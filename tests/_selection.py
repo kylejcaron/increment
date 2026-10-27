@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import os
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from scripts.selection_map import SelectionMap, is_stale, tests_changed_since
 
@@ -19,37 +21,72 @@ def _module_name(path: Path, root: Path) -> str:
     return ".".join(parts)
 
 
-def _lazy_tables(root: Path) -> dict[str, dict[str, str]]:
-    tables: dict[str, dict[str, str]] = {}
-    package = root / "increment"
-    if not package.is_dir():
-        return tables
-    for path in package.rglob("*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, UnicodeError):
-            continue
-        for node in tree.body:
-            value = None
-            if isinstance(node, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS"
-                for target in node.targets
+_FACTS_FILE = Path(".pytest_cache") / "selection-facts.json"
+
+
+def _extract_facts(source: str) -> dict[str, Any]:
+    """What selection needs from one file, independent of every other file."""
+    tree = ast.parse(source)
+    imports: list[list[Any]] = []
+    dynamic: list[str] = []
+    walks_package = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.append(["import", None, 0, [alias.name for alias in node.names]])
+        elif isinstance(node, ast.ImportFrom):
+            imports.append(["from", node.module, node.level, [alias.name for alias in node.names]])
+        elif isinstance(node, ast.Call):
+            function = node.func
+            if (
+                (isinstance(function, ast.Attribute) and function.attr == "import_module")
+                or (isinstance(function, ast.Name) and function.id == "import_module")
+            ) and (
+                node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
             ):
-                value = node.value
-            elif (
-                isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and node.target.id == "_LAZY_IMPORTS"
-            ):
-                value = node.value
-            if value is None:
-                continue
+                dynamic.append(node.args[0].value)
+            if isinstance(function, ast.Attribute) and function.attr in {
+                "walk_packages",
+                "__subclasses__",
+            }:
+                walks_package = True
+        elif (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "sys"
+            and node.value.attr == "modules"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            dynamic.append(node.slice.value)
+    lazy_table: dict[str, str] | None = None
+    top_names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            top_names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            top_names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.Assign):
+            top_names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            top_names.add(node.target.id)
+        is_lazy = (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_LAZY_IMPORTS" for t in node.targets)
+        ) or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_LAZY_IMPORTS"
+        )
+        if is_lazy and lazy_table is None and node.value is not None:
             try:
-                entries = ast.literal_eval(value)
+                entries = ast.literal_eval(node.value)
             except (ValueError, TypeError):
-                break
-            if isinstance(entries, dict):
-                tables[_module_name(path, root)] = {
+                entries = None
+            lazy_table = (
+                {
                     name: target[0]
                     for name, target in entries.items()
                     if isinstance(name, str)
@@ -57,93 +94,124 @@ def _lazy_tables(root: Path) -> dict[str, dict[str, str]]:
                     and len(target) == 2
                     and isinstance(target[0], str)
                 }
-            break
+                if isinstance(entries, dict)
+                else {}
+            )
+    return {
+        "imports": imports,
+        "dynamic": dynamic,
+        "walks_package": walks_package,
+        "lazy_table": lazy_table,
+        "top_names": sorted(top_names),
+    }
+
+
+class _Facts:
+    """Per-file facts keyed by content digest, persisted between runs."""
+
+    def __init__(self, root: Path) -> None:
+        self._path = root / _FACTS_FILE
+        try:
+            loaded = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = {}
+        self._entries: dict[str, Any] = loaded if isinstance(loaded, dict) else {}
+        self._dirty = False
+
+    def get(self, path: Path) -> dict[str, Any] | None:
+        try:
+            source = path.read_bytes()
+        except OSError:
+            return None
+        digest = hashlib.sha256(source).hexdigest()
+        cached = self._entries.get(digest)
+        if cached is not None:
+            return cached
+        try:
+            facts = _extract_facts(source.decode("utf-8"))
+        except (SyntaxError, UnicodeError, ValueError):
+            return None
+        self._entries[digest] = facts
+        self._dirty = True
+        return facts
+
+    def save(self) -> None:
+        if not self._dirty:
+            return
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._path.with_name(f"{self._path.name}.{os.getpid()}")
+            temporary.write_text(json.dumps(self._entries), encoding="utf-8")
+            os.replace(temporary, self._path)
+        except OSError:
+            return
+
+
+def _lazy_tables(root: Path, facts: _Facts | None = None) -> dict[str, dict[str, str]]:
+    facts = facts or _Facts(root)
+    tables: dict[str, dict[str, str]] = {}
+    package = root / "increment"
+    if not package.is_dir():
+        return tables
+    for path in package.rglob("*.py"):
+        found = facts.get(path)
+        if found is not None and found["lazy_table"] is not None:
+            tables[_module_name(path, root)] = found["lazy_table"]
     return tables
 
 
-def _top_level_names(path: Path) -> set[str]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, UnicodeError):
-        return set()
-    names: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.Assign):
-            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
-    return names
-
-
 def _imports(
+    facts: dict[str, Any] | None,
     path: Path,
     module: str,
     known: set[str],
     tables: dict[str, dict[str, str]],
     eager: dict[str, set[str]] | None = None,
 ) -> tuple[set[str], set[str], set[tuple[str, str]]]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, UnicodeError):
-        return set(), set(), set()
     imports: set[str] = set()
     supplemental: set[tuple[str, str]] = set()
     unresolved: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imports.update(alias.name for alias in node.names if alias.name in known)
-        elif isinstance(node, ast.ImportFrom):
-            base = _resolve_import(module, path, node)
-            if base in known:
-                imports.add(base)
-            imports.update(
-                f"{base}.{alias.name}" for alias in node.names if f"{base}.{alias.name}" in known
-            )
-            for alias in node.names:
-                if base in tables:
-                    target = tables[base].get(alias.name)
-                    if target is None:
-                        # Names bound when the module runs, and its submodules,
-                        # resolve through the import graph, not the lazy table.
-                        if (
-                            alias.name != "*"
-                            and alias.name not in (eager or {}).get(base, set())
-                            and f"{base}.{alias.name}" not in known
-                        ):
-                            unresolved.add(alias.name)
-                    else:
-                        imports.add(target)
-                        supplemental.add((target, f"lazy_export:{alias.name}"))
-        elif isinstance(node, ast.Call):
-            function = node.func
-            if (isinstance(function, ast.Attribute) and function.attr == "import_module") or (
-                isinstance(function, ast.Name) and function.id == "import_module"
-            ):
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
-                    name = node.args[0].value
-                    if name == "increment" or name.startswith("increment."):
-                        supplemental.add((name, "dynamic_import"))
-                        imports.add(name)
-        elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute):
-            if (
-                isinstance(node.value.value, ast.Name)
-                and node.value.value.id == "sys"
-                and node.value.attr == "modules"
-            ):
-                if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
-                    name = node.slice.value
-                    if name == "increment" or name.startswith("increment."):
-                        imports.add(name)
-                        supplemental.add((name, "dynamic_import"))
+    if facts is None:
+        return imports, unresolved, supplemental
+    for kind, name, level, aliases in facts["imports"]:
+        if kind == "import":
+            imports.update(alias for alias in aliases if alias in known)
+            continue
+        base = _resolve_from(module, path, name, level)
+        if base in known:
+            imports.add(base)
+        imports.update(f"{base}.{alias}" for alias in aliases if f"{base}.{alias}" in known)
+        if base in tables:
+            for alias in aliases:
+                target = tables[base].get(alias)
+                if target is None:
+                    # Names bound when the module runs, and its submodules,
+                    # resolve through the import graph, not the lazy table.
+                    if (
+                        alias != "*"
+                        and alias not in (eager or {}).get(base, set())
+                        and f"{base}.{alias}" not in known
+                    ):
+                        unresolved.add(alias)
+                else:
+                    imports.add(target)
+                    supplemental.add((target, f"lazy_export:{alias}"))
+    for name in facts["dynamic"]:
+        if name == "increment" or name.startswith("increment."):
+            imports.add(name)
+            supplemental.add((name, "dynamic_import"))
     return imports, unresolved, supplemental
+
+
+def _resolve_from(module: str, path: Path, name: str | None, level: int) -> str:
+    base = name or ""
+    if level:
+        package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+        parts = package.split(".")
+        if level > 1:
+            parts = parts[: -(level - 1)]
+        base = ".".join((*parts, *base.split("."))) if base else ".".join(parts)
+    return base
 
 
 def _resolve_import(module: str, path: Path, node: ast.ImportFrom) -> str:
@@ -192,7 +260,8 @@ class SelectionGraph:
         reasons: dict[str, set[str]] = {}
         tests = sorted((root / "tests").rglob("test_*.py")) if (root / "tests").is_dir() else []
         names = {path: _module_name(path, root) for path in tests}
-        tables = _lazy_tables(root)
+        facts = _Facts(root)
+        tables = _lazy_tables(root, facts)
         usable = selection_map is not None and selection_map["tier"] == tier
         why_unusable = "missing"
         if selection_map is not None and selection_map["tier"] == tier:
@@ -270,44 +339,29 @@ class SelectionGraph:
         adjacency: dict[str, set[str]] = {}
         supplemental_edges: dict[str, set[tuple[str, str]]] = {}
         unresolved_by_module: dict[str, set[str]] = {}
+        file_facts = {module: facts.get(path) for module, path in all_paths.items()}
         eager = {
-            module: _top_level_names(all_paths[module]) for module in tables if module in all_paths
+            module: set(found["top_names"])
+            for module in tables
+            if (found := file_facts.get(module)) is not None
         }
         for module, path in all_paths.items():
-            imports, unresolved, supplemental = _imports(path, module, known, tables, eager)
+            found = file_facts[module]
+            imports, unresolved, supplemental = _imports(found, path, module, known, tables, eager)
             adjacency[module] = imports
             supplemental_edges[module] = supplemental
             unresolved_by_module[module] = unresolved
-            if module in helper_paths:
-                try:
-                    tree = ast.parse(path.read_text(encoding="utf-8"))
-                except (OSError, SyntaxError, UnicodeError):
-                    continue
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import) and any(
-                        alias.name == "tests.refusal_registry" for alias in node.names
-                    ):
-                        reasons.setdefault(path.relative_to(root).as_posix(), set()).add("required")
-                    if isinstance(node, ast.ImportFrom) and node.module == "tests.refusal_registry":
-                        reasons.setdefault(path.relative_to(root).as_posix(), set()).add("required")
-                    if (
-                        isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Attribute)
-                        and node.func.attr == "walk_packages"
-                    ):
-                        if changed_modules:
-                            reasons.setdefault(path.relative_to(root).as_posix(), set()).add(
-                                "required"
-                            )
-                    if (
-                        isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Attribute)
-                        and node.func.attr == "__subclasses__"
-                    ):
-                        if changed_modules:
-                            reasons.setdefault(path.relative_to(root).as_posix(), set()).add(
-                                "required"
-                            )
+            if module in helper_paths and found is not None:
+                relative = path.relative_to(root).as_posix()
+                if any(
+                    name == "tests.refusal_registry"
+                    for kind, name, _level, aliases in found["imports"]
+                    for name in ([name] if kind == "from" else aliases)
+                ):
+                    reasons.setdefault(relative, set()).add("required")
+                if found["walks_package"] and changed_modules:
+                    reasons.setdefault(relative, set()).add("required")
+        facts.save()
 
         for test_path, module in names.items():
             visited = _reachable(module, adjacency)
@@ -371,3 +425,58 @@ class AffectedHandler:
             payload["__metadata__"] = {**metadata, "decision_files": sorted(payload)}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def selection_graph(root: Path, base: str, *, tier: str) -> SelectionGraph:
+    """Build the graph for the paths changed since ``base``."""
+    from scripts.affected import _changed_paths
+    from scripts.selection_map import load
+
+    changed_paths = set(_changed_paths(base, root))
+    changed_modules = set()
+    for name in changed_paths:
+        path = Path(name)
+        if name.startswith("increment/") and path.suffix == ".py":
+            parts = path.with_suffix("").parts
+            if parts[-1] == "__init__":
+                parts = parts[:-1]
+            changed_modules.add(".".join(parts))
+    return SelectionGraph.from_tree(
+        root,
+        changed_modules,
+        tier=tier,
+        selection_map=load(root / "tests/selection_map.json"),
+        changed_paths=changed_paths,
+    )
+
+
+def kept_test_files(root: Path, base: str, *, tier: str) -> tuple[str, ...] | None:
+    """Decide every test file the way the pytest handler does, before collection.
+
+    Returns ``None`` when tach has no project configuration, so the caller
+    collects the whole test tree instead.
+    """
+    from tach.extension import TachPytestPluginHandler
+    from tach.filesystem.git_ops import get_changed_files
+    from tach.parsing import parse_project_config
+
+    project_config = parse_project_config(root=root)
+    if project_config is None:
+        return None
+    changed_files = get_changed_files(project_root=root, head=None, base=base)
+    handler = AffectedHandler(
+        TachPytestPluginHandler(
+            project_root=root,
+            project_config=project_config,
+            changed_files=changed_files,
+            all_affected_modules={path.resolve() for path in changed_files},
+        ),
+        selection_graph(root, base, tier=tier),
+    )
+    test_root = root / "tests"
+    candidates = sorted({*test_root.rglob("test_*.py"), *test_root.rglob("*_test.py")})
+    return tuple(
+        path.relative_to(root).as_posix()
+        for path in candidates
+        if not handler.should_remove_items(path)
+    )

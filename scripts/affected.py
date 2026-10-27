@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -252,7 +254,12 @@ def _without_xdist_worker_args(arguments: Sequence[str]) -> list[str]:
 
 
 def _pytest_invocations(
-    selection: Selection, base: str, tier: str, extra_args: Sequence[str]
+    selection: Selection,
+    base: str,
+    tier: str,
+    extra_args: Sequence[str],
+    *,
+    kept: Sequence[str] | None = None,
 ) -> list[list[str]]:
     markers = ["-m", _changed_markers(tier, Path(__file__).resolve().parent.parent)]
 
@@ -261,19 +268,24 @@ def _pytest_invocations(
         return [markers + roots + list(selection.doc_pages) + list(extra_args)]
 
     if selection.use_tach:
-        args = markers + [
-            "--tach-base",
-            base,
-            "--affected-tier",
-            tier,
-            "--affected-report",
-            selection.affected_report,
-            "tests",
-            *selection.test_files,
-            *selection.doc_pages,
-            *extra_args,
+        if kept == () and not selection.test_files and not selection.doc_pages:
+            return []
+        return [
+            markers
+            + [
+                "--tach-base",
+                base,
+                "--affected-tier",
+                tier,
+                "--affected-report",
+                selection.affected_report,
+                "-p",
+                "scripts.affected_filter",
+                *extra_args,
+                "tests",
+                *selection.doc_pages,
+            ]
         ]
-        return [args]
 
     direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
     direct_args.extend(extra_args)
@@ -329,10 +341,22 @@ def main(argv: list[str]) -> int:
     if selection.full_tier:
         print(f"affected: running full {arguments.tier} tier")
 
+    kept = None
+    if selection.use_tach:
+        from tests._selection import kept_test_files
+
+        kept = kept_test_files(root, arguments.base, tier=arguments.tier)
     statuses = []
-    for pytest_args in _pytest_invocations(selection, arguments.base, arguments.tier, extra_args):
+    for pytest_args in _pytest_invocations(
+        selection, arguments.base, arguments.tier, extra_args, kept=kept
+    ):
         command = [sys.executable, "-m", "pytest", *pytest_args]
-        statuses.append(subprocess.run(command, cwd=root, check=False).returncode)
+        environment = os.environ.copy()
+        if kept is None:
+            environment.pop("AFFECTED_TEST_FILES", None)
+        else:
+            environment["AFFECTED_TEST_FILES"] = json.dumps(sorted({*kept, *selection.test_files}))
+        statuses.append(subprocess.run(command, cwd=root, env=environment, check=False).returncode)
     status = _combined_pytest_status(statuses)
     if status is None:
         print("affected: no affected tests selected")

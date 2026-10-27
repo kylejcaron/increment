@@ -1,6 +1,6 @@
 {
-  "base_sha": "7421c7d878d762b515d007551adfcdf8feb1290e",
-  "generated_at": "2026-10-26T07:42:45.690860+00:00",
+  "base_sha": "6a17b6ca337ca64684d1026f5db2bc6af1ebe5b5",
+  "generated_at": "2026-10-26T12:53:22.701188+00:00",
   "modules": {
     "increment": [
       "tests/test_analysis_frame_sources.py",
@@ -1630,9 +1630,7 @@
     ],
     "increment._health": [
       "tests/test_analysis_moments.py",
-      "tests/test_consumer_standard.py",
       "tests/test_cuped_evidence.py",
-      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_experiment_health.py",
       "tests/test_readout_public_scope.py"
@@ -2803,8 +2801,7 @@
     "increment._planning_baseline": [
       "tests/power/test_core.py",
       "tests/test_analysis_planning_baseline.py",
-      "tests/test_native_encouragement_declaration.py",
-      "tests/test_retired_codes.py"
+      "tests/test_native_encouragement_declaration.py"
     ],
     "increment._policy_alpha": [
       "tests/breakout/test_daily.py",
@@ -3725,7 +3722,9 @@
       "tests/estimation/test_adjust_cluster.py",
       "tests/estimation/test_aipw.py",
       "tests/estimation/test_asymptotic_joint.py",
+      "tests/estimation/test_binomial_rr.py",
       "tests/estimation/test_conversion_route.py",
+      "tests/estimation/test_conversion_route_calibration.py",
       "tests/estimation/test_dml.py",
       "tests/estimation/test_encouragement.py",
       "tests/estimation/test_encouragement_calibration.py",
@@ -3864,8 +3863,7 @@
       "tests/test_warehouse_cuped_parity.py",
       "tests/test_warehouse_cuped_qr.py",
       "tests/test_warehouse_cuped_qr_edges.py",
-      "tests/test_weight_diagnostic_parity.py",
-      "tests/test_workflows.py"
+      "tests/test_weight_diagnostic_parity.py"
     ],
     "increment.breakout.estimates": [
       "tests/breakout/test_daily.py",
@@ -5407,11 +5405,13 @@
       "tests/test_comparative_efficiency.py",
       "tests/test_conversion_family_readout.py",
       "tests/test_dashboard.py",
+      "tests/test_dashboard_result_evidence.py",
       "tests/test_decision_wire.py",
       "tests/test_readouts_observational.py",
       "tests/test_readouts_plan.py",
       "tests/test_tables.py",
-      "tests/test_unit_day_artifact_facade.py"
+      "tests/test_unit_day_artifact_facade.py",
+      "tests/test_unit_day_artifact_production.py"
     ],
     "increment.estimation._certified": [
       "tests/breakout/test_daily.py",
@@ -5467,6 +5467,7 @@
       "tests/test_frame_validation_dtypes.py",
       "tests/test_metric_evidence.py",
       "tests/test_mixed_family_auto.py",
+      "tests/test_native_encouragement_declaration.py",
       "tests/test_native_source_parity.py",
       "tests/test_parity_harness.py",
       "tests/test_plan_resolver.py",
@@ -5496,10 +5497,13 @@
       "tests/breakout/test_estimates.py",
       "tests/estimation/test_conversion_composite.py",
       "tests/estimation/test_exploratory_family.py",
-      "tests/test_dashboard.py"
+      "tests/test_dashboard.py",
+      "tests/test_dashboard_population.py"
     ],
     "increment.estimation._rank_bands": [
-      "tests/estimation/test_winsor_repair.py"
+      "tests/test_docs_refusal_guidance.py",
+      "tests/test_refusal_uniqueness.py",
+      "tests/test_retired_codes.py"
     ],
     "increment.estimation._readout_refusals": [
       "tests/estimation/test_abs_scale.py",
@@ -10167,12 +10171,14 @@
       "tests/test_warehouse_cuped_qr_regressions.py"
     ],
     "increment.query.artifact_contract": [
+      "tests/breakout/test_daily.py",
       "tests/query/test_artifact_contract.py",
       "tests/query/test_builders.py",
       "tests/query/test_fact_resolution.py",
       "tests/query/test_session.py",
       "tests/test_analysis_asof.py",
       "tests/test_analysis_facade.py",
+      "tests/test_analysis_factor.py",
       "tests/test_analysis_planning_baseline.py",
       "tests/test_analysis_quantile.py",
       "tests/test_analysis_trigger.py",
@@ -10185,8 +10191,8 @@
       "tests/test_evidence_capabilities.py",
       "tests/test_evidence_provider.py",
       "tests/test_experiment_health.py",
+      "tests/test_mixed_family_auto.py",
       "tests/test_native_encouragement_declaration.py",
-      "tests/test_native_pipeline_parity.py",
       "tests/test_parity_harness.py",
       "tests/test_provider_forwarding_parity.py",
       "tests/test_quantile_export_parity.py",
@@ -10198,6 +10204,7 @@
       "tests/test_readouts_switchback.py",
       "tests/test_refusal_uniqueness.py",
       "tests/test_sequential_public_sources.py",
+      "tests/test_sequential_registration_contract.py",
       "tests/test_source_capabilities.py",
       "tests/test_triggered_sequential.py",
       "tests/test_triggered_sitewide.py",
@@ -10205,7 +10212,8 @@
       "tests/test_unit_day_artifact_extensions.py",
       "tests/test_unit_day_artifact_facade.py",
       "tests/test_unit_day_artifact_parity.py",
-      "tests/test_unit_day_artifact_production.py"
+      "tests/test_unit_day_artifact_production.py",
+      "tests/test_warehouse_cuped_qr.py"
     ],
     "increment.query.artifact_digest": [
       "tests/estimation/test_adjust_cluster.py",
@@ -10707,6 +10715,8 @@
     "increment.query.native_source": [
       "tests/estimation/test_adjust.py",
       "tests/estimation/test_adjust_cluster.py",
+      "tests/estimation/test_binomial_rr.py",
+      "tests/estimation/test_conversion_route_calibration.py",
       "tests/estimation/test_encouragement_calibration.py",
       "tests/estimation/test_late_cluster.py",
       "tests/query/test_builders.py",
@@ -10782,11 +10792,9 @@
       "tests/test_unit_day_artifact_parity.py",
       "tests/test_unit_day_artifact_production.py",
       "tests/test_warehouse_cuped_qr_edges.py",
-      "tests/test_weight_diagnostic_parity.py",
-      "tests/test_workflows.py"
+      "tests/test_weight_diagnostic_parity.py"
     ],
     "increment.query.sequential_capture": [
-      "tests/query/test_session.py",
       "tests/test_analysis_asof.py",
       "tests/test_analysis_facade.py",
       "tests/test_analysis_trigger.py",
@@ -10803,7 +10811,10 @@
       "tests/test_unit_day_artifact_parity.py"
     ],
     "increment.query.session": [
+      "tests/breakout/test_daily.py",
       "tests/estimation/test_adjust_cluster.py",
+      "tests/estimation/test_binomial_rr.py",
+      "tests/estimation/test_conversion_route_calibration.py",
       "tests/estimation/test_encouragement_calibration.py",
       "tests/estimation/test_late_cluster.py",
       "tests/query/test_builders.py",
@@ -10850,6 +10861,7 @@
       "tests/test_experiment_health.py",
       "tests/test_exploratory_metrics.py",
       "tests/test_metric_evidence.py",
+      "tests/test_mixed_family_auto.py",
       "tests/test_native_contracts.py",
       "tests/test_native_core_operations.py",
       "tests/test_native_encouragement_declaration.py",
@@ -10883,8 +10895,7 @@
       "tests/test_warehouse_cuped_qr.py",
       "tests/test_warehouse_cuped_qr_edges.py",
       "tests/test_warehouse_cuped_qr_regressions.py",
-      "tests/test_weight_diagnostic_parity.py",
-      "tests/test_workflows.py"
+      "tests/test_weight_diagnostic_parity.py"
     ],
     "increment.query.source": [
       "tests/query/test_artifact_contract.py",
@@ -13726,14 +13737,14 @@
       "tests/estimation/test_binomial_grid_calibration.py"
     ],
     "increment.simulate.__main__": [
-      "tests/test_consumer_standard.py",
+      "tests/test_docs_refusal_guidance.py",
       "tests/test_refusal_uniqueness.py",
       "tests/test_retired_codes.py"
     ],
     "increment.simulate._cluster_reconstruction": [
       "tests/simulate/test_clustered_cate.py",
-      "tests/test_refusal_uniqueness.py",
-      "tests/test_retired_codes.py"
+      "tests/test_docs_refusal_guidance.py",
+      "tests/test_refusal_uniqueness.py"
     ],
     "increment.simulate.bandit_loggers": [
       "tests/calibration/test_logged_policy_adaptive.py",
