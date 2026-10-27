@@ -140,7 +140,7 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
             "-m",
             "pytest",
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
             "-q",
             "--tach-base",
             base,

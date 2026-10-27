@@ -44,10 +44,24 @@ jobs:
     with: {backend_mode: all}
     secrets: inherit
 
+  parity-matrix-10x:
+    name: full parity matrix at tenfold data size
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      INCREMENT_PARITY_DATA_SCALE: "10"
+      INCREMENT_PARITY_MATRIX: full
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - run: uv run pytest tests/test_parity_matrix.py -m 'not benchmark'
   report-failure:
     name: report a failed weekly gate
     runs-on: ubuntu-latest
-    needs: [test-all-floor, warehouse-backends]
+    needs: [test-all-floor, warehouse-backends, parity-matrix-10x]
     if: failure()
     timeout-minutes: 10
     permissions:

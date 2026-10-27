@@ -31,6 +31,8 @@ def _run_heavy(session: nox.Session, *command: str, **kwargs) -> None:
     from scripts.test_slots import _with_workers, hold_slot
 
     hold_slot()
+    if command and command[0] == "pytest" and "--benchmark-skip" not in command:
+        command = ("pytest", "--benchmark-skip", *command[1:])
     command = tuple(_with_workers(list(command)))
     session.run(*command, **kwargs)
 
@@ -103,21 +105,21 @@ DUCKDB_FLOORS: dict[str, str] = {
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
 TIER_MARKERS = {
-    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
-    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress",
-    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress",
+    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
     # The compile registry builds once in its own CI job instead of in every slow shard.
     "slow": (
         "slow and not parameter_recovery and not numerical_certification and not examples"
-        " and not compile_registry"
+        " and not compile_registry and not benchmark"
     ),
-    "compile-registry": "compile_registry",
-    "parameter-recovery": "parameter_recovery",
-    "numerical-certification": "numerical_certification",
-    "scientific": "(parameter_recovery or numerical_certification)",
-    "examples": "examples",
-    "all": "slow or not slow",
-    "all-except-scientific": "not parameter_recovery and not numerical_certification",
+    "compile-registry": "compile_registry and not benchmark",
+    "parameter-recovery": "parameter_recovery and not benchmark",
+    "numerical-certification": "numerical_certification and not benchmark",
+    "scientific": "(parameter_recovery or numerical_certification) and not benchmark",
+    "examples": "examples and not benchmark",
+    "all": "(slow or not slow) and not benchmark",
+    "all-except-scientific": "not parameter_recovery and not numerical_certification and not benchmark",
 }
 
 
@@ -134,6 +136,7 @@ def _sync(session: nox.Session, *groups: str, extras: tuple[str, ...] = ()) -> N
 def _run_pytest_tier(session: nox.Session, tier: str, *pytest_args: str) -> None:
     marker = TIER_MARKERS.get(tier)
     selection = ("-m", marker) if marker is not None else ()
+
     _run_heavy(session, "pytest", *selection, *pytest_args)
 
 
@@ -172,6 +175,7 @@ def _run_pytest_at_floor(
         "--no-sync",
         *with_args,
         "pytest",
+        "--benchmark-skip",
         *marker_args,
         *selection,
         env={

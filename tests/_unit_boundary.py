@@ -18,6 +18,7 @@ UNIT_EXCLUDING_MARKERS = frozenset(
         "numerical_certification",
         "examples",
         "stress",
+        "benchmark",
     }
 )
 

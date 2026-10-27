@@ -77,7 +77,7 @@ jobs:
             echo "incomplete evidence: no base" > affected-report.json
             echo "incomplete evidence: no base" >> "$GITHUB_STEP_SUMMARY"
           else
-            uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
+            uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
           fi
       - name: Retain selection prediction
         if: always()

@@ -176,21 +176,41 @@ default CI selection; the Make targets define supported tiers:
 
 | Target | Marker expression |
 | --- | --- |
-| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress` |
-| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress` |
-| `make test-fast` | Unit plus integration-fast |
-| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry` |
-| `make test-tier TIER=compile-registry` | `compile_registry` (the warehouse compile registry; its own CI job) |
-| `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery` |
-| `make test-numerical-certification` | `numerical_certification` |
-| `make test-scientific SPLITS=N GROUP=K` | `(parameter_recovery or numerical_certification)` |
-| `make test-examples` | `examples` |
-| `make test-all` | `slow or not slow` |
+| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark` |
+| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark` |
+| `make test-fast` | Unit plus integration-fast (benchmarks excluded) |
+| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark` |
+| `make test-tier TIER=compile-registry` | `compile_registry and not benchmark` (the warehouse compile registry; its own CI job) |
+| `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery and not benchmark` |
+| `make test-numerical-certification` | `numerical_certification and not benchmark` |
+| `make test-scientific SPLITS=N GROUP=K` | `(parameter_recovery or numerical_certification) and not benchmark` |
+| `make test-examples` | `examples and not benchmark` |
+| `make test-all` | `(slow or not slow) and not benchmark` |
 
 The parameter-recovery, numerical-certification, scientific and examples tests
 also carry `slow`; the marker expressions keep their purpose-specific gates
 separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
 are no tier-level wall-clock budgets.
+
+Ordinary test lanes pass `--benchmark-skip` because pytest-benchmark's xdist
+collection warning is fatal under the project's warning policy. Run benchmarks
+explicitly with `make benchmark`. To compare code changes against your machine,
+capture a local baseline before editing:
+
+```bash
+uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 \
+  --benchmark-only --benchmark-save=before-change
+make benchmark BENCHMARK_BASELINE=/path/to/baseline.json
+```
+
+The plugin writes the baseline JSON under `.benchmarks/`; pass that generated
+path to `BENCHMARK_BASELINE`.
+
+The committed `tests/fixtures/benchmarks/step4-pre-kernel.json` is a
+reference-machine diagnostic, not a portable performance gate. `make benchmark`
+records results by default; comparison happens only when `BENCHMARK_BASELINE`
+is explicitly supplied.
+
 
 Start with the exact regression:
 
