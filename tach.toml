@@ -789,6 +789,10 @@ expose = ["_FrozenMapping"]
 from = ["increment._multiplicity"]
 expose = ["MultiplicityFamily", "guarantee_for_correction"]
 
+[[interfaces]]
+from = ["increment._evidence_types"]
+expose = ["day_axis_time_basis", "day_axis_source_partitions"]
+
 
 [[modules]]
 path = "increment.declarations"
@@ -820,3 +824,12 @@ depends_on = ["increment._literals", "increment.declarations", "increment.estima
 [[modules]]
 path = "increment.estimation._adjust.dml"
 depends_on = ["increment._literals", "increment.declarations", "increment.errors", "increment.estimation"]
+
+[[modules]]
+path = "increment.kernel.contracts"
+depends_on = [
+  "increment._canonical",
+  "increment._evidence_types",
+  "increment.declarations",
+  "increment.errors",
+]

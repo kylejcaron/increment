@@ -44,6 +44,8 @@ from increment._evidence_types import (
     SourceContext,
     UnitRows,
     UnitRowsRequest,
+    day_axis_source_partitions,
+    day_axis_time_basis,
     validate_compliance_source_match,
 )
 from increment._source_types import (
@@ -56,7 +58,6 @@ from increment._source_types import (
     is_custom_source,
 )
 from increment.errors import CodedError
-from increment.semantics.models import RetentionMetric
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
 
 
@@ -878,15 +879,19 @@ def _groups(req: DayAxisRequest) -> list[tuple[Any, tuple[Any, ...]]]:
             (
                 "asof"
                 if req.grain == "asof"
-                else ("cohort" if isinstance(metric, RetentionMetric) else "daily"),
+                else ("cohort" if day_axis_time_basis(metric, req.grain) == "cohort" else "daily"),
                 (metric,),
             )
             for metric in req.metrics
         ]
     if req.grain == "asof":
         return [("asof", tuple(req.metrics))] if req.metrics else []
-    activity = tuple(m for m in req.metrics if not isinstance(m, RetentionMetric))
-    retention = tuple(m for m in req.metrics if isinstance(m, RetentionMetric))
+    activity = tuple(
+        metric for metric in req.metrics if day_axis_time_basis(metric, req.grain) == "calendar"
+    )
+    retention = tuple(
+        metric for metric in req.metrics if day_axis_time_basis(metric, req.grain) == "cohort"
+    )
     groups = []
     if activity:
         groups.append(("daily", activity))
@@ -1040,7 +1045,9 @@ class _ArtifactDayAxis:
                 view = (
                     "asof"
                     if req.grain == "asof"
-                    else ("cohort" if isinstance(metric, RetentionMetric) else "daily")
+                    else (
+                        "cohort" if day_axis_time_basis(metric, req.grain) == "cohort" else "daily"
+                    )
                 )
                 yield DayAxisSlice(
                     list(result.rows), (metric,), view, req.dimension, result.source_name
@@ -1087,21 +1094,8 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
         dimensions = tuple(
             dict.fromkeys((*request.by, *((request.dimension,) if request.dimension else ())))
         )
-        declared = () if request.experiment is None else request.experiment.breakouts
-        # Keep each declared breakout's source so same-named dimensions stay distinct.
-        declared_identities = tuple(
-            BreakoutIdentity(item.property, item.source)
-            for item in declared
-            if item.property in dimensions
-        )
-        declared_properties = {identity.property for identity in declared_identities}
-        # Requested dimensions the experiment does not declare join every source scope.
-        undeclared = tuple(
-            BreakoutIdentity(dimension, None)
-            for dimension in dimensions
-            if dimension not in declared_properties
-        )
-        sources = tuple(dict.fromkeys(item.source for item in declared_identities)) or (None,)
+        partitions = day_axis_source_partitions(request.experiment, dimensions)
+        sources = tuple(source_name for source_name, _, _ in partitions)
         scopes = tuple(
             (
                 source_name,
@@ -1109,33 +1103,22 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                     metrics=request.metrics,
                     population=request.population,
                     grain=request.grain,
-                    breakouts=(
-                        *(item for item in declared_identities if item.source == source_name),
-                        *undeclared,
-                    ),
+                    breakouts=identities,
                 ),
             )
-            for source_name in sources
+            for source_name, identities, _ in partitions
         )
         route = day_axis_route(src)
         for _source_name, scope in scopes:
             require_evidence(src, request=scope)
 
         def scoped_slices() -> Iterator[DayAxisSlice]:
-            for source_name, scope in scopes:
+            for (source_name, scope), (_, _, breakouts) in zip(scopes, partitions, strict=True):
                 with evidence_scope(src, scope) as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
                     if experiment is not None and len(sources) > 1:
                         # Each source scope reads only its own declared breakouts.
-                        experiment = experiment.model_copy(
-                            update={
-                                "breakouts": tuple(
-                                    item
-                                    for item in experiment.breakouts
-                                    if item.property not in dimensions or item.source == source_name
-                                )
-                            }
-                        )
+                        experiment = experiment.model_copy(update={"breakouts": breakouts})
                     scoped_request = (
                         request
                         if experiment is request.experiment
