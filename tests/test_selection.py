@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 
 from scripts.selection_map import SelectionMap, is_stale
-from tests._selection import AffectedHandler, SelectionGraph
+from tests._selection import AffectedHandler, SelectionGraph, kept_test_files
 
 pytestmark = pytest.mark.integration
 
@@ -223,6 +223,29 @@ def _map(
     return payload
 
 
+def test_kept_test_files_uses_tach_dependencies(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "tach.toml": (
+                'source_roots = ["."]\nroot_module = "ignore"\n'
+                '[[modules]]\npath = "increment"\ndepends_on = []\n'
+                '[[modules]]\npath = "increment._literals"\ndepends_on = ["increment"]\n'
+            ),
+            "increment/__init__.py": "",
+            "increment/_literals.py": "VALUE = 1\n",
+            "tests/test_importer.py": "import increment._literals\n\ndef test_importer(): pass\n",
+            "tests/test_unrelated.py": "def test_unrelated(): pass\n",
+        },
+    )
+    base = _commit(tmp_path)
+    (tmp_path / "increment/_literals.py").write_text("VALUE = 2\n")
+    _map(tmp_path, {}, base=base)
+    _scratch_commit(tmp_path, "change production dependency")
+
+    assert kept_test_files(tmp_path, base, tier="fast") == ("tests/test_importer.py",)
+
+
 def test_map_helper_builds_a_fresh_map(tmp_path: Path) -> None:
     _tree(tmp_path, {"increment/x.py": "", "tests/test_a.py": ""})
     base = _commit(tmp_path)
@@ -269,6 +292,26 @@ def test_unresolvable_lazy_export_keeps_importing_test(tmp_path: Path) -> None:
     graph = SelectionGraph.from_tree(tmp_path, {"increment.impl"}, tier="fast", selection_map=None)
 
     assert "unresolved_lazy_name" in graph.keeps("tests/test_api.py")
+
+
+def test_edited_test_file_is_reread_after_an_earlier_selection(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/__init__.py": "",
+            "increment/a.py": "",
+            "increment/b.py": "",
+            "tests/test_x.py": "import increment.a\n",
+        },
+    )
+    first = SelectionGraph.from_tree(tmp_path, {"increment.b"}, tier="fast", selection_map=None)
+    (tmp_path / "tests/test_x.py").write_text(
+        "import importlib\nimportlib.import_module('increment.b')\n"
+    )
+    second = SelectionGraph.from_tree(tmp_path, {"increment.b"}, tier="fast", selection_map=None)
+
+    assert "dynamic_import" not in first.keeps("tests/test_x.py")
+    assert "dynamic_import" in second.keeps("tests/test_x.py")
 
 
 def test_eagerly_bound_name_and_submodule_of_a_lazy_package_are_resolved(tmp_path: Path) -> None:

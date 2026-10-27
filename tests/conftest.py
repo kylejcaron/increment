@@ -8,9 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from scripts.affected import _changed_paths
-from scripts.selection_map import load
-from tests._selection import AffectedHandler, SelectionGraph
+from tests._selection import AffectedHandler, SelectionGraph, selection_graph
 from tests._unit_boundary import backend_fixture
 
 if TYPE_CHECKING:
@@ -145,22 +143,10 @@ def pytest_configure(config: pytest.Config) -> None:
     base = config.getoption("--tach-base", default=None)
     if base is None:
         return
-    root = Path(config.rootpath)
-    changed_paths = set(_changed_paths(base, root))
-    changed_modules = set()
-    for name in changed_paths:
-        path = Path(name)
-        if name.startswith("increment/") and path.suffix == ".py":
-            parts = path.with_suffix("").parts
-            if parts[-1] == "__init__":
-                parts = parts[:-1]
-            changed_modules.add(".".join(parts))
-    graph = SelectionGraph.from_tree(
-        root,
-        changed_modules,
+    graph = selection_graph(
+        Path(config.rootpath),
+        base,
         tier=config.getoption("--affected-tier", default="fast"),
-        selection_map=load(root / "tests/selection_map.json"),
-        changed_paths=changed_paths,
     )
     report_option = config.getoption("--affected-report", default=None)
     report = Path(report_option) if report_option else None

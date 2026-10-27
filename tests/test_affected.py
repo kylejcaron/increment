@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from scripts.affected import Selection, _pytest_arguments, _pytest_invocations, select
+from scripts.affected import Selection, _pytest_arguments, _pytest_invocations, main, select
 
 pytestmark = pytest.mark.integration
 
@@ -78,10 +80,286 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
         "fast",
         "--affected-report",
         ".affected-report-fast.json",
-        "tests",
+        "-p",
+        "scripts.affected_filter",
         "-n",
         "2",
+        "tests",
     ]
+
+
+def test_prefiltered_selection_runs_kept_and_changed_tests_without_importing_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tach.toml": (
+                'source_roots = ["."]\nroot_module = "ignore"\n'
+                '[[modules]]\npath = "increment"\ndepends_on = []\n'
+                '[[modules]]\npath = "increment._literals"\ndepends_on = ["increment"]\n'
+            ),
+            "tests/conftest.py": (
+                "def pytest_addoption(parser):\n"
+                "    parser.addoption('--affected-report', default=None)\n"
+                "    parser.addoption('--affected-tier', default='fast')\n"
+            ),
+            "increment/__init__.py": "",
+            "increment/_literals.py": "VALUE = 1\n",
+            "tests/test_kept.py": (
+                "import increment._literals\n"
+                "from pathlib import Path\n"
+                "def test_kept(): Path('kept-ran').touch()\n"
+            ),
+            "tests/test_changed.py": (
+                "import increment._literals\n"
+                "from pathlib import Path\n"
+                "def test_changed(): Path('changed-ran').touch()\n"
+            ),
+            "tests/test_unrelated.py": "raise AssertionError('unrelated module imported')\n",
+        },
+    )
+    (root / "increment/_literals.py").write_text("VALUE = 2\n")
+    (root / "tests/test_changed.py").write_text(
+        "import increment._literals\n"
+        "from pathlib import Path\n"
+        "def test_changed(): Path('changed-ran').touch()\n"
+    )
+    _git(root, "add", ".")
+    _git(
+        root,
+        "-c",
+        "user.email=tests@example.com",
+        "-c",
+        "user.name=Tests",
+        "commit",
+        "--no-verify",
+        "-qm",
+        "changed selection inputs",
+    )
+    selection_base = _git(root, "rev-parse", "HEAD")
+    (root / "tests/selection_map.json").write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "base_sha": selection_base,
+                "tier": "fast",
+                "modules": {"increment._literals": ["tests/test_kept.py"]},
+            }
+        )
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+
+    assert main(["--base", base]) == 0
+    capsys.readouterr()
+    assert (root / "kept-ran").exists()
+    assert (root / "changed-ran").exists()
+
+
+def test_filtered_invocation_collects_directory_and_loads_filter_plugin() -> None:
+    selection = Selection(("tests/test_allowed.py",), (), True, False, ())
+
+    (invocation,) = _pytest_invocations(
+        selection, "base", "fast", [], kept=("tests/test_allowed.py",)
+    )
+
+    assert "tests" in invocation
+    assert "tests/test_allowed.py" not in invocation
+    assert "scripts.affected_filter" in invocation
+
+
+def test_deselect_keeps_directory_when_tach_has_no_selection() -> None:
+    selection = Selection((), (), True, False, ())
+
+    (invocation,) = _pytest_invocations(
+        selection, "base", "fast", ["--deselect=tests/test_one.py::test_one"], kept=None
+    )
+
+    assert "tests" in invocation
+
+
+def test_filtered_collection_respects_ignore_and_deselect_and_skips_other_files(
+    tmp_path: Path,
+) -> None:
+    root, _ = _repo(
+        tmp_path,
+        {
+            "tests/test_ignored.py": "def test_ignored(): raise AssertionError('ignored')\n",
+            "tests/test_kept.py": """def test_deselected(): raise AssertionError('deselected')
+def test_kept(): pass
+""",
+            "tests/test_other.py": "raise AssertionError('imported unrelated test')\n",
+        },
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py", "tests/test_ignored.py"])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "scripts.affected_filter",
+            "-v",
+            "--ignore=tests/test_ignored.py",
+            "--deselect=tests/test_kept.py::test_deselected",
+            "tests",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tests/test_kept.py::test_kept" in result.stdout
+    assert "test_ignored" not in result.stdout
+    assert "test_deselected" not in result.stdout
+    assert "test_other" not in result.stdout
+
+
+def test_filtered_collection_skips_imports_for_unkept_test_files(tmp_path: Path) -> None:
+    root, _ = _repo(
+        tmp_path,
+        {
+            "tests/test_kept.py": "def test_kept(): pass\n",
+            "tests/test_other.py": "raise AssertionError('imported unrelated test')\n",
+        },
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py"])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "scripts.affected_filter",
+            "--collect-only",
+            "-q",
+            "tests",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "1 test collected" in result.stdout
+
+
+def test_unfiltered_collection_without_tach_selection_collects_whole_tree(
+    tmp_path: Path,
+) -> None:
+    root, _ = _repo(
+        tmp_path,
+        {
+            "tests/test_one.py": "def test_one(): pass\n",
+            "tests/test_two.py": "def test_two(): pass\n",
+        },
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("AFFECTED_TEST_FILES", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "scripts.affected_filter",
+            "--collect-only",
+            "-q",
+            "tests",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "2 tests collected" in result.stdout
+
+
+def test_prefiltered_selection_with_nothing_kept_runs_nothing(tmp_path: Path) -> None:
+    root, base = _repo(tmp_path, {"increment/frame.py": "VALUE = 1\n"})
+    selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
+
+    assert _pytest_invocations(selection, base, "fast", [], kept=()) == []
+
+
+def test_ignore_option_keeps_directory_collection_so_the_exclusion_applies(tmp_path: Path) -> None:
+    root, base = _repo(tmp_path, {"increment/frame.py": "VALUE = 1\n"})
+    selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
+
+    (invocation,) = _pytest_invocations(
+        selection, base, "fast", ["--ignore=tests/test_b.py"], kept=("tests/test_b.py",)
+    )
+
+    assert "tests" in invocation
+    assert "tests/test_b.py" not in invocation
+
+
+def test_environment_ignore_excludes_module_from_source_change_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/frame.py": "VALUE = 1\n",
+            "tests/test_allowed.py": "def test_allowed(): pass\n",
+            "tests/test_excluded.py": "def test_excluded(): pass\n",
+        },
+    )
+    selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=tests/test_excluded.py")
+    (invocation,) = _pytest_invocations(
+        selection, base, "fast", [], kept=("tests/test_allowed.py", "tests/test_excluded.py")
+    )
+    pytest_args = []
+    args = iter(invocation)
+    for argument in args:
+        if argument in {"--tach-base", "--affected-tier", "--affected-report"}:
+            next(args)
+        else:
+            pytest_args.append(argument)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", *pytest_args],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "tests/test_allowed.py::test_allowed" in result.stdout
+    assert "tests/test_excluded.py::test_excluded" not in result.stdout
+
+
+def test_deselect_preserves_prefiltered_files() -> None:
+    selection = Selection(("tests/test_allowed.py",), (), True, False, ())
+
+    (invocation,) = _pytest_invocations(
+        selection,
+        "base",
+        "fast",
+        ["--deselect=tests/test_allowed.py::test_one"],
+        kept=("tests/test_allowed.py",),
+    )
+
+    assert "tests" in invocation
+    assert "scripts.affected_filter" in invocation
+    assert "tests/test_allowed.py" not in invocation
 
 
 def test_source_and_doc_change_runs_tach_scope_and_doc_page(tmp_path: Path) -> None:
@@ -103,7 +381,7 @@ def test_source_and_doc_change_runs_tach_scope_and_doc_page(tmp_path: Path) -> N
     assert invocation[-2:] == ["tests", "docs/guides/cuped.md"]
 
 
-def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path) -> None:
+def test_source_and_test_change_runs_tach_scope_through_filter_plugin(tmp_path: Path) -> None:
     root, base = _repo(
         tmp_path,
         {
@@ -120,7 +398,9 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
     assert selection.use_tach is True
     assert selection.test_files == ("tests/test_explicit.py",)
     (invocation,) = _pytest_invocations(selection, base, "fast", [])
-    assert invocation[-2:] == ["tests", "tests/test_explicit.py"]
+    assert invocation[-1] == "tests"
+    assert "scripts.affected_filter" in invocation
+    assert "tests/test_explicit.py" not in invocation
 
 
 def test_changed_test_module_selects_its_test_importers(tmp_path: Path) -> None:
