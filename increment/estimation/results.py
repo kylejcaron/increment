@@ -100,6 +100,8 @@ RelativeUnavailableReason = Literal[
 if TYPE_CHECKING:
     from increment.estimation.binomial_rr import BinomialInterval
     from increment.estimation.inference import LiftPosterior
+    from increment.estimation.readout_types import ReadoutMetadata
+    from increment.result_envelope import ResultCell
 
 
 class Estimate(CodedModel, BaseModel):
@@ -1740,6 +1742,19 @@ class LiftEstimate(_RowIdentity):
     def _family_view(self) -> LiftEstimate:
         """The estimate exploratory-family evidence and FCR reissue read: this row itself."""
         return self
+
+    def as_cells(
+        self,
+        metadata: ReadoutMetadata | None = None,
+        *,
+        created_at: datetime | None = None,
+    ) -> list[ResultCell]:
+        """Return this finished row as one portable result cell."""
+        from importlib import import_module
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        return [ResultCell.from_row(self, metadata, created_at=created_at)]
 
     def reintervalize(
         self, alpha: float, *, interval_alternative: str | None = None

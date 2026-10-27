@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
 
 from increment.estimation.readout_types import (
@@ -66,6 +68,19 @@ class ReadoutInterpretation:
     groups: tuple[InterpretedGroup, ...]
     metadata_known: bool
     partial: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EffectEstimate:
+    point: float | None
+    lower: float | None
+    upper: float | None
+    alpha: float | None
+    value_scale: str
+    reason: str | None = None
+    geometry: str | None = None
+    intervals: tuple[tuple[float | None, float | None], ...] = ()
+    qualification: str | None = None
 
 
 def _unscoped_cell(row) -> InterpretedCell:
@@ -164,6 +179,35 @@ def _interpret_unscoped(visible_rows):
     return ReadoutInterpretation(groups, False, False)
 
 
+def _failure_and_availability(row, record):
+    failure = record.failure
+    sampling = record.sampling
+    if failure is not None:
+        failure_code, failure_context = failure.code, failure.context
+    elif row is not None and getattr(row, "sampling_available", None) is False:
+        failure_code = getattr(row, "failure_code", None) or getattr(
+            row, "sampling_reason_code", None
+        )
+        failure_context = getattr(row, "failure_context", None) or getattr(
+            row, "sampling_reason_context", None
+        )
+    elif sampling is not None and not sampling.available:
+        failure_code, failure_context = sampling.reason_code, sampling.reason_context
+    elif row is not None:
+        failure_code = getattr(row, "failure_code", None)
+        failure_context = getattr(row, "failure_context", None)
+    else:
+        failure_code = failure_context = None
+    sampling_available = (
+        False
+        if row is not None and getattr(row, "sampling_available", None) is False
+        else sampling.available
+        if sampling is not None
+        else _has_sampling_result(row)
+    )
+    return failure_code, failure_context, sampling_available
+
+
 def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpretation:
     """Interpret retained collection evidence without recomputing inference."""
     visible_rows = tuple(rows)
@@ -211,20 +255,9 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                 for cell in cells:
                     record = metadata.record(source_id, cell)
                     row = row_by_key.get((source_id, cell))
-                    failure = record.failure
-                    sampling = record.sampling
-                    if failure is not None:
-                        failure_code = failure.code
-                        failure_context = failure.context
-                    elif sampling is not None and not sampling.available:
-                        failure_code = sampling.reason_code
-                        failure_context = sampling.reason_context
-                    elif row is not None:
-                        failure_code = getattr(row, "failure_code", None)
-                        failure_context = getattr(row, "failure_context", None)
-                    else:
-                        failure_code = None
-                        failure_context = None
+                    failure_code, failure_context, sampling_available = _failure_and_availability(
+                        row, record
+                    )
                     failure_message = render_readout_failure(
                         failure_code,
                         failure_context,
@@ -238,9 +271,6 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                         and getattr(row, "unavailable", None) is not None
                     ):
                         failure_message = f"Unavailable: {row.unavailable}"
-                    sampling_available = (
-                        sampling.available if sampling is not None else _has_sampling_result(row)
-                    )
                     posterior = record.posterior
                     interpreted.append(
                         InterpretedCell(
@@ -555,6 +585,151 @@ def _render_group_label(group, *, metadata_known: bool, show_source: bool) -> st
     return f"{group.population or 'population unknown'} — {comparison}{source}"
 
 
+def render_brief_qualification(row, family=None, *, alpha=None) -> str | None:
+    """Return compact confidence and inference labels from retained result evidence."""
+    labels = []
+    estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
+    display_alpha = alpha if alpha is not None else getattr(estimate, "alpha", None)
+    family_definition = None if family is None else family.family
+    procedure = getattr(row, "family_procedure", None) or getattr(
+        family_definition, "correction", None
+    )
+    family_size = getattr(row, "family_size", None)
+    if family_size is None and family is not None:
+        family_size = len(family.members)
+    if display_alpha is not None:
+        labels.append(f"{1 - display_alpha:.1%} confidence")
+    if family_size is not None:
+        procedure_label = (
+            str(procedure).replace("_", " ").title() if procedure is not None else "family"
+        )
+        labels.append(f"{family_size}-member {procedure_label}")
+    if getattr(getattr(row, "sequential_result", None), "validity_regime", None) == (
+        "asymptotic_sequential"
+    ):
+        labels.append("asymptotic sequential")
+    relative_set = getattr(row, "relative_confidence_set", None)
+    if relative_set is not None and relative_set.qualification == "working_approximation":
+        labels.append("asymptotic joint confidence set")
+    return "; ".join(labels) if labels else None
+
+
+def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+    """Project cells and retained disclosures into source-qualified brief lines."""
+    rows_by_identity = {
+        (row.source_snapshot_id, CellKey.from_row(row)): row
+        for group in interpretation.groups
+        for row in group.visible_rows
+    }
+    source_ids = {cell.source_snapshot_id for cell in cells if cell.source_snapshot_id is not None}
+    comparisons = {
+        (group.source_snapshot_id, CellKey.from_row(row)): (
+            group.control_group,
+            group.treatment_group,
+        )
+        for group in interpretation.groups
+        for row in group.visible_rows
+    }
+    lines = []
+    for cell in cells:
+        key = cell.identity.key
+        label = _cell_label(key)
+        comparison = comparisons.get((cell.source_snapshot_id, key))
+        if comparison is not None and all(comparison):
+            label += f", comparison={comparison[1]} vs {comparison[0]}"
+        if len(source_ids) > 1 and cell.source_snapshot_id is not None:
+            label += f", source={_display_source(cell.source_snapshot_id)}"
+        status = cell.components["sampling"][0]
+        row = rows_by_identity.get((cell.source_snapshot_id, key))
+        text = _brief_summary_text(cell.summary)
+        text += f"; status={status.state}"
+        if status.code is not None:
+            text += f"; code={status.code}"
+        reasons = tuple(
+            dict.fromkeys(
+                reason
+                for reason in (status.reason, _reason(status.context))
+                if reason and reason != "reason unavailable"
+            )
+        )
+        if reasons:
+            text += f"; reason={'; '.join(reasons)}"
+        if row is not None:
+            discovery = getattr(row, "discovery", None)
+            if discovery is not None:
+                text += "; " + ("selected" if discovery else "not selected")
+            selection = _selection_qualification(row)
+            if selection is not None:
+                text += f"; {selection}"
+            qualification = render_brief_qualification(
+                row, cell.family, alpha=None if cell.summary is None else cell.summary.alpha
+            )
+            if qualification is not None:
+                text += f"; {qualification}"
+        lines.append(f"{label}: {text}")
+
+    lines.extend(_brief_disclosure_lines(interpretation))
+    lines.extend(f"Warning: {line}" for line in render_readout_qualifications(interpretation))
+    for group in interpretation.groups:
+        lines.extend(
+            line
+            for line in _render_group_scope(group, group.visible_rows)
+            if line.startswith("Integrity:")
+            or line.startswith("SRM not checked")
+            or line.startswith("SRM not run")
+        )
+    return tuple(lines)
+
+
+def _brief_summary_text(summary) -> str:
+    if summary is None:
+        return "unavailable"
+    text = f"{summary.point!r} [{summary.lower!r}, {summary.upper!r}] ({summary.value_scale}"
+    if summary.alpha is not None:
+        text += f", {1 - summary.alpha:.1%} confidence"
+    if summary.geometry is not None:
+        text += f", {summary.geometry} set {summary.intervals!r}"
+    if summary.reason is not None:
+        text += f", {summary.reason}"
+    if summary.qualification is not None:
+        text += f", {summary.qualification}"
+    return text + ")"
+
+
+def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+    source_ids = {group.source_snapshot_id for group in interpretation.groups}
+    lines = []
+    for group in interpretation.groups:
+        warning_codes = {
+            cell.failure_code
+            for cell in (*group.hidden_cells, *group.unavailable_cells)
+            if cell.failure_code is not None
+        }
+        required_keys = {cell.key for cell in group.required_cells}
+        warning_codes.update(
+            f"readout.hidden_required_cell:{cell.key.metric}"
+            for cell in group.hidden_cells
+            if cell.key in required_keys
+        )
+        if group.integrity_status not in {"not_rejected", "not_applicable"}:
+            warning_codes.add(f"integrity.{group.integrity_status}")
+        warning_codes.update(advisory.code for advisory in group.advisories)
+        if group.partial:
+            warning_codes.add("readout.partial_view")
+        qualifications = []
+        if len(source_ids) > 1 and group.source_snapshot_id is not None:
+            qualifications.append(f"source={_display_source(group.source_snapshot_id)}")
+        if group.control_group is not None and group.treatment_group is not None:
+            qualifications.append(f"comparison={group.treatment_group} vs {group.control_group}")
+        suffix = "" if not qualifications else f" ({'; '.join(qualifications)})"
+        lines.extend(f"Warning: {code}{suffix}" for code in sorted(warning_codes))
+    if not interpretation.groups and not interpretation.metadata_known:
+        lines.append("Warning: integrity.unknown")
+    if interpretation.partial and not any(group.partial for group in interpretation.groups):
+        lines.append("Warning: readout.partial_view")
+    return tuple(lines)
+
+
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     """Render metric evidence first, followed by relevant qualifications."""
     if not interpretation.groups:
@@ -575,42 +750,53 @@ def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     return "\n".join(lines)
 
 
-def _render_group_scope(group, visible_rows) -> list[str]:
-    lines = []
+def _render_integrity_disclosure(group) -> str | None:
     if group.integrity_status == "failed":
-        lines.append(f"Integrity: failed ({group.integrity_code or 'mismatch'}).")
-    elif group.integrity_status == "not_rejected":
-        lines.append(
-            "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
-        )
-    elif (
+        return f"Integrity: failed ({group.integrity_code or 'mismatch'})."
+    if group.integrity_status == "not_rejected":
+        return "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
+    if (
         group.integrity_status == "not_checked_missing_declaration"
         and group.integrity_code == "integrity.allocation_missing_or_nonconstant"
     ):
-        lines.append(
+        return (
             "SRM not checked; declare allocation={...} and "
             'allocation_scheme="independent" on Randomized or Encouragement.'
         )
-    elif (
+    if (
         group.integrity_status == "not_checked_missing_declaration"
         and group.integrity_code == "integrity.allocation_scheme_missing"
     ):
-        lines.append(
+        return (
             'SRM not checked; declare allocation_scheme="independent" on '
             "Randomized or Encouragement; it must describe how units were actually assigned."
         )
-    elif group.integrity_code == "integrity.triggered_population_not_checked":
-        lines.append(
+    if group.integrity_status == "not_checked_missing_declaration":
+        reason = group.integrity_code or _reason(group.integrity_context)
+        return (
+            f"SRM not checked ({reason}); declare allocation={{...}} and "
+            'allocation_scheme="independent" matching the assignment actually used.'
+        )
+    if group.integrity_code == "integrity.triggered_population_not_checked":
+        return (
             "SRM not checked on the triggered population; post-trigger counts cannot "
             "validate assignment. Check the assigned population instead."
         )
-    elif group.integrity_status == "not_checked_missing_counts":
-        lines.append("SRM not checked; assignment counts are not recorded.")
-    elif group.integrity_status == "unsupported_assignment":
-        lines.append("SRM not run for this assignment design.")
-    elif group.integrity_status.startswith("not_checked"):
+    if group.integrity_status == "not_checked_missing_counts":
+        return "SRM not checked; assignment counts are not recorded."
+    if group.integrity_status == "unsupported_assignment":
+        return "SRM not run for this assignment design."
+    if group.integrity_status.startswith("not_checked"):
         reason = group.integrity_code or group.integrity_status
-        lines.append(f"SRM not checked ({reason}).")
+        return f"SRM not checked ({reason})."
+    return None
+
+
+def _render_group_scope(group, visible_rows) -> list[str]:
+    lines = []
+    integrity = _render_integrity_disclosure(group)
+    if integrity is not None:
+        lines.append(integrity)
     if group.partial:
         lines.append("View: partial; do not treat visible cells as a complete decision.")
     if group.decision_complete is False:
@@ -717,7 +903,7 @@ def _render_group_rows(group, visible_rows) -> list[str]:
 
 
 def _decision_line(row, *, control_group: str | None, treatment_group: str | None) -> str:
-    estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
+    projection = project_effect(row)
     control = control_group if control_group is not None else "control identity unknown"
     treatment = treatment_group if treatment_group is not None else "treatment identity unknown"
     parts = [f"{row.metric}: {control} → {treatment}"]
@@ -730,20 +916,16 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
         value = getattr(row, name, None)
         if value is not None:
             parts.append(f"{label}={value:.6g}" if name.startswith("mean_") else f"{label}={value}")
-    scale = (
-        "absolute"
-        if hasattr(row, "control_group")
-        else getattr(row, "value_scale", "absolute" if hasattr(row, "control") else "relative")
-    )
-    if estimate is not None:
-        factor = 100 if scale == "relative" else 1
-        value = estimate.value * factor
+    factor = 100 if projection.value_scale == "relative" else 1
+    if projection.point is not None:
         suffix = "%" if factor == 100 else ""
-        parts.append(f"effect={value:.6g}{suffix}")
-        if estimate.lb is not None or estimate.ub is not None:
-            low = "−∞" if estimate.lb is None else f"{estimate.lb * factor:.6g}"
-            high = "+∞" if estimate.ub is None else f"{estimate.ub * factor:.6g}"
+        parts.append(f"effect={projection.point * factor:.6g}{suffix}")
+        if projection.lower is not None or projection.upper is not None:
+            low = "−∞" if projection.lower is None else f"{projection.lower * factor:.6g}"
+            high = "+∞" if projection.upper is None else f"{projection.upper * factor:.6g}"
             parts.append(f"interval=[{low}, {high}]{suffix}")
+    if projection.qualification is not None:
+        parts.append(f"scale qualification={projection.qualification}")
     estimand = getattr(row, "estimand", None)
     if estimand is not None:
         parts.append(f"estimand={estimand}")
@@ -891,17 +1073,30 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
 
 def _cell_label(cell: CellKey) -> str:
     parts = [cell.metric]
-    if cell.kind == "contrast" and cell.treatment_group is not None:
-        comparison = (
-            f"{cell.treatment_group} vs {cell.control_group}"
-            if cell.control_group is not None
-            else f"treatment {cell.treatment_group}"
-        )
-        parts.append(comparison)
+    if cell.kind == "contrast":
+        if cell.control_group is not None:
+            parts.append(f"control={cell.control_group}")
+        if cell.treatment_group is not None:
+            parts.append(f"treatment={cell.treatment_group}")
     elif cell.group_id is not None:
-        parts.append(cell.group_id)
-    if cell.method is not None:
-        parts.append(cell.method)
+        parts.append(f"arm={cell.group_id}")
+    if cell.dimension is not None:
+        parts.append(f"dimension={cell.dimension}")
+    if cell.dimension_value is not None:
+        parts.append(f"segment={cell.dimension_value}")
+    for attribute, label in (
+        (cell.method, "method"),
+        (cell.method_role, "role"),
+        (cell.estimand, "estimand"),
+        (cell.analysis_population, "population"),
+        (cell.value_scale, "scale"),
+        (cell.inference, "inference"),
+        (cell.alternative, "alternative"),
+        (cell.ds, "date"),
+        (cell.ds_basis, "date basis"),
+    ):
+        if attribute is not None:
+            parts.append(f"{label}={attribute}")
     return " / ".join(parts)
 
 
@@ -1104,6 +1299,216 @@ def _jsonable(value):
     return value
 
 
+def _sequential_lift_bound(value, *, lower: bool) -> float | None:
+    if value is None:
+        return None
+    exact = Fraction(value) - 1
+    try:
+        result = float(exact)
+    except OverflowError:
+        return None
+    if not math.isfinite(result):
+        return None
+    if (lower and Fraction(result) > exact) or (not lower and Fraction(result) < exact):
+        result = math.nextafter(result, -math.inf if lower else math.inf)
+    return result if math.isfinite(result) else None
+
+
+def project_effect(row) -> EffectEstimate:
+    """Choose one retained estimate on the row's requested scale."""
+    sequential = (
+        row.require_asymptotic_sequential_result()
+        if getattr(row, "inference", None) == "asymptotic_mean"
+        and getattr(row, "sequential_result", None) is not None
+        and hasattr(row, "require_asymptotic_sequential_result")
+        else None
+    )
+    if sequential is not None:
+        bounds = sequential.bounds
+        available = bounds.available
+        point = row.lift.value if sequential.point_reason is None and row.lift is not None else None
+        disconnected = available and len(bounds.components) > 1
+        return EffectEstimate(
+            point,
+            None
+            if not available or disconnected
+            else _sequential_lift_bound(bounds.lower, lower=True),
+            None
+            if not available or disconnected
+            else _sequential_lift_bound(bounds.upper, lower=False),
+            float(sequential.decision_alpha),
+            getattr(row, "value_scale", "relative"),
+            sequential.point_reason
+            or (
+                "disconnected sequential confidence set"
+                if disconnected
+                else None
+                if available
+                else bounds.reason
+            ),
+            "disconnected" if disconnected else None,
+            tuple(
+                (
+                    _sequential_lift_bound(item.lower, lower=True),
+                    _sequential_lift_bound(item.upper, lower=False),
+                )
+                for item in bounds.components
+            )
+            if disconnected
+            else (),
+        )
+
+    contrast = hasattr(row, "control_group") and hasattr(row, "estimate")
+    requested = (
+        "absolute"
+        if contrast
+        else getattr(row, "value_scale", "absolute" if hasattr(row, "control") else "relative")
+    )
+    lift = getattr(row, "lift", None)
+    relative_set = getattr(row, "relative_confidence_set", None)
+    if requested == "relative" and relative_set is not None:
+        intervals = relative_set.intervals
+        lower, upper = intervals[0] if len(intervals) == 1 else (None, None)
+        point = lift.value if lift is not None else None
+        reason = None
+        if point is None:
+            reason = (
+                getattr(row, "relative_unavailable_reason", None)
+                or relative_set.point_unavailable_reason
+                or getattr(row, "relative_error_code", None)
+            )
+        if relative_set.geometry == "unavailable":
+            reason = reason or relative_set.reason
+        return EffectEstimate(
+            point,
+            lower,
+            upper,
+            relative_set.alpha,
+            "relative",
+            reason,
+            relative_set.geometry,
+            intervals,
+        )
+
+    binomial = getattr(row, "binomial_set", None)
+    if requested == "relative" and binomial is not None:
+        point = None if lift is None else lift.value
+        reason = (
+            None
+            if point is not None
+            else (
+                getattr(row, "relative_unavailable_reason", None)
+                or getattr(row, "failure_code", None)
+            )
+        )
+        return EffectEstimate(
+            point,
+            binomial.lower,
+            binomial.upper,
+            binomial.alpha,
+            "relative",
+            reason,
+            binomial.geometry,
+            ((binomial.lower, binomial.upper),),
+        )
+
+    if contrast:
+        estimate = row.estimate
+        return EffectEstimate(estimate.value, estimate.lb, estimate.ub, estimate.alpha, "absolute")
+
+    if requested == "absolute":
+        absolute = getattr(row, "abs_diff", None)
+        if (
+            absolute is None
+            and getattr(row, "value_scale", None) == "absolute"
+            and lift is not None
+        ):
+            return EffectEstimate(
+                lift.value,
+                lift.lb,
+                lift.ub,
+                lift.alpha,
+                "absolute",
+                getattr(row, "relative_unavailable_reason", None),
+            )
+        if absolute is not None:
+            return EffectEstimate(
+                absolute,
+                row.abs_lb,
+                row.abs_ub,
+                row.abs_alpha,
+                "absolute",
+                getattr(row, "absolute_error_code", None),
+            )
+        if lift is not None and getattr(row, "value_scale", "relative") == "relative":
+            reason = getattr(row, "absolute_error_code", None) or "absolute interval unavailable"
+            return EffectEstimate(
+                lift.value,
+                lift.lb,
+                lift.ub,
+                lift.alpha,
+                "relative",
+                None,
+                qualification=f"requested absolute scale unavailable; showing relative ({reason})",
+            )
+
+    if requested == "relative" and lift is not None:
+        absolute = getattr(row, "abs_diff", None)
+        if (
+            absolute is not None
+            and lift.lb is None
+            and lift.ub is None
+            and (
+                getattr(row, "abs_lb", None) is not None or getattr(row, "abs_ub", None) is not None
+            )
+        ):
+            reason = getattr(row, "relative_error_code", None) or getattr(
+                row, "relative_unavailable_reason", None
+            )
+            return EffectEstimate(
+                absolute,
+                row.abs_lb,
+                row.abs_ub,
+                row.abs_alpha,
+                "absolute",
+                reason,
+                qualification=(
+                    "requested relative scale unavailable; showing absolute "
+                    f"({reason or 'relative interval unavailable'})"
+                ),
+            )
+        return EffectEstimate(
+            lift.value,
+            lift.lb,
+            lift.ub,
+            lift.alpha,
+            "relative",
+            getattr(row, "relative_unavailable_reason", None)
+            or getattr(row, "relative_error_code", None),
+        )
+
+    absolute = getattr(row, "abs_diff", None)
+    if absolute is not None:
+        reason = getattr(row, "relative_unavailable_reason", None) or getattr(
+            row, "relative_error_code", None
+        )
+        return EffectEstimate(
+            absolute,
+            row.abs_lb,
+            row.abs_ub,
+            row.abs_alpha,
+            "absolute",
+            reason,
+            qualification=f"requested relative scale unavailable; showing absolute ({reason or 'relative interval unavailable'})",
+        )
+    reason = (
+        getattr(row, "relative_unavailable_reason", None)
+        or getattr(row, "relative_error_code", None)
+        or getattr(row, "failure_code", None)
+    )
+    return EffectEstimate(None, None, None, None, requested, reason)
+
+
 def _has_point(row) -> bool:
     if row is None:
         return False
@@ -1168,12 +1573,12 @@ def _render_effect(row, *, qualify_method: bool = False):
             lines.append(effect + ".")
         return lines
     contrast = hasattr(row, "control_group")
-    scale = "absolute" if contrast else getattr(row, "value_scale", "relative")
+    projection = project_effect(row)
+    scale = projection.value_scale
     label = (
         "absolute contrast" if contrast else "absolute" if scale == "absolute" else "relative lift"
     )
-    estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
-    if estimate is not None:
+    if projection.point is not None:
         method = getattr(row, "method", None)
         method_role = getattr(row, "method_role", None)
         method_label = (
@@ -1181,14 +1586,16 @@ def _render_effect(row, *, qualify_method: bool = False):
             if qualify_method
             else ""
         )
-        effect = f"{row.metric} ({role}, {label}{method_label}): {estimate.value:.6g}"
-        if estimate.lb is not None or estimate.ub is not None:
-            low = "−∞" if estimate.lb is None else f"{estimate.lb:.6g}"
-            high = "+∞" if estimate.ub is None else f"{estimate.ub:.6g}"
+        effect = f"{row.metric} ({role}, {label}{method_label}): {projection.point:.6g}"
+        if projection.lower is not None or projection.upper is not None:
+            low = "−∞" if projection.lower is None else f"{projection.lower:.6g}"
+            high = "+∞" if projection.upper is None else f"{projection.upper:.6g}"
             effect += f", set [{low}, {high}]"
-            if estimate.level is not None:
-                effect += f" at {estimate.level:.3g} confidence"
+            if projection.alpha is not None:
+                effect += f" at {1 - projection.alpha:.3g} confidence"
         lines.append(effect + ".")
+    if projection.qualification is not None:
+        lines.append(f"{row.metric} scale qualification: {projection.qualification}.")
     interpretation = render_effect_interpretation(row)
     if interpretation is not None:
         lines.append(f"{row.metric} {interpretation[0].lower()}{interpretation[1:]}")
@@ -1280,7 +1687,11 @@ def _render_test_null(row, *, contrast: bool, scale: str) -> list[str]:
         return []
     unit = (
         "absolute units"
-        if null_abs is not None or contrast or scale == "absolute"
+        if null_abs is not None or contrast
+        else "relative lift"
+        if null_lift is not None and getattr(row, "value_scale", None) == "relative"
+        else "absolute units"
+        if scale == "absolute" or getattr(row, "value_scale", None) == "absolute"
         else "relative lift"
     )
     return [f"{row.metric} test alternative: {row.alternative}; null ({unit}): {null:.6g}."]

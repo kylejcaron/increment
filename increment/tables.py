@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
     from increment.breakout.estimates import EstimateList
     from increment.estimation.contrast_results import ContrastResults
+    from increment.result_envelope import AnalysisEnvelope
 
 
 _REFUSALS = refusals(
@@ -1528,15 +1529,39 @@ def _prepare_readout_metadata(
     return frame, display_columns, shifted_null_lift, group_column
 
 
+class _EnvelopeReadoutRows(list):
+    def __init__(self, rows, metadata, cells):
+        super().__init__(rows)
+        self.metadata = metadata
+        self.cells = tuple(cells)
+
+
 def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, ...]]:
     """Convert row, frame, or scoped collection input to the render frame."""
     metadata = getattr(data, "metadata", None)
     scope_notes = ()
-    is_result_collection = hasattr(data, "metadata") and callable(getattr(data, "to_frame", None))
-    if is_result_collection:
+    if isinstance(data, _EnvelopeReadoutRows):
         if metadata is not None:
-            scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
-        data = estimates_to_readout(data)
+            interpretation = interpret_readout(data, metadata)
+            scope_notes = render_readout_qualifications(interpretation)
+        row_data = estimates_to_readout(list(data))
+        if metadata is not None:
+            for projected, row in zip(row_data, data, strict=True):
+                projected["view_partial"] = metadata.partial
+                projected.update(
+                    readout_evidence_columns(
+                        interpretation, row, source_snapshot_id=row.source_snapshot_id
+                    )
+                )
+        data = row_data
+    else:
+        is_result_collection = hasattr(data, "metadata") and callable(
+            getattr(data, "to_frame", None)
+        )
+        if is_result_collection:
+            if metadata is not None:
+                scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
+            data = estimates_to_readout(data)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)
         if isinstance(data, list)
@@ -1553,9 +1578,24 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
     return frame, scope_notes
 
 
+def _readout_envelope_rows(data: Any) -> Any:
+    from importlib import import_module
+
+    envelope_module = import_module("increment.result_envelope")
+    if not isinstance(data, envelope_module.AnalysisEnvelope):
+        return data
+    return _EnvelopeReadoutRows(
+        (cell._projection_row() for cell in data.cells), data.metadata, data.cells
+    )
+
+
 # Keep trend labels aligned with ``_resolve_trend_frame``.
 def readout_table(
-    data: IntoDataFrame | list[dict[str, Any]] | EstimateList[Any] | ContrastResults,
+    data: IntoDataFrame
+    | list[dict[str, Any]]
+    | EstimateList[Any]
+    | ContrastResults
+    | AnalysisEnvelope,
     *,
     title: str = "Experiment Readout",
     subtitle: str = "",
@@ -1624,6 +1664,8 @@ def readout_table(
     import coeftable as ct
     import narwhals as nw
     import pandas as pd
+
+    data = _readout_envelope_rows(data)
 
     frame, scope_header = _readout_input_frame(data, nw, pd)
     if nest_by == "segment" and not len(frame) and "segment" not in frame.columns:

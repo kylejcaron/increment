@@ -135,6 +135,7 @@ from increment.sequential_state import SequentialSnapshot, require_public_laws, 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.readout_types import ReadoutMetadata
+    from increment.result_envelope import ResultCell
 
 Renderer = Callable[..., str]
 
@@ -1806,6 +1807,12 @@ class LiftEstimates(EstimateList[LiftEstimate]):
         "multiplicity_status",
         "relative_unavailable_reason",
     )
+
+    def as_cells(self, *, created_at: datetime | None = None) -> list[ResultCell]:
+        """Convert this pilot run's rows with one shared creation timestamp."""
+
+        stamp = created_at or datetime.now().astimezone()
+        return [cell for row in self for cell in row.as_cells(self.metadata, created_at=stamp)]
 
 
 class BreakoutEstimates(EstimateList[BreakoutEstimate]):

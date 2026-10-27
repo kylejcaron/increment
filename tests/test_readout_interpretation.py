@@ -19,25 +19,10 @@ from increment.semantics.design import Randomized
 
 
 def test_low_reliability_interval_is_qualified_in_shared_interpretation():
-    import datetime as dt
+    from increment.tables import estimates_to_readout
 
-    from increment._interpretation import render_effect_interpretation
-    from increment.breakout.estimates import DailyLiftEstimate
-    from increment.estimation.results import Estimate
-
-    row = DailyLiftEstimate(
-        metric="revenue",
-        group_id="treatment",
-        method="unadjusted",
-        method_role="decision",
-        ds=dt.date(2025, 1, 1),
-        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
-        alternative="greater",
-        null_lift=0.0,
-        low_reliability=True,
-    )
-
-    interpretation = render_effect_interpretation(row)
+    row = _run_mean(_mean_frame())[0].model_copy(update={"low_reliability": True})
+    interpretation = estimates_to_readout([row])[0]["effect_interpretation"]
 
     assert interpretation is not None
     assert "low reliability" in interpretation.lower()
@@ -162,6 +147,61 @@ def _run_mean(
 
 def _interpret(results):
     return interpret_readout(results, results.metadata)
+
+
+@pytest.mark.integration
+def test_directional_binomial_guardrail_projection_uses_its_set_alpha():
+    from increment._interpretation import project_effect
+    from increment.estimation.results import LiftEstimate
+
+    data = pd.DataFrame(
+        [
+            {
+                "unit": f"{group}-{index}",
+                "arm": group,
+                "revenue": float(index + (group == "treatment")),
+                "complaints": int(index < (20 if group == "control" else 17)),
+            }
+            for group in ("control", "treatment")
+            for index in range(500)
+        ]
+    )
+    results = Analysis.from_unit_summary(
+        data,
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[
+            MetricSpec(name="revenue", type="mean"),
+            MetricSpec(
+                name="complaints",
+                type="conversion",
+                preferred_direction="decrease",
+            ),
+        ],
+        plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
+    ).run()
+    guardrail = next(row for row in results if row.metric == "complaints")
+    assert isinstance(guardrail, LiftEstimate)
+    assert guardrail.binomial_set is not None
+    assert guardrail.binomial_set.alpha == pytest.approx(0.1)
+    assert guardrail.binomial_set.level == pytest.approx(0.9)
+    assert guardrail.binomial_set.decision_alpha == pytest.approx(0.05)
+    assert guardrail.lift is not None
+
+    projection = project_effect(guardrail)
+    assert projection.alpha == pytest.approx(0.1)
+    rendered = str(results)
+    guardrail_line = next(
+        line
+        for line in rendered.splitlines()
+        if line.startswith("complaints (guardrail, relative lift):")
+    )
+    assert "at 0.9 confidence" in guardrail_line
 
 
 def test_prior_backed_repr_shows_posterior_without_preferred_direction():

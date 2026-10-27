@@ -402,3 +402,47 @@ def test_cuped_linear_absolute_ratio_projection_failure_preserves_log_ratio() ->
     treatment = next(row for row in result if row.group_id == "treatment")
     assert treatment.lift is not None
     assert treatment.abs_diff is None
+
+
+def test_cuped_ratio_overflow_roundtrip_reissues_withheld_alpha() -> None:
+    from increment.result_envelope import ResultCell
+
+    metric = MetricSpec(
+        name="revenue_per_order",
+        type="ratio",
+        numerator="revenue",
+        denominator="orders",
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
+    )
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "revenue": 1e150 * (1.0 + index / 1000.0 + (group == "treatment") * 0.0032),
+            "orders": 1e-200,
+            "pre": ("a", "b", "c")[index % 3],
+        }
+        for group in ("control", "treatment")
+        for index in range(18)
+    ]
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[metric],
+        plan=AnalysisPlan(alpha=0.05, primary="revenue_per_order"),
+    )
+    estimates = cast(list[LiftEstimate], list(analysis.run()))
+    (row,) = (estimate for estimate in estimates if estimate.group_id == "treatment")
+
+    assert row.multiplicity_status == "declared_plan"
+    withheld = row.reintervalize(1e-200)
+    assert withheld.lift is not None and withheld.lift.alpha is None
+    (cell,) = ResultCell.from_arrow(ResultCell.to_arrow(withheld.as_cells()))
+    replayed = cell.retained_row()
+
+    reissued = replayed.reintervalize(0.1)
+    assert reissued.lift is not None and reissued.lift.alpha == pytest.approx(0.1)

@@ -365,6 +365,18 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
             with pytest.raises(TypeError):
                 cast(dict[str, object], restored.absolute_error_context)["value"] = 0
 
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    cell = ResultCell.from_arrow(ResultCell.to_arrow(headline.as_cells()))[0]
+    assert cell.summary is not None
+    assert cell.summary.value_scale == "relative"
+    assert cell.summary.point == pytest.approx(0.0099157164, rel=1e-7)
+    assert cell.summary.lower == pytest.approx(0.0062455691, rel=1e-7)
+    assert cell.summary.upper == pytest.approx(0.0135992501, rel=1e-7)
+    envelope_headline = render(AnalysisEnvelope((cell,), metadata=None), "brief").splitlines()[0]
+    assert "relative" in envelope_headline
+    assert "0.0099157" in envelope_headline
+
 
 def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_mean() -> None:
     rows: list[dict[str, Any]] = []

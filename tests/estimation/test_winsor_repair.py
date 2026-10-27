@@ -1056,6 +1056,10 @@ experiments:
             if not volatile:
                 assert result.confidence_set == native_results["assigned"].confidence_set
                 assert (
+                    result.reintervalize(0.01).confidence_set
+                    == native_results["assigned"].reintervalize(0.01).confidence_set
+                )
+                assert (
                     result.reintervalize(0.1).confidence_set
                     == native_results["assigned"].reintervalize(0.1).confidence_set
                 )

@@ -229,6 +229,31 @@ def _append_frame_value(
         data[name].append(value)
 
 
+def _append_estimates_frame_values(
+    data: dict[str, list[Any]],
+    estimates: Sequence[BaseModel],
+    model: type[BaseModel],
+    estimate_field: str | None,
+    binomial_set_field: str | None,
+) -> None:
+    for estimate in estimates:
+        for name in model.model_fields:
+            if name not in data and name not in (estimate_field, binomial_set_field):
+                continue
+            if name in {"n_control", "n_treat", "mean_control", "mean_treat"} and (
+                model.__name__ not in {"LiftEstimate", "BreakoutEstimate", "DailyLiftEstimate"}
+            ):
+                continue
+            _append_frame_value(
+                data,
+                name,
+                getattr(estimate, name),
+                estimate_field,
+                binomial_set_field,
+                getattr(estimate, binomial_set_field) if binomial_set_field is not None else None,
+            )
+
+
 def _append_decision_frame_values(
     data: dict[str, list[Any]], estimates: Sequence[BaseModel]
 ) -> None:
@@ -353,20 +378,13 @@ def to_frame[M: BaseModel](
         selected = tuple(name for name in projection_columns if name in requested_set)
     columns = list(projection_columns)
     data: dict[str, list[Any]] = {name: [] for name in columns}
-    for est in estimates:
-        for name in model.model_fields:
-            if name in {"n_control", "n_treat", "mean_control", "mean_treat"} and (
-                model.__name__ not in {"LiftEstimate", "BreakoutEstimate", "DailyLiftEstimate"}
-            ):
-                continue
-            _append_frame_value(
-                data,
-                name,
-                getattr(est, name),
-                estimate_field,
-                binomial_set_field,
-                getattr(est, binomial_set_field) if binomial_set_field is not None else None,
-            )
+    _append_estimates_frame_values(
+        data,
+        estimates,
+        model,
+        estimate_field,
+        binomial_set_field,
+    )
 
     if model.__name__ in {"LiftEstimate", "BreakoutEstimate", "DailyLiftEstimate"}:
         _append_decision_frame_values(data, estimates)
@@ -432,6 +450,7 @@ def to_frame[M: BaseModel](
         if name != estimate_field
         and name != binomial_set_field
         and (_is_optional_string(info.annotation) or _is_optional_model(info.annotation))
+        and name in schema
         and schema[name] == nw.String()
     ]
     if estimate_field is not None:
@@ -472,6 +491,7 @@ def to_frame[M: BaseModel](
         if name != estimate_field
         and name != binomial_set_field
         and _is_optional_float(info.annotation)
+        and name in schema
         and schema[name].is_float()
     ]
     if binomial_set_field is not None:

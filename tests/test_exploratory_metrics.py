@@ -202,6 +202,31 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
     assert [row.family_id for row in restored] == [row.family_id for row in added]
 
 
+def test_unadjusted_exploratory_rows_can_reintervalize_above_plan_alpha(warehouse):
+    plan = AnalysisPlan(alpha=0.05, primary="revenue")
+    exploratory = lift_rows(
+        _analysis(warehouse, plan).run(
+            metrics=[],
+            exploratory_metrics=["rps"],
+            decision_method=Method(name="unadjusted"),
+        )
+    )
+    assert len(exploratory) == 1
+    row = exploratory[0]
+    assert row.multiplicity_status == "exploratory_unadjusted"
+    assert row.family_id is not None
+    assert row.family_procedure is None
+    assert row.reintervalize(0.1).lift is not None
+
+    declared = lift_rows(
+        _analysis(warehouse, AnalysisPlan(alpha=0.05, primary="rps")).run(
+            decision_method=Method(name="unadjusted")
+        )
+    )
+    reissued = declared[0].reintervalize(0.1)
+    assert reissued.lift is not None and reissued.lift.alpha == pytest.approx(0.1)
+
+
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_run_warns_for_added_metric_with_unused_preperiod_covariate():
     definitions = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
