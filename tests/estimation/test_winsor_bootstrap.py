@@ -1122,6 +1122,17 @@ def test_full_reference_stream_centering_wire_and_reinversion():
     reference = confidence_set.reference
     assert isinstance(reference, BootstrapReference)
     assert reference.failure_indices == ()
+
+    unselected = row.model_copy(
+        update={
+            "family_id": "review-family",
+            "multiplicity_status": "exploratory_family",
+            "family_procedure": "bh",
+            "family_threshold": 0.01,
+            "discovery": False,
+        }
+    )
+    assert unselected.reintervalize(0.04).confidence_set is not None
     samples = []
     for g, p in enumerate(reference.pilots):
         centers = np.random.Generator(

@@ -49,6 +49,9 @@ change without notice.
   1.0 stability promise or deprecation window.
 - A bug fix may change a previously incorrect numerical answer. Release notes
   describe the correction; compatibility does not preserve wrong values.
+- Release note (bug fix): portable cell summaries follow the row's requested
+  effect scale and retain an available relative lift when an additive sidecar
+  cannot be projected. A different-scale fallback is labeled explicitly.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
@@ -70,6 +73,80 @@ change without notice.
 Persisted files use versioned formats; they are not upgraded silently. Re-export
 legacy artifacts from trusted definitions. The details below document supported
 moments, artifact, and checkpoint formats.
+
+### Portable result cells
+
+Serialize the collection and reopen it with its dedicated decoder:
+
+```python
+import polars as pl
+
+from increment import Analysis, MetricSpec, Randomized
+from increment.estimation.readout_types import ReadoutResults
+
+frame = pl.DataFrame(
+    {
+        "unit": ["c0", "c1", "t0", "t1"],
+        "arm": ["control", "control", "treatment", "treatment"],
+        "revenue": [1.0, 2.0, 1.5, 2.5],
+    }
+)
+rows = Analysis.from_unit_summary(
+    frame,
+    unit="unit",
+    group="arm",
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+    metrics=[MetricSpec(name="revenue", type="mean")],
+).run()
+payload = rows.model_dump_json()
+restored = ReadoutResults.model_validate_json(payload)
+```
+
+This preserves the rows and collection-level metadata. A row or collection JSON
+payload is distinct from a portable `ResultCell` payload; use the envelope
+format below when you need per-cell operation metadata, summaries, or Arrow
+interchange.
+
+For portable per-cell interval operations, use `ResultCell` and
+`AnalysisEnvelope` from `increment.result_envelope`. `ResultCell.to_payload()`
+and `from_payload()` read and write JSON-compatible cell data; `to_arrow()` and
+`from_arrow()` read and write Arrow tables. The envelope's matching methods
+preserve its cells and readout metadata.
+Save `ReadoutResults` JSON to preserve and reopen a complete result collection.
+Use `ResultCell` or `AnalysisEnvelope` for portable per-cell summaries,
+available operations, and Arrow interchange. The long-term choice of saved
+result format is tracked in kata issue `cade`.
+
+
+Each cell retains its supported `LiftEstimate` state with identity, inference
+status, available operations, and a summary. Raw source outcomes are not
+retained: a row carrying raw outcomes in a confidence set is represented as an
+unavailable cell with its identity and reason. The envelope does not retain a
+live analysis or fit object.
+
+
+`relevel(cell, alpha=...)` can rebuild supported retained `t` intervals only
+at the same or a lower alpha than the interval already stored; it can preserve
+or widen the interval, but cannot narrow it. Directional intervals with an open
+endpoint are not relevelable. Requests that would narrow a supported interval
+refuse with `results.operation.alpha_above_allocation`. This portable cell
+operation is separate from `LiftEstimate.reintervalize(alpha)`, which keeps its
+existing row-level reissue behavior. For multiplicity correction, pass the
+retained rows to `select_exploratory_family()`; it derives the family cutoff and
+returns corrected estimates.
+The envelope supports the 3a result types: fixed-horizon mean, ratio and CUPED
+lift rows, plus asymptotic sequential lift rows. After reopening, only the
+operations listed as available for a cell can be applied. The envelope is not
+a replacement for every collection format or every result type; it does not
+add margin comparisons or family combination.
+
+See the [retained-state inventory](development/retained-state.md) for the
+construction details and operation limits.
+
 
 !!! warning "A checkpoint belongs to one monitoring process"
     Do not restart monitoring and spend alpha again: retain the old checkpoint

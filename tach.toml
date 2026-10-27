@@ -96,6 +96,16 @@ path = "increment.results"
 depends_on = []
 
 [[modules]]
+path = "increment.result_envelope"
+depends_on = [
+  "increment.errors",
+  "increment.estimation",
+  "increment.kernel.contracts",
+  "increment._interpretation",
+  "increment.estimation.sequential_result",
+]
+
+[[modules]]
 path = "increment._labels"
 depends_on = []
 

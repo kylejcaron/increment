@@ -1,0 +1,38 @@
+{
+  "provenance": "Captured 2026-10-26 from pre-existing public Analysis.run(), LiftEstimate.reintervalize(), and select_exploratory_family() paths before result_envelope operations; seeded definitions and deterministic asymptotic public-source input.",
+  "reference": {
+    "mean/avg_session_duration": {
+      "alpha": 0.02,
+      "lower": 0.11484877218820314,
+      "upper": 0.31835190225291793,
+      "value": 0.21233782401550388
+    },
+    "ratio/revenue_per_session/treatment": {
+      "alpha": 0.02,
+      "lower": -0.18894826368370785,
+      "upper": 0.31705548876230644,
+      "value": 0.03353768242167669
+    },
+    "cuped/avg_session_duration": {
+      "alpha": 0.02,
+      "lower": 0.16425166994123275,
+      "upper": 0.33246470427735536,
+      "value": 0.24552168069956185
+    },
+    "family_threshold/mean/avg_session_duration": {
+      "alpha": 0.03,
+      "lower": 0.12114790680786532,
+      "upper": 0.31094478312264784
+    },
+    "family_threshold/binomial/purchase_rate": {
+      "alpha": 0.03,
+      "lower": 0.11534734005526869,
+      "upper": 0.4480219720144512
+    },
+    "sequential/outcome": {
+      "decision_alpha": 0.05,
+      "lower": 1.5412241579570962,
+      "upper": 2.633026087968677
+    }
+  }
+}
