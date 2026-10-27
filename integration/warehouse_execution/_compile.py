@@ -442,17 +442,17 @@ def _build_cached_captured_compile_data(dialect):
 
 
 @cache
-def _captured_compile_cache_key(dialect):
+def _captured_compile_cache_key(dialect, root=None):
     from pathlib import Path
 
     from tests._shared_cache import fixture_cache_key
 
-    root = Path(__file__).resolve().parents[2]
+    root = Path(root or Path(__file__).resolve().parents[2]).resolve()
     dependencies = root / "integration" / "warehouse_execution" / "_compile_dependencies.txt"
     # The recorded list and its checker are inputs too: CI skips the dependency
     # trace on an exact cache hit, so any change to either must miss the cache.
     source_paths = (
-        Path(__file__),
+        root / "integration" / "warehouse_execution" / "_compile.py",
         root / "tests" / "warehouse_cuped_cases.py",
         dependencies,
         root / "scripts" / "trace_compile_dependencies.py",
@@ -471,15 +471,22 @@ def _captured_compile_cache_key(dialect):
 def _captured_compile_data(dialect):
     from pathlib import Path
 
+    from scripts.trace_compile_dependencies import (
+        _build_and_record,
+        _write_dependency_record,
+    )
     from tests._shared_cache import get_or_build
 
     root = Path(__file__).resolve().parents[2]
     cache_root = root / ".pytest_cache" / "warehouse_compile_registry"
-    return get_or_build(
-        cache_root,
-        _captured_compile_cache_key(dialect),
-        lambda: _build_cached_captured_compile_data(dialect),
-    )
+    cache_key = _captured_compile_cache_key(dialect)
+
+    def build():
+        records, modules = _build_and_record(root, dialect)
+        _write_dependency_record(root, cache_key, modules)
+        return records
+
+    return get_or_build(cache_root, cache_key, build)
 
 
 def _restore_cached_captured_case(record, dialect):
