@@ -491,6 +491,28 @@ class CateValidation(CodedModel, BaseModel):
     #: Distinct declared clusters in the holdout population; `None` when the
     #: source declares no cluster (`_Holdout.cluster_ids` is `None`).
     n_clusters: int | None = Field(default=None, strict=True, gt=0)
+    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+
+    def as_cell(self, *, created_at=None):
+        from importlib import import_module
+
+        from increment.errors import CodedError
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        if self.report_context is None:
+            raise CodedError(
+                "CATE report identity was not captured by its producing facade",
+                code="results.cell.schema_unsupported",
+                context={"row_kind": "cate_validation"},
+            )
+        return ResultCell.from_cate_report(
+            row=self,
+            row_kind="cate_validation",
+            label="Honest CATE validation",
+            identity_context=self.report_context,
+            created_at=created_at,
+        )
 
     @model_validator(mode="after")
     def _validate_cluster_count(self) -> CateValidation:
@@ -609,6 +631,28 @@ class TargetingRule(CodedModel, BaseModel):
     score_cutoff: float | None = Field(allow_inf_nan=False)
     #: Declared model/adjustment columns; deployment identity is separate metadata.
     required_columns: tuple[str, ...] = ()
+    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+
+    def as_cell(self, *, created_at=None):
+        from importlib import import_module
+
+        from increment.errors import CodedError
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        if self.report_context is None:
+            raise CodedError(
+                "Targeting report identity was not captured by its producing facade",
+                code="results.cell.schema_unsupported",
+                context={"row_kind": "targeting"},
+            )
+        return ResultCell.from_cate_report(
+            row=self,
+            row_kind="targeting",
+            label="Targeting policy report",
+            identity_context=self.report_context,
+            created_at=created_at,
+        )
 
     def __repr__(self) -> str:
         validation = self.validation
@@ -809,6 +853,27 @@ class TargetingSelection(CodedModel, BaseModel):
     seed: int
     rule: TargetingRule
     population: str | None = None
+    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+
+    def as_cell(self, *, created_at=None):
+        from importlib import import_module
+
+        from increment.errors import CodedError
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+        if self.report_context is None:
+            raise CodedError(
+                "Targeting-selection report identity was not captured by its producing facade",
+                code="results.cell.schema_unsupported",
+                context={"row_kind": "targeting_selection"},
+            )
+        return ResultCell.from_cate_report(
+            row=self,
+            row_kind="targeting_selection",
+            label="Targeting selection",
+            identity_context=self.report_context,
+            created_at=created_at,
+        )
 
     @model_validator(mode="after")
     def _policy_contract(self) -> TargetingSelection:

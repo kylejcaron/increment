@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "key": {
+      "kind": "arm",
+      "metric": "orders",
+      "method": "unadjusted",
+      "method_role": "decision",
+      "estimand": "itt",
+      "analysis_population": "assigned",
+      "value_scale": "relative",
+      "inference": "fixed",
+      "alternative": "two-sided",
+      "group_id": "treatment",
+      "control_group": null,
+      "treatment_group": null,
+      "dimension": null,
+      "dimension_value": null,
+      "source": null,
+      "ds": null,
+      "ds_basis": null,
+      "aggregation": null
+    },
+    "source_snapshot_id": null,
+    "experiment_id": null,
+    "analysis_spec_hash": null,
+    "metric_hash": null,
+    "estimator_id": null,
+    "method_config_hash": null,
+    "method_instance_id": null,
+    "scope": null
+  },
+  "label": "unadjusted",
+  "family": null,
+  "source_snapshot_id": null,
+  "retained_row": null,
+  "projection_fields": {},
+  "components": {
+    "sampling": {
+      "status": {"state": "unavailable", "code": "results.component.unavailable", "reason": "no retained row", "context": {}, "advisories": []},
+      "construction": null,
+      "reason": "no retained row",
+      "kind": null,
+      "supports": []
+    },
+    "posterior": {
+      "status": {"state": "unavailable", "code": "results.component.unavailable", "reason": "no retained row", "context": {}, "advisories": []},
+      "construction": null,
+      "reason": "no retained row",
+      "kind": null,
+      "supports": []
+    },
+    "sequential": {
+      "status": {"state": "unavailable", "code": "results.component.unavailable", "reason": "no retained row", "context": {}, "advisories": []},
+      "construction": null,
+      "reason": "no retained row",
+      "kind": null,
+      "supports": []
+    }
+  },
+  "provenance": {
+    "run_id": null,
+    "execution_identity_hash": null,
+    "package_version": "0+unknown",
+    "created_at": "2026-10-27T00:00:00+00:00"
+  },
+  "summary": null
+}
