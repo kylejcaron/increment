@@ -3235,7 +3235,12 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     assert actual
     assert {row.source for row in actual} == {"events", "app"}
     assert len(identities) == len(set(identities))
-    from increment.readouts._evidence import load_breakout_evidence, load_day_axis_rows
+
+    def load_breakout_evidence(src: Any, request: object) -> Any:
+        return request_evidence(evidence_provider(src), request)
+
+    def load_day_axis_rows(src: Any, request: object) -> Any:
+        return request_evidence(src, request)
 
     declared = tuple(experiment.breakouts)
     identities = tuple(BreakoutIdentity(item.property, item.source) for item in declared)
