@@ -3038,6 +3038,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             "event": "assignment",
             "group_id": "control",
             "country_code": "US",
+            "device_type": "mobile",
             "revenue": None,
         },
         {
@@ -3046,6 +3047,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             "event": "purchase",
             "group_id": None,
             "country_code": "US",
+            "device_type": "mobile",
             "revenue": 1.0,
         },
     ]
@@ -3073,7 +3075,13 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
                     "column": "country_code",
                     "dtype": "string",
                     "as_of": "static",
-                }
+                },
+                {
+                    "name": "device",
+                    "column": "device_type",
+                    "dtype": "string",
+                    "as_of": "static",
+                },
             ],
         }
 
@@ -3105,9 +3113,11 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
                 "plan": {"primary": "revenue"},
                 "breakouts": [
                     {"property": "country", "source": "events"},
+                    {"property": "device", "source": "events"},
                     {"property": "country", "source": "app"},
+                    {"property": "device", "source": "app"},
                 ],
-            }
+            },
         ],
     }
     defs_path = tmp_path / "two_sources.yaml"
@@ -3121,12 +3131,60 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     builtin = evidence_provider(source)
 
     class Provider:
-        evidence = replace(source.evidence, breakouts=("country",))
+        evidence = replace(source.evidence, breakouts=("country", "device"))
         context = source.context
         artifact_experiment = experiment
 
+        def __init__(self):
+            self.active_scope: EvidenceScope | None = None
+            self.rows_by_source = {
+                "events": (
+                    {
+                        "ds": dt.date(2026, 1, 1),
+                        "country": "US",
+                        "device": "mobile",
+                        "group_id": "control",
+                        "revenue": 11.0,
+                        "source": "events",
+                    },
+                    {
+                        "ds": dt.date(2026, 1, 2),
+                        "country": "US",
+                        "device": "mobile",
+                        "group_id": "treatment",
+                        "revenue": 12.0,
+                        "source": "events",
+                    },
+                ),
+                "app": (
+                    {
+                        "ds": dt.date(2026, 1, 1),
+                        "country": "CA",
+                        "device": "tablet",
+                        "group_id": "control",
+                        "revenue": 21.0,
+                        "source": "app",
+                    },
+                    {
+                        "ds": dt.date(2026, 1, 2),
+                        "country": "CA",
+                        "device": "tablet",
+                        "group_id": "treatment",
+                        "revenue": 22.0,
+                        "source": "app",
+                    },
+                ),
+            }
+
         def moments(self, request):
-            return builtin.moments(request)
+            assert self.active_scope is not None
+            sources = {identity.source for identity in self.active_scope.breakouts}
+            if len(sources) != 1:
+                return ()
+            source_name = next(iter(sources))
+            if source_name is None:
+                return ()
+            return self.rows_by_source[source_name]
 
         def unit_rows(self, request):
             return builtin.unit_rows(request)
@@ -3149,18 +3207,121 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
         def capture_sequential(self, request):
             return builtin.capture_sequential(request)
 
-        def scope(self, request):
-            return builtin.scope(request)
+        def scope(self, request: EvidenceScope):
+            from contextlib import contextmanager
 
-    forwarded = Analysis._from_source(cast(Any, Provider()))
-    try:
-        actual = forwarded.run_daily(dimension="country")
-    finally:
-        analysis.close()
+            from increment.evidence import EvidenceScopeResult
 
-    keys = [(row.ds, row.group_id, row.source) for row in actual]
-    assert len(keys) == len(set(keys))
+            delegated = builtin.scope(request)
+
+            @contextmanager
+            def scoped():
+                with delegated.source:
+                    self.active_scope = request
+                    try:
+                        yield self
+                    finally:
+                        self.active_scope = None
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider = Provider()
+    forwarding = _forwarding_provider(source, scope=builtin.scope, artifact_experiment=experiment)
+    forwarding_analysis = Analysis._from_source(forwarding)
+    actual = forwarding_analysis.run_daily(dimension="country")
+    identities = [
+        (row.source, row.ds, row.dimension, row.dimension_value, row.group_id) for row in actual
+    ]
+    assert actual
     assert {row.source for row in actual} == {"events", "app"}
+    assert len(identities) == len(set(identities))
+
+    def load_breakout_evidence(src: Any, request: object) -> Any:
+        return request_evidence(evidence_provider(src), request)
+
+    def load_day_axis_rows(src: Any, request: object) -> Any:
+        return request_evidence(src, request)
+
+    declared = tuple(experiment.breakouts)
+    identities = tuple(BreakoutIdentity(item.property, item.source) for item in declared)
+    breakout_request = BreakoutSlicesRequest(
+        breakouts=identities,
+        breakout_definitions=declared,
+        metrics=source.context.metrics,
+        configs=source.context.configs,
+    )
+    original_breakouts = load_breakout_evidence(source, breakout_request)
+    for identity, definition in zip(identities, declared, strict=True):
+        acquired = load_breakout_evidence(
+            source,
+            replace(
+                breakout_request,
+                breakouts=(identity,),
+                breakout_definitions=(definition,),
+            ),
+        )
+        expected = tuple(item for item in original_breakouts.slices if item.identity == identity)
+        assert tuple(item.identity for item in acquired.slices) == tuple(
+            item.identity for item in expected
+        )
+        assert acquired.slices[0].source.moments(
+            source.context.metrics[0], by=(identity.property,)
+        ) == expected[0].source.moments(source.context.metrics[0], by=(identity.property,))
+
+    metric = source.context.metrics[0]
+
+    custom_request = DayAxisRequest(
+        caller="run_daily",
+        grain="daily",
+        metrics=(metric,),
+        dimension=None,
+        by=("country", "device"),
+        experiment=experiment,
+    )
+    custom_slices = tuple(load_day_axis_rows(provider, custom_request).slices)
+    custom_rows = tuple(row for item in custom_slices for row in item.rows)
+    expected_custom_rows = provider.rows_by_source["events"] + provider.rows_by_source["app"]
+    assert [item.source_name for item in custom_slices] == ["events", "app"]
+    assert custom_rows == expected_custom_rows
+    custom_cell_ids = tuple(
+        (row["source"], row["ds"], row["country"], row["device"], row["group_id"])
+        for row in custom_rows
+    )
+    assert len(custom_cell_ids) == len(set(custom_cell_ids))
+    assert [
+        tuple((item.property, item.source) for item in day_slice.experiment.breakouts)
+        for day_slice in custom_slices
+    ] == [
+        (("country", "events"), ("device", "events")),
+        (("country", "app"), ("device", "app")),
+    ]
+
+    for grain, caller in (("daily", "run_daily"), ("asof", "run_asof")):
+        day_request = DayAxisRequest(
+            caller=caller,
+            grain=grain,
+            metrics=(metric,),
+            dimension=None,
+            by=("country", "device"),
+            experiment=experiment,
+        )
+        unnormalized = tuple(load_day_axis_rows(provider, day_request).slices)
+        source_names = tuple(
+            dict.fromkeys(item.source for item in declared if item.property in day_request.by)
+        )
+        assert source_names == ("events", "app")
+        assert [item.source_name for item in unnormalized] == list(source_names)
+        for source_name in source_names:
+            child_experiment = experiment.model_copy(
+                update={"breakouts": tuple(item for item in declared if item.source == source_name)}
+            )
+            child_request = replace(day_request, experiment=child_experiment)
+            acquired = tuple(load_day_axis_rows(provider, child_request).slices)
+            expected = tuple(item for item in unnormalized if item.source_name == source_name)
+            assert len(acquired) == len(expected) == 1
+            assert acquired[0].rows == expected[0].rows
+
+    analysis.close()
 
 
 @pytest.mark.integration

@@ -17,6 +17,7 @@ class ReachRow(NamedTuple):
 
 
 DEFAULT_ENTRY_POINTS = (
+    "increment.kernel.contracts",
     "increment",
     "increment.errors",
     "increment.semantics",

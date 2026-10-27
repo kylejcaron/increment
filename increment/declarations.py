@@ -148,7 +148,7 @@ class CellKey(_ReadoutModel):
     dimension: str | None = None
     dimension_value: str | None = None
     source: str | None = None
-    ds: date | datetime | str | int | float | None = None
+    ds: Any = None
     ds_basis: Literal["calendar", "cohort"] | None = None
 
     @classmethod
@@ -190,15 +190,20 @@ class CellKey(_ReadoutModel):
     @classmethod
     def _deserialize_day_axis(cls, value):
         if isinstance(value, Mapping) and set(value) == {"label"}:
-            return value["label"]
+            label = value["label"]
+            if not isinstance(label, str):
+                _refuse("readout.cell.key_invalid", kind="day_axis", fields=("ds",))
+            return label
         if isinstance(value, Mapping) and set(value) == {"datetime"}:
             return datetime.fromisoformat(value["datetime"])
         if isinstance(value, str):
             try:
                 return date.fromisoformat(value)
             except ValueError:
-                pass
-        return value
+                return value
+        if value is None or isinstance(value, (date, datetime, int, float)):
+            return value
+        _refuse("readout.cell.key_invalid", kind="day_axis", fields=("ds",))
 
     @model_validator(mode="after")
     def _identity_axes(self):

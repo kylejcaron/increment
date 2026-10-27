@@ -18,7 +18,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.semantics.models import Breakout, Metric
+from increment.semantics.models import Breakout, Metric, RetentionMetric
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
@@ -155,6 +155,71 @@ class DayAxisRequest:
     experiment: Any | None = None
     covariate_metrics: frozenset[str] = frozenset()
     by: tuple[str, ...] = ()
+
+
+def day_axis_time_basis(metric: object, grain: str) -> Literal["calendar", "cohort"]:
+    """Return the date coordinate used by a day-axis metric."""
+    is_retention = isinstance(metric, RetentionMetric) or (
+        isinstance(metric, Mapping) and metric.get("type") == "retention"
+    )
+    return "cohort" if grain == "daily" and is_retention else "calendar"
+
+
+def _experiment_breakouts(experiment: object) -> tuple[object, ...]:
+    if isinstance(experiment, Mapping):
+        values = experiment.get("breakouts", ())
+    else:
+        values = getattr(experiment, "breakouts", ())
+    return tuple(values) if isinstance(values, Sequence) else ()
+
+
+def _breakout_identity(value: object) -> BreakoutIdentity | None:
+    if isinstance(value, Mapping):
+        property_name = value.get("property")
+        source = value.get("source")
+    else:
+        property_name = getattr(value, "property", None)
+        source = getattr(value, "source", None)
+    if isinstance(property_name, str) and (source is None or isinstance(source, str)):
+        return BreakoutIdentity(property_name, source)
+    return None
+
+
+def day_axis_source_partitions(
+    experiment: object | None, dimensions: Sequence[str]
+) -> tuple[tuple[str | None, tuple[BreakoutIdentity, ...], tuple[object, ...]], ...]:
+    """Partition requested day-axis dimensions and declarations by source."""
+    requested = tuple(dict.fromkeys(dimensions))
+    declared = _experiment_breakouts(experiment) if experiment is not None else ()
+    declared_pairs = tuple(
+        (identity, definition)
+        for definition in declared
+        if (identity := _breakout_identity(definition)) is not None
+    )
+    selected = tuple(
+        (identity, definition)
+        for identity, definition in declared_pairs
+        if identity.property in requested
+    )
+    declared_properties = {identity.property for identity, _ in selected}
+    undeclared = tuple(
+        BreakoutIdentity(property_name, None)
+        for property_name in requested
+        if property_name not in declared_properties
+    )
+    sources = tuple(dict.fromkeys(identity.source for identity, _ in selected)) or (None,)
+    return tuple(
+        (
+            source,
+            tuple(identity for identity, _ in selected if identity.source == source) + undeclared,
+            tuple(
+                definition
+                for identity, definition in declared_pairs
+                if identity.property not in requested or identity.source == source
+            ),
+        )
+        for source in sources
+    )
 
 
 @dataclass(frozen=True, slots=True)
