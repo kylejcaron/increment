@@ -605,14 +605,13 @@ class ResultCell:
                 required_columns=getattr(policy, "required_columns", ()),
             )
             if row_kind == "targeting_selection":
+                from increment.estimation.targeting import TargetingSelection
+
+                selection = cast(TargetingSelection, row)
                 method_config.update(
                     fractions=getattr(row, "fractions", ()),
                     n_folds=getattr(row, "n_folds", None),
-                    seed=(
-                        str(row.seed)
-                        if getattr(row, "seed", None) is not None
-                        else None
-                    ),
+                    seed=str(selection.seed),
                 )
         method_config_hash = contracts.contract_hash("report_method_config", method_config)
         identity = contracts.CellIdentity(

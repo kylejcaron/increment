@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -48,7 +48,6 @@ from increment._evidence_types import (
     SourceContext,
     UnitRows,
     UnitRowsRequest,
-    _breakout_identity,
     day_axis_source_partitions,
     day_axis_time_basis,
     validate_compliance_source_match,
@@ -63,7 +62,17 @@ from increment._source_types import (
     is_custom_source,
 )
 from increment.errors import CodedError
+from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
+
+
+def _declared_breakout_property(value: object) -> str | None:
+    if isinstance(value, Breakout):
+        return value.property
+    if isinstance(value, Mapping):
+        property_name = value.get("property")
+        return property_name if isinstance(property_name, str) else None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1109,10 +1118,12 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                 tuple(
                     sorted(
                         {
-                            identity.property
+                            property_name
                             for breakout in breakouts
-                            if (identity := _breakout_identity(breakout)) is not None
-                            and identity.property in requested_properties
+                            if (
+                                (property_name := _declared_breakout_property(breakout)) is not None
+                                and property_name in requested_properties
+                            )
                         }
                     )
                 ),
