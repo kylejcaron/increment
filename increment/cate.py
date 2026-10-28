@@ -351,6 +351,21 @@ def _report_identity_context(
     }
 
 
+def _validation_settings(
+    interact: Sequence[Covariate],
+    adjust: Sequence[Covariate],
+    cluster_weight: str,
+    bootstrap: ClusterBootstrap,
+) -> dict[str, object]:
+    """Validation inputs that change its verdict, recorded in its result identity."""
+    return {
+        "interactions": [covariate.model_dump(mode="json") for covariate in interact],
+        "adjustments": [covariate.model_dump(mode="json") for covariate in adjust],
+        "cluster_weight": cluster_weight,
+        "bootstrap": {"seed": bootstrap.seed, "repetitions": bootstrap.repetitions},
+    }
+
+
 _DR_CROSSFIT_FOLDS = 5
 _DR_CROSSFIT_SEED = 0
 
@@ -548,13 +563,9 @@ def validate_cate(
     if not isinstance(result, CateValidation):
         return result
     report_context = _report_identity_context(source, unit, metric, control)
-    # The validation verdict depends on these inputs, so they are part of its result identity.
-    report_context["method_settings"] = {
-        "interactions": [covariate.model_dump(mode="json") for covariate in interact_covs],
-        "adjustments": [covariate.model_dump(mode="json") for covariate in adjust_covs],
-        "cluster_weight": cluster_weight,
-        "bootstrap": {"seed": bootstrap.seed, "repetitions": bootstrap.repetitions},
-    }
+    report_context["method_settings"] = _validation_settings(
+        interact_covs, adjust_covs, cluster_weight, bootstrap
+    )
     return result.model_copy(update={"report_context": report_context})
 
 
@@ -655,7 +666,13 @@ def targeting_rule(
     if not isinstance(result, TargetingRule):
         return result
     identity_context = _report_identity_context(source, unit, metric, control)
-    validation = result.validation.model_copy(update={"report_context": identity_context})
+    validation_context = {
+        **identity_context,
+        "method_settings": _validation_settings(
+            interact_covs, adjust_covs, cluster_weight, bootstrap
+        ),
+    }
+    validation = result.validation.model_copy(update={"report_context": validation_context})
     return result.model_copy(update={"report_context": identity_context, "validation": validation})
 
 
