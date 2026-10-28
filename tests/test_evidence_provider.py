@@ -782,6 +782,7 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
     assert provider.read is False
     analysis.close()
 
+
 def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() -> None:
     from contextlib import nullcontext
     from datetime import date
@@ -796,6 +797,9 @@ def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() 
 
         def __init__(self) -> None:
             self.read = False
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused primitive")
 
         def compliance(self, request: ComplianceRequest):
             self.read = True
@@ -815,7 +819,7 @@ def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() 
     )
     for request in requests:
         with pytest.raises(CapabilityError) as raised:
-            request_evidence(provider, request)
+            request_evidence(cast(Any, provider), request)
         assert raised.value.code == "evidence.operation_unavailable"
         assert provider.read is False
 

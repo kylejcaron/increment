@@ -307,6 +307,7 @@ def test_wildcard_lazy_import_keeps_importing_test(tmp_path: Path) -> None:
 
     assert "unresolved_lazy_name" in graph.keeps("tests/test_api.py")
 
+
 def test_edited_test_file_is_reread_after_an_earlier_selection(tmp_path: Path) -> None:
     _tree(
         tmp_path,

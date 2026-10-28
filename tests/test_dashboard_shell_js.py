@@ -52,14 +52,16 @@ def test_dashboard_shell_scripts_parse(tmp_path):
     assert _syntax_errors(node_path, scripts, tmp_path) == []
 
 
-
-
 def test_report_print_rules_raise_table_text_and_wrap_long_labels():
     html = files("increment.dashboard").joinpath("_shell.html").read_text()
     assert ".rpt .rpt-results .gt_row[data-inc-floor]" in html
     assert ".rpt .rpt-results .gt_col_heading[data-inc-floor]" in html
-    assert ".rpt .rpt-results .gt_col_heading { white-space: normal !important; overflow-wrap: anywhere !important;" in html
+    assert (
+        ".rpt .rpt-results .gt_col_heading { white-space: normal !important; overflow-wrap: anywhere !important;"
+        in html
+    )
     assert ".rpt .rpt-results td { overflow-wrap: anywhere; min-width: 0; }" in html
+
 
 @pytest.mark.integration
 def test_theme_choice_survives_os_changes_and_storage_failures():
