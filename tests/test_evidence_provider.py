@@ -3000,6 +3000,146 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
     ) == [(("country", "app"),), (("country", "web"),)]
 
 
+@pytest.mark.integration
+def test_custom_daily_joint_grouping_refuses_dimensions_split_across_sources(
+    tmp_path,
+) -> None:
+    from dataclasses import replace as replace_dataclass
+
+    from increment.readouts import daily
+    from increment.semantics.models import Breakout
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    experiment = analysis.experiment.model_copy(
+        update={
+            "breakouts": (
+                Breakout(property="country", source="web"),
+                Breakout(property="device", source="app"),
+            )
+        }
+    )
+    events: list[str] = []
+
+    class Provider:
+        evidence = replace_dataclass(source.evidence, breakouts=("country", "device"))
+        context = source.context
+        artifact_experiment = experiment
+
+        def moments(self, request: MomentsRequest):
+            events.append("read")
+            return ()
+
+        def unit_rows(self, request: UnitRowsRequest):
+            raise AssertionError("unused")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused")
+
+        def counts(self, request: CountsRequest):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused")
+
+        def scope(self, request: EvidenceScope):
+            events.append("scope")
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        with pytest.raises(CapabilityError) as error:
+            daily(Provider(), by=("country", "device"))
+        assert error.value.code == "evidence.joint_grouping_unavailable"
+    finally:
+        analysis.close()
+
+    assert events == []
+
+
+@pytest.mark.integration
+def test_custom_daily_joint_grouping_keeps_dimensions_declared_on_same_source(
+    tmp_path,
+) -> None:
+    from dataclasses import replace as replace_dataclass
+
+    from increment.readouts import daily
+    from increment.semantics.models import Breakout
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    experiment = analysis.experiment.model_copy(
+        update={
+            "breakouts": (
+                Breakout(property="country", source="web"),
+                Breakout(property="device", source="web"),
+            )
+        }
+    )
+    events: list[object] = []
+
+    class Provider:
+        evidence = replace_dataclass(source.evidence, breakouts=("country", "device"))
+        context = source.context
+        artifact_experiment = experiment
+
+        def moments(self, request: MomentsRequest):
+            events.append("read")
+            return ()
+
+        def unit_rows(self, request: UnitRowsRequest):
+            raise AssertionError("unused")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused")
+
+        def counts(self, request: CountsRequest):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused")
+
+        def scope(self, request: EvidenceScope):
+            events.append(
+                ("scope", tuple((item.property, item.source) for item in request.breakouts))
+            )
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        daily(Provider(), by=("country", "device"))
+    finally:
+        analysis.close()
+
+    assert events == [("scope", (("country", "web"), ("device", "web"))), "read"]
+
+
 def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading() -> None:
     from increment import Analysis
 

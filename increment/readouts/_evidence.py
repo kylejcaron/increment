@@ -13,7 +13,11 @@ from increment._evidence_loaders import (
     source_for_population,
 )
 from increment._evidence_loaders import route_provider_request as _route_provider_request
-from increment._evidence_refusals import require_evidence, require_population
+from increment._evidence_refusals import (
+    refuse_joint_grouping,
+    require_evidence,
+    require_population,
+)
 from increment._evidence_types import (
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
@@ -1094,8 +1098,33 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
         dimensions = tuple(
             dict.fromkeys((*request.by, *((request.dimension,) if request.dimension else ())))
         )
-        partitions = day_axis_source_partitions(request.experiment, dimensions)
+        experiment_metadata = request.experiment or _trigger_experiment(src)
+        partitions = day_axis_source_partitions(experiment_metadata, dimensions)
         sources = tuple(source_name for source_name, _, _ in partitions)
+        requested_properties = set(dimensions)
+        source_properties = tuple(
+            (
+                source_name,
+                tuple(
+                    sorted(
+                        {
+                            breakout.property
+                            for breakout in breakouts
+                            if breakout.property in requested_properties
+                        }
+                    )
+                ),
+            )
+            for source_name, _, breakouts in partitions
+        )
+        declared_properties = {
+            prop for _, properties in source_properties for prop in properties
+        }
+        if len(declared_properties) > 1 and any(
+            set(properties) != declared_properties
+            for _, properties in source_properties
+        ):
+            refuse_joint_grouping(src, dimensions, source_properties)
         scopes = tuple(
             (
                 source_name,

@@ -32,6 +32,15 @@ RAW_OUTCOMES_UNAVAILABLE = _spec("evidence.raw_outcomes_unavailable", "raw outco
 CLUSTER_UNAVAILABLE = _spec("evidence.cluster_unavailable", "cluster evidence")
 COVARIATE_UNAVAILABLE = _spec("evidence.covariate_unavailable", "covariates")
 OPERATION_UNAVAILABLE = _spec("evidence.operation_unavailable", "operation")
+JOINT_GROUPING_UNAVAILABLE = RefusalSpec(
+    "evidence.joint_grouping_unavailable",
+    CapabilityError,
+    template=(
+        "{constructor} cannot supply joint grouping {requested!r} from separately "
+        "declared sources {offered!r}; declare all requested properties on one source"
+    ),
+    keys=frozenset({"constructor", "requested", "offered"}),
+)
 UNSUPPORTED_REQUEST = RefusalSpec(
     "evidence.request_unsupported",
     CapabilityError,
@@ -41,6 +50,32 @@ UNSUPPORTED_REQUEST = RefusalSpec(
     ),
     keys=frozenset({"constructor", "requested", "offered", "route"}),
 )
+EVIDENCE_REFUSALS = {
+    spec.code: spec
+    for spec in (
+        GRAIN_UNAVAILABLE,
+        BREAKOUT_UNAVAILABLE,
+        UNIT_ROWS_UNAVAILABLE,
+        RAW_OUTCOMES_UNAVAILABLE,
+        CLUSTER_UNAVAILABLE,
+        COVARIATE_UNAVAILABLE,
+        OPERATION_UNAVAILABLE,
+        PROVIDER_UNAVAILABLE,
+        JOINT_GROUPING_UNAVAILABLE,
+        UNSUPPORTED_REQUEST,
+    )
+}
+
+
+def refuse_joint_grouping(
+    src: object, requested: Sequence[str], offered: object
+) -> NoReturn:
+    refuse(
+        JOINT_GROUPING_UNAVAILABLE,
+        constructor=type(src).__name__,
+        requested=tuple(requested),
+        offered=offered,
+    )
 EVIDENCE_REFUSALS = {
     spec.code: spec
     for spec in (
