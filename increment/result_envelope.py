@@ -10,20 +10,21 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 import pyarrow as pa
 from pydantic import BaseModel
 
 from increment._interpretation import EffectEstimate, project_effect
 from increment.errors import CodedError
-from increment.estimation._fcr_reinterval import classify, reinterval_selected
+from increment.estimation._fcr_reinterval import Construction, classify, reinterval_selected
 from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
 from increment.estimation.results import LiftEstimate
 from increment.kernel.contracts import CellIdentity
 
 _SCHEMA_VERSION = 2
 _METADATA_KEY = b"increment.readout_metadata"
+_CONSTRUCTION_TAGS = frozenset((None, *get_args(Construction)))
 _PROJECTION_FIELDS = (
     "null_lift",
     "null_abs",
@@ -852,7 +853,7 @@ class ResultCell:
                     context={"component": name},
                 )
             construction = component.get("construction")
-            if construction not in {None, "wald", "conversion", "binomial", "joint", "unavailable"}:
+            if construction not in _CONSTRUCTION_TAGS:
                 raise CodedError(
                     "Unsupported result-cell construction",
                     code="results.cell.schema_unsupported",
@@ -975,14 +976,7 @@ class ResultCell:
             for name in ("sampling", "posterior", "sequential"):
                 comp = entry[name]
                 stored_construction = comp["construction"]
-                if stored_construction not in {
-                    None,
-                    "wald",
-                    "conversion",
-                    "binomial",
-                    "joint",
-                    "unavailable",
-                }:
+                if stored_construction not in _CONSTRUCTION_TAGS:
                     raise CodedError(
                         "Unsupported result-cell construction",
                         code="results.cell.schema_unsupported",
