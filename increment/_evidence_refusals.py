@@ -275,20 +275,22 @@ def _request_requirements(  # noqa: PLR0915
         by = () if request.cell is None else (request.cell.breakout.property,)
     elif isinstance(request, ComplianceRequest):
         population = request.population
-        if declaration.compliance_axis == "none":
+        if declaration.compliance_axis == "none" or (
+            request.as_of is not None and declaration.compliance_axis != "asof"
+        ):
             refuse_operation(
                 src,
                 "compliance",
-                ("total", "asof"),
-                route="use a source with enrollment and uptake records",
+                ("asof",) if request.as_of is not None else ("total", "asof"),
+                route="use a source with the requested compliance axis and population",
             )
     elif isinstance(request, ComplianceSeriesRequest):
         population = request.population
-        if declaration.compliance_axis == "none":
+        if declaration.compliance_axis != "asof":
             refuse_operation(
                 src,
                 "compliance_series",
-                (declaration.compliance_axis,),
+                ("asof",),
                 route="use a source with the requested compliance axis and population",
             )
     elif isinstance(request, CountsRequest):
