@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 from pathlib import Path
 
 _SELECTED_FILES = os.environ.get("AFFECTED_TEST_FILES")
@@ -26,3 +27,12 @@ def pytest_ignore_collect(collection_path: Path) -> bool | None:
         return None
 
     return True if f"tests/{relative.as_posix()}" not in _KEPT else None
+
+def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
+    if (
+        exitstatus == 0
+        and not getattr(session, "items", ())
+        and getattr(getattr(session, "config", None), "option", None)
+        and getattr(session.config.option, "deselect", ())
+    ):
+        session.exitstatus = 5

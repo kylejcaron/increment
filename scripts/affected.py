@@ -294,7 +294,11 @@ def _pytest_invocations(
             + [
                 "-p",
                 "scripts.affected_filter",
-                *extra_args,
+                *(
+                    _without_xdist_worker_args(extra_args)
+                    if len(selection.test_files) <= 6
+                    else extra_args
+                ),
                 "tests",
                 *selection.doc_pages,
             ]
@@ -306,12 +310,18 @@ def _pytest_invocations(
 
 
 def _tach_head(arguments: Sequence[str]) -> str | None:
-    for index, argument in enumerate(arguments):
+    head = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
         if argument == "--tach-head":
-            return arguments[index + 1] if index + 1 < len(arguments) else None
+            head = arguments[index + 1] if index + 1 < len(arguments) else None
+            index += 2
+            continue
         if argument.startswith("--tach-head="):
-            return argument.partition("=")[2]
-    return None
+            head = argument.partition("=")[2]
+        index += 1
+    return head
 
 
 def _pytest_arguments(
@@ -320,11 +330,15 @@ def _pytest_arguments(
     return _pytest_invocations(selection, base, tier, extra_args)[0]
 
 
-def _combined_pytest_status(statuses: Sequence[int]) -> int | None:
+def _combined_pytest_status(
+    statuses: Sequence[int], *, deselect_requested: bool = False
+) -> int | None:
     if not statuses:
         return None
     meaningful = [status for status in statuses if status != 5]
-    return next((status for status in meaningful if status != 0), 5 if not meaningful else 0)
+    if not meaningful:
+        return 5 if deselect_requested else 0
+    return next((status for status in meaningful if status != 0), 0)
 
 
 def main(argv: list[str]) -> int:
@@ -357,6 +371,8 @@ def main(argv: list[str]) -> int:
 
     kept = None
     if selection.use_tach:
+        from tests._selection import kept_test_files
+
         kept = kept_test_files(
             root, arguments.base, tier=arguments.tier, head=_tach_head(extra_args)
         )
@@ -375,10 +391,18 @@ def main(argv: list[str]) -> int:
         else:
             environment["AFFECTED_TEST_FILES"] = "[]"
         statuses.append(subprocess.run(command, cwd=root, env=environment, check=False).returncode)
-    status = _combined_pytest_status(statuses)
+    status = _combined_pytest_status(
+        statuses,
+        deselect_requested=any(
+            argument == "--deselect" or argument.startswith("--deselect=")
+            for argument in extra_args
+        ),
+    )
     if status is None:
         print("affected: no affected tests selected")
         return 0
+    if status == 0 and statuses and all(item == 5 for item in statuses):
+        print("affected: no affected tests selected")
     return status
 
 

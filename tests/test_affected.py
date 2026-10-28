@@ -194,6 +194,7 @@ def test_kept(): pass
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("PYTEST_PLUGINS", None)
     env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py", "tests/test_ignored.py"])
     result = subprocess.run(
         [
@@ -231,6 +232,7 @@ def test_filtered_collection_skips_imports_for_unkept_test_files(tmp_path: Path)
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("PYTEST_PLUGINS", None)
     env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py"])
     result = subprocess.run(
         [
@@ -266,6 +268,7 @@ def test_unfiltered_collection_without_tach_selection_collects_whole_tree(
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("PYTEST_PLUGINS", None)
     env.pop("AFFECTED_TEST_FILES", None)
     result = subprocess.run(
         [
@@ -673,7 +676,9 @@ def test_unit_tier_uses_unit_marker_expression(tmp_path: Path) -> None:
     assert _pytest_arguments(selection, base, "unit", []) == [
         "-m",
         "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-        "tests/test_example.py",
+        "-p",
+        "scripts.affected_filter",
+        "tests",
     ]
 
 
@@ -784,7 +789,9 @@ def test_slow_tier_marker_expression_is_used(tmp_path: Path) -> None:
     assert _pytest_arguments(selection, base, "slow", []) == [
         "-m",
         TIER_MARKERS["slow"],
-        "tests/test_example.py",
+        "-p",
+        "scripts.affected_filter",
+        "tests",
     ]
 
 
@@ -800,7 +807,9 @@ def test_small_selection_runs_without_workers() -> None:
     assert _pytest_arguments(selection, "base", "fast", ["-n", "4", "--dist", "loadgroup"]) == [
         "-m",
         "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-        *selection.test_files,
+        "-p",
+        "scripts.affected_filter",
+        "tests",
     ]
 
     for worker_args in (
@@ -812,7 +821,9 @@ def test_small_selection_runs_without_workers() -> None:
         assert _pytest_arguments(selection, "base", "fast", worker_args) == [
             "-m",
             "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-            *selection.test_files,
+            "-p",
+            "scripts.affected_filter",
+            "tests",
         ]
     larger = Selection(
         test_files=(*selection.test_files, "tests/test_6.py"),
@@ -821,11 +832,12 @@ def test_small_selection_runs_without_workers() -> None:
         full_tier=False,
         uncovered=(),
     )
-    assert _pytest_arguments(larger, "base", "fast", ["-n", "4", "--dist", "loadgroup"])[-4:] == [
+    assert _pytest_arguments(larger, "base", "fast", ["-n", "4", "--dist", "loadgroup"])[-5:] == [
         "-n",
         "4",
         "--dist",
         "loadgroup",
+        "tests",
     ]
 
 
