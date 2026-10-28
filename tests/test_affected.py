@@ -429,41 +429,52 @@ def test_deselect_cannot_silently_skip_every_selected_test(
 def test_partial_deselect_with_xdist_keeps_successful_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Seven changed files keep the requested workers; fewer run serially.
+    files = {
+        f"tests/test_{index}.py": (
+            "from pathlib import Path\n"
+            "def test_deselected(): raise AssertionError('deselected')\n"
+            f"def test_kept(): Path('kept-{index}').touch()\n"
+        )
+        for index in range(7)
+    }
+    root, base = _repo(tmp_path, files)
+    for path, contents in files.items():
+        (root / path).write_text(contents + "# changed\n")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+    deselections = [f"--deselect=tests/test_{index}.py::test_deselected" for index in range(7)]
+
+    status = main(["--base", base, "--", "-n", "2", *deselections])
+
+    assert status == 0
+    assert all((root / f"kept-{index}").exists() for index in range(7))
+
+
+def test_affected_run_with_xdist_disabled_collects_serially(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, base = _repo(
         tmp_path,
         {
-            "tests/test_changed.py": (
-                "from pathlib import Path\n"
-                "def test_deselected(): raise AssertionError('deselected')\n"
-                "def test_kept(): Path('kept-ran').touch()\n"
-            ),
+            "tests/test_changed.py": "from pathlib import Path\ndef test_ran(): Path('ran').touch()\n"
         },
     )
-    selection = _change(
+    _change(
         root,
         base,
         "tests/test_changed.py",
-        "from pathlib import Path\n"
-        "def test_deselected(): raise AssertionError('deselected')\n"
-        "def test_kept(): Path('kept-ran').touch()\n"
-        "# changed\n",
+        "from pathlib import Path\ndef test_ran(): Path('ran').touch()\n# changed\n",
     )
     monkeypatch.chdir(root)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
-    status = main(
-        [
-            "--base",
-            base,
-            "--",
-            "-n",
-            "2",
-            "--deselect=tests/test_changed.py::test_deselected",
-        ]
-    )
-    assert selection.test_files == ("tests/test_changed.py",)
+
+    status = main(["--base", base, "--", "-p", "no:xdist"])
+
     assert status == 0
-    assert (root / "kept-ran").exists()
+    assert (root / "ran").exists()
 
 
 def test_all_user_deselection_with_xdist_is_reported_as_failure(

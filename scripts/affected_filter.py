@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _SELECTED_FILES = os.environ.get("AFFECTED_TEST_FILES")
 _KEPT = (
     None
@@ -91,6 +93,8 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
         session.exitstatus = 0
 
 
+# Specified by xdist; optional so a run with ``-p no:xdist`` still validates the plugin.
+@pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node: Any, error: Any) -> None:
     global _DESELECTED
     _DESELECTED += int(getattr(node, "workeroutput", {}).get("affected_user_deselected", 0))

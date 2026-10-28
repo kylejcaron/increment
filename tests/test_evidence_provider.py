@@ -3239,6 +3239,24 @@ def _assert_bound_daily_slice_reads_only_its_source(
     assert built_in_slices
     assert {item.source_name for item in built_in_slices} == {"events"}
 
+    # A source-less declaration claims no other source, so a bound slice keeps it.
+    sourceless = experiment.model_copy(
+        update={"breakouts": (Breakout(property="country", source=None),)}
+    )
+    sourceless_axis = request_evidence(
+        bound_slices.slices[0].source,
+        DayAxisRequest(
+            "run_daily",
+            "daily",
+            source.context.metrics,
+            dimension="country",
+            experiment=sourceless,
+        ),
+    )
+    sourceless_slices = tuple(cast(Any, sourceless_axis).slices)
+    assert sourceless_slices
+    assert {item.source_name for item in sourceless_slices} == {"events"}
+
     inferred = cast(
         Any,
         request_evidence(
