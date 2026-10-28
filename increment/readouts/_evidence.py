@@ -75,6 +75,15 @@ def _declared_breakout_property(value: object) -> str | None:
     return None
 
 
+def _declared_breakout_source(value: object) -> str | None:
+    if isinstance(value, Breakout):
+        return value.source
+    if isinstance(value, Mapping):
+        source = value.get("source")
+        return source if isinstance(source, str) else None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class DayAxisSlice:
     rows: list[dict[str, Any]]
@@ -1171,7 +1180,15 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
             for (source_name, scope), (_, _, breakouts) in zip(scopes, partitions, strict=True):
                 with evidence_scope(src, scope) as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
-                    if experiment is not None and breakouts:
+                    if experiment is not None and bound_identity is not None:
+                        breakouts = tuple(
+                            breakout
+                            for breakout in experiment.breakouts
+                            if _declared_breakout_property(breakout) not in requested_properties
+                            or _declared_breakout_source(breakout) == bound_identity.source
+                        )
+                        experiment = experiment.model_copy(update={"breakouts": breakouts})
+                    elif experiment is not None and breakouts:
                         # Preserve declarations discovered only after entering the scope.
                         experiment = experiment.model_copy(update={"breakouts": breakouts})
                     scoped_request = (

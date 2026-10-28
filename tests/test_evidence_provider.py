@@ -3207,11 +3207,7 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
     assert reads == []
 
 
-def _assert_bound_daily_slice_reads_only_its_source(
-    forwarding: Any,
-    source: Any,
-    experiment: Any,
-) -> None:
+def _assert_bound_daily_slice_reads_only_its_source(forwarding: Any, source: Any) -> None:
     from increment.semantics.models import Breakout
 
     bound_identity = BreakoutIdentity("country", "events")
@@ -3235,7 +3231,6 @@ def _assert_bound_daily_slice_reads_only_its_source(
             "daily",
             source.context.metrics,
             dimension="country",
-            experiment=experiment,
         ),
     )
     built_in_slices = tuple(cast(Any, bound_axis).slices)
@@ -3457,6 +3452,9 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     assert {row.source for row in actual} == {"events", "app"}
     assert len(identities) == len(set(identities))
 
+    scoped_forwarding = _forwarding_provider(source, scope=builtin.scope)
+    _assert_bound_daily_slice_reads_only_its_source(scoped_forwarding, source)
+
     declared = tuple(experiment.breakouts)
     identities = tuple(BreakoutIdentity(item.property, item.source) for item in declared)
     breakout_request = BreakoutSlicesRequest(
@@ -3539,10 +3537,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             assert len(acquired) == len(expected) == 1
             assert acquired[0].rows == expected[0].rows
 
-    try:
-        _assert_bound_daily_slice_reads_only_its_source(forwarding, source, experiment)
-    finally:
-        analysis.close()
+    analysis.close()
 
 
 @pytest.mark.integration
