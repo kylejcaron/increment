@@ -978,6 +978,7 @@ def test_exploratory_metrics_retain_independent_capture_metadata(monkeypatch):
         analysis.close()
         con.disconnect()
 
+
 @pytest.mark.integration
 def test_exploratory_live_results_retain_live_coherence_metadata():
     con = ds.duckdb_connection()
@@ -1003,8 +1004,7 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
         exported = estimates_to_readout(rows)
         assert all(row["coherence"] == "live" for row in exported)
         assert all(
-            json.loads(row["effective_modes"]) == metadata.effective_modes
-            for row in exported
+            json.loads(row["effective_modes"]) == metadata.effective_modes for row in exported
         )
         assert "Coherence: live; no pinned snapshot is guaranteed." in (
             readout_table(rows).gt().as_raw_html()
