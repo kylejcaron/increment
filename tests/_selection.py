@@ -427,9 +427,7 @@ class AffectedHandler:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def selection_graph(
-    root: Path, base: str, *, tier: str, head: str | None = None
-) -> SelectionGraph:
+def selection_graph(root: Path, base: str, *, tier: str, head: str | None = None) -> SelectionGraph:
     """Build the graph for the paths changed since ``base``."""
     from scripts.affected import _changed_paths
     from scripts.selection_map import load

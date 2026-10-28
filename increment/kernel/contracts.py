@@ -296,9 +296,7 @@ def _request_value(value: object) -> object:
     if isinstance(value, datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             _refuse("kernel.request.datetime_timezone", field="datetime")
-        normalized = value.astimezone(UTC).isoformat(timespec="microseconds").replace(
-            "+00:00", "Z"
-        )
+        normalized = value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
         return {"type": "datetime", "value": normalized}
     if isinstance(value, date):
         return {"type": "date", "value": value.isoformat()}

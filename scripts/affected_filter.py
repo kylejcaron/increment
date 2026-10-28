@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 _SELECTED_FILES = os.environ.get("AFFECTED_TEST_FILES")
 _KEPT = (
@@ -13,15 +13,21 @@ _KEPT = (
     if _SELECTED_FILES is None
     else {Path(path).as_posix() for path in json.loads(_SELECTED_FILES)}
 )
-
-
-
 _DESELECTED = 0
+_USER_DESELECT_PATTERNS: tuple[str, ...] = ()
+
+
+def pytest_configure(config: Any) -> None:
+    global _USER_DESELECT_PATTERNS
+    _USER_DESELECT_PATTERNS = tuple(config.option.deselect or ())
 
 
 def pytest_deselected(items: list[Any]) -> None:
     global _DESELECTED
-    _DESELECTED += len(items)
+    _DESELECTED += sum(
+        any(item.nodeid.startswith(pattern) for pattern in _USER_DESELECT_PATTERNS)
+        for item in items
+    )
 
 
 def pytest_ignore_collect(collection_path: Path) -> bool | None:
@@ -37,9 +43,17 @@ def pytest_ignore_collect(collection_path: Path) -> bool | None:
 
     return True if f"tests/{relative.as_posix()}" not in _KEPT else None
 
+
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
-    if (
-        exitstatus == 5
-        and _DESELECTED > 0
-    ):
+    workeroutput = getattr(session.config, "workeroutput", None)
+    if isinstance(workeroutput, dict):
+        workeroutput["affected_user_deselected"] = _DESELECTED
+    if exitstatus == 5 and _DESELECTED:
         session.exitstatus = 6
+    elif exitstatus == 5 and _KEPT is not None:
+        session.exitstatus = 0
+
+
+def pytest_testnodedown(node: Any, error: Any) -> None:
+    global _DESELECTED
+    _DESELECTED += int(node.workeroutput.get("affected_user_deselected", 0))

@@ -264,10 +264,11 @@ def _pytest_invocations(
     kept: Sequence[str] | None = None,
 ) -> list[list[str]]:
     markers = ["-m", _changed_markers(tier, Path(__file__).resolve().parent.parent)]
+    filter_plugin = ["-p", "scripts.affected_filter"]
 
     if selection.full_tier:
         roots = ["tests"] if selection.doc_pages else []
-        return [markers + roots + list(selection.doc_pages) + list(extra_args)]
+        return [markers + filter_plugin + roots + list(selection.doc_pages) + list(extra_args)]
 
     if selection.use_tach:
         if kept == () and not selection.test_files and not selection.doc_pages:
@@ -304,7 +305,7 @@ def _pytest_invocations(
             ]
         ]
 
-    direct_args = markers + list(selection.doc_pages)
+    direct_args = markers + filter_plugin + list(selection.doc_pages)
     direct_args.extend(extra_args)
     return [direct_args]
 

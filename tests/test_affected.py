@@ -306,8 +306,7 @@ def test_explicit_targets_honor_ignore_from_all_pytest_option_sources(
         tmp_path,
         {
             "pyproject.toml": (
-                "[tool.pytest.ini_options]\n"
-                'addopts = "--ignore=tests/test_config.py"\n'
+                '[tool.pytest.ini_options]\naddopts = "--ignore=tests/test_config.py"\n'
             ),
             "tests/test_config.py": "raise AssertionError('config ignore bypassed')\n",
             "tests/test_env.py": "raise AssertionError('environment ignore bypassed')\n",
@@ -316,8 +315,7 @@ def test_explicit_targets_honor_ignore_from_all_pytest_option_sources(
     )
     for name in ("config", "env", "cli"):
         (root / f"tests/test_{name}.py").write_text(
-            "from pathlib import Path\n"
-            f"def test_{name}(): Path('{name}-ran').touch()\n"
+            f"from pathlib import Path\ndef test_{name}(): Path('{name}-ran').touch()\n"
         )
     _git(root, "add", ".")
     _git(
@@ -334,9 +332,7 @@ def test_explicit_targets_honor_ignore_from_all_pytest_option_sources(
     base = _git(root, "rev-parse", "HEAD")
     for name in ("config", "env", "cli"):
         (root / f"tests/test_{name}.py").write_text(
-            "from pathlib import Path\n"
-            f"def test_{name}(): Path('{name}-ran').touch()\n"
-            "# changed\n"
+            f"from pathlib import Path\ndef test_{name}(): Path('{name}-ran').touch()\n# changed\n"
         )
     selection = select(base, root)
     monkeypatch.chdir(root)
@@ -374,8 +370,7 @@ def test_deselect_cannot_silently_skip_every_selected_test(
         tmp_path,
         {
             "tests/test_changed.py": (
-                "from pathlib import Path\n"
-                "def test_changed(): Path('changed-ran').touch()\n"
+                "from pathlib import Path\ndef test_changed(): Path('changed-ran').touch()\n"
             ),
             "tests/test_unrelated.py": "raise AssertionError('unrelated test imported')\n",
         },
@@ -384,23 +379,20 @@ def test_deselect_cannot_silently_skip_every_selected_test(
         root,
         base,
         "tests/test_changed.py",
-        "from pathlib import Path\n"
-        "def test_changed(): Path('changed-ran').touch()\n"
-        "# changed\n",
+        "from pathlib import Path\ndef test_changed(): Path('changed-ran').touch()\n# changed\n",
     )
     monkeypatch.chdir(root)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
     monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
-    monkeypatch.setenv(
-        "PYTEST_ADDOPTS", "--deselect=tests/test_changed.py::test_changed"
-    )
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--deselect=tests/test_changed.py::test_changed")
     status = main(["--base", base])
 
     assert selection.test_files == ("tests/test_changed.py",)
     assert status == 5
     assert not (root / "changed-ran").exists()
+
 
 def test_partial_deselect_with_xdist_keeps_successful_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -442,6 +434,23 @@ def test_partial_deselect_with_xdist_keeps_successful_run(
     assert (root / "kept-ran").exists()
 
 
+def test_all_user_deselection_with_xdist_is_reported_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {f"tests/test_{index}.py": "def test_selected(): pass\n" for index in range(7)}
+    root, base = _repo(tmp_path, files)
+    for path, contents in files.items():
+        (root / path).write_text(contents + "# changed\n")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+    deselections = [f"--deselect=tests/test_{index}.py::test_selected" for index in range(7)]
+
+    status = main(["--base", base, "--", "-n", "2", *deselections])
+
+    assert status == 5
+
+
 def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:
     from tests._selection import kept_test_files
 
@@ -466,10 +475,9 @@ def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:
     _git(root, "commit", "--no-verify", "-qm", "tach head source change")
     _git(root, "checkout", "-q", current_branch)
 
-    assert kept_test_files(root, base, tier="fast", head=None) is not None
-    assert "tests/test_changed.py" in kept_test_files(
-        root, base, tier="fast", head="tach-head"
-    )
+    selection = kept_test_files(root, base, tier="fast", head="tach-head")
+    assert selection is not None
+    assert "tests/test_changed.py" in selection
 
 
 def test_ignore_option_keeps_directory_collection_so_the_exclusion_applies(tmp_path: Path) -> None:
@@ -697,6 +705,25 @@ def test_dependency_change_runs_full_tier(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"pyproject.toml": '[project]\ndependencies = ["a"]\n'})
     selection = _change(root, base, "pyproject.toml", '[project]\ndependencies = ["b"]\n')
     assert selection.full_tier is True
+
+
+def test_full_tier_user_deselection_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\ndependencies = ["a"]\n',
+            "tests/test_selected.py": "def test_selected(): pass\n",
+        },
+    )
+    _change(root, base, "pyproject.toml", '[project]\ndependencies = ["b"]\n')
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--", "--deselect=tests/test_selected.py::test_selected"])
+
+    assert status == 5
 
 
 def test_tach_change_runs_tach_without_tests(tmp_path: Path) -> None:
