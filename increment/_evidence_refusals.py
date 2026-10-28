@@ -67,15 +67,15 @@ EVIDENCE_REFUSALS = {
 }
 
 
-def refuse_joint_grouping(
-    src: object, requested: Sequence[str], offered: object
-) -> NoReturn:
+def refuse_joint_grouping(src: object, requested: Sequence[str], offered: object) -> NoReturn:
     refuse(
         JOINT_GROUPING_UNAVAILABLE,
         constructor=type(src).__name__,
         requested=tuple(requested),
         offered=offered,
     )
+
+
 EVIDENCE_REFUSALS = {
     spec.code: spec
     for spec in (

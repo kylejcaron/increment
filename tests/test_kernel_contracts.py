@@ -7,7 +7,7 @@ import pickle
 import subprocess
 import sys
 from collections.abc import Mapping
-from datetime import date
+from datetime import UTC, date
 from typing import Any, cast
 
 import pytest
@@ -557,7 +557,7 @@ def test_analysis_request_hash_normalizes_equivalent_datetime_offsets():
 
     from increment.evidence import SequentialCaptureRequest
 
-    utc = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    utc = datetime(2026, 1, 3, tzinfo=UTC)
     offset = datetime(2026, 1, 3, 1, tzinfo=timezone(timedelta(hours=1)))
     hashes = tuple(
         AnalysisRequest.from_requests(
@@ -569,7 +569,6 @@ def test_analysis_request_hash_normalizes_equivalent_datetime_offsets():
         for value in (utc, offset)
     )
     assert hashes[0] == hashes[1]
-
 
 
 def test_analysis_request_json_encodes_uuid_breakout_values():
@@ -600,6 +599,7 @@ def test_analysis_request_json_encodes_uuid_breakout_values():
     )
     payload = json.loads(json.dumps(descriptor.canonical_payload()))
     assert payload["requests"][0]["fields"]["cell"]["value"] == str(value)
+
 
 def test_analysis_request_admits_observational_breakout_and_sequential_requests():
     from increment.declarations import Method

@@ -609,7 +609,7 @@ class ResultCell:
                     fractions=getattr(row, "fractions", ()),
                     n_folds=getattr(row, "n_folds", None),
                     seed=(
-                        str(getattr(row, "seed"))
+                        str(row.seed)
                         if getattr(row, "seed", None) is not None
                         else None
                     ),

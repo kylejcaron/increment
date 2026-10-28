@@ -48,6 +48,7 @@ from increment._evidence_types import (
     SourceContext,
     UnitRows,
     UnitRowsRequest,
+    _breakout_identity,
     day_axis_source_partitions,
     day_axis_time_basis,
     validate_compliance_source_match,
@@ -1108,21 +1109,19 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                 tuple(
                     sorted(
                         {
-                            breakout.property
+                            identity.property
                             for breakout in breakouts
-                            if breakout.property in requested_properties
+                            if (identity := _breakout_identity(breakout)) is not None
+                            and identity.property in requested_properties
                         }
                     )
                 ),
             )
             for source_name, _, breakouts in partitions
         )
-        declared_properties = {
-            prop for _, properties in source_properties for prop in properties
-        }
+        declared_properties = {prop for _, properties in source_properties for prop in properties}
         if len(declared_properties) > 1 and any(
-            set(properties) != declared_properties
-            for _, properties in source_properties
+            set(properties) != declared_properties for _, properties in source_properties
         ):
             refuse_joint_grouping(src, dimensions, source_properties)
         scopes = tuple(

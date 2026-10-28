@@ -7,8 +7,8 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from types import MappingProxyType
-from uuid import UUID
 from typing import Any, Literal, Protocol, cast, runtime_checkable
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, field_validator, model_validator
 from pydantic_core import PydanticSerializationError

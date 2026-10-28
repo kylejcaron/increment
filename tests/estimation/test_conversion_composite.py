@@ -114,7 +114,6 @@ class TestDeltaRowsCarryTheirCounts:
         with pytest.raises(ValueError):
             LiftEstimate.model_validate(payload)
 
-
     def test_persisted_zero_dense_level_is_rejected_for_positive_threshold(self):
         counts = (1_000_000, 2_000_000, 1_020_000, 2_000_000)
         row = lift_row(counts, alpha=0.05)
@@ -125,6 +124,7 @@ class TestDeltaRowsCarryTheirCounts:
         payload["delta_evidence"]["dense_level"] = 0.0
         with pytest.raises(ValueError):
             LiftEstimate.model_validate(payload)
+
     def test_a_dense_row_persists_its_counts_dense_level_and_route(self):
         counts = (2_500, 50_000, 2_550, 50_000)
         row = lift_row(counts)
