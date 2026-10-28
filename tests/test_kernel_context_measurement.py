@@ -206,6 +206,10 @@ def test_measurement_records_wall_memory_materializations_and_cleanup():
         assert result.temp_bytes_after_scope == max(
             sample.temp_bytes_after_scope for sample in result.repetitions
         )
+    for output in (*baseline.outputs, *captured.outputs):
+        payload = json.loads(output)
+        assert isinstance(payload, dict)
+        assert set(payload) == {"metadata", "rows"}
     assert len(baseline.outputs) == len(captured.outputs)
     assert all(
         nested_close(json.loads(expected), json.loads(actual))

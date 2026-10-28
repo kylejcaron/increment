@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
@@ -226,9 +226,9 @@ def _stable_value(value: Any) -> Any:
             "__type__": type(value).__qualname__,
             **{name: _stable_value(getattr(value, name)) for name in value.__dataclass_fields__},
         }
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {str(key): _stable_value(item) for key, item in sorted(value.items())}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_stable_value(item) for item in value]
     return value
 
@@ -256,7 +256,18 @@ def _identity(value: Any) -> tuple[str, ...]:
 
 def _canonical(rows: Any) -> str:
     values = sorted((_stable_value(row) for row in rows), key=_identity)
-    return json.dumps(values, sort_keys=True, separators=(",", ":"))
+    metadata = getattr(rows, "metadata", None)
+    qualifications = None
+    if metadata is not None:
+        qualifications = {
+            "coherence": metadata.coherence,
+            "effective_modes": _stable_value(metadata.effective_modes),
+        }
+    return json.dumps(
+        {"metadata": qualifications, "rows": values},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 # Cross-mode artifact runs are independently published; R12 checks identity portability.
@@ -358,13 +369,10 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
         )
         provider = evidence_provider(source)
         execution_context_type: Any = None
-        breakout_impl: Any = None
         if route == "captured":
             from increment.kernel.context import EvidenceExecutionContext
-            from increment.readouts._breakout import _breakout_impl
 
             execution_context_type = EvidenceExecutionContext
-            breakout_impl = _breakout_impl
 
         def execute_workload(temp_sampler: _TempPeak | None = None) -> tuple[str, ...]:
             if route == "per_operation":
@@ -379,7 +387,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
                     temp_sampler.sample()
                 return (_canonical(run_rows), _canonical(breakout_rows), _canonical(daily_rows))
 
-            assert execution_context_type is not None and breakout_impl is not None
+            assert execution_context_type is not None
             context = execution_context_type(
                 provider,
                 scope,
@@ -391,7 +399,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
                 if temp_sampler is not None:
                     temp_sampler.sample()
                 pinned = _builtin_source(scoped_provider)
-                breakout_rows = breakout_impl(
+                breakout_rows = readouts.breakout(
                     pinned,
                     breakout_name,
                     metrics=[metric.name for metric in metrics],
