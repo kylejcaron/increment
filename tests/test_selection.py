@@ -294,6 +294,19 @@ def test_unresolvable_lazy_export_keeps_importing_test(tmp_path: Path) -> None:
     assert "unresolved_lazy_name" in graph.keeps("tests/test_api.py")
 
 
+def test_wildcard_lazy_import_keeps_importing_test(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/__init__.py": "_LAZY_IMPORTS = {'Leaf': ('increment.leaf', 'Leaf')}\n",
+            "increment/leaf.py": "class Leaf: pass\n",
+            "tests/test_api.py": "from increment import *\n",
+        },
+    )
+    graph = SelectionGraph.from_tree(tmp_path, {"increment.leaf"}, tier="fast", selection_map=None)
+
+    assert "unresolved_lazy_name" in graph.keeps("tests/test_api.py")
+
 def test_edited_test_file_is_reread_after_an_earlier_selection(tmp_path: Path) -> None:
     _tree(
         tmp_path,

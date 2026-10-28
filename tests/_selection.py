@@ -185,12 +185,13 @@ def _imports(
             for alias in aliases:
                 target = tables[base].get(alias)
                 if target is None:
-                    # Names bound when the module runs, and its submodules,
-                    # resolve through the import graph, not the lazy table.
+                    # A wildcard's exported names cannot be resolved statically.
                     if (
-                        alias != "*"
-                        and alias not in (eager or {}).get(base, set())
-                        and f"{base}.{alias}" not in known
+                        alias == "*"
+                        or (
+                            alias not in (eager or {}).get(base, set())
+                            and f"{base}.{alias}" not in known
+                        )
                     ):
                         unresolved.add(alias)
                 else:
