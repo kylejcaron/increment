@@ -359,7 +359,11 @@ def main(argv: list[str]) -> int:
         from tests._selection import kept_test_files
 
         kept = kept_test_files(root, arguments.base, tier=arguments.tier)
-    elif selection.test_files and any(argument.startswith("--ignore") for argument in extra_args):
+    elif (
+        not selection.use_tach
+        and selection.test_files
+        and any(argument.startswith("--ignore") for argument in extra_args)
+    ):
         kept = selection.test_files
     statuses = []
     for pytest_args in _pytest_invocations(

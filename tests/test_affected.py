@@ -167,6 +167,12 @@ def test_cli_tach_head_override_preserves_override_selection(tmp_path: Path) -> 
     override_head = _git(root, "rev-parse", "HEAD")
     _git(root, "checkout", "-q", main_branch)
     (root / "increment/a.py").write_text("VALUE = 2\n")
+    (root / "tests/test_a.py").write_text(
+        "import increment.a\n"
+        "from pathlib import Path\n"
+        "def test_a(): Path('a-ran').touch()\n"
+        "# changed\n"
+    )
     (root / "tests/selection_map.json").write_text(
         json.dumps(
             {
@@ -193,6 +199,7 @@ def test_cli_tach_head_override_preserves_override_selection(tmp_path: Path) -> 
             "--",
             "--tach-head",
             override_head,
+            "--ignore=tests/test_a.py",
         ],
         cwd=root,
         env=environment,
