@@ -178,8 +178,35 @@ def test_empty_selection_and_invalid_request_do_not_open_execution_scope(tmp_pat
         evidence = source.evidence
         context = source.context
 
-        def __getattr__(self, name):
-            return getattr(source, name)
+        def moments(self, request):
+            return source.moments(request)
+
+        def breakout_method_moments(self, request):
+            return source.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            return source.unit_rows(request)
+
+        def method_fit(self, request):
+            return source.method_fit(request)
+
+        def compliance(self, request):
+            return source.compliance(request)
+
+        def compliance_series(self, request):
+            return source.compliance_series(request)
+
+        def counts(self, request):
+            from increment.evidence import CountEvidence
+
+            return CountEvidence(
+                request.population,
+                "assignment",
+                source.assignment_counts(population=request.population),
+            )
+
+        def capture_sequential(self, request):
+            return source.capture_sequential(request)
 
         def scope(self, request):
             pytest.fail(f"validated request opened an evidence scope: {request!r}")
