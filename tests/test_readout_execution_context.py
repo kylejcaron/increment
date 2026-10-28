@@ -599,13 +599,12 @@ def test_artifact_run_remains_captured_when_live_is_requested(tmp_path):
         manifest = cast(Any, held_source(analysis))._manifest
         identity = f"artifact:{manifest.artifact_id}:{manifest.generation_id}"
         assert rows.metadata.effective_modes == {identity: "captured"}
-        from increment import EvidenceScope
+        from increment import EvidenceScope, evidence_provider
         from increment.kernel.context import EvidenceExecutionContext
-        from increment.readouts._provider import native_scope_provider
 
         source = cast(Any, held_source(analysis))
         context = EvidenceExecutionContext(
-            native_scope_provider(source),
+            evidence_provider(source),
             EvidenceScope(
                 metrics=tuple(source.context.metrics),
                 configs=tuple(source.context.configs),

@@ -988,11 +988,12 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
             decision_method=Method(name="unadjusted"),
             coherence="live",
         )
-        assert rows.metadata is not None
-        assert rows.metadata.coherence == "live"
-        assert rows.metadata.effective_modes
-        assert set(rows.metadata.effective_modes.values()) == {"live"}
-        assert {capture.coherence for capture in rows.metadata.captures} == {"live"}
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.coherence == "live"
+        assert metadata.effective_modes
+        assert set(metadata.effective_modes.values()) == {"live"}
+        assert {capture.coherence for capture in metadata.captures} == {"live"}
         frame = rows.to_frame()
         assert frame["coherence"].to_list() == ["live"] * len(rows)
         import json
@@ -1002,7 +1003,7 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
         exported = estimates_to_readout(rows)
         assert all(row["coherence"] == "live" for row in exported)
         assert all(
-            json.loads(row["effective_modes"]) == rows.metadata.effective_modes
+            json.loads(row["effective_modes"]) == metadata.effective_modes
             for row in exported
         )
         assert "Coherence: live; no pinned snapshot is guaranteed." in (
