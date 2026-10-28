@@ -432,9 +432,7 @@ def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     assert cell.summary is not None
     assert cell.summary.alpha == pytest.approx(first_row.require_sequential_result().decision_alpha)
     assert cell.summary.reason == first_row.require_sequential_result().point_reason
-    assert cell.summary.intervals == (
-        (cell.summary.lower, cell.summary.upper),
-    )
+    assert cell.summary.intervals == ((cell.summary.lower, cell.summary.upper),)
     json_cell = ResultCell.from_payload(cell.to_payload())
     (arrow_cell,) = ResultCell.from_arrow(ResultCell.to_arrow([cell]))
     for restored in (json_cell, arrow_cell):
