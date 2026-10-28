@@ -90,6 +90,12 @@ class MethodFitAnswer:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactProvenance:
+    manifest_sha256: str | None = None
+    relation_digests: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedMulticovariateFit:
     """Selected retained, warehouse, or local input for a mixed-CUPED fit."""
 

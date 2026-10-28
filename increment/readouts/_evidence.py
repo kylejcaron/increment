@@ -19,6 +19,7 @@ from increment._evidence_refusals import (
 )
 from increment._evidence_scopes import SCOPE_OWNERS, loader_source, scope_source
 from increment._evidence_types import (
+    ArtifactProvenance,
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
     BreakoutRoute,
@@ -114,7 +115,7 @@ def is_custom_provider(src: object) -> bool:
 
 def fit_source(src: EvidenceSource) -> EvidenceSource:
     """Return the loader that owns mixed-covariate CUPED fits for this view."""
-    return getattr(src, "_source", src)
+    return getattr(src, "_source", None) or src
 
 
 def fits_cuped_in_warehouse(src: EvidenceSource) -> bool:
@@ -191,6 +192,31 @@ def day_axis_route(src: EvidenceSource) -> DayAxisRoute:
 
 def is_artifact_route(src: EvidenceSource) -> bool:
     return source_route(src) == ARTIFACT_ROUTE
+
+
+def artifact_provenance(src: EvidenceSource) -> ArtifactProvenance:
+    """Read artifact provenance through the evidence acquisition boundary."""
+    if not is_artifact_route(src):
+        return ArtifactProvenance()
+    seen: set[int] = set()
+    leaf: object | None = src
+    while leaf is not None and id(leaf) not in seen:
+        seen.add(id(leaf))
+        manifest = getattr(leaf, "_manifest", None)
+        if manifest is not None:
+            relations = (
+                manifest.base.exposures,
+                manifest.base.measure_stats,
+                *(extension.relation for extension in manifest.extensions),
+            )
+            return ArtifactProvenance(
+                manifest_sha256=manifest.manifest_sha256,
+                relation_digests=tuple(
+                    sorted((relation.role, relation.content_sha256) for relation in relations)
+                ),
+            )
+        leaf = getattr(leaf, "_source", None)
+    return ArtifactProvenance()
 
 
 def serves_custom_breakouts(src: EvidenceSource) -> bool:
@@ -351,6 +377,36 @@ def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:
     return CountEvidence("triggered", grain, counts, units)
 
 
+def method_fit_input_digest(src: EvidenceSource, request: MethodFitRequest) -> str | None:
+    owner = fit_source(src)
+    digest = getattr(owner, "method_fit_input_digest", None)
+    if callable(digest):
+        return digest(request)
+    if not declared_evidence(src).unit_rows:
+        return None
+
+    import narwhals as nw
+
+    from increment.estimation.readout_types import StreamingDigest
+
+    unit_rows = load_unit_rows(
+        src,
+        UnitRowsRequest(
+            metric=request.metric,
+            covariates=tuple(item.name for item in request.method.covariates or ()),
+            population=request.population,
+        ),
+    )
+    frame = nw.from_native(unit_rows, eager_only=True)
+    digest = StreamingDigest()
+    digest.update_positional_rows(
+        frame.iter_rows(named=False),
+        columns=tuple(frame.columns),
+        normalize_frame_floats=True,
+    )
+    return digest.hexdigest()
+
+
 def validate_trigger_fires_in_every_arm(src: EvidenceSource, trigger: str | None) -> None:
     """Validate trigger uptake from the same evidence source used by the readout."""
     assigned = load_counts(src, CountsRequest(kind="assignment", population="assigned"))
@@ -368,7 +424,19 @@ def load_method_fit(src: EvidenceSource, request: MethodFitRequest) -> MethodFit
     owner = src if is_custom_source(src) else getattr(src, "_source", src)
     require_request_evidence(src, request, declaration_source=owner)
     routed, answer = _route_provider_request(src, request)
+
     if routed:
+        if (
+            isinstance(answer, MethodFitAnswer)
+            and answer.origin in {"warehouse", "retained_fitted"}
+            and answer.evidence_sha256 is None
+        ):
+            from dataclasses import replace
+
+            answer = replace(
+                answer,
+                evidence_sha256=method_fit_input_digest(src, request),
+            )
         return answer
     if request.cell is None and declared_evidence(src).method_fit == "retained":
         evidence = cast(Any, src).categorical_evidence(request.metric, request.method)
@@ -441,6 +509,7 @@ def load_method_fit(src: EvidenceSource, request: MethodFitRequest) -> MethodFit
         origin=origin,
         envelope=envelope,
         fit_identity=tuple(identity),
+        evidence_sha256=method_fit_input_digest(src, request),
     )
 
 
@@ -605,7 +674,20 @@ class _BreakoutScopedProvider:
                 }
                 return loaders[method](pinned, request)
             require_request_evidence(pinned, request)
-            return getattr(pinned, method)(request)
+            answer = getattr(pinned, method)(request)
+            if (
+                isinstance(request, MethodFitRequest)
+                and isinstance(answer, MethodFitAnswer)
+                and answer.origin in {"warehouse", "retained_fitted"}
+                and answer.evidence_sha256 is None
+            ):
+                from dataclasses import replace
+
+                answer = replace(
+                    answer,
+                    evidence_sha256=method_fit_input_digest(pinned, request),
+                )
+            return answer
 
         if self._scoped:
             return read(self.provider)

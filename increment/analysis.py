@@ -323,6 +323,7 @@ def _stamp_exploratory_rows(rows):
     from increment.estimation.readout_types import (
         CellKey,
         FamilyScope,
+        ReadoutMetadata,
         ReadoutScope,
         cell_order,
         family_identity,
@@ -407,7 +408,19 @@ def _stamp_exploratory_rows(rows):
         ),
         by_source=metadata.scope.by_source,
     )
-    metadata = metadata.model_copy(update={"scope": scope})
+    metadata = ReadoutMetadata(
+        scope=scope,
+        cells=metadata.cells,
+        partial=metadata.partial,
+        partial_reason=metadata.partial_reason,
+        source_content_digest_unavailable_reason=metadata.source_content_digest_unavailable_reason,
+        source_content_digest=metadata.source_content_digest,
+        artifact_manifest_sha256=metadata.artifact_manifest_sha256,
+        artifact_relation_digests=metadata.artifact_relation_digests,
+        coherence=metadata.coherence,
+        effective_modes=metadata.effective_modes,
+        captures=metadata.captures,
+    )
     return LiftEstimates(
         updated,
         metadata=metadata,
@@ -2582,6 +2595,141 @@ class Analysis:
             args.append(("design", type(study.identification).__name__))
         return args
 
+    def _persistence_identity(
+        self,
+        results: Any,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+        extra_metrics: Sequence[Metric] = (),
+        runtime_request: Mapping[str, object] | None = None,
+    ):
+        from increment.kernel.contracts import Registration, contract_hash
+        from increment.store.producer import PersistenceIdentity
+
+        design = cast(Any, self._design)
+        if isinstance(self._state, ContrastAnalysisState):
+            procedures = cast("ContrastContext", self._context).procedures
+            registration_hash = Registration(
+                registration_hash=contract_hash(
+                    "registration",
+                    {
+                        "design": design.model_dump(mode="json"),
+                        "procedures": {
+                            name: procedure.model_dump(mode="json")
+                            for name, procedure in sorted(procedures.items())
+                        },
+                    },
+                )
+            ).hash()
+        else:
+            procedures = self._plan.procedures
+            registration_hash = Registration.from_plan(self._plan).hash()
+        cells = results.as_cells()
+        cell_metrics = {cell.identity.key.metric for cell in cells}
+        metrics = {metric.name: metric for metric in (*self._metrics, *extra_metrics)}
+        if "uptake" in cell_metrics and "uptake" not in metrics:
+            from increment.semantics.models import MeanMetric
+
+            uptake = getattr(design, "uptake", None)
+            metrics["uptake"] = MeanMetric(
+                name="uptake",
+                entity="__uptake__",
+                fact="__uptake__",
+                aggregation="avg_event",
+                window_days=getattr(uptake, "window_days", None),
+            )
+        methods: dict[tuple[str, str, str], Method] = {}
+        source_refs: dict[tuple[str, str], str] = {}
+        method_overrides: list[Method] = []
+        if isinstance(decision_method, Method):
+            method_overrides.append(decision_method)
+        if sensitivity_methods is not UNSET:
+            method_overrides.extend(cast(Sequence[Method], sensitivity_methods))
+        from dataclasses import fields, is_dataclass
+        from enum import Enum
+
+        def declaration_value(value):
+            if hasattr(type(value), "model_fields"):
+                return {
+                    name: declaration_value(getattr(value, name))
+                    for name in type(value).model_fields
+                }
+            if is_dataclass(value) and not isinstance(value, type):
+                return {
+                    field.name: declaration_value(getattr(value, field.name))
+                    for field in fields(value)
+                }
+            if isinstance(value, Mapping):
+                return {
+                    str(name): declaration_value(item)
+                    for name, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                }
+            if isinstance(value, (tuple, list)):
+                return [declaration_value(item) for item in value]
+            if isinstance(value, (set, frozenset)):
+                items = [declaration_value(item) for item in value]
+                return sorted(items, key=lambda item: repr(item))
+            if isinstance(value, Enum):
+                return value.value
+            if value is None or isinstance(value, (str, int, float, bool)):
+                return value
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+            return f"{type(value).__module__}.{type(value).__qualname__}"
+
+        source_context = getattr(self._src, "context", None)
+        declaration_identity = getattr(self._src, "declaration_identity", None)
+        if callable(declaration_identity):
+            declaration = declaration_identity()
+            declaration_unavailable_reason = None
+        else:
+            declaration = {"context": declaration_value(source_context)}
+            declaration_unavailable_reason = "source_declaration_identity_unavailable"
+        source_declaration_hash = contract_hash(
+            "source_declaration_v1", declaration_value(declaration)
+        )
+        if runtime_request:
+            registration_hash = contract_hash(
+                "analysis_runtime_request_v1",
+                {
+                    "registration_hash": registration_hash,
+                    "request": declaration_value(runtime_request),
+                },
+            )
+        for cell in cells:
+            key = cell.identity.key
+            estimator = key.method or "unadjusted"
+            role = key.method_role or "decision"
+            procedure = procedures.get(key.metric)
+            declared_methods: tuple[Method | None, ...] = (
+                ()
+                if procedure is None
+                else (
+                    getattr(procedure, "decision_method", None),
+                    *getattr(procedure, "sensitivity_methods", ()),
+                )
+            )
+            selected = next(
+                (
+                    method
+                    for method in (*method_overrides, *declared_methods)
+                    if isinstance(method, Method) and method.name == estimator
+                ),
+                None,
+            )
+            if selected is None:
+                selected = Method.cuped() if estimator == "cuped" else Method(name=estimator)
+            methods[(key.metric, estimator, role)] = selected
+            source_refs[(key.analysis_population, key.metric)] = source_declaration_hash
+        return PersistenceIdentity(
+            design=design,
+            metrics=metrics,
+            registration_hash=registration_hash,
+            methods=methods,
+            source_refs=source_refs,
+            source_declaration_identity_unavailable_reason=declaration_unavailable_reason,
+        )
+
     def run(
         self,
         *,
@@ -2594,6 +2742,7 @@ class Analysis:
         exploratory_metrics: Sequence[str] | None = None,
         population: Literal["assigned", "triggered"] | None = None,
         coherence: Literal["captured", "live"] = "captured",
+        store: Any | None = None,
     ) -> LiftEstimates | ContrastResults:
         """Run the full A/B test analysis pipeline.
 
@@ -2640,6 +2789,9 @@ class Analysis:
             source-owned snapshot; warehouse sources require TEMP materialization
             and refuse if it is unavailable. ``"live"`` opts out of that guarantee
             and marks results as live-qualified.
+        store : Any | None
+            Optional result store. When provided, persist the complete run
+            and expose its ``run_id`` and ``analysis_spec_hash`` in result metadata.
 
         Returns
         -------
@@ -2664,11 +2816,29 @@ class Analysis:
                 supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
         added = self._exploratory_metrics(exploratory_metrics, caller="run")
+        runtime_request: dict[str, object] = {}
+        if prior is not UNSET:
+            runtime_request["prior"] = prior
+        if estimands is not None:
+            runtime_request["estimands"] = tuple(estimands)
+        if value_scale is not None:
+            runtime_request["value_scale"] = value_scale
         if isinstance(self._state, ContrastAnalysisState):
             rows = self._run_contrast(
                 decision_method, sensitivity_methods, prior, metrics, estimands, value_scale
             )
             rows._default_backend = self._input_backend
+            if store is not None:
+                from uuid import uuid4
+
+                store.persist_results(
+                    rows,
+                    self._state.experiment_name,
+                    uuid4().hex,
+                    self._persistence_identity(
+                        rows, decision_method, sensitivity_methods, runtime_request=runtime_request
+                    ),
+                )
             return rows
         selected = select_metrics(cast("Sequence[Metric]", self._metrics), metrics, caller="run")
 
@@ -2713,6 +2883,21 @@ class Analysis:
             prior=prior,
         )
         rows._default_backend = getattr(self, "_input_backend", None)
+        if store is not None:
+            from uuid import uuid4
+
+            store.persist_results(
+                rows,
+                self._state.experiment_name,
+                uuid4().hex,
+                self._persistence_identity(
+                    rows,
+                    decision_method,
+                    sensitivity_methods,
+                    added,
+                    runtime_request=runtime_request,
+                ),
+            )
         return rows
 
     def _warn_run_advisories(

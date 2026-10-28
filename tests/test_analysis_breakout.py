@@ -1817,4 +1817,88 @@ def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
         con.disconnect()
 
 
+def test_custom_breakout_scope_rechecks_scoped_unit_row_capability(tmp_path):
+    from contextlib import contextmanager
+    from dataclasses import replace
+
+    from increment import BreakoutIdentity, EvidenceScopeResult
+    from increment.errors import CodedError
+    from increment.evidence import (
+        BreakoutSlicesRequest,
+        UnitRowsRequest,
+        evidence_provider,
+        request_evidence,
+    )
+    from tests.analysis_factory import held_source
+
+    native, con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(native))
+    builtin = evidence_provider(source)
+    reads = 0
+
+    class ScopedProvider:
+        context = source.context
+        evidence = replace(source.evidence, unit_rows=False)
+
+        def unit_rows(self, request):
+            nonlocal reads
+            reads += 1
+            return builtin.unit_rows(request)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield ScopedProvider()
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        slices = cast(
+            Any,
+            request_evidence(
+                Provider(),
+                BreakoutSlicesRequest(breakouts=(BreakoutIdentity("region", "source_a"),)),
+            ),
+        )
+        slice_source = slices.slices[0].source
+        with pytest.raises(CodedError) as raised:
+            request_evidence(
+                evidence_provider(slice_source),
+                UnitRowsRequest(source.context.metrics[0]),
+            )
+        assert raised.value.code == "evidence.unit_rows_unavailable"
+        assert reads == 0
+    finally:
+        native.close()
+        con.disconnect()
+
+
 pytestmark = pytest.mark.integration

@@ -141,6 +141,26 @@ def test_current_conformance_runs_restored_writer_rows(tmp_path):
         )
 
 
+def test_moments_source_persists_declared_identity(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    analysis = Analysis.from_moments(
+        _legacy_fixed10_rows(),
+        metrics={"revenue": "mean"},
+        control="control",
+    )
+    store = ParquetResultsStore(tmp_path)
+    try:
+        rows = analysis.run(store=store)
+        assert rows.metadata is not None
+        assert rows.metadata.analysis_spec_hash is not None
+        assert rows.metadata.run_id is not None
+        handle = store.open_run("moments", rows.metadata.analysis_spec_hash, rows.metadata.run_id)
+        assert handle.get(rows.as_cells()[0].identity)
+    finally:
+        analysis.close()
+
+
 def test_legacy_moments_preserve_missing_evidence():
 
     legacy = Analysis.from_moments(

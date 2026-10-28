@@ -789,6 +789,90 @@ def test_refresh_preserves_artifact_identity_and_rejects_cross_context() -> None
         Analysis.from_unit_day_artifact(store, first, expected_context=other_context)
 
 
+@pytest.mark.integration
+def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
+    from increment.store import ParquetResultsStore
+
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first_definitions = _definitions(first_dir)
+    second_definitions = _definitions(second_dir)
+    payload = yaml.safe_load(second_definitions.read_text())
+    source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    source["sql"] += "\n/* declaration changed */"
+    second_definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    store = ParquetResultsStore(tmp_path / "runs")
+    hashes = []
+    for definitions in (first_definitions, second_definitions):
+        con, analysis, _context, _artifact_store = _native(definitions=definitions)
+        try:
+            import warnings
+
+            from increment.errors import IncrementWarning
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                rows = analysis.run(store=store)
+            assert any(
+                isinstance(item.message, IncrementWarning)
+                and item.message.code == "analysis.cuped.covariate_unused"
+                for item in caught
+            )
+            assert rows.metadata is not None
+            hashes.append(rows.metadata.analysis_spec_hash)
+        finally:
+            analysis.close()
+            con.disconnect()
+    assert hashes[0] != hashes[1]
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_fresh_artifact_generation_preserves_content_digest(tmp_path: Path):
+    from increment.store import ParquetResultsStore
+
+    result_store = ParquetResultsStore(tmp_path / "runs")
+    _con, native, context, artifact_store, first = _published()
+    second = native.publish_unit_day_artifact(artifact_store, refresh_of=first)
+    first_analysis = Analysis.from_unit_day_artifact(
+        artifact_store, first, expected_context=context
+    )
+    second_analysis = Analysis.from_unit_day_artifact(
+        artifact_store, second, expected_context=context
+    )
+    try:
+        first_rows = first_analysis.run(store=result_store)
+        second_rows = second_analysis.run(store=result_store)
+        first_cells = first_rows.as_cells()
+        second_cells = second_rows.as_cells()
+        first_digests = {cell.identity.source_content_digest for cell in first_cells}
+        second_digests = {cell.identity.source_content_digest for cell in second_cells}
+        assert first_rows.metadata is not None
+        assert second_rows.metadata is not None
+        assert first_rows.metadata.analysis_spec_hash == second_rows.metadata.analysis_spec_hash
+        assert first_rows.metadata.analysis_spec_hash is not None
+        assert second_rows.metadata.analysis_spec_hash is not None
+        assert first_rows.metadata.scope.snapshot_id != second_rows.metadata.scope.snapshot_id
+        assert (
+            result_store.open_run(
+                "new_onboarding_v2", first_rows.metadata.analysis_spec_hash
+            ).run.run_id
+            == second_rows.metadata.run_id
+        )
+        assert None not in first_digests
+        assert None not in second_digests
+        assert first_cells
+        assert first_cells[0].provenance.artifact_manifest_sha256 == first.manifest_sha256
+        assert first_cells[0].provenance.artifact_relation_digests
+        assert first_cells[0].provenance.source_content_digest != first.manifest_sha256
+        assert first_digests and first_digests == second_digests
+    finally:
+        first_analysis.close()
+        second_analysis.close()
+
+
 # Guards triggered dispatch from silently returning only the assigned population.
 @pytest.mark.integration
 @pytest.mark.slow

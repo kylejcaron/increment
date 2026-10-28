@@ -20,7 +20,8 @@ to split on.
 
 The compared payload is every public field of the emitted row (its `model_dump()`), except
 ingress-specific identity hashes that are validated against retained scope metadata before
-normalization: `source_snapshot_id` and `family_id`, resolved fact `source`, the three identifiers a sequential
+normalization: `source_snapshot_id`, `source_content_digest` (cross-ingress agreement is not
+currently guaranteed), and `family_id`, resolved fact `source`, the three identifiers a sequential
 checkpoint derives from its registration (`registration_id`, `filtration_id`, `prefix_id`; they
 hash the path's observation mapping, see below) and, inside a winsor confidence set's raw pool,
 `study_id` (the source's identity) and `missingness` (a frame names its declared policy, a
@@ -104,6 +105,8 @@ _PATH_SPECIFIC: dict[str, Any] = {
     "source": True,
     # source_snapshot_id is validated against retained scope before it is treated as path-specific.
     "source_snapshot_id": True,
+    # Cross-ingress content agreement is measured separately; numeric aggregation can differ.
+    "source_content_digest": True,
     "sequential_result": {
         "checkpoint": {"registration_id": True, "filtration_id": True, "prefix_id": True}
     },
@@ -369,8 +372,9 @@ class CaseResult:
     # Constructor signatures or schemas that cannot express the request: name -> structural
     # absence. These ingress attempts have no refusal code and are not row-compared.
     absences: dict[str, Absence] = field(default_factory=dict)
-    # Advice is counted per ingress; availability may differ by constructor.
     advisory_counts: dict[str, int] = field(default_factory=dict)
+    # Exact evidence digest per successful ingress, retained for the R12 measurement.
+    source_content_digests: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @allow_declared_overrides
@@ -528,6 +532,7 @@ def run_case(
     absences: dict[str, Absence] = {}
     sequential_state: dict[str, SequentialCapture] = {}
     advisory_counts: dict[str, int] = {}
+    source_content_digests: dict[str, tuple[str, ...]] = {}
     for name, build in case.build.items():
         analysis = None
         try:
@@ -571,6 +576,10 @@ def run_case(
             results, advisory_counts[name] = _read_with_advisories(
                 analysis, name, case, coherence=coherence
             )
+            metadata = getattr(results, "metadata", None)
+            content_digest = getattr(metadata, "source_content_digest", None)
+            if content_digest is not None:
+                source_content_digests[name] = (content_digest,)
             family_for_row = _family_map_for_output(case, name, results)
             rows[name] = _normalize(results, family_for_row=family_for_row)
         except Exception as exc:
@@ -599,6 +608,7 @@ def run_case(
         sequential_state=sequential_state,
         absences=absences,
         advisory_counts=advisory_counts,
+        source_content_digests=source_content_digests,
     )
 
 

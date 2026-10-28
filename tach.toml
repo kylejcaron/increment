@@ -18,6 +18,16 @@ depends_on = []
 [[modules]]
 path = "increment.errors"
 depends_on = []
+
+[[modules]]
+path = "increment.store"
+depends_on = [
+  "increment._canonical",
+  "increment.errors",
+  "increment.estimation",
+  "increment.kernel.contracts",
+  "increment.result_envelope", "increment.declarations",
+]
 [[modules]]
 path = "increment._multiplicity"
 depends_on = ["increment._literals", "increment.errors", "increment.sequential_state"]
@@ -550,7 +560,7 @@ depends_on = [
   "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
-  "increment._health",
+  "increment._health", "increment.store", "increment.kernel.contracts",
 ]
 
 [[modules]]
@@ -741,6 +751,7 @@ expose = [
 [[interfaces]]
 from = ["increment._evidence_types"]
 expose = [
+  "ArtifactProvenance",
   "EvidenceSource",
   "EvidenceScope", "EvidenceStream", "BreakoutIdentity", "BreakoutCell", "BreakoutMethodMomentsRequest",
   "MethodFitRequest", "MethodFitAnswer", "ScalarBreakoutRows",

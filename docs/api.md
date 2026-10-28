@@ -122,6 +122,21 @@ Estimated result collections expose `as_cells()`: this includes run readouts,
 `ContrastResults`. Individual report objects expose `as_cell()`, including
 `CateResult`, `CateValidation`, `TargetingRule`, `TargetingSelection`, and
 `ConfoundingSensitivity`.
+Store identity is based on the capture (`source_snapshot_id`) and analysis
+specification, not on equality of `source_content_digest`. The versioned
+content digest records canonical estimation-input evidence as provenance and
+is not a store deduplication key. In the measured parity set, exact
+cross-constructor agreement was 11/42 scenarios (26.2%) and 74/306 pairs
+(24.2%); all 232 disagreements were evidence representation/value differences.
+No float-only differences were observed; an example representation mismatch is
+a differing `cy1` sufficient statistic. The digest is stable within an ingress;
+the store does not rely on cross-ingress agreement. Nontrivial representation
+work is tracked in kata issue `xfx3`.
+
+The Arrow `se` column in portable cells, envelopes, and run history uses the
+estimator's native uncertainty scale: `log_se` for log-scale relative lift and
+`abs_se` when no log-scale standard error is retained. It is not a standard
+error on the displayed relative lift (`exp(log_mean) - 1`).
 
 Continuing with the `rows` collection created above, save and reopen an
 envelope to render its table or text report:

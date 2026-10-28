@@ -27,7 +27,12 @@ from increment.readouts._common import (
 )
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
-from increment.readouts._evidence import _builtin_source, evidence_scope, prior_exclusions
+from increment.readouts._evidence import (
+    _builtin_source,
+    artifact_provenance,
+    evidence_scope,
+    prior_exclusions,
+)
 from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
@@ -648,6 +653,7 @@ def _run_prepared(  # noqa: PLR0915
         computations,
         observed_by_metric,
         evidence_by_metric,
+        artifact_provenance(src),
         population,
         preflight_roster,
     )

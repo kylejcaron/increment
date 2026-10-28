@@ -691,6 +691,45 @@ def test_metric_free_fixed_horizon_compliance_matches_populated_oracle() -> None
         assert arm.n_units == 2
 
 
+def test_compliance_only_analysis_can_be_persisted(tmp_path) -> None:
+    from increment.store import ParquetResultsStore
+
+    table = pa.table(
+        {
+            "user_id": ["c1", "c2", "t1", "t2"],
+            "variant": ["control", "control", "treatment", "treatment"],
+            "clicked": [0.0, 0.0, 1.0, 0.0],
+            "revenue": [10.0, 12.0, 20.0, 22.0],
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        metrics=[],
+        design=_encouragement_design(),
+        experiment_id="encouragement",
+    )
+    try:
+        rows = analysis.run(
+            estimands=("compliance",),
+            store=ParquetResultsStore(tmp_path),
+        )
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.analysis_spec_hash is not None
+        assert (
+            len(
+                ParquetResultsStore(tmp_path)
+                .open_run("encouragement", metadata.analysis_spec_hash)
+                .run.cells
+            )
+            == 1
+        )
+    finally:
+        analysis.close()
+
+
 def _pre_exposure_click_rows() -> list[tuple[str, str, date, date, float, float]]:
     """u1 (treatment): panel days 0..5, explicit ``exposed_on`` = day 3, its
     only click on day 0 - three days BEFORE its own exposure. u2

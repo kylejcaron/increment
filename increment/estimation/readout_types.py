@@ -179,6 +179,13 @@ class CellRecord(_ReadoutModel):
     sampling: SamplingInference | None = None
     posterior: PosteriorInference | None = None
     advisories: tuple[ReadoutAdvisory, ...] = ()
+    source_content_digest: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    artifact_manifest_sha256: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    artifact_relation_digests: tuple[tuple[str, str], ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
     @model_validator(mode="after")
     def _canonical_advisories(self):
@@ -444,6 +451,18 @@ class ReadoutMetadata(_ReadoutModel):
     cells: tuple[CellRecord, ...]
     partial: bool = False
     partial_reason: tuple[Literal["slice", "filter", "cross_snapshot_concat"], ...] = ()
+    run_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    analysis_spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_content_digest: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_content_digest_unavailable_reason: Literal["method_fit_input_unavailable"] | None = (
+        Field(default=None, exclude_if=lambda value: value is None)
+    )
+    artifact_manifest_sha256: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    artifact_relation_digests: tuple[tuple[str, str], ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     coherence: Literal["captured", "live"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -802,13 +821,14 @@ def _restore_collection(
     default_backend,
     envelope_view=None,
     completion_policy=False,  # noqa: FBT002 - legacy pickle restoration uses positional arguments.
+    persisted_cells=None,
 ):
     collection_scope = (
         {"envelope_view": envelope_view, "completion_policy": completion_policy}
         if collection_type.__name__ in {"DailyMetricValues", "DailyLiftEstimates"}
         else {}
     )
-    return collection_type(
+    collection = collection_type(
         rows,
         metadata=metadata,
         source=source,
@@ -816,6 +836,9 @@ def _restore_collection(
         default_backend=default_backend,
         **collection_scope,
     )
+    if persisted_cells is not None:
+        collection._persisted_cells = tuple(persisted_cells)
+    return collection
 
 
 def _digest_json_bytes(value):
@@ -1242,6 +1265,9 @@ def concat_collection(left, right):
     metadata = ReadoutMetadata(
         scope=scope,
         cells=tuple(ordered_records),
+        source_content_digest_unavailable_reason=(
+            a.source_content_digest_unavailable_reason or b.source_content_digest_unavailable_reason
+        ),
         coherence=coherence,
         effective_modes=dict(sorted(effective_modes.items())),
         captures=captures if len(captures) > 1 else (),
@@ -1373,7 +1399,71 @@ class ReadoutResults:
         if collection_name in {"DailyMetricValues", "DailyLiftEstimates"}:
             kwargs["envelope_view"] = payload.get("envelope_view")
             kwargs["completion_policy"] = payload.get("completion_policy", False)
-        return collection_type(rows, **kwargs)
+        collection = collection_type(rows, **kwargs)
+        persisted = payload.get("persisted_cells")
+        if persisted is not None:
+            from importlib import import_module
+
+            ResultCell = import_module("increment.result_envelope").ResultCell
+            persisted_cells = tuple(ResultCell.from_payload(cell) for cell in persisted)
+            if len(persisted_cells) != len(rows):
+                refuse_readout(
+                    "readout.serialization.identity_mismatch",
+                    source_snapshot_id=None if metadata is None else metadata.scope.snapshot_id,
+                    cell_key=None,
+                    reason="persisted-cell roster differs from collection rows",
+                )
+            if metadata is None or metadata.run_id is None or metadata.analysis_spec_hash is None:
+                refuse_readout(
+                    "readout.serialization.identity_mismatch",
+                    source_snapshot_id=None if metadata is None else metadata.scope.snapshot_id,
+                    cell_key=None,
+                    reason="persisted cells require run metadata",
+                )
+            for row, cell in zip(rows, persisted_cells, strict=True):
+                cell_key = cell.identity.key.model_dump(mode="json")
+                if (
+                    cell.identity.key != CellKey.from_row(row)
+                    or cell.source_snapshot_id != getattr(row, "source_snapshot_id", None)
+                    or cell.identity.experiment_id is None
+                    or cell.identity.analysis_spec_hash is None
+                    or cell.provenance.run_id != metadata.run_id
+                    or cell.provenance.source_content_digest != cell.identity.source_content_digest
+                ):
+                    refuse_readout(
+                        "readout.serialization.identity_mismatch",
+                        source_snapshot_id=cell.source_snapshot_id,
+                        cell_key=cell_key,
+                        reason="persisted cell identity or provenance disagrees with collection",
+                    )
+                if (
+                    cell.row_kind == "lift_estimate"
+                    and getattr(row, "confidence_set", None) is not None
+                ):
+                    expected = ResultCell.from_row(
+                        row,
+                        metadata,
+                        created_at=cell.provenance.created_at,
+                    )
+                    row_matches = (
+                        cell.projection_fields == expected.projection_fields
+                        and cell.components == expected.components
+                        and cell.summary == expected.summary
+                    )
+                else:
+                    retained_row = cell._projection_row()
+                    row_matches = retained_row.model_dump(mode="json") == row.model_dump(
+                        mode="json"
+                    )
+                if not row_matches:
+                    refuse_readout(
+                        "readout.serialization.identity_mismatch",
+                        source_snapshot_id=cell.source_snapshot_id,
+                        cell_key=cell_key,
+                        reason="persisted retained row disagrees with collection row",
+                    )
+            collection._persisted_cells = persisted_cells
+        return collection
 
 
 def dump_collection(results):
@@ -1393,6 +1483,8 @@ def dump_collection(results):
         else results.sequential_snapshot.model_dump(mode="json"),
         "rows": [row.model_dump(mode="json") for row in results],
     }
+    if getattr(results, "_persisted_cells", None) is not None:
+        payload["persisted_cells"] = [cell.to_payload() for cell in results._persisted_cells]
     if type(results).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
         payload["envelope_view"] = results._envelope_view
         payload["completion_policy"] = results._envelope_completion_policy

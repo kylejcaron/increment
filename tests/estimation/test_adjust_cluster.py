@@ -1859,3 +1859,8 @@ def test_unadjusted_large_offset_point_and_se_are_exact_joint_projections():
     assert row.abs_reference_df is not None
     assert row.abs_reference_df > row.reference_df
     assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
+    from increment.result_envelope import AnalysisEnvelope
+
+    projected = AnalysisEnvelope(tuple(row.as_cells()), metadata=None).to_arrow().to_pylist()[0]
+    assert projected["se"] == pytest.approx(row.abs_se)
+    assert projected["df"] == pytest.approx(row.abs_reference_df)

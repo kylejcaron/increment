@@ -33,7 +33,7 @@ def test_schema_one_golden_payload_decodes_as_lift_estimate():
     payload = json.loads(fixture.read_text())
     cell = ResultCell.from_payload(payload)
     assert cell.row_kind == "lift_estimate"
-    assert cell.to_payload()["schema_version"] == 2
+    assert cell.to_payload()["schema_version"] == 3
     assert cell.identity.key.metric == "orders"
 
 

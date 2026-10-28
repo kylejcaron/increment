@@ -195,6 +195,7 @@ class ContrastResult(CodedModel, BaseModel):
     reference_spec: UnitCycleReference | None = None
     provenance: ProspectiveAssumptionProvenance | None = None
     response_meaning: Literal["retained_total", "pre_normalized_retained_mean"] | None = None
+    value_scale: Literal["absolute"] = "absolute"
     analysis_population: Literal["assigned"] = "assigned"
     source_snapshot_id: str | None = None
     #: The declared ``Metric.type`` behind ``metric``; None when unknown (see ``LiftEstimate``).
@@ -443,8 +444,9 @@ class ContrastResults(list[ContrastResult]):
 
         def cell_identity(row):
             identity = contracts.CellIdentity.from_row(row)
-            key = identity.key.model_copy(update={"value_scale": "absolute"})
-            return identity.model_copy(update={"key": key})
+            return identity.model_copy(
+                update={"key": identity.key.model_copy(update={"value_scale": "absolute"})}
+            )
 
         stamp = created_at or datetime.now(UTC)
         return [
@@ -611,6 +613,7 @@ class ContrastResults(list[ContrastResult]):
             "reference_spec",
             "provenance",
             "response_meaning",
+            "value_scale",
             "analysis_population",
             "source_snapshot_id",
             "metric_type",

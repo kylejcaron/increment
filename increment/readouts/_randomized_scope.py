@@ -77,7 +77,144 @@ def _randomized_snapshot_id(source, request):
     return "sha256:" + sha256(canonical_json_bytes(preimage)).hexdigest()
 
 
-def _randomized_cell_record(cell, row, failure, config, snapshot_id, advisories=()):
+def _randomized_content_digest(evidence_by_metric):
+    from hashlib import sha256
+
+    import narwhals as nw
+
+    from increment._canonical import canonical_json_bytes
+
+    def input_payload(value):
+        import math
+        from collections.abc import Mapping
+        from datetime import date, datetime
+        from enum import Enum
+        from numbers import Integral, Real
+
+        from pydantic import BaseModel
+
+        if isinstance(value, BaseModel):
+            excluded = {
+                "fit",
+                "fit_state",
+                "fit_answer",
+                "method_fit_answers",
+                "coefficients",
+                "influence_references",
+                "source_identity",
+                "source_identity_hash",
+                "source_snapshot_id",
+                "study_id",
+                "experiment_id",
+                "artifact_id",
+                "generation_id",
+                "family_id",
+                "created_at",
+            }
+            payload = value.model_dump(mode="json")
+            return input_payload(
+                {key: item for key, item in payload.items() if key.lower() not in excluded}
+            )
+        if isinstance(value, Mapping):
+            return {str(key): input_payload(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            values = [input_payload(item) for item in value]
+            if values and all(isinstance(item, dict) for item in values):
+                keys = set().union(*(item.keys() for item in values))
+                return [{key: item.get(key) for key in sorted(keys)} for item in values]
+            return values
+        if isinstance(value, (set, frozenset)):
+            return sorted((input_payload(item) for item in value), key=canonical_json_bytes)
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Enum):
+            return input_payload(value.value)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, Integral):
+            number = int(value)
+            return number if -(2**53) < number < 2**53 else {"$integer": str(number)}
+        if isinstance(value, Real):
+            number = float(value)
+            if not math.isfinite(number):
+                return {"$float": number.hex() if not math.isnan(number) else "nan"}
+            return number
+        return value
+
+    from increment.estimation.readout_types import StreamingDigest
+
+    def rows_digest(rows):
+        digest = StreamingDigest()
+        for row in rows:
+            digest.update(input_payload(row))
+        return {"digest": digest.hexdigest(), "count": digest.count}
+
+    metric_inputs = []
+    for metric, evidence in sorted(evidence_by_metric.items()):
+        unit_digest = None
+        if evidence.unit_frame is not None:
+            frame = nw.from_native(evidence.unit_frame, eager_only=True)
+            unit_digest = rows_digest(frame.iter_rows(named=True))
+        method_fit_inputs = []
+        for request, answer in evidence.method_fit_answers:
+            cell = request.cell
+            if (
+                answer.origin in {"warehouse", "retained_fitted", "retained_categorical"}
+                and answer.evidence_sha256 is None
+            ):
+                return None, "method_fit_input_unavailable"
+            method_fit_inputs.append(
+                {
+                    "metric": request.metric.name,
+                    "method": input_payload(request.method.model_dump(mode="json")),
+                    "control": request.control,
+                    "arm_order": request.arm_order,
+                    "population": request.population,
+                    "cell": None
+                    if cell is None
+                    else {
+                        "breakout": {
+                            "property": cell.breakout.property,
+                            "source": cell.breakout.source,
+                        },
+                        "value": cell.value,
+                        "is_null": cell.is_null,
+                    },
+                    "input_evidence_sha256": answer.evidence_sha256,
+                }
+            )
+        metric_inputs.append(
+            {
+                "metric": metric,
+                "rows": rows_digest(evidence.rows),
+                "method_rows": [
+                    {"method": name, **rows_digest(rows)}
+                    for name, rows in sorted(evidence.method_rows)
+                ],
+                "method_fit_inputs": sorted(method_fit_inputs, key=canonical_json_bytes),
+                "unit_rows": unit_digest,
+            }
+        )
+
+    preimage = {
+        "kind": "increment.source_content",
+        "version": 1,
+        "metric_inputs": metric_inputs,
+    }
+    return "sha256:" + sha256(canonical_json_bytes(preimage)).hexdigest(), None
+
+
+def _randomized_cell_record(
+    cell,
+    row,
+    failure,
+    config,
+    snapshot_id,
+    advisories=(),
+    *,
+    source_content_digest,
+    artifact_provenance,
+):
     from increment.estimation.decision_types import PValueEvidence
     from increment.estimation.readout_types import (
         CellRecord,
@@ -118,6 +255,9 @@ def _randomized_cell_record(cell, row, failure, config, snapshot_id, advisories=
         sampling=sampling,
         posterior=posterior,
         advisories=tuple(advisories),
+        source_content_digest=source_content_digest,
+        artifact_manifest_sha256=artifact_provenance.manifest_sha256,
+        artifact_relation_digests=artifact_provenance.relation_digests,
     )
 
 
@@ -263,6 +403,7 @@ def _scoped_randomized_results(  # noqa: PLR0915
     computations,
     observed_by_metric,
     evidence_by_metric,
+    artifact_provenance,
     population,
     base_roster=None,
 ):
@@ -286,7 +427,13 @@ def _scoped_randomized_results(  # noqa: PLR0915
         for name, evidence in evidence_by_metric.items()
     }
     source = _randomized_source(selected, evidence_components, assignment_counts, population)
+    source_content_digest, source_content_digest_unavailable_reason = _randomized_content_digest(
+        evidence_by_metric
+    )
     from increment._source_identity import source_identity
+
+    artifact_manifest_sha256 = artifact_provenance.manifest_sha256
+    artifact_relation_digests = artifact_provenance.relation_digests
 
     request = {
         "view": "run",
@@ -464,7 +611,14 @@ def _scoped_randomized_results(  # noqa: PLR0915
         )
         records.append(
             _randomized_cell_record(
-                cell, row, failure, config, snapshot_id, tuple(advisories.values())
+                cell,
+                row,
+                failure,
+                config,
+                snapshot_id,
+                tuple(advisories.values()),
+                source_content_digest=source_content_digest,
+                artifact_provenance=artifact_provenance,
             )
         )
 
@@ -509,5 +663,12 @@ def _scoped_randomized_results(  # noqa: PLR0915
         by_source={snapshot_id: source_scope},
     )
     records.sort(key=lambda record: cell_order(record.cell))
-    metadata = ReadoutMetadata(scope=scope, cells=tuple(records))
+    metadata = ReadoutMetadata(
+        scope=scope,
+        cells=tuple(records),
+        source_content_digest=source_content_digest,
+        source_content_digest_unavailable_reason=source_content_digest_unavailable_reason,
+        artifact_manifest_sha256=artifact_manifest_sha256,
+        artifact_relation_digests=artifact_relation_digests,
+    )
     return LiftEstimates(output, metadata=metadata, source=source)

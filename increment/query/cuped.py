@@ -130,6 +130,67 @@ def resolved_multicovariate_request(
     )
 
 
+def method_fit_input_digest(source, method_request) -> str:
+    """Hash the raw method-fit relation with a bounded warehouse aggregate."""
+    import hashlib
+    import json
+    from typing import Any, cast
+
+    import ibis
+
+    cell = method_request.cell
+    breakout = cell.breakout if cell is not None else None
+    request = resolved_multicovariate_request(
+        source,
+        method_request.metric,
+        method_request.method,
+        control=method_request.control,
+        arm_order=method_request.arm_order,
+        population=method_request.population,
+        breakout_dimension=breakout.property if breakout is not None else None,
+        breakout_source=breakout.source if breakout is not None else None,
+        breakout_value=cell.value if cell is not None and not cell.is_null else None,
+        breakout_is_null=cell.is_null if cell is not None else False,
+    )
+    with source.cuped_relation(method_request.metric, request) as (relation, execute, _scratch):
+        columns = tuple(relation.columns)
+        schema = tuple((name, str(relation.schema()[name])) for name in columns)
+
+        def length_prefixed(value):
+            return value.length().cast("string").concat(":").concat(value)
+
+        fields = []
+        for name in columns:
+            value = relation[name]
+            marker = value.isnull().cast("string")
+            text = ibis.coalesce(value.cast("string"), ibis.literal(""))
+            fields.extend((length_prefixed(marker), length_prefixed(text)))
+        row_key = ibis.literal("").cast("string")
+        for field in fields:
+            row_key = row_key.concat(field)
+        row_hash = row_key.hash()
+        salted_hash = row_key.concat("\x1d").hash()
+        decimal_zero = ibis.literal(0).cast("decimal(38, 9)")
+        aggregate_relation = relation.aggregate(
+            hash_sum=ibis.coalesce(cast(Any, row_hash.cast("decimal(38, 9)")).sum(), decimal_zero),
+            salted_hash_sum=ibis.coalesce(
+                cast(Any, salted_hash.cast("decimal(38, 9)")).sum(), decimal_zero
+            ),
+            row_count=relation.count(),
+        )
+        aggregate = _rows(execute(aggregate_relation))[0]
+    evidence = (
+        "warehouse-method-fit-input-v1",
+        schema,
+        str(aggregate["hash_sum"]),
+        str(aggregate["salted_hash_sum"]),
+        int(aggregate["row_count"]),
+    )
+    return hashlib.sha256(
+        json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _known_cells_outcome_domain(source, metric, relation, outcomes) -> bool:
     """Check source-certified domains before considering categorical cells."""
     domain_reader = getattr(source, "cuped_outcome_domains", None)
