@@ -787,26 +787,102 @@ class _BreakoutScopedProvider:
         return EvidenceScopeResult(source(), scope)
 
 
+def _load_borrowed_breakout_slices(
+    request: BreakoutSlicesRequest,
+    *,
+    execution_context: Any,
+    fallback_source: EvidenceSource | None,
+) -> BreakoutSlices:
+    execution_context.validate_breakouts(request.breakouts)
+    with execution_context.borrow() as provider:
+        scoped_source = _builtin_source(provider)
+        available_metrics = {metric.name for metric in scoped_source.context.metrics}
+        exploratory_metrics = tuple(
+            metric for metric in request.metrics if metric.name not in available_metrics
+        )
+        if exploratory_metrics:
+            derive = getattr(scoped_source, "exploratory_source", None)
+            if callable(derive):
+                scoped_source = derive(metrics=exploratory_metrics)
+        if breakout_route(scoped_source) == UNSUPPORTED_ROUTE and fallback_source is not None:
+            readout_source = _builtin_source(fallback_source)
+            if breakout_route(readout_source) != UNSUPPORTED_ROUTE:
+                scoped_source = readout_source
+        return load_breakout_evidence(scoped_source, request)
+
+
+def _complete_breakout_request(
+    src: EvidenceSource,
+    request: BreakoutSlicesRequest | BreakoutUnitRowsRequest,
+) -> tuple[BreakoutSlicesRequest | BreakoutUnitRowsRequest, tuple[BreakoutIdentity, ...]]:
+    if not isinstance(request, BreakoutSlicesRequest):
+        return request, (request.breakout,)
+    definitions = tuple(request.breakout_definitions)
+    source = _builtin_source(src)
+    experiment = getattr(source, "_experiment", None) or getattr(
+        source, "artifact_experiment", None
+    )
+    if request.breakouts:
+        from increment.semantics.models import Breakout
+
+        declared = {BreakoutIdentity(item.property, item.source): item for item in definitions}
+        definitions = tuple(
+            declared.get(
+                identity,
+                Breakout(property=identity.property, source=identity.source),
+            )
+            for identity in request.breakouts
+        )
+        identities = request.breakouts
+    else:
+        if not definitions and experiment is not None:
+            definitions = tuple(experiment.breakouts)
+        identities = (
+            tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+            if definitions
+            else tuple(BreakoutIdentity(name, None) for name in declared_evidence(src).breakouts)
+        )
+    return (
+        replace(request, breakouts=identities, breakout_definitions=tuple(definitions)),
+        identities,
+    )
+
+
 @overload
 def load_breakout_evidence(
-    src: EvidenceSource, request: BreakoutSlicesRequest
+    src: EvidenceSource,
+    request: BreakoutSlicesRequest,
+    *,
+    execution_context: Any | None = None,
+    fallback_source: EvidenceSource | None = None,
 ) -> BreakoutSlices: ...
 
 
 @overload
 def load_breakout_evidence(
-    src: EvidenceSource, request: BreakoutUnitRowsRequest
+    src: EvidenceSource,
+    request: BreakoutUnitRowsRequest,
+    *,
+    execution_context: Any | None = None,
+    fallback_source: EvidenceSource | None = None,
 ) -> BreakoutUnitRows: ...
 def load_breakout_evidence(
-    src: EvidenceSource, request: BreakoutSlicesRequest | BreakoutUnitRowsRequest
+    src: EvidenceSource,
+    request: BreakoutSlicesRequest | BreakoutUnitRowsRequest,
+    *,
+    execution_context: Any | None = None,
+    fallback_source: EvidenceSource | None = None,
 ) -> BreakoutSlices | BreakoutUnitRows:
     """Acquire one typed breakout evidence request."""
+    request, identities = _complete_breakout_request(src, request)
     require_request_evidence(src, request)
-    if isinstance(request, BreakoutUnitRowsRequest):
-        identities = (request.breakout,)
-    else:
-        identities = request.breakouts
     require_breakout_identity(src, identities)
+    if isinstance(request, BreakoutSlicesRequest) and execution_context is not None:
+        return _load_borrowed_breakout_slices(
+            request,
+            execution_context=execution_context,
+            fallback_source=fallback_source,
+        )
     if is_custom_source(src):
         if isinstance(request, BreakoutUnitRowsRequest):
             scope = EvidenceScope(

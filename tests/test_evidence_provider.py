@@ -213,7 +213,8 @@ def test_each_builtin_arm_adapter_matches_every_declared_evidence_path(tmp_path)
             )
             scope = provider.scope(scope_request)
             assert isinstance(scope, EvidenceScopeResult)
-            assert scope.scope == scope_request
+            assert replace(scope.scope, uptake_facts=()) == scope_request
+            assert scope.scope.uptake_facts in ((), ("clicked",))
             by = source.evidence.breakouts if adapter.name == "breakout_moments" else ()
             moments_request = MomentsRequest(metric, grain=grain, by=by, population=population)
             expected = provider.moments(moments_request)
@@ -1546,7 +1547,7 @@ def test_custom_readouts_scope_day_axis_and_each_breakout_source() -> None:
         request_evidence(
             provider,
             BreakoutSlicesRequest(
-                (first_identity, second_identity), (metric,), configs=(object(),)
+                (first_identity, second_identity), metrics=(metric,), configs=(object(),)
             ),
         ),
     )
@@ -3178,7 +3179,7 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
             Any,
             request_evidence(
                 provider,
-                BreakoutSlicesRequest((web_identity,), source.context.metrics),
+                BreakoutSlicesRequest((web_identity,), metrics=source.context.metrics),
             ),
         )
         web_slice = slices.slices[0]

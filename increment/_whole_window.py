@@ -213,7 +213,11 @@ class WholeWindowReadouts:
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
 
-    def run(self, req: WholeWindowRequest) -> LiftEstimates:
+    def run(
+        self,
+        req: WholeWindowRequest,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> LiftEstimates:
         route = day_axis_route(self._src)
         validate_whole_window(
             req,
@@ -262,6 +266,16 @@ class WholeWindowReadouts:
             from increment.breakout.estimates import LiftEstimates
 
             return LiftEstimates()
+        if execution_context is not None:
+            if (
+                route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+                and self._experiment is not None
+                and self._experiment.trigger is not None
+                and req.population in (None, "triggered")
+            ):
+                with execution_context.borrow() as provider:
+                    self._validate_trigger(_builtin_source(provider))
+            return self._run_seam_family(req, execution_context)
         if (
             not is_custom_source(self._src)
             and req.population in (None, "triggered")
@@ -342,8 +356,12 @@ class WholeWindowReadouts:
                     estimands=req.estimands,
                     value_scale=req.value_scale,
                     population=population,
-                    coherence=req.coherence,
                     execution_context=execution_context,
+                    coherence=(
+                        req.coherence
+                        if execution_context is None
+                        else execution_context.requested_coherence
+                    ),
                 )
             )
 

@@ -33,6 +33,7 @@ from increment._cuped_evidence import (
     portable_cuped_rows,
     portable_requests,
 )
+from increment._evidence_types import BreakoutIdentity, EvidenceScope
 from increment._frame_validation import (
     COVARIATE_COLUMN_MISSING as _NATIVE_COVARIATE_MISSING,
 )
@@ -570,6 +571,94 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         events = self._build_events_table_for_exposure(self._experiment.exposure, dim_joined=False)
         return events.select("unit_id", "experiment_id").distinct()
 
+    def capture_requirements(self, requests: Sequence[EvidenceScope]) -> EvidenceScope:
+        """Derive pinned streams from the builders selected by a readout batch."""
+        metrics_by_name = {
+            metric.name: metric for request in requests for metric in request.metrics
+        }
+        configs_list: list[ResolvedMetricConfig] = []
+        for request in requests:
+            for config in request.configs or ():
+                if config not in configs_list:
+                    configs_list.append(config)
+        metrics = tuple(metrics_by_name.values())
+        configs = tuple(configs_list)
+        breakouts: list[BreakoutIdentity] = []
+        for request in requests:
+            if request.breakouts:
+                selected = request.breakouts
+            elif not request.include_breakouts:
+                continue
+            elif request.dimension is not None:
+                selected = tuple(
+                    BreakoutIdentity(item.property, item.source)
+                    for item in self._experiment.breakouts
+                    if item.property == request.dimension
+                )
+            else:
+                selected = tuple(
+                    BreakoutIdentity(item.property, item.source)
+                    for item in self._experiment.breakouts
+                )
+            breakouts.extend(selected)
+        breakouts = list(dict.fromkeys(breakouts))
+        uptake_facts = list(
+            dict.fromkeys(fact for request in requests for fact in request.uptake_facts)
+        )
+        design = self._context.design
+        if isinstance(design, Encouragement) and design.uptake is not None:
+            if any(
+                request.grain in {"total", "daily"}
+                or (
+                    request.grain == "asof"
+                    and (
+                        request.estimands is None
+                        or bool({"compliance", "late"}.intersection(request.estimands))
+                    )
+                )
+                for request in requests
+            ):
+                if design.uptake.fact not in uptake_facts:
+                    uptake_facts.append(design.uptake.fact)
+        grains = {request.grain for request in requests}
+        grain = next(
+            (candidate for candidate in ("asof", "daily", "total") if candidate in grains), None
+        )
+        return EvidenceScope(
+            metrics=metrics,
+            population=requests[0].population if requests else "assigned",
+            grain=grain,
+            dimension=next(
+                (request.dimension for request in requests if request.dimension is not None), None
+            ),
+            estimands=next(
+                (request.estimands for request in requests if request.estimands is not None), None
+            ),
+            breakouts=tuple(breakouts),
+            configs=configs if any(request.configs is not None for request in requests) else None,
+            uptake_facts=tuple(uptake_facts),
+            snapshot=any(request.snapshot for request in requests),
+            execution=any(request.execution for request in requests),
+            include_breakouts=any(request.include_breakouts for request in requests),
+        )
+
+    def evidence_scope_breakout_streams(
+        self, scope: EvidenceScope
+    ) -> Mapping[BreakoutIdentity, str]:
+        """Resolve each selected breakout to its captured fact-source stream."""
+        bindings = {}
+        for breakout in scope.breakouts:
+            try:
+                source = _resolve_breakout_fact_source(
+                    self._defs,
+                    self._experiment,
+                    Breakout(property=breakout.property, source=breakout.source),
+                )
+            except CodedError:
+                continue
+            bindings[breakout] = source.name
+        return bindings
+
     def evidence_scope_streams(self, scope: Any) -> Mapping[str, str]:
         tables = self._session._source_tables
         fact_names = set(scope.uptake_facts)
@@ -981,6 +1070,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        breakouts: Sequence[BreakoutIdentity] = (),
         configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
@@ -989,6 +1079,21 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         segment or dimensioned readout of the pinned source reads the same execution snapshot
         as the headline instead of failing on, or silently re-reading, an unpinned stream.
         """
+        selected_breakouts = tuple(
+            Breakout(property=item.property, source=item.source) for item in breakouts
+        )
+        extra_sources = (
+            tuple(
+                dict.fromkeys(
+                    _resolve_breakout_fact_source(self._defs, self._experiment, item).name
+                    for item in selected_breakouts
+                )
+            )
+            if breakouts
+            else self._declared_breakout_sources()
+            if include_breakouts
+            else ()
+        )
         use_shared_horizon = (
             bool(metrics)
             and self._experiment.observation_horizon is None
@@ -1004,7 +1109,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         with self._pinned_source_execution(
             metrics=metrics,
             uptake_facts=uptake_facts,
-            extra_sources=self._declared_breakout_sources() if include_breakouts else (),
+            extra_sources=extra_sources,
             configs=configs,
             snapshot_horizon_relation=snapshot_horizon_relation,
         ) as pinned:

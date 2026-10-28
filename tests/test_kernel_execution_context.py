@@ -298,3 +298,35 @@ def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
         ).fetchall()
         assert after == before
         analysis.close()
+
+
+@pytest.mark.integration
+def test_captured_context_refuses_when_its_pinned_stream_disappears(tmp_path):
+    from increment import EvidenceScope, evidence_provider
+    from tests.analysis_factory import held_source
+    from tests.source_conformance import _clear_captured_source_tables, definitions_source
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    context = EvidenceExecutionContext(
+        evidence_provider(source),
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+        ),
+        run_id="lost-capture",
+    )
+    try:
+        context.open()
+        assert context.snapshot_manifest
+        with context.borrow() as pinned:
+            _clear_captured_source_tables(pinned)
+        with pytest.raises(CodedError) as refused:
+            with context.borrow():
+                pass
+        assert refused.value.code == "kernel.snapshot.integrity"
+        assert refused.value.context["stream"] == "events"
+        assert refused.value.context["snapshot_id"] == context.snapshot_manifest["events"]
+    finally:
+        context.close()
+        analysis.close()

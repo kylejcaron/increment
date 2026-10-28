@@ -228,6 +228,7 @@ def test_native_encouragement_declaration_runs_and_matches_dataframe_oracle(
 
 
 def test_native_encouragement_day_source_declares_working_compliance_axis(con, tmp_path):
+
     from tests.analysis_factory import held_source
 
     _seed(con)
@@ -273,6 +274,45 @@ def test_native_encouragement_day_source_declares_working_compliance_axis(con, t
         assert triggered_day.evidence.populations == frozenset({"triggered"})
         assert triggered_day.compliance_summary(source.context.design, as_of=dates[0]) == summary
         assert analysis.run_asof_lift(estimands=("compliance",))
+    finally:
+        analysis.close()
+
+
+def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
+    _seed(con)
+    events = con.table("native_encouragement_events")
+    con.create_table("native_encouragement_outcomes", events.filter(events.event != "clicked"))
+    con.create_table("native_encouragement_uptake", events.filter(events.event == "clicked"))
+    defs = _encouragement_defs()
+    defs["fact_sources"][0]["sql"] = (
+        "select *, case when cast(substr(user_id, 2) as integer) % 2 = 0 "
+        "then 'mobile' else 'desktop' end as device_type "
+        "from native_encouragement_outcomes"
+    )
+    defs["fact_sources"][0]["facts"] = [
+        fact for fact in defs["fact_sources"][0]["facts"] if fact["name"] != "clicked"
+    ]
+    defs["fact_sources"].append(
+        {
+            "name": "uptake_events",
+            "sql": "select * from native_encouragement_uptake",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "clicked", "column": None}],
+        }
+    )
+    defs["fact_sources"][0]["properties"] = [
+        {"name": "device", "column": "device_type", "dtype": "string", "as_of": "static"}
+    ]
+    defs["experiments"][0]["breakouts"] = [{"property": "device", "source": "events"}]
+    analysis = Analysis.from_definitions(
+        "native_encouragement_exp", _write_defs_yaml(defs, tmp_path), con, store="none"
+    )
+    try:
+        assert len(analysis.run_daily()) == 14
+        assert len(analysis.run_asof()) == 62
+        assert analysis.run_breakout(metrics=["revenue"])
+        assert len(analysis.run_asof_lift(estimands=("itt",))) == 31
     finally:
         analysis.close()
 

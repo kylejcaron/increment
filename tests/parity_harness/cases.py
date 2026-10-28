@@ -153,6 +153,7 @@ class ParityCase:
     # show at least one selected and one unselected row.
     require_selection: bool = False
     decision_method: Any | None = None
+    moment_input_rows: Callable[[], list[dict[str, Any]]] | None = None
     readout_probe: Callable[[Any], None] | None = None
     source_probe: Callable[[str, Analysis], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -1041,8 +1042,7 @@ def _fixed_horizon_case(
         prior=None if clear_bound_prior else prior,
         require_selection=clear_bound_prior,
         readout_probe=_assert_neighboring_ratio_rows if ratio_numerics == "neighboring" else None,
-        # Publishing, adopting and replaying an artifact on every run stays under
-        # 2s, far above this module's ~40ms ordinary-case budget.
+        moment_input_rows=partial(_export_factory_rows_and_close, build_unit_summary),
         slow=True,
     )
 
@@ -4391,6 +4391,13 @@ def _retention_breakout_cohorts_case(
     def replay() -> Analysis:
         return _export_and_replay(native(), [metric])
 
+    def moment_input_rows() -> list[dict[str, Any]]:
+        source = native()
+        try:
+            return _export_rows(source)
+        finally:
+            _close_parity_analysis(source)
+
     def probe(results: Any) -> None:
         assert {(row.metric, row.dimension_value) for row in results} == {
             ("d7_retention", store) for store in stores
@@ -4448,6 +4455,7 @@ def _retention_breakout_cohorts_case(
         breakout_dimension="store",
         readout_probe=probe,
         source_probe=source_probe,
+        moment_input_rows=moment_input_rows,
         slow=True,
     )
 
@@ -7285,11 +7293,16 @@ def _exploratory_metrics_case() -> ParityCase:
     switchback ingress builds no case-wide fixture, so its refusal is probed beside the
     native one."""
 
-    def refused(analysis: Analysis) -> None:
-        for read in _EXPLORATORY_READS.values():
+    def refused(analysis: Analysis, *, switchback: bool = False) -> None:
+        for name, read in _EXPLORATORY_READS.items():
             with pytest.raises(CodedError) as caught:
                 read(analysis, ["purchase_rate"])
-            assert caught.value.code == _EXPLORATORY_SOURCE_LIMITED
+            expected_code = (
+                "facade.analysis.contrast_unavailable"
+                if switchback and name == "run_breakout"
+                else _EXPLORATORY_SOURCE_LIMITED
+            )
+            assert caught.value.code == expected_code
         with pytest.raises(CodedError) as caught:
             analysis.available_metrics  # noqa: B018
         assert caught.value.code == _EXPLORATORY_SOURCE_LIMITED
@@ -7298,7 +7311,7 @@ def _exploratory_metrics_case() -> ParityCase:
         if path != "from_definitions":
             refused(analysis)
             return
-        refused(_neighboring_integer_switchback_analysis())
+        refused(_neighboring_integer_switchback_analysis(), switchback=True)
         revenue = [metric for metric in analysis.metrics if metric.name == "revenue"]
         narrowed = make_analysis_like(
             analysis,
@@ -8386,6 +8399,19 @@ def _export_rows(analysis: Analysis) -> list[dict[str, Any]]:
         path = Path(td) / "moments.parquet"
         analysis.export(path)
         return pq.read_table(path).to_pylist()
+
+
+def _export_rows_and_close(analysis: Analysis) -> list[dict[str, Any]]:
+    try:
+        return _export_rows(analysis)
+    finally:
+        _close_parity_analysis(analysis)
+
+
+def _export_factory_rows_and_close(
+    factory: Callable[[], Analysis],
+) -> list[dict[str, Any]]:
+    return _export_rows_and_close(factory())
 
 
 def _export_counts_and_replay(

@@ -2376,12 +2376,15 @@ def test_triggered_experiment_day_axis_readouts_retain_population_identity(
 ):
     analysis = _analysis(tmp_path, _events(n_per_arm=100))
     try:
-        rows = getattr(analysis, method_name)(population=population)
+        rows = getattr(analysis, method_name)(population=population, coherence="captured")
         assert rows
         assert {row.analysis_population for row in rows} == {population}
         assert rows.metadata is not None
         assert rows.metadata.scope.populations == (population,)
         assert {cell.analysis_population for cell in rows.metadata.scope.cells} == {population}
+        assert rows.metadata.coherence == "captured"
+        assert rows.metadata.effective_modes
+        assert set(rows.metadata.effective_modes.values()) == {"captured"}
         frame_rows = rows.to_frame(backend="pyarrow").to_pylist()
         assert {row["analysis_population"] for row in frame_rows} == {population}
         from increment.estimation.readout_types import ReadoutResults

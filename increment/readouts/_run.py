@@ -250,7 +250,9 @@ def run(
 
         result._metadata = result.metadata.model_copy(
             update={
-                "coherence": context.coherence,
+                "coherence": (
+                    None if "provider" in context.effective_modes.values() else context.coherence
+                ),
                 "effective_modes": _FrozenMapping(context.effective_modes),
             }
         )

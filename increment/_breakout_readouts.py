@@ -55,9 +55,20 @@ class BreakoutRequest:
 
 
 class BreakoutReadouts:
-    def __init__(self, *, src: _BuiltinMomentSource, experiment: Experiment | None) -> None:
+    def __init__(
+        self,
+        *,
+        src: _BuiltinMomentSource,
+        experiment: Experiment | None,
+        execution_context=None,
+        scope_source: _BuiltinMomentSource | None = None,
+        analysis: object | None = None,
+    ) -> None:
         self._src = src
+        self._scope_source = src if scope_source is None else scope_source
         self._experiment = experiment
+        self._execution_context = execution_context
+        self._analysis = analysis
 
     def _configs(self, req: BreakoutRequest) -> tuple[ResolvedMetricConfig, ...]:
         return tuple(
@@ -73,29 +84,43 @@ class BreakoutReadouts:
         )
 
     def _slices(self, req: BreakoutRequest) -> Iterator[BreakoutSlice]:
-        breakouts = self._experiment.breakouts if self._experiment is not None else ()
-        if breakouts:
-            identities = tuple(BreakoutIdentity(item.property, item.source) for item in breakouts)
-        else:
-            from increment.evidence import evidence_provider
+        definitions = () if self._experiment is None else tuple(self._experiment.breakouts)
+        identities = tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+        if not identities:
+            from increment._source_types import declared_evidence
 
             identities = tuple(
-                BreakoutIdentity(dimension, None)
-                for dimension in evidence_provider(self._src).evidence.breakouts
+                BreakoutIdentity(name, None) for name in declared_evidence(self._src).breakouts
             )
-        if not identities:
-            return iter(())
+        request = BreakoutSlicesRequest(
+            breakouts=identities,
+            metrics=req.metrics,
+            population=req.population,
+            configs=self._configs(req),
+            breakout_definitions=definitions,
+        )
         evidence = load_breakout_evidence(
             _builtin_source(self._src),
-            BreakoutSlicesRequest(
-                breakouts=identities,
-                breakout_definitions=tuple(breakouts),
-                metrics=req.metrics,
-                population=req.population,
-                configs=self._configs(req),
-            ),
+            request,
+            execution_context=self._execution_context,
+            fallback_source=self._src if self._execution_context is not None else None,
         )
         return iter(evidence.slices)
+
+    def _stamp_execution_context(self, rows):
+        if rows.metadata is None or self._execution_context is None:
+            return rows
+        from increment._immutable import _FrozenMapping
+
+        modes = self._execution_context.effective_modes
+        coherence = None if "provider" in modes.values() else self._execution_context.coherence
+        rows._metadata = rows.metadata.model_copy(
+            update={
+                "coherence": coherence,
+                "effective_modes": _FrozenMapping(modes),
+            }
+        )
+        return rows
 
     def validate_populations(
         self,
@@ -175,6 +200,39 @@ class BreakoutReadouts:
             population=req.population,
         )
 
+    def _run_owned_context(self, req: BreakoutRequest) -> BreakoutEstimates:
+        from increment.readouts._line2 import owned_execution_context
+
+        if self._experiment is not None:
+            identities = tuple(
+                BreakoutIdentity(item.property, item.source) for item in self._experiment.breakouts
+            )
+        else:
+            from increment._source_types import declared_evidence
+
+            identities = tuple(
+                BreakoutIdentity(name, None)
+                for name in declared_evidence(self._scope_source).breakouts
+            )
+        scope = EvidenceScope(
+            metrics=tuple(req.metrics),
+            population=breakout_snapshot_population(self._scope_source, req.population),
+            configs=self._configs(req),
+            grain="total",
+            breakouts=identities,
+            snapshot=True,
+            execution=True,
+            include_breakouts=True,
+        )
+        with owned_execution_context(self._analysis, scope) as context:
+            return BreakoutReadouts(
+                src=self._src,
+                experiment=self._experiment,
+                execution_context=context,
+                scope_source=self._scope_source,
+                analysis=self._analysis,
+            ).run(req)
+
     def run(self, req: BreakoutRequest) -> BreakoutEstimates:
         from increment.breakout.estimates import BreakoutEstimates
 
@@ -206,6 +264,12 @@ class BreakoutReadouts:
                 q=req.q,
                 analysis_population=req.population,
             )
+        if self._execution_context is not None:
+            self._execution_context.validate_request(
+                self._scope_source,
+                req.metrics,
+                self._configs(req),
+            )
         route = breakout_route(self._src)
         if route == UNSUPPORTED_ROUTE:
             from increment._evidence_refusals import refuse_breakout
@@ -224,9 +288,8 @@ class BreakoutReadouts:
                 route="use a source with the requested breakout dimensions",
             )
         custom = serves_custom_breakouts(self._src)
-        if route in (ARTIFACT_ROUTE, NATIVE_ROUTE):
-            assert self._experiment is not None
-            if not self._experiment.breakouts or not req.metrics:
+        if route in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE) and not custom:
+            if not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
         elif custom:
@@ -234,7 +297,16 @@ class BreakoutReadouts:
             if not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
+        if (
+            self._execution_context is None
+            and route in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE)
+            and not custom
+            and req.population != "triggered"
+        ):
+            return self._run_owned_context(req)
         if route == NATIVE_ROUTE or custom:
+            if self._execution_context is not None:
+                return self._stamp_execution_context(self._run_slices(req, route))
             with evidence_scope(
                 self._src,
                 EvidenceScope(
@@ -242,15 +314,17 @@ class BreakoutReadouts:
                     # The snapshot pins one data version; each slice selects its population.
                     population=breakout_snapshot_population(self._src, req.population),
                     configs=self._configs(req),
+                    grain="total",
                     snapshot=True,
                     include_breakouts=True,
                 ),
             ) as pinned:
-                return BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
+                rows = BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
                     req, route
                 )
+                return self._stamp_execution_context(rows)
 
-        return self._run_slices(req, route)
+        return self._stamp_execution_context(self._run_slices(req, route))
 
     def _run_slices(self, req: BreakoutRequest, route: BreakoutRoute) -> BreakoutEstimates:
         from increment.breakout.estimates import BreakoutEstimates

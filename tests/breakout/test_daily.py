@@ -1474,6 +1474,64 @@ class TestRunDailyLiftAlwaysValidInference:
         assert raised.value.code == "sequential.route.unsupported"
 
 
+def test_segmented_sequential_daily_lift_preserves_source_through_restore():
+    import pickle
+
+    from increment import AlwaysValid, SequentialCell, SequentialModel, SequentialRegistration
+    from increment.breakout.estimates import run_daily_lift
+    from tests.sequential_cases import capture, records
+    from tests.sequential_cases import registration as make_registration
+
+    base = make_registration("bernoulli")
+    model = SequentialModel.model_validate({**base.models[0].model_dump(), "metric": "revenue"})
+    roster = tuple(
+        SequentialCell(
+            metric="revenue",
+            group_id="treatment",
+            segment=(("country", country),),
+            family=True,
+        )
+        for country in ("CA", "US")
+    )
+    registration = SequentialRegistration.model_validate(
+        {**base.model_dump(), "models": (model,), "roster": roster}
+    )
+
+    def segment_records(country, offset):
+        return [
+            {
+                **row,
+                "values": {"revenue": row["values"]["revenue"]},
+            }
+            for row in records(
+                [0, 1] * 200,
+                [1, 1] * 200,
+                offset=offset,
+                extra=("revenue",),
+                segments={"country": country},
+            )
+        ]
+
+    snapshot = capture(
+        registration,
+        [*segment_records("US", 0), *segment_records("CA", 400)],
+    ).model_copy(update={"reveal_cursor": date(2025, 1, 1)})
+    rows = run_daily_lift(
+        snapshot,
+        [_conversion_metric("revenue")],
+        control_group="control",
+        dimension="country",
+        source="events",
+        view="asof",
+        inference=AlwaysValid(registration=registration),
+    )
+
+    assert rows
+    assert {row.source for row in rows} == {"events"}
+    restored = pickle.loads(pickle.dumps(rows))
+    assert {row.source for row in restored} == {"events"}
+
+
 # DailyLiftEstimate model (mirrors TestBreakoutEstimate)
 
 

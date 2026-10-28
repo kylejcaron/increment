@@ -555,8 +555,18 @@ def _breakout_impl(
     selected = request.metrics
     resolved_configs = request.configs
     configs = {config.metric.name: config for config in resolved_configs}
+    from increment._evidence_types import BreakoutIdentity
     from increment._source_identity import source_identity
+    from increment.kernel.contracts import Scope
     from increment.readouts._design_scope import _config_snapshot
+
+    segment = BreakoutIdentity(dimension, source_name)
+    operation_scope = Scope(
+        view="breakout",
+        grain="total",
+        population=analysis_population,
+        segment=segment,
+    )
 
     methods_by_metric = {
         config.metric.name: _runtime_methods(config, design) for config in resolved_configs
@@ -580,12 +590,12 @@ def _breakout_impl(
             _config_snapshot(config, design)
             for config in sorted(resolved_configs, key=lambda c: c.metric.name)
         ],
-        "dimension": dimension,
+        "dimension": segment.property,
         "estimands": None if estimands is None else tuple(estimands),
         "correction": correction,
         "q": q,
-        "source_name": source_name,
-        "analysis_population": analysis_population,
+        "source_name": segment.source,
+        "analysis_population": operation_scope.population,
     }
 
     def scoped(rows, *, sequential_snapshot=None):

@@ -134,6 +134,7 @@ increment.readouts._daily
 increment.readouts._design_scope
 increment.readouts._encouragement
 increment.readouts._evidence
+increment.readouts._line2
 increment.readouts._metric_rows
 increment.readouts._metric_type
 increment.readouts._multiplicity_scope

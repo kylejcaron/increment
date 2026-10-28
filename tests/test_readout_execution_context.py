@@ -84,8 +84,8 @@ def test_live_mode_includes_sql_exposure_streams(tmp_path):
 @pytest.mark.integration
 def test_mutable_sql_panel_is_not_reported_as_captured():
     from increment import EvidenceScope
+    from increment.evidence import evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
     from tests.source_conformance import sql_totals_source
 
     source = sql_totals_source()
@@ -93,7 +93,7 @@ def test_mutable_sql_panel_is_not_reported_as_captured():
     con.create_table("mutable_summary", obj=con.to_pyarrow(source._summary))
     source._summary = con.table("mutable_summary")
     context = EvidenceExecutionContext(
-        native_scope_provider(source),
+        evidence_provider(source),
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
@@ -117,15 +117,14 @@ def test_mutable_sql_panel_is_not_reported_as_captured():
 @pytest.mark.integration
 def test_native_scope_provider_yields_typed_pinned_provider():
     from increment import EvidenceScope
-    from increment.evidence import MomentsRequest, request_evidence
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
     from tests.source_conformance import sql_totals_source
 
     source = sql_totals_source()
     metric = source.context.metrics[0]
     context = EvidenceExecutionContext(
-        native_scope_provider(source),
+        evidence_provider(source),
         EvidenceScope(
             metrics=(metric,),
             configs=tuple(source.context.configs),
@@ -145,13 +144,13 @@ def test_native_scope_provider_yields_typed_pinned_provider():
 @pytest.mark.integration
 def test_in_memory_moments_are_captured_without_snapshot_operation():
     from increment import EvidenceScope
+    from increment.evidence import evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
     from tests.source_conformance import moments_source
 
     source = moments_source()
     context = EvidenceExecutionContext(
-        native_scope_provider(source),
+        evidence_provider(source),
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
@@ -586,6 +585,29 @@ def test_collection_concat_preserves_and_checks_coherence_metadata(tmp_path):
 
 
 @pytest.mark.integration
+def test_daily_and_asof_collections_keep_distinct_scope_identity_and_mode(tmp_path):
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    try:
+        daily = analysis.run_daily()
+        asof = analysis.run_asof()
+        assert daily and asof
+        assert daily.metadata is not None
+        assert asof.metadata is not None
+        assert daily.metadata.coherence == "captured"
+        assert asof.metadata.coherence == "captured"
+        assert (
+            daily.metadata.cells[0].source_snapshot_id != asof.metadata.cells[0].source_snapshot_id
+        )
+        daily_identities = {cell.identity for cell in daily.as_cells()}
+        asof_identities = {cell.identity for cell in asof.as_cells()}
+        assert daily_identities.isdisjoint(asof_identities)
+        assert {identity.scope.view for identity in daily_identities} == {"daily"}
+        assert {identity.scope.view for identity in asof_identities} == {"asof"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_artifact_run_remains_captured_when_live_is_requested(tmp_path):
     from tests.source_conformance import unit_day_artifact_analysis
 
@@ -624,7 +646,179 @@ def test_artifact_run_remains_captured_when_live_is_requested(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("view", ("daily", "asof"))
+def test_artifact_day_axis_keeps_captured_metadata(tmp_path, view):
+    from tests.source_conformance import unit_day_artifact_analysis
+
+    analysis = unit_day_artifact_analysis(tmp_path)
+    try:
+        collection = analysis.run_daily() if view == "daily" else analysis.run_asof()
+        assert collection.metadata is not None
+        assert collection.metadata.coherence == "captured"
+        assert collection.metadata.effective_modes
+        assert set(collection.metadata.effective_modes.values()) == {"captured"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_artifact_public_run_keeps_captured_metadata_when_live_is_requested(tmp_path):
+    from tests.analysis_factory import held_source
+    from tests.source_conformance import unit_day_artifact_analysis
+
+    analysis = unit_day_artifact_analysis(tmp_path)
+    try:
+        collection = run(cast(Any, held_source(analysis)), coherence="live")
+        assert collection.metadata is not None
+        assert collection.metadata.coherence == "captured"
+        assert collection.metadata.effective_modes
+        assert set(collection.metadata.effective_modes.values()) == {"captured"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_clustered_day_axis_refuses_before_opening_context(tmp_path, monkeypatch):
+    from increment.errors import CodedError
+
+    analysis, _ = definitions_source(tmp_path, cluster=True, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    original = source.readout_snapshot
+    reads = 0
+
+    def count_snapshot(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source, "readout_snapshot", count_snapshot)
+    try:
+        with pytest.raises(CodedError):
+            analysis.run_daily()
+        assert reads == 0
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("operation", ("run_daily", "run_asof"))
+def test_standalone_value_read_skips_separately_sourced_cuped_covariate(
+    tmp_path, monkeypatch, operation
+):
+    import datetime as dt
+
+    import yaml
+
+    from increment import Analysis
+    from tests.covariate_cases import categorical_defs_and_con
+
+    path, con, units = categorical_defs_and_con(tmp_path)
+    definitions = yaml.safe_load(path.read_text())
+    experiment = definitions["experiments"][0]
+    experiment.pop("design")
+    experiment["n_pre_periods"] = 14
+    experiment["plan"] = {
+        "primary": {
+            "metric": "revenue",
+            "decision_method": {
+                "name": "linear",
+                "variance_reduction": "cuped_multicovariate",
+                "covariates": [
+                    {
+                        "name": "region",
+                        "kind": "categorical",
+                        "property": "region",
+                        "source": "profiles",
+                    }
+                ],
+            },
+        }
+    }
+    definitions["fact_sources"].append(
+        {
+            "name": "profiles",
+            "sql": "SELECT * FROM profiles",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "profile", "column": None}],
+            "properties": [
+                {"name": "region", "column": "region", "dtype": "string", "as_of": "pre_exposure"}
+            ],
+        }
+    )
+    con.create_table(
+        "profiles",
+        obj=[
+            {
+                "user_id": unit,
+                "ts": dt.datetime(2025, 7, 20),
+                "region": values["region"],
+                "event": "profile",
+            }
+            for unit, values in units.items()
+        ],
+    )
+    path.write_text(yaml.safe_dump(definitions))
+    analysis = Analysis.from_definitions("cat_test", path, con, store="none")
+    source = cast(Any, held_source(analysis))
+    original = source._get_fact_table
+    source_reads: list[str] = []
+
+    def count_source(fact_source):
+        source_reads.append(fact_source.name)
+        return original(fact_source)
+
+    monkeypatch.setattr(source, "_get_fact_table", count_source)
+    con.drop_table("profiles")
+    try:
+        rows = getattr(analysis, operation)(metrics=["revenue"])
+        assert rows
+        assert "profiles" not in source_reads
+        assert rows.metadata is not None
+        assert "profiles" not in rows.metadata.effective_modes
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_public_breakout_override_does_not_change_sibling_daily_lift():
+    from increment import Method
+    from tests.parity_harness.cases import PARITY_CASES
+
+    case = next(case for case in PARITY_CASES if case.id == "breakout_store_dimension")
+    analysis = case.build["from_definitions"]()
+    try:
+        breakout = analysis.run_breakout(
+            metrics=("revenue_cuped",),
+            decision_method=Method.unadjusted(name="breakout-unadjusted"),
+        )
+        daily_lift = analysis.run_daily_lift(metrics=("revenue_cuped",))
+        assert breakout
+        assert daily_lift
+        assert "breakout-unadjusted" in {row.method for row in breakout}
+        assert "breakout-unadjusted" not in {row.method for row in daily_lift}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_standalone_frame_panel_readouts_own_mode_metadata():
+    from tests.source_conformance import frame_panel_analysis
+
+    analysis = frame_panel_analysis()
+    try:
+        for operation in ("run_daily", "run_daily_lift", "run_asof_lift", "run_breakout"):
+            rows = getattr(analysis, operation)()
+            assert rows
+            assert rows.metadata is not None
+            assert rows.metadata.effective_modes
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_compliance_only_read_uses_borrowed_context():
+
     from increment import EvidenceScope
     from increment.evidence import evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
@@ -654,6 +848,22 @@ def test_compliance_only_read_uses_borrowed_context():
 
 
 @pytest.mark.integration
+def test_custom_provider_keeps_provider_qualification_under_captured_request():
+    from tests.test_readouts_encouragement import METRIC, FakeMomentSource, _design, _rows
+
+    source = FakeMomentSource(
+        _rows(n=100),
+        metrics=[METRIC],
+        capabilities={"total"},
+        design=_design(),
+    )
+    rows = run(source, coherence="captured")
+    assert rows.metadata is not None
+    assert rows.metadata.coherence is None
+    assert set(rows.metadata.effective_modes.values()) == {"provider"}
+
+
+@pytest.mark.integration
 def test_whole_window_captures_call_time_method_overrides(tmp_path):
     from increment import Method
 
@@ -667,38 +877,6 @@ def test_whole_window_captures_call_time_method_overrides(tmp_path):
 
 
 @pytest.mark.integration
-def test_trigger_validation_uses_the_pinned_whole_window_source(tmp_path, monkeypatch):
-    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
-    validated_sources = []
-    acquired_sources = []
-    original = analysis._validate_trigger_fires_in_every_arm
-    from increment.readouts import _evidence
-
-    original_load_counts = _evidence.load_counts
-
-    def load_counts(source, request):
-        acquired_sources.append((source, request))
-        return original_load_counts(source, request)
-
-    def validate(source=None):
-        validated_sources.append(source)
-        return original() if source is None else original(source)
-
-    monkeypatch.setattr(_evidence, "load_counts", load_counts)
-    monkeypatch.setattr(analysis, "_validate_trigger_fires_in_every_arm", validate)
-    try:
-        rows = analysis.run()
-        assert rows
-        assert len(validated_sources) == 1
-        pinned = validated_sources[0]
-        assert pinned is not None
-        assert pinned is not held_source(analysis)
-        assert [request.population for _, request in acquired_sources] == ["assigned", "triggered"]
-        assert all(source is pinned for source, _ in acquired_sources)
-    finally:
-        analysis.close()
-
-
 @pytest.mark.integration
 def test_custom_provider_forwarding_artifact_has_no_capture_guarantee(tmp_path):
     from increment.evidence import EvidenceProvider, evidence_provider
@@ -775,8 +953,8 @@ def test_custom_provider_forwarding_artifact_has_no_capture_guarantee(tmp_path):
 @pytest.mark.integration
 def test_triggered_native_wrapper_preserves_physical_stream_inventory(tmp_path):
     from increment import EvidenceScope
+    from increment.evidence import evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
     from tests.analysis_factory import held_source
 
     analysis, _ = definitions_source(
@@ -785,7 +963,7 @@ def test_triggered_native_wrapper_preserves_physical_stream_inventory(tmp_path):
     source = cast(Any, held_source(analysis))
     triggered = source.triggered_source()
     context = EvidenceExecutionContext(
-        native_scope_provider(triggered),
+        evidence_provider(triggered),
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
@@ -903,14 +1081,49 @@ def test_analysis_run_exposes_live_coherence_when_temp_tables_are_denied(tmp_pat
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("coherence", ("captured", "live"))
+def test_native_scope_result_binds_breakout_to_captured_source(tmp_path, coherence):
+    from increment import BreakoutIdentity, EvidenceScope
+    from increment.evidence import evidence_provider
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    identity = BreakoutIdentity("country", None)
+    try:
+        scope = EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+            breakouts=(identity,),
+            snapshot=True,
+            execution=True,
+        )
+        owner = evidence_provider(source)
+        result = owner.scope(scope)
+        assert result.breakout_streams == {identity: "events"}
+
+        from increment.kernel.context import EvidenceExecutionContext
+
+        context = EvidenceExecutionContext(
+            owner, scope, run_id="typed-breakout-binding", coherence=coherence
+        )
+        context.open()
+        try:
+            context.validate_breakouts((identity,))
+        finally:
+            context.close()
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_frame_panel_context_snapshots_mutable_pandas_panel():
     import narwhals as nw
     import pandas as pd
 
     from increment import Analysis, EvidenceScope
+    from increment.evidence import evidence_provider
     from increment.frame import FramePanelSource
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
     from tests.analysis_factory import held_source
 
     frame = pd.DataFrame(
@@ -950,7 +1163,7 @@ def test_frame_panel_context_snapshots_mutable_pandas_panel():
         unit_column="unit_id",
     )
     context = EvidenceExecutionContext(
-        native_scope_provider(source),
+        evidence_provider(source),
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
@@ -971,14 +1184,55 @@ def test_frame_panel_context_snapshots_mutable_pandas_panel():
 
 
 @pytest.mark.integration
+def test_undeclared_breakout_dimension_refuses_before_the_read(tmp_path, monkeypatch):
+    from increment import EvidenceScope
+    from increment.errors import CodedError
+    from increment.evidence import evidence_provider
+    from increment.kernel.context import EvidenceExecutionContext
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    owner = evidence_provider(source)
+    context = EvidenceExecutionContext(
+        owner,
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+            breakouts=(),
+            execution=True,
+        ),
+        run_id="undeclared-breakout",
+    )
+    captures = 0
+    original = source.readout_snapshot
+
+    def count_capture(*args, **kwargs):
+        nonlocal captures
+        captures += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source, "readout_snapshot", count_capture)
+    try:
+        context.open()
+        opened = captures
+        with pytest.raises(CodedError) as refused:
+            analysis._run_breakout(_execution_context=context)
+        assert refused.value.code == "kernel.context.undeclared_stream"
+        assert captures == opened
+    finally:
+        context.close()
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_frame_panel_context_snapshots_mutable_polars_panel():
     import narwhals as nw
     import polars as pl
 
     from increment import Analysis, EvidenceScope
+    from increment.evidence import evidence_provider
     from increment.frame import FramePanelSource
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
     from tests.analysis_factory import held_source
 
     frame = pl.DataFrame(
@@ -1018,7 +1272,7 @@ def test_frame_panel_context_snapshots_mutable_polars_panel():
         unit_column="unit_id",
     )
     context = EvidenceExecutionContext(
-        native_scope_provider(source),
+        evidence_provider(source),
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(source.context.configs),
@@ -1034,6 +1288,46 @@ def test_frame_panel_context_snapshots_mutable_polars_panel():
         )
         rows = run(source, execution_context=context)
         assert rows[0].require_lift().value == pytest.approx(1.6)
+    finally:
+        context.close()
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_undeclared_breakout_source_refuses_before_the_read(tmp_path, monkeypatch):
+    from increment import EvidenceScope
+    from increment.errors import CodedError
+    from increment.evidence import evidence_provider
+    from increment.kernel.context import EvidenceExecutionContext
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    context = EvidenceExecutionContext(
+        evidence_provider(source),
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+            execution=True,
+            include_breakouts=True,
+        ),
+        run_id="undeclared-breakout-identity",
+    )
+    captures = 0
+    original = source.readout_snapshot
+
+    def count_capture(*args, **kwargs):
+        nonlocal captures
+        captures += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source, "readout_snapshot", count_capture)
+    try:
+        context.open()
+        opened = captures
+        with pytest.raises(CodedError) as refused:
+            analysis._run_breakout(_execution_context=context)
+        assert refused.value.code == "kernel.context.undeclared_stream"
+        assert captures == opened
     finally:
         context.close()
         analysis.close()
@@ -1116,3 +1410,428 @@ def test_captured_analysis_keeps_unused_experiment_id_fact_column():
     finally:
         analysis.close()
         con.disconnect()
+
+
+@pytest.mark.integration
+def test_public_unit_summary_breakout_keeps_declared_segments():
+    from tests.parity_harness.cases import PARITY_CASES
+
+    case = next(case for case in PARITY_CASES if case.id == "breakout_store_dimension")
+    analysis = case.build["from_unit_summary"]()
+    try:
+        breakout = analysis.run_breakout()
+        assert len(breakout) == 15
+        assert breakout.metadata is not None
+        assert breakout.metadata.coherence == "captured"
+        assert set(breakout.metadata.effective_modes.values()) == {"captured"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_windowed_daily_scope_does_not_extend_past_metric_window():
+    from datetime import date
+
+    from tests.parity_harness import matrix, matrix_cases
+
+    cell = matrix.Cell("windowed_mean", "daily", "sequential", "utc", "error")
+    disposition = matrix.classify(cell)
+    case = matrix_cases.build_case(cell, "values", disposition.outcomes("values"))
+    expected_days = {date(2025, 1, 10), date(2025, 1, 11)}
+    for ingress in ("from_definitions", "from_unit_panel"):
+        analysis = case.build[ingress]()
+        try:
+            rows = analysis.run_daily()
+            assert {row.ds for row in rows} == expected_days
+            assert len(rows) == 4
+        finally:
+            analysis.close()
+
+
+@pytest.mark.integration
+def test_daily_missing_date_keeps_exact_segment_arm_cell(tmp_path):
+    from datetime import date
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True, window_days=2)
+    try:
+        with pytest.warns():
+            rows = analysis.run_daily(metrics=["revenue"], dimension="country")
+        missing = [
+            row
+            for row in rows
+            if row.ds == date(2026, 1, 2)
+            and row.dimension_value == "US"
+            and row.group_id == "treatment"
+        ]
+        assert len(missing) == 1
+        assert missing[0].value is None
+        assert missing[0].unavailable == "few_units"
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_dimensioned_asof_daily_lift_retains_registered_empty_roster_member():
+    from datetime import date
+
+    from increment import AlwaysValid, SequentialCell, SequentialRegistration
+    from increment.breakout.estimates import run_daily_lift
+    from increment.semantics.models import ConversionMetric
+    from tests.sequential_cases import capture, registration
+
+    base = registration("bernoulli")
+    levels = ("US", "CA", "ABSENT")
+    registered = SequentialRegistration.model_validate(
+        {
+            **base.model_dump(),
+            "roster": tuple(
+                SequentialCell(
+                    metric="outcome",
+                    group_id="treatment",
+                    segment=(("country", level),),
+                    family=True,
+                )
+                for level in levels
+            ),
+        }
+    )
+    observations = []
+    for country in ("US", "CA"):
+        for index in range(24):
+            for arm, value in (
+                ("control", index % 2),
+                ("treatment", (index + 1) % 2),
+            ):
+                observations.append(
+                    {
+                        "unit_id": f"{country}-{index}-{arm}",
+                        "group_id": arm,
+                        "segments": {"country": country},
+                        "values": {"outcome": value},
+                    }
+                )
+    snapshot = capture(registered, observations).model_copy(
+        update={"reveal_cursor": date(2025, 1, 1)}
+    )
+    rows = run_daily_lift(
+        snapshot,
+        [ConversionMetric(name="outcome", entity="user", fact="events")],
+        control_group="control",
+        dimension="country",
+        view="asof",
+        inference=AlwaysValid(registration=registered),
+    )
+    assert {row.dimension_value for row in rows} == set(levels)
+    absent = next(row for row in rows if row.dimension_value == "ABSENT")
+    assert absent.sequential_result is not None
+    assert absent.sequential_result.checkpoint.status == "missing"
+
+
+@pytest.mark.integration
+def test_dimensioned_daily_lift_discovers_unregistered_segment_before_estimability():
+    from datetime import date
+
+    from increment.breakout.estimates import run_daily_lift
+    from increment.estimation.armstats import centered_row_from_raw_sums
+    from increment.semantics.models import MeanMetric
+
+    n = 12.0
+    mean = 2.0
+    total = n * mean
+    summary = centered_row_from_raw_sums(
+        {
+            "ds": date(2025, 1, 1),
+            "experiment_id": "exp",
+            "metric": "revenue",
+            "group_id": "treatment",
+            "n": n,
+            "sum_y": total,
+            "sum_y2": 11.0 + total * total / n,
+            "sum_x": None,
+            "sum_x2": None,
+            "sum_xy": None,
+            "sum_den": None,
+            "sum_den2": None,
+            "sum_yden": None,
+        }
+    )
+    summary["country"] = "new-segment"
+    rows = run_daily_lift(
+        [summary],
+        [MeanMetric(name="revenue", entity="user", fact="purchase")],
+        control_group="control",
+        dimension="country",
+    )
+    treatment = [row for row in rows if row.group_id == "treatment"]
+    assert len(treatment) == 1
+    assert treatment[0].dimension_value == "new-segment"
+    assert treatment[0].unavailable == "no_control_arm"
+
+
+@pytest.mark.integration
+def test_breakout_override_preserves_sibling_daily_lift_configuration(tmp_path):
+    from datetime import date
+
+    import yaml
+
+    from increment import Analysis, Method
+    from tests.parity_harness import dataset as ds
+    from tests.parity_harness.cases import _DEFINITIONS_PLAN
+
+    rows = []
+    for treatment, arm, prefix in ((0, "control", "c"), (1, "treatment", "t")):
+        for index in range(20):
+            x = index + 2 * treatment
+            user_id = f"{prefix}{index}"
+            store_id = ds.store_for(index)
+            rows.extend(
+                (
+                    ds._row(
+                        user_id,
+                        ds._EXPOSURE_AT,
+                        "exposure",
+                        group_id=arm,
+                        experiment_id="exp",
+                        store_id=store_id,
+                    ),
+                    ds._row(
+                        user_id,
+                        ds._PRE_PURCHASE_AT,
+                        "purchase",
+                        store_id=store_id,
+                        revenue=float(x + 1),
+                    ),
+                    ds._row(
+                        user_id,
+                        ds._PURCHASE_AT,
+                        "purchase",
+                        store_id=store_id,
+                        revenue=float(10 + 2 * x + (index % 3) + 3 * treatment),
+                    ),
+                    ds._row(
+                        user_id,
+                        ds._SESSION_AT,
+                        "session_end",
+                        store_id=store_id,
+                        sess=1,
+                    ),
+                    ds._row(
+                        user_id,
+                        ds._FRESHNESS_PAD_AT,
+                        "purchase",
+                        store_id=store_id,
+                        revenue=0.0,
+                    ),
+                )
+            )
+    connection = ds.duckdb_connection(rows)
+    definitions = ds.definitions_dict(plan=_DEFINITIONS_PLAN, breakout=True)
+    definitions_path = tmp_path / "cuped_breakout_override.yaml"
+    definitions_path.write_text(yaml.safe_dump(definitions))
+    analysis = Analysis.from_definitions(
+        "exp", definitions_path, cast(Any, connection), store="none"
+    )
+    try:
+        standalone_daily = analysis.run_daily_lift(metrics=("revenue_cuped",))
+        standalone_asof = analysis.run_asof_lift(metrics=("revenue_cuped",))
+        analysis.run_breakout(
+            metrics=("revenue_cuped",),
+            decision_method=Method.unadjusted(name="breakout-only"),
+        )
+        scoped = {
+            "daily_lift": analysis.run_daily_lift(metrics=("revenue_cuped",)),
+            "asof_lift": analysis.run_asof_lift(metrics=("revenue_cuped",)),
+        }
+        assert standalone_daily and standalone_asof
+        for name, standalone in (("daily_lift", standalone_daily), ("asof_lift", standalone_asof)):
+            baseline = [
+                row
+                for row in standalone
+                if row.metric == "revenue_cuped" and row.ds == date(2025, 1, 10)
+            ]
+            actual = [
+                row
+                for row in scoped[name]
+                if row.metric == "revenue_cuped" and row.ds == date(2025, 1, 10)
+            ]
+            assert len(baseline) == len(actual) == 2
+            assert {row.method for row in baseline} == {"cuped", "unadjusted"}
+            cuped = next(row for row in baseline if row.method == "cuped")
+            assert cuped.require_lift().value == pytest.approx(0.09355184, abs=1e-8)
+            assert [row.require_lift().value for row in actual] == pytest.approx(
+                [row.require_lift().value for row in baseline]
+            )
+            assert {row.method for row in actual} == {row.method for row in baseline}
+    finally:
+        analysis.close()
+        connection.disconnect()
+
+
+@pytest.mark.integration
+def test_unsegmented_day_axis_reads_do_not_require_separate_breakout_sources(tmp_path):
+    from tests.test_dashboard_capture import _workspace
+
+    with _workspace(tmp_path, units=6, breakout_sources=("profiles",)) as (con, analysis):
+        con.drop_table("profiles", database="analytics")
+        for operation in ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"):
+            rows = getattr(analysis, operation)(metrics=["revenue_per_user"])
+            assert rows
+
+
+@pytest.mark.integration
+def test_breakout_scope_excludes_unselected_metric_fact_source(tmp_path):
+    import ibis
+    import yaml
+
+    from increment import Analysis
+    from tests.covariate_cases import _defs_yaml, _unit_rows
+
+    event_rows = []
+    unused_rows = []
+    for index, group in enumerate(["control"] * 10 + ["treatment"] * 10):
+        unit = f"u{index}"
+        event_rows.extend(
+            {**row, "segment": f"s{index % 2}"}
+            for row in _unit_rows("cov_test", unit, group, float(index), float(index + 1))
+        )
+        unused_rows.append(
+            {
+                "user_id": unit,
+                "ts": __import__("datetime").datetime(2025, 8, 3),
+                "event": "unused",
+                "unused_value": float(index),
+            }
+        )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=event_rows)
+    con.create_table("unused_events", obj=unused_rows)
+    document = yaml.safe_load(_defs_yaml("events", "cov_test", observational=False))
+    document["fact_sources"][0]["properties"].append(
+        {"name": "segment", "column": "segment", "dtype": "string", "as_of": "static"}
+    )
+    document["fact_sources"].append(
+        {
+            "name": "unused",
+            "sql": "SELECT * FROM unused_events",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "unused_fact", "column": "unused_value"}],
+        }
+    )
+    document["fact_sources"].append(
+        {
+            "name": "account_events",
+            "sql": document["fact_sources"][0]["sql"],
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [],
+            "properties": [
+                {"name": "segment", "column": "segment", "dtype": "string", "as_of": "static"}
+            ],
+        }
+    )
+    document["metrics"].append(
+        {
+            "type": "mean",
+            "name": "unselected",
+            "entity": "user_id",
+            "fact": "unused_fact",
+            "aggregation": "sum",
+            "window_days": 7,
+        }
+    )
+    document["experiments"][0]["breakouts"] = [{"property": "segment", "source": "events"}]
+    path = tmp_path / "selective_breakout.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    analysis = Analysis.from_definitions("cov_test", path, con)
+    try:
+        con.drop_table("unused_events")
+        rows = analysis.run_breakout(metrics=["revenue"])
+        assert rows
+        assert {row.metric for row in rows} == {"revenue"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_daily_dimension_does_not_capture_unselected_dimension_source(tmp_path):
+    import ibis
+    import yaml
+
+    from increment import Analysis
+    from tests.covariate_cases import _defs_yaml, _unit_rows
+
+    event_rows = []
+    other_rows = []
+    for index, group in enumerate(["control"] * 10 + ["treatment"] * 10):
+        unit = f"u{index}"
+        event_rows.extend(
+            {**row, "country": "US" if index % 2 else "CA"}
+            for row in _unit_rows("cov_test", unit, group, float(index), float(index + 1))
+        )
+        other_rows.append(
+            {
+                "user_id": unit,
+                "ts": __import__("datetime").datetime(2025, 7, 20),
+                "device": "mobile",
+            }
+        )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=event_rows)
+    con.create_table("other_events", obj=other_rows)
+    document = yaml.safe_load(_defs_yaml("events", "cov_test", observational=False))
+    document["fact_sources"][0]["properties"].append(
+        {"name": "country", "column": "country", "dtype": "string", "as_of": "static"}
+    )
+    document["fact_sources"].append(
+        {
+            "name": "other",
+            "sql": "SELECT * FROM other_events",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [],
+            "properties": [
+                {"name": "device", "column": "device", "dtype": "string", "as_of": "static"}
+            ],
+        }
+    )
+    document["experiments"][0]["breakouts"] = [
+        {"property": "country", "source": "events"},
+        {"property": "device", "source": "other", "skip_missing": True},
+    ]
+    path = tmp_path / "selective_daily.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    analysis = Analysis.from_definitions("cov_test", path, con)
+    try:
+        con.drop_table("other_events")
+        rows = analysis.run_daily(metrics=["revenue"], dimension="country")
+        assert rows
+        assert {row.dimension for row in rows} == {"country"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_standalone_daily_lift_rejects_sequential_plan_before_snapshot(tmp_path, monkeypatch):
+    from increment.errors import UnsupportedRequestError
+    from tests.sequential_cases import registered_native
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    analysis = registered_native(analysis, public_mean=True)
+    source = cast(Any, held_source(analysis))
+    snapshots = 0
+    original_snapshot = source.readout_snapshot
+
+    def count_snapshot(*args, **kwargs):
+        nonlocal snapshots
+        snapshots += 1
+        return original_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(source, "readout_snapshot", count_snapshot)
+    try:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            analysis.run_daily_lift()
+        assert raised.value.code == "readout.inference.disjoint_slices"
+        assert snapshots == 0
+    finally:
+        analysis.close()

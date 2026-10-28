@@ -48,7 +48,6 @@ tests/simulate/test_dgp.py 2
 tests/simulate/test_end_to_end.py 3
 tests/simulate/test_switchback.py 3
 tests/test_analysis_asof.py 2
-tests/test_analysis_daily.py 5
 tests/test_analysis_facade.py 3
 tests/test_analysis_moments.py 1
 tests/test_analysis_trigger.py 1
@@ -67,7 +66,6 @@ tests/test_dashboard_overview.py 1
 tests/test_exploratory_metrics.py 1
 tests/test_frame_panel.py 8
 tests/test_frame_switchback.py 3
-tests/test_readout_execution_context.py 1
 tests/test_readout_public_scope.py 1
 tests/test_readouts.py 1
 tests/test_readouts_observational.py 4
@@ -189,7 +187,6 @@ tests/test_allocation_endpoints.py 1
 tests/test_analysis_asof.py 2
 tests/test_analysis_config.py 9
 tests/test_analysis_config_roles.py 3
-tests/test_analysis_daily.py 1
 tests/test_analysis_facade.py 2
 tests/test_analysis_frame_sources.py 1
 tests/test_analysis_moments.py 2
@@ -233,7 +230,6 @@ tests/test_plan_compatibility.py 3
 tests/test_plan_resolver.py 3
 tests/test_policy_alpha.py 2
 tests/test_policy_parity.py 1
-tests/test_readout_execution_context.py 7
 tests/test_readout_interpretation.py 11
 tests/test_readout_metadata.py 4
 tests/test_readout_public_scope.py 8

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -8,7 +8,7 @@ from types import MappingProxyType, TracebackType
 from typing import Literal
 from uuid import uuid4
 
-from increment._evidence_types import EvidenceScope, EvidenceStream
+from increment._evidence_types import BreakoutIdentity, EvidenceScope, EvidenceStream
 from increment._source_types import EvidenceProvider, _loader_owner, is_custom_source
 from increment.kernel.contracts import _refuse
 
@@ -33,7 +33,16 @@ class EvidenceExecutionContext:
     _snapshot_manifest: Mapping[str, str] = field(
         init=False, default_factory=lambda: MappingProxyType({})
     )
+    _pinned_stream_inventory: Mapping[str, str] = field(
+        init=False, default_factory=lambda: MappingProxyType({})
+    )
+    _stream_resolver: Callable[[EvidenceProvider], tuple[EvidenceStream, ...]] | None = field(
+        init=False, default=None
+    )
     _effective_modes: Mapping[str, EffectiveMode] = field(
+        init=False, default_factory=lambda: MappingProxyType({})
+    )
+    _breakout_streams: Mapping[BreakoutIdentity, str] = field(
         init=False, default_factory=lambda: MappingProxyType({})
     )
 
@@ -42,7 +51,9 @@ class EvidenceExecutionContext:
         self._stack = ExitStack()
         self._scoped_provider: EvidenceProvider | None = None
         self._snapshot_manifest: Mapping[str, str] = MappingProxyType({})
+        self._breakout_streams = MappingProxyType({})
         self._effective_modes: Mapping[str, EffectiveMode] = MappingProxyType({})
+        self._pinned_stream_inventory: Mapping[str, str] = MappingProxyType({})
         requested_coherence = self.coherence
         if requested_coherence not in ("captured", "live"):
             _refuse("kernel.request.invalid", field="coherence")
@@ -57,6 +68,7 @@ class EvidenceExecutionContext:
         self._state = "opening"
         source = _loader_owner(self.provider)
         provider_owned = is_custom_source(source)
+
         requested = EvidenceScope(
             metrics=self.scope.metrics,
             population=self.scope.population,
@@ -73,7 +85,9 @@ class EvidenceExecutionContext:
         try:
             result = self.provider.scope(requested)
             scoped = self._stack.enter_context(result.source)
+            self._stream_resolver = result.stream_resolver
             self._scoped_provider = scoped
+            self._breakout_streams = result.breakout_streams
             streams = result.streams or (
                 result.stream_resolver(scoped) if result.stream_resolver is not None else ()
             )
@@ -90,6 +104,9 @@ class EvidenceExecutionContext:
             self.coherence = effective_coherence
             self._effective_modes = MappingProxyType(
                 dict.fromkeys((stream.identity for stream in streams), effective_mode)
+            )
+            self._pinned_stream_inventory = MappingProxyType(
+                {stream.identity: stream.physical for stream in streams}
             )
             self._snapshot_manifest = MappingProxyType(
                 {
@@ -134,6 +151,28 @@ class EvidenceExecutionContext:
         if any(config not in declared_configs for config in configs):
             _refuse("kernel.context.undeclared_stream", stream="metric_configuration")
 
+    def validate_breakouts(self, requested: Sequence[object]) -> None:
+        declared = set(self.scope.breakouts)
+        streams = set(self._pinned_stream_inventory)
+        artifact_capture = any(stream.startswith("artifact:") for stream in streams)
+        provider_capture = "provider" in self._effective_modes.values()
+        for identity in requested:
+            if identity not in declared:
+                _refuse(
+                    "kernel.context.undeclared_stream",
+                    stream=f"breakout:{getattr(identity, 'property', '')}:{getattr(identity, 'source', None)}",
+                )
+            if artifact_capture:
+                continue
+            if provider_capture:
+                continue
+            stream = self._breakout_streams.get(identity)
+            if stream is None or stream not in streams:
+                _refuse(
+                    "kernel.context.undeclared_stream",
+                    stream=f"breakout:{getattr(identity, 'property', '')}:{getattr(identity, 'source', None)}",
+                )
+
     def _require_open(self) -> EvidenceProvider:
         if self._state != "open" or self._scoped_provider is None:
             _refuse("kernel.context.closed")
@@ -154,7 +193,32 @@ class EvidenceExecutionContext:
 
     @contextmanager
     def borrow(self) -> Iterator[EvidenceProvider]:
-        yield self._require_open()
+        provider = self._require_open()
+        if self._snapshot_manifest:
+            if self._stream_resolver is None:
+                current_inventory = self._pinned_stream_inventory
+            else:
+                streams = self._stream_resolver(provider)
+                current_inventory = MappingProxyType(
+                    {stream.identity: stream.physical for stream in streams}
+                )
+            if current_inventory != self._pinned_stream_inventory:
+                stream = next(
+                    (
+                        name
+                        for name in sorted(
+                            set(current_inventory).union(self._pinned_stream_inventory)
+                        )
+                        if current_inventory.get(name) != self._pinned_stream_inventory.get(name)
+                    ),
+                    next(iter(self._snapshot_manifest)),
+                )
+                _refuse(
+                    "kernel.snapshot.integrity",
+                    stream=stream,
+                    snapshot_id=self._snapshot_manifest.get(stream, ""),
+                )
+        yield provider
 
     @contextmanager
     def evidence_scope(self):

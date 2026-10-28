@@ -337,10 +337,11 @@ class FrameTotalsSource(SequentialSourceMixin):
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        breakouts: Sequence[Any] = (),
         configs: Sequence[Any] | None = None,
     ):
         """Pin the caller-owned dataframe as it exists at scope entry."""
-        del metrics, population, uptake_facts, include_breakouts, configs
+        del metrics, population, uptake_facts, include_breakouts, breakouts, configs
         frame = self._frame.to_native()
         clone = getattr(frame, "clone", None)
         if callable(clone):
@@ -1307,6 +1308,7 @@ class _RestrictedSummaryBreakoutSource:
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        breakouts: Sequence[Any] = (),
         configs: Sequence[Any] | None = None,
     ) -> Iterator[_RestrictedSummaryBreakoutSource]:
         with self._source.readout_snapshot(
@@ -1314,6 +1316,7 @@ class _RestrictedSummaryBreakoutSource:
             population=population,
             uptake_facts=uptake_facts,
             include_breakouts=include_breakouts,
+            breakouts=breakouts,
             configs=configs,
         ) as source:
             yield _RestrictedSummaryBreakoutSource(source, self._covariate_columns)
@@ -1502,10 +1505,11 @@ class FramePanelSource(SequentialSourceMixin):
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        breakouts: Sequence[Any] = (),
         configs: Sequence[Any] | None = None,
     ):
         """Snapshot mutable pandas and Polars panel evidence at readout start."""
-        del metrics, population, uptake_facts, include_breakouts, configs
+        del metrics, population, uptake_facts, include_breakouts, breakouts, configs
         pinned = copy(self)
         snapshots: list[tuple[str, nw.DataFrame[Any] | None]] = []
         for attribute in (
