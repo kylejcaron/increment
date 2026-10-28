@@ -347,7 +347,21 @@ def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, 
         return _line1_read(analysis, case), counts
 
 
-def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # noqa: PLR0915
+def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:
+    """The current outcome of a registered pair under the capture's recorded conditions.
+
+    The frozen capture ran every DuckDB connection with ``threads=1``
+    (``scripts/capture_evidence_identity.capture`` wraps ``_capture_operations`` in
+    ``_single_thread_duckdb``); the actual side reuses that same helper so a
+    comparison never mixes multi-threaded reduction order into the oracle.
+    """
+    from scripts.capture_evidence_identity import _single_thread_duckdb
+
+    with _single_thread_duckdb():
+        return _line1_outcome(scenario_id, ingress)
+
+
+def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # noqa: PLR0915
     import json
     import warnings
     from contextlib import ExitStack
