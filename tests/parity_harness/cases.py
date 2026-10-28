@@ -163,6 +163,7 @@ class ParityCase:
     # Explicitly classified synthetic or legacy outputs that intentionally have no source scope.
     unscoped_outputs: Mapping[str, str] = field(default_factory=dict)
     marks: tuple[pytest.MarkDecorator, ...] = ()
+    coherence: Literal["captured", "live"] | None = None
 
     def __post_init__(self) -> None:
         # Registered rows get their legacy expectations exclusively from the

@@ -385,11 +385,22 @@ def _read(analysis: Any, case: ParityCase) -> Any:
         {"decision_method": case.decision_method} if case.decision_method is not None else {}
     )
     if case.view is None:
+        coherence_kwargs = {"coherence": case.coherence} if case.coherence is not None else {}
         if case.breakout_dimension:
             return analysis.run_breakout(
-                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **method_kwargs
+                **estimand_kwargs,
+                **prior_kwargs,
+                **metric_kwargs,
+                **method_kwargs,
+                **coherence_kwargs,
             )
-        return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs, **method_kwargs)
+        return analysis.run(
+            **estimand_kwargs,
+            **prior_kwargs,
+            **metric_kwargs,
+            **method_kwargs,
+            **coherence_kwargs,
+        )
     dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
     population = {"population": case.population}
     match case.view:

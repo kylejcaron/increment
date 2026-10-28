@@ -811,12 +811,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for sql in exposure_sql_queries & column_projections.keys():
             required_columns = {"unit_id", "ts", "group_id", "experiment_id"}
             column_projections[sql] = tuple(sorted(set(column_projections[sql]) | required_columns))
-        for source in sources.values():
-            validate_fact_source_schema(
-                self._session.source_sql(source.sql),
-                source,
-                require_event=source.name in event_source_names,
-            )
         enrolled = self._scope_enrolled_units()
         # The generous lower margin limits only the snapshot copy, not builder
         # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
@@ -846,6 +840,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
+        for source in sources.values():
+            validate_fact_source_schema(
+                pinned._session.source_sql(source.sql),
+                source,
+                require_event=source.name in event_source_names,
+            )
         # Internal narrowing keeps this enclosing readout's captured horizon.
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
