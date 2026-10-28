@@ -335,6 +335,7 @@ class MomentsRequest:
     method: Any | None = None
     include_covariate: bool = False
     completed_windows_only: bool = False
+    experiment: Any | None = None
     population: Literal["assigned", "triggered"] = "assigned"
 
 

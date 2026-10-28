@@ -899,6 +899,7 @@ def _rows(
                     include_covariate=_include_covariate(req, metric),
                     completed_windows_only=req.completed_windows_only,
                     population=req.population,
+                    experiment=req.experiment,
                 ),
             )
             if routed:
@@ -1203,7 +1204,11 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
 
 def load_builtin_day_moments(src: EvidenceSource, request: MomentsRequest) -> MomentRows:
     """Answer a typed daily or as-of moments request from a built-in loader's day source."""
-    experiment = getattr(src, "_experiment", None) or getattr(src, "artifact_experiment", None)
+    experiment = (
+        request.experiment
+        or getattr(src, "_experiment", None)
+        or getattr(src, "artifact_experiment", None)
+    )
     day_request = DayAxisRequest(
         caller="run_daily_lift" if request.grain == "daily" else "run_asof_lift",
         grain=cast(Literal["daily", "asof"], request.grain),
