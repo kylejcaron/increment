@@ -2418,6 +2418,31 @@ def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_p
     ]
 
 
+@pytest.mark.integration
+def test_scoped_builtin_metadata_keeps_day_axis_breakouts(tmp_path) -> None:
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    provider = _forwarding_provider(source)
+    provider.scope = builtin.scope
+    try:
+        result = cast(
+            Any,
+            request_evidence(
+                provider,
+                DayAxisRequest(
+                    "run_daily",
+                    "daily",
+                    source.context.metrics,
+                    dimension="country",
+                ),
+            ),
+        )
+        assert tuple(result.slices)
+    finally:
+        analysis.close()
+
+
 def _forwarding_provider(source: Any, **attributes: Any) -> Any:
     builtin = evidence_provider(source)
 
