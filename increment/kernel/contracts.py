@@ -5,9 +5,10 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast, runtime_checkable
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, field_validator, model_validator
 from pydantic_core import PydanticSerializationError
@@ -290,9 +291,16 @@ def execution_identity_hash(
 
 def _request_value(value: object) -> object:
     if isinstance(value, datetime):
-        return {"type": "datetime", "value": value.isoformat()}
+        normalized = (
+            value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+            if value.tzinfo is not None and value.utcoffset() is not None
+            else value.isoformat()
+        )
+        return {"type": "datetime", "value": normalized}
     if isinstance(value, date):
         return {"type": "date", "value": value.isoformat()}
+    if isinstance(value, UUID):
+        return str(value)
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if dataclasses.is_dataclass(value):

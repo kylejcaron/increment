@@ -25,7 +25,12 @@ from increment.declarations import (
     register,
     register_implementation,
 )
-from increment.errors import CodedError, InvalidRequestError, raiser, refusals
+from increment.errors import (
+    CodedError,
+    InvalidRequestError,
+    raiser,
+    refusals,
+)
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -48,8 +53,6 @@ class _EstimatorMapping(Mapping[str, EstimatorRef]):
 
 
 ESTIMATORS: Mapping[str, EstimatorRef] = _EstimatorMapping()
-
-_BUILTIN_ESTIMATOR_IDS = frozenset(ref.estimator_id for ref in BUILTIN_ESTIMATORS)
 
 
 def load(estimator_id: str) -> Any:
@@ -209,8 +212,6 @@ def validate_observational_routes(
         if not method.is_observational:
             continue
         ref = ESTIMATORS[observational_estimator_id(method)]
-        if ref.estimator_id in _BUILTIN_ESTIMATOR_IDS:
-            continue
         for metric in metrics:
             require_routes(
                 source,

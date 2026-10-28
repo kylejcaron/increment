@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -13,7 +13,11 @@ from increment._evidence_loaders import (
     source_for_population,
 )
 from increment._evidence_loaders import route_provider_request as _route_provider_request
-from increment._evidence_refusals import require_evidence, require_population
+from increment._evidence_refusals import (
+    refuse_joint_grouping,
+    require_evidence,
+    require_population,
+)
 from increment._evidence_types import (
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
@@ -58,7 +62,17 @@ from increment._source_types import (
     is_custom_source,
 )
 from increment.errors import CodedError
+from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
+
+
+def _declared_breakout_property(value: object) -> str | None:
+    if isinstance(value, Breakout):
+        return value.property
+    if isinstance(value, Mapping):
+        property_name = value.get("property")
+        return property_name if isinstance(property_name, str) else None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1094,8 +1108,49 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
         dimensions = tuple(
             dict.fromkeys((*request.by, *((request.dimension,) if request.dimension else ())))
         )
-        partitions = day_axis_source_partitions(request.experiment, dimensions)
-        sources = tuple(source_name for source_name, _, _ in partitions)
+        experiment_metadata = request.experiment or _trigger_experiment(src)
+        partitions = day_axis_source_partitions(experiment_metadata, dimensions)
+        requested_properties = set(dimensions)
+        source_properties = tuple(
+            (
+                source_name,
+                tuple(
+                    sorted(
+                        {
+                            property_name
+                            for breakout in breakouts
+                            if (
+                                (property_name := _declared_breakout_property(breakout)) is not None
+                                and property_name in requested_properties
+                            )
+                        }
+                    )
+                ),
+            )
+            for source_name, _, breakouts in partitions
+        )
+        declared_properties = {prop for _, properties in source_properties for prop in properties}
+        bound_identity = src.identity if isinstance(src, _BreakoutScopedProvider) else None
+        if bound_identity is None:
+            if len(declared_properties) > 1 and any(
+                set(properties) != declared_properties for _, properties in source_properties
+            ):
+                refuse_joint_grouping(src, dimensions, source_properties)
+        else:
+            bound_properties = {
+                prop
+                for source_name, properties in source_properties
+                if source_name == bound_identity.source
+                for prop in properties
+            }
+            if len(declared_properties) > 1 and not declared_properties.issubset(bound_properties):
+                refuse_joint_grouping(src, dimensions, source_properties)
+            if bound_identity.source is not None:
+                bound_partitions = tuple(
+                    partition for partition in partitions if partition[0] == bound_identity.source
+                )
+                if bound_partitions:
+                    partitions = bound_partitions
         scopes = tuple(
             (
                 source_name,
@@ -1116,8 +1171,8 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
             for (source_name, scope), (_, _, breakouts) in zip(scopes, partitions, strict=True):
                 with evidence_scope(src, scope) as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
-                    if experiment is not None and len(sources) > 1:
-                        # Each source scope reads only its own declared breakouts.
+                    if experiment is not None:
+                        # Delegate each partition with only its own breakout declarations.
                         experiment = experiment.model_copy(update={"breakouts": breakouts})
                     scoped_request = (
                         request

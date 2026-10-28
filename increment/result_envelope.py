@@ -120,6 +120,8 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
             qualification = f"selected population: fraction={fraction:g}"
             if achieved is not None:
                 qualification += f", achieved_fraction={achieved:g}"
+    geometry = "interval" if lower is not None or upper is not None else None
+    intervals = ((lower, upper),) if geometry is not None else ()
     return EffectEstimate(
         point=cast(float | None, point),
         lower=lower,
@@ -127,7 +129,8 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
         alpha=alpha,
         value_scale=identity.key.value_scale or "relative",
         reason=reason,
-        geometry="interval" if lower is not None or upper is not None else None,
+        geometry=geometry,
+        intervals=intervals,
         qualification=qualification,
     )
 
@@ -602,10 +605,13 @@ class ResultCell:
                 required_columns=getattr(policy, "required_columns", ()),
             )
             if row_kind == "targeting_selection":
+                from increment.estimation.targeting import TargetingSelection
+
+                selection = cast(TargetingSelection, row)
                 method_config.update(
                     fractions=getattr(row, "fractions", ()),
                     n_folds=getattr(row, "n_folds", None),
-                    seed=getattr(row, "seed", None),
+                    seed=str(selection.seed),
                 )
         method_config_hash = contracts.contract_hash("report_method_config", method_config)
         identity = contracts.CellIdentity(

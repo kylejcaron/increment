@@ -468,10 +468,29 @@ def test_cate_validation_alpha_survives_json_and_arrow_reopening():
     cell = validation.as_cell()
     json_restored = ResultCell.from_payload(json.loads(json.dumps(cell.to_payload())))
     (arrow_restored,) = ResultCell.from_arrow(ResultCell.to_arrow([cell]))
+    assert validation.holdout_ate is not None
     for restored in (json_restored, arrow_restored):
         assert restored.summary is not None
         assert restored.summary.alpha == pytest.approx(0.1)
+        assert restored.summary.intervals == (
+            (validation.holdout_ate.lb, validation.holdout_ate.ub),
+        )
         assert "90.0% confidence" in render(AnalysisEnvelope((restored,), None), "brief")
+
+
+def test_targeting_selection_cell_accepts_full_width_seed():
+    selection = select_targeting_rule(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fractions=(0.0, 0.5, 1.0),
+        n_folds=2,
+        seed=0,
+    )
+    cell = selection.model_copy(update={"seed": 2**53}).as_cell()
+    adjacent_cell = selection.model_copy(update={"seed": 2**53 + 1}).as_cell()
+    assert cell.identity.method_config_hash != adjacent_cell.identity.method_config_hash
 
 
 def test_honest_cate_and_targeting_reports_have_report_only_cells():
