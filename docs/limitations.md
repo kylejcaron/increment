@@ -687,13 +687,12 @@ that needs an absolute-scale estimand)
     ceiling, a tail its float margin dominates; the refusal code is persisted as
     `exact_unavailable`). A capped `p*` is not a tail probability but is valid: the row rejects
     nowhere below `U`, and at `U` and above only where its delta p-value does; it can lie below the
-    nuisance budget `1e-6` that bounds every exact p-value. A row persisted before the counts
-    existed restores as a plain Wald row whose p-value is the delta p-value at every level; a
-    family that corrects such a restored row below `U` reads an unvalidated delta p-value there,
-    as every family did before the counts were persisted. A restored row's `U` is checked against
-    the rule (dense at `U`, not one float below); a row cut under a build whose normal quantile
-    differs by one float at its count is refused by code (`estimation.results.delta.dense_level`),
-    and re-running the analysis is the remedy.
+    nuisance budget `1e-6` that bounds every exact p-value. A row persisted before the counts existed restores
+    as a plain Wald row whose p-value is the delta p-value at every level; a family that corrects
+    such a row below `U` reads an unvalidated delta p-value there. When counts are present, the
+    persisted `U` is checked against the rule using a relative consistency tolerance: floating-point
+    noise across builds is accepted, while material mismatches (including replacing a positive
+    threshold with zero) are refused.
 
     A selected member is reissued at `min(R q / m, alpha)` by its counts at that level with no
     family floor: the delta interval where they are dense there, the exact binomial set from the
