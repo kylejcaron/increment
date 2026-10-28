@@ -1846,7 +1846,7 @@ def _ratio_component_horizon_case(
         else:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                if not complete and constructor in {"from_definitions", "from_unit_panel"}:
+                if not complete and constructor == "from_definitions":
                     _assert_horizon_export_warns_censoring(analysis, path)
                 else:
                     analysis.export(path)

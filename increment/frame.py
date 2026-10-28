@@ -1392,6 +1392,17 @@ def _preserve_empty_summary_segments(
         rows.append(empty)
 
 
+def _same_frame(left: nw.DataFrame[Any] | None, right: nw.DataFrame[Any] | None) -> bool:
+    """Compare mutable frame evidence with its readout-entry snapshot."""
+    if left is None or right is None:
+        return left is right
+    if left is right:
+        return True
+    if left.implementation.value != right.implementation.value:
+        return False
+    return bool(left.to_native().equals(right.to_native()))
+
+
 # from_unit_panel: one row per unit per day.
 
 
@@ -1456,6 +1467,7 @@ class FramePanelSource(SequentialSourceMixin):
             available_covariates=frozenset(frame.columns),
         )
 
+    @contextmanager
     def readout_snapshot(
         self,
         *,
@@ -1468,6 +1480,7 @@ class FramePanelSource(SequentialSourceMixin):
         """Snapshot mutable pandas and Polars panel evidence at readout start."""
         del metrics, population, uptake_facts, include_breakouts, configs
         pinned = copy(self)
+        snapshots: list[tuple[str, nw.DataFrame[Any] | None]] = []
         for attribute in (
             "_sparse_panel",
             "_source_frame",
@@ -1476,17 +1489,44 @@ class FramePanelSource(SequentialSourceMixin):
         ):
             frame = getattr(self, attribute)
             if frame is None:
+                snapshots.append((attribute, None))
                 continue
             if frame.implementation.value == "pandas":
                 frame = nw.from_native(frame.to_native().copy(deep=True), eager_only=True)
             elif frame.implementation.value == "polars":
                 frame = nw.from_native(frame.to_native().clone(), eager_only=True)
             setattr(pinned, attribute, frame)
+            snapshots.append((attribute, frame))
         pinned._identity = None
         pinned._moment_rows_cache = {}
         pinned._moment_failures_cache = {}
         pinned._scalar_cell_failures = None
-        return nullcontext(pinned)
+        try:
+            yield pinned
+        except BaseException:
+            if not all(
+                _same_frame(getattr(self, attribute), snapshot) for attribute, snapshot in snapshots
+            ):
+                self._identity = None
+                self._moment_rows_cache = {}
+                self._moment_failures_cache = {}
+                self._scalar_cell_failures = None
+            raise
+            # Reuse the reduction cache for later exports only while source evidence matches
+            # the captured frames; a mutation must leave the live source cache invalidated.
+            unchanged = all(
+                _same_frame(getattr(self, attribute), snapshot) for attribute, snapshot in snapshots
+            )
+            if unchanged:
+                self._identity = pinned._identity
+                self._moment_rows_cache = pinned._moment_rows_cache
+                self._moment_failures_cache = pinned._moment_failures_cache
+                self._scalar_cell_failures = pinned._scalar_cell_failures
+            else:
+                self._identity = None
+                self._moment_rows_cache = {}
+                self._moment_failures_cache = {}
+                self._scalar_cell_failures = None
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913
