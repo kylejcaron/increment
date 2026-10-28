@@ -172,11 +172,29 @@ def test_empty_selection_and_invalid_request_do_not_open_execution_scope(tmp_pat
     from increment.errors import CodedError
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+
+    class ScopeGuard:
+        evidence = source.evidence
+        context = source.context
+
+        def __getattr__(self, name):
+            return getattr(source, name)
+
+        def scope(self, request):
+            pytest.fail(f"validated request opened an evidence scope: {request!r}")
+
+    guard = ScopeGuard()
+    assert run(guard, metrics=[]) == []
+    with pytest.raises(CodedError) as readout_error:
+        run(guard, metrics=["not-a-declared-metric"])
+    assert readout_error.value.code == "facade.analysis_config.unknown_metric_declared"
+
     analysis.close()
     assert analysis.run(metrics=[]) == []
-    with pytest.raises(CodedError) as error:
+    with pytest.raises(CodedError) as facade_error:
         analysis.run(metrics=["not-a-declared-metric"])
-    assert error.value.code == "facade.analysis_config.unknown_metric_declared"
+    assert facade_error.value.code == "facade.analysis_config.unknown_metric_declared"
 
 
 @pytest.mark.integration
