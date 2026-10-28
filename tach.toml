@@ -557,6 +557,7 @@ depends_on = [
   "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",
+  "increment.kernel.contracts",
   "increment.frame", "increment.plan",
   "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.switchback",
@@ -612,6 +613,8 @@ depends_on = [
   "increment._analysis_config", "increment._readout_request", "increment.decision",
   "increment._source_identity",
   "increment.errors", "increment.estimation", "increment.readouts", "increment.semantics", "increment.sources",
+  "increment._evidence_loaders", "increment._evidence_types",
+  "increment._evidence_scopes", "increment.kernel",
   "increment._unit_cycle",
   "increment.declarations",
 ]
@@ -656,7 +659,12 @@ depends_on = [
 
 [[modules]]
 path = "increment._evidence_scopes"
-depends_on = ["increment._evidence_loaders", "increment._evidence_types", "increment._source_types"]
+depends_on = [
+  "increment._evidence_loaders",
+  "increment._evidence_types",
+  "increment._source_types",
+  "increment.errors",
+]
 
 [[modules]]
 path = "increment.evidence"
@@ -762,6 +770,7 @@ expose = [
   "BreakoutUnitRowsRequest", "BreakoutUnitRows", "BreakoutRoute", "DayAxisRoute",
   "DayAxisRequest", "DayAxisRows", "ComplianceRequest", "ComplianceSeriesRequest",
   "MetricEvidence", "MetricEvidenceRequest",
+  "ContrastStatsRequest",
   "MomentsRequest", "MomentRows", "UnitRowsRequest", "UnitRows",
   "CountsRequest", "CountEvidence", "SequentialCaptureRequest", "SequentialCapture",
   "SequentialSnapshotRequest",
@@ -869,4 +878,5 @@ depends_on = [
   "increment._evidence_types",
   "increment.declarations",
   "increment.errors",
+  "increment.semantics",
 ]

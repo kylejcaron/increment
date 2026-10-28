@@ -24,8 +24,7 @@ from increment.semantics.models import Metric
 from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
-    pass
-
+    from increment.kernel.context import EvidenceExecutionContext
 _CONTRAST_REQUEST = RefusalSpec(
     "readout.contrast.request",
     InvalidRequestError,
@@ -111,12 +110,9 @@ class ContrastHandler:
 
     family: ClassVar[Literal["contrast"]] = "contrast"
 
-    def run(self, source: ContrastSource, request: ContrastReadoutRequest) -> ContrastResults:
-        from increment._source_identity import source_identity
-        from increment.readouts._contrast_scope import scope_contrast_results
-
-        results = []
-        stats = {}
+    @staticmethod
+    def preflight(source: ContrastSource, request: ContrastReadoutRequest) -> None:
+        """Validate all contrast procedures before any evidence is acquired."""
         for metric in request.metrics:
             try:
                 procedure = request.procedures[metric.name]
@@ -134,7 +130,29 @@ class ContrastHandler:
                     reason="unit_cycle_reference_required",
                     metric=metric.name,
                 )
-            stats[metric.name] = source.contrast_stats(metric)
+
+    def run(
+        self,
+        source: ContrastSource,
+        request: ContrastReadoutRequest,
+        *,
+        execution_context: EvidenceExecutionContext,
+    ) -> ContrastResults:
+        from increment._evidence_loaders import load_contrast_stats
+        from increment._evidence_types import ContrastStatsRequest
+        from increment._source_identity import source_identity
+        from increment.readouts._contrast_scope import scope_contrast_results
+
+        self.preflight(source, request)
+        results = []
+        stats = {}
+        for metric in request.metrics:
+            procedure = request.procedures[metric.name]
+            stats[metric.name] = load_contrast_stats(
+                source,
+                ContrastStatsRequest(metric),
+                execution_context=execution_context,
+            )
             results.append(compute_contrast(stats[metric.name], procedure).results[0])
         return scope_contrast_results(
             results,
@@ -142,7 +160,61 @@ class ContrastHandler:
             stats=stats,
             procedures=request.procedures,
             source_identity_record=source_identity(source),
+            coherence=(
+                None
+                if "provider" in execution_context.effective_modes.values()
+                else execution_context.coherence
+            ),
+            effective_modes=execution_context.effective_modes,
         )
 
 
-__all__ = ["ArmMomentHandler", "ContrastHandler", "ContrastReadoutRequest"]
+@dataclass(frozen=True, slots=True)
+class ContrastEvidenceOperation:
+    """Own one switchback evidence lifecycle and dispatch its contrast readout."""
+
+    def run(
+        self,
+        source: ContrastSource,
+        request: ContrastReadoutRequest,
+        *,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> ContrastResults:
+        handler = ContrastHandler()
+        handler.preflight(source, request)
+        from increment._evidence_scopes import (
+            switchback_scope_provider,
+            validate_switchback_requests,
+        )
+        from increment._evidence_types import EvidenceScope
+
+        if execution_context is not None:
+            from increment._evidence_types import ContrastStatsRequest
+
+            stats_requests = tuple(ContrastStatsRequest(metric) for metric in request.metrics)
+            validate_switchback_requests(source, stats_requests, execution_context)
+            return handler.run(source, request, execution_context=execution_context)
+
+        from uuid import uuid4
+
+        from increment.kernel.context import EvidenceExecutionContext
+
+        owner = EvidenceExecutionContext(
+            provider=switchback_scope_provider(source),
+            scope=EvidenceScope(
+                grain="total",
+                population="assigned",
+                metrics=request.metrics,
+            ),
+            run_id=uuid4().hex,
+        )
+        with owner.evidence_scope():
+            return handler.run(source, request, execution_context=owner)
+
+
+__all__ = [
+    "ArmMomentHandler",
+    "ContrastEvidenceOperation",
+    "ContrastHandler",
+    "ContrastReadoutRequest",
+]

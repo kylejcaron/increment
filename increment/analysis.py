@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         DailyMetricValues,
         LiftEstimates,
     )
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.query.artifact_contract import ArtifactContext, ArtifactStore
     from increment.query.session import SourceSnapshotEvidence, WarehouseSession
     from increment.semantics.artifact import ArtifactExtensionRequest, UnitDayArtifactRef
@@ -55,7 +56,7 @@ from increment._day_axis import (
     _TRIGGER_UNSUPPORTED,
     DayAxisReadouts,
 )
-from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
+from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
 from increment._evidence_types import (
     CountsRequest,
     DayAxisRequest,
@@ -2763,6 +2764,7 @@ class Analysis:
         population: Literal["assigned", "triggered"] | None = None,
         coherence: Literal["captured", "live"] = "captured",
         store: Any | None = None,
+        _execution_context: EvidenceExecutionContext | None = None,
     ) -> LiftEstimates | ContrastResults:
         """Run the full A/B test analysis pipeline.
 
@@ -2812,6 +2814,8 @@ class Analysis:
         store : Any | None
             Optional result store. When provided, persist the complete run
             and expose its ``run_id`` and ``analysis_spec_hash`` in result metadata.
+        _execution_context : EvidenceExecutionContext | None
+            Internal run owner used when this readout is composed with other operations.
 
         Returns
         -------
@@ -2847,7 +2851,13 @@ class Analysis:
             runtime_request["value_scale"] = value_scale
         if isinstance(self._state, ContrastAnalysisState):
             rows = self._run_contrast(
-                decision_method, sensitivity_methods, prior, metrics, estimands, value_scale
+                decision_method,
+                sensitivity_methods,
+                prior,
+                metrics,
+                estimands,
+                value_scale,
+                execution_context=_execution_context,
             )
             rows._default_backend = self._input_backend
             if store is not None:
@@ -2862,6 +2872,10 @@ class Analysis:
                     ),
                 )
             return rows
+        if _execution_context is not None:
+            from increment.kernel.contracts import _refuse as _kernel_refuse
+
+            _kernel_refuse("kernel.request.invalid", field="_execution_context")
         selected = select_metrics(cast("Sequence[Metric]", self._metrics), metrics, caller="run")
 
         def request(chosen: Sequence[Metric]) -> WholeWindowRequest:
@@ -3068,6 +3082,8 @@ class Analysis:
         metrics: Sequence[str | Metric] | None,
         estimands: Sequence[str] | None,
         value_scale: Mapping[str, ValueScale] | None,
+        *,
+        execution_context: EvidenceExecutionContext | None = None,
     ) -> ContrastResults:
         reject_role_overrides_under_contrast(
             decision_method=decision_method,
@@ -3080,9 +3096,18 @@ class Analysis:
         selected = select_metrics(cast("Sequence[Metric]", context.metrics), metrics, caller="run")
         request = ContrastReadoutRequest(
             metrics=tuple(selected),
-            procedures={metric.name: context.procedures[metric.name] for metric in selected},
+            procedures={
+                metric.name: context.procedures[metric.name]
+                for metric in selected
+                if metric.name in context.procedures
+            },
         )
-        return ContrastHandler().run(cast("ContrastSource", self._src), request)
+        source = cast("ContrastSource", self._src)
+        return ContrastEvidenceOperation().run(
+            source,
+            request,
+            execution_context=execution_context,
+        )
 
     def _whole_window(self) -> WholeWindowReadouts:
         self._require_arm_state("run")
