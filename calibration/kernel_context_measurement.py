@@ -259,10 +259,13 @@ def _canonical(rows: Any) -> str:
     metadata = getattr(rows, "metadata", None)
     qualifications = None
     if metadata is not None:
-        qualifications = {
-            "coherence": metadata.coherence,
-            "effective_modes": _stable_value(metadata.effective_modes),
-        }
+        coherence = getattr(metadata, "coherence", None)
+        effective_modes = getattr(metadata, "effective_modes", None)
+        if coherence is not None and effective_modes is not None:
+            qualifications = {
+                "coherence": coherence,
+                "effective_modes": _normalize_effective_modes(effective_modes),
+            }
     return json.dumps(
         {"metadata": qualifications, "rows": values},
         sort_keys=True,
@@ -270,11 +273,31 @@ def _canonical(rows: Any) -> str:
     )
 
 
+def _normalize_effective_modes(modes: Any) -> Any:
+    if not isinstance(modes, Mapping):
+        return _stable_value(modes)
+    normalized: dict[str, Any] = {}
+    artifact_modes: list[Any] = []
+    for identity, mode in modes.items():
+        stable_mode = _stable_value(mode)
+        if str(identity).startswith("artifact:"):
+            artifact_modes.append(stable_mode)
+        else:
+            normalized[str(identity)] = stable_mode
+    for index, mode in enumerate(sorted(artifact_modes, key=_identity)):
+        normalized[f"artifact:stream:{index}"] = mode
+    return dict(sorted(normalized.items()))
+
+
 # Cross-mode artifact runs are independently published; R12 checks identity portability.
 def _without_cross_mode_identity(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: _without_cross_mode_identity(item)
+            key: (
+                _normalize_effective_modes(item)
+                if key == "effective_modes"
+                else _without_cross_mode_identity(item)
+            )
             for key, item in value.items()
             if key not in {"source_snapshot_id", "family_id"}
         }
@@ -283,16 +306,32 @@ def _without_cross_mode_identity(value: Any) -> Any:
     return value
 
 
+def _comparison_payload(value: Any) -> tuple[Any, Any]:
+    if isinstance(value, dict) and "metadata" in value and "rows" in value:
+        return value["metadata"], value["rows"]
+    return None, value
+
+
 def _outputs_equal(baseline: tuple[str, ...], candidate: tuple[str, ...]) -> bool:
     from tests.parity_harness.comparison import nested_close
 
-    return len(baseline) == len(candidate) and all(
-        nested_close(
-            _without_cross_mode_identity(json.loads(expected)),
-            _without_cross_mode_identity(json.loads(actual)),
-        )
-        for expected, actual in zip(baseline, candidate, strict=True)
-    )
+    if len(baseline) != len(candidate):
+        return False
+    for expected, actual in zip(baseline, candidate, strict=True):
+        expected_metadata, expected_rows = _comparison_payload(json.loads(expected))
+        actual_metadata, actual_rows = _comparison_payload(json.loads(actual))
+        if expected_metadata is None or actual_metadata is None:
+            expected_value = expected_rows
+            actual_value = actual_rows
+        else:
+            expected_value = {"metadata": expected_metadata, "rows": expected_rows}
+            actual_value = {"metadata": actual_metadata, "rows": actual_rows}
+        if not nested_close(
+            _without_cross_mode_identity(expected_value),
+            _without_cross_mode_identity(actual_value),
+        ):
+            return False
+    return True
 
 
 def _append_units(source: Any, count: int) -> None:
@@ -439,9 +478,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
                 finally:
                     scope_lifetime += time.perf_counter() - started_scope
 
-            return EvidenceScopeResult(
-                timed_source(), result.scope, result.streams, result.stream_resolver
-            )
+            return replace(result, source=timed_source())
 
         setattr(provider_type, "scope", counted_provider_scope)  # noqa: B010
         provider = evidence_provider(source)
@@ -712,6 +749,24 @@ def _measure_pair(
     )
 
 
+def _has_captured_qualification(outputs: tuple[str, ...]) -> bool:
+    if not outputs:
+        return False
+    for output in outputs:
+        payload = json.loads(output)
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        modes = metadata.get("effective_modes") if isinstance(metadata, dict) else None
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("coherence") != "captured"
+            or not isinstance(modes, dict)
+            or not modes
+            or any(mode != "captured" for mode in modes.values())
+        ):
+            return False
+    return True
+
+
 def _set_gate(baseline: Measurement, candidate: Measurement) -> tuple[Measurement, Measurement]:
     baseline_consistent = all(
         _outputs_equal(baseline.outputs, sample.outputs) for sample in baseline.repetitions
@@ -719,7 +774,10 @@ def _set_gate(baseline: Measurement, candidate: Measurement) -> tuple[Measuremen
     candidates_match = all(
         _outputs_equal(baseline.outputs, sample.outputs) for sample in candidate.repetitions
     )
-    outputs_equal = baseline_consistent and candidates_match
+    candidate_qualified = candidate.route != "captured" or all(
+        _has_captured_qualification(sample.outputs) for sample in candidate.repetitions
+    )
+    outputs_equal = baseline_consistent and candidates_match and candidate_qualified
     wall_pass = outputs_equal and candidate.wall_seconds <= baseline.wall_seconds
     rss_pass = outputs_equal and candidate.peak_rss_bytes <= 1.5 * baseline.peak_rss_bytes
     return (

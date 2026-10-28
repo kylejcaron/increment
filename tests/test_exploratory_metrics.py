@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pandas as pd
+import narwhals as nw
 import pytest
 
 from increment import Analysis, SourceSnapshotEvidence
@@ -995,7 +996,7 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
         assert metadata.effective_modes
         assert set(metadata.effective_modes.values()) == {"live"}
         assert {capture.coherence for capture in metadata.captures} == {"live"}
-        frame = rows.to_frame()
+        frame = nw.from_native(rows.to_frame(), eager_only=True)
         assert frame["coherence"].to_list() == ["live"] * len(rows)
         import json
 

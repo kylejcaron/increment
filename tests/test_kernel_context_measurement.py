@@ -84,6 +84,101 @@ def test_temp_peak_stops_sampling_when_workload_raises(monkeypatch):
     assert not sampler._thread.is_alive()
 
 
+def test_measurement_canonicalization_accepts_legacy_metadata_schema():
+    from types import SimpleNamespace
+
+    from calibration.kernel_context_measurement import _canonical
+
+    class Collection(list):
+        metadata = SimpleNamespace()
+
+    payload = json.loads(_canonical(Collection([{"value": 1}])))
+    assert payload["metadata"] is None
+
+
+def test_measurement_comparison_normalizes_artifact_publication_ids():
+    from calibration.kernel_context_measurement import _outputs_equal
+
+    def output(artifact: str, *, artifact_streams: int = 1) -> str:
+        effective_modes = {
+            f"artifact:{artifact}:{index}": "captured"
+            for index in range(artifact_streams)
+        }
+        effective_modes["source:raw_events"] = "captured"
+        return json.dumps(
+            {
+                "metadata": {
+                    "coherence": "captured",
+                    "effective_modes": effective_modes,
+                },
+                "rows": [{"value": 1}],
+            }
+        )
+
+    assert _outputs_equal((output("first"),), (output("second"),))
+    assert not _outputs_equal(
+        (output("first", artifact_streams=2),),
+        (output("second"),),
+    )
+
+
+def test_measurement_gate_requires_captured_qualification_with_legacy_baseline():
+    from calibration.kernel_context_measurement import (
+        Measurement,
+        Sample,
+        _outputs_equal,
+        _set_gate,
+    )
+
+    def result(output):
+        sample = Sample(
+            1.0,
+            100,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            True,
+            (json.dumps(output),),
+        )
+        return Measurement(
+            route="captured",
+            backend="duckdb",
+            rows=8,
+            seed=1,
+            repetitions=(sample,),
+            wall_seconds=1.0,
+            wall_min_max=(1.0, 1.0),
+            peak_rss_bytes=100,
+            rss_min_max=(100, 100),
+            scope_opens=0,
+            pins=0,
+            materializations=0,
+            temp_bytes=0,
+            temp_bytes_after_scope=0,
+            session_lifetime_seconds=0.0,
+            cleanup=True,
+            outputs=sample.outputs,
+        )
+
+    baseline = result({"metadata": None, "rows": [{"value": 1}]})
+    live = result(
+        {
+            "metadata": {
+                "coherence": "live",
+                "effective_modes": {"source:raw_events": "live"},
+            },
+            "rows": [{"value": 1}],
+        }
+    )
+
+
+    assert _outputs_equal(baseline.outputs, live.outputs)
+    _, gated = _set_gate(baseline, live)
+    assert gated.outputs_equal is False
+
+
 def test_measurement_gate_checks_every_repetition_against_baseline():
     from calibration.kernel_context_measurement import Measurement, Sample, _set_gate
 
@@ -210,6 +305,10 @@ def test_measurement_records_wall_memory_materializations_and_cleanup():
         payload = json.loads(output)
         assert isinstance(payload, dict)
         assert set(payload) == {"metadata", "rows"}
+    captured_metadata = json.loads(captured.outputs[0])["metadata"]
+    assert captured_metadata["coherence"] == "captured"
+    assert captured_metadata["effective_modes"]
+    assert set(captured_metadata["effective_modes"].values()) == {"captured"}
     assert len(baseline.outputs) == len(captured.outputs)
     assert all(
         nested_close(json.loads(expected), json.loads(actual))
