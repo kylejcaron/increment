@@ -963,7 +963,14 @@ def _trigger_metadata_source(src: Any) -> Any | None:
         if root is None:
             continue
         adapter = getattr(root, "adapter", None)
-        for candidate in (root, getattr(root, "source", None), getattr(adapter, "source", None)):
+        provider = getattr(root, "provider", None)
+        for candidate in (
+            root,
+            getattr(root, "source", None),
+            getattr(adapter, "source", None),
+            provider,
+            getattr(provider, "source", None),
+        ):
             if candidate is not None and any(
                 getattr(candidate, name, None) is not None
                 for name in ("artifact_experiment", "experiment", "_experiment")
@@ -1199,7 +1206,9 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                                 item.metrics,
                                 item.view,
                                 item.dimension,
-                                item.source_name or source_name,
+                                item.source_name
+                                or (bound_identity.source if bound_identity is not None else None)
+                                or source_name,
                                 edge_source,
                                 experiment,
                             )
@@ -1213,7 +1222,9 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                             item.metrics,
                             item.view,
                             item.dimension,
-                            item.source_name or source_name,
+                            item.source_name
+                            or (bound_identity.source if bound_identity is not None else None)
+                            or source_name,
                             edge_source,
                             experiment,
                         )
