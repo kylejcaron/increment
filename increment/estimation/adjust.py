@@ -33,6 +33,7 @@ from increment.errors import (
     warn,
 )
 from increment.estimation._adjust.clustered_unadjusted import estimate_clustered_unadjusted
+from increment.estimation._adjust.common import SUPPORTED_RATIO_METRIC, adjustment_compatibility
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.engine import (
@@ -62,6 +63,38 @@ if TYPE_CHECKING:
 
 
 from increment.estimators.registry import load, observational_estimator_id
+from increment.estimators.registry import (
+    validate_observational_routes as _validate_observational_routes,
+)
+
+
+def validate_observational_routes(
+    source: object,
+    metrics: Sequence[Metric],
+    methods: Sequence[Method],
+    design: Observational,
+    population: str = "assigned",
+) -> None:
+    """Validate routes after rejecting source-independent method incompatibilities."""
+    for method in methods:
+        if not method.is_observational:
+            continue
+        for metric in metrics:
+            if uses_builtin_adjustment_preflight(method):
+                try:
+                    adjustment_compatibility(metric, method=method.name.upper())
+                except UnsupportedRequestError as error:
+                    if error.code == SUPPORTED_RATIO_METRIC.code:
+                        continue
+                    raise
+            _validate_observational_routes(
+                source,
+                (metric,),
+                (method,),
+                design,
+                population,
+            )
+
 
 _REFUSALS = (
     refusals(
@@ -861,30 +894,17 @@ def _validate_adjustment_methods(methods: Sequence[Method]) -> None:
 def _warn_unsupported_ratio_metrics(
     metrics: Sequence[Metric],
     methods: Sequence[Method],
-    design: Observational,
-    cluster: str | None,
 ) -> set[tuple[str, str]]:
-    from increment.estimation._adjust.common import adjustment_preflight
-
     warned: set[tuple[str, str]] = set()
+
     for method in methods:
         if not uses_builtin_adjustment_preflight(method):
             continue
-        roles = ("learner",) if method.name == "iptw" else ("propensity_learner", "outcome_learner")
         for metric in metrics:
-            if metric.type != "ratio":
-                continue
             try:
-                adjustment_preflight(
-                    metric,
-                    design,
-                    method=method.name.upper(),
-                    moment_rows=(),
-                    cluster=cluster,
-                    learner_roles=roles,
-                )
+                adjustment_compatibility(metric, method=method.name.upper())
             except UnsupportedRequestError as exc:
-                if exc.code != "estimation.adjust_common.supported_ratio_metric":
+                if exc.code != SUPPORTED_RATIO_METRIC.code:
                     raise
                 _warn(
                     "estimation.adjust.skip_unsupported_metric",
@@ -979,13 +999,9 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         prior_scale_judged=_prior_scale_judged,
     )
     prewarned_unsupported = (
-        _warn_unsupported_ratio_metrics(selected, methods, design, cluster)
-        if evidence is None
-        else set()
+        _warn_unsupported_ratio_metrics(selected, methods) if evidence is None else set()
     )
     if evidence is None:
-        from increment.estimators.registry import validate_observational_routes
-
         validate_observational_routes(
             src,
             tuple(selected),

@@ -282,6 +282,7 @@ class ReadoutRequest:
     q: float | None = None
     value_scale: Mapping[str, ValueScale] = field(default_factory=dict)
     completion_policy: bool = False
+    source: EvidenceSource | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     # Public request factory signature is the API for readout construction.
@@ -309,6 +310,7 @@ class ReadoutRequest:
         scalar = evidence.scalar
         request = cls(
             context=context,
+            source=source,
             metrics=tuple(metrics),
             configs=tuple(configs),
             view=view,
@@ -345,29 +347,6 @@ class ReadoutRequest:
 
         for config, methods in zip(request.configs, request.estimation_methods, strict=True):
             check_method_covariates(source, config.metric.name, methods)
-        # Built-in routes are checked after request validation; declared custom routes
-        # still refuse before reads.
-        if (
-            getattr(request.design, "mechanism", None) == "observational"
-            and request.view != "daily"
-        ):
-            from increment.estimators.registry import (
-                uses_builtin_adjustment_preflight,
-                validate_observational_routes,
-            )
-
-            for config, methods in zip(request.configs, request.estimation_methods, strict=True):
-                custom_methods = tuple(
-                    method for method in methods if not uses_builtin_adjustment_preflight(method)
-                )
-                if custom_methods:
-                    validate_observational_routes(
-                        source,
-                        (config.metric,),
-                        custom_methods,
-                        request.design,
-                        request.population,
-                    )
         return request
 
     @property
@@ -526,6 +505,17 @@ def validate_request(request: ReadoutRequest) -> None:
     validate_readout_adjustment(request)
     validate_readout_encouragement(request)
     validate_readout_inference(request)
+    if getattr(request.design, "mechanism", None) == "observational" and request.source is not None:
+        from increment.estimation.adjust import validate_observational_routes
+
+        for config, methods in zip(request.configs, request.estimation_methods, strict=True):
+            validate_observational_routes(
+                request.source,
+                (config.metric,),
+                methods,
+                request.design,
+                request.population,
+            )
     validate_readout_source(request)
     if request.view in {"run", "breakout"} and not isinstance(
         request.plan.inference, SEQUENTIAL_POLICIES

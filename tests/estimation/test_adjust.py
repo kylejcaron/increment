@@ -1135,6 +1135,64 @@ def test_builtin_estimator_refuses_aggregate_provider_before_reading_moments():
     assert moment_reads == []
 
 
+def test_public_run_refuses_missing_builtin_covariates_before_scope_or_reads():
+    from dataclasses import replace
+
+    design = _obs("refuse", overlap="trim")
+    source = from_unit_summary(
+        _confounded_table(200, seed=3),
+        unit="user_id",
+        group="variant",
+        control="C",
+        metrics={"revenue": "mean"},
+        design=design,
+    )
+    adapter = evidence_provider(source)
+    events = []
+
+    class Provider:
+        context = adapter.context
+        evidence = replace(adapter.evidence, available_covariates=frozenset())
+
+        def moments(self, request):
+            events.append("moments")
+            return request_evidence(adapter, request)
+
+        def breakout_method_moments(self, request):
+            return request_evidence(adapter, request)
+
+        def unit_rows(self, request):
+            events.append("unit_rows")
+            return request_evidence(adapter, request)
+
+        def method_fit(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance_series(self, request):
+            return request_evidence(adapter, request)
+
+        def counts(self, request):
+            return request_evidence(adapter, request)
+
+        def capture_sequential(self, request):
+            return request_evidence(adapter, request)
+
+        def scope(self, request):
+            events.append("scope")
+            return adapter.scope(request)
+
+    analysis = Analysis._from_source(cast(Any, Provider()))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(CapabilityError):
+            analysis.run(decision_method=Method(name="iptw"))
+
+    assert events == []
+
+
 def test_adjustment_requests_excludes_zero_unit_arms():
     """An arm with no unit rows is omitted from the public estimator's results."""
     from increment.estimation._adjust.common import adjustment_requests
