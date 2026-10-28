@@ -597,11 +597,12 @@ class ResultCell:
             "control": identity_context["control"],
         }
         if row_kind == "cate":
+            cate_row = cast(Any, row)
             method_config.update(
                 alpha=getattr(row, "alpha", None),
                 ard=getattr(row, "beta_ard", None) is not None,
-                interactions=cast(Any, row).interaction_spec.model_dump(mode="json"),
-                adjustments=cast(Any, row).main_spec.model_dump(mode="json"),
+                interactions=cate_row.interaction_spec.model_dump(mode="json"),
+                adjustments=cate_row.main_spec.model_dump(mode="json"),
             )
         elif row_kind == "cate_validation":
             method_config.update(
