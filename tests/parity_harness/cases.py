@@ -163,7 +163,6 @@ class ParityCase:
     # Explicitly classified synthetic or legacy outputs that intentionally have no source scope.
     unscoped_outputs: Mapping[str, str] = field(default_factory=dict)
     marks: tuple[pytest.MarkDecorator, ...] = ()
-    coherence: Literal["captured", "live"] | None = None
 
     def __post_init__(self) -> None:
         # Registered rows get their legacy expectations exclusively from the
@@ -1847,7 +1846,7 @@ def _ratio_component_horizon_case(
         else:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                if constructor == "from_definitions" and not complete:
+                if not complete and constructor in {"from_definitions", "from_unit_panel"}:
                     _assert_horizon_export_warns_censoring(analysis, path)
                 else:
                     analysis.export(path)

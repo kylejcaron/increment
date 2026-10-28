@@ -728,16 +728,13 @@ def test_sequential_missing_zero_matches_all_ingress_paths(postgres_event_connec
 
 @pytest.mark.parametrize("complete", [False, True], ids=["lagging-denominator", "both-complete"])
 def test_ratio_component_horizons_match_all_ingress_paths(postgres_event_connection, complete):
-    from dataclasses import replace
-
     from tests.parity_harness.cases import _ratio_component_horizon_case
     from tests.parity_harness.runner import assert_parity, run_case
 
     case = _ratio_component_horizon_case(
         complete=complete, warehouse_connection=postgres_event_connection, dialect="postgres"
     )
-    case = replace(case, coherence="live")
-    assert_parity(case, run_case(case))
+    assert_parity(case, run_case(case, coherence="live"))
 
 
 def test_uptake_timestamp_boundaries_match_all_ingress_paths(postgres_event_connection):
