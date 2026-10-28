@@ -176,6 +176,44 @@ def test_compare_normalizes_tuple_and_list_containers_recursively() -> None:
     _compare(expected, actual)
 
 
+def test_qr_snapshot_normalization_sorts_families_and_compares_fit_numbers() -> None:
+    expected = {
+        "families": [
+            {"name": "primary", "family_id": "expected-a", "source_snapshot_id": "expected"},
+            {"name": "guardrail", "family_id": "expected-b", "source_snapshot_id": "expected"},
+        ],
+        "ordered_values": [1, 2],
+        "aggregate_evidence": {
+            "moments": [
+                {
+                    "metric": "revenue",
+                    "cuped_evidence": json.dumps({"kind": "fit", "theta": 1.0}),
+                }
+            ]
+        },
+    }
+    actual = {
+        "families": [
+            {"name": "guardrail", "family_id": "actual-b", "source_snapshot_id": "actual"},
+            {"name": "primary", "family_id": "actual-a", "source_snapshot_id": "actual"},
+        ],
+        "ordered_values": [1, 2],
+        "aggregate_evidence": {
+            "moments": [
+                {
+                    "metric": "revenue",
+                    "cuped_evidence": json.dumps({"kind": "fit", "theta": 1.0 + 1e-10}),
+                }
+            ]
+        },
+    }
+    expected_normalized = _decode_fitted_cuped_evidence(_without_snapshot_identity(expected))
+    actual_normalized = _decode_fitted_cuped_evidence(_without_snapshot_identity(actual))
+
+    _compare(expected_normalized, actual_normalized)
+    assert expected_normalized["ordered_values"] == actual_normalized["ordered_values"]
+
+
 # Deliberate changes made after the pre-kernel capture, keyed by component and the exact
 # captured status reason. #270 added likelihood sequential results, so a cell with neither
 # sequential kind now states that no sequential result of any kind is retained.
@@ -206,6 +244,23 @@ def _without_snapshot_identity(value: Any) -> Any:
         for key in ("source_snapshot_id", "snapshot_id", "decision_snapshot_id", "family_id"):
             if key in normalized:
                 normalized[key] = None
+        families = normalized.get("families")
+        if isinstance(families, list):
+            normalized["families"] = sorted(
+                families, key=lambda item: json.dumps(item, sort_keys=True)
+            )
+        retained = value.get("retained_family")
+        if isinstance(retained, str):
+            decoded_retained = json.loads(retained)
+            if isinstance(decoded_retained, list):
+                normalized["retained_family"] = json.dumps(
+                    sorted(
+                        (_without_snapshot_identity(item) for item in decoded_retained),
+                        key=lambda item: json.dumps(item, sort_keys=True),
+                    ),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
         if isinstance(value.get("by_source"), Mapping):
             normalized["by_source"] = sorted(
                 (_without_snapshot_identity(item) for item in value["by_source"].values()),
@@ -214,6 +269,22 @@ def _without_snapshot_identity(value: Any) -> Any:
         return normalized
     if isinstance(value, (list, tuple)):
         return [_without_snapshot_identity(item) for item in value]
+    return value
+
+
+def _decode_fitted_cuped_evidence(value: Any) -> Any:
+    """Compare serialized fitted evidence numerically without relaxing declarations."""
+    if isinstance(value, Mapping):
+        return {
+            key: (
+                json.loads(item)
+                if key == "cuped_evidence" and isinstance(item, str)
+                else _decode_fitted_cuped_evidence(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_decode_fitted_cuped_evidence(item) for item in value]
     return value
 
 
@@ -355,6 +426,9 @@ def _assert_outcome_matches(
                 if snapshotless:
                     expected_value = _without_snapshot_identity(expected_value)
                     actual_value = _without_snapshot_identity(actual_value)
+                    if field == "aggregate_evidence":
+                        expected_value = _decode_fitted_cuped_evidence(expected_value)
+                        actual_value = _decode_fitted_cuped_evidence(actual_value)
                 if field == "aggregate_evidence" and not snapshotless:
                     assert expected_value == actual_value
                 else:
