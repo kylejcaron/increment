@@ -266,6 +266,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             sql_grains=frozenset({"total"}),
         )
 
+    def declaration_identity(self) -> Mapping[str, Any]:
+        """Return source declarations without capture or observation values."""
+        return {
+            "experiment": self._experiment.model_dump(mode="json"),
+            "definitions": self._defs.model_dump(mode="json"),
+            "metrics": [metric.model_dump(mode="json") for metric in self._metrics],
+            "observation_mapping": self._sequential_observation_mapping(),
+        }
+
     def __init__(
         self,
         session: WarehouseSession,
@@ -4365,6 +4374,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             datatype = self._get_fact_table(fact_source)[column].type() if column else None
             domains.append(component_domain(measure, datatype))
         return tuple(domains)
+
+    def method_fit_input_digest(self, method_request) -> str:
+        from increment.query.cuped import method_fit_input_digest
+
+        return method_fit_input_digest(self, method_request)
 
     @contextmanager
     def cuped_relation(self, metric: Metric, request):

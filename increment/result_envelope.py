@@ -22,7 +22,7 @@ from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
 from increment.estimation.results import LiftEstimate
 from increment.kernel.contracts import CellIdentity
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _METADATA_KEY = b"increment.readout_metadata"
 _CONSTRUCTION_TAGS = frozenset((None, *get_args(Construction)))
 _PROJECTION_FIELDS = (
@@ -234,6 +234,10 @@ class Provenance:
     execution_identity_hash: str | None
     package_version: str
     created_at: datetime
+    source_content_digest: str | None = None
+    artifact_manifest_sha256: str | None = None
+    artifact_relation_digests: tuple[tuple[str, str], ...] = ()
+    source_declaration_identity_unavailable_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
@@ -328,13 +332,6 @@ class ResultCell:
         construction, reason = classify(row)
         identity = CellIdentity.from_row(row)
         key = identity.key
-        raw_outcomes_present = row.confidence_set is not None
-        row_fields = row.model_dump(mode="json")
-        sampling_state = (
-            None
-            if raw_outcomes_present
-            else RetainedState(construction, reason, "lift_sampling", row_fields)
-        )
         record = None
         if metadata is not None:
             record = next(
@@ -345,6 +342,36 @@ class ResultCell:
                 ),
                 None,
             )
+        source_content_digest = (
+            record.source_content_digest
+            if record is not None and record.source_content_digest is not None
+            else None
+            if metadata is None
+            else metadata.source_content_digest
+        )
+        artifact_manifest_sha256 = (
+            record.artifact_manifest_sha256
+            if record is not None and record.artifact_manifest_sha256 is not None
+            else None
+            if metadata is None
+            else metadata.artifact_manifest_sha256
+        )
+        artifact_relation_digests = (
+            record.artifact_relation_digests
+            if record is not None and record.artifact_relation_digests
+            else ()
+            if metadata is None
+            else metadata.artifact_relation_digests
+        )
+        if source_content_digest is not None:
+            identity = identity.model_copy(update={"source_content_digest": source_content_digest})
+        raw_outcomes_present = row.confidence_set is not None
+        row_fields = row.model_dump(mode="json")
+        sampling_state = (
+            None
+            if raw_outcomes_present
+            else RetainedState(construction, reason, "lift_sampling", row_fields)
+        )
         failure = None if record is None else record.failure
         sampling = None if record is None else record.sampling
         advisory_codes = () if record is None else tuple(item.code for item in record.advisories)
@@ -474,7 +501,7 @@ class ResultCell:
             else None
         )
         return cls(
-            identity=CellIdentity.from_row(row),
+            identity=identity,
             label=row.method,
             family=family,
             source_snapshot_id=row.source_snapshot_id,
@@ -483,7 +510,15 @@ class ResultCell:
                 "posterior": (posterior_status, posterior_state),
                 "sequential": (sequential_status, sequential_state),
             },
-            provenance=Provenance(None, None, package_version, stamp),
+            provenance=Provenance(
+                None,
+                None,
+                package_version,
+                stamp,
+                source_content_digest,
+                artifact_manifest_sha256,
+                artifact_relation_digests,
+            ),
             summary=summary,
             projection_fields=_safe_projection_fields(row),
         )
@@ -805,11 +840,13 @@ class ResultCell:
                 "kind": None if state is None else state.kind,
                 "supports": sorted(op.value for op in self.supports[name]),
             }
+        identity_payload = self.identity.model_dump(mode="json")
+        identity_payload.pop("source_content_digest", None)
         return {
             "schema_version": _SCHEMA_VERSION,
             "row_kind": self.row_kind,
             "row_payload": None if self.row_payload is None else _plain(self.row_payload),
-            "identity": self.identity.model_dump(mode="json"),
+            "identity": identity_payload,
             "label": self.label,
             "family": None if self.family is None else self.family.model_dump(mode="json"),
             "source_snapshot_id": self.source_snapshot_id,
@@ -821,6 +858,14 @@ class ResultCell:
                 "execution_identity_hash": self.provenance.execution_identity_hash,
                 "package_version": self.provenance.package_version,
                 "created_at": self.provenance.created_at.isoformat(),
+                "source_content_digest": self.provenance.source_content_digest,
+                "artifact_manifest_sha256": self.provenance.artifact_manifest_sha256,
+                "artifact_relation_digests": [
+                    list(item) for item in self.provenance.artifact_relation_digests
+                ],
+                "source_declaration_identity_unavailable_reason": (
+                    self.provenance.source_declaration_identity_unavailable_reason
+                ),
             },
             "summary": None
             if self.summary is None
@@ -840,7 +885,7 @@ class ResultCell:
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> ResultCell:
         schema_version = payload.get("schema_version")
-        if schema_version not in {1, _SCHEMA_VERSION}:
+        if schema_version not in {1, 2, _SCHEMA_VERSION}:
             raise CodedError(
                 "Unsupported result-cell schema",
                 code="results.cell.schema_unsupported",
@@ -913,6 +958,19 @@ class ResultCell:
             )
             components[name] = (status, state)
         prov = payload["provenance"]
+        provenance = Provenance(
+            prov.get("run_id"),
+            prov.get("execution_identity_hash"),
+            prov["package_version"],
+            datetime.fromisoformat(prov["created_at"]),
+            prov.get("source_content_digest"),
+            prov.get("artifact_manifest_sha256"),
+            tuple(tuple(item) for item in prov.get("artifact_relation_digests", ())),
+            prov.get("source_declaration_identity_unavailable_reason"),
+        )
+        identity = CellIdentity.model_validate(payload["identity"]).model_copy(
+            update={"source_content_digest": provenance.source_content_digest}
+        )
         summary_data = payload.get("summary")
         if summary_data is not None:
             summary_data = dict(summary_data)
@@ -920,19 +978,14 @@ class ResultCell:
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
         return cls(
-            identity=CellIdentity.model_validate(payload["identity"]),
+            identity=identity,
             label=payload["label"],
             family=None
             if payload.get("family") is None
             else FamilyScope.model_validate(payload["family"]),
             source_snapshot_id=payload.get("source_snapshot_id"),
             components=components,
-            provenance=Provenance(
-                prov.get("run_id"),
-                prov.get("execution_identity_hash"),
-                prov["package_version"],
-                datetime.fromisoformat(prov["created_at"]),
-            ),
+            provenance=provenance,
             summary=None if summary_data is None else EffectEstimate(**summary_data),
             projection_fields=payload.get("projection_fields") or {},
             row_kind=row_kind,
@@ -953,6 +1006,21 @@ class ResultCell:
                 "source_snapshot_id": cell.source_snapshot_id,
                 "provenance": _json(payload["provenance"]),
                 "summary": None if cell.summary is None else _json(payload["summary"]),
+                "point": None if cell.summary is None else cell.summary.point,
+                "lower": None if cell.summary is None else cell.summary.lower,
+                "upper": None if cell.summary is None else cell.summary.upper,
+                "alpha": None if cell.summary is None else cell.summary.alpha,
+                "se": _standard_error(payload["row_payload"] or payload["retained_row"]),
+                "df": _standard_error_df(payload["row_payload"] or payload["retained_row"]),
+                "reason_code": cell.components["sampling"][0].code
+                or next(
+                    (
+                        status.code
+                        for status, _state in cell.components.values()
+                        if status.code is not None
+                    ),
+                    None,
+                ),
                 "retained_row": None
                 if payload["retained_row"] is None
                 else _json(payload["retained_row"]),
@@ -1083,6 +1151,56 @@ def _restore_result_cell(payload: Mapping[str, Any]) -> ResultCell:
     return ResultCell.from_payload(payload)
 
 
+def _numeric_field(payload: Mapping[str, Any] | None, *names: str) -> float | None:
+    if payload is None:
+        return None
+    candidates = [payload]
+    candidates.extend(value for value in payload.values() if isinstance(value, Mapping))
+    for candidate in candidates:
+        for name in names:
+            value = candidate.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+    return None
+
+
+def _standard_error(payload: object) -> float | None:
+    """Project retained SE on the estimator's native scale: log, otherwise additive."""
+    if not isinstance(payload, Mapping):
+        return None
+    data = payload.get("data")
+    lift = payload.get("lift")
+    candidates = [lift] if isinstance(lift, Mapping) else []
+    if isinstance(data, Mapping):
+        data_lift = data.get("lift")
+        if isinstance(data_lift, Mapping):
+            candidates.append(data_lift)
+        candidates.append(data)
+    candidates.append(payload)
+    for candidate in candidates:
+        name = "log_se" if "log_se" in candidate else "abs_se"
+        value = candidate.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        value = candidate.get("standard_error")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _standard_error_df(payload: object) -> float | None:
+    """Project degrees of freedom from the reference used by the projected SE."""
+    if not isinstance(payload, Mapping):
+        return None
+    data = payload.get("data")
+    if isinstance(data, Mapping):
+        payload = data
+    lift = payload.get("lift")
+    if isinstance(lift, Mapping) and isinstance(lift.get("log_se"), (int, float)):
+        return _numeric_field(cast(Mapping[str, Any], payload), "reference_df", "df")
+    return _numeric_field(cast(Mapping[str, Any], payload), "abs_reference_df", "abs_dof", "dof")
+
+
 def _arrow_schema() -> pa.Schema:
     comp = pa.struct(
         [
@@ -1107,6 +1225,13 @@ def _arrow_schema() -> pa.Schema:
             ("source_snapshot_id", pa.string()),
             ("provenance", pa.string()),
             ("summary", pa.string()),
+            ("point", pa.float64()),
+            ("lower", pa.float64()),
+            ("upper", pa.float64()),
+            ("alpha", pa.float64()),
+            ("se", pa.float64()),
+            ("df", pa.float64()),
+            ("reason_code", pa.string()),
             ("retained_row", pa.string()),
             ("row_payload", pa.string()),
             ("projection_fields", pa.string()),
@@ -1257,17 +1382,23 @@ class AnalysisEnvelope:
     cells: tuple[ResultCell, ...]
     metadata: ReadoutMetadata | None
 
-    def to_payload(self) -> dict[str, Any]:
+    def to_payload(self, *, include_capture_metadata: bool = False) -> dict[str, Any]:
+        metadata = None if self.metadata is None else self.metadata.model_dump(mode="json")
+        if metadata is not None and not include_capture_metadata:
+            for key in ("source_content_digest", "captures"):
+                metadata.pop(key, None)
+            for cell in metadata["cells"]:
+                cell.pop("source_content_digest", None)
         return {
             "schema_version": _SCHEMA_VERSION,
             "cells": [cell.to_payload() for cell in self.cells],
-            "metadata": None if self.metadata is None else self.metadata.model_dump(mode="json"),
+            "metadata": metadata,
         }
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> AnalysisEnvelope:
         schema_version = payload.get("schema_version")
-        if schema_version not in {1, _SCHEMA_VERSION}:
+        if schema_version not in {1, 2, _SCHEMA_VERSION}:
             raise CodedError(
                 "Unsupported result-cell schema",
                 code="results.cell.schema_unsupported",
@@ -1279,11 +1410,14 @@ class AnalysisEnvelope:
             None if metadata is None else ReadoutMetadata.model_validate(metadata),
         )
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, include_capture_metadata: bool = True) -> pa.Table:
         table = ResultCell.to_arrow(self.cells)
         metadata = dict(table.schema.metadata or {})
-        if self.metadata is not None:
-            metadata[_METADATA_KEY] = _json(self.metadata).encode("utf-8")
+        payload_metadata = self.to_payload(include_capture_metadata=include_capture_metadata)[
+            "metadata"
+        ]
+        if payload_metadata is not None:
+            metadata[_METADATA_KEY] = _json(payload_metadata).encode("utf-8")
         return table.replace_schema_metadata(metadata)
 
     @classmethod

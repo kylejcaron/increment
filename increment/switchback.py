@@ -287,6 +287,18 @@ class FrameSwitchbackSource:
             available_covariates=None,
         )
 
+    def declaration_identity(self) -> Mapping[str, Any]:
+        """Describe switchback design and metric declarations without row values."""
+        return {
+            "study_id": self._context.study_id,
+            "study": self._context.study.model_dump(mode="json"),
+            "metrics": [metric.model_dump(mode="json") for metric in self._context.metrics],
+            "contrast_references": {
+                name: reference.model_dump(mode="json")
+                for name, reference in self._context.contrast_references.items()
+            },
+        }
+
     def __init__(
         self,
         *,

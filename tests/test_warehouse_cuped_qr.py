@@ -2388,6 +2388,59 @@ def test_unchanged_warehouse_qr_requests_keep_stable_identity():
     assert first.identity != changed.identity
 
 
+@pytest.mark.integration
+def test_warehouse_fit_input_digest_accepts_dataframe_snapshot_results():
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    import ibis
+    import pandas as pd
+    import pyarrow as pa
+
+    from increment.estimation.engine import Method
+    from increment.query.cuped import method_fit_input_digest
+    from increment.semantics.models import CupedCovariate
+
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "digest_input",
+        obj=[
+            {"unit_id": "u1", "group_id": "control", "y": 1.0, "x": 2.0},
+            {"unit_id": "u2", "group_id": "treatment", "y": 3.0, "x": 4.0},
+        ],
+    )
+    relation = connection.table("digest_input")
+    aggregate = {"hash_sum": 11, "salted_hash_sum": 13, "row_count": 2}
+
+    class Source:
+        context = SimpleNamespace(study_id="dataframe-snapshot-digest")
+        result = None
+
+        @contextmanager
+        def cuped_relation(self, _metric, _request):
+            yield relation, lambda _query: self.result, None
+
+    source = Source()
+    request = SimpleNamespace(
+        metric=SimpleNamespace(name="metric"),
+        method=Method.cuped_multicovariate(
+            covariates=[CupedCovariate(name="x", kind="continuous")]
+        ),
+        control="control",
+        arm_order=("control", "treatment"),
+        population="assigned",
+        cell=None,
+    )
+    try:
+        source.result = pd.DataFrame([aggregate])
+        dataframe_digest = method_fit_input_digest(source, request)
+        source.result = pa.Table.from_pylist([aggregate])
+        arrow_digest = method_fit_input_digest(source, request)
+        assert dataframe_digest == arrow_digest
+    finally:
+        connection.disconnect()
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("denominator_scale", (1.0e-50, 1.0e-40, 1.0e-20))

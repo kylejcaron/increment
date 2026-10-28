@@ -115,6 +115,7 @@ class ImplementationRef(_ContractModel):
 class CellIdentity(_ContractModel):
     key: SkipValidation[CellKey]
     source_snapshot_id: str | None
+    source_content_digest: str | None = Field(default=None, exclude_if=lambda value: value is None)
     experiment_id: str | None = None
     analysis_spec_hash: str | None = None
     metric_hash: str | None = None
@@ -139,7 +140,9 @@ class CellIdentity(_ContractModel):
     @classmethod
     def from_row(cls, row: object) -> CellIdentity:
         return cls(
-            key=CellKey.from_row(row), source_snapshot_id=getattr(row, "source_snapshot_id", None)
+            key=CellKey.from_row(row),
+            source_snapshot_id=getattr(row, "source_snapshot_id", None),
+            source_content_digest=getattr(row, "source_content_digest", None),
         )
 
     def canonical_payload(self) -> dict[str, object]:
@@ -150,7 +153,9 @@ class CellIdentity(_ContractModel):
         return cls.model_validate(dict(payload))
 
     def hash(self) -> str:
-        return contract_hash("cell_identity", self.canonical_payload())
+        payload = self.canonical_payload()
+        payload.pop("source_content_digest", None)
+        return contract_hash("cell_identity", payload)
 
 
 def metric_hash(metric: BaseModel) -> str:

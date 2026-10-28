@@ -1440,6 +1440,14 @@ class MomentsSource(SequentialSourceMixin):
             available_covariates=None,
         )
 
+    def declaration_identity(self) -> Mapping[str, Any]:
+        """Describe moments-cube declarations without hashing its rows."""
+        return {
+            "context": self._context,
+            "shape": self.shape,
+            "breakouts": self.breakouts,
+        }
+
     def __init__(
         self,
         rows: Sequence[Mapping[str, object]],
@@ -1670,6 +1678,16 @@ class MomentsSource(SequentialSourceMixin):
         """The joint categorical evidence retained for this request, if any."""
         evidence = self._evidence.get((metric.name, method_key(method)))
         return evidence if evidence is not None and evidence.kind == "categorical_cells" else None
+
+    def method_fit_input_digest(self, request) -> str | None:
+        evidence = self._evidence.get((request.metric.name, method_key(request.method)))
+        if (
+            evidence is None
+            or evidence.kind != "fitted_multicovariate"
+            or evidence.population != request.population
+        ):
+            return None
+        return evidence.payload_sha256
 
     def fit_cuped_multicovariate(
         self,

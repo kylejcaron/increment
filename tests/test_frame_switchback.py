@@ -166,6 +166,35 @@ def test_ordinary_panel_uses_independent_units_for_uncertainty():
     assert result.estimate.ub == pytest.approx(-30 + critical * 72)
 
 
+def test_switchback_public_analysis_persists_and_round_trips(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    analysis = Analysis.from_switchback_panel(
+        pl.DataFrame(_rows()),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"mean": "mean"},
+        identification=_identification(),
+        assignment=_assignment(),
+        experiment_id="switchback",
+    )
+    try:
+        store = ParquetResultsStore(tmp_path)
+        rows = analysis.run(store=store)
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.analysis_spec_hash is not None
+        assert metadata.run_id is not None
+        handle = store.open_run("switchback", metadata.analysis_spec_hash, metadata.run_id)
+        (cell,) = handle.envelope().cells
+        assert cell.identity.key.value_scale == "absolute"
+    finally:
+        analysis.close()
+
+
 def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
     analysis = Analysis.from_switchback_panel(
         pl.DataFrame(_rows()),

@@ -59,6 +59,13 @@ representation and table header identify live or provider-owned results, and
 flattened outputs retain both the requested coherence and the effective
 per-stream modes.
 
+Pass a `ResultsStore` to `Analysis.run(store=...)` to persist the completed
+result cells without changing the returned result collection. The run records
+its `run_id` and `analysis_spec_hash` in `results.metadata`; use those values
+with `store.open_run(experiment_id, analysis_spec_hash, run_id)` to pin the
+saved cells and metadata. Persistence is opt-in; calls without `store` remain
+in-memory only.
+
 Interpretation separates the tested-null outcome from effect direction.
 An interval containing the tested null is inconclusive, not evidence of no
 effect. Excluding a nonzero margin can meet that test without establishing an

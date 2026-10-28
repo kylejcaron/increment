@@ -108,6 +108,27 @@ def test_cell_identity_round_trips_with_stable_hash():
     assert decoded == value and decoded.hash() == value.hash()
 
 
+def test_cell_identity_hash_is_stable_when_content_digest_is_added():
+    from increment.declarations import CellKey
+
+    identity = CellIdentity(
+        key=CellKey(
+            kind="arm",
+            metric="orders",
+            method="unadjusted",
+            method_role="decision",
+            estimand="itt",
+            analysis_population="assigned",
+            group_id="treatment",
+        ),
+        source_snapshot_id="snap",
+    )
+    with_content_digest = identity.model_copy(
+        update={"source_content_digest": "sha256:" + "a" * 64}
+    )
+    assert with_content_digest.hash() == identity.hash()
+
+
 def test_cell_identity_preserves_iso_string_day_labels_across_round_trips():
     from increment.declarations import CellKey
 

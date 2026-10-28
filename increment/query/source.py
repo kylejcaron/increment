@@ -1462,6 +1462,11 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             return_components=return_components,
         )
 
+    def method_fit_input_digest(self, method_request) -> str:
+        from increment.query.cuped import method_fit_input_digest
+
+        return method_fit_input_digest(self, method_request)
+
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Expose only a verified warehouse relation to compact CUPED reduction."""

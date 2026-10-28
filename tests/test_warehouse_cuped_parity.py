@@ -698,3 +698,43 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
         adopted.close()
         native.close()
         connection.disconnect()
+
+
+@pytest.mark.integration
+def test_warehouse_multicovariate_digest_tracks_covariate_only_changes(tmp_path):
+    import copy
+
+    from increment import Analysis
+    from tests.parity_harness import matrix_data
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    units = matrix_data.linear_cuped_rows(n_per_arm=24)
+    events = mixed_cuped_event_rows(units)
+    changed_events = copy.deepcopy(events)
+    for row in changed_events:
+        if row["pre_revenue"] is not None:
+            row["pre_revenue"] = 2.5 * row["pre_revenue"] + 7.0
+
+    connections = [ibis.duckdb.connect(), ibis.duckdb.connect()]
+    analyses = []
+    try:
+        for index, (connection, payload) in enumerate(
+            zip(connections, (events, changed_events), strict=True)
+        ):
+            connection.create_table("mixed_events", obj=payload)
+            definitions_path = tmp_path / f"warehouse-cuped-{index}.yaml"
+            definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
+            analyses.append(Analysis.from_definitions("mixed_cuped", definitions_path, connection))
+
+        digests = []
+        for analysis in analyses:
+            rows = analysis.run(metrics=["revenue"])
+            assert rows.metadata is not None
+            assert rows.metadata.source_content_digest is not None
+            digests.append(rows.metadata.source_content_digest)
+        assert digests[0] != digests[1]
+    finally:
+        for analysis in analyses:
+            analysis.close()
+        for connection in connections:
+            connection.disconnect()

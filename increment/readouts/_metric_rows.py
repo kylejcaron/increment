@@ -26,6 +26,7 @@ from increment.readouts._evidence import (
     load_method_fit,
     load_moments,
     load_unit_rows,
+    method_fit_input_digest,
     metric_authenticator,
     retains_cuped_relation,
 )
@@ -418,9 +419,17 @@ def _load_metric_evidence(  # noqa: PLR0915
         for method in methods
         if getattr(method, "variance_reduction", None) == "cuped_multicovariate"
     )
+    from dataclasses import replace
+
     method_fit_answers = tuple(
-        (method_fit_request, load_method_fit(src, method_fit_request))
+        (
+            method_fit_request,
+            replace(answer, evidence_sha256=method_fit_input_digest(src, method_fit_request))
+            if answer.origin in {"warehouse", "retained_fitted"} and answer.evidence_sha256 is None
+            else answer,
+        )
         for method_fit_request in method_fit_requests
+        for answer in (load_method_fit(src, method_fit_request),)
     )
     retained_answers = tuple(
         (method_fit_request.method.name, answer)

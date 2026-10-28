@@ -2779,6 +2779,92 @@ def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
     assert unit_requests
 
 
+def test_warehouse_fit_input_digest_uses_declared_unit_rows():
+    from types import SimpleNamespace
+
+    from increment import CupedCovariate, Method
+    from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    segment = CupedCovariate(name="segment", kind="categorical")
+    country = CupedCovariate(name="country", kind="categorical")
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return MethodFitAnswer(
+                "warehouse",
+                envelope=SimpleNamespace(fit=None, arm_order=("control", "treatment"), withheld=()),
+            )
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        methods = (
+            Method.cuped_multicovariate(name="segment-fit", covariates=(segment,)),
+            Method.cuped_multicovariate(name="country-fit", covariates=(country,)),
+        )
+        request = MetricEvidenceRequest(
+            metric=source.context.metrics[0],
+            control_group="control",
+            methods=methods,
+            covariates=(segment, country),
+        )
+        evidence = cast(Any, request_evidence(Provider(), request))
+        digests = [answer.evidence_sha256 for _, answer in evidence.method_fit_answers]
+        assert all(digest is not None for digest in digests)
+        assert digests[0] != digests[1]
+
+        class NoUnitRowsProvider(Provider):
+            evidence = replace(source.evidence, method_fit="warehouse", unit_rows=False)
+
+        unavailable = cast(Any, request_evidence(NoUnitRowsProvider(), request))
+        from increment.readouts import run
+
+        unavailable_readout = run(NoUnitRowsProvider())
+    finally:
+        analysis.close()
+    assert all(answer.evidence_sha256 is None for _, answer in unavailable.method_fit_answers)
+    assert unavailable_readout.metadata is not None
+    assert unavailable_readout.metadata.source_content_digest is None
+    assert (
+        unavailable_readout.metadata.source_content_digest_unavailable_reason
+        == "method_fit_input_unavailable"
+    )
+
+
 def test_local_cuped_fallback_preserves_retained_categorical_components() -> None:
     from types import SimpleNamespace
 

@@ -175,6 +175,54 @@ def test_analysis_switchback_run_returns_one_result_per_metric_and_diagnostic():
     assert diagnostic.observation_rows > 0
 
 
+def test_switchback_store_projects_typed_uncertainty_into_history(tmp_path):
+    from increment.estimation.contrast_results import ContrastResult
+    from increment.store import HistorySelector, ParquetResultsStore
+
+    frame = _frame()
+    frame["value"] *= 72
+    analysis = Analysis.from_switchback_panel(
+        frame,
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"value": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        experiment_id="switchback",
+        assignment=_assignment(),
+    )
+    store = ParquetResultsStore(tmp_path)
+    try:
+        results = analysis.run(store=store)
+        result = results[0]
+        assert isinstance(result, ContrastResult)
+        assert result.standard_error is not None
+        assert result.dof == pytest.approx(1.0)
+        assert results.metadata is not None
+        assert results.metadata.analysis_spec_hash is not None
+        assert results.metadata.run_id is not None
+        handle = store.open_run(
+            "switchback", results.metadata.analysis_spec_hash, results.metadata.run_id
+        )
+        run = handle.run
+        cell = run.cells[0]
+        assert cell.identity.metric_hash is not None
+        history = store.history("switchback", HistorySelector(cell.identity.metric_hash))
+        assert history["se"].to_pylist() == [result.standard_error]
+        assert history["df"].to_pylist() == [result.dof]
+        assert history["se"].to_pylist()[0] == pytest.approx(72.0)
+        assert history["df"].to_pylist()[0] == pytest.approx(1.0)
+        projected = handle.envelope().to_arrow().to_pylist()[0]
+        assert projected["se"] == pytest.approx(72.0)
+        assert projected["df"] == pytest.approx(1.0)
+    finally:
+        analysis.close()
+
+
 @pytest.mark.parametrize(
     "method",
     ["run_daily", "run_daily_lift", "run_asof", "run_asof_lift", "run_breakout", "srm", "sitewide"],

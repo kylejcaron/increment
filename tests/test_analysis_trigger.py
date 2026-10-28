@@ -893,6 +893,20 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
             if row.analysis_population == "triggered"
         }
         assert set(native_triggered) == set(artifact_triggered)
+        artifact_cells = artifact_rows.as_cells()
+        for cell in artifact_cells:
+            assert cell.provenance.source_content_digest is not None
+            assert cell.provenance.artifact_manifest_sha256 == reference.manifest_sha256
+            assert cell.provenance.artifact_relation_digests
+        digest_by_population = {
+            population: {
+                cell.provenance.source_content_digest
+                for cell in artifact_cells
+                if cell.identity.key.analysis_population == population
+            }
+            for population in ("assigned", "triggered")
+        }
+        assert digest_by_population["assigned"].isdisjoint(digest_by_population["triggered"])
         assert {key: row.family_threshold for key, row in native_triggered.items()} == {
             key: row.family_threshold for key, row in artifact_triggered.items()
         }
@@ -966,6 +980,58 @@ def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
         assert analysis.trigger_rates() == pytest.approx({"C": 0.20270270270270271, "T": 0.1925})
         assert analysis.run()
         assert analysis.run(population="triggered")
+    finally:
+        analysis.close()
+
+
+def test_triggered_analysis_store_uses_triggered_scope_for_history(tmp_path):
+    from increment.store import HistorySelector, ParquetResultsStore
+
+    analysis = _analysis(tmp_path, _events(trigger_rate=0.2))
+    try:
+        store = ParquetResultsStore(tmp_path / "results")
+        rows = analysis.run(population="triggered", store=store)
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.analysis_spec_hash is not None
+        handle = store.open_run("exp", metadata.analysis_spec_hash)
+        (cell,) = handle.run.cells
+        assert cell.identity.scope is not None
+        assert cell.identity.scope.population == "triggered"
+        assert cell.identity.metric_hash is not None
+        history = store.history(
+            "exp",
+            HistorySelector(
+                cell.identity.metric_hash,
+                scope_hash=cell.identity.scope.hash(),
+            ),
+        )
+        assert history.num_rows == 1
+    finally:
+        analysis.close()
+
+
+def test_persisted_population_specs_keep_their_own_source_reference(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    analysis = _analysis(tmp_path, _events(trigger_rate=0.2))
+    try:
+        store = ParquetResultsStore(tmp_path / "results")
+        both = analysis.run(store=store)
+        assert both.metadata is not None
+        assert both.metadata.analysis_spec_hash is not None
+        combined = store.open_run("exp", both.metadata.analysis_spec_hash).run
+        combined_hashes = {
+            cell.identity.scope.population: cell.identity.analysis_spec_hash
+            for cell in combined.cells
+            if cell.identity.scope is not None
+        }
+        assigned = analysis.run(population="assigned", store=store)
+        assert assigned.metadata is not None
+        assert assigned.metadata.analysis_spec_hash is not None
+        assigned_run = store.open_run("exp", assigned.metadata.analysis_spec_hash).run
+        (assigned_cell,) = assigned_run.cells
+        assert combined_hashes["assigned"] == assigned_cell.identity.analysis_spec_hash
     finally:
         analysis.close()
 
@@ -2357,6 +2423,17 @@ def test_triggered_run_does_not_retest_assigned_law_on_selected_counts(tmp_path)
     )
 
     results = analysis.run()
+    cells = [row.as_cells(metadata=results.metadata)[0] for row in results]
+    digests_by_population = {
+        population: {
+            cell.provenance.source_content_digest
+            for cell in cells
+            if cell.identity.key.analysis_population == population
+        }
+        for population in ("assigned", "triggered")
+    }
+    assert all(None not in digests for digests in digests_by_population.values())
+    assert digests_by_population["assigned"].isdisjoint(digests_by_population["triggered"])
 
     scopes = {
         scope.rosters[0].analysis_population: scope

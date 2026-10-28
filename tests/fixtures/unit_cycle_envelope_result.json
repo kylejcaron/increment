@@ -88,6 +88,7 @@
     "declaration_id": "test-declaration"
   },
   "response_meaning": "retained_total",
+  "value_scale": "absolute",
   "analysis_population": "assigned",
   "source_snapshot_id": null,
   "decision_scope_complete": null,

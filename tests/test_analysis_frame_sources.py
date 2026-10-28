@@ -877,6 +877,163 @@ def test_day_axis_snapshot_identity_tracks_binary_input_counts():
         changed.close()
 
 
+@pytest.mark.integration
+def test_numeric_input_changes_source_content_digest():
+    import pandas as pd
+
+    first = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "value": [1.0, 2.0, 2.0, 3.0],
+        }
+    )
+    second = first.assign(value=[1.0, 2.0, 2.5, 3.5])
+    analyses = [
+        Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+            experiment_id="content-digest",
+        )
+        for frame in (first, second)
+    ]
+    try:
+        rows = [analysis.run() for analysis in analyses]
+        from increment.estimation.results import LiftEstimate
+
+        assert isinstance(rows[0][0], LiftEstimate)
+        assert isinstance(rows[1][0], LiftEstimate)
+        assert rows[0][0].lift is not None and rows[1][0].lift is not None
+        cells = [result.as_cells()[0] for result in rows]
+        assert cells[0].identity.source_content_digest == cells[0].provenance.source_content_digest
+        assert cells[0].identity.source_content_digest is not None
+        assert rows[0][0].lift.value != rows[1][0].lift.value
+        digests = [{cell.identity.source_content_digest} for cell in cells]
+        assert digests[0].isdisjoint(digests[1])
+    finally:
+        for analysis in analyses:
+            analysis.close()
+
+
+@pytest.mark.integration
+def test_cuped_covariate_only_change_changes_source_content_digest():
+    import pandas as pd
+
+    from increment import Analysis, Method
+    from increment.semantics.models import CupedCovariate
+
+    first = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "c3", "t1", "t2", "t3"],
+            "arm": ["control"] * 3 + ["treatment"] * 3,
+            "value": [1.0, 3.0, 2.0, 2.0, 5.0, 4.0],
+            "pre": [2.0, 3.0, 4.0, 3.0, 4.0, 5.0],
+        }
+    )
+    second = first.assign(pre=[9.0, 2.0, 7.0, 1.0, 8.0, 3.0])
+    analyses = [
+        Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+            experiment_id="cuped-content",
+        )
+        for frame in (first, second)
+    ]
+    try:
+        method = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"))
+        results = [
+            analysis.run(
+                decision_method=Method(name="unadjusted"),
+                sensitivity_methods=(method,),
+            )
+            for analysis in analyses
+        ]
+        digests = []
+        for result in results:
+            metadata = result.metadata
+            assert metadata is not None
+            digests.append(metadata.source_content_digest)
+        assert all(digest is not None for digest in digests)
+        assert digests[0] != digests[1]
+        digest_by_snapshot = {
+            result[0].source_snapshot_id: digest
+            for result, digest in zip(results, digests, strict=True)
+        }
+        combined = results[0].concat(results[1])
+        cells = combined.as_cells()
+        assert {cell.identity.source_snapshot_id for cell in cells} == set(digest_by_snapshot)
+        for cell in cells:
+            expected_digest = digest_by_snapshot[cell.identity.source_snapshot_id]
+            assert cell.identity.source_content_digest == expected_digest
+            assert cell.provenance.source_content_digest == expected_digest
+    finally:
+        for analysis in analyses:
+            analysis.close()
+
+
+@pytest.mark.integration
+def test_multicovariate_cuped_hashes_user_column_named_missingness():
+    import pandas as pd
+
+    from increment import Analysis, Method
+    from increment.semantics.models import CupedCovariate
+
+    frames = []
+    for covariate in (
+        lambda i: i % 10 + i // 10,
+        lambda i: (3 * i) % 11,
+    ):
+        frames.append(
+            pd.DataFrame(
+                [
+                    {
+                        "unit": f"u{i}",
+                        "arm": "control" if i < 10 else "treatment",
+                        "value": 20 + i % 10 + 0.3 * ((3 * i) % 7) + 2 * (i // 10),
+                        "missingness": covariate(i),
+                        "second_covariate": (7 * i) % 13,
+                    }
+                    for i in range(20)
+                ]
+            )
+        )
+    analyses = [
+        Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+            experiment_id="missingness-column",
+        )
+        for frame in frames
+    ]
+    try:
+        result_digests = []
+        methods = (
+            CupedCovariate(name="missingness", kind="continuous"),
+            CupedCovariate(name="second_covariate", kind="continuous"),
+        )
+        for analysis in analyses:
+            rows = analysis.run(
+                decision_method=Method(name="unadjusted"),
+                sensitivity_methods=(Method.cuped_multicovariate(covariates=methods),),
+            )
+            assert rows.metadata is not None
+            assert rows.metadata.source_content_digest is not None
+            result_digests.append(rows.metadata.source_content_digest)
+        assert result_digests[0] != result_digests[1]
+    finally:
+        for analysis in analyses:
+            analysis.close()
+
+
 @pytest.fixture
 def panel_breakout_analysis():
     import pandas as pd

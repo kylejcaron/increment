@@ -641,6 +641,46 @@ def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, 
         analysis.close()
 
 
+def test_format13_retained_fit_digest_tracks_covariate_inputs(tmp_path):
+    original = _records()
+    changed = [{**row, "history_a": row["history_a"] * 2.0 + 1.0} for row in original]
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    spec = _spec(False, (method,))
+    digests = []
+    for index, records in enumerate((original, changed)):
+        analysis = Analysis.from_unit_summary(
+            pa.Table.from_pylist(records),
+            unit="unit",
+            group="arm",
+            control="control",
+            experiment_id="compact",
+            metrics=[spec],
+            plan=AnalysisPlan(),
+        )
+        replay = None
+        try:
+            analysis.run()
+            _, rows = _export_rows(analysis, tmp_path, name=f"fit-{index}.parquet")
+            replay = Analysis.from_moments(
+                rows, metrics=[spec], control="control", experiment_id="compact"
+            )
+            results = replay.run()
+            assert results.metadata is not None
+            assert results.metadata.source_content_digest is not None
+            digests.append(results.metadata.source_content_digest)
+        finally:
+            if replay is not None:
+                replay.close()
+            analysis.close()
+    assert digests[0] != digests[1]
+
+
 def test_three_arm_envelopes_are_row_order_invariant(tmp_path):
     records = [
         {

@@ -828,6 +828,39 @@ class ArtifactMomentSource(SequentialSourceMixin):
             available_covariates=None,
         )
 
+    def declaration_identity(self) -> Mapping[str, Any]:
+        """Return artifact schema declarations, excluding generation identity."""
+        import json
+
+        def relation_schema(reference):
+            return {
+                "role": reference.role,
+                "schema_sha256": reference.schema_sha256,
+                "primary_key": reference.primary_key,
+                "digest_format": reference.digest_format,
+            }
+
+        return {
+            "artifact_format": self._manifest.artifact_format,
+            "experiment_id": self._manifest.experiment_id,
+            "day_boundary": self._manifest.day_boundary,
+            "context": json.loads(self._manifest.context.canonical_json),
+            "base_relations": {
+                "exposures": relation_schema(self._manifest.base.exposures),
+                "measure_stats": relation_schema(self._manifest.base.measure_stats),
+            },
+            "measures": [
+                {
+                    "measure_key": measure.measure_key,
+                    "outcome_domain": measure.outcome_domain,
+                }
+                for measure in self._manifest.measures
+            ],
+            "metric_measures": [
+                measure.model_dump(mode="json") for measure in self._manifest.metric_measures
+            ],
+        }
+
     def __init__(
         self,
         store: ArtifactStore,

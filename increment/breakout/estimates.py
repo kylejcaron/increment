@@ -1088,6 +1088,7 @@ class EstimateList[M: BaseModel](list[M]):
         self._default_backend = default_backend
         self._envelope_view = envelope_view
         self._envelope_completion_policy = completion_policy
+        self._persisted_cells = None
         validate_collection(self, metadata)
 
     @property
@@ -1114,6 +1115,7 @@ class EstimateList[M: BaseModel](list[M]):
             self._default_backend,
             self._envelope_view,
             self._envelope_completion_policy,
+            self._persisted_cells,
         )
 
     def model_dump_json(self):
@@ -1124,8 +1126,15 @@ class EstimateList[M: BaseModel](list[M]):
     def filter(self, predicate):
         from increment.estimation.readout_types import partial_metadata
 
-        rows = [row for row in self if predicate(row)]
-        return type(self)(
+        persisted = self._persisted_cells
+        rows = []
+        selected_cells = [] if persisted is not None else None
+        for index, row in enumerate(self):
+            if predicate(row):
+                rows.append(row)
+                if persisted is not None and selected_cells is not None:
+                    selected_cells.append(persisted[index])
+        collection = type(self)(
             rows,
             metadata=partial_metadata(self.metadata, rows, "filter"),
             source=self.source,
@@ -1134,6 +1143,9 @@ class EstimateList[M: BaseModel](list[M]):
             envelope_view=self._envelope_view,
             completion_policy=self._envelope_completion_policy,
         )
+        if selected_cells is not None:
+            collection._persisted_cells = tuple(selected_cells)
+        return collection
 
     def concat(self, other):
         from increment.estimation.readout_types import concat_collection
@@ -1301,7 +1313,7 @@ class EstimateList[M: BaseModel](list[M]):
         if isinstance(key, slice):
             from increment.estimation.readout_types import partial_metadata
 
-            return type(self)(
+            collection = type(self)(
                 result,
                 metadata=partial_metadata(self.metadata, result, "slice"),
                 source=self.source,
@@ -1310,6 +1322,11 @@ class EstimateList[M: BaseModel](list[M]):
                 envelope_view=self._envelope_view,
                 completion_policy=self._envelope_completion_policy,
             )
+            if self._persisted_cells is not None:
+                collection._persisted_cells = tuple(
+                    self._persisted_cells[index] for index in range(*key.indices(len(self)))
+                )
+            return collection
         return cast("M", result)
 
     def __add__(self, other):
@@ -1822,6 +1839,9 @@ class LiftEstimates(EstimateList[LiftEstimate]):
         """Convert this pilot run's rows with one shared creation timestamp."""
 
         stamp = created_at or datetime.now().astimezone()
+        persisted = getattr(self, "_persisted_cells", None)
+        if persisted is not None:
+            return list(persisted)
         return [cell for row in self for cell in row.as_cells(self.metadata, created_at=stamp)]
 
 

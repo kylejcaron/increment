@@ -316,6 +316,20 @@ class FrameTotalsSource(SequentialSourceMixin):
             capture="snapshot",
         )
 
+    def declaration_identity(self) -> Mapping[str, Any]:
+        """Describe frame columns and metric declarations without row values."""
+        return {
+            "study_id": self.context.study_id,
+            "unit": self._unit,
+            "group": self._group,
+            "exposure_date": self._exposure_date,
+            "specs": [spec.model_dump(mode="json") for spec in self._specs],
+            "control": self._control,
+            "uptake": self._uptake,
+            "cluster": self.context.cluster,
+            "segment_columns": dict(self._segment_columns),
+        }
+
     def readout_snapshot(
         self,
         *,
@@ -1466,6 +1480,19 @@ class FramePanelSource(SequentialSourceMixin):
             ),
             available_covariates=frozenset(frame.columns),
         )
+
+    def declaration_identity(self) -> Mapping[str, Any]:
+        """Describe panel columns and metric declarations without row values."""
+        return {
+            "study_id": self._context.study_id,
+            "unit_column": self._unit_column,
+            "control": self._control,
+            "uptake": self._uptake,
+            "window_days": self._window_days,
+            "specs": [spec.model_dump(mode="json") for spec in self._specs],
+            "observation_mapping": dict(self._sequential_mapping),
+            "breakouts": self.breakouts,
+        }
 
     @contextmanager
     def readout_snapshot(

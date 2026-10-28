@@ -178,6 +178,7 @@ def test_to_frame_supports_declared_backends(backend):
         "reference_spec",
         "provenance",
         "response_meaning",
+        "value_scale",
         "analysis_population",
         "source_snapshot_id",
         "metric_type",

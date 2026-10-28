@@ -47,6 +47,33 @@ def test_seeded_lift_cells_round_trip_retained_row_and_legacy_interval(seeded_co
 
 
 @pytest.mark.integration
+def test_exploratory_run_stamping_preserves_source_content_provenance(seeded_con, seeded_defs):
+    import warnings
+
+    from increment import Analysis
+    from increment.errors import IncrementWarning
+
+    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    try:
+        (metric,) = analysis.available_metrics[:1]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.warns(IncrementWarning):
+                rows = analysis.run(metrics=[], exploratory_metrics=[metric.name])
+        assert rows.metadata is not None
+        assert rows.metadata.source_content_digest is not None
+        (cell,) = rows.as_cells()
+        assert cell.provenance.source_content_digest == rows.metadata.source_content_digest
+        assert cell.identity.source_content_digest == rows.metadata.source_content_digest
+        payload = cell.to_payload()
+        assert "source_content_digest" not in payload["identity"]
+        restored = type(cell).from_payload(payload)
+        assert restored.identity.source_content_digest == cell.identity.source_content_digest
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_ratio_and_cuped_rows_survive_detached_json_arrow_operations(
     seeded_con, seeded_pre_period_con, seeded_defs
 ):
@@ -630,7 +657,9 @@ def test_result_envelope_arrow_round_trip_preserves_cell_and_readout_metadata(
     assert unavailable.components["sequential"][0] == amended.components["sequential"][0]
     arrow = envelope.to_arrow()
     restored = AnalysisEnvelope.from_arrow(arrow)
-    assert restored == AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload())))
+    assert restored == AnalysisEnvelope.from_payload(
+        json.loads(json.dumps(envelope.to_payload(include_capture_metadata=True)))
+    )
     metadata = rows.metadata
     assert metadata is not None
     live_metadata = type(metadata).model_validate(
@@ -1006,6 +1035,13 @@ def test_result_cell_schema_is_versioned_and_structured():
         "source_snapshot_id",
         "provenance",
         "summary",
+        "point",
+        "lower",
+        "upper",
+        "alpha",
+        "se",
+        "df",
+        "reason_code",
         "retained_row",
         "row_payload",
         "projection_fields",
@@ -1027,7 +1063,7 @@ def test_result_cell_schema_is_versioned_and_structured():
     ]
     golden = json.loads(
         (
-            Path(__file__).parent / "goldens" / "decision_wire" / "result_envelope_v2.schema.json"
+            Path(__file__).parent / "goldens" / "decision_wire" / "result_envelope_v3.schema.json"
         ).read_text()
     )
     actual = {field.name: {"type": str(field.type), "nullable": field.nullable} for field in schema}
