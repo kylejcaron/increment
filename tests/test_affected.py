@@ -610,6 +610,7 @@ def test_environment_ignore_excludes_module_from_source_change_collection(
     )
     selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
     monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=tests/test_excluded.py")
+    monkeypatch.setenv("AFFECTED_TEST_FILES", "[]")
     (invocation,) = _pytest_invocations(
         selection, base, "fast", [], kept=("tests/test_allowed.py", "tests/test_excluded.py")
     )

@@ -51,11 +51,6 @@ _CLUSTER_LABELS = RefusalSpec(
         "value/count {value!r}; constraint {constraint}"
     ),
 )
-_TRIGGER_ARM_MISSING = RefusalSpec(
-    "query.integrity.trigger_arm_missing",
-    InvalidRequestError,
-    template="trigger {trigger!r} never fires in arm(s) {silent!r} (observed rates: {rates!r}); {route}",
-)
 _MIXED_ASSIGNMENTS_EXCLUDED_WARNING = WarningSpec(
     "query.integrity.mixed_assignments_excluded",
     IncrementWarning,
@@ -189,22 +184,4 @@ def validate_cluster_labels(
             kind="cross-arm labels",
             value=n_span,
             constraint="each randomization-grain cluster belongs to exactly one arm",
-        )
-
-
-def validate_trigger_fires_in_every_arm(rates: dict[str, float], trigger: str | None) -> None:
-    """Refuse a declared trigger that never fires in a declared arm.
-
-    A trigger that fires in one arm only is the treatment, not an
-    eligibility rule - narrowing on it conditions the population on
-    assignment and the comparison is no longer randomized.
-    """
-    silent = sorted(arm for arm, rate in rates.items() if rate == 0.0)
-    if silent:
-        refuse(
-            _TRIGGER_ARM_MISSING,
-            trigger=trigger,
-            silent=tuple(silent),
-            rates={a: round(r, 4) for a, r in rates.items()},
-            route="analyze the assigned population, or declare an eligibility fact observable in every arm",
         )

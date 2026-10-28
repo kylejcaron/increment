@@ -2607,33 +2607,57 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
         tmp_path, trigger=True, partial_trigger=False, return_analysis=True
     )
     populations: list[str] = []
+    operations_seen: set[str] = set()
+    filtered_analysis = None
     provider_analysis = None
     try:
         expected = list(native.run(population="triggered"))
+        source = cast(Any, held_source(native))
         provider = _forwarding_provider(
-            cast(Any, held_source(native)),
+            source,
             artifact_experiment=native.experiment,
             close=lambda: None,
         )
+        provider.source = source
         for operation in ("scope", "moments", "unit_rows"):
             original = getattr(provider, operation)
 
-            def record_population(request, *, original=original):
+            def record_population(request, *, original=original, operation=operation):
                 populations.append(request.population)
+                operations_seen.add(operation)
                 return original(request)
 
             setattr(provider, operation, record_population)
         provider_analysis = Analysis._from_source(provider, experiment=native.experiment)
-        actual = list(provider_analysis.run(population="triggered"))
+        result = provider_analysis.run(population="triggered")
+        actual = list(result)
+        assert result.metadata is not None
+        assert set(result.metadata.effective_modes.values()) == {"provider"}
         assert [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual] == [
             row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected
         ]
+        filtered_provider = _forwarding_provider(
+            source,
+            artifact_experiment=native.experiment,
+            close=lambda: None,
+        )
+        filtered_provider.source = source
+        filtered_provider.moments = lambda request: ()
+        filtered_analysis = Analysis._from_source(filtered_provider, experiment=native.experiment)
+        from increment.errors import InvalidRequestError
+
+        with pytest.raises(InvalidRequestError) as filtered:
+            list(filtered_analysis.run(population="triggered"))
+        assert filtered.value.code == "readout.arms.no_treatment"
     finally:
         if provider_analysis is not None:
             provider_analysis.close()
+        if filtered_analysis is not None:
+            filtered_analysis.close()
         native.close()
     assert populations
     assert set(populations) == {"triggered"}
+    assert "moments" in operations_seen
 
 
 def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
@@ -3714,3 +3738,19 @@ def test_day_axis_scopes_keep_requested_dimensions_the_experiment_does_not_decla
 
     assert scoped_breakouts
     assert all(set(breakouts) == {"country", "device"} for breakouts in scoped_breakouts)
+
+
+@pytest.mark.integration
+def test_scope_result_source_is_evidence_provider(tmp_path):
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    provider = evidence_provider(source)
+    metric = source.context.metrics[0]
+    request = EvidenceScope(metrics=(metric,), execution=True)
+    result = provider.scope(request)
+    try:
+        with result.source as scoped:
+            assert isinstance(scoped, EvidenceProvider)
+            assert scoped.moments(MomentsRequest(metric)) == tuple(source.moments(metric))
+    finally:
+        analysis.close()

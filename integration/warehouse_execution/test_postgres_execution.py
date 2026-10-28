@@ -395,12 +395,9 @@ def test_conversion_calendar_trend(postgres_con):
 
 
 def test_denied_temp_creation_fails_the_gate(postgres_nonpublic_con, monkeypatch):
-    """A denied CREATE TEMP TABLE privilege must not be swallowed as a
-    passing store='always' run. ``WarehouseSession.materialize_table``
-    degrades a create failure to an unmaterialized live expression and
-    warns; this suite's project-wide ``filterwarnings = ["error", ...]``
-    promotes that warning to a hard failure, and the probe's own
-    required-materialization check would catch it even if it didn't."""
+    """A denied TEMP creation refuses the default captured source snapshot."""
+    from increment.errors import CodedError
+
     con = postgres_nonpublic_con
     create_table = con.create_table
 
@@ -410,10 +407,11 @@ def test_denied_temp_creation_fails_the_gate(postgres_nonpublic_con, monkeypatch
         return create_table(name, *args, **kwargs)
 
     monkeypatch.setattr(con, "create_table", deny_temp)
-    with pytest.raises(
-        (AssertionError, UserWarning), match="did not materialize|could not materialize"
-    ):
-        run_materialized_cache_correction_probe(con, dialect="postgres", monkeypatch=monkeypatch)
+    with pytest.raises(CodedError) as refusal:
+        run_materialized_cache_correction_probe(
+            con, dialect="postgres", monkeypatch=monkeypatch, coherence="captured"
+        )
+    assert refusal.value.code == "query.session.snapshot.materialization_failed"
 
 
 def test_partial_materialization_fails_the_gate(postgres_nonpublic_con, monkeypatch):
@@ -736,7 +734,7 @@ def test_ratio_component_horizons_match_all_ingress_paths(postgres_event_connect
     case = _ratio_component_horizon_case(
         complete=complete, warehouse_connection=postgres_event_connection, dialect="postgres"
     )
-    assert_parity(case, run_case(case))
+    assert_parity(case, run_case(case, coherence="live"))
 
 
 def test_uptake_timestamp_boundaries_match_all_ingress_paths(postgres_event_connection):

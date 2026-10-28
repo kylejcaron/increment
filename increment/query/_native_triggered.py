@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._evidence_types import EvidenceScope
     from increment._source_types import EvidenceCapabilities
     from increment.sources import Grain
 
@@ -208,3 +209,6 @@ class TriggeredPopulationSource:
             configs=configs,
         ) as pinned:
             yield self if pinned is self._source else pinned.triggered_source()
+
+    def evidence_scope_streams(self, scope: EvidenceScope) -> Mapping[str, str]:
+        return self._source.evidence_scope_streams(scope)

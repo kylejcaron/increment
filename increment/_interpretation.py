@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
@@ -68,6 +69,10 @@ class ReadoutInterpretation:
     groups: tuple[InterpretedGroup, ...]
     metadata_known: bool
     partial: bool
+    coherence: str | None = None
+    provider_owned: bool = False
+    effective_modes: Mapping[str, str] | None = None
+    independently_captured: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,7 +353,21 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                         visible_rows=rows_here,
                     )
                 )
-    return ReadoutInterpretation(tuple(groups), True, metadata.partial)
+    return ReadoutInterpretation(
+        tuple(groups),
+        True,
+        metadata.partial,
+        metadata.coherence,
+        any(
+            mode == "provider"
+            for capture in metadata.captures
+            for mode in capture.effective_modes.values()
+        )
+        or any(mode == "provider" for mode in metadata.effective_modes.values()),
+        dict(metadata.effective_modes),
+        len(metadata.captures) > 1
+        and all(capture.coherence == "captured" for capture in metadata.captures),
+    )
 
 
 def readout_evidence_columns(
@@ -391,6 +410,9 @@ def readout_evidence_columns(
             )
         status = getattr(row, "multiplicity_status", None)
         return {
+            "coherence": interpretation.coherence,
+            "effective_modes": _json(dict(interpretation.effective_modes or {})),
+            "provider_owned": interpretation.provider_owned,
             "source_snapshot_id": group.source_snapshot_id,
             "analysis_population": group.population,
             "control_group": group.control_group,
@@ -465,6 +487,9 @@ def readout_evidence_columns(
             ),
         }
     return {
+        "coherence": interpretation.coherence,
+        "effective_modes": _json(dict(interpretation.effective_modes or {})),
+        "provider_owned": interpretation.provider_owned,
         "source_snapshot_id": source_snapshot_id,
         "analysis_population": getattr(row, "analysis_population", None),
         "control_group": getattr(row, "control_group", None),
@@ -678,6 +703,7 @@ def render_readout_brief(cells, interpretation: ReadoutInterpretation) -> tuple[
             or line.startswith("SRM not checked")
             or line.startswith("SRM not run")
         )
+    lines.extend(_coherence_qualifications(interpretation))
     return tuple(lines)
 
 
@@ -730,11 +756,43 @@ def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[str,
     return tuple(lines)
 
 
+def _coherence_qualifications(
+    interpretation: ReadoutInterpretation, *, include_uniform_capture: bool = False
+) -> tuple[str, ...]:
+    """Qualify evidence coherence; one uniform capture is the default guarantee and is
+    stated only where every disclosure is listed."""
+    uniform_capture = (
+        interpretation.coherence == "captured"
+        and not interpretation.independently_captured
+        and not interpretation.provider_owned
+        and all(mode == "captured" for mode in (interpretation.effective_modes or {}).values())
+    )
+    if uniform_capture and not include_uniform_capture:
+        return ()
+    qualifications = []
+    if interpretation.independently_captured:
+        qualifications.append("Coherence: captured independently per result family.")
+    else:
+        if interpretation.provider_owned:
+            qualifications.append("Coherence: provider-owned; the kernel does not pin a snapshot.")
+        if interpretation.coherence == "live":
+            qualifications.append("Coherence: live; no pinned snapshot is guaranteed.")
+        elif interpretation.coherence == "captured" and not interpretation.provider_owned:
+            qualifications.append("Coherence: captured.")
+    if interpretation.effective_modes:
+        modes = ", ".join(
+            f"{source}={mode}" for source, mode in sorted(interpretation.effective_modes.items())
+        )
+        qualifications.append(f"Effective evidence modes: {modes}")
+    return tuple(qualifications)
+
+
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     """Render metric evidence first, followed by relevant qualifications."""
+    lines = list(_coherence_qualifications(interpretation))
     if not interpretation.groups:
-        return "Scope retained; no source-qualified cells recorded."
-    lines: list[str] = []
+        lines.append("Scope retained; no source-qualified cells recorded.")
+        return "\n".join(lines)
     show_source = len({group.source_snapshot_id for group in interpretation.groups}) > 1
     for group in interpretation.groups:
         lines.append(
@@ -955,7 +1013,10 @@ def _display_source(source_id: str | None) -> str | None:
 def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
     """Return compact, source-attributed qualifications for a rendered table header."""
     if not interpretation.groups:
-        return ("Scope and integrity unknown.",)
+        return (
+            *_coherence_qualifications(interpretation, include_uniform_capture=True),
+            "Scope and integrity unknown.",
+        )
     comparisons = [
         _group_comparison(group, metadata_known=interpretation.metadata_known)
         for group in interpretation.groups
@@ -1068,7 +1129,7 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             note = getattr(row, "note", None)
             if note and not any(code in note for code in advisory_codes):
                 add_bullet(f"Qualification: {note}")
-    return tuple(bullets)
+    return (*_coherence_qualifications(interpretation, include_uniform_capture=True), *bullets)
 
 
 def _cell_label(cell: CellKey) -> str:

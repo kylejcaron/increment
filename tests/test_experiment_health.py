@@ -131,6 +131,33 @@ def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
 
 
 @pytest.mark.integration
+def test_native_health_check_preserves_trigger_evidence(tmp_path):
+    from tests.test_analysis_trigger import _analysis, _events
+
+    events = _events(n_per_arm=100, trigger_rate=0.5)
+    event_rows = events.to_pylist()
+    expected_rates = {
+        arm: sum(row["group_id"] == arm and row["event"] == "saw_surface" for row in event_rows)
+        / sum(row["group_id"] == arm and row["event"] == "enrolled" for row in event_rows)
+        for arm in ("C", "T")
+    }
+    analysis = _analysis(tmp_path, events)
+    try:
+        report = analysis.health_check(expected_allocation={"C": 0.5, "T": 0.5})
+    finally:
+        analysis.close()
+
+    rates = next(check for check in report.checks if check.check == "trigger_rates")
+    maturity = [check for check in report.checks if check.check == "trigger_maturity"]
+    feeds = [check for check in report.checks if check.check == "feed_completeness"]
+    assert rates.availability == "available"
+    assert dict(rates.rates) == pytest.approx(expected_rates)
+    assert maturity and all(check.availability == "available" for check in maturity)
+    assert feeds and any(check.feed == "events" for check in feeds)
+    assert report.source_cutoff == "2024-01-16T00:00:00+00:00"
+
+
+@pytest.mark.integration
 def test_health_missing_certificates_are_unknown(tmp_path) -> None:
     import ibis
 

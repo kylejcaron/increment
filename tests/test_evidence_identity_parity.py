@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
+import subprocess
+import sys
 from collections.abc import Callable, Mapping
 from functools import cache
 from pathlib import Path
@@ -11,10 +14,74 @@ from typing import Any, cast
 import pytest
 
 from increment.result_envelope import ResultCell
+from tests.analysis_factory import held_source
 from tests.parity_harness.comparison import TOLERANCE
 
-# Cutover name → explicitly registered (scenario_id, ingress) pairs.
-REGISTERED: Mapping[str, frozenset[tuple[str, str]]] = {}
+# Line-one owns whole-window parity pairs not assigned to lines 2–7.
+_LINE1_SCENARIOS = frozenset(
+    {
+        "edge-empty-arm",
+        "edge-zero-variance-arm",
+        "edge-near-zero-ratio-denominator",
+        "edge-near-zero-positive-ratio-denominator",
+        "edge-nonfinite-ratio-denominator",
+        "arm-facts-parity",
+        "categorical-cuped-moments-format-13",
+        "bare_metric_name_summary_panel",
+        "cuped_covariate_name_summary_panel",
+        "exact_counts_conversion_window_boundary_export_from_definitions",
+        "exact_counts_conversion_window_boundary_export_from_unit_panel",
+        "exact_counts_retention_cohort_boundary_export_from_definitions",
+        "exact_counts_retention_cohort_boundary_export_from_unit_panel",
+        "audit-panel-missing-zero-inferred",
+        "mean_ratio_conversion_cuped_fixed_horizon",
+        "artifact_context_format_two",
+        "artifact_context_format_one_refusal",
+        "dashboard-group-data",
+        "audit-prior-reset-family",
+        "portable_subset_with_winsorized_sibling",
+        "audit-artifact-rounded-aggregates",
+        "audit-cuped-covariate-rescaling",
+        "audit-ratio-neighboring-means",
+        "lift_prior_normal_mean_ratio_conversion_cuped",
+        "lift_prior_student_t_mean_ratio_conversion_cuped",
+        "lift_prior_mixture_mean_ratio_conversion_cuped",
+        "exploratory-metrics",
+        "window_spelling_zulu_vs_offset",
+        "window_spelling_offset_vs_offset",
+        "audit-panel-component-horizon",
+        "audit-pinned-dimension-freshness",
+        "audit-panel-component-horizon-ratio",
+        "audit-panel-component-horizon-ratio-complete",
+        "multiplicity_primary_secondaries_guardrail",
+        "nonpositive_mean_additive_row_matches_across_sources",
+        "clustered_negative_control_mean_produces_a_fieller_set",
+        "clustered_assignment_integrity_scope",
+        "clustered_zero_relative_variance_preserves_point_and_additive_interval",
+        "audit-cluster-export-refusal",
+        "conversion_route_straddles_the_dense_threshold",
+        "audit-uptake-timestamp-boundaries",
+        "audit-compliance-only-outcome-missingness",
+        "audit-compliance-only-empty-catalog",
+        "quantile_tied_rounded_outcomes",
+        "audit-quantile-family",
+        "audit-panel-pre-exposure-and-selection",
+        "winsor-percentile-three-arm",
+        "winsor-percentile-zero-inclusive-2-arm",
+        "winsor-percentile-size-routed-analytic",
+        "mixed-cuped-multicovariate-fixed-horizon",
+    }
+)
+_LINE1_INGRESSES = (
+    "from_definitions",
+    "from_moments",
+    "from_unit_panel",
+    "from_unit_summary",
+)
+_LINE1_PAIRS = frozenset(
+    (scenario_id, ingress) for scenario_id in _LINE1_SCENARIOS for ingress in _LINE1_INGRESSES
+)
+REGISTERED: Mapping[str, frozenset[tuple[str, str]]] = {"line1": _LINE1_PAIRS}
 NEW_PATH_ADAPTERS: Mapping[tuple[str, str], Callable[[str, str], Mapping[str, object]]] = {}
 SEEDED_RESAMPLING_FIELD_PATHS = frozenset(
     {
@@ -22,6 +89,30 @@ SEEDED_RESAMPLING_FIELD_PATHS = frozenset(
         "retained_row.confidence_set.raw.permutation_p_value",
     }
 )
+_MODE_METADATA_FIELDS = frozenset({"coherence", "effective_modes"})
+
+
+def _mode_metadata(metadata: object) -> Mapping[str, object]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    metadata_by_key = cast(Mapping[str, object], metadata)
+    return {key: metadata_by_key[key] for key in _MODE_METADATA_FIELDS if key in metadata_by_key}
+
+
+def _metadata_without_modes(metadata: object) -> object:
+    if not isinstance(metadata, Mapping):
+        return metadata
+    return {key: value for key, value in metadata.items() if key not in _MODE_METADATA_FIELDS}
+
+
+def _json_compatible(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
 _SKIP_COUNT = 0
 
 
@@ -85,13 +176,135 @@ def test_compare_normalizes_tuple_and_list_containers_recursively() -> None:
     _compare(expected, actual)
 
 
-def _assert_payload_matches(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> None:
+def test_qr_snapshot_normalization_sorts_families_and_compares_fit_numbers() -> None:
+    expected = {
+        "families": [
+            {"name": "primary", "family_id": "expected-a", "source_snapshot_id": "expected"},
+            {"name": "guardrail", "family_id": "expected-b", "source_snapshot_id": "expected"},
+        ],
+        "ordered_values": [1, 2],
+        "aggregate_evidence": {
+            "moments": [
+                {
+                    "metric": "revenue",
+                    "cuped_evidence": json.dumps({"kind": "fit", "theta": 1.0}),
+                }
+            ]
+        },
+    }
+    actual = {
+        "families": [
+            {"name": "guardrail", "family_id": "actual-b", "source_snapshot_id": "actual"},
+            {"name": "primary", "family_id": "actual-a", "source_snapshot_id": "actual"},
+        ],
+        "ordered_values": [1, 2],
+        "aggregate_evidence": {
+            "moments": [
+                {
+                    "metric": "revenue",
+                    "cuped_evidence": json.dumps({"kind": "fit", "theta": 1.0 + 1e-10}),
+                }
+            ]
+        },
+    }
+    expected_normalized = _decode_fitted_cuped_evidence(_without_snapshot_identity(expected))
+    actual_normalized = _decode_fitted_cuped_evidence(_without_snapshot_identity(actual))
+
+    _compare(expected_normalized, actual_normalized)
+    assert expected_normalized["ordered_values"] == actual_normalized["ordered_values"]
+
+
+# Deliberate changes made after the pre-kernel capture, keyed by component and the exact
+# captured status reason. #270 added likelihood sequential results, so a cell with neither
+# sequential kind now states that no sequential result of any kind is retained.
+_POST_CAPTURE_STATUS_REASONS: Mapping[tuple[str, str], str] = {
+    ("sequential", "no asymptotic sequential result is retained"): (
+        "no sequential result is retained"
+    ),
+}
+
+
+def _with_post_capture_reasons(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Express captured reasons in current wording; cells restored from stored payloads
+    retain the captured wording, so both sides of a comparison are normalized."""
+    migrated = copy.deepcopy(dict(payload))
+    for name, component in migrated.get("components", {}).items():
+        status = component["status"]
+        replacement = _POST_CAPTURE_STATUS_REASONS.get((name, status.get("reason")))
+        if replacement is not None and component.get("kind") is None:
+            status["reason"] = replacement
+    return migrated
+
+
+# Match test_metric_evidence's QR precedent: LAPACK QR bits vary across BLAS platforms.
+def _without_snapshot_identity(value: Any) -> Any:
+    """Remove only identities that transitively depend on platform-sensitive evidence."""
+    if isinstance(value, Mapping):
+        normalized = {key: _without_snapshot_identity(item) for key, item in value.items()}
+        for key in ("source_snapshot_id", "snapshot_id", "decision_snapshot_id", "family_id"):
+            if key in normalized:
+                normalized[key] = None
+        families = normalized.get("families")
+        if isinstance(families, list):
+            normalized["families"] = sorted(
+                families, key=lambda item: json.dumps(item, sort_keys=True)
+            )
+        retained = value.get("retained_family")
+        if isinstance(retained, str):
+            decoded_retained = json.loads(retained)
+            if isinstance(decoded_retained, list):
+                normalized["retained_family"] = json.dumps(
+                    sorted(
+                        (_without_snapshot_identity(item) for item in decoded_retained),
+                        key=lambda item: json.dumps(item, sort_keys=True),
+                    ),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+        if isinstance(value.get("by_source"), Mapping):
+            normalized["by_source"] = sorted(
+                (_without_snapshot_identity(item) for item in value["by_source"].values()),
+                key=lambda item: json.dumps(item, sort_keys=True),
+            )
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_without_snapshot_identity(item) for item in value]
+    return value
+
+
+def _decode_fitted_cuped_evidence(value: Any) -> Any:
+    """Compare serialized fitted evidence numerically without relaxing declarations."""
+    if isinstance(value, Mapping):
+        return {
+            key: (
+                json.loads(item)
+                if key == "cuped_evidence" and isinstance(item, str)
+                else _decode_fitted_cuped_evidence(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_decode_fitted_cuped_evidence(item) for item in value]
+    return value
+
+
+def _assert_payload_matches(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], *, snapshotless: bool = False
+) -> None:
     canonical_expected = ResultCell.from_payload(expected).to_payload()
-    _compare(_comparable_payload(canonical_expected), _comparable_payload(actual))
+    expected_payload = _comparable_payload(_with_post_capture_reasons(canonical_expected))
+    actual_payload = _comparable_payload(_with_post_capture_reasons(actual))
+    if snapshotless:
+        expected_payload = _without_snapshot_identity(expected_payload)
+        actual_payload = _without_snapshot_identity(actual_payload)
+    _compare(expected_payload, actual_payload)
 
 
 def _assert_operation_matches(
-    expected: Mapping[str, Any], operation: Callable[[], ResultCell]
+    expected: Mapping[str, Any],
+    operation: Callable[[], ResultCell],
+    *,
+    snapshotless: bool = False,
 ) -> None:
     from increment.errors import CodedError
 
@@ -105,10 +318,22 @@ def _assert_operation_matches(
         assert expected["status"] == "available"
         expected_cell = expected["result_cell"]
         assert isinstance(expected_cell, Mapping)
-        _assert_payload_matches(expected_cell, actual.to_payload())
+        _assert_payload_matches(expected_cell, actual.to_payload(), snapshotless=snapshotless)
 
 
-def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
+def _identity_hash_without_snapshot(value: object) -> str:
+    if isinstance(value, ResultCell):
+        identity = value.identity
+    else:
+        payload = cast(Mapping[str, Any], value).get("result_cell", value)
+        assert isinstance(payload, Mapping)
+        identity = ResultCell.from_payload(cast(Mapping[str, Any], payload)).identity
+    return identity.model_copy(update={"source_snapshot_id": None}).hash()
+
+
+def _assert_cell_matches(
+    expected: Mapping[str, Any], actual: object, *, snapshotless: bool = False
+) -> None:
     from increment.result_envelope import relevel
 
     expected_cell = expected["result_cell"]
@@ -116,7 +341,7 @@ def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
     actual_payload = actual.to_payload() if isinstance(actual, ResultCell) else actual
     assert isinstance(actual_payload, Mapping)
     actual_payload = cast(Mapping[str, Any], actual_payload)
-    _assert_payload_matches(expected_cell, actual_payload)
+    _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
     actual_cell = (
         actual if isinstance(actual, ResultCell) else ResultCell.from_payload(actual_payload)
     )
@@ -127,10 +352,25 @@ def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
         _assert_operation_matches(
             operation,
             lambda alpha=float(alpha): relevel(actual_cell, alpha=alpha),
+            snapshotless=snapshotless,
         )
 
 
-def _assert_outcome_matches(expected: Mapping[str, Any], actual: Mapping[str, object]) -> None:
+def _has_platform_sensitive_scope_component(actual: Mapping[str, object]) -> bool:
+    components = actual.get("_scope_evidence_components", ())
+    if not isinstance(components, (list, tuple)):
+        return False
+    for item in components:
+        if isinstance(item, Mapping):
+            kind = item.get("kind")
+            if isinstance(kind, str) and kind.startswith("warehouse_qr:"):
+                return True
+    return False
+
+
+def _assert_outcome_matches(
+    expected: Mapping[str, Any], actual: Mapping[str, object]
+) -> Mapping[str, object]:
     assert expected["kind"] == actual["kind"]
     if expected["kind"] == "refusal":
         assert expected["code"] == actual["code"]
@@ -145,11 +385,35 @@ def _assert_outcome_matches(expected: Mapping[str, Any], actual: Mapping[str, ob
         actual_cells = actual["cells"]
         assert isinstance(expected_cells, Mapping)
         assert isinstance(actual_cells, Mapping)
-        assert expected_cells.keys() == actual_cells.keys()
-        for key, expected_cell in expected_cells.items():
+        snapshotless = _has_platform_sensitive_scope_component(actual)
+        cells_to_compare: Any
+        actual_cells_by_identity: Any
+        if snapshotless:
+            expected_by_identity = {
+                _identity_hash_without_snapshot(cell): cell for cell in expected_cells.values()
+            }
+            actual_by_identity = {
+                _identity_hash_without_snapshot(cell): cell for cell in actual_cells.values()
+            }
+            assert len(expected_by_identity) == len(expected_cells)
+            assert len(actual_by_identity) == len(actual_cells)
+            assert expected_by_identity.keys() == actual_by_identity.keys()
+            cells_to_compare = expected_by_identity.items()
+            actual_cells_by_identity = actual_by_identity
+        else:
+            assert expected_cells.keys() == actual_cells.keys()
+            cells_to_compare = expected_cells.items()
+            actual_cells_by_identity = actual_cells
+        for identity, expected_cell in cells_to_compare:
             assert isinstance(expected_cell, Mapping)
-            _assert_cell_matches(expected_cell, actual_cells[key])
-        _compare(expected["metadata"], actual["metadata"])
+            actual_cell = cast(Any, actual_cells_by_identity)[identity]
+            _assert_cell_matches(expected_cell, actual_cell, snapshotless=snapshotless)
+        expected_metadata = _metadata_without_modes(expected["metadata"])
+        actual_metadata = _metadata_without_modes(actual["metadata"])
+        if snapshotless:
+            expected_metadata = _without_snapshot_identity(expected_metadata)
+            actual_metadata = _without_snapshot_identity(actual_metadata)
+        _compare(expected_metadata, actual_metadata)
         for field in (
             "population_identity",
             "daily_values",
@@ -157,10 +421,249 @@ def _assert_outcome_matches(expected: Mapping[str, Any], actual: Mapping[str, ob
             "aggregate_evidence",
         ):
             if field in expected:
-                if field == "aggregate_evidence":
-                    assert expected[field] == actual[field]
+                expected_value = expected[field]
+                actual_value = actual[field]
+                if snapshotless:
+                    expected_value = _without_snapshot_identity(expected_value)
+                    actual_value = _without_snapshot_identity(actual_value)
+                    if field == "aggregate_evidence":
+                        expected_value = _decode_fitted_cuped_evidence(expected_value)
+                        actual_value = _decode_fitted_cuped_evidence(actual_value)
+                if field == "aggregate_evidence" and not snapshotless:
+                    assert expected_value == actual_value
                 else:
-                    _compare(expected[field], actual[field])
+                    _compare(expected_value, actual_value)
+        return _mode_metadata(actual["metadata"])
+    return {}
+
+
+def _line1_read(analysis: Any, case: Any) -> Any:
+    metrics = None if case.metrics is None else list(case.metrics)
+    return analysis.run(
+        estimands=case.estimands,
+        prior=case.prior,
+        metrics=metrics,
+        decision_method=case.decision_method,
+    )
+
+
+def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
+    from unittest.mock import patch
+
+    stack.enter_context(patch.object(target, name, replacement))
+
+
+def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, int]]:
+    from collections import Counter
+    from contextlib import ExitStack
+
+    source = held_source(analysis)
+    source_type = type(source)
+    names = (
+        ("unit_frame",)
+        if callable(getattr(source, "unit_frame", None))
+        else (
+            ("readout_snapshot",)
+            if callable(getattr(source, "readout_snapshot", None))
+            else tuple(
+                name
+                for name in ("moments", "moments_for_method")
+                if callable(getattr(source, name, None))
+            )
+        )
+    )
+    counts: Counter[str] = Counter()
+    depth = 0
+    with ExitStack() as stack:
+        for name in names:
+            original = getattr(source_type, name)
+
+            def counted(this, *args, _original=original, _name=name, **kwargs):
+                nonlocal depth
+                if depth == 0:
+                    metrics = kwargs.get("metrics") if _name == "readout_snapshot" else None
+                    if metrics is not None:
+                        for metric in metrics:
+                            counts[str(getattr(metric, "name", metric))] += 1
+                    else:
+                        metric = args[0] if args else kwargs.get("metric")
+                        key = getattr(metric, "name", str(metric)) if metric is not None else _name
+                        counts[str(key)] += 1
+                depth += 1
+                try:
+                    return _original(this, *args, **kwargs)
+                finally:
+                    depth -= 1
+
+            _enter_patch(stack, source_type, name, counted)
+        return _line1_read(analysis, case), counts
+
+
+def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:
+    """The current outcome of a registered pair under the capture's recorded conditions.
+
+    The frozen capture ran every DuckDB connection with ``threads=1``
+    (``scripts/capture_evidence_identity.capture`` wraps ``_capture_operations`` in
+    ``_single_thread_duckdb``); the actual side reuses that same helper so a
+    comparison never mixes multi-threaded reduction order into the oracle.
+    """
+    from contextlib import ExitStack
+
+    # Capture component kinds at the snapshot-hash seam to select QR normalization by evidence.
+    from increment.readouts import _design_scope, _randomized_scope
+    from scripts.capture_evidence_identity import _single_thread_duckdb
+
+    scope_components: list[dict[str, Any]] = []
+    original_design_snapshot_id = _design_scope._design_snapshot_id
+    original_randomized_snapshot_id = _randomized_scope._randomized_snapshot_id
+
+    def capture_design_scope(src: Any, source: Mapping[str, Any], request: Mapping[str, Any]):
+        scope_components.extend(source.get("components", ()))
+        return original_design_snapshot_id(src, source, request)
+
+    def capture_randomized_scope(source: Mapping[str, Any], request: Mapping[str, Any]):
+        scope_components.extend(source.get("components", ()))
+        return original_randomized_snapshot_id(source, request)
+
+    with _single_thread_duckdb(), ExitStack() as stack:
+        _enter_patch(stack, _design_scope, "_design_snapshot_id", capture_design_scope)
+        _enter_patch(stack, _randomized_scope, "_randomized_snapshot_id", capture_randomized_scope)
+        outcome = _line1_outcome(scenario_id, ingress)
+    if outcome.get("kind") == "cells":
+        return {**outcome, "_scope_evidence_components": scope_components}
+    return outcome
+
+
+def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # noqa: PLR0915
+    import json
+    import warnings
+    from contextlib import ExitStack
+    from datetime import UTC, datetime
+
+    from increment import Analysis
+    from increment.errors import CodedError, InvalidRequestError
+    from increment.result_envelope import AnalysisEnvelope
+    from scripts.capture_evidence_identity import (
+        _aggregate_evidence,
+        _population_identity,
+    )
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_analysis
+
+    cases = {case.id: case for case in PARITY_CASES}
+    case = cases[scenario_id]
+    if ingress not in case.build:
+        return {
+            "kind": "absent",
+            "reason": case.waive.get(ingress, "constructor ingress is not declared"),
+        }
+
+    aggregate_rows: list[dict[str, object]] = []
+    payloads: dict[str, object] = {}
+    try:
+        if ingress == "from_moments":
+            original_from_moments = Analysis.from_moments
+
+            def capture_moments(cls, rows, **kwargs):
+                aggregate_rows.extend(copy.deepcopy(dict(row)) for row in rows)
+                return original_from_moments(rows, **kwargs)
+
+            with ExitStack() as stack:
+                _enter_patch(stack, Analysis, "from_moments", classmethod(capture_moments))
+                analysis = case.build[ingress]()
+        else:
+            analysis = case.build[ingress]()
+    except CodedError as error:
+        outcome = {
+            "kind": "refusal",
+            "code": error.code,
+            "stage": "construct",
+            "context": dict(error.context),
+        }
+        aggregate = _aggregate_evidence(payloads, aggregate_rows)
+        if aggregate is not None:
+            payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+            aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+            outcome["aggregate_evidence"] = aggregate
+        return outcome
+
+    try:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                results, read_count = _run_with_read_counter(analysis, case)
+            assert all(count == 1 for count in read_count.values()), (
+                f"{scenario_id}/{ingress} performed repeated captured reads: {read_count}"
+            )
+            metadata_value = getattr(results, "metadata", None)
+            cells = []
+            for row in results:
+                cells.extend(
+                    row.as_cells(
+                        metadata_value,
+                        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    )
+                )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                population_identity = _population_identity(analysis, case, cells)
+        except CodedError as error:
+            outcome: dict[str, object] = {
+                "kind": "refusal",
+                "code": error.code,
+                "stage": "run",
+                "context": dict(error.context),
+            }
+            aggregate = _aggregate_evidence(payloads, aggregate_rows)
+            if aggregate is not None:
+                payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+                aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+                outcome["aggregate_evidence"] = aggregate
+            return outcome
+
+        family_selection: dict[str, object] = {"status": "unavailable"}
+        if cells:
+            try:
+                from increment.estimation.family import select_exploratory_family
+
+                selected = select_exploratory_family(list(results), q=0.05)
+                family_selection = {
+                    "status": "available",
+                    "q": 0.05,
+                    "results": json.loads(
+                        json.dumps([row.model_dump(mode="json") for row in selected])
+                    ),
+                }
+            except (CodedError, InvalidRequestError) as error:
+                family_selection = {
+                    "status": "refusal",
+                    "code": error.code,
+                    "context": dict(error.context),
+                }
+        family_selection = cast(dict[str, object], _json_compatible(family_selection))
+        cells_by_hash: dict[str, object] = {}
+        for cell in cells:
+            cell_hash = cell.identity.hash()
+            assert cell_hash not in cells_by_hash
+            cells_by_hash[cell_hash] = cell
+        outcome = {
+            "kind": "cells",
+            "cells": cells_by_hash,
+            "daily_values": [],
+            "family_selection": family_selection,
+            "metadata": AnalysisEnvelope(tuple(cells), metadata_value).to_payload()["metadata"],
+            "population_identity": population_identity,
+        }
+        aggregate = _aggregate_evidence(payloads, aggregate_rows)
+        if aggregate is not None:
+            payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+            aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+            outcome["aggregate_evidence"] = aggregate
+        return outcome
+    finally:
+        _close_parity_analysis(analysis)
+
+
+NEW_PATH_ADAPTERS = dict.fromkeys(_LINE1_PAIRS, _line1_actual_outcome)
 
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
@@ -185,6 +688,23 @@ def test_capture_scenario_inventory_matches_fixture() -> None:
     assert actual == expected
 
 
+def test_line1_registration_inventory_matches_frozen_capture() -> None:
+    captured = _capture()["scenarios"]
+    fixture_pairs = {
+        (scenario_id, ingress) for scenario_id, outcomes in captured.items() for ingress in outcomes
+    }
+    assert _LINE1_PAIRS <= fixture_pairs
+    assert set(NEW_PATH_ADAPTERS) == _LINE1_PAIRS
+    counts = {
+        kind: sum(
+            captured[scenario_id][ingress]["kind"] == kind for scenario_id, ingress in _LINE1_PAIRS
+        )
+        for kind in ("cells", "refusal", "absent")
+    }
+    assert counts == {"cells": 144, "refusal": 19, "absent": 37}
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("scenario_id", "ingress", "expected"),
     sorted(
@@ -198,7 +718,8 @@ def test_frozen_capture_outcome(
 ) -> None:
     global _SKIP_COUNT
     key = (scenario_id, ingress)
-    if key not in REGISTERED.get("pre-kernel", frozenset()):
+    registered = {pair for pairs in REGISTERED.values() for pair in pairs}
+    if key not in registered:
         _SKIP_COUNT += 1
         if os.getenv("INCREMENT_REQUIRE_ALL_REGISTERED") == "1":
             pytest.fail(f"new path not registered for {scenario_id}/{ingress}")
@@ -216,7 +737,45 @@ def test_frozen_capture_outcome(
             f"registered adapter skipped for {scenario_id}/{ingress}: {error}",
             pytrace=False,
         )
-    _assert_outcome_matches(expected, actual)
+    modes = _assert_outcome_matches(expected, actual)
+    if key in _LINE1_PAIRS and expected["kind"] == "cells":
+        assert modes["coherence"] == "captured"
+        effective_modes = modes["effective_modes"]
+        assert isinstance(effective_modes, Mapping)
+        assert effective_modes
+        assert set(effective_modes.values()) == {"captured"}
+
+
+@pytest.mark.integration
+def test_readout_snapshot_identity_is_hash_seed_independent() -> None:
+    script = """
+import json
+from tests.test_evidence_identity_parity import _line1_actual_outcome
+scenarios = (
+    ("categorical-cuped-moments-format-13", "from_moments"),
+    ("mixed-cuped-multicovariate-fixed-horizon", "from_moments"),
+    ("dashboard-group-data", "from_unit_summary"),
+)
+for scenario, ingress in scenarios:
+    outcome = _line1_actual_outcome(scenario, ingress)
+    print(json.dumps({
+        "scenario": scenario,
+        "snapshot_id": outcome["metadata"]["scope"]["snapshot_id"],
+    }, sort_keys=True))
+"""
+    snapshots = []
+    for seed in ("0", "4"):
+        environment = os.environ.copy()
+        environment["PYTHONHASHSEED"] = seed
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        snapshots.append(result.stdout)
+    assert snapshots[0] == snapshots[1]
 
 
 def test_frozen_capture_replays_every_outcome_against_itself() -> None:
@@ -305,10 +864,38 @@ def test_frozen_capture_rejects_refusal_context_mismatch(context: dict[str, obje
         _assert_outcome_matches(expected, actual)
 
 
+def test_frozen_capture_rejects_captured_refusal_context_mutation() -> None:
+    expected = next(
+        outcome
+        for scenario in _capture()["scenarios"].values()
+        for outcome in scenario.values()
+        if outcome["kind"] == "refusal"
+    )
+    _assert_unchanged_capture_matches(expected)
+    actual = copy.deepcopy(expected)
+    actual["context"] = {**expected["context"], "unexpected": "changed"}
+    with pytest.raises(AssertionError):
+        _assert_outcome_matches(expected, actual)
+
+
 def test_frozen_capture_rejects_absence_reason_mismatch() -> None:
     expected = {"kind": "absent", "reason": "constructor not declared"}
     _assert_outcome_matches(expected, expected)
     actual = {"kind": "absent", "reason": "different absence reason"}
+    with pytest.raises(AssertionError):
+        _assert_outcome_matches(expected, actual)
+
+
+def test_frozen_capture_rejects_captured_absence_reason_mutation() -> None:
+    expected = next(
+        outcome
+        for scenario in _capture()["scenarios"].values()
+        for outcome in scenario.values()
+        if outcome["kind"] == "absent"
+    )
+    _assert_unchanged_capture_matches(expected)
+    actual = dict(expected)
+    actual["reason"] = "different absence reason"
     with pytest.raises(AssertionError):
         _assert_outcome_matches(expected, actual)
 
@@ -385,7 +972,7 @@ def test_registered_adapter_skip_fails(monkeypatch) -> None:
     scenario_id, scenario = next(iter(_capture()["scenarios"].items()))
     ingress, expected = next(iter(scenario.items()))
     key = (scenario_id, ingress)
-    monkeypatch.setattr(parity, "REGISTERED", {"pre-kernel": frozenset({key})})
+    monkeypatch.setattr(parity, "REGISTERED", {"line1": frozenset({key})})
     monkeypatch.setattr(
         parity,
         "NEW_PATH_ADAPTERS",

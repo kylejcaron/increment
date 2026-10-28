@@ -264,9 +264,13 @@ def _rows(results) -> list[dict[str, Any]]:
 
 
 def _frame_rows(results) -> list[dict[str, Any]]:
+    """Serialize full result models alongside their presentation-derived fields."""
     frame = results.to_frame()
-    rows = json.loads(frame.to_json(orient="records", date_format="iso", double_precision=15))
-    for row in rows:
+    rendered = json.loads(frame.to_json(orient="records", date_format="iso", double_precision=15))
+    rows = []
+    for result, projection in zip(results, rendered, strict=True):
+        row = result.model_dump(mode="json")
+        row.update(projection)
         advisories = row.get("advisories")
         if isinstance(advisories, str):
             row["advisories"] = [
@@ -274,6 +278,11 @@ def _frame_rows(results) -> list[dict[str, Any]]:
                 for notice in json.loads(advisories)
             ]
         row.pop("failure_message", None)
+        # These capture/result envelope fields postdate the frozen replay fixture;
+        # all pre-existing result fields remain compared below.
+        for key in ("binomial_set", "coherence", "effective_modes", "provider_owned"):
+            row.pop(key, None)
+        rows.append(row)
     return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
 
 

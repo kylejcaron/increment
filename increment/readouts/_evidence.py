@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, ExitStack, contextmanager
-from contextvars import ContextVar
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast, overload
 
@@ -18,6 +17,7 @@ from increment._evidence_refusals import (
     require_evidence,
     require_population,
 )
+from increment._evidence_scopes import SCOPE_OWNERS, loader_source, scope_source
 from increment._evidence_types import (
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
@@ -52,6 +52,7 @@ from increment._evidence_types import (
     day_axis_time_basis,
     validate_compliance_source_match,
 )
+from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_types import (
     EvidenceCapabilities,
     EvidenceProvider,
@@ -60,6 +61,9 @@ from increment._source_types import (
     declared_evidence,
     is_builtin_source,
     is_custom_source,
+)
+from increment._trigger_integrity import (
+    validate_trigger_fires_in_every_arm as _validate_trigger,
 )
 from increment.errors import CodedError
 from increment.semantics.models import Breakout
@@ -270,39 +274,13 @@ def evidence_scope(
 
 @contextmanager
 def _evidence_scope(src: EvidenceSource, scope: EvidenceScope) -> Iterator[EvidenceSource]:
-    from increment._source_types import is_custom_source
-
-    if is_custom_source(src):
-        require_request_evidence(src, scope)
-        scoped = src.scope(scope)
-        with scoped.source as pinned:
-            token = _SCOPE_OWNERS.set((*_SCOPE_OWNERS.get(), (id(pinned), src)))
-            try:
-                yield pinned
-            finally:
-                _SCOPE_OWNERS.reset(token)
-        return
-
-    with ExitStack() as stack:
-        scoped = _builtin_source(src)
-        if scope.snapshot and "readout_snapshot" in declared_evidence(scoped).operations:
-            scoped = stack.enter_context(
-                cast(Any, scoped).readout_snapshot(
-                    metrics=scope.metrics,
-                    population=scope.population,
-                    include_breakouts=scope.include_breakouts or bool(scope.breakouts),
-                    configs=scope.configs,
-                    uptake_facts=scope.uptake_facts,
-                )
-            )
-        if scope.execution and "readout_execution" in declared_evidence(scoped).operations:
-            stack.enter_context(cast(Any, scoped).readout_execution())
+    with scope_source(src, scope) as scoped:
         yield scoped
 
 
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:
-    """Narrow a source that this legacy acquisition path reads structurally."""
-    return cast(_BuiltinMomentSource, src)
+    """Bridge typed scoped providers to the loader-shaped acquisition seam."""
+    return loader_source(src)
 
 
 def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:
@@ -371,6 +349,18 @@ def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:
         return CountEvidence(request.population, "unit", source.unit_counts())
     grain, counts, units = cast(Any, source).triggered_counts()
     return CountEvidence("triggered", grain, counts, units)
+
+
+def validate_trigger_fires_in_every_arm(src: EvidenceSource, trigger: str | None) -> None:
+    """Validate trigger uptake from the same evidence source used by the readout."""
+    assigned = load_counts(src, CountsRequest(kind="assignment", population="assigned"))
+    triggered = load_counts(src, CountsRequest(kind="assignment", population="triggered"))
+    rates = {
+        arm: triggered.counts.get(arm, 0) / count if count else 0.0
+        for arm, count in assigned.counts.items()
+        if arm not in (MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL)
+    }
+    _validate_trigger(rates, trigger)
 
 
 def load_method_fit(src: EvidenceSource, request: MethodFitRequest) -> MethodFitAnswer:
@@ -517,24 +507,13 @@ def loader_snapshot(
     return source_snapshot(src, previous=previous)
 
 
-# Entered custom scopes, innermost last: (id of the yielded view, provider that owns it).
-# Keyed by identity so providers need be neither hashable nor weak-referenceable.
-_SCOPE_OWNERS: ContextVar[tuple[tuple[int, Any], ...]] = ContextVar("_SCOPE_OWNERS", default=())
-
-
 def _scope_owner(src: Any) -> Any:
     """Return the provider whose entered scope yielded ``src``, following nested scopes."""
     owner = src._snapshot_provider if isinstance(src, _BreakoutScopedProvider) else src
-    for view_id, scope_owner in reversed(_SCOPE_OWNERS.get()):
+    for view_id, scope_owner in reversed(SCOPE_OWNERS.get()):
         if view_id == id(owner) and scope_owner is not owner:
             owner = scope_owner
     return owner
-
-
-@contextmanager
-def _scope_source(src: EvidenceSource, request: EvidenceScope) -> Iterator[EvidenceSource]:
-    with evidence_scope(src, request) as scoped:
-        yield scoped
 
 
 class _BreakoutScopedProvider:
@@ -726,30 +705,6 @@ class _BreakoutScopedProvider:
         return EvidenceScopeResult(source(), scope)
 
 
-def load_evidence_scope(src: EvidenceSource, request: EvidenceScope) -> EvidenceScopeResult:
-    """Return a context-managed scoped view, closing source resources on exit."""
-    require_request_evidence(src, request)
-    scope = request
-    if (
-        not is_custom_source(src)
-        and request.snapshot
-        and request.include_breakouts
-        and request.population == "triggered"
-    ):
-        scope = EvidenceScope(
-            metrics=request.metrics,
-            population="assigned",
-            grain=request.grain,
-            breakouts=request.breakouts,
-            configs=request.configs,
-            uptake_facts=request.uptake_facts,
-            snapshot=request.snapshot,
-            execution=request.execution,
-            include_breakouts=request.include_breakouts,
-        )
-    return EvidenceScopeResult(_scope_source(src, scope), scope)
-
-
 @overload
 def load_breakout_evidence(
     src: EvidenceSource, request: BreakoutSlicesRequest
@@ -760,8 +715,6 @@ def load_breakout_evidence(
 def load_breakout_evidence(
     src: EvidenceSource, request: BreakoutUnitRowsRequest
 ) -> BreakoutUnitRows: ...
-
-
 def load_breakout_evidence(
     src: EvidenceSource, request: BreakoutSlicesRequest | BreakoutUnitRowsRequest
 ) -> BreakoutSlices | BreakoutUnitRows:
@@ -955,6 +908,7 @@ def _rows(
                     include_covariate=_include_covariate(req, metric),
                     completed_windows_only=req.completed_windows_only,
                     population=req.population,
+                    experiment=req.experiment,
                 ),
             )
             if routed:
@@ -1233,9 +1187,11 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                             "use Analysis.from_definitions or Analysis.from_unit_day_artifact",
                         )
                     # Custom typed moments can preserve trigger-aware scoped semantics.
-                    # Direct loading is reserved for a built-in loader yielded by scope.
-                    if is_builtin_source(pinned):
-                        delegated = _load_day_axis_rows(pinned, scoped_request)
+                    # A typed adapter may wrap a built-in loader; unwrap only for the
+                    # loader-backed day-axis route.
+                    pinned_loader = _builtin_source(pinned)
+                    if is_builtin_source(pinned_loader):
+                        delegated = _load_day_axis_rows(pinned_loader, scoped_request)
                         edge_source = _trigger_edge_source(delegated.source.src)
                         for item in delegated.slices:
                             yield DayAxisSlice(
@@ -1269,7 +1225,11 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
 
 def load_builtin_day_moments(src: EvidenceSource, request: MomentsRequest) -> MomentRows:
     """Answer a typed daily or as-of moments request from a built-in loader's day source."""
-    experiment = getattr(src, "_experiment", None) or getattr(src, "artifact_experiment", None)
+    experiment = (
+        request.experiment
+        or getattr(src, "_experiment", None)
+        or getattr(src, "artifact_experiment", None)
+    )
     day_request = DayAxisRequest(
         caller="run_daily_lift" if request.grain == "daily" else "run_asof_lift",
         grain=cast(Literal["daily", "asof"], request.grain),

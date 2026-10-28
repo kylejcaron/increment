@@ -1,6 +1,12 @@
 # H1: pytest.raises(..., match=...) on coded or unresolved exceptions
 # ---
 # H2: private-attribute reach-ins outside the two sanctioned shims
+tests/test_kernel_context_measurement.py::test_measurement_duckdb_source_disables_progress_output::_src
+tests/test_readout_execution_context.py::test_analysis_run_exposes_live_coherence_when_temp_tables_are_denied::_con
+tests/test_readout_execution_context.py::test_custom_provider_preserves_snapshot_after_update::_con
+tests/test_readout_execution_context.py::test_mutable_sql_panel_is_not_reported_as_captured::_con
+tests/test_readout_execution_context.py::test_whole_window_assigned_and_triggered_reads_share_capture.count_snapshot::_con
+tests/test_sequential_public_sources.py::test_sequential_readout_refuses_execution_context_before_evidence_read::_state
 # H3: patches targeting increment internals
 tests/breakout/test_daily.py 1
 tests/breakout/test_estimates.py 1
@@ -61,6 +67,7 @@ tests/test_dashboard_overview.py 1
 tests/test_exploratory_metrics.py 1
 tests/test_frame_panel.py 8
 tests/test_frame_switchback.py 3
+tests/test_readout_execution_context.py 1
 tests/test_readout_public_scope.py 1
 tests/test_readouts.py 1
 tests/test_readouts_observational.py 4
@@ -168,6 +175,7 @@ tests/query/test_artifact_contract.py 9
 tests/query/test_artifact_reader.py 1
 tests/query/test_builders.py 7
 tests/query/test_fact_resolution.py 4
+tests/query/test_integrity.py 1
 tests/query/test_report_builders.py 1
 tests/semantics/test_models.py 1
 tests/semantics/test_unit_day_artifact.py 4
@@ -208,6 +216,8 @@ tests/test_dashboard_overview.py 15
 tests/test_dashboard_population.py 6
 tests/test_dashboard_result_evidence.py 11
 tests/test_errors.py 1
+# Snapshot hash seams expose component kinds for evidence-driven QR parity.
+tests/test_evidence_identity_parity.py 2
 tests/test_experiment_health.py 3
 tests/test_exploratory_metrics.py 1
 tests/test_frame_exact_successes.py 4
@@ -223,6 +233,7 @@ tests/test_plan_compatibility.py 3
 tests/test_plan_resolver.py 3
 tests/test_policy_alpha.py 2
 tests/test_policy_parity.py 1
+tests/test_readout_execution_context.py 7
 tests/test_readout_interpretation.py 11
 tests/test_readout_metadata.py 4
 tests/test_readout_public_scope.py 8
@@ -233,7 +244,7 @@ tests/test_readouts_plan.py 2
 tests/test_readouts_switchback.py 2
 tests/test_refusal_uniqueness.py 5
 tests/test_render_compatibility.py 7
-tests/test_sequential_public_sources.py 2
+tests/test_sequential_public_sources.py 3
 tests/test_source_capabilities.py 10
 tests/test_sources.py 3
 tests/test_tables.py 6

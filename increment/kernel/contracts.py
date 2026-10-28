@@ -33,6 +33,8 @@ _REFUSALS = refusals(
             "Request datetime field {field!r} must be timezone-aware"
         ),
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
+        "kernel.context.closed": "Execution context is closed",
+        "kernel.context.undeclared_stream": "Execution context does not declare stream {stream!r}",
     },
 )
 _refuse = raiser(_REFUSALS)
