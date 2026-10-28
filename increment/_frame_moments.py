@@ -126,6 +126,16 @@ def emit_centered_moments(
     type, never from the values: 0/1-valued mean data is not a conversion.
     """
     group_cols = list(keys)
+    stable_order = [
+        *group_cols,
+        *(
+            column
+            for column in ("unit_id", "__cluster__")
+            if column in long.columns and column not in group_cols
+        ),
+    ]
+    if len(stable_order) > len(group_cols):
+        long = long.sort(stable_order)
     live = [variable for variable in plan.variables if variable in columns]
     masks = [mask for mask in plan.masked if mask in columns]
     ref_name = {variable: plan.name(("ref", (variable,), None)) for variable in live}
@@ -528,6 +538,7 @@ def _moment_rows(
     metrics: Sequence[MetricSpec],
     experiment_id: str,
     uptake: str | None = None,
+    unit: str = "unit_id",
     cluster: str | None = None,
     by: Sequence[str] = (),
     outcome_column: str | None = None,
@@ -634,6 +645,7 @@ def _moment_rows(
             exprs.append(nw.col(uptake).cast(nw.Float64).alias("d"))
 
         long = frame.select(
+            nw.col(unit).alias("unit_id"),
             *[nw.col(name) for name in by],
             nw.col(group).alias("group_id"),
             *exprs,

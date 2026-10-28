@@ -2030,7 +2030,7 @@ def emit_centered_moments(
             aggs[passthrough.column] = null(passthrough.dtype)
     for moment in plan.masked_moments():
         aggs[plan.name(moment)] = reduced(moment)
-    summary = centered.group_by(group_cols).agg(**aggs)
+    summary = centered.group_by(group_cols).agg(**aggs).order_by(group_cols)
 
     x_var = plan.x_variable()
     if x_var is None:

@@ -560,14 +560,24 @@ def test_frozen_capture_outcome(
 
 
 @pytest.mark.integration
-def test_categorical_readout_snapshot_identity_is_hash_seed_independent() -> None:
+def test_readout_snapshot_identity_is_hash_seed_independent() -> None:
     script = """
+import json
 from tests.test_evidence_identity_parity import _line1_actual_outcome
-outcome = _line1_actual_outcome("categorical-cuped-moments-format-13", "from_moments")
-print(outcome["metadata"]["scope"]["snapshot_id"])
+scenarios = (
+    ("categorical-cuped-moments-format-13", "from_moments"),
+    ("mixed-cuped-multicovariate-fixed-horizon", "from_moments"),
+    ("dashboard-group-data", "from_unit_summary"),
+)
+for scenario, ingress in scenarios:
+    outcome = _line1_actual_outcome(scenario, ingress)
+    print(json.dumps({
+        "scenario": scenario,
+        "snapshot_id": outcome["metadata"]["scope"]["snapshot_id"],
+    }, sort_keys=True))
 """
-    snapshot_ids = []
-    for seed in ("0", "1"):
+    snapshots = []
+    for seed in ("0", "4"):
         environment = os.environ.copy()
         environment["PYTHONHASHSEED"] = seed
         result = subprocess.run(
@@ -577,8 +587,8 @@ print(outcome["metadata"]["scope"]["snapshot_id"])
             text=True,
             env=environment,
         )
-        snapshot_ids.append(result.stdout.strip())
-    assert snapshot_ids[0] == snapshot_ids[1]
+        snapshots.append(result.stdout)
+    assert snapshots[0] == snapshots[1]
 
 
 def test_frozen_capture_replays_every_outcome_against_itself() -> None:

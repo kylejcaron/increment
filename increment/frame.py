@@ -605,6 +605,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         return _moment_rows(
             self._frame,
             group=self._group,
+            unit=self._unit,
             metrics=(method_spec,),
             experiment_id=self._experiment_id,
             uptake=self._uptake,
@@ -1026,6 +1027,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             else _moment_rows(
                 nwf,
                 group=group,
+                unit=unit,
                 metrics=specs,
                 experiment_id=experiment_id,
                 uptake=uptake,
