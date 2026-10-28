@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast
 from increment._analysis_config import effective_methods
 from increment._evidence_types import SourceContext
 from increment._literals import Correction, ValueScale
-from increment._source_types import declared_evidence, is_builtin_source
+from increment._source_types import declared_evidence
 from increment.errors import (
     RefusalSpec,
     refuse,
