@@ -287,7 +287,16 @@ def _pytest_invocations(
             ]
         ]
     if selection.test_files and any(arg.startswith("--ignore") for arg in extra_args):
-        return [markers + ["tests", *selection.doc_pages, *extra_args]]
+        return [
+            markers
+            + [
+                "-p",
+                "scripts.affected_filter",
+                "tests",
+                *selection.doc_pages,
+                *extra_args,
+            ]
+        ]
 
     direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
     direct_args.extend(extra_args)
@@ -350,6 +359,8 @@ def main(argv: list[str]) -> int:
         from tests._selection import kept_test_files
 
         kept = kept_test_files(root, arguments.base, tier=arguments.tier)
+    elif selection.test_files and any(argument.startswith("--ignore") for argument in extra_args):
+        kept = selection.test_files
     statuses = []
     for pytest_args in _pytest_invocations(
         selection, arguments.base, arguments.tier, extra_args, kept=kept

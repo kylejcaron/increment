@@ -70,6 +70,7 @@ def test_cli_honors_ignore_for_explicitly_selected_test_files(tmp_path: Path) ->
         {
             "tests/test_ignored.py": "from pathlib import Path\ndef test_ignored(): Path('ignored-ran').touch()\n",
             "tests/test_selected.py": "from pathlib import Path\ndef test_selected(): Path('selected-ran').touch()\n",
+            "tests/test_unrelated.py": "raise AssertionError('unrelated test imported')\n",
         },
     )
     (root / "tests/test_ignored.py").write_text(
