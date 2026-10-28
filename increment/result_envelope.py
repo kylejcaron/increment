@@ -609,6 +609,7 @@ class ResultCell:
                 alpha=getattr(row, "alpha", None),
                 n_groups=len(getattr(row, "groups", ())),
                 evaluation_population=_plain(getattr(row, "evaluation_population", None)),
+                settings=identity_context.get("method_settings"),
             )
         if row_kind in {"targeting", "targeting_selection"}:
             method_config.update(

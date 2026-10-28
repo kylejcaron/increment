@@ -463,10 +463,21 @@ def test_cate_and_validation_settings_change_cell_identity():
     validation_three = validate_cate(
         _source(), "revenue", control="control", interact=["spend"], n_groups=3
     ).as_cell()
+    validation_platform = validate_cate(
+        _source(),
+        "revenue",
+        control="control",
+        interact=[Covariate(name="platform", kind="categorical")],
+        n_groups=2,
+    ).as_cell()
 
     assert cate_spend.identity.method_config_hash != cate_unadjusted.identity.method_config_hash
     assert (
         validation_two.identity.method_config_hash != validation_three.identity.method_config_hash
+    )
+    assert (
+        validation_two.identity.method_config_hash
+        != validation_platform.identity.method_config_hash
     )
 
 

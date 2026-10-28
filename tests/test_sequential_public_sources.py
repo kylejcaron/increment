@@ -455,14 +455,16 @@ def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     assert cell.summary is not None
     assert cell.summary.alpha == pytest.approx(first_row.require_sequential_result().decision_alpha)
     assert cell.summary.reason == first_row.require_sequential_result().point_reason
-    assert cell.summary.intervals == ((cell.summary.lower, cell.summary.upper),)
+    # With no events a relative lift is bounded only below, by -100%.
+    assert (cell.summary.lower, cell.summary.upper) == (-1.0, None)
+    assert cell.summary.intervals == ((-1.0, None),)
     json_cell = ResultCell.from_payload(cell.to_payload())
     (arrow_cell,) = ResultCell.from_arrow(ResultCell.to_arrow([cell]))
     for restored in (json_cell, arrow_cell):
         assert restored.summary is not None
         assert restored.summary.alpha == cell.summary.alpha
         assert restored.summary.reason == cell.summary.reason
-        assert restored.summary.intervals == cell.summary.intervals
+        assert restored.summary.intervals == ((-1.0, None),)
     snapshot = first.sequential_snapshot()
     later = pd.concat(
         [early, _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24, offset=4)], ignore_index=True
