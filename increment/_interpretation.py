@@ -772,12 +772,13 @@ def _coherence_qualifications(
     qualifications = []
     if interpretation.independently_captured:
         qualifications.append("Coherence: captured independently per result family.")
-    elif interpretation.provider_owned:
-        qualifications.append("Coherence: provider-owned; the kernel does not pin a snapshot.")
-    elif interpretation.coherence == "live":
-        qualifications.append("Coherence: live; no pinned snapshot is guaranteed.")
-    elif interpretation.coherence == "captured":
-        qualifications.append("Coherence: captured.")
+    else:
+        if interpretation.provider_owned:
+            qualifications.append("Coherence: provider-owned; the kernel does not pin a snapshot.")
+        if interpretation.coherence == "live":
+            qualifications.append("Coherence: live; no pinned snapshot is guaranteed.")
+        elif interpretation.coherence == "captured" and not interpretation.provider_owned:
+            qualifications.append("Coherence: captured.")
     if interpretation.effective_modes:
         modes = ", ".join(
             f"{source}={mode}" for source, mode in sorted(interpretation.effective_modes.items())

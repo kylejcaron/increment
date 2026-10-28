@@ -183,7 +183,6 @@ def fit_multicovariate_source(
         )
     with relation_factory(metric, request) as (relation, execute, scratch_factory):
         relation = relation.filter(relation.group_id.isin(request.arm_order))
-        relation = relation.order_by("group_id", "unit_id")
         declarations = tuple(request.method.covariates or ())
         from increment.query._cuped_cells import require_warehouse_magnitude_range
 

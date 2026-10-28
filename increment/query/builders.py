@@ -1958,7 +1958,6 @@ def emit_centered_moments(
     *,
     keys: Sequence[str],
     columns: Mapping[str, str],
-    order_by: Sequence[str] = ("unit_id",),
 ) -> ir.Table:
     """One centered-moment row per *keys* from *table*, shaped by *plan*.
 
@@ -1977,14 +1976,12 @@ def emit_centered_moments(
     elsewhere, so a group's exact count is the integer sum of its rows.
     """
     group_cols = list(keys)
-    stable_order = list(order_by)
-    ordered = table.order_by(stable_order)
-    window = ibis.window(group_by=group_cols, order_by=stable_order, rows=(None, None))
+    window = ibis.window(group_by=group_cols)
     live = [variable for variable in plan.variables if variable in columns]
     masks = [mask for mask in plan.masked if mask in columns]
     ref_name = {variable: plan.name(("ref", (variable,), None)) for variable in live}
-    centered = ordered.mutate(
-        **{ref_name[variable]: ordered[columns[variable]].mean().over(window) for variable in live}
+    centered = table.mutate(
+        **{ref_name[variable]: table[columns[variable]].mean().over(window) for variable in live}
     )
     residual = {
         variable: centered[columns[variable]] - centered[ref_name[variable]] for variable in live
@@ -2030,7 +2027,7 @@ def emit_centered_moments(
             aggs[passthrough.column] = null(passthrough.dtype)
     for moment in plan.masked_moments():
         aggs[plan.name(moment)] = reduced(moment)
-    summary = centered.group_by(group_cols).agg(**aggs).order_by(group_cols)
+    summary = centered.group_by(group_cols).agg(**aggs)
 
     x_var = plan.x_variable()
     if x_var is None:
@@ -2171,11 +2168,7 @@ def group_summary(
         x_var = plan.x_variable()
         assert x_var is not None
         summary = emit_centered_moments(
-            per_cluster,
-            plan,
-            keys=group_cols,
-            columns={"y": "g", "den": "m", x_var: "x"},
-            order_by=(cluster,),
+            per_cluster, plan, keys=group_cols, columns={"y": "g", "den": "m", x_var: "x"}
         )
         # A cluster total is never a binary outcome: keep the declared row shape with an
         # explicit NULL count rather than any sum of cluster outcomes.

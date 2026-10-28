@@ -1185,8 +1185,21 @@ def concat_collection(left, right):
             )
         captures_by_id[capture.snapshot_id] = capture
     captures = tuple(captures_by_id[key] for key in sorted(captures_by_id))
-    coherence = captures[0].coherence if len(captures) == 1 else None
-    effective_modes = dict(captures[0].effective_modes) if len(captures) == 1 else {}
+    capture_coherences = {capture.coherence for capture in captures}
+    coherence = (
+        "live"
+        if "live" in capture_coherences
+        else "captured"
+        if capture_coherences == {"captured"}
+        else None
+    )
+    mode_rank = {"captured": 0, "live": 1, "provider": 2}
+    effective_modes: dict[str, Literal["captured", "live", "provider"]] = {}
+    for capture in captures:
+        for identity, mode in capture.effective_modes.items():
+            previous = effective_modes.get(identity)
+            if previous is None or mode_rank[mode] > mode_rank[previous]:
+                effective_modes[identity] = mode
     ids = sorted([a.scope.snapshot_id, b.scope.snapshot_id])
     cross = a.scope.snapshot_id != b.scope.snapshot_id
     sources, result_source = _merge_source_scopes(left, right, ids)

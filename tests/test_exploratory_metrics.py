@@ -978,5 +978,39 @@ def test_exploratory_metrics_retain_independent_capture_metadata(monkeypatch):
         analysis.close()
         con.disconnect()
 
+@pytest.mark.integration
+def test_exploratory_live_results_retain_live_coherence_metadata():
+    con = ds.duckdb_connection()
+    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    try:
+        rows = analysis.run(
+            exploratory_metrics=["rps"],
+            decision_method=Method(name="unadjusted"),
+            coherence="live",
+        )
+        assert rows.metadata is not None
+        assert rows.metadata.coherence == "live"
+        assert rows.metadata.effective_modes
+        assert set(rows.metadata.effective_modes.values()) == {"live"}
+        assert {capture.coherence for capture in rows.metadata.captures} == {"live"}
+        frame = rows.to_frame()
+        assert frame["coherence"].to_list() == ["live"] * len(rows)
+        import json
+
+        from increment.tables import estimates_to_readout, readout_table
+
+        exported = estimates_to_readout(rows)
+        assert all(row["coherence"] == "live" for row in exported)
+        assert all(
+            json.loads(row["effective_modes"]) == rows.metadata.effective_modes
+            for row in exported
+        )
+        assert "Coherence: live; no pinned snapshot is guaranteed." in (
+            readout_table(rows).gt().as_raw_html()
+        )
+    finally:
+        analysis.close()
+        con.disconnect()
+
 
 pytestmark = pytest.mark.integration
