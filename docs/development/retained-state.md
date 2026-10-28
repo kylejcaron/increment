@@ -1,4 +1,4 @@
-# Retained state for result-envelope pilot
+# Retained state for result envelopes
 
 The 3a adapter is `LiftEstimate.as_cells()`; `LiftEstimates.as_cells()` stamps one aware timestamp for the run and passes its existing `ReadoutMetadata` through unchanged. Supported cell states retain the serialized `LiftEstimate`, including nested inference sets, relative and additive references, status fields, and sequential checkpoints. Confidence sets that retain raw outcomes are not serialized: those cells preserve identity and an unavailable reason without row state. Supported retained rows are restored with `LiftEstimate.model_validate`; no live fit object is needed.
 
@@ -35,11 +35,28 @@ Use `ResultCell` or `AnalysisEnvelope` for portable per-cell summaries,
 available operations, and Arrow interchange. The long-term choice of saved
 result format is tracked in kata issue `cade`.
 
-The envelope adapter covers fixed-horizon mean, ratio and CUPED lift rows and
-asymptotic sequential lift rows. Only operations listed for a cell can be
-applied after reopening it. The format does not represent every analysis row
-type, reconstruct source data or fit objects, or add margin comparisons and
-family combination operations.
+The version-2 envelope adds a tagged report-only row payload for result classes
+that are not `LiftEstimate` rows. These payloads are not deserialized as
+`LiftEstimate` and have no portable operations unless a construction-specific
+adapter retains the required state. Version-1 JSON and Arrow result cells
+continue to decode as `lift_estimate`.
+
+| Public result row or collection | Retained state and identity | Portable operation ruling |
+|---|---|---|
+| `BreakoutEstimate` / `BreakoutEstimates` | Full typed row, including segment identity, population, source, raw and prior-shrunken result fields, relative/additive references, confidence-set geometry, counts, exclusion/unavailable status, multiplicity and posterior fields. | Report-only; no lift cast or relevel inference. Segment identity remains distinct from total rows. |
+| `DailyLiftEstimate` / `DailyLiftEstimates` | Full typed row, including `ds`, `ds_basis`, segment identity, source, set geometry, unavailable reason and sequential state. Daily and as-of rows have distinct row-kind and scope identities. | Report-only; no portable operation. |
+| `DailyMetricValue` / `DailyMetricValues` | Full typed row, including absolute arm mean or its exact unavailable reason, `ds`, `ds_basis`, segment and source. Daily and as-of values have distinct row-kind and scope identities. Both identity and summary explicitly use absolute scale. | Report-only; arm-level absolute values are not treatment contrasts. |
+| `CateResult` | Versioned report-only payload contains only fields in its public serialized form. The producing facade captures metric, control, treatment, scope and canonical source identity; an explicit source snapshot ID is retained when available. Omitted fit state is not reconstructed. | No fit-dependent operations. `cate`, `contrast` and `score` remain on the live result. |
+| Honest CATE / targeting outputs (`GroupEffect`, `CateValidation`, `TargetingRule`, `TargetingSelection`) | Typed report payload retains held-out group effects, gate/qualification, selected fraction and policy readout with numeric-null reasons. The selection estimand follows the outer targeting rule population; the inner selection population stays in the report payload. Withheld policy values remain null. | Report-only; no replay or policy mutation. |
+| `ConfoundingSensitivity` | Typed payload preserves the observed ratio, derived bounds and exact interval-null reason. The cell summary projects the ratio and both bounds to relative lift; table display formats those summaries as percentages. | Report-only; sensitivity is not a second sampling interval. |
+| `ContrastResult` / `ContrastResults` | Typed payload preserves contrast identity, estimate, descriptive or t-reference variance, null SE/dof reasons, realized order counts, status, refusal context, advisories and collection metadata. Its identity and summary use absolute scale. | Descriptive `switchback_unit_variance_envelope` does not support sampling operations; t-based methods remain construction-specific and are not granted lift operations. |
+
+Report-only cells can be reopened and passed through the same table and renderer entry points as their live rows; the renderer rehydrates typed report details rather than interpreting report payloads as `LiftEstimate`. Collection concatenation refuses incompatible daily/as-of view or completion-policy scopes with a coded error.
+
+Posterior mixture ordering and zero-weight components are serialized in model
+order; tuple-valued state is represented as canonical JSON arrays. Unordered
+advisories and operation sets are sorted. Runtime-only handles are excluded.
+Duplicate row identities are not collapsed: each input row remains a cell.
 
 See the [API reference's result format guidance](../api.md#portable-result-cells)
 for the user-facing format choice.

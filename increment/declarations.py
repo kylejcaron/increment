@@ -232,6 +232,7 @@ class CellKey(_ReadoutModel):
             and self.control_group is not None
             and self.treatment_group is not None
             and self.aggregation is not None
+            and self.value_scale in {None, "absolute"}
             and all(
                 value is None
                 for value in (
@@ -241,7 +242,6 @@ class CellKey(_ReadoutModel):
                     self.source,
                     self.ds,
                     self.ds_basis,
-                    self.value_scale,
                 )
             )
         )

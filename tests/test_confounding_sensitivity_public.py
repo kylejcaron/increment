@@ -280,3 +280,26 @@ def test_mean_metric_row_is_refused_from_its_metric_type():
         assert excinfo.value.context["metric_type"] == "mean"
     finally:
         analysis.close()
+
+
+def test_sensitivity_report_row_round_trips_as_report_only_cell():
+    import json
+
+    from increment.result_envelope import ResultCell
+
+    analysis = _analysis(_frame(), clustered=True)
+    try:
+        (lift,) = analysis.run()
+        report = confounding_sensitivity(lift, threshold_risk_ratio=1.05)
+        cell = report.as_cell()
+        assert cell.row_kind == "sensitivity"
+        payload = json.loads(json.dumps(cell.to_payload()))
+        restored = ResultCell.from_payload(payload)
+        assert restored.supports["sampling"] == frozenset()
+        assert restored.row_payload is not None
+        assert restored.row_payload["data"]["interval_unavailable_reason"] == (
+            report.interval_unavailable_reason
+        )
+        assert ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0].row_payload == cell.row_payload
+    finally:
+        analysis.close()

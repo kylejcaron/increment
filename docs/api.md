@@ -111,41 +111,61 @@ payload is distinct from a portable `ResultCell` payload; use the envelope
 format below when you need per-cell operation metadata, summaries, or Arrow
 interchange.
 
-For portable per-cell interval operations, use `ResultCell` and
-`AnalysisEnvelope` from `increment.result_envelope`. `ResultCell.to_payload()`
-and `from_payload()` read and write JSON-compatible cell data; `to_arrow()` and
-`from_arrow()` read and write Arrow tables. The envelope's matching methods
-preserve its cells and readout metadata.
+For portable cells, use `ResultCell` and `AnalysisEnvelope` from
+`increment.result_envelope`. `ResultCell.to_payload()` / `from_payload()` read
+and write JSON-compatible cells; `ResultCell.to_arrow()` / `from_arrow()` read
+and write Arrow tables. The matching envelope methods also preserve collection
+metadata.
+
+Estimated result collections expose `as_cells()`: this includes run readouts,
+`BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues`, and
+`ContrastResults`. Individual report objects expose `as_cell()`, including
+`CateResult`, `CateValidation`, `TargetingRule`, `TargetingSelection`, and
+`ConfoundingSensitivity`.
+
+Continuing with the `rows` collection created above, save and reopen an
+envelope to render its table or text report:
+
+```python
+import json
+
+from increment.result_envelope import AnalysisEnvelope, render
+from increment.tables import readout_table
+
+envelope = AnalysisEnvelope(tuple(rows.as_cells()), rows.metadata)
+saved = json.dumps(envelope.to_payload())
+reopened = AnalysisEnvelope.from_payload(json.loads(saved))
+table = readout_table(reopened)
+brief = render(reopened)
+```
+
+Version-2 cells also cover breakout rows, daily/as-of lift and absolute metric
+values, switchback contrasts, honest CATE and targeting reports, and sensitivity
+reports. These rows preserve typed report data and identity; their retained
+payloads do not recreate fit state or grant portable inference operations.
+Check each cell's `supports` before requesting an operation. Raw source outcomes
+are not retained: cells that would carry raw outcomes preserve identity and the
+reason without serializing those outcomes. The envelope retains no live analysis
+or fit object.
+
+`relevel(cell, alpha=...)` is available only for supported retained `t`
+intervals, at the same or a lower alpha than already stored; it can preserve or
+widen the interval, but cannot narrow it. Directional intervals with an open
+endpoint are not relevelable. Requests that would narrow an interval refuse
+with `results.operation.alpha_above_allocation`. This cell operation is
+separate from `LiftEstimate.reintervalize(alpha)`, which keeps its existing
+row-level reissue behavior. For multiplicity correction, pass retained lift
+rows to `select_exploratory_family()`; it derives the family cutoff and returns
+corrected estimates.
+
 Save `ReadoutResults` JSON to preserve and reopen a complete result collection.
 Use `ResultCell` or `AnalysisEnvelope` for portable per-cell summaries,
-available operations, and Arrow interchange. The long-term choice of saved
-result format is tracked in kata issue `cade`.
+available operations, rendering, and Arrow interchange. The long-term choice
+of saved result format is tracked in kata issue `cade`.
 
-
-Each cell retains its supported `LiftEstimate` state with identity, inference
-status, available operations, and a summary. Raw source outcomes are not
-retained: a row carrying raw outcomes in a confidence set is represented as an
-unavailable cell with its identity and reason. The envelope does not retain a
-live analysis or fit object.
-
-
-`relevel(cell, alpha=...)` can rebuild supported retained `t` intervals only
-at the same or a lower alpha than the interval already stored; it can preserve
-or widen the interval, but cannot narrow it. Directional intervals with an open
-endpoint are not relevelable. Requests that would narrow a supported interval
-refuse with `results.operation.alpha_above_allocation`. This portable cell
-operation is separate from `LiftEstimate.reintervalize(alpha)`, which keeps its
-existing row-level reissue behavior. For multiplicity correction, pass the
-retained rows to `select_exploratory_family()`; it derives the family cutoff and
-returns corrected estimates.
-The envelope supports the 3a result types: fixed-horizon mean, ratio and CUPED
-lift rows, plus asymptotic sequential lift rows. After reopening, only the
-operations listed as available for a cell can be applied. The envelope is not
-a replacement for every collection format or every result type; it does not
-add margin comparisons or family combination.
-
-See the [retained-state inventory](development/retained-state.md) for the
+See the [retained-state inventory](development/retained-state.md) for
 construction details and operation limits.
+
 
 
 !!! warning "A checkpoint belongs to one monitoring process"

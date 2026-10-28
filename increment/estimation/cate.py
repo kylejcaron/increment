@@ -566,6 +566,28 @@ class CateResult(CodedModel, BaseModel):
     interaction_means: tuple[float, ...] = Field(exclude=True, repr=False)
     interaction_positions: tuple[tuple[int, int], ...] = Field(exclude=True, repr=False)
     beta_ard: tuple[float, ...] | None = Field(default=None, exclude=True, repr=False)
+    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+
+    def as_cell(self, *, created_at=None):
+        from importlib import import_module
+
+        from increment.errors import CodedError
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        if self.report_context is None:
+            raise CodedError(
+                "CATE report identity was not captured by its producing facade",
+                code="results.cell.schema_unsupported",
+                context={"row_kind": "cate"},
+            )
+        return ResultCell.from_cate_report(
+            row=self,
+            row_kind="cate",
+            label="CATE",
+            identity_context=self.report_context,
+            created_at=created_at,
+        )
 
     @model_validator(mode="after")
     def _level_matches_alpha(self) -> CateResult:

@@ -287,6 +287,55 @@ def test_nonrepresentable_e_value_refuses(b):
     assert excinfo.value.code == "sensitivity.confounding.ratio_not_representable"
 
 
+def test_sensitivity_result_cell_retains_observed_ratio_and_interval():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
+
+    result = confounding_sensitivity(_row(1.2, 1.1, 1.3))
+    cell = ResultCell.from_payload(json.loads(json.dumps(result.as_cell().to_payload())))
+    assert cell.summary is not None
+    assert cell.summary.point == pytest.approx(0.2)
+    assert cell.summary.lower == pytest.approx(0.1)
+    assert cell.summary.upper == pytest.approx(0.3)
+    from increment.tables import readout_table
+
+    html = readout_table(AnalysisEnvelope((cell,), None))._repr_html_()
+    assert "20.0%" in html
+    assert "10.0%" in html
+    assert "30.0%" in html
+
+
+def test_sensitivity_table_projects_restored_cell():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
+    from increment.tables import readout_table
+
+    cell = ResultCell.from_payload(
+        json.loads(json.dumps(confounding_sensitivity(_row(1.2, 1.1, 1.3)).as_cell().to_payload()))
+    )
+    html = readout_table(AnalysisEnvelope((cell,), None))._repr_html_()
+    assert "conversion" in html
+    from increment.result_envelope import render
+
+    full = render(AnalysisEnvelope((cell,), None), "full")
+    assert "bias_factor_point" in full
+    assert "e_value_point" in full
+
+
+def test_restored_sensitivity_full_render_retains_tipping_points():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    result = confounding_sensitivity(_row(1.2, 1.1, 1.3))
+    cell = ResultCell.from_payload(json.loads(json.dumps(result.as_cell().to_payload())))
+    text = render(AnalysisEnvelope((cell,), None), "full")
+    assert "bias_factor_point" in text
+    assert "e_value_point" in text
+
+
 def test_metric_type_unavailable_is_refused():
     with pytest.raises(UnsupportedRequestError) as excinfo:
         confounding_sensitivity(_row(1.4, metric_type=None))

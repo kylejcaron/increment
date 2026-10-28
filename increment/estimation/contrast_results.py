@@ -434,6 +434,31 @@ class ContrastResults(list[ContrastResult]):
             self._default_backend,
         )
 
+    def as_cells(self, *, created_at=None):
+        from datetime import UTC, datetime
+        from importlib import import_module
+
+        contracts = import_module("increment.kernel.contracts")
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        def cell_identity(row):
+            identity = contracts.CellIdentity.from_row(row)
+            key = identity.key.model_copy(update={"value_scale": "absolute"})
+            return identity.model_copy(update={"key": key})
+
+        stamp = created_at or datetime.now(UTC)
+        return [
+            ResultCell.from_report_payload(
+                row_kind=row.method,
+                identity=cell_identity(row),
+                label=row.method,
+                row=row,
+                source_snapshot_id=row.source_snapshot_id,
+                created_at=stamp,
+            )
+            for row in self
+        ]
+
     def model_dump_json(self):
         from increment.estimation.readout_types import dump_collection
 

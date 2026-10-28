@@ -8,7 +8,7 @@ before passing arrays to the pure-math layer. The tests also assert that the
 from __future__ import annotations
 
 import copy
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import pyarrow as pa
@@ -140,12 +140,12 @@ def _frame(
     )
 
 
-def _source(*, design=None, **kwargs):
+def _source(*, design=None, control="control", **kwargs):
     return from_unit_summary(
         _frame(**kwargs),
         unit="user_id",
         group="variant",
-        control="control",
+        control=control,
         metrics=[MetricSpec(name="revenue")],
         design=design,
     )
@@ -288,6 +288,279 @@ class TestEstimate:
             shrunk.score(cols, deploy_grain="unit").std()
             < plain.score(cols, deploy_grain="unit").std()
         )
+
+
+def test_cate_envelope_captures_facade_identity_without_fit_state():
+    import gc
+    import json
+
+    from increment.result_envelope import ResultCell
+
+    result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+    cell = result.as_cell()
+    payload = json.loads(json.dumps(cell.to_payload()))
+    del result
+    gc.collect()
+    restored = ResultCell.from_payload(payload)
+    assert restored.row_kind == "cate"
+    assert restored.row_payload is not None
+    assert restored.row_payload["payload_version"] == 1
+    assert restored.row_payload["identity_context"]["metric"] == "revenue"
+    assert restored.row_payload["identity_context"]["source_identity"]
+    assert restored.row_payload["identity_context"]["control"] == "control"
+    assert restored.row_payload["identity_context"]["treatment"] == "treatment"
+    assert restored.supports["sampling"] == frozenset()
+    assert cell.identity.trigger_name == restored.row_payload["identity_context"]["trigger_name"]
+    assert cell.identity.source_identity_hash is not None
+    assert cell.identity.experiment_id == restored.row_payload["identity_context"][
+        "source_identity"
+    ].get("study_id")
+
+
+def test_cate_and_targeting_cells_bind_distinct_study_and_source_identity():
+    import json
+
+    from increment.result_envelope import ResultCell
+
+    first = estimate_cate(_source(), "revenue", control="control", interact=["spend"]).as_cell()
+    assert first.identity.experiment_id == "frame"
+    second_source = from_unit_summary(
+        _frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[MetricSpec(name="revenue")],
+        experiment_id="second-study",
+    )
+    second = estimate_cate(
+        second_source, "revenue", control="control", interact=["spend"]
+    ).as_cell()
+    restored = ResultCell.from_payload(json.loads(json.dumps(second.to_payload())))
+    assert first.identity.experiment_id != restored.identity.experiment_id
+    assert first.identity.source_identity_hash != restored.identity.source_identity_hash
+    source_result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+    identity_context = cast(dict[str, Any], source_result.report_context).copy()
+    identity_context["trigger_name"] = "onboarding-complete"
+    triggered = source_result.model_copy(update={"report_context": identity_context}).as_cell()
+    assert triggered.identity.trigger_name == "onboarding-complete"
+
+
+def test_trimmed_targeting_and_nested_validation_use_effective_estimand():
+    rule = targeting_rule(_source(), "revenue", control="control", interact=["spend"], fraction=0.5)
+    trimmed_validation = rule.validation.model_copy(update={"population": "overlap_trimmed"})
+    trimmed_rule = rule.model_copy(
+        update={"population": "overlap_trimmed", "validation": trimmed_validation}
+    )
+    cell = trimmed_rule.as_cell()
+    assert cell.identity.key.estimand == "overlap_subpopulation_ate"
+
+
+def test_nested_validation_population_does_not_override_targeting_rule_population():
+    selection = select_targeting_rule(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fractions=(0.0, 0.5, 1.0),
+        n_folds=2,
+        seed=0,
+    )
+    validation = selection.rule.validation.model_copy(update={"population": "overlap_trimmed"})
+    rule = selection.rule.model_copy(update={"validation": validation})
+    report = selection.model_copy(update={"rule": rule})
+    assert report.as_cell().identity.key.estimand == "ate"
+
+
+def test_inner_population_serializes_independently_from_the_outer_rule():
+    selection = select_targeting_rule(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fractions=(0.0, 0.5, 1.0),
+        n_folds=2,
+        seed=0,
+    ).model_copy(update={"population": "overlap_trimmed"})
+
+    cell = selection.as_cell()
+    assert cell.identity.key.estimand == "ate"
+    assert cell.row_payload is not None
+    assert cell.row_payload["data"]["population"] == "overlap_trimmed"
+
+
+def test_empty_targeting_selection_reason_survives_cell_and_table_round_trip():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
+    from increment.tables import readout_table
+
+    selection = select_targeting_rule(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fractions=(0.0,),
+        n_folds=2,
+        seed=0,
+    )
+    cell = ResultCell.from_payload(json.loads(json.dumps(selection.as_cell().to_payload())))
+    assert cell.summary is not None
+    assert cell.summary.reason == "estimation.targeting.empty_group"
+    html = readout_table(AnalysisEnvelope((cell,), None))._repr_html_()
+    assert "estimation.targeting.empty_group" in html
+
+
+def test_targeting_policy_fraction_changes_identity_and_summary_qualification():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    first = targeting_rule(
+        _source(), "revenue", control="control", interact=["spend"], fraction=0.25
+    ).as_cell()
+    second = targeting_rule(
+        _source(), "revenue", control="control", interact=["spend"], fraction=0.75
+    ).as_cell()
+    assert first.identity.method_config_hash != second.identity.method_config_hash
+    first = ResultCell.from_payload(json.loads(json.dumps(first.to_payload())))
+    assert first.summary is not None
+    assert first.summary.qualification is not None
+    assert "0.25" in first.summary.qualification
+    assert "0.25" in render(AnalysisEnvelope((first,), None), "brief")
+
+
+def test_cate_control_is_bound_to_identity_and_reopened_rendering():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    control_a = estimate_cate(
+        _source(arms=("control_A", "treatment"), control="control_A"),
+        "revenue",
+        control="control_A",
+        interact=["spend"],
+    ).as_cell()
+    control_b = estimate_cate(
+        _source(arms=("control_B", "treatment"), control="control_B"),
+        "revenue",
+        control="control_B",
+        interact=["spend"],
+    ).as_cell()
+    assert control_a.identity.method_config_hash != control_b.identity.method_config_hash
+    restored = ResultCell.from_payload(json.loads(json.dumps(control_a.to_payload())))
+    text = render(AnalysisEnvelope((restored,), None), "full")
+    assert "control=control_A" in text
+
+
+def test_cate_validation_alpha_survives_json_and_arrow_reopening():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    validation = validate_cate(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        n_groups=2,
+        alpha=0.1,
+    )
+    cell = validation.as_cell()
+    json_restored = ResultCell.from_payload(json.loads(json.dumps(cell.to_payload())))
+    (arrow_restored,) = ResultCell.from_arrow(ResultCell.to_arrow([cell]))
+    for restored in (json_restored, arrow_restored):
+        assert restored.summary is not None
+        assert restored.summary.alpha == pytest.approx(0.1)
+        assert "90.0% confidence" in render(AnalysisEnvelope((restored,), None), "brief")
+
+
+def test_honest_cate_and_targeting_reports_have_report_only_cells():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+    from increment.tables import readout_table
+
+    source = _source()
+    validation = validate_cate(source, "revenue", control="control", interact=["spend"], n_groups=2)
+    rule = targeting_rule(
+        source,
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fraction=0.5,
+    )
+    selection = select_targeting_rule(
+        source,
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fractions=(0.0, 0.5, 1.0),
+        n_folds=2,
+        seed=0,
+    )
+    restored_cells = []
+    for result, row_kind in (
+        (validation, "cate_validation"),
+        (rule, "targeting"),
+        (selection, "targeting_selection"),
+    ):
+        cell = result.as_cell()
+        assert cell.row_kind == row_kind
+        restored = ResultCell.from_payload(json.loads(json.dumps(cell.to_payload())))
+        restored_cells.append(restored)
+        assert restored.supports["sampling"] == frozenset()
+        assert restored.row_payload == cell.row_payload
+        assert restored.identity.experiment_id == "frame"
+        assert restored.identity.source_identity_hash is not None
+        assert restored.row_payload is not None
+        assert (
+            restored.identity.trigger_name
+            == restored.row_payload["identity_context"]["trigger_name"]
+        )
+        assert restored.summary is not None
+        result_data = cast(Any, result)
+        estimate = (
+            result_data.holdout_ate
+            if row_kind == "cate_validation"
+            else (
+                result_data.policy_value
+                if row_kind == "targeting"
+                else result_data.rule.policy_value
+            )
+        )
+        expected = None if estimate is None else estimate.value
+        summary = cast(Any, restored.summary)
+        assert summary.point == expected
+        if expected is None:
+            assert summary.reason is not None
+        else:
+            assert summary.point == pytest.approx(expected)
+        table = readout_table(AnalysisEnvelope((restored,), None))._repr_html_()
+        assert "revenue" in table
+    brief = render(AnalysisEnvelope(tuple(restored_cells), None), "brief")
+    for restored in restored_cells:
+        summary = cast(Any, restored.summary)
+        if summary.point is not None:
+            assert repr(summary.point) in brief
+    full = render(AnalysisEnvelope(tuple(restored_cells), None), "full")
+    assert "recommendation=" in full
+    assert "gate=" in full
+    assert "fraction=" in full
+
+
+def test_restored_targeting_full_render_retains_decision_details():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    result = targeting_rule(
+        _source(), "revenue", control="control", interact=["spend"], fraction=0.5
+    )
+    cell = ResultCell.from_payload(json.loads(json.dumps(result.as_cell().to_payload())))
+    text = render(AnalysisEnvelope((cell,), None), "full")
+    assert "recommendation=" in text
+    assert "gate=" in text
+    assert "fraction=" in text
 
 
 def test_cate_inference_is_invariant_to_representable_outcome_translation():

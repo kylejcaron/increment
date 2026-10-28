@@ -794,14 +794,27 @@ def refuse_legacy_sampling(row: Any) -> NoReturn:
 
 
 def _restore_collection(
-    collection_type, rows, metadata, source, sequential_snapshot, default_backend
+    collection_type,
+    rows,
+    metadata,
+    source,
+    sequential_snapshot,
+    default_backend,
+    envelope_view=None,
+    completion_policy=False,  # noqa: FBT002 - legacy pickle restoration uses positional arguments.
 ):
+    collection_scope = (
+        {"envelope_view": envelope_view, "completion_policy": completion_policy}
+        if collection_type.__name__ in {"DailyMetricValues", "DailyLiftEstimates"}
+        else {}
+    )
     return collection_type(
         rows,
         metadata=metadata,
         source=source,
         sequential_snapshot=sequential_snapshot,
         default_backend=default_backend,
+        **collection_scope,
     )
 
 
@@ -1062,6 +1075,16 @@ def _merge_cell_identities(
     return records, rows
 
 
+def _daily_collection_scope(collection):
+    view = getattr(collection, "_envelope_view", None)
+    if view not in {"daily", "asof"} and collection.metadata is not None:
+        views = {family.view for family in collection.metadata.scope.families}
+        view = next(iter(views)) if len(views) == 1 else None
+    return ("daily" if view not in {"daily", "asof"} else view), getattr(
+        collection, "_envelope_completion_policy", False
+    )
+
+
 def concat_collection(left, right):
     if type(left) is not type(right):
         refuse_readout(
@@ -1069,6 +1092,26 @@ def concat_collection(left, right):
             left=type(left).__name__,
             right=type(right).__name__,
         )
+    collection_scope = {}
+    if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
+        left_scope = _daily_collection_scope(left)
+        right_scope = _daily_collection_scope(right)
+        if left_scope != right_scope:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=tuple(
+                    sorted(
+                        metadata.scope.snapshot_id
+                        for metadata in (left.metadata, right.metadata)
+                        if metadata is not None
+                    )
+                ),
+                fields=("envelope_view", "completion_policy"),
+            )
+        collection_scope = {
+            "envelope_view": left_scope[0],
+            "completion_policy": left_scope[1],
+        }
     if left.metadata is None and right.metadata is None:
         if left.source != right.source or left.sequential_snapshot != right.sequential_snapshot:
             refuse_readout(
@@ -1083,6 +1126,7 @@ def concat_collection(left, right):
             default_backend=(
                 left._default_backend if left._default_backend == right._default_backend else None
             ),
+            **collection_scope,
         )
     if left.metadata is None or right.metadata is None:
         refuse_readout(
@@ -1194,6 +1238,11 @@ def concat_collection(left, right):
         rows.values(),
         "cross_snapshot_concat" if cross else "slice",
     )
+    if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
+        collection_scope = {
+            "envelope_view": left_scope[0],
+            "completion_policy": left_scope[1],
+        }
     return type(left)(
         rows.values(),
         metadata=metadata,
@@ -1202,6 +1251,7 @@ def concat_collection(left, right):
         default_backend=(
             left._default_backend if left._default_backend == right._default_backend else None
         ),
+        **collection_scope,
     )
 
 
@@ -1307,6 +1357,9 @@ class ReadoutResults:
             "source": payload.get("source"),
             "sequential_snapshot": sequential,
         }
+        if collection_name in {"DailyMetricValues", "DailyLiftEstimates"}:
+            kwargs["envelope_view"] = payload.get("envelope_view")
+            kwargs["completion_policy"] = payload.get("completion_policy", False)
         return collection_type(rows, **kwargs)
 
 
@@ -1314,19 +1367,20 @@ def dump_collection(results):
     import json
 
     metadata = results.metadata
-    return json.dumps(
-        {
-            "kind": "increment.readout",
-            "schema_version": 2,
-            "collection": type(results).__name__,
-            "row_model": results._model.__name__,
-            "snapshot_id": None if metadata is None else metadata.scope.snapshot_id,
-            "source": results.source,
-            "metadata": None if metadata is None else metadata.model_dump(mode="json"),
-            "sequential_snapshot": None
-            if results.sequential_snapshot is None
-            else results.sequential_snapshot.model_dump(mode="json"),
-            "rows": [row.model_dump(mode="json") for row in results],
-        },
-        allow_nan=False,
-    )
+    payload = {
+        "kind": "increment.readout",
+        "schema_version": 2,
+        "collection": type(results).__name__,
+        "row_model": results._model.__name__,
+        "snapshot_id": None if metadata is None else metadata.scope.snapshot_id,
+        "source": results.source,
+        "metadata": None if metadata is None else metadata.model_dump(mode="json"),
+        "sequential_snapshot": None
+        if results.sequential_snapshot is None
+        else results.sequential_snapshot.model_dump(mode="json"),
+        "rows": [row.model_dump(mode="json") for row in results],
+    }
+    if type(results).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
+        payload["envelope_view"] = results._envelope_view
+        payload["completion_policy"] = results._envelope_completion_policy
+    return json.dumps(payload, allow_nan=False)

@@ -3541,6 +3541,7 @@ class Analysis:
         )
         rows = self._day_axis().values(req)
         rows._default_backend = self._input_backend
+        rows._envelope_view = "daily"
         return rows
 
     def _daily_lift(self, **kwargs: Any) -> DailyLiftEstimates:
@@ -3696,6 +3697,7 @@ class Analysis:
             prior=prior,
         )
         rows._default_backend = self._input_backend
+        rows._envelope_view = "daily"
         return rows
 
     def run_asof(
@@ -3782,6 +3784,8 @@ class Analysis:
         )
         rows = self._day_axis().values(req)
         rows._default_backend = self._input_backend
+        rows._envelope_completion_policy = completed_windows_only
+        rows._envelope_view = "asof"
         return rows
 
     def run_asof_lift(
@@ -3915,4 +3919,6 @@ class Analysis:
             correction=normalize_display_correction(asof_policy.correction),
         )
         rows._default_backend = self._input_backend
+        rows._envelope_completion_policy = completed_windows_only
+        rows._envelope_view = "asof"
         return rows

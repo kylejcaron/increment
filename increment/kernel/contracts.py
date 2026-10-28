@@ -9,7 +9,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation, field_validator, model_validator
 from pydantic_core import PydanticSerializationError
 
 from increment import _evidence_types
@@ -117,6 +117,8 @@ class CellIdentity(_ContractModel):
     estimator_id: str | None = None
     method_config_hash: str | None = None
     method_instance_id: str | None = None
+    trigger_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_identity_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     scope: Scope | None = None
 
     @model_validator(mode="before")

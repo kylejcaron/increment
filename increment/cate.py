@@ -318,6 +318,39 @@ def _unit_design(
     )
 
 
+def _report_identity_context(
+    source: EvidenceSource, unit: _UnitDesign, metric: str, control: str
+) -> dict[str, object]:
+    from importlib import import_module
+
+    source_identity = import_module("increment._source_identity").source_identity(source)
+    arms = set(unit.frame["group_id"].to_list())
+    treatment = next(arm for arm in arms if arm != control)
+    evidence = declared_evidence(source)
+    population = (
+        "triggered"
+        if "triggered" in evidence.populations and "assigned" not in evidence.populations
+        else "assigned"
+    )
+    return {
+        "metric": metric,
+        "control": control,
+        "treatment": treatment,
+        "source_identity": source_identity,
+        "source_snapshot_id": None,
+        "trigger_name": source.context.trigger_name,
+        "analysis_population": population,
+        "scope": {
+            "view": "run",
+            "grain": "total",
+            "population": population,
+            "time_basis": "calendar",
+            "completion_policy": False,
+            "segment": [],
+        },
+    }
+
+
 _DR_CROSSFIT_FOLDS = 5
 _DR_CROSSFIT_SEED = 0
 
@@ -401,7 +434,7 @@ def estimate_cate(
         caller="estimate_cate",
         permit_observational=False,
     )
-    return fit_cate(
+    result = fit_cate(
         unit.y,
         unit.d,
         unit.cols,
@@ -412,6 +445,9 @@ def estimate_cate(
         cluster_weight=cluster_weight,
         cluster_ids=unit.cluster_ids,
         intervention_grain=unit.intervention_grain,
+    )
+    return result.model_copy(
+        update={"report_context": _report_identity_context(source, unit, metric, control)}
     )
 
 
@@ -490,7 +526,7 @@ def validate_cate(
         permit_observational=True,
     )
     adjustment, psi_fn, arm_summary = _score_plan(unit.identification)
-    return validate_cate_arrays(
+    result = validate_cate_arrays(
         unit.y,
         unit.d,
         unit.cols,
@@ -508,6 +544,11 @@ def validate_cate(
         arm_summary=arm_summary,
         intervention_grain=unit.intervention_grain,
         include_evaluation_population=include_evaluation_population,
+    )
+    if not isinstance(result, CateValidation):
+        return result
+    return result.model_copy(
+        update={"report_context": _report_identity_context(source, unit, metric, control)}
     )
 
 
@@ -585,7 +626,7 @@ def targeting_rule(
         permit_observational=True,
     )
     adjustment, psi_fn, arm_summary = _score_plan(unit.identification)
-    return targeting_rule_arrays(
+    result = targeting_rule_arrays(
         unit.y,
         unit.d,
         unit.cols,
@@ -605,6 +646,11 @@ def targeting_rule(
         deploy_grain=deploy_grain,
         include_evaluation_population=include_evaluation_population,
     )
+    if not isinstance(result, TargetingRule):
+        return result
+    identity_context = _report_identity_context(source, unit, metric, control)
+    validation = result.validation.model_copy(update={"report_context": identity_context})
+    return result.model_copy(update={"report_context": identity_context, "validation": validation})
 
 
 # Identification, selection and deployment controls remain explicit at the public boundary.
@@ -682,7 +728,7 @@ def select_targeting_rule(  # noqa: PLR0913
         permit_observational=True,
     )
     adjustment, psi_fn, arm_summary = _score_plan(unit.identification)
-    return select_targeting_rule_arrays(
+    result = select_targeting_rule_arrays(
         unit.y,
         unit.d,
         unit.cols,
@@ -705,6 +751,14 @@ def select_targeting_rule(  # noqa: PLR0913
         deploy_grain=deploy_grain,
         include_evaluation_population=include_evaluation_population,
     )
+    if not isinstance(result, TargetingSelection):
+        return result
+    identity_context = _report_identity_context(source, unit, metric, control)
+    validation = result.rule.validation.model_copy(update={"report_context": identity_context})
+    rule = result.rule.model_copy(
+        update={"report_context": identity_context, "validation": validation}
+    )
+    return result.model_copy(update={"report_context": identity_context, "rule": rule})
 
 
 __all__ = [
