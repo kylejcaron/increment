@@ -295,10 +295,7 @@ def execution_identity_hash(
 
 def _request_value(value: object) -> object:
     if isinstance(value, datetime):
-        try:
-            normalized = canonical_datetime_string(value)
-        except CanonicalJSONError:
-            _refuse("kernel.request.datetime_timezone", field="datetime")
+        normalized = canonical_datetime_string(value)
         return {"type": "datetime", "value": normalized}
     if isinstance(value, date):
         return {"type": "date", "value": value.isoformat()}
