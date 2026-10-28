@@ -1736,14 +1736,6 @@ class WarehouseSession:
 
     def source_sql(self, sql: str) -> Table:
         """Resolve source SQL against this operation's captured inputs, if any."""
-        if self._con.name == "postgres" and not self._postgres_temp_privilege_checked:
-            with cast(Any, self._con).raw_sql(
-                "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
-            ) as cursor:
-                has_temp_privilege = cursor.fetchone()[0]
-            self._postgres_temp_privilege_checked = True
-            if not has_temp_privilege:
-                _raise("query.session.snapshot.materialization_failed")
         if self._source_tables is not None:
             if sql not in self._source_tables:
                 _raise("query.session.snapshot.source_missing")
@@ -1755,6 +1747,7 @@ class WarehouseSession:
         queries: tuple[str, ...],
         *,
         column_hints: Mapping[str, tuple[str | None, str | None]] = MappingProxyType({}),
+        column_projections: Mapping[str, tuple[str, ...]] = MappingProxyType({}),
         scope: SourceScope | None = None,
         source_snapshot_evidence: SourceSnapshotEvidence | None = None,
         extra_relations: Mapping[str, Table] = MappingProxyType({}),
@@ -1770,9 +1763,23 @@ class WarehouseSession:
         table; raw rows never cross the client boundary. The returned session owns its cleanup.
         """
         queries = tuple(dict.fromkeys(queries))
+        if self._con.name == "postgres" and not self._postgres_temp_privilege_checked:
+            with cast(Any, self._con).raw_sql(
+                "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
+            ) as cursor:
+                has_temp_privilege = cursor.fetchone()[0]
+            self._postgres_temp_privilege_checked = True
+            if not has_temp_privilege:
+                _raise("query.session.snapshot.materialization_failed")
         tables = []
         for sql in queries:
             table = self.source_sql(sql)
+            projection = column_projections.get(sql)
+            if projection is not None:
+                available = set(table.columns)
+                selected = tuple(column for column in projection if column in available)
+                if selected:
+                    table = table.select(*selected)
             if scope is not None:
                 unit_col, ts_col = column_hints.get(sql, (None, None))
                 from increment.query.builders import _utc_timestamp_literal

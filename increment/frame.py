@@ -1412,8 +1412,8 @@ class FramePanelSource(SequentialSourceMixin):
     cumulative ``"asof"`` moments.
 
     Construction snapshots metric metadata, group counts, and fact dates.
-    Captured readout scopes copy mutable pandas frames at scope entry; immutable
-    Polars and Arrow frames stay zero-copy. Returned moments and counts are defensive
+    Captured readout scopes copy mutable pandas and Polars frames at scope entry;
+    immutable Arrow frames stay zero-copy. Returned moments and counts are defensive
     copies.
     """
 
@@ -1465,7 +1465,7 @@ class FramePanelSource(SequentialSourceMixin):
         include_breakouts: bool = False,
         configs: Sequence[Any] | None = None,
     ):
-        """Snapshot mutable pandas panel evidence at the start of a readout."""
+        """Snapshot mutable pandas and Polars panel evidence at readout start."""
         del metrics, population, uptake_facts, include_breakouts, configs
         pinned = copy(self)
         for attribute in (
@@ -1479,6 +1479,8 @@ class FramePanelSource(SequentialSourceMixin):
                 continue
             if frame.implementation.value == "pandas":
                 frame = nw.from_native(frame.to_native().copy(deep=True), eager_only=True)
+            elif frame.implementation.value == "polars":
+                frame = nw.from_native(frame.to_native().clone(), eager_only=True)
             setattr(pinned, attribute, frame)
         pinned._identity = None
         pinned._moment_rows_cache = {}

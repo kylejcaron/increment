@@ -927,6 +927,75 @@ def test_frame_panel_context_snapshots_mutable_pandas_panel():
 
 
 @pytest.mark.integration
+def test_frame_panel_context_snapshots_mutable_polars_panel():
+    import narwhals as nw
+    import polars as pl
+
+    from increment import Analysis, EvidenceScope
+    from increment.frame import FramePanelSource
+    from increment.kernel.context import EvidenceExecutionContext
+    from increment.readouts._provider import native_scope_provider
+    from tests.analysis_factory import held_source
+
+    frame = pl.DataFrame(
+        {
+            "unit_id": ["c1", "c2", "t1", "t2"] * 2,
+            "group_id": ["control", "control", "treatment", "treatment"] * 2,
+            "ds": ["2025-01-01"] * 4 + ["2025-01-02"] * 4,
+            "value": [9.0, 11.0, 24.0, 28.0] * 2,
+        }
+    )
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit_id",
+        group="group_id",
+        date="ds",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    base = cast(Any, held_source(analysis))
+    panel = nw.from_native(frame, eager_only=True)
+    source = FramePanelSource(
+        panel=panel,
+        metrics=list(base._specs),
+        control=base._control,
+        experiment_id=base._experiment_id,
+        design=base.design,
+        plan=base.plan,
+        group_counts=dict(base._group_counts),
+        n_filled=base._n_filled,
+        first_exposure=base._first_exposure,
+        exposure=base._exposure,
+        observation_end=base._observation_end,
+        fact_max_ds=base._fact_max_ds,
+        unassigned=base._unassigned,
+        synthesised_metrics=base.context.metrics,
+        source_frame=panel,
+        unit_column="unit_id",
+    )
+    context = EvidenceExecutionContext(
+        native_scope_provider(source),
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+            snapshot=True,
+        ),
+        run_id="mutable-polars-panel-snapshot",
+    )
+    try:
+        context.open()
+        frame.replace_column(
+            frame.get_column_index("value"),
+            pl.Series("value", [9.0, 11.0, 124.0, 128.0] * 2),
+        )
+        rows = run(source, execution_context=context)
+        assert rows[0].require_lift().value == pytest.approx(1.6)
+    finally:
+        context.close()
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_captured_analysis_keeps_unused_experiment_id_fact_column():
     from increment import AnalysisPlan
     from increment.semantics.models import Definitions

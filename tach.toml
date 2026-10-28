@@ -75,7 +75,6 @@ depends_on = ["increment.errors"]
 path = "increment._health"
 depends_on = [
   "increment._evidence_types",
-  "increment._source_types",
   "increment.estimation",
   "increment.evidence",
   "increment.readouts",

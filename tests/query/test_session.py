@@ -89,6 +89,60 @@ def _session():
     )
 
 
+def test_live_postgres_source_sql_does_not_require_temp_privilege():
+    class LivePostgres:
+        name = "postgres"
+
+        def sql(self, statement, *, dialect):
+            assert statement == "SELECT 1"
+            assert dialect == "postgres"
+            return "live relation"
+
+        def raw_sql(self, _statement):
+            pytest.fail("live source access must not check TEMP privilege")
+
+    session = WarehouseSession(
+        LivePostgres(),  # type: ignore[ty:invalid-argument-type]
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql("SELECT 1") == "live relation"
+
+
+def test_captured_postgres_sources_require_temp_privilege():
+    from increment.errors import CapabilityError
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def fetchone(self):
+            return (False,)
+
+    class Postgres:
+        name = "postgres"
+
+        def raw_sql(self, statement):
+            assert "has_database_privilege" in statement
+            return Cursor()
+
+        def sql(self, *_args, **_kwargs):
+            pytest.fail("capture must refuse before reading without TEMP privilege")
+
+    session = WarehouseSession(
+        Postgres(),  # type: ignore[ty:invalid-argument-type]
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    with pytest.raises(CapabilityError) as error:
+        session.pin_sources(("SELECT 1",))
+
+    assert error.value.code == "query.session.snapshot.materialization_failed"
+
+
 def _readout_source(snapshots):
     from contextlib import contextmanager
 

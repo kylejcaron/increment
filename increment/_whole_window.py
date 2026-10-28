@@ -302,7 +302,7 @@ class WholeWindowReadouts:
                     uptake_facts=() if uptake is None else (uptake.fact,),
                     snapshot=True,
                     execution=True,
-                    include_breakouts=True,
+                    include_breakouts=False,
                 ),
                 run_id=uuid4().hex,
                 coherence=req.coherence,

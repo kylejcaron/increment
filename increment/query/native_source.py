@@ -654,8 +654,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return self
         sources: dict[str, FactSource] = {}
         event_source_names: set[str] = set()
+        required_facts: set[str] = set()
         queries: list[str] = []
         column_hints: dict[str, tuple[str | None, str | None]] = {}
+        column_projections: dict[str, tuple[str, ...]] = {}
         # Exposure/trigger SQL stays unscoped: it defines enrollment and the
         # observation window, so filtering it by those same values is circular.
         # Shared fact sources also remain unscoped.
@@ -663,6 +665,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
         def add_fact(fact: str, *, unscoped: bool = False) -> str:
             source, _ = _find_fact_source(self._defs, fact)
+            required_facts.add(fact)
             sources[source.name] = source
             event_source_names.add(source.name)
             if unscoped:
@@ -752,6 +755,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         }
         dimensions = {name for source in sources.values() for name in source.dims}
         for source in sources.values():
+            required_columns = {
+                *source.entities,
+                self._experiment.unit,
+                *((self._experiment.cluster,) if self._experiment.cluster is not None else ()),
+                source.timestamp_column,
+                "experiment_id",
+                "group_id",
+                "event",
+                *(property_.column for property_ in source.properties),
+                *(
+                    fact.column
+                    for fact in source.facts
+                    if fact.name in required_facts and fact.column is not None
+                ),
+            }
+            column_projections[source.sql] = tuple(
+                sorted(set(column_projections.get(source.sql, ())) | required_columns)
+            )
             queries.append(source.sql)
             column_hints[source.sql] = self._source_column_hint(
                 source,
@@ -763,6 +784,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         dim_by_name = {d.name: d for d in self._defs.dim_sources}
         for dim_name in dimensions:
             dim = dim_by_name[dim_name]
+            required_columns = {dim.entity, *(property_.column for property_ in dim.properties)}
+            if dim.validity is not None:
+                required_columns.update(
+                    column
+                    for column in (
+                        dim.validity.valid_from,
+                        dim.validity.valid_to,
+                        dim.validity.changed_at,
+                    )
+                    if column is not None
+                )
+            column_projections[dim.sql] = tuple(
+                sorted(set(column_projections.get(dim.sql, ())) | required_columns)
+            )
             queries.append(dim.sql)
             if dim_name in site_volume_dim_names or dim_name in freshness_dim_names:
                 column_hints[dim.sql] = (None, None)
@@ -788,6 +823,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._session.pin_sources(
                 tuple(queries),
                 column_hints=column_hints,
+                column_projections=column_projections,
                 scope=scope,
                 extra_relations=(
                     {}

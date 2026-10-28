@@ -220,7 +220,7 @@ def _warehouse_compliance_analysis(
     if unusable_outcome:
         definitions["fact_sources"][0]["sql"] = (
             "SELECT * EXCLUDE (revenue), "
-            "CASE WHEN event = 'purchase' THEN 'unexpected outcome reduction' "
+            "CASE WHEN event = 'purchase' THEN error('unexpected outcome reduction') "
             "ELSE NULL END AS revenue FROM events"
         )
     if separate_outcome_source:

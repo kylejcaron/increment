@@ -675,6 +675,62 @@ def _analysis(
     )
 
 
+@pytest.mark.integration
+def test_headline_run_does_not_capture_unrequested_failing_breakout(tmp_path):
+    definitions = (
+        _defs_yaml()
+        .replace(
+            "fact_sources:\n",
+            "fact_sources:\n"
+            "  - name: profiles\n"
+            "    sql: SELECT user_id, ts, event, value, experiment_id, group_id, "
+            "error('broken breakout') AS region FROM events\n"
+            "    timestamp_column: ts\n"
+            "    entities: [user_id]\n"
+            "    facts: []\n"
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n",
+            1,
+        )
+        .replace(
+            "    plan:\n",
+            "    breakouts: [{property: region, source: profiles}]\n    plan:\n",
+            1,
+        )
+        .replace(
+            "      - name: saw_surface\n        column: null\n",
+            "      - name: saw_surface\n        column: null\n"
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n",
+            1,
+        )
+    )
+    definitions_path = tmp_path / "definitions.yml"
+    definitions_path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=_with_preassignment_region(_events(n_per_arm=20, trigger_rate=0.5)),
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        definitions_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
+        ),
+    )
+    try:
+        rows = analysis.run()
+        by_population = {row.analysis_population for row in rows if row.metric == "revenue"}
+        assert by_population == {"assigned", "triggered"}
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
 def test_reports_both_populations_and_the_triggered_effect_is_undiluted(tmp_path):
     rate, effect = 0.2, 0.5
     an = _analysis(tmp_path, _events(trigger_rate=rate, effect=effect))

@@ -1,7 +1,7 @@
 """Behavioral contracts for callable experiment-health diagnostics."""
 
 from collections.abc import Mapping, MutableMapping
-from typing import cast
+from typing import Any, cast
 
 import pyarrow as pa
 import pytest
@@ -128,6 +128,79 @@ def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
     assert assumptions.context["counterfactual_trigger_invariance"].startswith("assumed")
     assert assumptions.context["trigger_order_stationarity"].startswith("assumed")
     assert assumptions.context["family_guarantee"] is None
+
+
+@pytest.mark.integration
+def test_forwarding_provider_health_check_preserves_trigger_evidence(tmp_path):
+    from dataclasses import replace
+
+    from increment.evidence import EvidenceProvider, evidence_provider
+    from tests.analysis_factory import held_source
+    from tests.test_analysis_trigger import _analysis, _events
+
+    events = _events(n_per_arm=100, trigger_rate=0.5)
+    event_rows = events.to_pylist()
+    expected_rates = {
+        arm: sum(row["group_id"] == arm and row["event"] == "saw_surface" for row in event_rows)
+        / sum(row["group_id"] == arm and row["event"] == "enrolled" for row in event_rows)
+        for arm in ("C", "T")
+    }
+    analysis = _analysis(tmp_path, events)
+    source = cast(Any, held_source(analysis))
+    adapter = evidence_provider(source)
+
+    class ForwardingProvider:
+        evidence = adapter.evidence
+        context = adapter.context
+
+        def __getattr__(self, name):
+            return getattr(adapter, name)
+
+        def moments(self, request):
+            return adapter.moments(request)
+
+        def unit_rows(self, request):
+            return adapter.unit_rows(request)
+
+        def method_fit(self, request):
+            return adapter.method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return adapter.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return adapter.compliance(request)
+
+        def compliance_series(self, request):
+            return adapter.compliance_series(request)
+
+        def counts(self, request):
+            return adapter.counts(request)
+
+        def capture_sequential(self, request):
+            return adapter.capture_sequential(request)
+
+        def scope(self, request):
+            return adapter.scope(request)
+
+    provider = ForwardingProvider()
+    assert isinstance(provider, EvidenceProvider)
+    original_state = analysis._state
+    analysis._state = replace(original_state, source=provider)
+    try:
+        report = analysis.health_check(expected_allocation={"C": 0.5, "T": 0.5})
+    finally:
+        analysis._state = original_state
+        analysis.close()
+
+    rates = next(check for check in report.checks if check.check == "trigger_rates")
+    maturity = [check for check in report.checks if check.check == "trigger_maturity"]
+    feeds = [check for check in report.checks if check.check == "feed_completeness"]
+    assert rates.availability == "available"
+    assert dict(rates.rates) == pytest.approx(expected_rates)
+    assert maturity and all(check.availability == "available" for check in maturity)
+    assert feeds and any(check.feed == "events" for check in feeds)
+    assert report.source_cutoff == "2024-01-16T00:00:00+00:00"
 
 
 @pytest.mark.integration

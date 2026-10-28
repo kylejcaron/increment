@@ -88,12 +88,7 @@ def load_evidence_scope(
 ) -> EvidenceScopeResult:
     require_request_evidence(src, request)
     scope = request
-    if (
-        not is_custom_source(src)
-        and request.snapshot
-        and request.include_breakouts
-        and request.population == "triggered"
-    ):
+    if not is_custom_source(src) and request.snapshot and request.population == "triggered":
         scope = EvidenceScope(
             metrics=request.metrics,
             population="assigned",
@@ -127,9 +122,9 @@ def load_evidence_scope(
 
     return EvidenceScopeResult(
         source(),
-        scope,
+        request,
         stream_resolver=lambda scoped: _scope_streams(
-            cast(EvidenceSource, _loader_owner(scoped)), scope
+            cast(EvidenceSource, _loader_owner(scoped)), request
         ),
         capture_status=capture_status,
     )
