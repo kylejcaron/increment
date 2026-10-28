@@ -1512,21 +1512,21 @@ class FramePanelSource(SequentialSourceMixin):
                 self._moment_failures_cache = {}
                 self._scalar_cell_failures = None
             raise
-            # Reuse the reduction cache for later exports only while source evidence matches
-            # the captured frames; a mutation must leave the live source cache invalidated.
-            unchanged = all(
-                _same_frame(getattr(self, attribute), snapshot) for attribute, snapshot in snapshots
-            )
-            if unchanged:
-                self._identity = pinned._identity
-                self._moment_rows_cache = pinned._moment_rows_cache
-                self._moment_failures_cache = pinned._moment_failures_cache
-                self._scalar_cell_failures = pinned._scalar_cell_failures
-            else:
-                self._identity = None
-                self._moment_rows_cache = {}
-                self._moment_failures_cache = {}
-                self._scalar_cell_failures = None
+        # Reuse the reduction cache for later exports only while source evidence matches
+        # the captured frames; a mutation must leave the live source cache invalidated.
+        unchanged = all(
+            _same_frame(getattr(self, attribute), snapshot) for attribute, snapshot in snapshots
+        )
+        if unchanged:
+            self._identity = pinned._identity
+            self._moment_rows_cache = pinned._moment_rows_cache
+            self._moment_failures_cache = pinned._moment_failures_cache
+            self._scalar_cell_failures = pinned._scalar_cell_failures
+        else:
+            self._identity = None
+            self._moment_rows_cache = {}
+            self._moment_failures_cache = {}
+            self._scalar_cell_failures = None
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913
