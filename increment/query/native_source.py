@@ -474,6 +474,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             already_warned=getattr(self, "_mixed_assignment_warned", False),
         )
 
+    def _adopt_assignment_validation(self, pinned: DefinitionsMomentSource) -> None:
+        """Keep live integrity state and materialization caches aligned with a pinned read."""
+        fingerprint = pinned._mixed_assignment_fingerprint
+        if fingerprint is None:
+            return
+        previous = self._mixed_assignment_fingerprint
+        if previous is not None and previous != fingerprint:
+            self._invalidate_materialization()
+        self._mixed_assignment_units = pinned._mixed_assignment_units
+        self._unassigned_assignment_units = pinned._unassigned_assignment_units
+        self._mixed_assignment_fingerprint = fingerprint
+        self._mixed_assignment_warned = pinned._mixed_assignment_warned
+
     @contextmanager
     def _validated_assignments(self) -> Iterator[None]:
         """Validate assignments once for a series of per-date reads."""
@@ -845,6 +858,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
+        pinned._mixed_assignment_warned = self._mixed_assignment_warned
         for source in sources.values():
             validate_fact_source_schema(
                 pinned._session.source_sql(source.sql),
@@ -926,6 +940,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             yield pinned
         finally:
             if pinned is not self:
+                self._adopt_assignment_validation(pinned)
                 pinned.close()
 
     def _declared_breakout_sources(self) -> tuple[str, ...]:

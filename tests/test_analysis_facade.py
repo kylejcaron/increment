@@ -1926,11 +1926,9 @@ def test_analysis_run_native_skips_pre_events_without_a_cuped_request(
     monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
     results = a.run(decision_method=Method(name="unadjusted"))
     assert results
-    # 9 queries at 192c91c (was 6): a duplicate-group-membership
-    # fingerprint/dedup pass now runs an extra 3 times across exposure
-    # resolution. None of the 9 filter on ts < (verified below), so this
-    # is a stale count, not a pre-period leak.
-    assert len(queries) == 9
+    # One captured source snapshot avoids the redundant live fingerprint read.
+    # The contract is that none of these reads query the pre-period.
+    assert len(queries) == 8
     assert not any(
         "ts <" in query.lower().replace('"ts"', "ts").replace("`ts`", "ts") for query in queries
     )
