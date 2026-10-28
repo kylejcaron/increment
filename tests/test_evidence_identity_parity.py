@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
 import subprocess
@@ -197,16 +198,42 @@ def _with_post_capture_reasons(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     return migrated
 
 
-def _assert_payload_matches(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> None:
+# Match test_metric_evidence's QR precedent: LAPACK QR bits vary across BLAS platforms.
+def _without_snapshot_identity(value: Any) -> Any:
+    """Remove only identities that transitively depend on platform-sensitive evidence."""
+    if isinstance(value, Mapping):
+        normalized = {key: _without_snapshot_identity(item) for key, item in value.items()}
+        for key in ("source_snapshot_id", "snapshot_id", "decision_snapshot_id", "family_id"):
+            if key in normalized:
+                normalized[key] = None
+        if isinstance(value.get("by_source"), Mapping):
+            normalized["by_source"] = sorted(
+                (_without_snapshot_identity(item) for item in value["by_source"].values()),
+                key=lambda item: json.dumps(item, sort_keys=True),
+            )
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_without_snapshot_identity(item) for item in value]
+    return value
+
+
+def _assert_payload_matches(
+    expected: Mapping[str, Any], actual: Mapping[str, Any], *, snapshotless: bool = False
+) -> None:
     canonical_expected = ResultCell.from_payload(expected).to_payload()
-    _compare(
-        _comparable_payload(_with_post_capture_reasons(canonical_expected)),
-        _comparable_payload(_with_post_capture_reasons(actual)),
-    )
+    expected_payload = _comparable_payload(_with_post_capture_reasons(canonical_expected))
+    actual_payload = _comparable_payload(_with_post_capture_reasons(actual))
+    if snapshotless:
+        expected_payload = _without_snapshot_identity(expected_payload)
+        actual_payload = _without_snapshot_identity(actual_payload)
+    _compare(expected_payload, actual_payload)
 
 
 def _assert_operation_matches(
-    expected: Mapping[str, Any], operation: Callable[[], ResultCell]
+    expected: Mapping[str, Any],
+    operation: Callable[[], ResultCell],
+    *,
+    snapshotless: bool = False,
 ) -> None:
     from increment.errors import CodedError
 
@@ -220,10 +247,22 @@ def _assert_operation_matches(
         assert expected["status"] == "available"
         expected_cell = expected["result_cell"]
         assert isinstance(expected_cell, Mapping)
-        _assert_payload_matches(expected_cell, actual.to_payload())
+        _assert_payload_matches(expected_cell, actual.to_payload(), snapshotless=snapshotless)
 
 
-def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
+def _identity_hash_without_snapshot(value: object) -> str:
+    if isinstance(value, ResultCell):
+        identity = value.identity
+    else:
+        payload = cast(Mapping[str, Any], value).get("result_cell", value)
+        assert isinstance(payload, Mapping)
+        identity = ResultCell.from_payload(cast(Mapping[str, Any], payload)).identity
+    return identity.model_copy(update={"source_snapshot_id": None}).hash()
+
+
+def _assert_cell_matches(
+    expected: Mapping[str, Any], actual: object, *, snapshotless: bool = False
+) -> None:
     from increment.result_envelope import relevel
 
     expected_cell = expected["result_cell"]
@@ -231,7 +270,7 @@ def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
     actual_payload = actual.to_payload() if isinstance(actual, ResultCell) else actual
     assert isinstance(actual_payload, Mapping)
     actual_payload = cast(Mapping[str, Any], actual_payload)
-    _assert_payload_matches(expected_cell, actual_payload)
+    _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
     actual_cell = (
         actual if isinstance(actual, ResultCell) else ResultCell.from_payload(actual_payload)
     )
@@ -242,7 +281,20 @@ def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
         _assert_operation_matches(
             operation,
             lambda alpha=float(alpha): relevel(actual_cell, alpha=alpha),
+            snapshotless=snapshotless,
         )
+
+
+def _has_platform_sensitive_scope_component(actual: Mapping[str, object]) -> bool:
+    components = actual.get("_scope_evidence_components", ())
+    if not isinstance(components, (list, tuple)):
+        return False
+    for item in components:
+        if isinstance(item, Mapping):
+            kind = item.get("kind")
+            if isinstance(kind, str) and kind.startswith("warehouse_qr:"):
+                return True
+    return False
 
 
 def _assert_outcome_matches(
@@ -262,14 +314,35 @@ def _assert_outcome_matches(
         actual_cells = actual["cells"]
         assert isinstance(expected_cells, Mapping)
         assert isinstance(actual_cells, Mapping)
-        assert expected_cells.keys() == actual_cells.keys()
-        for key, expected_cell in expected_cells.items():
+        snapshotless = _has_platform_sensitive_scope_component(actual)
+        cells_to_compare: Any
+        actual_cells_by_identity: Any
+        if snapshotless:
+            expected_by_identity = {
+                _identity_hash_without_snapshot(cell): cell for cell in expected_cells.values()
+            }
+            actual_by_identity = {
+                _identity_hash_without_snapshot(cell): cell for cell in actual_cells.values()
+            }
+            assert len(expected_by_identity) == len(expected_cells)
+            assert len(actual_by_identity) == len(actual_cells)
+            assert expected_by_identity.keys() == actual_by_identity.keys()
+            cells_to_compare = expected_by_identity.items()
+            actual_cells_by_identity = actual_by_identity
+        else:
+            assert expected_cells.keys() == actual_cells.keys()
+            cells_to_compare = expected_cells.items()
+            actual_cells_by_identity = actual_cells
+        for identity, expected_cell in cells_to_compare:
             assert isinstance(expected_cell, Mapping)
-            _assert_cell_matches(expected_cell, actual_cells[key])
-        _compare(
-            _metadata_without_modes(expected["metadata"]),
-            _metadata_without_modes(actual["metadata"]),
-        )
+            actual_cell = cast(Any, actual_cells_by_identity)[identity]
+            _assert_cell_matches(expected_cell, actual_cell, snapshotless=snapshotless)
+        expected_metadata = _metadata_without_modes(expected["metadata"])
+        actual_metadata = _metadata_without_modes(actual["metadata"])
+        if snapshotless:
+            expected_metadata = _without_snapshot_identity(expected_metadata)
+            actual_metadata = _without_snapshot_identity(actual_metadata)
+        _compare(expected_metadata, actual_metadata)
         for field in (
             "population_identity",
             "daily_values",
@@ -277,10 +350,15 @@ def _assert_outcome_matches(
             "aggregate_evidence",
         ):
             if field in expected:
-                if field == "aggregate_evidence":
-                    assert expected[field] == actual[field]
+                expected_value = expected[field]
+                actual_value = actual[field]
+                if snapshotless:
+                    expected_value = _without_snapshot_identity(expected_value)
+                    actual_value = _without_snapshot_identity(actual_value)
+                if field == "aggregate_evidence" and not snapshotless:
+                    assert expected_value == actual_value
                 else:
-                    _compare(expected[field], actual[field])
+                    _compare(expected_value, actual_value)
         return _mode_metadata(actual["metadata"])
     return {}
 
@@ -355,10 +433,31 @@ def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object
     ``_single_thread_duckdb``); the actual side reuses that same helper so a
     comparison never mixes multi-threaded reduction order into the oracle.
     """
+    from contextlib import ExitStack
+
+    # Capture component kinds at the snapshot-hash seam to select QR normalization by evidence.
+    from increment.readouts import _design_scope, _randomized_scope
     from scripts.capture_evidence_identity import _single_thread_duckdb
 
-    with _single_thread_duckdb():
-        return _line1_outcome(scenario_id, ingress)
+    scope_components: list[dict[str, Any]] = []
+    original_design_snapshot_id = _design_scope._design_snapshot_id
+    original_randomized_snapshot_id = _randomized_scope._randomized_snapshot_id
+
+    def capture_design_scope(src: Any, source: Mapping[str, Any], request: Mapping[str, Any]):
+        scope_components.extend(source.get("components", ()))
+        return original_design_snapshot_id(src, source, request)
+
+    def capture_randomized_scope(source: Mapping[str, Any], request: Mapping[str, Any]):
+        scope_components.extend(source.get("components", ()))
+        return original_randomized_snapshot_id(source, request)
+
+    with _single_thread_duckdb(), ExitStack() as stack:
+        _enter_patch(stack, _design_scope, "_design_snapshot_id", capture_design_scope)
+        _enter_patch(stack, _randomized_scope, "_randomized_snapshot_id", capture_randomized_scope)
+        outcome = _line1_outcome(scenario_id, ingress)
+    if outcome.get("kind") == "cells":
+        return {**outcome, "_scope_evidence_components": scope_components}
+    return outcome
 
 
 def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # noqa: PLR0915
