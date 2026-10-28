@@ -1747,31 +1747,31 @@ class WarehouseSession:
         return result
 
     def source_sql(self, sql: str) -> Table:
-        """Resolve source SQL against this operation's captured inputs, if any."""
+        """Resolve source SQL against this operation's captured inputs, if any.
+
+        PostgreSQL introspects source SQL through a TEMP view; on a role without TEMP the
+        backend's raw privilege error is reported as the snapshot capability refusal.
+        """
         if self._source_tables is not None:
             if sql not in self._source_tables:
                 _raise("query.session.snapshot.source_missing")
             return self._source_tables[sql]
-        return self._con.sql(sql, dialect=self._defs.dialect)
-
-    def preflight_fact_source_schema(
-        self, fact_source: FactSource, *, require_event: bool = True
-    ) -> None:
-        """Validate source columns before snapshot capability checks when introspection succeeds.
-
-        A PostgreSQL source-inspection privilege error on a role without TEMP is reported as the
-        snapshot capability refusal instead of leaking the backend's raw privilege error.
-        """
-        from increment.query.fact_resolution import validate_fact_source_schema
-
         try:
-            validate_fact_source_schema(
-                self.source_sql(fact_source.sql), fact_source, require_event=require_event
-            )
+            return self._con.sql(sql, dialect=self._defs.dialect)
         except Exception as exc:
             if self._con.name == "postgres" and _is_postgres_privilege_error(exc):
                 self._require_snapshot_temp_privilege()
             raise
+
+    def preflight_fact_source_schema(
+        self, fact_source: FactSource, *, require_event: bool = True
+    ) -> None:
+        """Validate source columns before snapshot capability checks when introspection succeeds."""
+        from increment.query.fact_resolution import validate_fact_source_schema
+
+        validate_fact_source_schema(
+            self.source_sql(fact_source.sql), fact_source, require_event=require_event
+        )
 
     def _require_snapshot_temp_privilege(self) -> None:
         if self._con.name != "postgres" or self._postgres_temp_privilege_checked:
