@@ -362,7 +362,8 @@ def _validation_settings(
         "interactions": [covariate.model_dump(mode="json") for covariate in interact],
         "adjustments": [covariate.model_dump(mode="json") for covariate in adjust],
         "cluster_weight": cluster_weight,
-        "bootstrap": {"seed": bootstrap.seed, "repetitions": bootstrap.repetitions},
+        # Seeds can exceed the canonical JSON integer range, so they are hashed as decimals.
+        "bootstrap": {"seed": str(bootstrap.seed), "repetitions": bootstrap.repetitions},
     }
 
 

@@ -481,6 +481,36 @@ def test_cate_and_validation_settings_change_cell_identity():
     )
 
 
+def test_full_width_bootstrap_seeds_give_distinct_validation_identities():
+    from increment import ClusterBootstrap
+
+    def cell(seed: int):
+        return validate_cate(
+            _source(),
+            "revenue",
+            control="control",
+            interact=["spend"],
+            n_groups=2,
+            bootstrap=ClusterBootstrap(seed=seed, repetitions=99),
+        ).as_cell()
+
+    standalone = (cell(2**53), cell(2**53 + 1))
+    attached = tuple(
+        targeting_rule(
+            _source(),
+            "revenue",
+            control="control",
+            interact=["spend"],
+            fraction=0.5,
+            bootstrap=ClusterBootstrap(seed=seed, repetitions=99),
+        ).validation.as_cell()
+        for seed in (2**53, 2**53 + 1)
+    )
+
+    for low, high in (standalone, attached):
+        assert low.identity.method_config_hash != high.identity.method_config_hash
+
+
 def test_cate_validation_alpha_survives_json_and_arrow_reopening():
     import json
 
