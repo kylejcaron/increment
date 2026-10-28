@@ -72,6 +72,7 @@ class ReadoutInterpretation:
     coherence: str | None = None
     provider_owned: bool = False
     effective_modes: Mapping[str, str] | None = None
+    independently_captured: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,8 +358,15 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
         True,
         metadata.partial,
         metadata.coherence,
-        any(mode == "provider" for mode in metadata.effective_modes.values()),
+        any(
+            mode == "provider"
+            for capture in metadata.captures
+            for mode in capture.effective_modes.values()
+        )
+        or any(mode == "provider" for mode in metadata.effective_modes.values()),
         dict(metadata.effective_modes),
+        len(metadata.captures) > 1
+        and all(capture.coherence == "captured" for capture in metadata.captures),
     )
 
 
@@ -750,7 +758,9 @@ def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[str,
 
 def _coherence_qualifications(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
     qualifications = []
-    if interpretation.provider_owned:
+    if interpretation.independently_captured:
+        qualifications.append("Coherence: captured independently per result family.")
+    elif interpretation.provider_owned:
         qualifications.append("Coherence: provider-owned; the kernel does not pin a snapshot.")
     elif interpretation.coherence == "live":
         qualifications.append("Coherence: live; no pinned snapshot is guaranteed.")

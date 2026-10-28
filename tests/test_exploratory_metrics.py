@@ -12,7 +12,7 @@ import pickle
 import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -947,6 +947,36 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
             assert clone.code == refusal.code
             assert dict(clone.context) == dict(refusal.context)
             assert str(clone) == str(refusal)
+
+
+@pytest.mark.integration
+def test_exploratory_metrics_retain_independent_capture_metadata(monkeypatch):
+    con = ds.duckdb_connection()
+    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    original = analysis._exploratory_analysis
+
+    def mutate_before_exploratory_read(metrics, *, caller):
+        cast(Any, con).raw_sql(
+            "UPDATE events SET revenue = revenue * 10 WHERE group_id = 'treatment'"
+        )
+        return original(metrics, caller=caller)
+
+    monkeypatch.setattr(analysis, "_exploratory_analysis", mutate_before_exploratory_read)
+    try:
+        rows = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
+        assert rows.metadata is not None
+        assert len(rows.metadata.captures) == 2
+        assert len({capture.snapshot_id for capture in rows.metadata.captures}) == 2
+        assert {capture.coherence for capture in rows.metadata.captures} == {"captured"}
+        restored = type(rows.metadata).model_validate_json(rows.metadata.model_dump_json())
+        assert restored.captures == rows.metadata.captures
+        from increment.tables import readout_table
+
+        html = readout_table(rows).gt().as_raw_html()
+        assert "Coherence: captured independently per result family." in html
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 pytestmark = pytest.mark.integration

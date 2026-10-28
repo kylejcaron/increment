@@ -422,6 +422,23 @@ class ReadoutScope(_ReadoutModel):
         return bool(values) and all(values)
 
 
+class ReadoutCapture(_ReadoutModel):
+    snapshot_id: str
+    coherence: Literal["captured", "live"] | None = None
+    effective_modes: Mapping[str, Literal["captured", "live", "provider"]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+
+    @field_validator("effective_modes", mode="before")
+    @classmethod
+    def _freeze_capture_modes(
+        cls, value: object
+    ) -> Mapping[str, Literal["captured", "live", "provider"]]:
+        if not isinstance(value, Mapping):
+            raise PydanticCustomError("effective_modes_type", "effective_modes must be a mapping")
+        return _FrozenMapping(cast(Mapping[str, Literal["captured", "live", "provider"]], value))
+
+
 class ReadoutMetadata(_ReadoutModel):
     scope: ReadoutScope
     cells: tuple[CellRecord, ...]
@@ -433,6 +450,7 @@ class ReadoutMetadata(_ReadoutModel):
     effective_modes: Mapping[str, Literal["captured", "live", "provider"]] = Field(
         default_factory=dict, exclude_if=lambda value: not value
     )
+    captures: tuple[ReadoutCapture, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @field_validator("effective_modes", mode="before")
     @classmethod
@@ -1098,22 +1116,33 @@ def concat_collection(left, right):
         )
     a: ReadoutMetadata = left.metadata
     b: ReadoutMetadata = right.metadata
-    if a.coherence is not None and b.coherence is not None and a.coherence != b.coherence:
-        refuse_readout(
-            "readout.collection.concat_metadata_mismatch",
-            snapshot_ids=tuple(sorted((a.scope.snapshot_id, b.scope.snapshot_id))),
-            fields=("coherence",),
-        )
-    coherence = a.coherence if a.coherence is not None else b.coherence
-    effective_modes = dict(a.effective_modes)
-    for source, mode in b.effective_modes.items():
-        if source in effective_modes and effective_modes[source] != mode:
+    left_captures = a.captures or (
+        ReadoutCapture(
+            snapshot_id=a.scope.snapshot_id,
+            coherence=a.coherence,
+            effective_modes=a.effective_modes,
+        ),
+    )
+    right_captures = b.captures or (
+        ReadoutCapture(
+            snapshot_id=b.scope.snapshot_id,
+            coherence=b.coherence,
+            effective_modes=b.effective_modes,
+        ),
+    )
+    captures_by_id = {capture.snapshot_id: capture for capture in left_captures}
+    for capture in right_captures:
+        previous = captures_by_id.get(capture.snapshot_id)
+        if previous is not None and previous != capture:
             refuse_readout(
                 "readout.collection.concat_metadata_mismatch",
-                snapshot_ids=tuple(sorted((a.scope.snapshot_id, b.scope.snapshot_id))),
-                fields=("effective_modes",),
+                snapshot_ids=(capture.snapshot_id,),
+                fields=("captures",),
             )
-        effective_modes[source] = mode
+        captures_by_id[capture.snapshot_id] = capture
+    captures = tuple(captures_by_id[key] for key in sorted(captures_by_id))
+    coherence = captures[0].coherence if len(captures) == 1 else None
+    effective_modes = dict(captures[0].effective_modes) if len(captures) == 1 else {}
     ids = sorted([a.scope.snapshot_id, b.scope.snapshot_id])
     cross = a.scope.snapshot_id != b.scope.snapshot_id
     sources, result_source = _merge_source_scopes(left, right, ids)
@@ -1158,6 +1187,7 @@ def concat_collection(left, right):
         cells=tuple(ordered_records),
         coherence=coherence,
         effective_modes=dict(sorted(effective_modes.items())),
+        captures=captures if len(captures) > 1 else (),
     )
     metadata = partial_metadata(
         metadata,

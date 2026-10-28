@@ -639,7 +639,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 captured_streams.update({identity: identity for identity in identities})
         return dict(sorted(captured_streams.items()))
 
-    def _pinned_source(  # noqa: PLR0915
+    def _pinned_source(  # noqa: PLR0915, C901
         self,
         *,
         metrics: Sequence[Metric] | None = None,
@@ -662,6 +662,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # observation window, so filtering it by those same values is circular.
         # Shared fact sources also remain unscoped.
         unscoped_queries: set[str] = set()
+        exposure_sql_queries: set[str] = set()
 
         def add_fact(fact: str, *, unscoped: bool = False) -> str:
             source, _ = _find_fact_source(self._defs, fact)
@@ -689,6 +690,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             exposure = self._exp_lookup_exposures[name]
             if exposure.sql is not None:
                 queries.append(exposure.sql)
+                exposure_sql_queries.add(exposure.sql)
                 unscoped_queries.add(exposure.sql)
             else:
                 assert exposure.fact is not None
@@ -804,6 +806,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
+        # A SQL-backed exposure can share a query with a fact or dimension
+        # projection. Keep its enrollment coordinates in that physical stream.
+        for sql in exposure_sql_queries & column_projections.keys():
+            required_columns = {"unit_id", "ts", "group_id", "experiment_id"}
+            column_projections[sql] = tuple(sorted(set(column_projections[sql]) | required_columns))
         for source in sources.values():
             validate_fact_source_schema(
                 self._session.source_sql(source.sql),
