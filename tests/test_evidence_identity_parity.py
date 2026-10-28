@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import math
 import os
+import subprocess
+import sys
 from collections.abc import Callable, Mapping
 from functools import cache
 from pathlib import Path
@@ -555,6 +557,28 @@ def test_frozen_capture_outcome(
         assert isinstance(effective_modes, Mapping)
         assert effective_modes
         assert set(effective_modes.values()) == {"captured"}
+
+
+@pytest.mark.integration
+def test_categorical_readout_snapshot_identity_is_hash_seed_independent() -> None:
+    script = """
+from tests.test_evidence_identity_parity import _line1_actual_outcome
+outcome = _line1_actual_outcome("categorical-cuped-moments-format-13", "from_moments")
+print(outcome["metadata"]["scope"]["snapshot_id"])
+"""
+    snapshot_ids = []
+    for seed in ("0", "1"):
+        environment = os.environ.copy()
+        environment["PYTHONHASHSEED"] = seed
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        snapshot_ids.append(result.stdout.strip())
+    assert snapshot_ids[0] == snapshot_ids[1]
 
 
 def test_frozen_capture_replays_every_outcome_against_itself() -> None:
