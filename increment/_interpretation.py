@@ -1376,7 +1376,6 @@ def project_effect(row) -> EffectEstimate:
             intervals=() if bounds.empty else ((lower, upper),),
         )
 
-
     contrast = hasattr(row, "control_group") and hasattr(row, "estimate")
     requested = (
         "absolute"
