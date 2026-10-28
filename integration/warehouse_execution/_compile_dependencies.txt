@@ -1,4 +1,4 @@
-# Traced on commit: 0f6c1cf2fea9c2d73dd1f31bd2501be3dae09a87
+# Traced on commit: 60ab98f90809c0ccc1c85d2be67ad4840a4c5ba8
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -11,6 +11,7 @@ increment._display
 increment._evidence_dispatch
 increment._evidence_loaders
 increment._evidence_refusals
+increment._evidence_scopes
 increment._evidence_types
 increment._finite_sample_refusals
 increment._frame_moments
@@ -31,6 +32,7 @@ increment._source_identity
 increment._source_operations
 increment._source_types
 increment._study
+increment._trigger_integrity
 increment._unit_cycle
 increment._whole_window
 increment._window
@@ -98,6 +100,9 @@ increment.estimators
 increment.estimators.registry
 increment.evidence
 increment.frame
+increment.kernel
+increment.kernel.context
+increment.kernel.contracts
 increment.plan
 increment.query
 increment.query._artifact_float
@@ -134,6 +139,7 @@ increment.readouts._metric_type
 increment.readouts._multiplicity_scope
 increment.readouts._observational
 increment.readouts._passes
+increment.readouts._provider
 increment.readouts._randomized
 increment.readouts._randomized_scope
 increment.readouts._requests

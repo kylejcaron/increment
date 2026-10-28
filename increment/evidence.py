@@ -51,102 +51,15 @@ from increment._source_types import (
     EvidenceCapabilities,
     EvidenceProvider,
     ScalarEvidenceDeclaration,
-    declared_evidence,
     is_builtin_source,
+    refuse_provider_unavailable,
 )
+from increment.readouts._provider import _BuiltInEvidenceProvider
 
 
 def _validate(provider: Any, request: object) -> None:
     """Apply the shared capability check before calling a loader method."""
     require_evidence(provider, request=request)
-
-
-class _BuiltInEvidenceProvider:
-    """Present the evidence methods of an existing loader as typed requests."""
-
-    __slots__ = ("source", "evidence", "context")
-
-    def __init__(self, source: Any) -> None:
-        self.source = source
-        self.evidence = declared_evidence(source)
-        self.context = source.context
-
-    def moments(self, request: MomentsRequest) -> MomentRows:
-        from increment.readouts._evidence import (
-            NATIVE_ROUTE,
-            day_axis_route,
-            load_builtin_day_moments,
-            load_moments,
-        )
-
-        if (
-            request.grain != "total"
-            and request.method is None
-            and (
-                request.grain not in self.evidence.grains
-                or day_axis_route(self.source) == NATIVE_ROUTE
-            )
-        ):
-            # Native loaders answer daily and as-of grains only through their day source.
-            return load_builtin_day_moments(self.source, request)
-        _validate(self.source, request)
-        return load_moments(self.source, request)
-
-    def unit_rows(self, request: UnitRowsRequest) -> UnitRows:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_unit_rows
-
-        return load_unit_rows(self.source, request)
-
-    def method_fit(self, request: MethodFitRequest) -> MethodFitAnswer:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_method_fit
-
-        return load_method_fit(self.source, request)
-
-    def breakout_method_moments(self, request: BreakoutMethodMomentsRequest) -> ScalarBreakoutRows:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_breakout_method_moments
-
-        return load_breakout_method_moments(self.source, request)
-
-    def compliance(self, request: ComplianceRequest) -> ComplianceSummary:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_compliance
-
-        return load_compliance(self.source, request)
-
-    def compliance_series(
-        self, request: ComplianceSeriesRequest
-    ) -> tuple[tuple[object, ComplianceSummary], ...]:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_compliance_series
-
-        return load_compliance_series(self.source, request)
-
-    def counts(self, request: CountsRequest) -> CountEvidence:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_counts
-
-        return load_counts(self.source, request)
-
-    def capture_sequential(self, request: SequentialCaptureRequest) -> SequentialCapture:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_sequential_capture
-
-        return load_sequential_capture(self.source, request)
-
-    def sequential_snapshot(self, request: SequentialSnapshotRequest) -> SequentialCapture:
-        _validate(self.source, request)
-        from increment.readouts._evidence import loader_snapshot
-
-        return loader_snapshot(self.source, previous=request.previous)
-
-    def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_evidence_scope
-
-        return load_evidence_scope(self.source, request)
 
 
 def evidence_provider(source: Any) -> EvidenceProvider:
@@ -155,7 +68,8 @@ def evidence_provider(source: Any) -> EvidenceProvider:
         return _BuiltInEvidenceProvider(source)
     if isinstance(source, EvidenceProvider):
         return source
-    from increment._source_types import refuse_provider_unavailable
+    if isinstance(getattr(source, "evidence", None), EvidenceCapabilities):
+        return _BuiltInEvidenceProvider(source)
 
     refuse_provider_unavailable(source)
 

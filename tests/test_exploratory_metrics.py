@@ -12,8 +12,9 @@ import pickle
 import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
+import narwhals as nw
 import pandas as pd
 import pytest
 
@@ -184,6 +185,9 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
     assert {row.multiplicity_status for row in added} == {"exploratory_unadjusted"}
     assert all(row.family_id is not None for row in added)
     assert added.metadata is not None
+    assert added.metadata.coherence == "captured"
+    assert added.metadata.effective_modes
+    assert set(added.metadata.effective_modes.values()) == {"captured"}
     assert {family.name for family in added.metadata.scope.families} == {"exploratory"}
     assert {cell.metric for family in added.metadata.scope.families for cell in family.members} == {
         name
@@ -944,6 +948,71 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
             assert clone.code == refusal.code
             assert dict(clone.context) == dict(refusal.context)
             assert str(clone) == str(refusal)
+
+
+@pytest.mark.integration
+def test_exploratory_metrics_retain_independent_capture_metadata(monkeypatch):
+    con = ds.duckdb_connection()
+    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    original = analysis._exploratory_analysis
+
+    def mutate_before_exploratory_read(metrics, *, caller):
+        cast(Any, con).raw_sql(
+            "UPDATE events SET revenue = revenue * 10 WHERE group_id = 'treatment'"
+        )
+        return original(metrics, caller=caller)
+
+    monkeypatch.setattr(analysis, "_exploratory_analysis", mutate_before_exploratory_read)
+    try:
+        rows = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
+        assert rows.metadata is not None
+        assert len(rows.metadata.captures) == 2
+        assert len({capture.snapshot_id for capture in rows.metadata.captures}) == 2
+        assert {capture.coherence for capture in rows.metadata.captures} == {"captured"}
+        restored = type(rows.metadata).model_validate_json(rows.metadata.model_dump_json())
+        assert restored.captures == rows.metadata.captures
+        from increment.tables import readout_table
+
+        html = readout_table(rows).gt().as_raw_html()
+        assert "Coherence: captured independently per result family." in html
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_exploratory_live_results_retain_live_coherence_metadata():
+    con = ds.duckdb_connection()
+    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    try:
+        rows = analysis.run(
+            exploratory_metrics=["rps"],
+            decision_method=Method(name="unadjusted"),
+            coherence="live",
+        )
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.coherence == "live"
+        assert metadata.effective_modes
+        assert set(metadata.effective_modes.values()) == {"live"}
+        assert {capture.coherence for capture in metadata.captures} == {"live"}
+        frame = nw.from_native(rows.to_frame(), eager_only=True)
+        assert frame["coherence"].to_list() == ["live"] * len(rows)
+        import json
+
+        from increment.tables import estimates_to_readout, readout_table
+
+        exported = estimates_to_readout(rows)
+        assert all(row["coherence"] == "live" for row in exported)
+        assert all(
+            json.loads(row["effective_modes"]) == metadata.effective_modes for row in exported
+        )
+        assert "Coherence: live; no pinned snapshot is guaranteed." in (
+            readout_table(rows).gt().as_raw_html()
+        )
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 pytestmark = pytest.mark.integration

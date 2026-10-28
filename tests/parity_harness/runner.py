@@ -81,7 +81,7 @@ from __future__ import annotations
 import inspect
 import warnings
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
@@ -374,7 +374,12 @@ class CaseResult:
 
 
 @allow_declared_overrides
-def _read(analysis: Any, case: ParityCase) -> Any:
+def _read(
+    analysis: Any,
+    case: ParityCase,
+    *,
+    coherence: Literal["captured", "live"] | None = None,
+) -> Any:
     """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
     (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and
     its lift are separate cases, so one refusing never hides the other's rows."""
@@ -385,11 +390,22 @@ def _read(analysis: Any, case: ParityCase) -> Any:
         {"decision_method": case.decision_method} if case.decision_method is not None else {}
     )
     if case.view is None:
+        coherence_kwargs = {"coherence": coherence} if coherence is not None else {}
         if case.breakout_dimension:
             return analysis.run_breakout(
-                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **method_kwargs
+                **estimand_kwargs,
+                **prior_kwargs,
+                **metric_kwargs,
+                **method_kwargs,
+                **coherence_kwargs,
             )
-        return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs, **method_kwargs)
+        return analysis.run(
+            **estimand_kwargs,
+            **prior_kwargs,
+            **metric_kwargs,
+            **method_kwargs,
+            **coherence_kwargs,
+        )
     dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
     population = {"population": case.population}
     match case.view:
@@ -407,7 +423,13 @@ def _read(analysis: Any, case: ParityCase) -> Any:
             )
 
 
-def _read_with_advisories(analysis: Any, name: str, case: ParityCase) -> tuple[Any, int]:
+def _read_with_advisories(
+    analysis: Any,
+    name: str,
+    case: ParityCase,
+    *,
+    coherence: Literal["captured", "live"] | None = None,
+) -> tuple[Any, int]:
     expected = case.expected_warning_codes.get(name, ())
     with warnings.catch_warnings(record=True) as caught:
         warnings.filterwarnings(
@@ -417,7 +439,11 @@ def _read_with_advisories(analysis: Any, name: str, case: ParityCase) -> tuple[A
         )
         if expected:
             warnings.simplefilter("always", IncrementWarning)
-        results = _read(analysis, case)
+        results = (
+            _read(analysis, case)
+            if coherence is None
+            else _read(analysis, case, coherence=coherence)
+        )
     if case.readout_probe is not None or case.source_probe is not None:
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -476,7 +502,9 @@ def _assert_names_absent_field(case_id: str, name: str, exc: Exception, absent: 
     )
 
 
-def run_case(case: ParityCase) -> CaseResult:
+def run_case(
+    case: ParityCase, *, coherence: Literal["captured", "live"] | None = None
+) -> CaseResult:
     """Attempt every constructor `case.build` lists; return normalized rows
     for the ones that succeeded, the `.code` for the ones that raised, and
     (when `case.sequential`) each surviving constructor's `SequentialCapture`
@@ -540,7 +568,9 @@ def run_case(case: ParityCase) -> CaseResult:
                 assert sequential_fingerprint(continued) == sequential_fingerprint(snapshot), (
                     f"{case.id}: replayed empty-freeze snapshot could not continue on {name}"
                 )
-            results, advisory_counts[name] = _read_with_advisories(analysis, name, case)
+            results, advisory_counts[name] = _read_with_advisories(
+                analysis, name, case, coherence=coherence
+            )
             family_for_row = _family_map_for_output(case, name, results)
             rows[name] = _normalize(results, family_for_row=family_for_row)
         except Exception as exc:

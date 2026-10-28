@@ -22,6 +22,7 @@ canonical_source_recipe_json: Canonical serialized source recipe.
 checkpoints: Sequential look schedule.
 cluster: Column identifying randomization clusters.
 cluster_weight: Weighting choice for cluster-level analysis.
+coherence: Whether the arm readout requires one pinned source snapshot.
 columns: Column names or mappings requested from a source.
 completed_windows_only: Whether to include only completed windows.
 con: Warehouse backend connection.

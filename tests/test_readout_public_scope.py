@@ -117,7 +117,9 @@ def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_r
     html = readout_table(results).gt().as_raw_html()
     subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
     assert "<ul " in subtitle
-    assert subtitle.count("<li>") == 4
+    assert subtitle.count("<li>") == 6
+    assert "Coherence: captured." in subtitle
+    assert "Effective evidence modes:" in subtitle
     assert "Integrity: not_checked" in subtitle
     assert subtitle.count("sha256:") == 1
     assert "Interpretation:" not in subtitle and "Interpretation:" not in html

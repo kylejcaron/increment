@@ -88,8 +88,12 @@ class _ForwardingProvider:
 @pytest.mark.parametrize(
     ("constructor", "kind", "operations"),
     [
-        ("summary", "unit_summary", {"export_moments", "unit_counts"}),
-        ("panel", "unit_panel", {"export_moments", "unit_counts"}),
+        (
+            "summary",
+            "unit_summary",
+            {"export_moments", "unit_counts", "readout_snapshot"},
+        ),
+        ("panel", "unit_panel", {"export_moments", "unit_counts", "readout_snapshot"}),
     ],
 )
 def test_public_frame_constructors_declare_evidence(constructor, kind, operations) -> None:
@@ -113,6 +117,7 @@ def test_public_frame_constructors_declare_evidence(constructor, kind, operation
 
     source = cast("Any", held_source(analysis))
     evidence = source.evidence
+    assert evidence.capture == "snapshot"
     assert evidence.operations == operations
     assert pickle.loads(pickle.dumps(evidence)) == evidence
     assert copy.deepcopy(evidence) == evidence
@@ -149,10 +154,11 @@ def test_switchback_declares_no_arm_moment_grains() -> None:
             "summary",
             {
                 "kind": "unit_summary",
+                "capture": "snapshot",
                 "grains": frozenset({"total"}),
                 "breakouts": (),
                 "shape": "unit_summary",
-                "operations": frozenset({"export_moments", "unit_counts"}),
+                "operations": frozenset({"export_moments", "unit_counts", "readout_snapshot"}),
                 "unit_rows": True,
                 "raw_outcomes": True,
                 "method_fit": "local",
@@ -168,10 +174,11 @@ def test_switchback_declares_no_arm_moment_grains() -> None:
             "panel",
             {
                 "kind": "unit_panel",
+                "capture": "snapshot",
                 "grains": frozenset({"total", "daily", "asof"}),
                 "breakouts": ("segment",),
                 "shape": "unit_panel",
-                "operations": frozenset({"export_moments", "unit_counts"}),
+                "operations": frozenset({"export_moments", "unit_counts", "readout_snapshot"}),
                 "unit_rows": True,
                 "raw_outcomes": False,
                 "method_fit": "local",
@@ -215,6 +222,7 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
     assert evidence.breakouts == expected["breakouts"]
     assert evidence.shape == expected["shape"]
     assert evidence.operations == expected["operations"]
+    assert evidence.capture == expected["capture"]
     assert evidence.unit_rows == expected["unit_rows"]
     assert evidence.raw_outcomes == expected["raw_outcomes"]
     assert evidence.method_fit == expected["method_fit"]
@@ -274,7 +282,9 @@ def test_restricted_summary_breakout_declaration_matches_baseline() -> None:
     assert evidence.grains == frozenset({"total"})
     assert evidence.breakouts == ("segment",)
     assert evidence.shape == "unit_panel"
-    assert evidence.operations == frozenset({"export_moments", "unit_counts"})
+    assert evidence.operations == frozenset({"export_moments", "unit_counts", "readout_snapshot"})
+    with breakout.readout_snapshot(metrics=(), population="assigned") as scoped:
+        assert scoped.evidence.kind == "breakout"
     assert evidence.unit_rows is True
     assert evidence.raw_outcomes is False
     assert evidence.method_fit == "local"

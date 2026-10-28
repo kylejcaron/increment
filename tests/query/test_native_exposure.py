@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any, cast
 
 import ibis
 import pytest
@@ -207,6 +208,94 @@ experiments:
     with pytest.raises(CapabilityError) as exc_info:
         analysis.allocation_history()
     assert exc_info.value.code == "evidence.operation_unavailable"
+
+
+@pytest.mark.integration
+def test_captured_exposure_and_dimension_sharing_sql_preserves_coordinates(tmp_path):
+    yaml = """
+fact_sources:
+  - name: outcomes
+    sql: SELECT * FROM outcome_events
+    timestamp_column: ts
+    entities: [unit_id]
+    dims: [regions]
+    facts:
+      - name: purchase
+        column: value
+dim_sources:
+  - name: regions
+    sql: SELECT unit_id, ts, group_id, region FROM shared_stream
+    entity: unit_id
+    properties:
+      - {name: region, column: region, dtype: string, as_of: static}
+exposures:
+  - name: enrollment
+    sql: SELECT unit_id, ts, group_id, region FROM shared_stream
+metrics:
+  - name: revenue
+    type: mean
+    entity: unit_id
+    fact: purchase
+    aggregation: sum
+    window_days: 7
+experiments:
+  - name: exp
+    exposure: enrollment
+    unit: unit_id
+    start: 2025-01-01T00:00:00
+    end: 2025-01-08T00:00:00
+    control_group: control
+    plan: {secondaries: [revenue]}
+"""
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "shared_stream",
+        obj=[
+            {
+                "unit_id": unit,
+                "ts": dt.datetime(2025, 1, 1, 9, 0),
+                "group_id": group,
+                "region": "north" if group == "control" else "south",
+            }
+            for unit, group in (
+                ("c1", "control"),
+                ("c2", "control"),
+                ("t1", "treatment"),
+                ("t2", "treatment"),
+            )
+        ],
+    )
+    con.create_table(
+        "outcome_events",
+        obj=[
+            {
+                "unit_id": unit,
+                "ts": dt.datetime(2025, 1, 2, 9, 0),
+                "event": "purchase",
+                "value": value,
+            }
+            for unit, value in (("c1", 9.0), ("c2", 11.0), ("t1", 24.0), ("t2", 28.0))
+        ]
+        + [
+            {
+                "unit_id": "c1",
+                "ts": dt.datetime(2025, 1, 10, 9, 0),
+                "event": "purchase",
+                "value": 0.0,
+            }
+        ],
+    )
+    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    try:
+        captured = analysis.run()
+        live = analysis.run(coherence="live")
+        assert cast(Any, captured[0]).require_lift().value == pytest.approx(1.6)
+        assert cast(Any, live[0]).require_lift().value == pytest.approx(1.6)
+        assert captured.metadata is not None and captured.metadata.coherence == "captured"
+        assert live.metadata is not None and live.metadata.coherence == "live"
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 @pytest.mark.integration

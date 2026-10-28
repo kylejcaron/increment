@@ -238,6 +238,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             breakouts=tuple(self.breakouts),
             shape=self.shape,
             operations=self.operations,
+            capture="snapshot",
             unit_rows=True,
             raw_outcomes=True,
             method_fit="warehouse",
@@ -473,6 +474,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             already_warned=getattr(self, "_mixed_assignment_warned", False),
         )
 
+    def _adopt_assignment_validation(self, pinned: DefinitionsMomentSource) -> None:
+        """Keep live integrity state and materialization caches aligned with a pinned read."""
+        fingerprint = pinned._mixed_assignment_fingerprint
+        if fingerprint is None:
+            return
+        previous = self._mixed_assignment_fingerprint
+        if previous is not None and previous != fingerprint:
+            self._invalidate_materialization()
+        self._mixed_assignment_units = pinned._mixed_assignment_units
+        self._unassigned_assignment_units = pinned._unassigned_assignment_units
+        self._mixed_assignment_fingerprint = fingerprint
+        self._mixed_assignment_warned = pinned._mixed_assignment_warned
+
     @contextmanager
     def _validated_assignments(self) -> Iterator[None]:
         """Validate assignments once for a series of per-date reads."""
@@ -547,7 +561,98 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         events = self._build_events_table_for_exposure(self._experiment.exposure, dim_joined=False)
         return events.select("unit_id", "experiment_id").distinct()
 
-    def _pinned_source(  # noqa: PLR0915
+    def evidence_scope_streams(self, scope: Any) -> Mapping[str, str]:
+        tables = self._session._source_tables
+        fact_names = set(scope.uptake_facts)
+        for metric in scope.metrics:
+            numerator = getattr(metric, "numerator", None)
+            denominator = getattr(metric, "denominator", None)
+            if numerator is not None and denominator is not None:
+                fact_names.update((numerator.fact, denominator.fact))
+            else:
+                fact_names.add(metric.fact)
+
+        sources: dict[str, FactSource] = {}
+        for config in scope.configs or ():
+            for method in effective_methods(config, design=self.context.design):
+                for covariate in method.covariates or ():
+                    covariate = self._resolve_covariate_binding(covariate, config.metric)
+                    if isinstance(covariate, CupedCovariateBinding) and covariate.measure:
+                        fact_names.add(covariate.measure.fact)
+                    else:
+                        property_name = getattr(covariate, "property", None) or covariate.name
+                        source = self._resolve_unit_covariate_source(
+                            property_name,
+                            declared_source=getattr(covariate, "source", None),
+                            kind=getattr(covariate, "kind", None),
+                        )
+                        sources[source.name] = source
+        for breakout in scope.breakouts:
+            try:
+                source = _resolve_breakout_fact_source(
+                    self._defs,
+                    self._experiment,
+                    Breakout(property=breakout.property, source=breakout.source),
+                )
+            except CodedError:
+                continue
+            sources[source.name] = source
+        if isinstance(self._experiment.design, ObservationalDeclaration):
+            for covariate in self._experiment.design.covariates:
+                source = self._resolve_unit_covariate_source(
+                    covariate.property,
+                    declared_source=covariate.source,
+                    kind=getattr(covariate, "kind", None),
+                )
+                sources[source.name] = source
+
+        streams: dict[str, str] = {}
+        for fact in fact_names:
+            source, _ = _find_fact_source(self._defs, fact)
+            sources[source.name] = source
+        dimensions: set[str] = set()
+        for source in sources.values():
+            streams[source.name] = source.name
+            dimensions.update(source.dims)
+        streams.update({f"dimension:{name}": f"dimension:{name}" for name in dimensions})
+
+        for name in (self._experiment.exposure, self._experiment.trigger):
+            if name is None:
+                continue
+            exposure = self._exp_lookup_exposures[name]
+            if exposure.sql is not None:
+                streams[f"exposure:{name}"] = f"exposure:{name}"
+            elif exposure.fact is not None:
+                source, _ = _find_fact_source(self._defs, exposure.fact)
+                streams[source.name] = source.name
+                streams.update(
+                    {
+                        f"dimension:{dimension}": f"dimension:{dimension}"
+                        for dimension in source.dims
+                    }
+                )
+
+        if tables is None:
+            return dict(sorted(streams.items()))
+
+        labels: dict[str, set[str]] = {}
+        for source in self._defs.fact_sources:
+            labels.setdefault(source.sql, set()).add(source.name)
+        for dimension in self._defs.dim_sources:
+            labels.setdefault(dimension.sql, set()).add(f"dimension:{dimension.name}")
+        for exposure in self._defs.exposures:
+            if exposure.sql is not None:
+                labels.setdefault(exposure.sql, set()).add(f"exposure:{exposure.name}")
+        captured_streams: dict[str, str] = {}
+        for query in tables:
+            identities = labels.get(query)
+            if identities is None:
+                captured_streams[f"source:{query}"] = query
+            else:
+                captured_streams.update({identity: identity for identity in identities})
+        return dict(sorted(captured_streams.items()))
+
+    def _pinned_source(  # noqa: PLR0915, C901
         self,
         *,
         metrics: Sequence[Metric] | None = None,
@@ -562,15 +667,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return self
         sources: dict[str, FactSource] = {}
         event_source_names: set[str] = set()
+        required_facts: set[str] = set()
         queries: list[str] = []
         column_hints: dict[str, tuple[str | None, str | None]] = {}
+        column_projections: dict[str, tuple[str, ...]] = {}
         # Exposure/trigger SQL stays unscoped: it defines enrollment and the
         # observation window, so filtering it by those same values is circular.
         # Shared fact sources also remain unscoped.
         unscoped_queries: set[str] = set()
+        exposure_sql_queries: set[str] = set()
 
         def add_fact(fact: str, *, unscoped: bool = False) -> str:
             source, _ = _find_fact_source(self._defs, fact)
+            required_facts.add(fact)
             sources[source.name] = source
             event_source_names.add(source.name)
             if unscoped:
@@ -594,6 +703,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             exposure = self._exp_lookup_exposures[name]
             if exposure.sql is not None:
                 queries.append(exposure.sql)
+                exposure_sql_queries.add(exposure.sql)
                 unscoped_queries.add(exposure.sql)
             else:
                 assert exposure.fact is not None
@@ -604,6 +714,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 add_fact(uptake.fact)
         for fact in uptake_facts:
             add_fact(fact)
+
         # Sources read only for a breakout/factor/covariate property lookup:
         # `_build_breakout_properties_table` takes the latest value over the
         # whole source (static) or strictly before exposure (pre_exposure),
@@ -616,6 +727,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # breakout property is (see below): pin them unconditionally, since
         # every readout of this design needs `unit_frame`'s covariate join
         # to resolve, not only an explicit publish request.
+
         self._add_observational_covariate_sources(sources, property_source_names)
         requested_configs = self._context.configs if configs is None else configs
         for config in requested_configs:
@@ -646,6 +758,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     )
                     sources[fact_source.name] = fact_source
                     property_source_names.add(fact_source.name)
+
         site_volume_source_names, site_volume_dim_names = self._site_volume_scope_names(
             site_volume_metrics, sources
         )
@@ -657,6 +770,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         }
         dimensions = {name for source in sources.values() for name in source.dims}
         for source in sources.values():
+            required_columns = {
+                *source.entities,
+                self._experiment.unit,
+                *((self._experiment.cluster,) if self._experiment.cluster is not None else ()),
+                source.timestamp_column,
+                "experiment_id",
+                "group_id",
+                "event",
+                *(property_.column for property_ in source.properties),
+                *(
+                    fact.column
+                    for fact in source.facts
+                    if fact.name in required_facts and fact.column is not None
+                ),
+            }
+            column_projections[source.sql] = tuple(
+                sorted(set(column_projections.get(source.sql, ())) | required_columns)
+            )
             queries.append(source.sql)
             column_hints[source.sql] = self._source_column_hint(
                 source,
@@ -668,18 +799,31 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         dim_by_name = {d.name: d for d in self._defs.dim_sources}
         for dim_name in dimensions:
             dim = dim_by_name[dim_name]
+            required_columns = {dim.entity, *(property_.column for property_ in dim.properties)}
+            if dim.validity is not None:
+                required_columns.update(
+                    column
+                    for column in (
+                        dim.validity.valid_from,
+                        dim.validity.valid_to,
+                        dim.validity.changed_at,
+                    )
+                    if column is not None
+                )
+            column_projections[dim.sql] = tuple(
+                sorted(set(column_projections.get(dim.sql, ())) | required_columns)
+            )
             queries.append(dim.sql)
             if dim_name in site_volume_dim_names or dim_name in freshness_dim_names:
                 column_hints[dim.sql] = (None, None)
             else:
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
-        for source in sources.values():
-            validate_fact_source_schema(
-                self._session.source_sql(source.sql),
-                source,
-                require_event=source.name in event_source_names,
-            )
+        # A SQL-backed exposure can share a query with a fact or dimension
+        # projection. Keep its enrollment coordinates in that physical stream.
+        for sql in exposure_sql_queries & column_projections.keys():
+            required_columns = {"unit_id", "ts", "group_id", "experiment_id"}
+            column_projections[sql] = tuple(sorted(set(column_projections[sql]) | required_columns))
         enrolled = self._scope_enrolled_units()
         # The generous lower margin limits only the snapshot copy, not builder
         # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
@@ -689,10 +833,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             days=self._experiment.n_pre_periods + 1
         )
         scope = SourceScope(enrolled_units=enrolled, window_start=window_start)
+        for source in sources.values():
+            self._session.preflight_fact_source_schema(
+                source, require_event=source.name in event_source_names
+            )
+
         pinned = DefinitionsMomentSource(
             self._session.pin_sources(
                 tuple(queries),
                 column_hints=column_hints,
+                column_projections=column_projections,
                 scope=scope,
                 extra_relations=(
                     {}
@@ -708,6 +858,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
+        pinned._mixed_assignment_warned = self._mixed_assignment_warned
+        for source in sources.values():
+            validate_fact_source_schema(
+                pinned._session.source_sql(source.sql),
+                source,
+                require_event=source.name in event_source_names,
+            )
         # Internal narrowing keeps this enclosing readout's captured horizon.
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
@@ -783,6 +940,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             yield pinned
         finally:
             if pinned is not self:
+                self._adopt_assignment_validation(pinned)
                 pinned.close()
 
     def _declared_breakout_sources(self) -> tuple[str, ...]:

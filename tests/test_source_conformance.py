@@ -378,7 +378,10 @@ def test_readout_snapshot_replays_and_tracks_changed_ingress_arms(
 
             monkeypatch.setattr(source, name, changed_counts, raising=False)
 
-    mutated = readouts.run(source)
+    # The definitions snapshot reads the captured warehouse relation, not
+    # a later monkeypatch of the source's public moments method. Use live
+    # evidence to exercise the changed ingress adapter itself.
+    mutated = readouts.run(source, coherence="live")
     assert isinstance(mutated, LiftEstimates)
     mutated_row = mutated[0]
     assert isinstance(mutated_row, LiftEstimate)

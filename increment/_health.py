@@ -33,7 +33,9 @@ def check_health(
         )
     )
     with scoped.source as pinned:
-        return collect(pinned)
+        from increment.readouts._evidence import _builtin_source
+
+        return collect(_builtin_source(pinned))
 
 
 __all__ = ["check_health"]
