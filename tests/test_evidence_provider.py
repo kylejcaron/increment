@@ -2418,6 +2418,31 @@ def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_p
     ]
 
 
+@pytest.mark.integration
+def test_scoped_builtin_metadata_keeps_day_axis_breakouts(tmp_path) -> None:
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    provider = _forwarding_provider(source)
+    provider.scope = builtin.scope
+    try:
+        result = cast(
+            Any,
+            request_evidence(
+                provider,
+                DayAxisRequest(
+                    "run_daily",
+                    "daily",
+                    source.context.metrics,
+                    dimension="country",
+                ),
+            ),
+        )
+        assert tuple(result.slices)
+    finally:
+        analysis.close()
+
+
 def _forwarding_provider(source: Any, **attributes: Any) -> Any:
     builtin = evidence_provider(source)
 
@@ -3207,9 +3232,7 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
 
 
 def _assert_bound_daily_slice_reads_only_its_source(
-    forwarding: Any,
-    source: Any,
-    experiment: Any,
+    forwarding: Any, source: Any, experiment: Any
 ) -> None:
     from increment.semantics.models import Breakout
 
@@ -3234,12 +3257,57 @@ def _assert_bound_daily_slice_reads_only_its_source(
             "daily",
             source.context.metrics,
             dimension="country",
-            experiment=experiment,
         ),
     )
     built_in_slices = tuple(cast(Any, bound_axis).slices)
     assert built_in_slices
     assert {item.source_name for item in built_in_slices} == {"events"}
+
+    # A source-less declaration claims no other source, so a bound slice keeps it.
+    sourceless = experiment.model_copy(
+        update={"breakouts": (Breakout(property="country", source=None),)}
+    )
+    sourceless_axis = request_evidence(
+        bound_slices.slices[0].source,
+        DayAxisRequest(
+            "run_daily",
+            "daily",
+            source.context.metrics,
+            dimension="country",
+            experiment=sourceless,
+        ),
+    )
+    sourceless_slices = tuple(cast(Any, sourceless_axis).slices)
+    assert sourceless_slices
+    assert {item.source_name for item in sourceless_slices} == {"events"}
+
+    inferred = cast(
+        Any,
+        request_evidence(
+            forwarding,
+            BreakoutSlicesRequest(
+                breakouts=(BreakoutIdentity("country", None),),
+                breakout_definitions=(bound_definition,),
+                metrics=source.context.metrics,
+                configs=source.context.configs,
+            ),
+        ),
+    )
+    inferred_axis = request_evidence(
+        inferred.slices[0].source,
+        DayAxisRequest(
+            "run_daily",
+            "daily",
+            source.context.metrics,
+            dimension="country",
+            experiment=experiment,
+        ),
+    )
+    inferred_slices = tuple(cast(Any, inferred_axis).slices)
+    assert sorted((item.source_name, item.dimension) for item in inferred_slices) == [
+        ("app", "country"),
+        ("events", "country"),
+    ]
 
 
 @pytest.mark.integration
@@ -3456,6 +3524,9 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     assert {row.source for row in actual} == {"events", "app"}
     assert len(identities) == len(set(identities))
 
+    scoped_forwarding = _forwarding_provider(source, scope=builtin.scope)
+    _assert_bound_daily_slice_reads_only_its_source(scoped_forwarding, source, experiment)
+
     declared = tuple(experiment.breakouts)
     identities = tuple(BreakoutIdentity(item.property, item.source) for item in declared)
     breakout_request = BreakoutSlicesRequest(
@@ -3538,10 +3609,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             assert len(acquired) == len(expected) == 1
             assert acquired[0].rows == expected[0].rows
 
-    try:
-        _assert_bound_daily_slice_reads_only_its_source(forwarding, source, experiment)
-    finally:
-        analysis.close()
+    analysis.close()
 
 
 @pytest.mark.integration

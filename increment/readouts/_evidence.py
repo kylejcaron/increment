@@ -79,6 +79,15 @@ def _declared_breakout_property(value: object) -> str | None:
     return None
 
 
+def _declared_breakout_source(value: object) -> str | None:
+    if isinstance(value, Breakout):
+        return value.source
+    if isinstance(value, Mapping):
+        source = value.get("source")
+        return source if isinstance(source, str) else None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class DayAxisSlice:
     rows: list[dict[str, Any]]
@@ -954,7 +963,14 @@ def _trigger_metadata_source(src: Any) -> Any | None:
         if root is None:
             continue
         adapter = getattr(root, "adapter", None)
-        for candidate in (root, getattr(root, "source", None), getattr(adapter, "source", None)):
+        provider = getattr(root, "provider", None)
+        for candidate in (
+            root,
+            getattr(root, "source", None),
+            getattr(adapter, "source", None),
+            provider,
+            getattr(provider, "source", None),
+        ):
             if candidate is not None and any(
                 getattr(candidate, name, None) is not None
                 for name in ("artifact_experiment", "experiment", "_experiment")
@@ -1125,8 +1141,20 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
             for (source_name, scope), (_, _, breakouts) in zip(scopes, partitions, strict=True):
                 with evidence_scope(src, scope) as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
-                    if experiment is not None:
-                        # Delegate each partition with only its own breakout declarations.
+                    if experiment is not None and bound_identity is not None:
+                        scoped_source = bound_identity.source or source_name
+                        # A source-less declaration claims no other source; the loader's own
+                        # preflight resolves it, so only conflicting explicit sources are dropped.
+                        breakouts = tuple(
+                            breakout
+                            for breakout in experiment.breakouts
+                            if _declared_breakout_property(breakout) not in requested_properties
+                            or scoped_source is None
+                            or _declared_breakout_source(breakout) in (None, scoped_source)
+                        )
+                        experiment = experiment.model_copy(update={"breakouts": breakouts})
+                    elif experiment is not None and breakouts:
+                        # Preserve declarations discovered only after entering the scope.
                         experiment = experiment.model_copy(update={"breakouts": breakouts})
                     scoped_request = (
                         request
@@ -1178,7 +1206,9 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                                 item.metrics,
                                 item.view,
                                 item.dimension,
-                                item.source_name or source_name,
+                                item.source_name
+                                or (bound_identity.source if bound_identity is not None else None)
+                                or source_name,
                                 edge_source,
                                 experiment,
                             )
@@ -1192,7 +1222,9 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                             item.metrics,
                             item.view,
                             item.dimension,
-                            item.source_name or source_name,
+                            item.source_name
+                            or (bound_identity.source if bound_identity is not None else None)
+                            or source_name,
                             edge_source,
                             experiment,
                         )
