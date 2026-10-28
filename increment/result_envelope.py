@@ -600,8 +600,8 @@ class ResultCell:
             method_config.update(
                 alpha=getattr(row, "alpha", None),
                 ard=getattr(row, "beta_ard", None) is not None,
-                interactions=getattr(row, "interaction_spec").model_dump(mode="json"),
-                adjustments=getattr(row, "main_spec").model_dump(mode="json"),
+                interactions=cast(Any, row).interaction_spec.model_dump(mode="json"),
+                adjustments=cast(Any, row).main_spec.model_dump(mode="json"),
             )
         elif row_kind == "cate_validation":
             method_config.update(
