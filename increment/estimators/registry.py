@@ -210,6 +210,8 @@ def validate_observational_routes(
             continue
         ref = ESTIMATORS[observational_estimator_id(method)]
         for metric in metrics:
+            if ref.estimator_id in _BUILTIN_ESTIMATOR_IDS and metric.type == "ratio":
+                continue
             require_routes(
                 source,
                 ref,

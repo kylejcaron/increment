@@ -939,8 +939,40 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
+    prewarned_unsupported: set[tuple[str, str]] = set()
     if evidence is None:
+        from increment.estimation._adjust.common import adjustment_preflight
         from increment.estimators.registry import validate_observational_routes
+
+        for method in methods:
+            if not uses_builtin_adjustment_preflight(method):
+                continue
+            roles = (
+                ("learner",) if method.name == "iptw" else ("propensity_learner", "outcome_learner")
+            )
+            for metric in selected:
+                if metric.type != "ratio":
+                    continue
+                try:
+                    adjustment_preflight(
+                        metric,
+                        design,
+                        method=method.name.upper(),
+                        moment_rows=(),
+                        cluster=cluster,
+                        learner_roles=roles,
+                    )
+                except UnsupportedRequestError as exc:
+                    if exc.code != "estimation.adjust_common.supported_ratio_metric":
+                        raise
+                    _warn(
+                        "estimation.adjust.skip_unsupported_metric",
+                        metric_name=metric.name,
+                        method_name=method.name,
+                        exc=exc,
+                        skip_file_prefixes=PACKAGE_FRAMES,
+                    )
+                    prewarned_unsupported.add((method.name, metric.name))
 
         validate_observational_routes(
             src,
@@ -1104,13 +1136,14 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         raise
                     # A single unsupported metric (e.g. ratio under IPTW) must not
                     # abort every other metric's estimate; each adjust_fn already refuses itself.
-                    _warn(
-                        "estimation.adjust.skip_unsupported_metric",
-                        metric_name=metric.name,
-                        method_name=method.name,
-                        exc=exc,
-                        skip_file_prefixes=PACKAGE_FRAMES,
-                    )
+                    if (method.name, metric.name) not in prewarned_unsupported:
+                        _warn(
+                            "estimation.adjust.skip_unsupported_metric",
+                            metric_name=metric.name,
+                            method_name=method.name,
+                            exc=exc,
+                            skip_file_prefixes=PACKAGE_FRAMES,
+                        )
                     if resolved_method_roles.get(method.name, "decision") == "decision":
                         from increment.estimation.decision_types import (
                             ArmHypothesisKey,

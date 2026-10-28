@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast
 from increment._analysis_config import effective_methods
 from increment._evidence_types import SourceContext
 from increment._literals import Correction, ValueScale
-from increment._source_types import declared_evidence
+from increment._source_types import declared_evidence, is_builtin_source
 from increment.errors import (
     RefusalSpec,
     refuse,
@@ -345,8 +345,11 @@ class ReadoutRequest:
 
         for config, methods in zip(request.configs, request.estimation_methods, strict=True):
             check_method_covariates(source, config.metric.name, methods)
+        # Native route checks belong after semantic request validation.  The
+        # observational facade validates its route before acquisition.
         if (
-            getattr(request.design, "mechanism", None) == "observational"
+            not is_builtin_source(source)
+            and getattr(request.design, "mechanism", None) == "observational"
             and request.view != "daily"
         ):
             from increment.estimators.registry import validate_observational_routes
