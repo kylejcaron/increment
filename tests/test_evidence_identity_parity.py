@@ -173,9 +173,34 @@ def test_compare_normalizes_tuple_and_list_containers_recursively() -> None:
     _compare(expected, actual)
 
 
+# Deliberate changes made after the pre-kernel capture, keyed by component and the exact
+# captured status reason. #270 added likelihood sequential results, so a cell with neither
+# sequential kind now states that no sequential result of any kind is retained.
+_POST_CAPTURE_STATUS_REASONS: Mapping[tuple[str, str], str] = {
+    ("sequential", "no asymptotic sequential result is retained"): (
+        "no sequential result is retained"
+    ),
+}
+
+
+def _with_post_capture_reasons(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Express captured reasons in current wording; cells restored from stored payloads
+    retain the captured wording, so both sides of a comparison are normalized."""
+    migrated = copy.deepcopy(dict(payload))
+    for name, component in migrated.get("components", {}).items():
+        status = component["status"]
+        replacement = _POST_CAPTURE_STATUS_REASONS.get((name, status.get("reason")))
+        if replacement is not None and component.get("kind") is None:
+            status["reason"] = replacement
+    return migrated
+
+
 def _assert_payload_matches(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> None:
     canonical_expected = ResultCell.from_payload(expected).to_payload()
-    _compare(_comparable_payload(canonical_expected), _comparable_payload(actual))
+    _compare(
+        _comparable_payload(_with_post_capture_reasons(canonical_expected)),
+        _comparable_payload(_with_post_capture_reasons(actual)),
+    )
 
 
 def _assert_operation_matches(
