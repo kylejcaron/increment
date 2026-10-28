@@ -1185,6 +1185,7 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                             breakout
                             for breakout in experiment.breakouts
                             if _declared_breakout_property(breakout) not in requested_properties
+                            or bound_identity.source is None
                             or _declared_breakout_source(breakout) == bound_identity.source
                         )
                         experiment = experiment.model_copy(update={"breakouts": breakouts})

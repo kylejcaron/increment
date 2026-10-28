@@ -451,6 +451,20 @@ def test_all_user_deselection_with_xdist_is_reported_as_failure(
     assert status == 5
 
 
+def test_keyword_filter_excluding_all_affected_tests_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(tmp_path, {"tests/test_changed.py": "def test_changed(): pass\n"})
+    _change(root, base, "tests/test_changed.py", "def test_changed(): pass\n# changed\n")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--", "-k", "no_such_test_keyword"])
+
+    assert status == 5
+
+
 def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:
     from tests._selection import kept_test_files
 
@@ -775,6 +789,8 @@ def test_full_tier_preserves_doc_pages_and_uncovered_paths(tmp_path: Path) -> No
     assert _pytest_arguments(selection, base, "fast", []) == [
         "-m",
         "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+        "-p",
+        "scripts.affected_filter",
         "tests",
         "docs/guides/cuped.md",
     ]

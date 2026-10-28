@@ -15,17 +15,20 @@ _KEPT = (
 )
 _DESELECTED = 0
 _USER_DESELECT_PATTERNS: tuple[str, ...] = ()
+_USER_KEYWORD_FILTER = False
 
 
 def pytest_configure(config: Any) -> None:
-    global _USER_DESELECT_PATTERNS
+    global _USER_DESELECT_PATTERNS, _USER_KEYWORD_FILTER
     _USER_DESELECT_PATTERNS = tuple(config.option.deselect or ())
+    _USER_KEYWORD_FILTER = bool(config.option.keyword)
 
 
 def pytest_deselected(items: list[Any]) -> None:
     global _DESELECTED
     _DESELECTED += sum(
-        any(item.nodeid.startswith(pattern) for pattern in _USER_DESELECT_PATTERNS)
+        _USER_KEYWORD_FILTER
+        or any(item.nodeid.startswith(pattern) for pattern in _USER_DESELECT_PATTERNS)
         for item in items
     )
 
@@ -56,4 +59,4 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
 
 def pytest_testnodedown(node: Any, error: Any) -> None:
     global _DESELECTED
-    _DESELECTED += int(node.workeroutput.get("affected_user_deselected", 0))
+    _DESELECTED += int(getattr(node, "workeroutput", {}).get("affected_user_deselected", 0))

@@ -3207,7 +3207,9 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
     assert reads == []
 
 
-def _assert_bound_daily_slice_reads_only_its_source(forwarding: Any, source: Any) -> None:
+def _assert_bound_daily_slice_reads_only_its_source(
+    forwarding: Any, source: Any, experiment: Any
+) -> None:
     from increment.semantics.models import Breakout
 
     bound_identity = BreakoutIdentity("country", "events")
@@ -3236,6 +3238,30 @@ def _assert_bound_daily_slice_reads_only_its_source(forwarding: Any, source: Any
     built_in_slices = tuple(cast(Any, bound_axis).slices)
     assert built_in_slices
     assert {item.source_name for item in built_in_slices} == {"events"}
+
+    inferred = cast(
+        Any,
+        request_evidence(
+            forwarding,
+            BreakoutSlicesRequest(
+                breakouts=(BreakoutIdentity("country", None),),
+                breakout_definitions=(bound_definition,),
+                metrics=source.context.metrics,
+                configs=source.context.configs,
+            ),
+        ),
+    )
+    inferred_axis = request_evidence(
+        inferred.slices[0].source,
+        DayAxisRequest(
+            "run_daily",
+            "daily",
+            source.context.metrics,
+            dimension="country",
+            experiment=experiment,
+        ),
+    )
+    assert "events" in {item.source_name for item in cast(Any, inferred_axis).slices}
 
 
 @pytest.mark.integration
@@ -3453,7 +3479,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     assert len(identities) == len(set(identities))
 
     scoped_forwarding = _forwarding_provider(source, scope=builtin.scope)
-    _assert_bound_daily_slice_reads_only_its_source(scoped_forwarding, source)
+    _assert_bound_daily_slice_reads_only_its_source(scoped_forwarding, source, experiment)
 
     declared = tuple(experiment.breakouts)
     identities = tuple(BreakoutIdentity(item.property, item.source) for item in declared)
