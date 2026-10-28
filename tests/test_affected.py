@@ -392,18 +392,53 @@ def test_deselect_cannot_silently_skip_every_selected_test(
     monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
+    monkeypatch.setenv(
+        "PYTEST_ADDOPTS", "--deselect=tests/test_changed.py::test_changed"
+    )
+    status = main(["--base", base])
+
+    assert selection.test_files == ("tests/test_changed.py",)
+    assert status == 5
+    assert not (root / "changed-ran").exists()
+
+def test_partial_deselect_with_xdist_keeps_successful_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_changed.py": (
+                "from pathlib import Path\n"
+                "def test_deselected(): raise AssertionError('deselected')\n"
+                "def test_kept(): Path('kept-ran').touch()\n"
+            ),
+        },
+    )
+    selection = _change(
+        root,
+        base,
+        "tests/test_changed.py",
+        "from pathlib import Path\n"
+        "def test_deselected(): raise AssertionError('deselected')\n"
+        "def test_kept(): Path('kept-ran').touch()\n"
+        "# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
     status = main(
         [
             "--base",
             base,
             "--",
-            "--deselect=tests/test_changed.py::test_changed",
+            "-n",
+            "2",
+            "--deselect=tests/test_changed.py::test_deselected",
         ]
     )
-
     assert selection.test_files == ("tests/test_changed.py",)
-    assert status == 5
-    assert not (root / "changed-ran").exists()
+    assert status == 0
+    assert (root / "kept-ran").exists()
 
 
 def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:

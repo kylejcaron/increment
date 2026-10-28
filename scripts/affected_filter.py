@@ -15,6 +15,15 @@ _KEPT = (
 )
 
 
+
+_DESELECTED = 0
+
+
+def pytest_deselected(items: list[Any]) -> None:
+    global _DESELECTED
+    _DESELECTED += len(items)
+
+
 def pytest_ignore_collect(collection_path: Path) -> bool | None:
     if _KEPT is None or not collection_path.is_file():
         return None
@@ -30,9 +39,7 @@ def pytest_ignore_collect(collection_path: Path) -> bool | None:
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     if (
-        exitstatus == 0
-        and not getattr(session, "items", ())
-        and getattr(getattr(session, "config", None), "option", None)
-        and getattr(session.config.option, "deselect", ())
+        exitstatus == 5
+        and _DESELECTED > 0
     ):
-        session.exitstatus = 5
+        session.exitstatus = 6

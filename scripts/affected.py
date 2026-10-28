@@ -330,14 +330,12 @@ def _pytest_arguments(
     return _pytest_invocations(selection, base, tier, extra_args)[0]
 
 
-def _combined_pytest_status(
-    statuses: Sequence[int], *, deselect_requested: bool = False
-) -> int | None:
+def _combined_pytest_status(statuses: Sequence[int]) -> int | None:
     if not statuses:
         return None
+    if any(status == 6 for status in statuses):
+        return 5
     meaningful = [status for status in statuses if status != 5]
-    if not meaningful:
-        return 5 if deselect_requested else 0
     return next((status for status in meaningful if status != 0), 0)
 
 
@@ -391,13 +389,7 @@ def main(argv: list[str]) -> int:
         else:
             environment["AFFECTED_TEST_FILES"] = "[]"
         statuses.append(subprocess.run(command, cwd=root, env=environment, check=False).returncode)
-    status = _combined_pytest_status(
-        statuses,
-        deselect_requested=any(
-            argument == "--deselect" or argument.startswith("--deselect=")
-            for argument in extra_args
-        ),
-    )
+    status = _combined_pytest_status(statuses)
     if status is None:
         print("affected: no affected tests selected")
         return 0
