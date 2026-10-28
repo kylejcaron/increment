@@ -143,6 +143,83 @@ def test_captured_postgres_sources_require_temp_privilege():
     assert error.value.code == "query.session.snapshot.materialization_failed"
 
 
+def test_snapshot_schema_declaration_refuses_before_temp_capability_check():
+    from increment.errors import DefinitionError
+    from increment.semantics.models import FactSource
+
+    class Postgres:
+        name = "postgres"
+
+        def sql(self, *_args, **_kwargs):
+            return SimpleNamespace(columns=("user_id", "event_at"))
+
+        def raw_sql(self, _statement):
+            pytest.fail("a declaration refusal must precede TEMP privilege checks")
+
+    source = FactSource.model_construct(
+        name="purchase_rows",
+        sql="SELECT user_id, event_at FROM analytics.event_log",
+        timestamp_column="event_at",
+        entities=("user_id",),
+        facts=(),
+    )
+    session = WarehouseSession(
+        Postgres(),  # type: ignore[ty:invalid-argument-type]
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    with pytest.raises(DefinitionError) as error:
+        session.preflight_fact_source_schema(source, require_event=True)
+
+    assert error.value.code == "definition.fact_source.missing_columns"
+    assert error.value.context["missing"] == ("event",)
+
+
+def test_sql_source_privilege_error_maps_to_temp_capability_refusal():
+    from increment.errors import CapabilityError
+    from increment.semantics.models import FactSource
+
+    class PrivilegeError(Exception):
+        sqlstate = "42501"
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def fetchone(self):
+            return (False,)
+
+    class Postgres:
+        name = "postgres"
+
+        def sql(self, *_args, **_kwargs):
+            raise PrivilegeError("permission denied")
+
+        def raw_sql(self, statement):
+            assert "has_database_privilege" in statement
+            return Cursor()
+
+    source = FactSource.model_construct(
+        name="purchase_rows",
+        sql="SELECT user_id FROM analytics.event_log",
+        timestamp_column="event_at",
+        entities=("user_id",),
+        facts=(),
+    )
+    session = WarehouseSession(
+        Postgres(),  # type: ignore[ty:invalid-argument-type]
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    with pytest.raises(CapabilityError) as error:
+        session.preflight_fact_source_schema(source, require_event=True)
+
+    assert error.value.code == "query.session.snapshot.materialization_failed"
+
+
 def _readout_source(snapshots):
     from contextlib import contextmanager
 

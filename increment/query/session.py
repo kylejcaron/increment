@@ -1631,6 +1631,18 @@ def _warehouse_artifact_qr_scratch(con: SQLBackend) -> Iterator[_WarehouseQrScra
         yield scratch
 
 
+def _is_postgres_privilege_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    while current is not None:
+        if (
+            getattr(current, "sqlstate", None) == "42501"
+            or getattr(current, "pgcode", None) == "42501"
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class WarehouseSession:
     """One ibis connection's fact-table cache and TEMP-table mechanics.
 
@@ -1742,6 +1754,36 @@ class WarehouseSession:
             return self._source_tables[sql]
         return self._con.sql(sql, dialect=self._defs.dialect)
 
+    def preflight_fact_source_schema(
+        self, fact_source: FactSource, *, require_event: bool = True
+    ) -> None:
+        """Validate source columns before snapshot capability checks when introspection succeeds.
+
+        A PostgreSQL source-inspection privilege error on a role without TEMP is reported as the
+        snapshot capability refusal instead of leaking the backend's raw privilege error.
+        """
+        from increment.query.fact_resolution import validate_fact_source_schema
+
+        try:
+            validate_fact_source_schema(
+                self.source_sql(fact_source.sql), fact_source, require_event=require_event
+            )
+        except Exception as exc:
+            if self._con.name == "postgres" and _is_postgres_privilege_error(exc):
+                self._require_snapshot_temp_privilege()
+            raise
+
+    def _require_snapshot_temp_privilege(self) -> None:
+        if self._con.name != "postgres" or self._postgres_temp_privilege_checked:
+            return
+        with cast(Any, self._con).raw_sql(
+            "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
+        ) as cursor:
+            has_temp_privilege = cursor.fetchone()[0]
+        self._postgres_temp_privilege_checked = True
+        if not has_temp_privilege:
+            _raise("query.session.snapshot.materialization_failed")
+
     def pin_sources(
         self,
         queries: tuple[str, ...],
@@ -1763,14 +1805,7 @@ class WarehouseSession:
         table; raw rows never cross the client boundary. The returned session owns its cleanup.
         """
         queries = tuple(dict.fromkeys(queries))
-        if self._con.name == "postgres" and not self._postgres_temp_privilege_checked:
-            with cast(Any, self._con).raw_sql(
-                "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
-            ) as cursor:
-                has_temp_privilege = cursor.fetchone()[0]
-            self._postgres_temp_privilege_checked = True
-            if not has_temp_privilege:
-                _raise("query.session.snapshot.materialization_failed")
+        self._require_snapshot_temp_privilege()
         tables = []
         for sql in queries:
             table = self.source_sql(sql)

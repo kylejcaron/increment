@@ -820,6 +820,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             days=self._experiment.n_pre_periods + 1
         )
         scope = SourceScope(enrolled_units=enrolled, window_start=window_start)
+        for source in sources.values():
+            self._session.preflight_fact_source_schema(
+                source, require_event=source.name in event_source_names
+            )
+
         pinned = DefinitionsMomentSource(
             self._session.pin_sources(
                 tuple(queries),
