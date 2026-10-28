@@ -3182,6 +3182,42 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
     assert reads == []
 
 
+def _assert_bound_daily_slice_reads_only_its_source(
+    forwarding: Any,
+    source: Any,
+    experiment: Any,
+) -> None:
+    from increment.semantics.models import Breakout
+
+    bound_identity = BreakoutIdentity("country", "events")
+    bound_definition = Breakout(property="country", source="events")
+    bound_slices = cast(
+        Any,
+        request_evidence(
+            forwarding,
+            BreakoutSlicesRequest(
+                breakouts=(bound_identity,),
+                breakout_definitions=(bound_definition,),
+                metrics=source.context.metrics,
+                configs=source.context.configs,
+            ),
+        ),
+    )
+    bound_axis = request_evidence(
+        bound_slices.slices[0].source,
+        DayAxisRequest(
+            "run_daily",
+            "daily",
+            source.context.metrics,
+            dimension="country",
+            experiment=experiment,
+        ),
+    )
+    built_in_slices = tuple(cast(Any, bound_axis).slices)
+    assert built_in_slices
+    assert {item.source_name for item in built_in_slices} == {"events"}
+
+
 @pytest.mark.integration
 def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) -> None:
     import datetime as dt
@@ -3396,12 +3432,6 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     assert {row.source for row in actual} == {"events", "app"}
     assert len(identities) == len(set(identities))
 
-    def load_breakout_evidence(src: Any, request: object) -> Any:
-        return request_evidence(evidence_provider(src), request)
-
-    def load_day_axis_rows(src: Any, request: object) -> Any:
-        return request_evidence(src, request)
-
     declared = tuple(experiment.breakouts)
     identities = tuple(BreakoutIdentity(item.property, item.source) for item in declared)
     breakout_request = BreakoutSlicesRequest(
@@ -3410,14 +3440,17 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
         metrics=source.context.metrics,
         configs=source.context.configs,
     )
-    original_breakouts = load_breakout_evidence(source, breakout_request)
+    original_breakouts = cast(Any, request_evidence(builtin, breakout_request))
     for identity, definition in zip(identities, declared, strict=True):
-        acquired = load_breakout_evidence(
-            source,
-            replace(
-                breakout_request,
-                breakouts=(identity,),
-                breakout_definitions=(definition,),
+        acquired = cast(
+            Any,
+            request_evidence(
+                builtin,
+                replace(
+                    breakout_request,
+                    breakouts=(identity,),
+                    breakout_definitions=(definition,),
+                ),
             ),
         )
         expected = tuple(item for item in original_breakouts.slices if item.identity == identity)
@@ -3438,7 +3471,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
         by=("country", "device"),
         experiment=experiment,
     )
-    custom_slices = tuple(load_day_axis_rows(provider, custom_request).slices)
+    custom_slices = tuple(cast(Any, request_evidence(provider, custom_request)).slices)
     custom_rows = tuple(row for item in custom_slices for row in item.rows)
     expected_custom_rows = provider.rows_by_source["events"] + provider.rows_by_source["app"]
     assert [item.source_name for item in custom_slices] == ["events", "app"]
@@ -3465,7 +3498,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             by=("country", "device"),
             experiment=experiment,
         )
-        unnormalized = tuple(load_day_axis_rows(provider, day_request).slices)
+        unnormalized = tuple(cast(Any, request_evidence(provider, day_request)).slices)
         source_names = tuple(
             dict.fromkeys(item.source for item in declared if item.property in day_request.by)
         )
@@ -3476,12 +3509,15 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
                 update={"breakouts": tuple(item for item in declared if item.source == source_name)}
             )
             child_request = replace(day_request, experiment=child_experiment)
-            acquired = tuple(load_day_axis_rows(provider, child_request).slices)
+            acquired = tuple(cast(Any, request_evidence(provider, child_request)).slices)
             expected = tuple(item for item in unnormalized if item.source_name == source_name)
             assert len(acquired) == len(expected) == 1
             assert acquired[0].rows == expected[0].rows
 
-    analysis.close()
+    try:
+        _assert_bound_daily_slice_reads_only_its_source(forwarding, source, experiment)
+    finally:
+        analysis.close()
 
 
 @pytest.mark.integration

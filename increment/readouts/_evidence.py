@@ -1151,7 +1151,6 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                 )
                 if bound_partitions:
                     partitions = bound_partitions
-        sources = tuple(source_name for source_name, _, _ in partitions)
         scopes = tuple(
             (
                 source_name,
@@ -1172,8 +1171,8 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
             for (source_name, scope), (_, _, breakouts) in zip(scopes, partitions, strict=True):
                 with evidence_scope(src, scope) as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
-                    if experiment is not None and len(sources) > 1:
-                        # Each source scope reads only its own declared breakouts.
+                    if experiment is not None:
+                        # Delegate each partition with only its own breakout declarations.
                         experiment = experiment.model_copy(update={"breakouts": breakouts})
                     scoped_request = (
                         request
