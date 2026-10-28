@@ -465,6 +465,32 @@ def test_keyword_filter_excluding_all_affected_tests_fails(
     assert status == 5
 
 
+def test_keyword_matching_only_tier_excluded_tests_remains_successful(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_affected.py": (
+                "import pytest\n@pytest.mark.integration\ndef test_affected(): pass\n"
+            )
+        },
+    )
+    _change(
+        root,
+        base,
+        "tests/test_affected.py",
+        "import pytest\n@pytest.mark.integration\ndef test_affected(): pass\n# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--tier", "unit", "--", "-k", "affected"])
+
+    assert status == 0
+
+
 def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:
     from tests._selection import kept_test_files
 

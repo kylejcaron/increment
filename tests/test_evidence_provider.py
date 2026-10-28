@@ -3261,7 +3261,11 @@ def _assert_bound_daily_slice_reads_only_its_source(
             experiment=experiment,
         ),
     )
-    assert "events" in {item.source_name for item in cast(Any, inferred_axis).slices}
+    inferred_slices = tuple(cast(Any, inferred_axis).slices)
+    assert {(item.source_name, item.dimension) for item in inferred_slices} == {
+        ("events", "country"),
+        ("app", "country"),
+    }
 
 
 @pytest.mark.integration

@@ -16,6 +16,7 @@ _KEPT = (
 _DESELECTED = 0
 _USER_DESELECT_PATTERNS: tuple[str, ...] = ()
 _USER_KEYWORD_FILTER = False
+_TIER = os.environ.get("AFFECTED_TEST_TIER", "fast")
 
 
 def pytest_configure(config: Any) -> None:
@@ -24,11 +25,39 @@ def pytest_configure(config: Any) -> None:
     _USER_KEYWORD_FILTER = bool(config.option.keyword)
 
 
+def _tier_eligible(item: Any) -> bool:
+    markers = {marker.name for marker in item.iter_markers()}
+    if _TIER == "slow":
+        return "slow" in markers and not markers.intersection(
+            {
+                "parameter_recovery",
+                "numerical_certification",
+                "examples",
+                "compile_registry",
+                "benchmark",
+            }
+        )
+    excluded = {
+        "slow",
+        "parameter_recovery",
+        "numerical_certification",
+        "examples",
+        "stress",
+        "benchmark",
+    }
+    if _TIER == "unit":
+        excluded.add("integration")
+    return not markers.intersection(excluded)
+
+
 def pytest_deselected(items: list[Any]) -> None:
     global _DESELECTED
     _DESELECTED += sum(
-        _USER_KEYWORD_FILTER
-        or any(item.nodeid.startswith(pattern) for pattern in _USER_DESELECT_PATTERNS)
+        _tier_eligible(item)
+        and (
+            _USER_KEYWORD_FILTER
+            or any(item.nodeid.startswith(pattern) for pattern in _USER_DESELECT_PATTERNS)
+        )
         for item in items
     )
 

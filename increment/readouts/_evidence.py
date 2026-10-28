@@ -1181,12 +1181,13 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
                 with evidence_scope(src, scope) as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
                     if experiment is not None and bound_identity is not None:
+                        scoped_source = bound_identity.source or source_name
                         breakouts = tuple(
                             breakout
                             for breakout in experiment.breakouts
                             if _declared_breakout_property(breakout) not in requested_properties
-                            or bound_identity.source is None
-                            or _declared_breakout_source(breakout) == bound_identity.source
+                            or scoped_source is None
+                            or _declared_breakout_source(breakout) == scoped_source
                         )
                         experiment = experiment.model_copy(update={"breakouts": breakouts})
                     elif experiment is not None and breakouts:
