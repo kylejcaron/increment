@@ -17,6 +17,18 @@ class CanonicalJSONError(ValueError):
         super().__init__(message)
         self.code = code
 
+def canonical_datetime_string(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise CanonicalJSONError(
+            "canonical JSON datetime must be timezone-aware",
+            code="artifact.digest.timestamp",
+        )
+    return (
+        value.astimezone(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
 
 def _json_value(value: object) -> object:
     mapping = _mapping(value)
@@ -44,13 +56,7 @@ def _json_value(value: object) -> object:
     if isinstance(value, UUID):
         return str(value).lower()
     if isinstance(value, datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise CanonicalJSONError(
-                "canonical JSON datetime must be timezone-aware",
-                code="artifact.digest.timestamp",
-            )
-        normalized = value.astimezone(UTC)
-        return normalized.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        return canonical_datetime_string(value)
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, (list, tuple)):
