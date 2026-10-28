@@ -51,8 +51,8 @@ def test_metric_union_dispatches_on_type():
             "threshold_days": 7,
         }
     )
-    assert m.threshold_days == 7
     assert isinstance(m, RetentionMetric)
+    assert m.threshold_days == 7
 
 
 @pytest.mark.parametrize("aggregation", ["avg_event", "avg_calendar_day"])
@@ -179,6 +179,7 @@ def test_ratio_metric_parts_are_bare_measures():
             "denominator": {"fact": "orders", "aggregation": "count"},
         }
     )
+    assert isinstance(m, RatioMetric)
     assert m.numerator.aggregation == "sum"
     assert not hasattr(m.numerator, "entity")
 

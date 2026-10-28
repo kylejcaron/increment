@@ -27,7 +27,7 @@ dependencies = [
     # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
     # exposes that module and ships CPython 3.14 wheels exists.
     "ibis-framework>=11.0.0; python_version >= '3.14'",
-    "pydantic>=2.12.3",
+    "pydantic>=2.14.1",
     # Ibis's compiler registry imports packaging even without backend extras.
     "packaging>=24.0",
     # PyYAML gained CPython 3.13 support in 6.0.2 and 3.14 in 6.0.3, so a
@@ -36,15 +36,17 @@ dependencies = [
     "pyyaml>=6.0.1; python_version < '3.13'",
     "pyyaml>=6.0.2; python_version == '3.13'",
     "pyyaml>=6.0.3; python_version >= '3.14'",
-    "numpy>=1.26",
-    "scipy>=1.14",
-    "sqlglot>=27.24.2,<30.18",
-    "narwhals>=2.24",
+    "numpy>=2.5.4",
+    "scipy>=1.18.1",
+    # SQLGlot 30.24 emits `DROP VIEW IF EXISTS` without a target in DuckDB.
+    # Hold at 30.14 until its generator produces valid DROP statements again (2026-10-28).
+    "sqlglot>=30.14,<30.15",
+    "narwhals>=2.27.1",
     # Arrow 23.0.1 is the security floor; 25.0.0 crashes after its loading thread exits.
     # Exclude the broken release rather than changing process-wide allocators.
-    "pyarrow>=23.0.1,!=25.0.0; python_version < '3.13'",
-    "pyarrow>=23.0.1,!=25.0.0; python_version == '3.13'",
-    "pyarrow>=23.0.1,!=25.0.0; python_version >= '3.14'",
+    "pyarrow!=25.0.0,>=26.0.0; python_version < '3.13'",
+    "pyarrow!=25.0.0,>=26.0.0; python_version == '3.13'",
+    "pyarrow!=25.0.0,>=26.0.0; python_version >= '3.14'",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -61,60 +63,65 @@ Repository = "https://github.com/kylejcaron/increment"
 [project.optional-dependencies]
 demo   = [
     "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",
-    "ibis-framework[duckdb]>=11.0.0; python_version >= '3.14'",
+    "ibis-framework[duckdb]>=12.0.0; python_version >= '3.14'",
 ]
-tables = ["coeftable>=0.13.1", "pandas>=2.2"]
+tables = ["coeftable>=0.13.1", "pandas>=3.0.5,<3.1"]
+# Ibis 12 reads the deprecated pandas 3.1 `future.infer_string` option;
+# pandas turns that warning into an exception in this project's test policy.
+# Hold pandas below 3.1 until Ibis updates its pandas adapter (2026-10-28).
 # Optional presentation layer for `increment.dashboard`. Core Increment,
 # estimation, power, and the dataframe entry points never import these.
 dashboard = [
-    "marimo>=0.25.0",
+    "marimo>=0.25.2",
     "coeftable>=0.13.1",
-    "pandas>=2.2",
+    "pandas>=3.0.5,<3.1",
     "anywidget>=0.9",
 ]
 
 [build-system]
-requires = ["hatchling>=1.31", "hatch-vcs>=0.5"]
+requires = ["hatchling>=1.32.4", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.8.0",
-    "prek>=0.4.11",
-    "marimo>=0.25.0",
-    "altair>=5.4",
+    "ruff>=0.17.2",
+    "prek>=0.5.7",
+    "marimo>=0.25.2",
+    "altair>=6.3.0",
     "pytest==9.1.1",
-    "ty>=0.0.1a5",
+    # ty 0.0.91 emits hundreds of new diagnostics across existing code/tests;
+    # hold at 0.0.64 until the stricter checks are adopted incrementally (2026-10-28).
+    "ty>=0.0.64,<0.0.65",
     "pytest-cov>=6.0",
     "pytest-xdist>=3.6",
     "psutil>=7.2.2",
-    "nox>=2025.5",
+    "nox>=2026.10.20",
     "virtualenv>=21.14.13",
-    "polars>=1.0",
+    "polars>=2.0.0",
     "sybil>=10.1.0",
-    "tach>=0.35.0",
+    "tach>=0.35.3",
     "vulture>=2.14",
-    "hypothesis>=6.112",
+    "hypothesis>=6.170.9",
     "pytest-timeout>=2.4",
-    "filelock>=4.2.1",
+    "filelock>=4.2.4",
     "pytest-split>=0.11.0",
     "mutmut>=3.8,<3.9",
-    "pydoclint>=0.9.1",
-    "complexipy==8.0.1",
+    "pydoclint>=0.11.1",
+    "complexipy==8.1.0",
     "pytest-benchmark>=5.3.0",
 ]
 warehouse-backends = [
-    "ibis-framework[postgres]>=10.1.0",
+    "ibis-framework[postgres]>=12.0.0",
     # ibis pulls psycopg without a driver; the pure-Python path needs a system
     # libpq, which neither a clean CI image nor a clean checkout has.
-    "psycopg[binary]>=3.2",
-    "ibis-framework[snowflake]>=10.1.0",
-    "ibis-framework[bigquery]>=10.1.0",
+    "psycopg[binary]>=3.3.6",
+    "ibis-framework[snowflake]>=12.0.0",
+    "ibis-framework[bigquery]>=12.0.0",
 ]
 docs = [
-    "griffe-pydantic>=1.3.1",
-    "mkdocs-material>=9.7.7",
-    "mkdocstrings[python]>=1.0.6",
+    "griffe-pydantic>=1.3.2",
+    "mkdocs-material>=9.8.0",
+    "mkdocstrings[python]>=1.0.8",
 ]
 
 [tool.hatch.build.targets.wheel]

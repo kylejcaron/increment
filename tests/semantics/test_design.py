@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -320,9 +322,11 @@ def test_randomized_allocation_snapshots_caller_dict():
 
 
 def test_encouragement_allocation_immutable_after_construction():
-    d = TypeAdapter(Design).validate_python(_enc(allocation={"control": 0.5, "treatment": 0.5}))
+    d = TypeAdapter(Encouragement).validate_python(
+        _enc(allocation={"control": 0.5, "treatment": 0.5})
+    )
     with pytest.raises(TypeError):
-        d.allocation["control"] = 0.9
+        cast(dict[str, float], d.allocation)["control"] = 0.9
 
 
 def test_encouragement_min_first_stage_z_rejects_infinity():

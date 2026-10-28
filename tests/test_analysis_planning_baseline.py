@@ -1305,7 +1305,11 @@ class TestPlanningBaselineOnWarehouseRoutes:
             triggered = 20.0 + indices % 8 + indices % 3
             denominators = 2.0 + indices % 3
             expected = Baseline.from_summary(
-                SummaryStats(n=triggered.size, mean=triggered.mean(), var=triggered.var(ddof=1))
+                SummaryStats(
+                    n=triggered.size,
+                    mean=float(triggered.mean()),
+                    var=float(triggered.var(ddof=1)),
+                )
             )
             expected_ratio = triggered.sum() / denominators.sum()
             expected_ratio_var = (

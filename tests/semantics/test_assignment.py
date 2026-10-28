@@ -39,6 +39,7 @@ def test_switchback_sequence_dispatches_shared_schedule_order():
             "window": {"washout_steps": 1, "observation_steps": 2},
         }
     )
+    assert isinstance(switchback, SwitchbackAssignment)
     assert isinstance(switchback.sequence, SharedScheduleOrder)
     assert switchback.sequence.probability_ct == 0.6
     assert switchback.sequence.independence_unit == "shared_block"

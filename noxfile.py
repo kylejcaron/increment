@@ -39,49 +39,47 @@ def _run_heavy(session: nox.Session, *command: str, **kwargs) -> None:
 
 PYTHON_VERSIONS = ["3.12", "3.13", "3.14"]
 
-# Direct dependency floors declared in pyproject.toml. Keyed companions keep
-# each supported interpreter on the oldest usable combination: older NumPy,
-# SciPy, Pandas, and DuckDB releases do not publish wheels for every Python.
+# Direct dependency floors declared in pyproject.toml. Keyed companions retain
+# interpreter-specific package combinations where wheel availability differs.
 COMMON_FLOORS = (
-    "pydantic==2.12.3",
+    "pydantic==2.14.1",
     "packaging==24.0",
-    "sqlglot==27.24.2",
-    "narwhals==2.24.0",
+    "sqlglot==30.14.0",
+    "narwhals==2.27.1",
 )
 IBIS_FLOORS: dict[str, str] = {
     "3.12": "ibis-framework==10.1.0",
     "3.13": "ibis-framework==10.1.0",
     # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
     # exposes that module and ships CPython 3.14 Linux wheels exists.
-    "3.14": "ibis-framework==11.0.0",
+    "3.14": "ibis-framework==12.0.0",
 }
 FLOOR_PINS: dict[str, tuple[str, ...]] = {
     # Floors need both interpreter wheels and compatible dataframe libraries.
-    # Arrow 23.0.1 is the security floor and supports the NumPy 2 ABI; 3.12
-    # retains NumPy 1.26 as its oldest supported floor independently of the published range.
+    # Match the updated direct floors; use interpreter-compatible released wheels.
     "3.12": (
         *COMMON_FLOORS,
         "pyyaml==6.0.1",
-        "numpy==1.26.*",
-        "scipy==1.14.*",
-        "pyarrow==23.0.1",
-        "pandas==2.2.*",
+        "numpy==2.5.4",
+        "scipy==1.18.1",
+        "pyarrow==26.0.0",
+        "pandas==3.0.5",
     ),
     "3.13": (
         *COMMON_FLOORS,
         "pyyaml==6.0.2",
-        "numpy==2.1.*",
-        "scipy==1.14.*",
-        "pyarrow==23.0.1",
-        "pandas==2.2.*",
+        "numpy==2.5.4",
+        "scipy==1.18.1",
+        "pyarrow==26.0.0",
+        "pandas==3.0.5",
     ),
     "3.14": (
         *COMMON_FLOORS,
         "pyyaml==6.0.3",
-        "numpy==2.3.*",
-        "scipy==1.16.*",
-        "pyarrow==23.0.1",
-        "pandas==2.3.3",
+        "numpy==2.5.4",
+        "scipy==1.18.1",
+        "pyarrow==26.0.0",
+        "pandas==3.0.5",
     ),
 }
 TABLE_FLOORS: dict[str, tuple[str, ...]] = {
@@ -90,9 +88,9 @@ TABLE_FLOORS: dict[str, tuple[str, ...]] = {
     "3.14": ("coeftable==0.13.1",),
 }
 DASHBOARD_FLOORS: dict[str, tuple[str, ...]] = {
-    "3.12": ("marimo==0.25.0", "anywidget==0.9.0"),
-    "3.13": ("marimo==0.25.0", "anywidget==0.9.0"),
-    "3.14": ("marimo==0.25.0", "anywidget==0.9.0"),
+    "3.12": ("marimo==0.25.2", "anywidget==0.9.0"),
+    "3.13": ("marimo==0.25.2", "anywidget==0.9.0"),
+    "3.14": ("marimo==0.25.2", "anywidget==0.9.0"),
 }
 DUCKDB_FLOORS: dict[str, str] = {
     "3.12": "duckdb==1.3.2",
