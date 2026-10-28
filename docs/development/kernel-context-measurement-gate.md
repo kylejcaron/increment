@@ -79,3 +79,20 @@ The final-code binding rerun completed at 2026-10-27 07:15 EDT after the 60-minu
 | Definitions / DuckDB, 10M rows | captured | 1 / 1 | 1 | 7.55331 [7.07285–42.82959] | 7,470,874,624 [6,487,228,416–7,725,154,304] | 0 | 7.55274 | pass | yes | 0.5973x | 1.0379x | pass |
 
 Output equality held for every candidate repetition; all local routes cleaned up and reported zero TEMP bytes. Coherence probes were separate: median live/captured times and paired differences were 0.13349 / 0.13695 / +0.00486 seconds (DuckDB, 8 rows), 0.13858 / 0.14295 / +0.00531 seconds (artifact, 8 rows), and 3.45650 / 3.35315 / −0.10540 seconds (DuckDB, 10M rows). The artifact wall-time flag remains recorded as failed; the owner waiver for sub-second cases is stated above. The 10M-row case passed both unchanged thresholds. No memory-triggered fallback was used. The PostgreSQL workflow remains unrun pending harness support and a pushed-branch workflow.
+
+### Binding rerun: final code revision `7d1e3858`
+
+The final code measurement completed at 2026-10-27 20:28 EDT. `uptime` immediately before the run reported **3.47 / 10.37 / 13.24** (1/5/15-minute averages); the harness recorded **3.35 / 10.23 / 13.18** at 20:21:32 and **16.28 / 13.01 / 12.96** at 20:28:54. The post-run `uptime` at 20:28:58 reported **15.21 / 12.84 / 12.90**. The run started with the 1-minute load below 4. The ten heaviest processes at both endpoints are recorded in `/tmp/kernel-context-measurement-binding-round5-261.json`.
+
+| Case | Route | Opens / pins | Materializations | Median wall (s) [min–max] | Median RSS (bytes) [min–max] | TEMP bytes | Scope lifetime (s) | Cleanup | Outputs equal | Wall ratio | RSS ratio | Gate |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---|
+| Definitions / DuckDB, 8 rows | per-operation | 0 / 0 | 6 | 0.33037 [0.32065–0.34678] | 338,444,288 [332,972,032–342,458,368] | 0 | 0 | pass | baseline | — | — | — |
+| Definitions / DuckDB, 8 rows | captured | 1 / 1 | 1 | 0.24024 [0.23608–0.24796] | 333,971,456 [329,400,320–342,900,736] | 0 | 0.23984 | pass | yes | 0.7275x | 0.9868x | pass |
+| Artifact store, 8 rows | per-operation | 0 / 0 | 0 | 0.50933 [0.50614–0.51558] | 600,932,352 [589,676,544–625,917,952] | 0 | 0 | pass | baseline | — | — | — |
+| Artifact store, 8 rows | captured | 1 / 0 | 0 | 0.51849 [0.50947–0.54247] | 605,093,888 [594,231,296–615,874,560] | 0 | 0.51802 | pass | yes | 1.0180x | 1.0069x | wall flag failed; sub-second waiver applies |
+| Definitions / DuckDB, 10M rows | per-operation | 0 / 0 | 6 | 9.11450 [8.48015–9.95440] | 6,755,500,032 [6,605,242,368–6,901,334,016] | 0 | 0 | pass | baseline | — | — | — |
+| Definitions / DuckDB, 10M rows | captured | 1 / 1 | 1 | 5.24380 [5.21467–5.87806] | 6,155,108,352 [6,080,331,776–6,194,069,504] | 0 | 5.24324 | pass | yes | 0.5752x | 0.9111x | pass |
+
+All candidate outputs matched their baseline, all local routes cleaned up, and all runs reported zero TEMP bytes. Separate coherence probes recorded median live/captured costs of 0.00615 seconds (DuckDB, 8 rows), 0.00707 seconds (artifact, 8 rows), and −0.27925 seconds (DuckDB, 10M rows). The artifact wall-time flag remains failed at 1.0180x; the existing owner waiver for sub-second cases applies. The 10M-row case passed both unchanged thresholds. No memory-triggered fallback was used.
+
+The measured changes narrow warehouse capture to the requested fact values plus declaration coordinates and preserve logical source identities, omit unused headline breakouts, snapshot mutable Polars frames, and defer PostgreSQL TEMP privilege checks to captured materialization. The PostgreSQL workflow remains unrun pending harness support and a pushed-branch workflow.
