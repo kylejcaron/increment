@@ -251,6 +251,7 @@ def evidence_is_declared(source: object) -> bool:
         getattr(source, "evidence", None), EvidenceCapabilities
     )
 
+
 def declared_evidence(source: object) -> EvidenceCapabilities:
     """Return the source's explicit evidence declaration."""
     declaration = getattr(source, "evidence", None)
