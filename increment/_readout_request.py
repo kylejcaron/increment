@@ -345,23 +345,29 @@ class ReadoutRequest:
 
         for config, methods in zip(request.configs, request.estimation_methods, strict=True):
             check_method_covariates(source, config.metric.name, methods)
-        # Native route checks belong after semantic request validation.  The
-        # observational facade validates its route before acquisition.
+        # Built-in routes are checked after request validation; declared custom routes
+        # still refuse before reads.
         if (
-            not is_builtin_source(source)
-            and getattr(request.design, "mechanism", None) == "observational"
+            getattr(request.design, "mechanism", None) == "observational"
             and request.view != "daily"
         ):
-            from increment.estimators.registry import validate_observational_routes
+            from increment.estimators.registry import (
+                uses_builtin_adjustment_preflight,
+                validate_observational_routes,
+            )
 
             for config, methods in zip(request.configs, request.estimation_methods, strict=True):
-                validate_observational_routes(
-                    source,
-                    (config.metric,),
-                    methods,
-                    request.design,
-                    request.population,
+                custom_methods = tuple(
+                    method for method in methods if not uses_builtin_adjustment_preflight(method)
                 )
+                if custom_methods:
+                    validate_observational_routes(
+                        source,
+                        (config.metric,),
+                        custom_methods,
+                        request.design,
+                        request.population,
+                    )
         return request
 
     @property
