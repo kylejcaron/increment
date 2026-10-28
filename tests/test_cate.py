@@ -489,7 +489,8 @@ def test_targeting_selection_cell_accepts_full_width_seed():
         seed=0,
     )
     cell = selection.model_copy(update={"seed": 2**53}).as_cell()
-    assert cell.identity.method_config_hash
+    adjacent_cell = selection.model_copy(update={"seed": 2**53 + 1}).as_cell()
+    assert cell.identity.method_config_hash != adjacent_cell.identity.method_config_hash
 
 
 def test_honest_cate_and_targeting_reports_have_report_only_cells():
