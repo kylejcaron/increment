@@ -282,7 +282,7 @@ depends_on = [
   "increment._source_types",
   "increment.compatibility", "increment.errors", "increment.estimation",
   "increment.estimation.sequential", "increment.plan", "increment.semantics",
-  "increment.sequential_source", "increment.sources", "increment._evidence_refusals", "increment.estimators.registry",
+  "increment.sequential_source", "increment.sources", "increment._evidence_refusals",
 ]
 
 [[modules]]

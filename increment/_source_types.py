@@ -259,7 +259,9 @@ def is_custom_source(source: object) -> TypeGuard[EvidenceProvider]:
 def evidence_is_declared(source: object) -> bool:
     """Whether a source supplies its own evidence declaration."""
     declaration = getattr_static(source, "evidence", None)
-    return declaration is not None and isinstance(source.evidence, EvidenceCapabilities)
+    return declaration is not None and isinstance(
+        getattr(source, "evidence", None), EvidenceCapabilities
+    )
 
 
 def declared_evidence(source: object) -> EvidenceCapabilities:

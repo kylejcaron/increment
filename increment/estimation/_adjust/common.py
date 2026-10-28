@@ -335,6 +335,19 @@ class AdjustmentInputs:
     cluster: str | None
 
 
+def adjustment_compatibility(metric: Metric, *, method: str) -> None:
+    """Refuse source-independent metric/method incompatibilities."""
+    if metric.type == "ratio":
+        _raise(
+            "estimation.adjust_common.supported_ratio_metric",
+            method=method,
+            metric=metric.name,
+            role=None,
+            family=None,
+            correction=None,
+        )
+
+
 def adjustment_preflight(
     metric: Metric,
     design: Observational,
@@ -347,15 +360,7 @@ def adjustment_preflight(
     **contrast_kwargs: Any,
 ) -> AdjustmentPreflight:
     """Run all source-independent adjustment refusals before unit rows are read."""
-    if metric.type == "ratio":
-        _raise(
-            "estimation.adjust_common.supported_ratio_metric",
-            method=method,
-            metric=metric.name,
-            role=None,
-            family=None,
-            correction=None,
-        )
+    adjustment_compatibility(metric, method=method)
     learners = {name: contrast_kwargs.pop(name, None) for name in learner_roles}
     if design.adjustment.missing == "allow":
         fields = method_fields or {name: name for name in learner_roles}

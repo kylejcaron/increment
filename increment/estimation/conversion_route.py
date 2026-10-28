@@ -281,7 +281,7 @@ def dense_level_holds(
         if below == 0.0 or dense_min_count(below) > smallest:
             return True
     expected = dense_level(x_c, n_c, x_t, n_t, alternative=alternative)
-    return expected is not None and math.isclose(level, expected, rel_tol=1e-12, abs_tol=1e-15)
+    return expected is not None and math.isclose(level, expected, rel_tol=1e-12, abs_tol=0.0)
 
 
 def composite_p_value(p_delta: float, dense_level: float, escalated_p_value: float | None) -> float:
