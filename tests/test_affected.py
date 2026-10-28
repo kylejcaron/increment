@@ -55,6 +55,38 @@ def test_docs_only_change_selects_only_that_page(tmp_path: Path) -> None:
     assert selection.test_files == ()
 
 
+def test_explicit_readme_is_collected_with_affected_filter(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(root), *filter(None, environment.get("PYTHONPATH", "").split(os.pathsep)))
+    )
+    environment["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
+    environment["AFFECTED_TEST_FILES"] = "[]"
+    environment.pop("PYTEST_ADDOPTS", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "scripts.affected_filter",
+            "README.md",
+        ],
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "README.md::line:" in result.stdout
+
+
 def test_changed_test_file_is_selected(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"tests/test_example.py": "def test_old(): pass\n"})
 
