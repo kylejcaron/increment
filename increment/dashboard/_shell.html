@@ -328,8 +328,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   font-size: calc(var(--inc-dashboard-table-size) * .82) !important;
   padding: min(calc(var(--inc-dashboard-cell-padding-y) * .6), .5em) min(calc(var(--inc-dashboard-cell-padding-x) * .5), .75em) !important;
 }
-.rpt .rpt-results .gt_col_heading { white-space: normal !important; overflow-wrap: normal; word-break: normal; hyphens: none; vertical-align: bottom; }
-.rpt .rpt-results td { overflow-wrap: break-word; }
+.rpt .rpt-results .gt_col_heading { white-space: normal !important; overflow-wrap: anywhere !important; word-break: normal; hyphens: none; vertical-align: bottom; }
+.rpt .rpt-results td { overflow-wrap: anywhere; min-width: 0; }
 .rpt .rpt-results svg { width: 100% !important; height: auto !important; }
 .rpt .rpt-results tr, .rpt .rpt-results svg { break-inside: avoid; }
 .rpt .rpt-results .metric-select { min-width: 0; }
@@ -449,7 +449,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .rpt-card { max-width: none; margin: 0; padding: 0; border: 0; box-shadow: none !important; background: var(--surface) !important; }
   .rpt-paper { width: var(--rpt-fit-w, 100%); zoom: var(--rpt-fit-scale, 1); margin: 0 auto; }
   .rpt-paper[data-print-mode="single"] { break-inside: avoid; }
-  .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
+  .rpt .rpt-results .gt_row[data-inc-floor], .rpt .rpt-results .gt_col_heading[data-inc-floor], .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
   /* Static floors for the known small classes, so the minimum holds even before any measurement. */
   .rpt-brand, .rpt-kind { font-size: max(11px, var(--inc-dashboard-print-min-font-size)); }
   .rpt-primary-label { font-size: max(10px, var(--inc-dashboard-print-min-font-size)); }
