@@ -101,8 +101,7 @@ def test_measurement_comparison_normalizes_artifact_publication_ids():
 
     def output(artifact: str, *, artifact_streams: int = 1) -> str:
         effective_modes = {
-            f"artifact:{artifact}:{index}": "captured"
-            for index in range(artifact_streams)
+            f"artifact:{artifact}:{index}": "captured" for index in range(artifact_streams)
         }
         effective_modes["source:raw_events"] = "captured"
         return json.dumps(
