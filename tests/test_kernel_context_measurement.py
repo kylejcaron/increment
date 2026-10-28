@@ -130,17 +130,19 @@ def test_measurement_gate_requires_captured_qualification_with_legacy_baseline()
         _set_gate,
     )
 
-    def result(output):
+    def result(outputs):
+        encoded_outputs = tuple(json.dumps(output) for output in outputs)
         sample = Sample(
-            1.0,
-            100,
-            0,
-            0,
-            0,
-            0,
-            0.0,
-            True,
-            (json.dumps(output),),
+            wall_seconds=1.0,
+            peak_rss_bytes=100,
+            scope_opens=0,
+            pins=0,
+            materializations=0,
+            temp_bytes=0,
+            temp_bytes_after_scope=0,
+            session_lifetime_seconds=0.0,
+            cleanup=True,
+            outputs=encoded_outputs,
         )
         return Measurement(
             route="captured",
@@ -159,24 +161,44 @@ def test_measurement_gate_requires_captured_qualification_with_legacy_baseline()
             temp_bytes_after_scope=0,
             session_lifetime_seconds=0.0,
             cleanup=True,
-            outputs=sample.outputs,
+            outputs=encoded_outputs,
         )
 
-    baseline = result({"metadata": None, "rows": [{"value": 1}]})
-    live = result(
+    rows = [
+        {"metadata": None, "rows": [{"value": 1}]},
+        {"metadata": None, "rows": [{"value": 2}]},
+        {"metadata": None, "rows": [{"value": 3}]},
+    ]
+    baseline = result(rows)
+    live_outputs = [
         {
             "metadata": {
                 "coherence": "live",
                 "effective_modes": {"source:raw_events": "live"},
             },
             "rows": [{"value": 1}],
-        }
-    )
-
+        },
+        *rows[1:],
+    ]
+    live = result(live_outputs)
 
     assert _outputs_equal(baseline.outputs, live.outputs)
     _, gated = _set_gate(baseline, live)
     assert gated.outputs_equal is False
+
+    captured_outputs = [
+        {
+            "metadata": {
+                "coherence": "captured",
+                "effective_modes": {"source:raw_events": "captured"},
+            },
+            "rows": [{"value": 1}],
+        },
+        *rows[1:],
+    ]
+    captured = result(captured_outputs)
+    _, accepted = _set_gate(baseline, captured)
+    assert accepted.outputs_equal is True
 
 
 def test_measurement_gate_checks_every_repetition_against_baseline():

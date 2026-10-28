@@ -14,7 +14,7 @@ The binding rerun will measure the final revision once, using seven repetitions 
 
 ### Output comparison semantics
 
-The harness compares output rows across historical baseline schemas that do not expose coherence metadata, while separately requiring every captured candidate repetition to report `coherence="captured"` and captured effective modes. Artifact publication UUIDs are normalized to stable stream identities for cross-run comparisons; stream count and mode values remain part of equality. The scope-timing wrapper preserves the original qualification metadata.
+The harness compares output rows across historical baseline schemas that do not expose coherence metadata, while separately requiring the first (run) output of every captured candidate repetition to report `coherence="captured"` and captured effective modes. Later breakout or daily outputs may not carry qualification metadata. Artifact publication UUIDs are normalized to stable stream identities for cross-run comparisons; stream count and mode values remain part of equality. The scope-timing wrapper preserves the original qualification metadata.
 
 ## Results
 

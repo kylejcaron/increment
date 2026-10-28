@@ -750,21 +750,19 @@ def _measure_pair(
 
 
 def _has_captured_qualification(outputs: tuple[str, ...]) -> bool:
+    # Workload outputs are ordered run, breakout, daily; daily rows have no metadata.
     if not outputs:
         return False
-    for output in outputs:
-        payload = json.loads(output)
-        metadata = payload.get("metadata") if isinstance(payload, dict) else None
-        modes = metadata.get("effective_modes") if isinstance(metadata, dict) else None
-        if (
-            not isinstance(metadata, dict)
-            or metadata.get("coherence") != "captured"
-            or not isinstance(modes, dict)
-            or not modes
-            or any(mode != "captured" for mode in modes.values())
-        ):
-            return False
-    return True
+    payload = json.loads(outputs[0])
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    modes = metadata.get("effective_modes") if isinstance(metadata, dict) else None
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("coherence") == "captured"
+        and isinstance(modes, dict)
+        and bool(modes)
+        and all(mode == "captured" for mode in modes.values())
+    )
 
 
 def _set_gate(baseline: Measurement, candidate: Measurement) -> tuple[Measurement, Measurement]:
