@@ -426,6 +426,22 @@ def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     assert displayed["sequential_log_e"] == str(first_row.require_exact_sequential_result().log_e)
     assert displayed["posterior_prob_favorable"] is None
     assert displayed["stat_sig"] is False
+    from increment.result_envelope import ResultCell
+
+    (cell,) = first_row.as_cells()
+    assert cell.summary is not None
+    assert cell.summary.alpha == pytest.approx(first_row.require_sequential_result().decision_alpha)
+    assert cell.summary.reason == first_row.require_sequential_result().point_reason
+    assert cell.summary.intervals == (
+        (cell.summary.lower, cell.summary.upper),
+    )
+    json_cell = ResultCell.from_payload(cell.to_payload())
+    (arrow_cell,) = ResultCell.from_arrow(ResultCell.to_arrow([cell]))
+    for restored in (json_cell, arrow_cell):
+        assert restored.summary is not None
+        assert restored.summary.alpha == cell.summary.alpha
+        assert restored.summary.reason == cell.summary.reason
+        assert restored.summary.intervals == cell.summary.intervals
     snapshot = first.sequential_snapshot()
     later = pd.concat(
         [early, _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24, offset=4)], ignore_index=True

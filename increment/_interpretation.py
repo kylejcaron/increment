@@ -1357,6 +1357,25 @@ def project_effect(row) -> EffectEstimate:
             if disconnected
             else (),
         )
+    if (
+        getattr(row, "inference", None) == "always_valid"
+        and getattr(row, "sequential_result", None) is not None
+        and hasattr(row, "require_sequential_result")
+    ):
+        sequential = row.require_sequential_result()
+        bounds = sequential.bounds
+        lower = _sequential_lift_bound(bounds.lower, lower=True)
+        upper = _sequential_lift_bound(bounds.upper, lower=False)
+        return EffectEstimate(
+            row.lift.value if sequential.point_reason is None and row.lift is not None else None,
+            lower,
+            upper,
+            float(sequential.decision_alpha),
+            getattr(row, "value_scale", "relative"),
+            sequential.point_reason,
+            intervals=() if bounds.empty else ((lower, upper),),
+        )
+
 
     contrast = hasattr(row, "control_group") and hasattr(row, "estimate")
     requested = (
