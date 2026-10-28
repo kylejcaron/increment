@@ -2989,15 +2989,35 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
 
             return EvidenceScopeResult(scoped(), request)
 
-    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    provider = Provider()
+    provider_analysis = Analysis._from_source(cast(Any, provider))
     try:
         provider_analysis.run_daily(dimension="country")
+        assert sorted(
+            tuple((item.property, item.source) for item in items) for items in scoped_breakouts
+        ) == [(("country", "app"),), (("country", "web"),)]
+        scoped_breakouts.clear()
+        web_identity = BreakoutIdentity("country", "web")
+        slices = cast(
+            Any,
+            request_evidence(
+                provider,
+                BreakoutSlicesRequest((web_identity,), source.context.metrics),
+            ),
+        )
+        web_slice = slices.slices[0]
+        day_axis = cast(
+            Any,
+            request_evidence(
+                web_slice.source,
+                DayAxisRequest("run_daily", "daily", source.context.metrics, dimension="country"),
+            ),
+        )
+        tuple(day_axis.slices)
     finally:
         analysis.close()
 
-    assert sorted(
-        tuple((item.property, item.source) for item in breakouts) for breakouts in scoped_breakouts
-    ) == [(("country", "app"),), (("country", "web"),)]
+    assert scoped_breakouts == [(BreakoutIdentity("country", "web"),)]
 
 
 @pytest.mark.integration

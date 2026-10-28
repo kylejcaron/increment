@@ -1110,7 +1110,6 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
         )
         experiment_metadata = request.experiment or _trigger_experiment(src)
         partitions = day_axis_source_partitions(experiment_metadata, dimensions)
-        sources = tuple(source_name for source_name, _, _ in partitions)
         requested_properties = set(dimensions)
         source_properties = tuple(
             (
@@ -1131,10 +1130,28 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
             for source_name, _, breakouts in partitions
         )
         declared_properties = {prop for _, properties in source_properties for prop in properties}
-        if len(declared_properties) > 1 and any(
-            set(properties) != declared_properties for _, properties in source_properties
-        ):
-            refuse_joint_grouping(src, dimensions, source_properties)
+        bound_identity = src.identity if isinstance(src, _BreakoutScopedProvider) else None
+        if bound_identity is None:
+            if len(declared_properties) > 1 and any(
+                set(properties) != declared_properties for _, properties in source_properties
+            ):
+                refuse_joint_grouping(src, dimensions, source_properties)
+        else:
+            bound_properties = {
+                prop
+                for source_name, properties in source_properties
+                if source_name == bound_identity.source
+                for prop in properties
+            }
+            if len(declared_properties) > 1 and not declared_properties.issubset(bound_properties):
+                refuse_joint_grouping(src, dimensions, source_properties)
+            if bound_identity.source is not None:
+                bound_partitions = tuple(
+                    partition for partition in partitions if partition[0] == bound_identity.source
+                )
+                if bound_partitions:
+                    partitions = bound_partitions
+        sources = tuple(source_name for source_name, _, _ in partitions)
         scopes = tuple(
             (
                 source_name,
