@@ -341,6 +341,7 @@ def test_explicit_targets_honor_ignore_from_all_pytest_option_sources(
     selection = select(base, root)
     monkeypatch.chdir(root)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
     monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
     monkeypatch.setenv("PYTEST_ADDOPTS", "-o addopts=--ignore=tests/test_env.py")
