@@ -571,19 +571,21 @@ def test_analysis_request_hash_normalizes_equivalent_datetime_offsets():
     assert hashes[0] == hashes[1]
 
 
-def test_analysis_request_rejects_naive_datetime_as_unportable():
+def test_analysis_request_rejects_naive_datetime_identity():
     from datetime import datetime
 
+    from increment.errors import InvalidRequestError
     from increment.evidence import SequentialCaptureRequest
 
-    with pytest.raises(CodedError) as raised:
+    with pytest.raises(InvalidRequestError) as error:
         AnalysisRequest.from_requests(
             (SequentialCaptureRequest(finalized=True, as_of=datetime(2026, 1, 3)),),
             scope=Scope(view="asof", grain="asof"),
             registration_hash="r",
             source_ref="s",
         )
-    assert raised.value.code == "kernel.request.unportable"
+
+    assert error.value.code == "kernel.request.datetime_timezone"
 
 
 def test_analysis_request_json_encodes_uuid_breakout_values():

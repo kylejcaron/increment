@@ -34,10 +34,12 @@ def _git(*arguments: str, root: Path) -> str:
     return result.stdout
 
 
-def _changed_paths(base: str, root: Path) -> tuple[str, ...]:
+def _changed_paths(base: str, root: Path, *, head: str | None = None) -> tuple[str, ...]:
     try:
         _git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", root=root)
-        paths = set(_git("diff", "--name-only", f"{base}...HEAD", root=root).splitlines())
+        paths = set(
+            _git("diff", "--name-only", f"{base}...{head or 'HEAD'}", root=root).splitlines()
+        )
         paths.update(_git("diff", "--name-only", "--cached", root=root).splitlines())
         paths.update(_git("diff", "--name-only", root=root).splitlines())
         paths.update(_git("ls-files", "--others", "--exclude-standard", root=root).splitlines())
@@ -262,10 +264,11 @@ def _pytest_invocations(
     kept: Sequence[str] | None = None,
 ) -> list[list[str]]:
     markers = ["-m", _changed_markers(tier, Path(__file__).resolve().parent.parent)]
+    filter_plugin = ["-p", "scripts.affected_filter"]
 
     if selection.full_tier:
         roots = ["tests"] if selection.doc_pages else []
-        return [markers + roots + list(selection.doc_pages) + list(extra_args)]
+        return [markers + filter_plugin + roots + list(selection.doc_pages) + list(extra_args)]
 
     if selection.use_tach:
         if kept == () and not selection.test_files and not selection.doc_pages:
@@ -286,29 +289,40 @@ def _pytest_invocations(
                 *selection.doc_pages,
             ]
         ]
-    if selection.test_files and any(arg.startswith("--ignore") for arg in extra_args):
+    if selection.test_files:
         return [
             markers
             + [
                 "-p",
                 "scripts.affected_filter",
+                *(
+                    _without_xdist_worker_args(extra_args)
+                    if len(selection.test_files) <= 6
+                    else extra_args
+                ),
                 "tests",
                 *selection.doc_pages,
-                *extra_args,
             ]
         ]
 
-    direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
+    direct_args = markers + filter_plugin + list(selection.doc_pages)
     direct_args.extend(extra_args)
-    if (
-        selection.test_files
-        and len(selection.test_files) <= 6
-        and not selection.doc_pages
-        and not selection.full_tier
-    ):
-        direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
-        direct_args.extend(_without_xdist_worker_args(extra_args))
     return [direct_args]
+
+
+def _tach_head(arguments: Sequence[str]) -> str | None:
+    head = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--tach-head":
+            head = arguments[index + 1] if index + 1 < len(arguments) else None
+            index += 2
+            continue
+        if argument.startswith("--tach-head="):
+            head = argument.partition("=")[2]
+        index += 1
+    return head
 
 
 def _pytest_arguments(
@@ -318,9 +332,11 @@ def _pytest_arguments(
 
 
 def _combined_pytest_status(statuses: Sequence[int]) -> int | None:
-    meaningful = [status for status in statuses if status != 5]
-    if not meaningful:
+    if not statuses:
         return None
+    if any(status == 6 for status in statuses):
+        return 5
+    meaningful = [status for status in statuses if status != 5]
     return next((status for status in meaningful if status != 0), 0)
 
 
@@ -353,33 +369,37 @@ def main(argv: list[str]) -> int:
         print(f"affected: running full {arguments.tier} tier")
 
     kept = None
-    if selection.use_tach and not any(
-        argument == "--tach-head" or argument.startswith("--tach-head=") for argument in extra_args
-    ):
+    if selection.use_tach:
         from tests._selection import kept_test_files
 
-        kept = kept_test_files(root, arguments.base, tier=arguments.tier)
-    elif (
-        not selection.use_tach
-        and selection.test_files
-        and any(argument.startswith("--ignore") for argument in extra_args)
-    ):
-        kept = selection.test_files
+        kept = kept_test_files(
+            root, arguments.base, tier=arguments.tier, head=_tach_head(extra_args)
+        )
+
     statuses = []
     for pytest_args in _pytest_invocations(
         selection, arguments.base, arguments.tier, extra_args, kept=kept
     ):
         command = [sys.executable, "-m", "pytest", *pytest_args]
         environment = os.environ.copy()
-        if kept is None:
+        environment["AFFECTED_TEST_TIER"] = arguments.tier
+        environment["AFFECTED_TEST_MARKER_EXPR"] = _changed_markers(
+            arguments.tier, Path(__file__).resolve().parent.parent
+        )
+        selected_files = {*(kept or ()), *selection.test_files}
+        if selection.full_tier or (selection.use_tach and kept is None):
             environment.pop("AFFECTED_TEST_FILES", None)
+        elif selected_files:
+            environment["AFFECTED_TEST_FILES"] = json.dumps(sorted(selected_files))
         else:
-            environment["AFFECTED_TEST_FILES"] = json.dumps(sorted({*kept, *selection.test_files}))
+            environment["AFFECTED_TEST_FILES"] = "[]"
         statuses.append(subprocess.run(command, cwd=root, env=environment, check=False).returncode)
     status = _combined_pytest_status(statuses)
     if status is None:
         print("affected: no affected tests selected")
         return 0
+    if status == 0 and statuses and all(item == 5 for item in statuses):
+        print("affected: no affected tests selected")
     return status
 
 

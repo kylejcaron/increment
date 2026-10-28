@@ -10,9 +10,10 @@ import math
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from hashlib import sha256
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, cast
 
 from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from increment._canonical import _jcs_float, canonical_digest_bytes, canonical_json_bytes
 from increment._immutable import _FrozenMapping
@@ -421,29 +422,53 @@ class ReadoutScope(_ReadoutModel):
         return bool(values) and all(values)
 
 
+class ReadoutCapture(_ReadoutModel):
+    snapshot_id: str
+    coherence: Literal["captured", "live"] | None = None
+    effective_modes: Mapping[str, Literal["captured", "live", "provider"]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+
+    @field_validator("effective_modes", mode="before")
+    @classmethod
+    def _freeze_capture_modes(
+        cls, value: object
+    ) -> Mapping[str, Literal["captured", "live", "provider"]]:
+        if not isinstance(value, Mapping):
+            raise PydanticCustomError("effective_modes_type", "effective_modes must be a mapping")
+        return _FrozenMapping(cast(Mapping[str, Literal["captured", "live", "provider"]], value))
+
+
 class ReadoutMetadata(_ReadoutModel):
     scope: ReadoutScope
     cells: tuple[CellRecord, ...]
     partial: bool = False
     partial_reason: tuple[Literal["slice", "filter", "cross_snapshot_concat"], ...] = ()
+    coherence: Literal["captured", "live"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    effective_modes: Mapping[str, Literal["captured", "live", "provider"]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+    captures: tuple[ReadoutCapture, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+    @field_validator("effective_modes", mode="before")
+    @classmethod
+    def _freeze_effective_modes(
+        cls, value: object
+    ) -> Mapping[str, Literal["captured", "live", "provider"]]:
+        if not isinstance(value, Mapping):
+            raise PydanticCustomError("effective_modes_type", "effective_modes must be a mapping")
+        return _FrozenMapping(cast(Mapping[str, Literal["captured", "live", "provider"]], value))
 
     def __repr__(self) -> str:
         return (
             "ReadoutMetadata(\n"
             f"  snapshot_id={self.scope.snapshot_id!r}, cells={len(self.cells)}, "
-            f"partial={self.partial}, partial_reason={self.partial_reason!r}\n"
+            f"partial={self.partial}, partial_reason={self.partial_reason!r}, "
+            f"coherence={self.coherence!r}\n"
             ")"
         )
-
-    __str__ = __repr__
-
-    def __repr_args__(self) -> list[tuple[str, object]]:
-        return [
-            ("snapshot_id", self.scope.snapshot_id),
-            ("cells", len(self.cells)),
-            ("partial", self.partial),
-            ("partial_reason", self.partial_reason),
-        ]
 
     @property
     def sampling(self):
@@ -1135,6 +1160,46 @@ def concat_collection(left, right):
         )
     a: ReadoutMetadata = left.metadata
     b: ReadoutMetadata = right.metadata
+    left_captures = a.captures or (
+        ReadoutCapture(
+            snapshot_id=a.scope.snapshot_id,
+            coherence=a.coherence,
+            effective_modes=a.effective_modes,
+        ),
+    )
+    right_captures = b.captures or (
+        ReadoutCapture(
+            snapshot_id=b.scope.snapshot_id,
+            coherence=b.coherence,
+            effective_modes=b.effective_modes,
+        ),
+    )
+    captures_by_id = {capture.snapshot_id: capture for capture in left_captures}
+    for capture in right_captures:
+        previous = captures_by_id.get(capture.snapshot_id)
+        if previous is not None and previous != capture:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=(capture.snapshot_id,),
+                fields=("captures",),
+            )
+        captures_by_id[capture.snapshot_id] = capture
+    captures = tuple(captures_by_id[key] for key in sorted(captures_by_id))
+    capture_coherences = {capture.coherence for capture in captures}
+    coherence = (
+        "live"
+        if "live" in capture_coherences
+        else "captured"
+        if capture_coherences == {"captured"}
+        else None
+    )
+    mode_rank = {"captured": 0, "live": 1, "provider": 2}
+    effective_modes: dict[str, Literal["captured", "live", "provider"]] = {}
+    for capture in captures:
+        for identity, mode in capture.effective_modes.items():
+            previous = effective_modes.get(identity)
+            if previous is None or mode_rank[mode] > mode_rank[previous]:
+                effective_modes[identity] = mode
     ids = sorted([a.scope.snapshot_id, b.scope.snapshot_id])
     cross = a.scope.snapshot_id != b.scope.snapshot_id
     sources, result_source = _merge_source_scopes(left, right, ids)
@@ -1174,7 +1239,13 @@ def concat_collection(left, right):
         by_source=dict(sorted(sources.items())),
     )
     ordered_records = sorted(records.values(), key=_record_order)
-    metadata = ReadoutMetadata(scope=scope, cells=tuple(ordered_records))
+    metadata = ReadoutMetadata(
+        scope=scope,
+        cells=tuple(ordered_records),
+        coherence=coherence,
+        effective_modes=dict(sorted(effective_modes.items())),
+        captures=captures if len(captures) > 1 else (),
+    )
     metadata = partial_metadata(
         metadata,
         rows.values(),

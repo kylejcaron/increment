@@ -42,6 +42,23 @@ A failed integrity check remains visible beside the results, and
 The collection display includes retained scope even when filtering leaves no
 visible rows.
 
+Scope coherence is recorded on each scoped row as `coherence` and
+`effective_modes`. `Analysis.run()` defaults to `coherence="captured"`: a
+captured request asks built-in streams to pin evidence and refuses if the
+warehouse cannot create the required TEMP snapshot. Choose `coherence="live"`
+when snapshot materialization is unavailable (for example, when the database
+role lacks TEMP privileges); live results are qualified as live and lose the
+guarantee that separate reads observe one common source state.
+
+The effective per-stream mode map shows what actually happened. `live` means
+no common pinned snapshot is guaranteed, so separate reads may observe
+different source states. `provider` means a custom evidence provider owns the
+read semantics; the kernel does not guarantee that it pins a snapshot. Treat
+`provider` as a qualification, not as a synonym for `captured`. The result
+representation and table header identify live or provider-owned results, and
+flattened outputs retain both the requested coherence and the effective
+per-stream modes.
+
 Interpretation separates the tested-null outcome from effect direction.
 An interval containing the tested null is inconclusive, not evidence of no
 effect. Excluding a nonzero margin can meet that test without establishing an
@@ -55,7 +72,8 @@ is a ship/no-ship verdict.
 
 `to_frame()` on scoped collections and `estimates_to_readout()` retain portable
 scalar and canonical-JSON evidence columns, including comparison identity,
-`analysis_population`, `source_snapshot_id`, integrity status/code/context,
+`analysis_population`, `source_snapshot_id`, `coherence`, `effective_modes`,
+integrity status/code/context,
 required/available/hidden counts, unavailable identities and reasons,
 advisory codes/messages/context, posterior-unavailability reasons, and
 multiplicity family status. Nested disclosures are canonical JSON strings;

@@ -35,8 +35,8 @@ from increment._evidence_types import (
     MomentsRequest,
     UnitRowsRequest,
 )
+from increment._trigger_integrity import validate_trigger_fires_in_every_arm
 from increment.errors import CapabilityError, RefusalSpec, raiser, refusals
-from increment.query.integrity import validate_trigger_fires_in_every_arm
 from increment.readouts._evidence import (
     evidence_scope,
     is_custom_provider,

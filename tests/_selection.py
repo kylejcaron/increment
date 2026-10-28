@@ -425,12 +425,12 @@ class AffectedHandler:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def selection_graph(root: Path, base: str, *, tier: str) -> SelectionGraph:
+def selection_graph(root: Path, base: str, *, tier: str, head: str | None = None) -> SelectionGraph:
     """Build the graph for the paths changed since ``base``."""
     from scripts.affected import _changed_paths
     from scripts.selection_map import load
 
-    changed_paths = set(_changed_paths(base, root))
+    changed_paths = set(_changed_paths(base, root, head=head))
     changed_modules = set()
     for name in changed_paths:
         path = Path(name)
@@ -448,7 +448,9 @@ def selection_graph(root: Path, base: str, *, tier: str) -> SelectionGraph:
     )
 
 
-def kept_test_files(root: Path, base: str, *, tier: str) -> tuple[str, ...] | None:
+def kept_test_files(
+    root: Path, base: str, *, tier: str, head: str | None = None
+) -> tuple[str, ...] | None:
     """Decide every test file the way the pytest handler does, before collection.
 
     Returns ``None`` when tach has no project configuration, so the caller
@@ -461,7 +463,7 @@ def kept_test_files(root: Path, base: str, *, tier: str) -> tuple[str, ...] | No
     project_config = parse_project_config(root=root)
     if project_config is None:
         return None
-    changed_files = get_changed_files(project_root=root, head=None, base=base)
+    changed_files = get_changed_files(project_root=root, head=head, base=base)
     handler = AffectedHandler(
         TachPytestPluginHandler(
             project_root=root,
@@ -469,7 +471,7 @@ def kept_test_files(root: Path, base: str, *, tier: str) -> tuple[str, ...] | No
             changed_files=changed_files,
             all_affected_modules={path.resolve() for path in changed_files},
         ),
-        selection_graph(root, base, tier=tier),
+        selection_graph(root, base, tier=tier, head=head),
     )
     test_root = root / "tests"
     candidates = sorted({*test_root.rglob("test_*.py"), *test_root.rglob("*_test.py")})

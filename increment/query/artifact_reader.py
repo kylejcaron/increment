@@ -816,6 +816,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             breakouts=self.breakouts,
             shape=self.shape,
             operations=self.operations,
+            capture="immutable",
             unit_rows=True,
             raw_outcomes=True,
             method_fit="none",

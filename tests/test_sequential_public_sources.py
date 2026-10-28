@@ -144,6 +144,29 @@ def _row(analysis):
     return rows[0]
 
 
+def test_sequential_readout_refuses_execution_context_before_evidence_read():
+    from increment import EvidenceScope
+    from increment.kernel.context import EvidenceExecutionContext
+    from increment.readouts import run
+    from increment.readouts._provider import native_scope_provider
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    analysis = _analysis(_frame([0, 1] * 20, [1, 1] * 20), specs, _plan(specs, "bernoulli"))
+    source = analysis._state.source
+    context = EvidenceExecutionContext(
+        native_scope_provider(source),
+        EvidenceScope(metrics=tuple(source.context.metrics), configs=tuple(source.context.configs)),
+        run_id="sequential-borrow",
+    )
+    context.close()
+    try:
+        with pytest.raises(InvalidRequestError) as refused:
+            run(source, execution_context=context)
+        assert refused.value.code == "kernel.request.invalid"
+    finally:
+        analysis.close()
+
+
 def test_boolean_sequential_checkpoint_reloads_from_moments_with_bool_control(tmp_path):
     import pyarrow.parquet as pq
 

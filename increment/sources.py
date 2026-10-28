@@ -1413,6 +1413,7 @@ class MomentsSource(SequentialSourceMixin):
             breakouts=self.breakouts,
             shape=self.shape,
             operations=self.operations,
+            capture=backing.capture if backing is not None else "immutable",
             unit_rows=backing.unit_rows if backing is not None else False,
             raw_outcomes=backing.raw_outcomes if backing is not None else False,
             method_fit="retained" if retained_fit else "none",

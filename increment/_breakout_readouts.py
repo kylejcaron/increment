@@ -24,6 +24,7 @@ from increment.readouts._evidence import (
     NATIVE_ROUTE,
     PANEL_ROUTE,
     UNSUPPORTED_ROUTE,
+    _builtin_source,
     breakout_route,
     breakout_snapshot_population,
     evidence_scope,
@@ -85,7 +86,7 @@ class BreakoutReadouts:
         if not identities:
             return iter(())
         evidence = load_breakout_evidence(
-            self._src,
+            _builtin_source(self._src),
             BreakoutSlicesRequest(
                 breakouts=identities,
                 breakout_definitions=tuple(breakouts),

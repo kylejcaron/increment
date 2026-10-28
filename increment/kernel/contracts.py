@@ -5,7 +5,7 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 from uuid import UUID
@@ -14,11 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, SkipValidation, field_validat
 from pydantic_core import PydanticSerializationError
 
 from increment import _evidence_types
-from increment._canonical import (
-    CanonicalJSONError,
-    canonical_datetime_string,
-    canonical_json_bytes,
-)
+from increment._canonical import CanonicalJSONError, canonical_json_bytes
 from increment._evidence_types import BreakoutIdentity
 from increment.declarations import CellKey, Method
 from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
@@ -33,7 +29,12 @@ _REFUSALS = refusals(
         "kernel.request.invalid": "Invalid analysis request: {field}",
         "kernel.request.unportable": "Request kind {kind!r} field {field!r} is not portable",
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",
+        "kernel.request.datetime_timezone": (
+            "Request datetime field {field!r} must be timezone-aware"
+        ),
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
+        "kernel.context.closed": "Execution context is closed",
+        "kernel.context.undeclared_stream": "Execution context does not declare stream {stream!r}",
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -295,7 +296,9 @@ def execution_identity_hash(
 
 def _request_value(value: object) -> object:
     if isinstance(value, datetime):
-        normalized = canonical_datetime_string(value)
+        if value.tzinfo is None or value.utcoffset() is None:
+            _refuse("kernel.request.datetime_timezone", field="datetime")
+        normalized = value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
         return {"type": "datetime", "value": normalized}
     if isinstance(value, date):
         return {"type": "date", "value": value.isoformat()}

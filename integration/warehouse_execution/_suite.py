@@ -12,6 +12,7 @@ import datetime as dt
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Literal
 
 from increment import Analysis
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
@@ -291,7 +292,9 @@ experiments:
     return yaml, rows
 
 
-def run_materialized_cache_correction_probe(con, dialect: str, monkeypatch) -> None:
+def run_materialized_cache_correction_probe(
+    con, dialect: str, monkeypatch, *, coherence: Literal["captured", "live"] = "live"
+) -> None:
     """Check fresh materialized results, physical relations, and cleanup."""
     yaml, rows = _materialized_cache_fixture(con, dialect)
     con.create_table("events_cache_smoke", obj=rows, overwrite=True)
@@ -312,16 +315,20 @@ def run_materialized_cache_correction_probe(con, dialect: str, monkeypatch) -> N
             path = Path(td) / "defs.yaml"
             path.write_text(yaml)
             analysis = Analysis.from_definitions("exp", path, con, store="always")
-            before = analysis.run()[0].lift.value
+            before = analysis.run(coherence=coherence)[0].lift.value
             first_materializations = _required_materializations(con, created_relations)
             first_creation_count = len(created_relations)
             con.raw_sql(_cache_correction_sql(con, dialect))
-            cached = analysis.run()[0].lift.value
+            cached = analysis.run(coherence=coherence)[0].lift.value
             second_materializations = _required_materializations(
                 con, created_relations[first_creation_count:]
             )
             _assert_materializations_absent(con, first_materializations)
-            current = Analysis.from_definitions("exp", path, con, store="none").run()[0].lift.value
+            current = (
+                Analysis.from_definitions("exp", path, con, store="none")
+                .run(coherence="live")[0]
+                .lift.value
+            )
             assert abs(before - (2 / 11)) < 1e-9, f"expected pre-correction lift 2/11, got {before}"
             assert abs(cached - (15 / 11)) < 1e-9, (
                 f"expected post-correction lift 15/11, got {cached}"

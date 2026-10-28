@@ -195,6 +195,18 @@ class EvidenceCapabilities:
     scalar: ScalarEvidenceDeclaration | None
     available_covariates: frozenset[str] | None
     sql_grains: frozenset[Grain] = frozenset()
+    capture: Literal["snapshot", "immutable", "live"] = "live"
+
+
+class _OwnedLoaderAdapter:
+    """Marker for internal adapters whose ``source`` is the owned loader."""
+
+    __slots__ = ()
+    source: Any
+
+
+def _loader_owner(source: object) -> object:
+    return source.source if isinstance(source, _OwnedLoaderAdapter) else source
 
 
 @runtime_checkable

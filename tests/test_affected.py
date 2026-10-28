@@ -55,6 +55,38 @@ def test_docs_only_change_selects_only_that_page(tmp_path: Path) -> None:
     assert selection.test_files == ()
 
 
+def test_explicit_readme_is_collected_with_affected_filter(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(root), *filter(None, environment.get("PYTHONPATH", "").split(os.pathsep)))
+    )
+    environment["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
+    environment["AFFECTED_TEST_FILES"] = "[]"
+    environment.pop("PYTEST_ADDOPTS", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "scripts.affected_filter",
+            "README.md",
+        ],
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "README.md::line:" in result.stdout
+
+
 def test_changed_test_file_is_selected(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"tests/test_example.py": "def test_old(): pass\n"})
 
@@ -394,6 +426,7 @@ def test_kept(): pass
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("PYTEST_PLUGINS", None)
     env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py", "tests/test_ignored.py"])
     result = subprocess.run(
         [
@@ -431,6 +464,7 @@ def test_filtered_collection_skips_imports_for_unkept_test_files(tmp_path: Path)
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("PYTEST_PLUGINS", None)
     env["AFFECTED_TEST_FILES"] = json.dumps(["tests/test_kept.py"])
     result = subprocess.run(
         [
@@ -466,6 +500,7 @@ def test_unfiltered_collection_without_tach_selection_collects_whole_tree(
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env.pop("PYTEST_PLUGINS", None)
     env.pop("AFFECTED_TEST_FILES", None)
     result = subprocess.run(
         [
@@ -496,6 +531,260 @@ def test_prefiltered_selection_with_nothing_kept_runs_nothing(tmp_path: Path) ->
     assert _pytest_invocations(selection, base, "fast", [], kept=()) == []
 
 
+def test_explicit_targets_honor_ignore_from_all_pytest_option_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[tool.pytest.ini_options]\naddopts = "--ignore=tests/test_config.py"\n'
+            ),
+            "tests/test_config.py": "raise AssertionError('config ignore bypassed')\n",
+            "tests/test_env.py": "raise AssertionError('environment ignore bypassed')\n",
+            "tests/test_cli.py": "raise AssertionError('CLI ignore bypassed')\n",
+        },
+    )
+    for name in ("config", "env", "cli"):
+        (root / f"tests/test_{name}.py").write_text(
+            f"from pathlib import Path\ndef test_{name}(): Path('{name}-ran').touch()\n"
+        )
+    _git(root, "add", ".")
+    _git(
+        root,
+        "-c",
+        "user.email=tests@example.com",
+        "-c",
+        "user.name=Tests",
+        "commit",
+        "--no-verify",
+        "-qm",
+        "add runnable ignored tests",
+    )
+    base = _git(root, "rev-parse", "HEAD")
+    for name in ("config", "env", "cli"):
+        (root / f"tests/test_{name}.py").write_text(
+            f"from pathlib import Path\ndef test_{name}(): Path('{name}-ran').touch()\n# changed\n"
+        )
+    selection = select(base, root)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-o addopts=--ignore=tests/test_env.py")
+
+    status = main(
+        [
+            "--base",
+            base,
+            "--",
+            "-o",
+            "addopts=--ignore=tests/test_cli.py",
+        ]
+    )
+
+    assert selection.test_files == (
+        "tests/test_cli.py",
+        "tests/test_config.py",
+        "tests/test_env.py",
+    )
+    assert status == 0
+    assert (root / "config-ran").exists()
+    assert (root / "env-ran").exists()
+    assert not (root / "cli-ran").exists()
+
+
+def test_deselect_cannot_silently_skip_every_selected_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_changed.py": (
+                "from pathlib import Path\ndef test_changed(): Path('changed-ran').touch()\n"
+            ),
+            "tests/test_unrelated.py": "raise AssertionError('unrelated test imported')\n",
+        },
+    )
+    selection = _change(
+        root,
+        base,
+        "tests/test_changed.py",
+        "from pathlib import Path\ndef test_changed(): Path('changed-ran').touch()\n# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--deselect=tests/test_changed.py::test_changed")
+    status = main(["--base", base])
+
+    assert selection.test_files == ("tests/test_changed.py",)
+    assert status == 5
+    assert not (root / "changed-ran").exists()
+
+
+def test_partial_deselect_with_xdist_keeps_successful_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Seven changed files keep the requested workers; fewer run serially.
+    files = {
+        f"tests/test_{index}.py": (
+            "from pathlib import Path\n"
+            "def test_deselected(): raise AssertionError('deselected')\n"
+            f"def test_kept(): Path('kept-{index}').touch()\n"
+        )
+        for index in range(7)
+    }
+    root, base = _repo(tmp_path, files)
+    for path, contents in files.items():
+        (root / path).write_text(contents + "# changed\n")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+    deselections = [f"--deselect=tests/test_{index}.py::test_deselected" for index in range(7)]
+
+    status = main(["--base", base, "--", "-n", "2", *deselections])
+
+    assert status == 0
+    assert all((root / f"kept-{index}").exists() for index in range(7))
+
+
+def test_affected_run_with_xdist_disabled_collects_serially(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_changed.py": "from pathlib import Path\ndef test_ran(): Path('ran').touch()\n"
+        },
+    )
+    _change(
+        root,
+        base,
+        "tests/test_changed.py",
+        "from pathlib import Path\ndef test_ran(): Path('ran').touch()\n# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--", "-p", "no:xdist"])
+
+    assert status == 0
+    assert (root / "ran").exists()
+
+
+def test_all_user_deselection_with_xdist_is_reported_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {f"tests/test_{index}.py": "def test_selected(): pass\n" for index in range(7)}
+    root, base = _repo(tmp_path, files)
+    for path, contents in files.items():
+        (root / path).write_text(contents + "# changed\n")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+    deselections = [f"--deselect=tests/test_{index}.py::test_selected" for index in range(7)]
+
+    status = main(["--base", base, "--", "-n", "2", *deselections])
+
+    assert status == 5
+
+
+def test_keyword_filter_excluding_all_affected_tests_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(tmp_path, {"tests/test_changed.py": "def test_changed(): pass\n"})
+    _change(root, base, "tests/test_changed.py", "def test_changed(): pass\n# changed\n")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--", "-k", "no_such_test_keyword"])
+
+    assert status == 5
+
+
+def test_keyword_matching_only_tier_excluded_tests_remains_successful(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_affected.py": (
+                "import pytest\n@pytest.mark.integration\ndef test_affected(): pass\n"
+            )
+        },
+    )
+    _change(
+        root,
+        base,
+        "tests/test_affected.py",
+        "import pytest\n@pytest.mark.integration\ndef test_affected(): pass\n# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--tier", "unit", "--", "-k", "affected"])
+
+    assert status == 0
+
+
+def test_keyword_filter_uses_overridden_marker_expression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {"tests/test_changed.py": "import pytest\n@pytest.mark.slow\ndef test_changed(): pass\n"},
+    )
+    _change(
+        root,
+        base,
+        "tests/test_changed.py",
+        "import pytest\n@pytest.mark.slow\ndef test_changed(): pass\n# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--tier", "fast", "--", "-m", "slow", "-k", "no_such_test"])
+
+    assert status == 5
+
+
+def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:
+    from tests._selection import kept_test_files
+
+    root, base = _repo(
+        tmp_path,
+        {
+            "tach.toml": (
+                'source_roots = ["."]\nroot_module = "ignore"\n'
+                '[[modules]]\npath = "increment"\ndepends_on = []\n'
+                '[[modules]]\npath = "increment._literals"\ndepends_on = ["increment"]\n'
+            ),
+            "increment/__init__.py": "",
+            "increment/_literals.py": "VALUE = 1\n",
+            "tests/test_changed.py": "import increment._literals\n",
+            "tests/test_other.py": "def test_other(): pass\n",
+        },
+    )
+    current_branch = _git(root, "branch", "--show-current")
+    _git(root, "checkout", "-qb", "tach-head")
+    (root / "increment/_literals.py").write_text("VALUE = 2\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "--no-verify", "-qm", "tach head source change")
+    _git(root, "checkout", "-q", current_branch)
+
+    selection = kept_test_files(root, base, tier="fast", head="tach-head")
+    assert selection is not None
+    assert "tests/test_changed.py" in selection
+
+
 def test_ignore_option_keeps_directory_collection_so_the_exclusion_applies(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"increment/frame.py": "VALUE = 1\n"})
     selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
@@ -521,6 +810,7 @@ def test_environment_ignore_excludes_module_from_source_change_collection(
     )
     selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
     monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=tests/test_excluded.py")
+    monkeypatch.setenv("AFFECTED_TEST_FILES", "[]")
     (invocation,) = _pytest_invocations(
         selection, base, "fast", [], kept=("tests/test_allowed.py", "tests/test_excluded.py")
     )
@@ -533,8 +823,9 @@ def test_environment_ignore_excludes_module_from_source_change_collection(
             pytest_args.append(argument)
 
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     environment.pop("AFFECTED_TEST_FILES", None)
+    environment.pop("PYTEST_PLUGINS", None)
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", *pytest_args],
         cwd=root,
@@ -722,6 +1013,25 @@ def test_dependency_change_runs_full_tier(tmp_path: Path) -> None:
     assert selection.full_tier is True
 
 
+def test_full_tier_user_deselection_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\ndependencies = ["a"]\n',
+            "tests/test_selected.py": "def test_selected(): pass\n",
+        },
+    )
+    _change(root, base, "pyproject.toml", '[project]\ndependencies = ["b"]\n')
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("AFFECTED_TEST_FILES", raising=False)
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--", "--deselect=tests/test_selected.py::test_selected"])
+
+    assert status == 5
+
+
 def test_tach_change_runs_tach_without_tests(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"tach.toml": "[tool.tach]\n"})
     selection = _change(root, base, "tach.toml", "[tool.tach]\nchanged = true\n")
@@ -735,7 +1045,9 @@ def test_unit_tier_uses_unit_marker_expression(tmp_path: Path) -> None:
     assert _pytest_arguments(selection, base, "unit", []) == [
         "-m",
         "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-        "tests/test_example.py",
+        "-p",
+        "scripts.affected_filter",
+        "tests",
     ]
 
 
@@ -769,6 +1081,8 @@ def test_full_tier_preserves_doc_pages_and_uncovered_paths(tmp_path: Path) -> No
     assert _pytest_arguments(selection, base, "fast", []) == [
         "-m",
         "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+        "-p",
+        "scripts.affected_filter",
         "tests",
         "docs/guides/cuped.md",
     ]
@@ -846,7 +1160,9 @@ def test_slow_tier_marker_expression_is_used(tmp_path: Path) -> None:
     assert _pytest_arguments(selection, base, "slow", []) == [
         "-m",
         TIER_MARKERS["slow"],
-        "tests/test_example.py",
+        "-p",
+        "scripts.affected_filter",
+        "tests",
     ]
 
 
@@ -862,7 +1178,9 @@ def test_small_selection_runs_without_workers() -> None:
     assert _pytest_arguments(selection, "base", "fast", ["-n", "4", "--dist", "loadgroup"]) == [
         "-m",
         "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-        *selection.test_files,
+        "-p",
+        "scripts.affected_filter",
+        "tests",
     ]
 
     for worker_args in (
@@ -874,7 +1192,9 @@ def test_small_selection_runs_without_workers() -> None:
         assert _pytest_arguments(selection, "base", "fast", worker_args) == [
             "-m",
             "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-            *selection.test_files,
+            "-p",
+            "scripts.affected_filter",
+            "tests",
         ]
     larger = Selection(
         test_files=(*selection.test_files, "tests/test_6.py"),
@@ -883,11 +1203,12 @@ def test_small_selection_runs_without_workers() -> None:
         full_tier=False,
         uncovered=(),
     )
-    assert _pytest_arguments(larger, "base", "fast", ["-n", "4", "--dist", "loadgroup"])[-4:] == [
+    assert _pytest_arguments(larger, "base", "fast", ["-n", "4", "--dist", "loadgroup"])[-5:] == [
         "-n",
         "4",
         "--dist",
         "loadgroup",
+        "tests",
     ]
 
 

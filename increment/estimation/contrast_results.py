@@ -736,6 +736,7 @@ class ContrastResults(list[ContrastResult]):
             "point_available",
             "posterior_available",
             "view_partial",
+            "provider_owned",
         }
         count_columns = {
             "required_cell_count",
