@@ -270,6 +270,13 @@ class ComplianceSeriesRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ContrastStatsRequest:
+    """Request the pinned reduced switchback statistics for one metric."""
+
+    metric: Metric
+
+
+@dataclass(frozen=True, slots=True)
 class MetricEvidenceRequest:
     metric: Metric
     control_group: str

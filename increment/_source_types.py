@@ -203,6 +203,7 @@ class _OwnedLoaderAdapter:
 
     __slots__ = ()
     source: Any
+    provider_owned: bool = False
 
 
 def _loader_owner(source: object) -> object:

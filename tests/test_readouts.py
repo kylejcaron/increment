@@ -2586,7 +2586,11 @@ def test_contrast_handler_refuses_a_metric_with_no_procedure():
         procedures: dict = {}
 
     with pytest.raises(InvalidRequestError) as exc_info:
-        ContrastHandler().run(_FakeContrastSource(), _FakeContrastRequest())  # ty: ignore[invalid-argument-type]
+        ContrastHandler().run(
+            cast(Any, _FakeContrastSource()),
+            cast(Any, _FakeContrastRequest()),
+            execution_context=None,  # ty: ignore[invalid-argument-type]
+        )
     assert exc_info.value.code == "facade.evidence_dispatch.contrast_handler.readout_request_no"
     assert exc_info.value.context["metric_name"] == "rev"
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._evidence_refusals import refuse_grain, refuse_operation, require_evidence
 from increment._evidence_types import (
     BreakoutMethodMomentsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
+    ContrastStatsRequest,
     CountsRequest,
     EvidenceScope,
     EvidenceSource,
@@ -24,6 +25,9 @@ from increment._source_types import (
     is_custom_source,
 )
 
+if TYPE_CHECKING:
+    from increment.kernel.context import EvidenceExecutionContext
+
 
 def view_population(src: EvidenceSource) -> Literal["assigned", "triggered"]:
     """Return the population a source answers by default: triggered only for triggered-only views."""
@@ -38,6 +42,23 @@ def require_request_evidence(
 ) -> None:
     """Validate against the effective population and parent declaration."""
     require_evidence(declaration_source or src, request=request)
+
+
+def acquire_contrast_stats(source: Any, request: ContrastStatsRequest) -> Any:
+    """Read one declared switchback answer from its source."""
+    return source.contrast_stats(request.metric)
+
+
+def load_contrast_stats(
+    source: object,
+    request: ContrastStatsRequest,
+    *,
+    execution_context: EvidenceExecutionContext,
+) -> Any:
+    """Acquire one switchback answer through the run's borrowed scope."""
+    execution_context.validate_request(source, (request.metric,), ())
+    with execution_context.borrow() as borrowed:
+        return acquire_contrast_stats(borrowed, request)
 
 
 def route_provider_request(src: object, request: object) -> tuple[bool, Any]:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment.estimation.assignment_integrity import assignment_integrity
@@ -37,6 +37,8 @@ def scope_contrast_results(
     component_source: str | None = None,
     dimension: str | None = None,
     source_identity_record: Mapping[str, Any] | None = None,
+    coherence: Literal["captured", "live"] | None = None,
+    effective_modes: Mapping[str, Literal["captured", "live", "provider"]] | None = None,
 ) -> ContrastResults:
     """Attach scope to a complete set of contrast results.
 
@@ -149,5 +151,7 @@ def scope_contrast_results(
     metadata = ReadoutMetadata(
         scope=scope,
         cells=tuple(CellRecord(cell=cell, source_snapshot_id=snapshot_id) for cell in ordered),
+        coherence=coherence,
+        effective_modes=effective_modes or {},
     )
     return ContrastResults(stamped, metadata=metadata, source=source)

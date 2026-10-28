@@ -2,6 +2,7 @@
 !metric_name: Banned public function parameter; use metric or metrics.
 !outcome: Banned public function parameter; use the metric name.
 !control_group: Banned public function parameter; use control; model/result fields may retain this name.
+_execution_context: Internal owner for a composed analysis run; not a user tuning option.
 metric/metrics: Metric or set of metrics to analyze or summarize.
 adjust: Covariates used for outcome adjustment.
 alpha: Type-I error probability.

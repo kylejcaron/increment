@@ -15,6 +15,7 @@ import pytest
 
 from increment.result_envelope import ResultCell
 from tests.analysis_factory import held_source
+from tests.parity_harness import registrations_line5 as _line5
 from tests.parity_harness.comparison import TOLERANCE
 from tests.parity_harness.registrations_line2 import (
     LINE2_ASOF_PAIRS,
@@ -672,6 +673,10 @@ NEW_PATH_ADAPTERS = {
     **NEW_PATH_ADAPTERS,
     **dict.fromkeys(LINE2_PAIRS | LINE2_ASOF_PAIRS, line2_actual_outcome),
 }
+
+
+REGISTERED = {**REGISTERED, **_line5.REGISTERED}
+NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_line5.NEW_PATH_ADAPTERS}
 
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:

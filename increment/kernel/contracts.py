@@ -18,6 +18,7 @@ from increment._canonical import CanonicalJSONError, canonical_json_bytes
 from increment._evidence_types import BreakoutIdentity
 from increment.declarations import CellKey, Method
 from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
+from increment.semantics.models import Metric
 
 CONTRACTS_SCHEMA_VERSION: int = 1
 
@@ -56,7 +57,7 @@ class _ContractModel(CodedModel, BaseModel):
 
 
 class Scope(_ContractModel):
-    view: Literal["run", "daily", "asof", "breakout"]
+    view: Literal["run", "daily", "asof", "breakout", "switchback"]
     grain: Literal["total", "daily", "asof"]
     through_day: date | None = None
     day_domain: tuple[date, ...] = ()
@@ -64,6 +65,7 @@ class Scope(_ContractModel):
     time_basis: Literal["calendar", "cohort"] = "calendar"
     completion_policy: bool = False
     segment: tuple[BreakoutIdentity, ...] = ()
+    metrics: tuple[Metric, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @field_validator("segment", mode="before")
     @classmethod
@@ -78,7 +80,7 @@ class Scope(_ContractModel):
     def _validate_scope(self) -> Scope:
         invalid = (
             (
-                self.view in {"run", "breakout"}
+                self.view in {"run", "breakout", "switchback"}
                 and (self.grain != "total" or self.through_day is not None or self.day_domain)
             )
             or (self.view == "run" and bool(self.segment))
@@ -87,9 +89,10 @@ class Scope(_ContractModel):
             or (self.view == "asof" and self.grain != "asof")
             or (self.view == "breakout" and self.segment is None)
             or (bool(self.day_domain) and tuple(sorted(set(self.day_domain))) != self.day_domain)
+            or (self.view != "switchback" and bool(self.metrics))
         )
         if invalid:
-            _refuse("kernel.scope.invalid", field="scope")
+            _refuse("kernel.scope.invalid", field="view/grain/through_day/segment/metrics")
         return self
 
     def canonical_payload(self) -> dict[str, object]:
