@@ -286,6 +286,8 @@ def _pytest_invocations(
                 *selection.doc_pages,
             ]
         ]
+    if selection.test_files and any(arg.startswith("--ignore") for arg in extra_args):
+        return [markers + ["tests", *selection.doc_pages, *extra_args]]
 
     direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
     direct_args.extend(extra_args)
@@ -342,7 +344,9 @@ def main(argv: list[str]) -> int:
         print(f"affected: running full {arguments.tier} tier")
 
     kept = None
-    if selection.use_tach:
+    if selection.use_tach and not any(
+        argument == "--tach-head" or argument.startswith("--tach-head=") for argument in extra_args
+    ):
         from tests._selection import kept_test_files
 
         kept = kept_test_files(root, arguments.base, tier=arguments.tier)
