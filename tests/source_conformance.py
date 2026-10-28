@@ -357,6 +357,7 @@ def definitions_source(
     cluster: bool = False,
     sql_exposures: bool = False,
     return_analysis: bool = False,
+    window_days: int | None = 1,
 ) -> tuple[Any, Any]:
     """Build an in-memory definitions source with one breakout.
 
@@ -445,7 +446,7 @@ def definitions_source(
                 "entity": "user_id",
                 "fact": "purchase",
                 "aggregation": "sum",
-                "window_days": 1,
+                "window_days": window_days,
             }
         ],
         "experiments": [
@@ -772,6 +773,18 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
         ("sql_totals", sql_result),
         ("unit_day_artifact", artifact_result),
     )
+
+
+def _captured_source_session(source: Any) -> Any:
+    return source._session
+
+
+def _analysis_connection(analysis: Any) -> Any:
+    return analysis._con
+
+
+def _clear_captured_source_tables(provider: Any) -> None:
+    provider.source._session._source_tables.clear()
 
 
 __all__ = [

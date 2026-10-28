@@ -22,7 +22,7 @@ from increment._evidence_types import (
     DayAxisRequest,
     DayAxisRoute,
 )
-from increment._frame_panel import _day_axis_label_order
+from increment._frame_panel import _day_axis_label_order, _resolve_window_days
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from increment.semantics.models import Experiment, Metric
 
 DayAxisGrain = Literal["daily", "asof"]
+
 
 _CLUSTERED_DAY_AXIS = RefusalSpec(
     "facade.analysis.clustered_day_axis",
@@ -1134,6 +1135,164 @@ def _fill_triggered_early_look_rows(
     return output
 
 
+def _day_axis_base_domain(req: DayAxisRequest) -> tuple[dt.date, ...]:
+    experiment = req.experiment
+    if experiment is None:
+        return ()
+    start = experiment.start_day
+    end = experiment.observation_horizon_day
+    if end is None or end < start:
+        return ()
+    return tuple(start + dt.timedelta(days=n) for n in range((end - start).days + 1))
+
+
+def _metric_day_axis_domain(req: DayAxisRequest, metric: Any) -> tuple[dt.date, ...]:
+    domain = _day_axis_base_domain(req)
+    if req.grain != "daily" or not domain or metric.type == "retention":
+        return domain
+    window_days = _resolve_window_days(metric)
+    if window_days is None:
+        return domain
+    exclusive_end = domain[0] + dt.timedelta(days=window_days)
+    return tuple(day for day in domain if day < exclusive_end)
+
+
+def _day_axis_domain(req: DayAxisRequest) -> tuple[dt.date, ...]:
+    if req.grain != "daily" or not req.metrics:
+        return _day_axis_base_domain(req)
+    domains = (_metric_day_axis_domain(req, metric) for metric in req.metrics)
+    return tuple(sorted({day for domain in domains for day in domain}))
+
+
+def _fill_daily_domain_gaps(rows: list[Any], req: DayAxisRequest) -> list[Any]:
+    if req.grain != "daily" or req.population == "triggered" or not rows:
+        return rows
+    domain = _day_axis_domain(req)
+    if not domain:
+        return rows
+    identity_fields = (
+        "metric",
+        "group_id",
+        "analysis_population",
+        "dimension",
+        "dimension_value",
+        "source",
+        "ds_basis",
+        "method",
+        "method_role",
+        "estimand",
+    )
+
+    def identity(row: Any) -> tuple[object, ...]:
+        return tuple(getattr(row, field, None) for field in identity_fields)
+
+    metric_domains = {}
+    for metric in req.metrics:
+        declared_domain = () if metric.type == "retention" else _metric_day_axis_domain(req, metric)
+        emitted_domain = {row.ds for row in rows if row.metric == metric.name}
+        metric_domains[metric.name] = tuple(sorted(set(declared_domain) | emitted_domain))
+    if not metric_domains:
+        metric_domains = {"": domain}
+    present = {(identity(row), row.ds) for row in rows}
+    additions = []
+    for template in rows:
+        key = identity(template)
+        row_domain = metric_domains.get(template.metric, domain)
+        for day in row_domain:
+            if (key, day) in present:
+                continue
+            present.add((key, day))
+            if hasattr(template, "value"):
+                additions.append(
+                    template.model_copy(
+                        update={
+                            "ds": day,
+                            "value": None,
+                            "unavailable": "missing_metric_observations",
+                            "n": 0,
+                        }
+                    )
+                )
+            else:
+                additions.append(
+                    template.model_copy(
+                        update={
+                            "ds": day,
+                            "lift": None,
+                            "relative_confidence_set": None,
+                            "sequential_result": None,
+                            "binomial_set": None,
+                            "delta_evidence": None,
+                            "unavailable": "missing_metric_observations",
+                            "n_control": 0,
+                            "n_treat": 0,
+                            "mean_control": None,
+                            "mean_treat": None,
+                            "sampling_available": False,
+                            "sampling_reason_code": "readout.cell.missing_metric_observations",
+                            "posterior_available": False,
+                            "posterior_reason_code": "readout.cell.missing_metric_observations",
+                            "posterior_reason_context": None,
+                            "posterior_prob_favorable_reason_code": None,
+                            "posterior_model": None,
+                            "posterior_scale": None,
+                            "posterior_estimate": None,
+                            "posterior_lb": None,
+                            "posterior_ub": None,
+                            "posterior_level": None,
+                            "posterior_alpha": None,
+                            "posterior_latent_mean": None,
+                            "posterior_latent_sd": None,
+                            "posterior_prob_favorable": None,
+                            "posterior_components": None,
+                            "relative_unavailable_reason": None,
+                            "relative_error_code": None,
+                            "relative_error_context": None,
+                            "abs_diff": None,
+                            "abs_se": None,
+                            "abs_lb": None,
+                            "abs_ub": None,
+                            "abs_reference_kind": None,
+                            "abs_reference_df": None,
+                            "abs_alpha": None,
+                        }
+                    )
+                )
+    return [*rows, *additions]
+
+
+def _day_axis_scope(req: DayAxisRequest):
+    from increment._evidence_types import BreakoutIdentity
+    from increment.kernel.contracts import Scope
+
+    experiment = req.experiment
+    time_basis = (
+        "cohort"
+        if req.metrics and all(metric.type == "retention" for metric in req.metrics)
+        else "calendar"
+    )
+    segment = None
+    if req.dimension is not None:
+        source_name = next(
+            (
+                breakout.source
+                for breakout in getattr(experiment, "breakouts", ())
+                if breakout.property == req.dimension
+            ),
+            None,
+        )
+        segment = BreakoutIdentity(req.dimension, source_name)
+    return Scope(
+        view=req.grain,
+        grain=req.grain,
+        day_domain=_day_axis_domain(req),
+        population=req.population,
+        time_basis=time_basis,
+        completion_policy=req.completed_windows_only,
+        segment=segment,
+    )
+
+
 def _scope_day_axis_rows(
     rows,
     req: DayAxisRequest,
@@ -1144,6 +1303,9 @@ def _scope_day_axis_rows(
     design: Any = None,
     source: Any,
     family_populations: set[str] | None = None,
+    execution_context=None,
+    scope=None,
+    identity_rows: Sequence[Any] | None = None,
 ):
     """Attach source-local scope to day-axis rows before returning them."""
     from increment._source_identity import source_identity
@@ -1155,6 +1317,13 @@ def _scope_day_axis_rows(
         DailyLiftEstimates
         if req.caller in ("run_daily_lift", "run_asof_lift")
         else DailyMetricValues
+    )
+    scope = _day_axis_scope(req) if scope is None else scope
+    effective_modes = {} if execution_context is None else execution_context.effective_modes
+    coherence = (
+        None
+        if execution_context is None or "provider" in effective_modes.values()
+        else execution_context.coherence
     )
     scope_request = {
         "kind": "increment.readout.day_axis",
@@ -1173,7 +1342,7 @@ def _scope_day_axis_rows(
             for config in sorted(configs, key=lambda c: c.metric.name)
         ],
     }
-    return scoped_collection(
+    result = scoped_collection(
         rows,
         collection,
         plan,
@@ -1185,7 +1354,18 @@ def _scope_day_axis_rows(
         design=design,
         dimension=req.dimension,
         family_populations=family_populations,
+        identity_rows=identity_rows,
     )
+    if result.metadata is not None:
+        from increment._immutable import _FrozenMapping
+
+        result._metadata = result.metadata.model_copy(
+            update={
+                "coherence": coherence,
+                "effective_modes": _FrozenMapping(effective_modes),
+            }
+        )
+    return result
 
 
 def _order_day_axis_rows(rows: list[Any], req: DayAxisRequest) -> list[Any]:
@@ -1229,17 +1409,66 @@ class DayAxisReadouts:
         design: Randomized | Encouragement | Observational | None,
         experiment: Experiment | None,
         daily_lift: Callable[..., DailyLiftEstimates],
+        execution_context=None,
+        metadata_context=None,
     ) -> None:
         self._src = src
         self._plan = plan
         self._design = design
         self._experiment = experiment
         self._daily_lift = daily_lift
+        self._execution_context = execution_context
+        self._metadata_context = metadata_context
+
+    def resolve_lift_options(
+        self,
+        metrics: Sequence[Metric],
+        *,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+        prior: Prior | None | _Unset,
+    ) -> LiftOptions:
+        return LiftOptions.resolve(
+            self._src,
+            metrics,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            alpha=self._plan.alpha,
+        )
 
     def _route(self) -> DayAxisRoute:
         return day_axis_route(self._src)
 
-    def values(self, req: DayAxisRequest) -> DailyMetricValues:
+    def values(self, req: DayAxisRequest, *, scope=None) -> DailyMetricValues:
+        req = replace(req, experiment=self._experiment)
+        scope = _day_axis_scope(req) if scope is None else scope
+        if self._execution_context is not None:
+            context = self._execution_context
+            context.validate_request(self._src, req.metrics, ())
+            if req.dimension is not None:
+                from increment._evidence_types import BreakoutIdentity
+
+                source_name = next(
+                    (
+                        breakout.source
+                        for breakout in getattr(self._experiment, "breakouts", ())
+                        if breakout.property == req.dimension
+                    ),
+                    None,
+                )
+                context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
+            from increment.readouts._evidence import _builtin_source
+
+            with context.borrow() as provider:
+                return DayAxisReadouts(
+                    src=_builtin_source(provider),
+                    plan=self._plan,
+                    design=self._design,
+                    experiment=self._experiment,
+                    daily_lift=self._daily_lift,
+                    metadata_context=context,
+                ).values(req, scope=scope)
         route = self._route()
         validate_day_axis(
             req,
@@ -1249,7 +1478,7 @@ class DayAxisReadouts:
             route=route,
             experiment=self._experiment,
         )
-        evidence = load_day_axis_rows(self._src, replace(req, experiment=self._experiment))
+        evidence = load_day_axis_rows(self._src, req)
         results: list[DailyMetricValue] = []
         failure_rows: list[dict[str, Any]] = []
         for evidence_slice in evidence.slices:
@@ -1287,6 +1516,8 @@ class DayAxisReadouts:
         results = [
             row.model_copy(update={"analysis_population": req.population}) for row in results
         ]
+        identity_rows = tuple(results)
+        results = _fill_daily_domain_gaps(results, req)
         return _scope_day_axis_rows(
             _order_day_axis_rows(results, req),
             req,
@@ -1294,16 +1525,64 @@ class DayAxisReadouts:
             route=route,
             plan=self._plan,
             design=self._design,
+            execution_context=self._metadata_context,
+            identity_rows=identity_rows,
         )
 
-    def lift(
+    def lift(  # noqa: PLR0915
         self,
         req: DayAxisRequest,
         *,
         decision_method: Method | _Unset,
         sensitivity_methods: Sequence[Method] | _Unset,
         prior: Prior | None | _Unset,
+        scope=None,
+        options: LiftOptions | None = None,
     ) -> DailyLiftEstimates:
+        req = replace(req, experiment=self._experiment)
+        scope = _day_axis_scope(req) if scope is None else scope
+        opts = options or LiftOptions.resolve(
+            self._src,
+            req.metrics,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            alpha=self._plan.alpha,
+        )
+        if self._execution_context is not None:
+            context = self._execution_context
+            if req.estimands != ("compliance",) or req.dimension is not None:
+                context.validate_request(self._src, req.metrics, opts.configs)
+            if req.dimension is not None:
+                from increment._evidence_types import BreakoutIdentity
+
+                source_name = next(
+                    (
+                        breakout.source
+                        for breakout in getattr(self._experiment, "breakouts", ())
+                        if breakout.property == req.dimension
+                    ),
+                    None,
+                )
+                context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
+            from increment.readouts._evidence import _builtin_source
+
+            with context.borrow() as provider:
+                return DayAxisReadouts(
+                    src=_builtin_source(provider),
+                    plan=self._plan,
+                    design=self._design,
+                    experiment=self._experiment,
+                    daily_lift=self._daily_lift,
+                    metadata_context=context,
+                ).lift(
+                    req,
+                    decision_method=decision_method,
+                    sensitivity_methods=sensitivity_methods,
+                    prior=prior,
+                    scope=scope,
+                    options=opts,
+                )
         route = self._route()
         from increment._analysis_config import validate_scalar_route
 
@@ -1340,23 +1619,28 @@ class DayAxisReadouts:
                 completed_windows_only=req.completed_windows_only,
                 _population=req.population,
             )
+            source_by_dimension = {
+                breakout.property: breakout.source
+                for breakout in getattr(self._experiment, "breakouts", ())
+            }
             return _scope_day_axis_rows(
-                _order_day_axis_rows(daily_sequential_projection(rows, correction=correction), req),
+                _order_day_axis_rows(
+                    daily_sequential_projection(
+                        rows,
+                        correction=correction,
+                        source_by_dimension=source_by_dimension,
+                    ),
+                    req,
+                ),
                 req,
                 source=self._src,
                 route=route,
                 plan=self._plan,
                 configs=self._src.context.configs,
                 design=self._design,
+                execution_context=self._metadata_context,
+                scope=scope,
             )
-        opts = LiftOptions.resolve(
-            self._src,
-            req.metrics,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-            alpha=self._plan.alpha,
-        )
         for roles in opts.by_metric.values():
             _validate_methods(list(roles.methods))
         for name, roles in opts.by_metric.items():
@@ -1496,7 +1780,7 @@ class DayAxisReadouts:
             failure_rows.extend(raw_rows)
         arm_roster = (
             _triggered_group_roster(self._src, self._experiment)
-            if self._experiment is not None
+            if self._experiment is not None and (req.metrics or design_compliance)
             else []
         )
         _append_compliance_rows(
@@ -1519,6 +1803,8 @@ class DayAxisReadouts:
         results = [
             row.model_copy(update={"analysis_population": req.population}) for row in results
         ]
+        identity_rows = tuple(results)
+        results = _fill_daily_domain_gaps(results, req)
 
         return _scope_day_axis_rows(
             _order_day_axis_rows(
@@ -1531,4 +1817,6 @@ class DayAxisReadouts:
             plan=self._plan,
             configs=opts.configs,
             design=self._design,
+            execution_context=self._metadata_context,
+            identity_rows=identity_rows,
         )

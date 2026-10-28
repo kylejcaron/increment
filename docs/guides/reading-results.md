@@ -43,12 +43,13 @@ The collection display includes retained scope even when filtering leaves no
 visible rows.
 
 Scope coherence is recorded on each scoped row as `coherence` and
-`effective_modes`. `Analysis.run()` defaults to `coherence="captured"`: a
-captured request asks built-in streams to pin evidence and refuses if the
-warehouse cannot create the required TEMP snapshot. Choose `coherence="live"`
-when snapshot materialization is unavailable (for example, when the database
-role lacks TEMP privileges); live results are qualified as live and lose the
-guarantee that separate reads observe one common source state.
+`effective_modes`. `Analysis.run()` and the daily/as-of readout methods default
+to `coherence="captured"`: a captured request asks built-in streams to pin
+evidence and refuses if the warehouse cannot create the required TEMP snapshot.
+Choose `coherence="live"` when snapshot materialization is unavailable (for
+example, when the database role lacks TEMP privileges); live results are
+qualified as live and lose the guarantee that separate reads observe one common
+source state.
 
 The effective per-stream mode map shows what actually happened. `live` means
 no common pinned snapshot is guaranteed, so separate reads may observe

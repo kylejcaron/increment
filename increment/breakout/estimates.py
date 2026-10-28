@@ -2062,7 +2062,10 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
 
 
 def daily_sequential_projection(
-    rows: Sequence[LiftEstimate], *, correction: Correction
+    rows: Sequence[LiftEstimate],
+    *,
+    correction: Correction,
+    source_by_dimension: Mapping[str, str | None] | None = None,
 ) -> DailyLiftEstimates:
     """Project checkpoint rows onto the as-of view, keeping unavailable cells as such."""
     output = []
@@ -2070,6 +2073,14 @@ def daily_sequential_projection(
         if row.ds is None:
             sequential_refuse("source.invalid", "as-of checkpoint has no reveal label")
         result = row.sequential_result
+        cell = None if result is None else result.checkpoint.cell
+        if cell is not None and len(cell.segment) > 1:
+            sequential_refuse(
+                "route.unsupported", "as-of daily projection supports one registered dimension"
+            )
+        dimension, dimension_value = (
+            (None, None) if cell is None or not cell.segment else cell.segment[0]
+        )
         if result is None and row.failure_code is None:
             sequential_refuse("source.invalid", "as-of row lacks its sequential checkpoint")
         output.append(
@@ -2077,6 +2088,11 @@ def daily_sequential_projection(
                 ds=row.ds,
                 metric=row.metric,
                 group_id=row.group_id,
+                dimension=dimension,
+                source=(
+                    None if source_by_dimension is None else source_by_dimension.get(dimension)
+                ),
+                dimension_value=dimension_value,
                 method=row.method,
                 method_role=row.method_role,
                 inference=row.inference,
@@ -5253,15 +5269,23 @@ def _snapshot_daily_lift(
     from increment.sequential_state import validate_sequential_methods
 
     if (
-        context.dimension is not None
-        or "late" in requested_estimands
+        "late" in requested_estimands
         or isinstance(context.design, Observational)
         or context.prior is not None
         or any(p is not None for p in (context.prior_by_metric or {}).values())
     ):
         sequential_refuse(
             "route.unsupported",
-            "current sequential as-of requires raw unsegmented ITT or Bernoulli uptake",
+            "current sequential as-of requires ITT or Bernoulli uptake without observational priors",
+        )
+    registration = context.inference.registration
+    roster = registration.roster
+    if context.dimension is None:
+        if any(cell.segment for cell in roster):
+            sequential_refuse("source.invalid", "as-of request omitted its registered dimension")
+    elif any(len(cell.segment) != 1 or cell.segment[0][0] != context.dimension for cell in roster):
+        sequential_refuse(
+            "source.invalid", "as-of dimension differs from the retained registration"
         )
     registration = context.inference.registration
     for metric in metrics:
@@ -5274,9 +5298,7 @@ def _snapshot_daily_lift(
         sequential_refuse(
             "source.invalid", "as-of likelihood requires a labeled finalized exact snapshot"
         )
-    if summary.registration.control_group != context.control_group or any(
-        c.segment for c in summary.registration.roster
-    ):
+    if summary.registration.control_group != context.control_group:
         sequential_refuse("source.invalid", "as-of request differs from the retained registration")
     if any(c.estimand not in requested_estimands for c in summary.registration.roster):
         sequential_refuse("source.invalid", "as-of estimands differ from the retained roster")
@@ -5308,6 +5330,9 @@ def _snapshot_daily_lift(
     return daily_sequential_projection(
         [row.model_copy(update={"ds": summary.reveal_cursor}) for row in results],
         correction=correction,
+        source_by_dimension=(
+            {} if context.dimension is None else {context.dimension: context.source}
+        ),
     )
 
 

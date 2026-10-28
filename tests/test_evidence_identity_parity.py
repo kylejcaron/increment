@@ -16,6 +16,11 @@ import pytest
 from increment.result_envelope import ResultCell
 from tests.analysis_factory import held_source
 from tests.parity_harness.comparison import TOLERANCE
+from tests.parity_harness.registrations_line2 import (
+    LINE2_ASOF_PAIRS,
+    LINE2_PAIRS,
+    line2_actual_outcome,
+)
 
 # Line-one owns whole-window parity pairs not assigned to lines 2–7.
 _LINE1_SCENARIOS = frozenset(
@@ -120,14 +125,11 @@ _SKIP_COUNT = 0
 def _capture() -> dict:
     from scripts.capture_evidence_identity import load_operations_capture
 
-    path = (
-        Path(__file__).parent
-        / "fixtures"
-        / "evidence_identity"
-        / "pre-kernel"
-        / "operations.json.gz"
-    )
-    return load_operations_capture(path)
+    root = Path(__file__).parent / "fixtures" / "evidence_identity"
+    capture = load_operations_capture(root / "pre-kernel" / "operations.json.gz")
+    asof = load_operations_capture(root / "pre-kernel-asof" / "operations.json.gz")
+    capture["scenarios"].update(asof["scenarios"])
+    return capture
 
 
 def test_capture_reuses_decoded_fixture() -> None:
@@ -665,6 +667,12 @@ def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # n
 
 NEW_PATH_ADAPTERS = dict.fromkeys(_LINE1_PAIRS, _line1_actual_outcome)
 
+REGISTERED = {**REGISTERED, "line2": LINE2_PAIRS | LINE2_ASOF_PAIRS}
+NEW_PATH_ADAPTERS = {
+    **NEW_PATH_ADAPTERS,
+    **dict.fromkeys(LINE2_PAIRS | LINE2_ASOF_PAIRS, line2_actual_outcome),
+}
+
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
     payload = copy.deepcopy(dict(cell))
@@ -678,7 +686,7 @@ def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
 def test_capture_scenario_inventory_matches_fixture() -> None:
     from scripts.capture_evidence_identity import iter_capture_keys
 
-    expected = set(iter_capture_keys())
+    expected = set(iter_capture_keys()) | LINE2_ASOF_PAIRS
     record = _capture()
     actual = {
         (scenario_id, ingress)
@@ -694,7 +702,7 @@ def test_line1_registration_inventory_matches_frozen_capture() -> None:
         (scenario_id, ingress) for scenario_id, outcomes in captured.items() for ingress in outcomes
     }
     assert _LINE1_PAIRS <= fixture_pairs
-    assert set(NEW_PATH_ADAPTERS) == _LINE1_PAIRS
+    assert set(NEW_PATH_ADAPTERS) == set().union(*REGISTERED.values())
     counts = {
         kind: sum(
             captured[scenario_id][ingress]["kind"] == kind for scenario_id, ingress in _LINE1_PAIRS
@@ -738,7 +746,7 @@ def test_frozen_capture_outcome(
             pytrace=False,
         )
     modes = _assert_outcome_matches(expected, actual)
-    if key in _LINE1_PAIRS and expected["kind"] == "cells":
+    if key in set().union(*REGISTERED.values()) and expected["kind"] == "cells":
         assert modes["coherence"] == "captured"
         effective_modes = modes["effective_modes"]
         assert isinstance(effective_modes, Mapping)

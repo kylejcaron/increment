@@ -244,6 +244,8 @@ class EvidenceScope:
     metrics: tuple[Metric, ...] = ()
     population: Literal["assigned", "triggered"] = "assigned"
     grain: Literal["total", "daily", "asof"] | None = None
+    dimension: str | None = None
+    estimands: tuple[str, ...] | None = None
     breakouts: tuple[BreakoutIdentity, ...] = ()
     configs: tuple[Any, ...] | None = None
     uptake_facts: tuple[str, ...] = ()
@@ -438,6 +440,9 @@ class EvidenceScopeResult:
     streams: tuple[EvidenceStream, ...] = ()
     stream_resolver: Callable[[Any], tuple[EvidenceStream, ...]] | None = None
     capture_status: CaptureStatus | None = None
+    breakout_streams: Mapping[BreakoutIdentity, str] = dataclass_field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 # Columns a unit frame serves in its own right; a covariate declared under one

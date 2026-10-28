@@ -199,6 +199,7 @@ class TriggeredPopulationSource:
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        breakouts: Sequence[Any] = (),
         configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> Iterator[EvidenceSource]:
         with self._source.readout_snapshot(
@@ -206,6 +207,7 @@ class TriggeredPopulationSource:
             population="assigned",
             uptake_facts=uptake_facts,
             include_breakouts=include_breakouts,
+            breakouts=breakouts,
             configs=configs,
         ) as pinned:
             yield self if pinned is self._source else pinned.triggered_source()

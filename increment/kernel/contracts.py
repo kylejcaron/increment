@@ -35,6 +35,10 @@ _REFUSALS = refusals(
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
         "kernel.context.closed": "Execution context is closed",
         "kernel.context.undeclared_stream": "Execution context does not declare stream {stream!r}",
+        "kernel.snapshot.integrity": (
+            "Captured stream {stream!r} can no longer be replayed",
+            ("snapshot_id",),
+        ),
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -55,6 +59,7 @@ class Scope(_ContractModel):
     view: Literal["run", "daily", "asof", "breakout"]
     grain: Literal["total", "daily", "asof"]
     through_day: date | None = None
+    day_domain: tuple[date, ...] = ()
     population: Literal["assigned", "triggered"] = "assigned"
     time_basis: Literal["calendar", "cohort"] = "calendar"
     completion_policy: bool = False
@@ -74,15 +79,17 @@ class Scope(_ContractModel):
         invalid = (
             (
                 self.view in {"run", "breakout"}
-                and (self.grain != "total" or self.through_day is not None)
+                and (self.grain != "total" or self.through_day is not None or self.day_domain)
             )
             or (self.view == "run" and bool(self.segment))
             or (self.view == "breakout" and not self.segment)
             or (self.view == "daily" and self.grain != "daily")
             or (self.view == "asof" and self.grain != "asof")
+            or (self.view == "breakout" and self.segment is None)
+            or (bool(self.day_domain) and tuple(sorted(set(self.day_domain))) != self.day_domain)
         )
         if invalid:
-            _refuse("kernel.scope.invalid", field="view/grain/through_day/segment")
+            _refuse("kernel.scope.invalid", field="scope")
         return self
 
     def canonical_payload(self) -> dict[str, object]:

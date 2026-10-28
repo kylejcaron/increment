@@ -1532,6 +1532,131 @@ def test_retention_breakout_reports_censoring_once():
             connection.disconnect()
 
 
+def _selected_breakout_sources(tmp_path):
+    import ibis
+    import pyarrow as pa
+
+    from increment import Analysis
+    from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
+
+    events = _with_preassignment_region(_events(n_per_arm=4, trigger_rate=1.0))
+    devices = [
+        "mobile" if user_id.startswith("T") else "desktop"
+        for user_id in events["user_id"].to_pylist()
+    ]
+    events = events.append_column("device", pa.array(devices))
+    definitions = (
+        _defs_yaml(trigger=None)
+        .replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "      - {name: device, column: device, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+            1,
+        )
+        .replace(
+            "exposures:\n",
+            "  - name: profiles\n"
+            "    sql: SELECT * FROM events\n"
+            "    timestamp_column: ts\n"
+            "    entities: [user_id]\n"
+            "    facts: []\n"
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "exposures:\n",
+            1,
+        )
+        .replace(
+            "    plan:\n",
+            "    breakouts:\n"
+            "      - {property: region, source: events}\n"
+            "      - {property: device, source: events}\n"
+            "      - {property: region, source: profiles}\n"
+            "    plan:\n",
+            1,
+        )
+    )
+    path = tmp_path / "selected-breakouts.yml"
+    path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=events)
+    return Analysis.from_definitions("exp", path, con, store="none"), con
+
+
+@pytest.mark.integration
+def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp_path):
+    from increment import BreakoutIdentity
+    from increment.evidence import BreakoutSlicesRequest, evidence_provider, request_evidence
+    from increment.semantics.models import Breakout
+    from tests.analysis_factory import held_source
+
+    analysis, con = _selected_breakout_sources(tmp_path)
+    source = cast(Any, held_source(analysis))
+    identities = (
+        BreakoutIdentity("device", "events"),
+        BreakoutIdentity("region", "profiles"),
+    )
+    try:
+        slices = cast(
+            Any,
+            request_evidence(
+                evidence_provider(source),
+                BreakoutSlicesRequest(
+                    breakouts=identities,
+                    metrics=(source.context.metrics[0],),
+                    configs=source.context.configs,
+                    breakout_definitions=analysis.experiment.breakouts,
+                ),
+            ),
+        )
+        assert tuple(item.identity for item in slices.slices) == identities
+        assert len(slices.slices) == len(identities)
+
+        selected = analysis.dashboard_breakout_reads(Breakout(property="region", source="profiles"))
+        daily = selected.run_daily(metrics=["revenue"])
+        assert daily
+        assert {row.dimension for row in daily} == {"region"}
+        assert {row.source for row in daily} == {"profiles"}
+        rows = selected.run_breakout(metrics=["revenue"])
+        assert rows
+        assert {row.dimension for row in rows} == {"region"}
+        assert {row.source for row in rows} == {"profiles"}
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
+    from increment import BreakoutIdentity, EvidenceScope
+    from tests.analysis_factory import held_source
+
+    analysis, con = _selected_breakout_sources(tmp_path)
+    source = cast(Any, held_source(analysis))
+    selected = BreakoutIdentity("region", "profiles")
+    try:
+        explicit = source.capture_requirements(
+            (
+                EvidenceScope(
+                    metrics=tuple(source.context.metrics),
+                    breakouts=(selected,),
+                    include_breakouts=False,
+                ),
+            )
+        )
+        assert explicit.breakouts == (selected,)
+        expanded = source.capture_requirements(
+            (EvidenceScope(metrics=tuple(source.context.metrics), include_breakouts=True),)
+        )
+        assert expanded.breakouts == tuple(
+            BreakoutIdentity(item.property, item.source) for item in analysis.experiment.breakouts
+        )
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def _triggered_region_breakout(tmp_path):
     import datetime as dt
 

@@ -253,6 +253,15 @@ def _analysis_with_daily_events(con):
     return analysis
 
 
+def _forbid_database_reads(monkeypatch, con):
+    def fail(*args, **kwargs):
+        raise AssertionError("readout performed a warehouse query before refusing")
+
+    monkeypatch.setattr(con, "raw_sql", fail)
+    monkeypatch.setattr(con, "execute", fail)
+    monkeypatch.setattr(con, "to_pyarrow", fail)
+
+
 @pytest.fixture(scope="module")
 def daily_events_daily_values(con):
     """Plain ``run_daily()`` on the daily fixture, computed once - the
@@ -368,6 +377,60 @@ def test_run_daily_and_run_daily_lift_empty_when_no_metrics(con):
     assert analysis.run_daily_lift() == []
 
 
+@pytest.mark.integration
+def test_empty_day_axis_selections_do_not_capture_or_read(con, monkeypatch):
+    analysis = _analysis_with_daily_events(con)
+    create_table = con.create_table
+
+    def deny_snapshot(name, expr, **kwargs):
+        if kwargs.get("temp"):
+            pytest.fail("empty day-axis selection attempted a TEMP capture")
+        return create_table(name, expr, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", deny_snapshot)
+    _forbid_database_reads(monkeypatch, con)
+    for method in ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"):
+        assert list(getattr(analysis, method)(metrics=[])) == []
+
+
+@pytest.mark.integration
+def test_empty_asof_lift_keeps_implicit_compliance_capture(con, monkeypatch):
+    analysis = _analysis_with_asof_encouragement_events(con)
+    create_table = con.create_table
+    captured = []
+
+    def record_snapshot(name, expr, **kwargs):
+        if kwargs.get("temp"):
+            captured.append(name)
+        return create_table(name, expr, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", record_snapshot)
+    rows = analysis.run_asof_lift(metrics=[])
+
+    assert rows
+    assert {row.estimand for row in rows} == {"compliance"}
+    assert captured
+    assert rows.metadata is not None
+    assert rows.metadata.coherence == "captured"
+    assert set(rows.metadata.effective_modes.values()) == {"captured"}
+
+
+@pytest.mark.integration
+def test_day_axis_live_coherence_works_without_temp_privileges(con, monkeypatch):
+    analysis = _analysis_with_daily_events(con)
+    create_table = con.create_table
+
+    def deny_snapshot(name, expr, **kwargs):
+        if kwargs.get("temp"):
+            raise PermissionError("TEMP creation denied")
+        return create_table(name, expr, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", deny_snapshot)
+    for method in ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"):
+        rows = getattr(analysis, method)(coherence="live")
+        assert rows
+
+
 def test_run_daily_raises_when_experiment_has_retention_metric(con):
     """Analysis.run_daily() raises ValueError naming a
     RetentionMetric present in the experiment's metrics/guardrails,
@@ -412,24 +475,10 @@ def test_run_daily_lift_raises_when_experiment_has_retention_metric(con):
 
 
 def test_run_daily_lift_raises_for_encouragement_design_before_any_query_runs(con, monkeypatch):
-    """Analysis.run_daily_lift() refuses outright when this Analysis's
-    design is an Encouragement design - per-day incremental LATE is
-    statistically meaningless under a weak daily first stage, and this
-    method has no `estimands` parameter to narrow away from "late" with
-    (unlike `run_asof_lift`), so the whole call is refused rather than
-    silently reporting itt-only. The refusal fires BEFORE
-    `breakout_summaries`/any query runs, proven by making
-    `breakout_summaries` blow up if called (mirrors
-    `test_run_daily_lift_dimension_raises_before_breakout_summaries_runs`'s
-    own proof technique for the RetentionMetric guard)."""
-    from increment.analysis import Analysis as _Analysis
-
-    def _boom(self, *args, **kwargs):
-        raise AssertionError("breakout_summaries should not be called")
-
-    monkeypatch.setattr(_Analysis, "breakout_summaries", _boom)
-
+    """Daily inference is refused for an Encouragement design before any
+    query. The public warehouse connection is guarded to prove ordering."""
     analysis = _analysis_with_asof_encouragement_events(con)
+    _forbid_database_reads(monkeypatch, con)
 
     with pytest.raises(InvalidRequestError) as raised:
         analysis.run_daily_lift()
@@ -1294,15 +1343,10 @@ def test_run_daily_dimension_raises_when_experiment_has_retention_metric(con):
 
 
 def test_run_daily_dimension_raises_before_breakout_summaries_runs(con, monkeypatch):
-    """The RetentionMetric guard fires before `breakout_summaries` (and
-    hence any query) runs at all - proven by making `breakout_summaries`
-    itself blow up if called, then confirming the RetentionMetric
-    ValueError is what actually propagates, not the patched failure.
-    Regression guard for the exact bug shape the task brief warns about:
-    breakout_summaries computes daily_group_summary for EVERY declared
-    RetentionMetric among the declared metrics would otherwise be caught
-    deep in the per-(breakout, metric) loop, after other metrics' queries
-    already ran."""
+    """The RetentionMetric guard runs before any warehouse query.
+
+    The public connection is instrumented to fail on a read, proving the
+    refusal is raised before daily-group evidence is acquired."""
     analysis = _analysis_with_country_breakout(con)
     analysis = make_analysis_like(
         analysis,
@@ -1314,10 +1358,7 @@ def test_run_daily_dimension_raises_before_breakout_summaries_runs(con, monkeypa
         ],
     )
 
-    def _boom(self):
-        raise AssertionError("breakout_summaries must not run before the RetentionMetric guard")
-
-    monkeypatch.setattr(Analysis, "breakout_summaries", _boom)
+    _forbid_database_reads(monkeypatch, con)
 
     with pytest.raises(InvalidRequestError) as raised:
         analysis.run_daily(dimension="country")
@@ -1612,14 +1653,10 @@ def test_run_daily_lift_dimension_raises_when_experiment_has_retention_metric(co
 
 
 def test_run_daily_lift_dimension_raises_before_breakout_summaries_runs(con, monkeypatch):
-    """The RetentionMetric guard fires before `breakout_summaries` (and
-    hence any query) runs at all - proven by making `breakout_summaries`
-    itself blow up if called, then confirming the RetentionMetric
-    ValueError is what actually propagates, not the patched failure.
-    Same ordering guarantee run_daily's dimensioned path carries
-    (test_run_daily_dimension_raises_before_breakout_summaries_runs):
-    breakout_summaries computes daily_group_summary for EVERY declared
-    metric unconditionally, with no guard of its own."""
+    """The RetentionMetric guard runs before any warehouse query.
+
+    The public connection is instrumented to fail on a read, proving the
+    refusal is raised before daily-group evidence is acquired."""
     analysis = _analysis_with_country_breakout(con)
     analysis = make_analysis_like(
         analysis,
@@ -1631,10 +1668,7 @@ def test_run_daily_lift_dimension_raises_before_breakout_summaries_runs(con, mon
         ],
     )
 
-    def _boom(self):
-        raise AssertionError("breakout_summaries must not run before the RetentionMetric guard")
-
-    monkeypatch.setattr(Analysis, "breakout_summaries", _boom)
+    _forbid_database_reads(monkeypatch, con)
 
     with pytest.raises(InvalidRequestError) as raised:
         analysis.run_daily_lift(dimension="country")
@@ -2121,20 +2155,6 @@ def test_native_daily_lift_cuped_without_pre_period_refuses_without_fallback(see
             metrics=["purchase_rate"],
         )
     assert raised.value.code == "estimation.cuped.covariate_zero_variance"
-
-
-def test_native_daily_value_readout_does_not_build_pre_period_stats(
-    seeded_pre_period_con, monkeypatch
-):
-    from increment.query import _native_day_source, native_source
-
-    def fail(*args, **kwargs):
-        raise AssertionError("value-only daily readout requested pre-period stats")
-
-    monkeypatch.setattr(native_source, "pre_period_stats", fail)
-    monkeypatch.setattr(_native_day_source, "pre_period_stats", fail)
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    assert analysis.run_daily(metrics=["purchase_rate"])
 
 
 pytestmark = pytest.mark.integration

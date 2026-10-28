@@ -387,6 +387,7 @@ def scoped_collection(  # noqa: PLR0913
     family_populations: set[str] | None = None,
     sequential_snapshot: Any = None,
     source_components: Sequence[Mapping[str, Any]] = (),
+    identity_rows: Sequence[Any] | None = None,
 ):
     """Return rows with a source snapshot and source-local readout metadata.
 
@@ -412,7 +413,8 @@ def scoped_collection(  # noqa: PLR0913
     )
     from increment.readouts._design_scope import _request_snapshot
 
-    identity_request = _identity_request(rows, request)
+    identity_rows = rows if identity_rows is None else identity_rows
+    identity_request = _identity_request(identity_rows, request)
     payload: dict[str, Any] = {
         "kind": "increment.readout.snapshot",
         "version": 2,
@@ -443,7 +445,7 @@ def scoped_collection(  # noqa: PLR0913
                             input_evidence(
                                 row.model_dump(mode="json", exclude={"source_snapshot_id"})
                             )
-                            for row in rows
+                            for row in identity_rows
                         ),
                         key=canonical_json_bytes,
                     )

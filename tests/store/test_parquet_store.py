@@ -272,9 +272,11 @@ def test_percentile_winsorized_persisted_results_round_trip_json(tmp_path):
         plan=AnalysisPlan(primary="value"),
     )
     try:
-        rows = analysis.run(store=ParquetResultsStore(tmp_path))
-        from increment.estimation.readout_types import ReadoutResults
         from increment.estimation.results import LiftEstimate
+
+        rows = analysis.run(store=ParquetResultsStore(tmp_path))
+
+        from increment.estimation.readout_types import ReadoutResults
 
         original = rows[0]
         assert isinstance(original, LiftEstimate)

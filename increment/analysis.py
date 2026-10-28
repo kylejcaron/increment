@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
@@ -471,6 +473,24 @@ def _cuped_recommendation_admitted(
 
 
 _T = TypeVar("_T")
+
+
+_ACTIVE_EXECUTION_CONTEXT: ContextVar[Any | None] = ContextVar(
+    "_ACTIVE_EXECUTION_CONTEXT", default=None
+)
+
+
+@contextmanager
+def _execution_context_scope(context: Any) -> Iterator[None]:
+    token = _ACTIVE_EXECUTION_CONTEXT.set(context)
+    try:
+        yield
+    finally:
+        _ACTIVE_EXECUTION_CONTEXT.reset(token)
+
+
+def _current_execution_context() -> Any | None:
+    return _ACTIVE_EXECUTION_CONTEXT.get()
 
 
 class Analysis:
@@ -2752,9 +2772,6 @@ class Analysis:
 
         Parameters
         ----------
-        metrics : Sequence[str | Metric] | None
-            Narrow the estimated metrics. ``None`` (default) selects
-            every declared metric.
         decision_method : Method | _Unset
             Decision estimator override; UNSET inherits each metric's
             declaration. An explicit override replaces a declared,
@@ -2763,15 +2780,18 @@ class Analysis:
             Additional estimator overrides; UNSET inherits each declaration.
             An explicit override replaces a declared, non-default value for
             that run.
-        prior : Normal | StudentTPrior | MixturePrior | None | _Unset
+        prior : Prior | None | _Unset
             Informative prior override; UNSET inherits each declaration, None
             resets it. An explicit override replaces a declared, non-default
             value for that run. A mixture prior is refused on
             observational/encouragement rows - pass ``Normal``.
+        metrics : Sequence[str | Metric] | None
+            Narrow the estimated metrics. ``None`` (default) selects
+            every declared metric.
         estimands : Sequence[str] | None
             Under :class:`Encouragement` only: among ``"itt"``/
             ``"compliance"``/``"late"``, default all three.
-        value_scale : Mapping[str, Literal["relative", "absolute"]] | None
+        value_scale : Mapping[str, ValueScale] | None
             Observational-only: report a metric's rows as additive ATE
             instead of relative lift.
         exploratory_metrics : Sequence[str] | None
@@ -2804,6 +2824,8 @@ class Analysis:
             (``assigned`` or ``triggered``); the two populations are distinct
             result identities.
         """
+
+        _execution_context = _current_execution_context()
         from increment.breakout.estimates import LiftEstimates
 
         if isinstance(self._state, ContrastAnalysisState) and population == "triggered":
@@ -2855,7 +2877,7 @@ class Analysis:
             )
 
         rows = (
-            self._whole_window().run(request(selected))
+            self._whole_window().run(request(selected), execution_context=_execution_context)
             if selected or not added
             else LiftEstimates()
         )
@@ -2863,7 +2885,9 @@ class Analysis:
             rows = LiftEstimates(rows)
         if added:
             extra = (
-                self._exploratory_analysis(added, caller="run")._whole_window().run(request(added))
+                self._exploratory_analysis(added, caller="run")
+                ._whole_window()
+                .run(request(added), execution_context=_execution_context)
             )
             extra = LiftEstimates(
                 [row for row in extra if row.estimand != "compliance"],
@@ -3410,7 +3434,13 @@ class Analysis:
             segments instead. ``source`` names the resolved
             :class:`FactSource`. Empty when no breakouts are declared.
         """
+        execution_context = _current_execution_context()
+        if execution_context is None:
+            self._require_arm_state(
+                "run_breakout", population=population if population is not None else "assigned"
+            )
         rows = self._run_breakout(
+            _execution_context=execution_context,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
@@ -3431,6 +3461,7 @@ class Analysis:
         exploratory_metrics: Sequence[str] | None = None,
         correction: Correction | None = None,
         population: Literal["assigned", "triggered"] | None = None,
+        _execution_context=None,
     ) -> BreakoutEstimates:
         from increment.breakout.estimates import BreakoutEstimates
 
@@ -3533,6 +3564,7 @@ class Analysis:
                 exploratory_metrics=exploratory_metrics,
                 correction=correction,
                 population=population,
+                _execution_context=_execution_context,
             )
             combined = rows if combined is None else combined.concat(rows)
         return BreakoutEstimates([]) if combined is None else combined
@@ -3547,6 +3579,7 @@ class Analysis:
         exploratory_metrics: Sequence[str] | None = None,
         correction: Correction | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        _execution_context=None,
     ) -> BreakoutEstimates:
         """:meth:`run_breakout`, optionally under an explicit *correction* in place of the
         plan's breakout multiplicity (``"none"`` leaves every cell standing alone)."""
@@ -3582,6 +3615,7 @@ class Analysis:
                 prior=prior,
                 correction=correction,
                 population=population,
+                _execution_context=_execution_context,
             )
             if selected or not added
             else BreakoutEstimates([])
@@ -3595,6 +3629,9 @@ class Analysis:
                 prior=prior,
                 correction=correction,
                 population=population,
+                _execution_context=_execution_context,
+                _scope_source=self._src,
+                _scope_analysis=self,
             )
             rows = exploratory_rows if not rows else rows.concat(exploratory_rows)
         from increment.estimation.multiplicity import row_multiplicity_status
@@ -3623,6 +3660,9 @@ class Analysis:
         prior: Prior | None | _Unset,
         correction: Correction | None,
         population: Literal["assigned", "triggered"] = "assigned",
+        _execution_context=None,
+        _scope_source=None,
+        _scope_analysis=None,
     ) -> BreakoutEstimates:
         policy = self._plan.view_policies.for_view(
             "breakout",
@@ -3638,11 +3678,17 @@ class Analysis:
             q=policy.q if policy.q is not None else self._plan.q,
             population=population,
         )
+        experiment = getattr(self, "_experiment", None)
         source = getattr(self._src, "summary_breakout_source", None)
-        return BreakoutReadouts(
-            src=source if source is not None else self._src,
-            experiment=getattr(self, "_experiment", None),
-        ).run(request)
+        reader_source = source if source is not None else self._src
+        reader = BreakoutReadouts(
+            src=reader_source,
+            experiment=experiment,
+            execution_context=_execution_context,
+            scope_source=self._src if _scope_source is None else _scope_source,
+            analysis=self if _scope_analysis is None else _scope_analysis,
+        )
+        return reader.run(request)
 
     def _refuse_clustered_day_axis(self, method: str) -> None:
         """A declared cluster is total-grain only; see `_CLUSTERED_DAY_AXIS`."""
@@ -3661,6 +3707,7 @@ class Analysis:
         dimension: str | None = None,
         exploratory_metrics: Sequence[str] | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        coherence: Literal["captured", "live"] = "captured",
     ) -> DailyMetricValues:
         """Per-day absolute metric values, optionally broken out by segment.
 
@@ -3695,6 +3742,9 @@ class Analysis:
             ``"triggered"`` admits each unit on its first eligible trigger day;
             outcomes are strictly after that unit's trigger and require explicit
             source evidence. Supported on definitions and unit-day artifacts only.
+        coherence : Literal["captured", "live"]
+            ``"captured"`` (default) requests one source-owned snapshot;
+            ``"live"`` opts out when a warehouse cannot materialize TEMP tables.
 
         Returns
         -------
@@ -3714,6 +3764,8 @@ class Analysis:
             property, or (dimensioned only) *metrics* names an
             undeclared metric.
         """
+
+        _execution_context = _current_execution_context()
         added = self._exploratory_metrics(exploratory_metrics, caller="run_daily")
         self._require_arm_state("run_daily")
         selected = self._select_day_axis_metrics(metrics, caller="run_daily", added=added)
@@ -3724,7 +3776,7 @@ class Analysis:
             dimension=dimension,
             population=population,
         )
-        rows = self._day_axis().values(req)
+        rows = self._run_day_axis_values(req, _execution_context, coherence=coherence)
         rows._default_backend = self._input_backend
         rows._envelope_view = "daily"
         return rows
@@ -3788,13 +3840,46 @@ class Analysis:
             metadata=rows.metadata,
         )
 
-    def _day_axis(self) -> DayAxisReadouts:
+    @staticmethod
+    def _scoped_execution_context(context: Any):
+        return _execution_context_scope(context)
+
+    def _validate_day_axis_before_context(self, req: DayAxisRequest, execution_context=None):
+        if execution_context is None and (
+            req.dimension is not None
+            or (not is_custom_source(self._src) and req.population != "triggered")
+        ):
+            from increment._day_axis import validate_day_axis
+
+            validate_day_axis(
+                req,
+                src=self._src,
+                design=self._design,
+                plan=self._plan,
+                route=day_axis_route(self._src),
+                experiment=getattr(self, "_experiment", None),
+            )
+
+    def _run_day_axis_values(
+        self,
+        req: DayAxisRequest,
+        execution_context=None,
+        *,
+        coherence: Literal["captured", "live"] = "captured",
+    ):
+        self._validate_day_axis_before_context(req, execution_context)
+        from increment.readouts._line2 import run_standalone_day_axis_values
+
+        return run_standalone_day_axis_values(self, req, execution_context, coherence=coherence)
+
+    def _day_axis(self, execution_context=None) -> DayAxisReadouts:
         return DayAxisReadouts(
             src=self._src,
             plan=self._plan,
             design=self._design,
             experiment=getattr(self, "_experiment", None),
             daily_lift=self._daily_lift,
+            execution_context=execution_context,
         )
 
     def run_daily_lift(
@@ -3807,6 +3892,7 @@ class Analysis:
         estimands: Sequence[str] | None = None,
         dimension: str | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        coherence: Literal["captured", "live"] = "captured",
     ) -> DailyLiftEstimates:
         """Per-day relative lift estimates, optionally broken out by segment.
 
@@ -3844,6 +3930,9 @@ class Analysis:
             outcomes anchor at trigger, while compliance uptake stays anchored
             at assignment. Both require explicit source evidence and are
             supported on definitions and unit-day artifacts.
+        coherence : Literal["captured", "live"]
+            ``"captured"`` (default) requests one source-owned snapshot;
+            ``"live"`` opts out when a warehouse cannot materialize TEMP tables.
 
         Returns
         -------
@@ -3865,6 +3954,8 @@ class Analysis:
             A daily or cohort sequential-inference plan is refused because
             those disjoint slices cannot support sequential monitoring.
         """
+
+        _execution_context = _current_execution_context()
         self._require_arm_state("run_daily_lift", population=population)
         selected = self._select_day_axis_metrics(metrics, caller="run_daily_lift")
         req = DayAxisRequest(
@@ -3875,12 +3966,34 @@ class Analysis:
             estimands=tuple(estimands) if estimands is not None else None,
             population=population,
         )
-        rows = self._day_axis().lift(
-            req,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-        )
+        self._validate_day_axis_before_context(req, _execution_context)
+        lift_options = None
+        if _execution_context is not None:
+            lift_options = self._day_axis(_execution_context).resolve_lift_options(
+                req.metrics,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+            )
+        if _execution_context is None:
+            from increment.readouts._line2 import run_standalone_day_axis_lift
+
+            rows = run_standalone_day_axis_lift(
+                self,
+                req,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                coherence=coherence,
+            )
+        else:
+            rows = self._day_axis(_execution_context).lift(
+                req,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                options=lift_options,
+            )
         rows._default_backend = self._input_backend
         rows._envelope_view = "daily"
         return rows
@@ -3893,6 +4006,7 @@ class Analysis:
         completed_windows_only: bool = False,
         exploratory_metrics: Sequence[str] | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        coherence: Literal["captured", "live"] = "captured",
     ) -> DailyMetricValues:
         """Per-day absolute metric values "as of day N".
 
@@ -3938,6 +4052,9 @@ class Analysis:
             ``"triggered"`` admits each unit on its first eligible trigger day;
             outcomes are strictly after that unit's trigger and require explicit
             source evidence. Supported on definitions and unit-day artifacts only.
+        coherence : Literal["captured", "live"]
+            ``"captured"`` (default) requests one source-owned snapshot;
+            ``"live"`` opts out when a warehouse cannot materialize TEMP tables.
 
         Returns
         -------
@@ -3956,6 +4073,8 @@ class Analysis:
             metric list contains a `RetentionMetric` with an unbounded
             band, or *dimension* matches no declared breakout property.
         """
+
+        _execution_context = _current_execution_context()
         added = self._exploratory_metrics(exploratory_metrics, caller="run_asof")
         self._require_arm_state("run_asof")
         selected = self._select_day_axis_metrics(metrics, caller="run_asof", added=added)
@@ -3967,7 +4086,7 @@ class Analysis:
             completed_windows_only=completed_windows_only,
             population=population,
         )
-        rows = self._day_axis().values(req)
+        rows = self._run_day_axis_values(req, _execution_context, coherence=coherence)
         rows._default_backend = self._input_backend
         rows._envelope_completion_policy = completed_windows_only
         rows._envelope_view = "asof"
@@ -3985,6 +4104,7 @@ class Analysis:
         completed_windows_only: bool = False,
         exploratory_metrics: Sequence[str] | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        coherence: Literal["captured", "live"] = "captured",
     ) -> DailyLiftEstimates:
         """As-of relative lift history, or a registered sequential checkpoint.
 
@@ -4047,6 +4167,9 @@ class Analysis:
             ``"triggered"`` admits each unit on its first eligible trigger day;
             outcomes are strictly after that unit's trigger and require explicit
             source evidence. Supported on definitions and unit-day artifacts only.
+        coherence : Literal["captured", "live"]
+            ``"captured"`` (default) requests one source-owned snapshot;
+            ``"live"`` opts out when a warehouse cannot materialize TEMP tables.
         Notes
         -----
         Alpha, inference, and segmented as-of multiplicity come from
@@ -4076,6 +4199,8 @@ class Analysis:
         UnsupportedRequestError
             Segmented as-of BH or observational designs.
         """
+
+        _execution_context = _current_execution_context()
         added = self._exploratory_metrics(exploratory_metrics, caller="run_asof_lift")
         self._require_arm_state("run_asof_lift", population=population)
         selected = self._select_day_axis_metrics(metrics, caller="run_asof_lift", added=added)
@@ -4088,18 +4213,41 @@ class Analysis:
             estimands=tuple(estimands) if estimands is not None else None,
             population=population,
         )
+        self._validate_day_axis_before_context(req, _execution_context)
+        lift_options = None
+        if _execution_context is not None:
+            lift_options = self._day_axis(_execution_context).resolve_lift_options(
+                req.metrics,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+            )
         asof_policy = self._plan.view_policies.for_view(
             "asof",
             mechanism=getattr(self._design, "mechanism", None),
             segmented=dimension is not None,
         )
-        rows = self._stamp_exploratory(
-            self._day_axis().lift(
+        if _execution_context is None:
+            from increment.readouts._line2 import run_standalone_day_axis_lift
+
+            lift_rows = run_standalone_day_axis_lift(
+                self,
                 req,
                 decision_method=decision_method,
                 sensitivity_methods=sensitivity_methods,
                 prior=prior,
-            ),
+                coherence=coherence,
+            )
+        else:
+            lift_rows = self._day_axis(_execution_context).lift(
+                req,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                options=lift_options,
+            )
+        rows = self._stamp_exploratory(
+            lift_rows,
             added,
             correction=normalize_display_correction(asof_policy.correction),
         )
