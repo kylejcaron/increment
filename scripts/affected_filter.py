@@ -17,15 +17,20 @@ _DESELECTED = 0
 _USER_DESELECT_PATTERNS: tuple[str, ...] = ()
 _USER_KEYWORD_FILTER = False
 _TIER = os.environ.get("AFFECTED_TEST_TIER", "fast")
+_TIER_MARKER_EXPR = os.environ.get("AFFECTED_TEST_MARKER_EXPR", "")
+_TIER_FILTER_ACTIVE = False
 
 
 def pytest_configure(config: Any) -> None:
-    global _USER_DESELECT_PATTERNS, _USER_KEYWORD_FILTER
+    global _USER_DESELECT_PATTERNS, _USER_KEYWORD_FILTER, _TIER_FILTER_ACTIVE
     _USER_DESELECT_PATTERNS = tuple(config.option.deselect or ())
     _USER_KEYWORD_FILTER = bool(config.option.keyword)
+    _TIER_FILTER_ACTIVE = bool(_TIER_MARKER_EXPR) and config.option.markexpr == _TIER_MARKER_EXPR
 
 
 def _tier_eligible(item: Any) -> bool:
+    if not _TIER_FILTER_ACTIVE:
+        return True
     markers = {marker.name for marker in item.iter_markers()}
     if _TIER == "slow":
         return "slow" in markers and not markers.intersection(

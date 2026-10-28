@@ -491,6 +491,28 @@ def test_keyword_matching_only_tier_excluded_tests_remains_successful(
     assert status == 0
 
 
+def test_keyword_filter_uses_overridden_marker_expression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {"tests/test_changed.py": "import pytest\n@pytest.mark.slow\ndef test_changed(): pass\n"},
+    )
+    _change(
+        root,
+        base,
+        "tests/test_changed.py",
+        "import pytest\n@pytest.mark.slow\ndef test_changed(): pass\n# changed\n",
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+
+    status = main(["--base", base, "--tier", "fast", "--", "-m", "slow", "-k", "no_such_test"])
+
+    assert status == 5
+
+
 def test_tach_head_controls_prefiltered_test_selection(tmp_path: Path) -> None:
     from tests._selection import kept_test_files
 

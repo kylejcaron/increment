@@ -383,6 +383,9 @@ def main(argv: list[str]) -> int:
         command = [sys.executable, "-m", "pytest", *pytest_args]
         environment = os.environ.copy()
         environment["AFFECTED_TEST_TIER"] = arguments.tier
+        environment["AFFECTED_TEST_MARKER_EXPR"] = _changed_markers(
+            arguments.tier, Path(__file__).resolve().parent.parent
+        )
         selected_files = {*(kept or ()), *selection.test_files}
         if selection.full_tier or (selection.use_tach and kept is None):
             environment.pop("AFFECTED_TEST_FILES", None)
