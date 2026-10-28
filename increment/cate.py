@@ -351,6 +351,22 @@ def _report_identity_context(
     }
 
 
+def _validation_settings(
+    interact: Sequence[Covariate],
+    adjust: Sequence[Covariate],
+    cluster_weight: str,
+    bootstrap: ClusterBootstrap,
+) -> dict[str, object]:
+    """Validation inputs that change its verdict, recorded in its result identity."""
+    return {
+        "interactions": [covariate.model_dump(mode="json") for covariate in interact],
+        "adjustments": [covariate.model_dump(mode="json") for covariate in adjust],
+        "cluster_weight": cluster_weight,
+        # Seeds can exceed the canonical JSON integer range, so they are hashed as decimals.
+        "bootstrap": {"seed": str(bootstrap.seed), "repetitions": bootstrap.repetitions},
+    }
+
+
 _DR_CROSSFIT_FOLDS = 5
 _DR_CROSSFIT_SEED = 0
 
@@ -547,9 +563,11 @@ def validate_cate(
     )
     if not isinstance(result, CateValidation):
         return result
-    return result.model_copy(
-        update={"report_context": _report_identity_context(source, unit, metric, control)}
+    report_context = _report_identity_context(source, unit, metric, control)
+    report_context["method_settings"] = _validation_settings(
+        interact_covs, adjust_covs, cluster_weight, bootstrap
     )
+    return result.model_copy(update={"report_context": report_context})
 
 
 def targeting_rule(
@@ -649,7 +667,13 @@ def targeting_rule(
     if not isinstance(result, TargetingRule):
         return result
     identity_context = _report_identity_context(source, unit, metric, control)
-    validation = result.validation.model_copy(update={"report_context": identity_context})
+    validation_context = {
+        **identity_context,
+        "method_settings": _validation_settings(
+            interact_covs, adjust_covs, cluster_weight, bootstrap
+        ),
+    }
+    validation = result.validation.model_copy(update={"report_context": validation_context})
     return result.model_copy(update={"report_context": identity_context, "validation": validation})
 
 

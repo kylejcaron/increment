@@ -96,6 +96,47 @@ def test_changed_test_file_is_selected(tmp_path: Path) -> None:
     assert selection.use_tach is False
 
 
+def test_cli_honors_ignore_for_explicitly_selected_test_files(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_ignored.py": "from pathlib import Path\ndef test_ignored(): Path('ignored-ran').touch()\n",
+            "tests/test_selected.py": "from pathlib import Path\ndef test_selected(): Path('selected-ran').touch()\n",
+            "tests/test_unrelated.py": "raise AssertionError('unrelated test imported')\n",
+        },
+    )
+    (root / "tests/test_ignored.py").write_text(
+        "from pathlib import Path\ndef test_ignored(): Path('ignored-ran').touch()\n# changed\n"
+    )
+    (root / "tests/test_selected.py").write_text(
+        "from pathlib import Path\ndef test_selected(): Path('selected-ran').touch()\n# changed\n"
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "--no-verify", "-qm", "change selected tests")
+    script = Path(__file__).resolve().parents[1] / "scripts/affected.py"
+    environment = os.environ | {"PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--base",
+            base,
+            "--",
+            "--ignore=tests/test_ignored.py",
+        ],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / "selected-ran").exists()
+    assert not (root / "ignored-ran").exists()
+
+
 def test_source_change_uses_tach(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"increment/frame.py": "VALUE = 1\n"})
 
@@ -118,6 +159,165 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
         "2",
         "tests",
     ]
+
+
+def test_cli_tach_head_override_preserves_override_selection(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/conftest.py": (
+                "def pytest_addoption(parser):\n"
+                "    parser.addoption('--affected-report', default=None)\n"
+                "    parser.addoption('--affected-tier', default='fast')\n"
+            ),
+            "tach.toml": (
+                'source_roots = ["."]\nroot_module = "ignore"\n'
+                '[[modules]]\npath = "increment"\ndepends_on = []\n'
+                '[[modules]]\npath = "increment.a"\ndepends_on = ["increment"]\n'
+                '[[modules]]\npath = "increment.b"\ndepends_on = ["increment"]\n'
+            ),
+            "increment/__init__.py": "",
+            "increment/a.py": "VALUE = 1\n",
+            "increment/b.py": "VALUE = 1\n",
+            "tests/test_a.py": (
+                "import increment.a\n"
+                "from pathlib import Path\n"
+                "def test_a(): Path('a-ran').touch()\n"
+            ),
+            "tests/test_b.py": (
+                "import increment.b\n"
+                "from pathlib import Path\n"
+                "def test_b(): Path('b-ran').touch()\n"
+            ),
+        },
+    )
+    main_branch = _git(root, "branch", "--show-current")
+    _git(root, "checkout", "-qb", "override-head")
+    (root / "increment/b.py").write_text("VALUE = 2\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "--no-verify", "-qm", "change override module")
+    override_head = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "-q", main_branch)
+    (root / "increment/a.py").write_text("VALUE = 2\n")
+    (root / "tests/test_a.py").write_text(
+        "import increment.a\n"
+        "from pathlib import Path\n"
+        "def test_a(): Path('a-ran').touch()\n"
+        "# changed\n"
+    )
+    (root / "tests/selection_map.json").write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "base_sha": base,
+                "tier": "fast",
+                "modules": {
+                    "increment.a": ["tests/test_a.py"],
+                    "increment.b": ["tests/test_b.py"],
+                },
+            }
+        )
+    )
+    script = Path(__file__).resolve().parents[1] / "scripts/affected.py"
+    environment = os.environ | {"PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    environment.pop("AFFECTED_TEST_FILES", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--base",
+            base,
+            "--",
+            "--tach-head",
+            override_head,
+            "--ignore=tests/test_a.py",
+        ],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / "b-ran").exists()
+    assert not (root / "a-ran").exists()
+
+
+def test_cli_ignore_excludes_changed_test_during_source_collection(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/conftest.py": (
+                "def pytest_addoption(parser):\n"
+                "    parser.addoption('--affected-report', default=None)\n"
+                "    parser.addoption('--affected-tier', default='fast')\n"
+            ),
+            "tach.toml": (
+                'source_roots = ["."]\nroot_module = "ignore"\n'
+                '[[modules]]\npath = "increment"\ndepends_on = []\n'
+                '[[modules]]\npath = "increment._literals"\ndepends_on = ["increment"]\n'
+            ),
+            "increment/__init__.py": "",
+            "increment/_literals.py": "VALUE = 1\n",
+            "tests/test_ignored.py": (
+                "import increment._literals\n"
+                "from pathlib import Path\n"
+                "def test_ignored(): Path('ignored-ran').touch()\n"
+            ),
+            "tests/test_selected.py": (
+                "import increment._literals\n"
+                "from pathlib import Path\n"
+                "def test_selected(): Path('selected-ran').touch()\n"
+            ),
+        },
+    )
+    (root / "increment/_literals.py").write_text("VALUE = 2\n")
+    (root / "tests/test_ignored.py").write_text(
+        "import increment._literals\n"
+        "from pathlib import Path\n"
+        "def test_ignored(): Path('ignored-ran').touch()\n"
+        "# changed\n"
+    )
+    (root / "tests/selection_map.json").write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "base_sha": base,
+                "tier": "fast",
+                "modules": {
+                    "increment._literals": [
+                        "tests/test_ignored.py",
+                        "tests/test_selected.py",
+                    ]
+                },
+            }
+        )
+    )
+    script = Path(__file__).resolve().parents[1] / "scripts/affected.py"
+    environment = os.environ | {"PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    environment.pop("AFFECTED_TEST_FILES", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--base",
+            base,
+            "--",
+            "--ignore=tests/test_ignored.py",
+        ],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / "selected-ran").exists()
+    assert not (root / "ignored-ran").exists()
 
 
 def test_prefiltered_selection_runs_kept_and_changed_tests_without_importing_others(

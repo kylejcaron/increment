@@ -783,6 +783,47 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
     analysis.close()
 
 
+def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() -> None:
+    from contextlib import nullcontext
+    from datetime import date
+
+    from tests.source_conformance import encouragement_panel_source
+
+    source = encouragement_panel_source()
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, compliance_axis="total")
+
+        def __init__(self) -> None:
+            self.read = False
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused primitive")
+
+        def compliance(self, request: ComplianceRequest):
+            self.read = True
+            return source.compliance_summary(request.design, as_of=request.as_of)
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            self.read = True
+            return source.compliance_series(request.design)
+
+        def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
+            return EvidenceScopeResult(nullcontext(self), request)
+
+    provider = Provider()
+    requests = (
+        ComplianceRequest(source.context.design, as_of=date(2026, 1, 2)),
+        ComplianceSeriesRequest(source.context.design),
+    )
+    for request in requests:
+        with pytest.raises(CapabilityError) as raised:
+            request_evidence(cast(Any, provider), request)
+        assert raised.value.code == "evidence.operation_unavailable"
+        assert provider.read is False
+
+
 @pytest.mark.integration
 def test_cluster_count_cube_does_not_require_unit_or_assignment_counts(tmp_path) -> None:
     import pyarrow.parquet as pq

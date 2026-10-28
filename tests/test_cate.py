@@ -452,6 +452,65 @@ def test_cate_control_is_bound_to_identity_and_reopened_rendering():
     assert "control=control_A" in text
 
 
+def test_cate_and_validation_settings_change_cell_identity():
+    cate_spend = estimate_cate(
+        _source(), "revenue", control="control", interact=["spend"]
+    ).as_cell()
+    cate_unadjusted = estimate_cate(_source(), "revenue", control="control", interact=[]).as_cell()
+    validation_two = validate_cate(
+        _source(), "revenue", control="control", interact=["spend"], n_groups=2
+    ).as_cell()
+    validation_three = validate_cate(
+        _source(), "revenue", control="control", interact=["spend"], n_groups=3
+    ).as_cell()
+    validation_platform = validate_cate(
+        _source(),
+        "revenue",
+        control="control",
+        interact=[Covariate(name="platform", kind="categorical")],
+        n_groups=2,
+    ).as_cell()
+
+    assert cate_spend.identity.method_config_hash != cate_unadjusted.identity.method_config_hash
+    assert (
+        validation_two.identity.method_config_hash != validation_three.identity.method_config_hash
+    )
+    assert (
+        validation_two.identity.method_config_hash
+        != validation_platform.identity.method_config_hash
+    )
+
+
+def test_full_width_bootstrap_seeds_give_distinct_validation_identities():
+    from increment import ClusterBootstrap
+
+    def cell(seed: int):
+        return validate_cate(
+            _source(),
+            "revenue",
+            control="control",
+            interact=["spend"],
+            n_groups=2,
+            bootstrap=ClusterBootstrap(seed=seed, repetitions=99),
+        ).as_cell()
+
+    standalone = (cell(2**53), cell(2**53 + 1))
+    attached = tuple(
+        targeting_rule(
+            _source(),
+            "revenue",
+            control="control",
+            interact=["spend"],
+            fraction=0.5,
+            bootstrap=ClusterBootstrap(seed=seed, repetitions=99),
+        ).validation.as_cell()
+        for seed in (2**53, 2**53 + 1)
+    )
+
+    for low, high in (standalone, attached):
+        assert low.identity.method_config_hash != high.identity.method_config_hash
+
+
 def test_cate_validation_alpha_survives_json_and_arrow_reopening():
     import json
 

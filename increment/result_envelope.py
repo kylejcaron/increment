@@ -10,20 +10,21 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 import pyarrow as pa
 from pydantic import BaseModel
 
 from increment._interpretation import EffectEstimate, project_effect
 from increment.errors import CodedError
-from increment.estimation._fcr_reinterval import classify, reinterval_selected
+from increment.estimation._fcr_reinterval import Construction, classify, reinterval_selected
 from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
 from increment.estimation.results import LiftEstimate
 from increment.kernel.contracts import CellIdentity
 
 _SCHEMA_VERSION = 2
 _METADATA_KEY = b"increment.readout_metadata"
+_CONSTRUCTION_TAGS = frozenset((None, *get_args(Construction)))
 _PROJECTION_FIELDS = (
     "null_lift",
     "null_abs",
@@ -592,7 +593,24 @@ class ResultCell:
             )
         estimand = "overlap_subpopulation_ate" if effective_population is not None else "ate"
         policy = rule if rule is not None else row
-        method_config: dict[str, Any] = {"control": identity_context["control"]}
+        method_config: dict[str, Any] = {
+            "control": identity_context["control"],
+        }
+        if row_kind == "cate":
+            cate_row = cast(Any, row)
+            method_config.update(
+                alpha=getattr(row, "alpha", None),
+                ard=getattr(row, "beta_ard", None) is not None,
+                interactions=cate_row.interaction_spec.model_dump(mode="json"),
+                adjustments=cate_row.main_spec.model_dump(mode="json"),
+            )
+        elif row_kind == "cate_validation":
+            method_config.update(
+                alpha=getattr(row, "alpha", None),
+                n_groups=len(getattr(row, "groups", ())),
+                evaluation_population=_plain(getattr(row, "evaluation_population", None)),
+                settings=identity_context.get("method_settings"),
+            )
         if row_kind in {"targeting", "targeting_selection"}:
             method_config.update(
                 fraction=getattr(row, "selected_fraction", getattr(policy, "fraction", None)),
@@ -852,7 +870,7 @@ class ResultCell:
                     context={"component": name},
                 )
             construction = component.get("construction")
-            if construction not in {None, "wald", "conversion", "binomial", "joint", "unavailable"}:
+            if construction not in _CONSTRUCTION_TAGS:
                 raise CodedError(
                     "Unsupported result-cell construction",
                     code="results.cell.schema_unsupported",
@@ -975,14 +993,7 @@ class ResultCell:
             for name in ("sampling", "posterior", "sequential"):
                 comp = entry[name]
                 stored_construction = comp["construction"]
-                if stored_construction not in {
-                    None,
-                    "wald",
-                    "conversion",
-                    "binomial",
-                    "joint",
-                    "unavailable",
-                }:
+                if stored_construction not in _CONSTRUCTION_TAGS:
                     raise CodedError(
                         "Unsupported result-cell construction",
                         code="results.cell.schema_unsupported",
