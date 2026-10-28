@@ -1085,6 +1085,56 @@ def test_estimate_ate_does_not_repeat_adjustment_preflight(monkeypatch):
     assert len(calls) == 1
 
 
+def test_builtin_estimator_refuses_aggregate_provider_before_reading_moments():
+    from dataclasses import replace
+
+    source = _clean_confounded_src()
+    adapter = evidence_provider(source)
+    moment_reads = []
+
+    class AggregateOnlyProvider:
+        context = adapter.context
+
+        def __init__(self):
+            self.evidence = replace(adapter.evidence, unit_rows=False)
+
+        def moments(self, request):
+            moment_reads.append(request)
+            return request_evidence(adapter, request)
+
+        def breakout_method_moments(self, request):
+            return request_evidence(adapter, request)
+
+        def unit_rows(self, request):
+            return request_evidence(adapter, request)
+
+        def method_fit(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance_series(self, request):
+            return request_evidence(adapter, request)
+
+        def counts(self, request):
+            return request_evidence(adapter, request)
+
+        def capture_sequential(self, request):
+            return request_evidence(adapter, request)
+
+        def scope(self, request):
+            return request_evidence(adapter, request)
+
+    with pytest.raises(CapabilityError):
+        estimate_ate(
+            AggregateOnlyProvider(),
+            _obs("refuse"),
+            methods=[Method(name="iptw")],
+        )
+    assert moment_reads == []
+
+
 def test_adjustment_requests_excludes_zero_unit_arms():
     """An arm with no unit rows is omitted from the public estimator's results."""
     from increment.estimation._adjust.common import adjustment_requests

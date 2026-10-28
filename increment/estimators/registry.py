@@ -209,8 +209,6 @@ def validate_observational_routes(
         if not method.is_observational:
             continue
         ref = ESTIMATORS[observational_estimator_id(method)]
-        if ref.estimator_id in _BUILTIN_ESTIMATOR_IDS:
-            continue
         for metric in metrics:
             require_routes(
                 source,
