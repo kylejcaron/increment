@@ -452,6 +452,24 @@ def test_cate_control_is_bound_to_identity_and_reopened_rendering():
     assert "control=control_A" in text
 
 
+def test_cate_and_validation_settings_change_cell_identity():
+    cate_spend = estimate_cate(
+        _source(), "revenue", control="control", interact=["spend"]
+    ).as_cell()
+    cate_unadjusted = estimate_cate(_source(), "revenue", control="control", interact=[]).as_cell()
+    validation_two = validate_cate(
+        _source(), "revenue", control="control", interact=["spend"], n_groups=2
+    ).as_cell()
+    validation_three = validate_cate(
+        _source(), "revenue", control="control", interact=["spend"], n_groups=3
+    ).as_cell()
+
+    assert cate_spend.identity.method_config_hash != cate_unadjusted.identity.method_config_hash
+    assert (
+        validation_two.identity.method_config_hash != validation_three.identity.method_config_hash
+    )
+
+
 def test_cate_validation_alpha_survives_json_and_arrow_reopening():
     import json
 

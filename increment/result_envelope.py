@@ -593,7 +593,22 @@ class ResultCell:
             )
         estimand = "overlap_subpopulation_ate" if effective_population is not None else "ate"
         policy = rule if rule is not None else row
-        method_config: dict[str, Any] = {"control": identity_context["control"]}
+        method_config: dict[str, Any] = {
+            "control": identity_context["control"],
+        }
+        if row_kind == "cate":
+            method_config.update(
+                alpha=getattr(row, "alpha", None),
+                ard=getattr(row, "beta_ard", None) is not None,
+                interactions=getattr(row, "interaction_spec").model_dump(mode="json"),
+                adjustments=getattr(row, "main_spec").model_dump(mode="json"),
+            )
+        elif row_kind == "cate_validation":
+            method_config.update(
+                alpha=getattr(row, "alpha", None),
+                n_groups=len(getattr(row, "groups", ())),
+                evaluation_population=_plain(getattr(row, "evaluation_population", None)),
+            )
         if row_kind in {"targeting", "targeting_selection"}:
             method_config.update(
                 fraction=getattr(row, "selected_fraction", getattr(policy, "fraction", None)),
