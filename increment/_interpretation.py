@@ -756,7 +756,19 @@ def _brief_disclosure_lines(interpretation: ReadoutInterpretation) -> tuple[str,
     return tuple(lines)
 
 
-def _coherence_qualifications(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+def _coherence_qualifications(
+    interpretation: ReadoutInterpretation, *, include_uniform_capture: bool = False
+) -> tuple[str, ...]:
+    """Qualify evidence coherence; one uniform capture is the default guarantee and is
+    stated only where every disclosure is listed."""
+    uniform_capture = (
+        interpretation.coherence == "captured"
+        and not interpretation.independently_captured
+        and not interpretation.provider_owned
+        and all(mode == "captured" for mode in (interpretation.effective_modes or {}).values())
+    )
+    if uniform_capture and not include_uniform_capture:
+        return ()
     qualifications = []
     if interpretation.independently_captured:
         qualifications.append("Coherence: captured independently per result family.")
@@ -1000,7 +1012,10 @@ def _display_source(source_id: str | None) -> str | None:
 def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
     """Return compact, source-attributed qualifications for a rendered table header."""
     if not interpretation.groups:
-        return (*_coherence_qualifications(interpretation), "Scope and integrity unknown.")
+        return (
+            *_coherence_qualifications(interpretation, include_uniform_capture=True),
+            "Scope and integrity unknown.",
+        )
     comparisons = [
         _group_comparison(group, metadata_known=interpretation.metadata_known)
         for group in interpretation.groups
@@ -1113,7 +1128,7 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             note = getattr(row, "note", None)
             if note and not any(code in note for code in advisory_codes):
                 add_bullet(f"Qualification: {note}")
-    return (*_coherence_qualifications(interpretation), *bullets)
+    return (*_coherence_qualifications(interpretation, include_uniform_capture=True), *bullets)
 
 
 def _cell_label(cell: CellKey) -> str:
