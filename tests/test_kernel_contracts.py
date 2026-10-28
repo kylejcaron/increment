@@ -552,6 +552,55 @@ def test_analysis_request_json_round_trips_date_request_fields():
     assert restored.hash() == value.hash()
 
 
+def test_analysis_request_hash_normalizes_equivalent_datetime_offsets():
+    from datetime import datetime, timedelta, timezone
+
+    from increment.evidence import SequentialCaptureRequest
+
+    utc = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    offset = datetime(2026, 1, 3, 1, tzinfo=timezone(timedelta(hours=1)))
+    hashes = tuple(
+        AnalysisRequest.from_requests(
+            (SequentialCaptureRequest(finalized=True, as_of=value),),
+            scope=Scope(view="asof", grain="asof"),
+            registration_hash="r",
+            source_ref="s",
+        ).hash()
+        for value in (utc, offset)
+    )
+    assert hashes[0] == hashes[1]
+
+
+
+def test_analysis_request_json_encodes_uuid_breakout_values():
+    import uuid
+
+    from increment.evidence import BreakoutCell, BreakoutIdentity, MethodFitRequest
+    from increment.semantics.models import MeanMetric
+
+    metric = MeanMetric(name="orders", entity="user", fact="orders")
+    value = uuid.UUID("caa2f392-68f8-4bdc-a8ae-55f53b8a1e51")
+    request = MethodFitRequest(
+        metric=metric,
+        method=Method.unadjusted(),
+        control="control",
+        arm_order=("control", "treatment"),
+        population="assigned",
+        cell=BreakoutCell(BreakoutIdentity("id", None), value, False),
+    )
+    descriptor = AnalysisRequest.from_requests(
+        (request,),
+        scope=Scope(
+            view="breakout",
+            grain="total",
+            segment=BreakoutIdentity("id", None),
+        ),
+        registration_hash="r",
+        source_ref="s",
+    )
+    payload = json.loads(json.dumps(descriptor.canonical_payload()))
+    assert payload["requests"][0]["fields"]["cell"]["value"] == str(value)
+
 def test_analysis_request_admits_observational_breakout_and_sequential_requests():
     from increment.declarations import Method
     from increment.evidence import (
