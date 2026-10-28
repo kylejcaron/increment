@@ -382,7 +382,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
     if rows == 10_000_000 and backend != "duckdb":
         raise ValueError("the 10M-row stress case requires DuckDB")
     from increment import readouts
-    from increment._evidence_types import BreakoutIdentity, EvidenceScope, EvidenceScopeResult
+    from increment._evidence_types import BreakoutIdentity, EvidenceScope
     from increment.evidence import evidence_provider
     from increment.readouts._evidence import _builtin_source
 

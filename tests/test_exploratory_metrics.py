@@ -14,8 +14,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
-import pandas as pd
 import narwhals as nw
+import pandas as pd
 import pytest
 
 from increment import Analysis, SourceSnapshotEvidence
