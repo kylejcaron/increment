@@ -1571,7 +1571,7 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         "triggered-read-allocation-history",
         "`allocation_history(population=...)`",
         ("allocation_definitions_population",),
-        ("allocation_artifact_refused",),
+        ("allocation_artifact_identity_supported", "allocation_artifact_refused"),
         (
             ("unit summary", "allocation_from_unit_summary_refused"),
             ("unit panel", "allocation_from_unit_panel_refused"),

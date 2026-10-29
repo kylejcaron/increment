@@ -74,6 +74,7 @@ from increment.query.schemas import (
 )
 from increment.semantics.artifact import (
     ArtifactContext,
+    AssignmentCountsExtension,
     MeasureManifest,
     RatioMetricMeasure,
     SimpleMetricMeasure,
@@ -827,10 +828,98 @@ class ArtifactMomentSource(SequentialSourceMixin):
             scalar=None,
             available_covariates=None,
             assignment_relation=(
-                "reduced"
-                if any(ext.kind == "assignment_counts" for ext in self._manifest.extensions)
-                else "none"
+                "ledger"
+                if any(
+                    isinstance(ext, AssignmentCountsExtension) and ext.identity_relation is not None
+                    for ext in self._manifest.extensions
+                )
+                else (
+                    "reduced"
+                    if any(ext.kind == "assignment_counts" for ext in self._manifest.extensions)
+                    else "none"
+                )
             ),
+        )
+
+    def identity_assignment_evidence(self, request: Any) -> Any:
+        from decimal import Decimal
+
+        from increment._evidence_refusals import refuse_assignment_selection
+        from increment._evidence_types import AssignmentEvidence
+        from increment.query.ledger import Ledger
+
+        if request.experiment != self.context.study_id:
+            refuse_assignment_selection(
+                self,
+                requested={"experiment": request.experiment},
+                offered={"experiment": self.context.study_id},
+            )
+        identity_extension = next(
+            (
+                extension
+                for extension in self._manifest.extensions
+                if extension.kind == "assignment_counts" and extension.identity_relation is not None
+            ),
+            None,
+        )
+        if identity_extension is None:
+            return None
+        if request.population != "assigned" or self.context.cluster is not None:
+            return None
+        json_periods = identity_extension.extension_version >= 5
+        encoded_period = (
+            json.dumps(request.period, ensure_ascii=False)
+            if json_periods and request.period is not None
+            else request.period
+        )
+        reduced = Ledger(
+            self._assignment_rows(),
+            {
+                "unit": "unit_id",
+                "experiment": "experiment_id",
+                "arm": "arm",
+                "version": "version",
+                "period": "period",
+            },
+        ).reduce(
+            experiment=request.experiment,
+            population=request.population,
+            version=request.version,
+            period=encoded_period,
+            all_periods=request.all_periods,
+        )
+        allocation = getattr(self.context.design, "allocation", None)
+        probabilities: tuple[tuple[str, float], ...] = ()
+        if allocation:
+            weights = tuple((str(arm), Decimal(str(value))) for arm, value in allocation.items())
+            scale = max(weight for _, weight in weights)
+            total = sum((weight / scale for _, weight in weights), Decimal(0))
+            probabilities = tuple(
+                sorted((arm, float((weight / scale) / total)) for arm, weight in weights)
+            )
+        return AssignmentEvidence(
+            experiment=request.experiment,
+            population=request.population,
+            versions=reduced.versions,
+            periods=(
+                tuple(None if period is None else json.loads(period) for period in reduced.periods)
+                if json_periods
+                else tuple(None if period == "" else period for period in reduced.periods)
+            ),
+            arm_counts=(
+                tuple(
+                    (version, None if period is None else json.loads(period), arm, count)
+                    for version, period, arm, count in reduced.arm_counts
+                )
+                if json_periods
+                else tuple(
+                    (version, None if period == "" else period, arm, count)
+                    for version, period, arm, count in reduced.arm_counts
+                )
+            ),
+            independence_grain="unit",
+            probabilities=probabilities,
+            randomization_law=getattr(self.context.design, "allocation_scheme", None),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -890,7 +979,19 @@ class ArtifactMomentSource(SequentialSourceMixin):
         self._aggregation_by_metric: dict[str, str] = {}
         self._ratio_semantics: dict[str, tuple[str, int | None, str, int | None]] = {}
         self._source_context: SourceContext | None = None
-        self.operations: frozenset[SourceOperation] = ARTIFACT_OPERATIONS
+        has_identity_rows = any(
+            isinstance(extension, AssignmentCountsExtension)
+            and extension.identity_relation is not None
+            for extension in self._manifest.extensions
+        )
+        self.operations: frozenset[SourceOperation] = (
+            cast(
+                frozenset[SourceOperation],
+                ARTIFACT_OPERATIONS | {"allocation_history"},
+            )
+            if has_identity_rows
+            else ARTIFACT_OPERATIONS
+        )
 
     @classmethod
     def open(
@@ -1002,6 +1103,126 @@ class ArtifactMomentSource(SequentialSourceMixin):
             )
         self._verified_tables[role] = relation
         return relation
+
+    def _assignment_rows(self) -> ir.Table:
+        extension = next(
+            (
+                item
+                for item in self._manifest.extensions
+                if isinstance(item, AssignmentCountsExtension)
+                and item.identity_relation is not None
+            ),
+            None,
+        )
+        if extension is None or extension.identity_relation is None:
+            from increment._evidence_refusals import refuse_assignment_identity
+
+            refuse_assignment_identity(self, operation="allocation_history")
+        ref = extension.identity_relation
+        role = "assignment_rows"
+        if (
+            ref.artifact_id != self._manifest.artifact_id
+            or ref.generation_id != self._manifest.generation_id
+        ):
+            _relation_refuse(
+                "artifact.snapshot.mixed",
+                "assignment identity relation is not bound to manifest generation",
+            )
+        expected_names = tuple(field[0] for field in UNIT_DAY_ARTIFACT_RELATION_SCHEMAS[role])
+        self._store.validate_locator(
+            ref.relation,
+            artifact_id=ref.artifact_id,
+            generation_id=ref.generation_id,
+            role=role,
+        )
+        relation = self._snapshot.verify_relation(ref, expected_role=role)
+        names = _schema_names(relation)
+        if names is not None and names != expected_names:
+            _relation_refuse(
+                "artifact.relation.schema_mismatch",
+                "assignment identity relation schema mismatch",
+            )
+        self._verified_tables[role] = relation
+        return relation
+
+    def allocation_history(self, *, population: Literal["assigned", "triggered"] = "assigned"):
+        if population != "assigned":
+            from increment._evidence_refusals import refuse_assignment_identity
+
+            refuse_assignment_identity(self, operation="allocation_history")
+        assignments = self._assignment_rows()
+        exposures = self._ensure("exposures")
+        missing = exposures.anti_join(
+            assignments,
+            predicates=[
+                exposures.experiment_id == assignments.experiment_id,
+                exposures.unit_id == assignments.unit_id,
+            ],
+        )
+        if _rows(self._snapshot.execute(missing.limit(1))):
+            _relation_refuse(
+                "artifact.extension.invalid",
+                "assignment identity rows omit exposed units",
+            )
+        matches = exposures.join(
+            assignments,
+            predicates=[
+                exposures.experiment_id == assignments.experiment_id,
+                exposures.unit_id == assignments.unit_id,
+            ],
+        )
+        if _rows(self._snapshot.execute(matches.filter(matches.group_id != matches.arm).limit(1))):
+            _relation_refuse(
+                "artifact.extension.invalid",
+                "assignment identity arms disagree with exposure arms",
+            )
+        joined = matches.select(
+            experiment_id=exposures.experiment_id,
+            ds=exposures.first_exposure_date,
+            group_id=exposures.group_id,
+            unit_id=exposures.unit_id,
+        )
+        ambiguous = joined.group_by(["experiment_id", "unit_id"]).aggregate(
+            n_assignments=joined.group_id.nunique()
+        )
+        if _rows(self._snapshot.execute(ambiguous.filter(ambiguous.n_assignments > 1).limit(1))):
+            _relation_refuse(
+                "artifact.extension.invalid",
+                "assignment rows do not identify one arm per exposed unit",
+            )
+        joined = joined.distinct()
+        daily = joined.group_by(["experiment_id", "ds", "group_id"]).aggregate(
+            n_daily=joined.unit_id.count()
+        )
+        dates = joined.select("experiment_id", "ds").distinct()
+        groups = joined.select("experiment_id", "group_id").distinct()
+        grid = dates.inner_join(groups, "experiment_id").select("experiment_id", "ds", "group_id")
+        densified = grid.left_join(
+            daily,
+            (grid.experiment_id == daily.experiment_id)
+            & (grid.ds == daily.ds)
+            & (grid.group_id == daily.group_id),
+            rname="{name}_daily",
+        ).select(
+            grid.experiment_id,
+            grid.ds,
+            grid.group_id,
+            n_daily=ibis.coalesce(daily.n_daily, 0),
+        )
+        result = (
+            densified.mutate(
+                n_cumulative=densified.n_daily.sum().over(
+                    ibis.cumulative_window(group_by=["experiment_id", "group_id"], order_by="ds")
+                )
+            )
+            .select("experiment_id", "ds", "group_id", "n_daily", "n_cumulative")
+            .order_by(["ds", "group_id"])
+        )
+        import pyarrow as pa
+
+        rows = _rows(self._snapshot.execute(result))
+        table = pa.Table.from_pylist(rows)
+        return table.append_column("analysis_population", pa.array([population] * table.num_rows))
 
     def _metric_specs(self) -> list[MetricSpec]:
         if self._metrics_arg is None and not self._manifest.metric_measures:

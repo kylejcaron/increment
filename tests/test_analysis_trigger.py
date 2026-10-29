@@ -2333,7 +2333,12 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         ):
             with pytest.raises(CapabilityError) as refused:
                 operation()
-            assert refused.value.code == "evidence.operation_unavailable"
+            expected_code = (
+                "evidence.assignment.identity_unavailable"
+                if outcome_id == "allocation_artifact_refused"
+                else "evidence.operation_unavailable"
+            )
+            assert refused.value.code == expected_code
             assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
         if adopted is None:

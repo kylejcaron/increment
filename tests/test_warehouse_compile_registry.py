@@ -311,7 +311,7 @@ def test_all_captured_cases_are_registered():
 
     cases = compile_statement_cases("snowflake")
 
-    assert len(cases) == 835
+    assert len(cases) == 841
     assert [case.name for case in cases] == compile_case_names("snowflake")
 
 

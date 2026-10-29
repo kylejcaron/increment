@@ -1223,12 +1223,14 @@ def _reduce_switchback_assignment_schedule(
 ) -> tuple[Any, tuple[tuple[str, str, str], ...]]:
     from collections import Counter
 
+    import pyarrow as pa
+
     from increment._assignment_refusals import refuse_assignment_invalid
     from increment._evidence_types import AssignmentEvidence
+    from increment._frame_ledger import FrameLedger
 
-    counts: Counter[tuple[int, str, str]] = Counter()
-    periods: list[str] = []
-    order_cycles: list[tuple[str, str, str]] = []
+    periods = tuple(f"{cycle}:period={period}" for cycle in cycles for period in (0, 1))
+    rows = []
     for unit_index, unit in enumerate(schedule.units):
         for cycle_index, cycle in enumerate(cycles):
             if shared:
@@ -1237,24 +1239,52 @@ def _reduce_switchback_assignment_schedule(
                 control_first = bool(block_orders[cycle_index])
             else:
                 control_first = bool(schedule.control_first[unit_index, cycle_index])
-            cycle_id = str(cycle)
-            first_period = f"{cycle_id}:period=0"
-            second_period = f"{cycle_id}:period=1"
-            if first_period not in periods:
-                periods.extend((first_period, second_period))
             first_arm, second_arm = (
                 (control_arm, treatment_arm) if control_first else (treatment_arm, control_arm)
             )
-            counts[(1, first_period, first_arm)] += 1
-            counts[(1, second_period, second_arm)] += 1
-            block = f"block:{cycle_id}" if shared else f"unit-cycle:{unit}:{cycle_id}"
-            if not shared or unit_index == 0:
-                order_cycles.append((cycle_id, block, "ct" if control_first else "tc"))
+            for period_index, arm in enumerate((first_arm, second_arm)):
+                rows.append(
+                    {
+                        "unit": str(unit),
+                        "experiment": experiment,
+                        "arm": arm,
+                        "version": 1,
+                        "period": f"{cycle}:period={period_index}",
+                    }
+                )
+
+    ledger = FrameLedger(
+        pa.Table.from_pylist(rows),
+        roles={
+            "unit": "unit",
+            "experiment": "experiment",
+            "arm": "arm",
+            "version": "version",
+            "period": "period",
+        },
+    )
+    joined = ledger.exposure(experiment=experiment, version=1, period_order=periods)
+    counts: Counter[tuple[int, str, str]] = Counter()
+    order_cycles: list[tuple[str, str, str]] = []
+    shared_cycles: set[str] = set()
+    for unit, period, arm, next_arm in joined:
+        counts[(1, period, arm)] += 1
+        if next_arm is None:
+            continue
+        cycle_id, period_number = period.split(":period=", maxsplit=1)
+        if period_number != "0":
+            continue
+        block = f"block:{cycle_id}" if shared else f"unit-cycle:{unit}:{cycle_id}"
+        if shared and cycle_id in shared_cycles:
+            continue
+        order_cycles.append((cycle_id, block, "ct" if arm == control_arm else "tc"))
+        if shared:
+            shared_cycles.add(cycle_id)
     evidence = AssignmentEvidence(
         experiment=experiment,
         population="assigned",
         versions=(1,),
-        periods=tuple(periods),
+        periods=periods,
         arm_counts=tuple(
             sorted(
                 (version, period, arm, count) for (version, period, arm), count in counts.items()

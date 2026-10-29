@@ -451,10 +451,18 @@ def load_assignment(src: EvidenceSource, request: AssignmentRequest) -> Assignme
         return operation(request)
     declaration = declared_evidence(src)
     if declaration.assignment_relation != "reduced":
-        from increment._evidence_refusals import refuse_assignment
+        counts_method = getattr(src, "assignment_counts", None)
+        aggregate_request = (
+            callable(counts_method)
+            and request.version in (None, 1)
+            and request.period is None
+            and not request.all_periods
+        )
+        if not aggregate_request:
+            from increment._evidence_refusals import refuse_assignment
 
-        refuse_assignment(src, offered=declaration.assignment_relation)
-    if request.version not in (None, 1) or request.period is not None:
+            refuse_assignment(src, offered=declaration.assignment_relation)
+    if request.version not in (None, 1) or request.period is not None or request.all_periods:
         from increment._evidence_refusals import refuse_assignment_selection
 
         refuse_assignment_selection(

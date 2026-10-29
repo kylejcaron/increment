@@ -88,7 +88,16 @@ def _require_analysis_operation[T](
     *,
     message: str,
 ) -> T:
-    offered = tuple(sorted(cast(Any, source).evidence.operations))
+    declaration = cast(Any, source).evidence
+    if (
+        operation == "allocation_history"
+        and "allocation_history" not in declaration.operations
+        and declaration.assignment_relation == "reduced"
+    ):
+        from increment._evidence_refusals import refuse_assignment_identity
+
+        refuse_assignment_identity(source, operation=operation)
+    offered = tuple(sorted(declaration.operations))
     if not isinstance(getattr(source, "context", None), SourceContext):
         from increment._evidence_refusals import refuse_operation
 

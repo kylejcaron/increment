@@ -171,14 +171,22 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     _evidence,
                 ),
                 _expectation(
+                    "allocation_artifact_identity_supported",
+                    _operation,
+                    "from_unit_day_artifact",
+                    "artifact retains assignment_rows and assigned history is requested",
+                    "supported",
+                    "tests.query.test_native_exposure::test_definitions_assignment_ledger_uses_explicit_role_mapping",
+                ),
+                _expectation(
                     "allocation_artifact_refused",
                     _operation,
                     "from_unit_day_artifact",
-                    "artifact-backed facade has no raw allocation event stream",
+                    "artifact has no assignment_rows identity relation",
                     "refused",
                     "tests.test_analysis_trigger::test_triggered_factor_group_and_allocation_preserve_population",
-                    codes=("evidence.operation_unavailable",),
-                    reason="Artifact-backed facade does not retain raw allocation events.",
+                    codes=("evidence.assignment.identity_unavailable",),
+                    reason="The artifact has reduced counts but no retained row-level assignment identity.",
                 ),
                 _expectation(
                     "allocation_moments_refused",
@@ -198,8 +206,8 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                         "source has no retained raw exposure-event stream for daily allocation history",
                         "refused",
                         "tests.test_allocation_history::test_allocation_history_refuses_non_native_ingresses",
-                        codes=("evidence.operation_unavailable",),
-                        reason="This source retains no raw allocation events.",
+                        codes=("evidence.assignment.identity_unavailable",),
+                        reason="This source retains only reduced assignment data, not row-level assignment identity.",
                     )
                     for ingress in ("from_unit_summary", "from_unit_panel", "from_switchback_panel")
                 ),

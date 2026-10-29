@@ -404,7 +404,7 @@ depends_on = [
   "increment._source_types", "increment._assignment_refusals", "increment._evidence_types",
   "increment._frame_validation", "increment._metric_specs", "increment._study",
   "increment.decision", "increment.errors", "increment.estimation", "increment.power.switchback", "increment.semantics",
-  "increment._unit_cycle",
+  "increment._unit_cycle", "increment._frame_ledger",
 ]
 
 [[modules]]

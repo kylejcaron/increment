@@ -753,6 +753,50 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             randomization_law=getattr(self.context.design, "allocation_scheme", None),
         )
 
+    def assignment_identity_rows(self) -> tuple[Mapping[str, Any], ...] | None:
+        """Materialize the selected unit assignment ledger for artifact publication."""
+        binding = self._experiment.assignment_ledger
+        if binding is None:
+            return None
+        from increment.query.ledger import Ledger
+
+        if "unit" not in binding.roles:
+            return None
+
+        source_relation = self._session.source_sql(binding.sql)
+        relation = source_relation.filter(
+            source_relation[binding.roles["experiment"]] == self._experiment.name
+        )
+        versions = relation.select(binding.roles["version"]).distinct().execute(limit=None)
+        rows = []
+        for version in sorted(int(value) for value in versions[binding.roles["version"]]):
+            reduced = Ledger(relation, binding.roles).rows(
+                experiment=self._experiment.name,
+                population="assigned",
+                version=version,
+                all_periods=True,
+            )
+            rows.extend(
+                {
+                    "experiment_id": row.experiment,
+                    "unit_id": row.unit,
+                    "version": row.version,
+                    "period": json.dumps(row.period, ensure_ascii=False),
+                    "arm": row.arm,
+                }
+                for row in reduced.rows
+            )
+        rows.sort(
+            key=lambda row: (
+                str(row["experiment_id"]).encode("utf-8"),
+                str(row["unit_id"]).encode("utf-8"),
+                int(row["version"]),
+                str(row["period"]).encode("utf-8"),
+                str(row["arm"]).encode("utf-8"),
+            )
+        )
+        return tuple(rows)
+
     def evidence_scope_streams(self, scope: Any) -> Mapping[str, str]:
         tables = self._session._source_tables
         fact_names = set(scope.uptake_facts)

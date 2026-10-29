@@ -21,7 +21,7 @@ import pytest
 
 from increment import Analysis
 from increment.errors import CapabilityError
-from tests.analysis_factory import _native_source
+from tests.analysis_factory import _native_source, held_source
 
 pytestmark = pytest.mark.integration
 
@@ -466,7 +466,13 @@ experiments:
     control_group: control
     plan: {secondaries: [revenue]}
     assignment_ledger:
-      sql: SELECT * FROM events
+      sql: |
+        SELECT * FROM events
+        UNION ALL
+        SELECT user_id, ts, event, group_id, value, subject, experiment_key, arm_name,
+               4 AS allocation_version, 'campaign' AS allocation_period, allocation_time,
+               first_exposure_time, first_trigger_time
+        FROM events
       roles:
         unit: subject
         experiment: experiment_key
@@ -514,7 +520,47 @@ experiments:
         ],
     )
     analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    artifact = None
     try:
+        from increment.query.session import WarehouseArtifactStore
+
+        store = WarehouseArtifactStore(con, schema_name="assignment_identity")
+        context = analysis.artifact_context
+        reference = analysis.publish_unit_day_artifact(store)
+        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        assert {
+            (row["group_id"], row["n_cumulative"])
+            for row in artifact.allocation_history().to_pylist()
+        } == {("control", 1), ("treatment", 1)}
+        artifact_assignment = cast(
+            AssignmentEvidence,
+            request_evidence(
+                evidence_provider(held_source(artifact)),
+                AssignmentRequest(experiment="exp", version=3, period="global"),
+            ),
+        )
+        assert artifact_assignment.arm_counts == (
+            (3, "global", "control", 1),
+            (3, "global", "treatment", 1),
+        )
+
+        with store.open_snapshot(reference) as snapshot:
+            manifest = snapshot.read_manifest(
+                reference.manifest, expected_sha256=reference.manifest_sha256
+            )
+        assignment_extension = next(
+            extension for extension in manifest.extensions if extension.kind == "assignment_counts"
+        )
+        assert assignment_extension.extension_version == 5
+        assert assignment_extension.identity_relation is not None
+        identity_ref = assignment_extension.identity_relation
+        con.raw_sql(
+            f'UPDATE "{identity_ref.relation.schema_name}"."{identity_ref.relation.name}" '
+            "SET arm = 'mutated' WHERE unit_id = 'u1'"
+        )
+        with pytest.raises(CapabilityError) as digest_mismatch:
+            artifact.allocation_history()
+        assert digest_mismatch.value.code == "artifact.relation.digest_mismatch"
         request = AssignmentRequest(experiment="exp", version=3, period="global")
         provider = evidence_provider(_native_source(analysis))
         with pytest.raises(CapabilityError) as refused:
@@ -540,7 +586,69 @@ experiments:
         assert evidence.population == "assigned"
         assert evidence.versions == (3,)
         assert evidence.periods == ("global",)
-        assert evidence.arm_counts == ((3, "global", "control", 1), (3, "global", "treatment", 1))
     finally:
+        if artifact is not None:
+            artifact.close()
+        analysis.close()
+        con.disconnect()
+
+
+def test_artifact_without_assignment_rows_refuses_allocation_history(tmp_path):
+    yaml = """
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: enrolled
+        column: null
+      - name: purchase
+        column: value
+exposures:
+  - name: enrolled
+    fact: enrolled
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: purchase
+    window_days: 7
+experiments:
+  - name: exp
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01T00:00:00
+    control_group: control
+    plan: {secondaries: [revenue]}
+"""
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=[
+            {
+                "user_id": "u1",
+                "ts": dt.datetime(2025, 1, 1, 9),
+                "event": "enrolled",
+                "group_id": "control",
+                "value": 10.0,
+            },
+        ],
+    )
+    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    artifact = None
+    try:
+        from increment.query.session import WarehouseArtifactStore
+
+        store = WarehouseArtifactStore(con, schema_name="assignment_identity_absent")
+        context = analysis.artifact_context
+        reference = analysis.publish_unit_day_artifact(store)
+        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        with pytest.raises(CapabilityError) as refused:
+            artifact.allocation_history()
+        assert refused.value.code == "evidence.assignment.identity_unavailable"
+    finally:
+        if artifact is not None:
+            artifact.close()
         analysis.close()
         con.disconnect()

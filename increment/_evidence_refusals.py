@@ -41,7 +41,15 @@ UNIT_ROWS_UNAVAILABLE = _spec("evidence.unit_rows_unavailable", "unit rows")
 RAW_OUTCOMES_UNAVAILABLE = _spec("evidence.raw_outcomes_unavailable", "raw outcomes")
 CLUSTER_UNAVAILABLE = _spec("evidence.cluster_unavailable", "cluster evidence")
 COVARIATE_UNAVAILABLE = _spec("evidence.covariate_unavailable", "covariates")
-
+ASSIGNMENT_IDENTITY_UNAVAILABLE = RefusalSpec(
+    "evidence.assignment.identity_unavailable",
+    CapabilityError,
+    template=(
+        "{constructor} cannot supply assignment identity for {operation!r}; "
+        "the source retains reduced counts only. {route}"
+    ),
+    keys=frozenset({"constructor", "operation", "route"}),
+)
 OPERATION_UNAVAILABLE = _spec("evidence.operation_unavailable", "operation")
 JOINT_GROUPING_UNAVAILABLE = RefusalSpec(
     "evidence.joint_grouping_unavailable",
@@ -70,6 +78,7 @@ EVIDENCE_REFUSALS = {
         RAW_OUTCOMES_UNAVAILABLE,
         CLUSTER_UNAVAILABLE,
         COVARIATE_UNAVAILABLE,
+        ASSIGNMENT_IDENTITY_UNAVAILABLE,
         OPERATION_UNAVAILABLE,
         PROVIDER_UNAVAILABLE,
         JOINT_GROUPING_UNAVAILABLE,
@@ -124,6 +133,19 @@ def refuse_operation(
         requested=requested,
         offered=tuple(offered),
         route=route,
+    )
+
+
+def refuse_assignment_identity(src: object, *, operation: str) -> NoReturn:
+    """Refuse identity-only assignment operations when the source holds counts only."""
+    refuse(
+        ASSIGNMENT_IDENTITY_UNAVAILABLE,
+        constructor=type(src).__name__,
+        operation=operation,
+        route=(
+            "supply a row-level assignment ledger via Analysis.from_definitions "
+            "with experiment.assignment_ledger, or via a FrameLedger"
+        ),
     )
 
 

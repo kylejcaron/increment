@@ -14,7 +14,14 @@ from datetime import UTC, date, datetime
 from typing import Annotated, Any, ClassVar, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from increment._artifact_identity import (
     context_digest,
@@ -56,6 +63,7 @@ RelationRole = Literal[
     "cuped_preperiod",
     "cuped_measure_covariate",
     "assignment_counts",
+    "assignment_rows",
     "trigger_population",
     "trigger_measure_stats",
     "encouragement_uptake",
@@ -511,7 +519,7 @@ class ArtifactContext(_ArtifactBase):
 
 
 class ExtensionRefBase(_ArtifactBase):
-    extension_version: Literal[1, 2, 3] = 1
+    extension_version: Literal[1, 2, 3, 4] = 1
     relation: ArtifactRelationRef
     definition_sha256: str
     source_provenance_sha256: str
@@ -528,6 +536,11 @@ class ExtensionRefBase(_ArtifactBase):
             _definition_refusal(
                 "definition.artifact_extension.unsupported_version",
                 "extension version 3 is reserved for trigger population anchors",
+            )
+        if self.extension_version == 4 and kind != "assignment_counts":
+            _definition_refusal(
+                "definition.artifact_extension.unsupported_version",
+                "extension version 4 is reserved for assignment identity rows",
             )
         return self
 
@@ -669,10 +682,12 @@ def _normalize_populations(
 
 class AssignmentCountsExtension(ExtensionRefBase):
     kind: Literal["assignment_counts"] = "assignment_counts"
+    extension_version: Literal[1, 4, 5] = 1
     populations: tuple[Literal["assigned", "triggered"], ...]
     mixed_unit_count: int = Field(ge=0, strict=True)
     unassigned_unit_count: int = Field(ge=0, strict=True)
     assignment_fingerprint_sha256: str
+    identity_relation: ArtifactRelationRef | None = None
 
     _validate_fingerprint_sha = field_validator("assignment_fingerprint_sha256")(
         lambda value: _artifact_sha256(value, "assignment_fingerprint_sha256")
@@ -684,6 +699,28 @@ class AssignmentCountsExtension(ExtensionRefBase):
         cls, value: tuple[Literal["assigned", "triggered"], ...]
     ) -> tuple[Literal["assigned", "triggered"], ...]:
         return _normalize_populations(value)
+
+    @model_validator(mode="after")
+    def _identity_relation_matches_version(self) -> AssignmentCountsExtension:
+        has_identity_relation = self.identity_relation is not None
+        if (self.extension_version in {4, 5}) != has_identity_relation:
+            _definition_refusal(
+                "definition.artifact_extension.unsupported_version",
+                "assignment identity rows require extension version 4 or 5 and a relation",
+            )
+        if has_identity_relation and self.identity_relation.role != "assignment_rows":
+            _definition_refusal(
+                "definition.artifact_extension.unsupported_version",
+                "assignment identity relation has the wrong role",
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_identity_relation(self, handler):
+        data = handler(self)
+        if self.identity_relation is None:
+            data.pop("identity_relation", None)
+        return data
 
 
 class TriggerPopulationExtension(ExtensionRefBase):
@@ -1091,6 +1128,13 @@ def _extension_relation(ref: ExtensionRefBase, *, artifact_id: UUID, generation_
         generation_id=generation_id,
         role=cast("RelationRole", ref.model_dump(mode="python")["kind"]),
     )
+    if isinstance(ref, AssignmentCountsExtension) and ref.identity_relation is not None:
+        _check_relation_binding(
+            ref.identity_relation,
+            artifact_id=artifact_id,
+            generation_id=generation_id,
+            role="assignment_rows",
+        )
 
 
 class UnitDayArtifactManifest(_ArtifactBase):

@@ -126,6 +126,7 @@ UNIT_DAY_ARTIFACT_RELATION_ROLES = (
     "cuped_preperiod",
     "cuped_measure_covariate",
     "assignment_counts",
+    "assignment_rows",
     "trigger_population",
     "trigger_measure_stats",
     "encouragement_uptake",
@@ -175,6 +176,14 @@ UNIT_DAY_ARTIFACT_ASSIGNMENT_COUNTS_FIELDS = (
     "group_id",
     "n_units",
     "n_randomization_units",
+)
+
+UNIT_DAY_ARTIFACT_ASSIGNMENT_ROWS_FIELDS = (
+    "experiment_id",
+    "unit_id",
+    "version",
+    "period",
+    "arm",
 )
 UNIT_DAY_ARTIFACT_TRIGGER_POPULATION_FIELDS = (
     "experiment_id",
@@ -285,6 +294,13 @@ UNIT_DAY_ARTIFACT_RELATION_SCHEMAS = MappingProxyType(
                 ("n_randomization_units", "INT64"),
             )
         ),
+        "assignment_rows": (
+            ("experiment_id", "STRING", False),
+            ("unit_id", "STRING", False),
+            ("version", "INT64", False),
+            ("period", "STRING", False),
+            ("arm", "STRING", False),
+        ),
         "trigger_population": tuple(
             (field, type_tag, False)
             for field, type_tag in (
@@ -354,6 +370,7 @@ UNIT_DAY_ARTIFACT_PRIMARY_KEYS = MappingProxyType(
         "cuped_preperiod": ("experiment_id", "unit_id"),
         "cuped_measure_covariate": ("experiment_id", "unit_id"),
         "assignment_counts": ("experiment_id", "population", "group_id"),
+        "assignment_rows": ("experiment_id", "unit_id", "version", "period"),
         "trigger_population": ("experiment_id", "unit_id"),
         "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),
         "encouragement_uptake": ("experiment_id", "unit_id"),

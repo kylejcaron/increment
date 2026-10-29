@@ -28,7 +28,7 @@ import narwhals as nw
 from increment._analysis_config import effective_methods
 from increment._frame_validation import _reject_windowed_specs
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synthesise_metric
-from increment.errors import refuse
+from increment.errors import CapabilityError, refuse
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
@@ -97,6 +97,7 @@ from increment.sources import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    import pyarrow as pa
     from ibis.backends.duckdb import Backend
     from ibis.backends.sql import SQLBackend
 
@@ -774,6 +775,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         assignment_extensions = [
             extension for extension in manifest.extensions if extension.kind == "assignment_counts"
         ]
+        if any(extension.identity_relation is not None for extension in assignment_extensions):
+            operations.add("allocation_history")
         has_trigger_population = any(
             extension.kind == "trigger_population" for extension in manifest.extensions
         )
@@ -878,7 +881,42 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 breakout_evidence=True,
                 covariate_grains=None,
             ),
+            assignment_relation=(
+                "ledger"
+                if any(
+                    extension.kind == "assignment_counts"
+                    and extension.identity_relation is not None
+                    for extension in self._manifest.extensions
+                )
+                else "reduced"
+            ),
         )
+
+    def allocation_history(
+        self, *, population: Literal["assigned", "triggered"] = "assigned"
+    ) -> pa.Table:
+        if self.context.cluster is not None:
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(
+                self,
+                "allocation_history",
+                ("unit",),
+                route="use srm() or triggered_counts() for the cluster-grain randomization check",
+            )
+        try:
+            return super().allocation_history(population=population)
+        except ArtifactContractError as exc:
+            if (
+                exc.code == "artifact.snapshot.mixed"
+                and exc.context.get("role") == "assignment_rows"
+            ):
+                raise CapabilityError(
+                    "assignment identity relation changed after publication",
+                    code="artifact.relation.digest_mismatch",
+                    context={"role": "assignment_rows"},
+                ) from exc
+            raise
 
     @classmethod
     def open(
