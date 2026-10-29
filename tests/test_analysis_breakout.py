@@ -191,6 +191,63 @@ def test_run_breakout_snapshot_identity_includes_pinned_source_evidence(con):
         changed.close()
 
 
+def test_custom_unit_counts_refuse_before_an_undeclared_provider_read(con):
+    from dataclasses import replace
+    from typing import Any, cast
+
+    from increment import Analysis, CountsRequest
+    from tests.analysis_factory import held_source
+
+    analysis = _analysis_with_country_breakout(con)
+    source = cast(Any, held_source(analysis))
+    called = False
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, count_grains=frozenset())
+
+        def moments(self, request):
+            raise AssertionError("unsupported moments read")
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("unsupported breakout read")
+
+        def unit_rows(self, request):
+            raise AssertionError("unsupported unit-row read")
+
+        def method_fit(self, request):
+            raise AssertionError("unsupported fit read")
+
+        def compliance(self, request):
+            raise AssertionError("unsupported compliance read")
+
+        def compliance_series(self, request):
+            raise AssertionError("unsupported compliance-series read")
+
+        def counts(self, request: CountsRequest):
+            nonlocal called
+            called = True
+            raise AssertionError("undeclared count read")
+
+        def capture_sequential(self, request):
+            raise AssertionError("unsupported sequential read")
+
+        def scope(self, request):
+            raise AssertionError("unsupported scope")
+
+    custom = Analysis._from_source(cast(Any, Provider()))
+    try:
+        from increment.errors import CapabilityError
+
+        with pytest.raises(CapabilityError) as raised:
+            custom.unit_counts()
+        assert raised.value.code == "evidence.operation_unavailable"
+        assert not called
+    finally:
+        custom.close()
+        analysis.close()
+
+
 def test_custom_breakout_uses_one_outer_snapshot_scope(con):
     from contextlib import contextmanager
     from typing import Any, cast

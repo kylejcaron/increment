@@ -668,19 +668,38 @@ def test_sequential_capture_matches_registered_temporal_snapshot(con) -> None:
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
+    previous_analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
+    actual_analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
+    expected_analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
     try:
-        as_of = date(2025, 7, 1)
-        expected = analysis.capture_sequential(finalized=True, as_of=as_of)
-        actual = evidence_provider(held_source(analysis)).capture_sequential(
-            SequentialCaptureRequest(finalized=True, as_of=as_of)
+        first_horizon = date(2025, 7, 1)
+        next_horizon = date(2025, 8, 1)
+        previous = previous_analysis.capture_sequential(
+            finalized=True, as_of=first_horizon, freeze=("revenue",)
         )
-        assert actual == expected
+        expected = expected_analysis.capture_sequential(
+            finalized=True, previous=previous, as_of=next_horizon
+        )
+        actual = evidence_provider(held_source(actual_analysis)).capture_sequential(
+            SequentialCaptureRequest(
+                finalized=True,
+                previous=previous,
+                as_of=next_horizon,
+                freeze=(),
+            )
+        )
+
+        assert actual.registration_id == expected.registration_id
         assert actual.states == expected.states
         assert actual.records == expected.records
+        actual.verify_parent(previous)
+        assert actual.frozen == previous.frozen
         assert actual.frozen == expected.frozen
+        assert all(checkpoint.cell.metric == "revenue" for checkpoint in actual.frozen)
     finally:
-        analysis.close()
+        actual_analysis.close()
+        expected_analysis.close()
+        previous_analysis.close()
 
 
 def test_unknown_evidence_requests_refuse_with_stable_coded_context() -> None:
@@ -3300,12 +3319,15 @@ def test_custom_daily_joint_grouping_keeps_dimensions_declared_on_same_source(
     )
     events: list[object] = []
 
+    requested_dimensions: list[tuple[str, ...]] = []
+
     class Provider:
         evidence = replace_dataclass(source.evidence, breakouts=("country", "device"))
         context = source.context
         artifact_experiment = experiment
 
         def moments(self, request: MomentsRequest):
+            requested_dimensions.append(request.by)
             events.append("read")
             return ()
 
@@ -3347,6 +3369,8 @@ def test_custom_daily_joint_grouping_keeps_dimensions_declared_on_same_source(
         analysis.close()
 
     assert events == [("scope", (("country", "web"), ("device", "web"))), "read"]
+    assert requested_dimensions
+    assert all(set(dimensions) == {"country", "device"} for dimensions in requested_dimensions)
 
 
 def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading() -> None:
@@ -3369,6 +3393,28 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
     assert refused.value.code == "evidence.operation_unavailable"
     assert refused.value.context["requested"] == "artifact_experiment"
     assert reads == []
+
+
+def test_analysis_unit_counts_uses_declared_typed_count_evidence() -> None:
+    from dataclasses import replace
+
+    from increment import Analysis
+
+    source = frame_panel_source()
+    evidence = replace(source.evidence, operations=source.evidence.operations - {"unit_counts"})
+    provider = _forwarding_provider(source, evidence=evidence)
+    analysis = Analysis._from_source(provider)
+
+    assert analysis.unit_counts() == source.unit_counts()
+
+
+def test_analysis_close_accepts_provider_without_close_method() -> None:
+    from increment import Analysis
+
+    provider = _forwarding_provider(frame_panel_source())
+    analysis = Analysis._from_source(provider)
+
+    analysis.close()
 
 
 def _assert_bound_daily_slice_reads_only_its_source(

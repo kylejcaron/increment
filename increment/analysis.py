@@ -59,6 +59,7 @@ from increment._day_axis import (
 )
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
 from increment._evidence_types import (
+    CountEvidence,
     CountsRequest,
     DayAxisRequest,
     EvidenceScope,
@@ -112,7 +113,7 @@ from increment.estimation.assignment_integrity import (
 )
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
-from increment.evidence import evidence_provider
+from increment.evidence import evidence_provider, request_evidence
 from increment.plan import (
     bind_automatic_sequential_plan,
     compile_decision_plan,
@@ -676,7 +677,9 @@ class Analysis:
 
     def close(self) -> None:
         """Release this analysis's resources without closing caller connections."""
-        cast("_BuiltinMomentSource", self._state.source).close()
+        close = getattr(self._state.source, "close", None)
+        if callable(close):
+            close()
 
     def _require_arm_state(
         self, method: str, *, population: Literal["assigned", "triggered"] = "assigned"
@@ -2047,16 +2050,20 @@ class Analysis:
         Excluded unassigned units appear under ``"(unassigned)"``. Sources
         without total-grain count evidence refuse with a coded capability error.
         """
-        source = _require_analysis_operation(
-            self._src,
-            "unit_counts",
-            message="unit_counts() requires a source with enrolled total-grain counts.",
+        source = self._src
+        if not is_custom_source(source):
+            source = _require_analysis_operation(
+                source,
+                "unit_counts",
+                message="unit_counts() requires a source with enrolled total-grain counts.",
+            )
+        request = CountsRequest(kind="unit", population=getattr(source, "population", "assigned"))
+        return dict(
+            cast(
+                CountEvidence,
+                request_evidence(evidence_provider(source), request),
+            ).counts
         )
-        request = CountsRequest(
-            kind="unit",
-            population=getattr(source, "population", "assigned"),
-        )
-        return dict(evidence_provider(source).counts(request).counts)
 
     def srm(
         self,
