@@ -229,7 +229,17 @@ def run(
         context = execution_context
         if context.requested_coherence != coherence:
             _refuse("kernel.request.invalid", field="coherence")
-        context.validate_request(src, selected, configs)
+        context.validate_request(src, selected, configs, population=_population)
+        uptake = getattr(design, "uptake", None)
+        if uptake is not None and (
+            estimands is None or {"compliance", "late"}.intersection(estimands)
+        ):
+            uptake_fact = uptake.fact
+            if uptake_fact not in context.scope.uptake_facts:
+                _refuse(
+                    "kernel.context.undeclared_stream",
+                    stream=f"fact:{uptake_fact}",
+                )
         manager = context.borrow()
     with manager as scoped:
         context.validate_observational_streams(src, design)

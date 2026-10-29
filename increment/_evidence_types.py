@@ -243,6 +243,7 @@ class EvidenceScope:
 
     metrics: tuple[Metric, ...] = ()
     population: Literal["assigned", "triggered"] = "assigned"
+    populations: tuple[Literal["assigned", "triggered"], ...] = ()
     grain: Literal["total", "daily", "asof"] | None = None
     dimension: str | None = None
     estimands: tuple[str, ...] | None = None

@@ -3181,27 +3181,32 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
             tuple((item.property, item.source) for item in items) for items in scoped_breakouts
         ) == [(("country", "app"),), (("country", "web"),)]
         scoped_breakouts.clear()
-        web_identity = BreakoutIdentity("country", "web")
-        slices = cast(
-            Any,
-            request_evidence(
-                provider,
-                BreakoutSlicesRequest((web_identity,), metrics=source.context.metrics),
-            ),
+        from increment.readouts import run_scoped
+
+        run_scoped(
+            provider_analysis,
+            lambda: provider_analysis.run_daily(dimension="country"),
+            population="assigned",
+            readouts=("daily",),
+            include_breakouts=True,
         )
-        web_slice = slices.slices[0]
-        day_axis = cast(
-            Any,
-            request_evidence(
-                web_slice.source,
-                DayAxisRequest("run_daily", "daily", source.context.metrics, dimension="country"),
-            ),
+        scoped_identities = {
+            tuple((item.property, item.source) for item in items) for items in scoped_breakouts
+        }
+        assert {(("country", "app"),), (("country", "web"),)} <= scoped_identities
+        scoped_breakouts.clear()
+        context_breakouts: list[tuple[Any, ...]] = []
+        run_scoped(
+            provider_analysis,
+            lambda: None,
+            population="assigned",
+            readouts=("run",),
+            on_context=lambda context: context_breakouts.append(context.scope.breakouts),
         )
-        tuple(day_axis.slices)
+        assert scoped_breakouts == [()]
+        assert context_breakouts == [()]
     finally:
         analysis.close()
-
-    assert scoped_breakouts == [(BreakoutIdentity("country", "web"),)]
 
 
 @pytest.mark.integration

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from increment._evidence_types import EvidenceScope
-from increment._source_types import is_custom_source
+from increment._source_types import declared_evidence, is_custom_source
 from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
 
 if TYPE_CHECKING:
@@ -39,11 +39,20 @@ def run_scoped_line3[T](
         covariates = union_covariates((config,), (methods,))
         if covariates and config.covariates != covariates:
             declared_configs.append(replace(config, covariates=covariates))
+    experiment = getattr(analysis, "_experiment", None)
+    populations = (
+        ("assigned", "triggered")
+        if getattr(experiment, "trigger", None) is not None
+        else tuple(sorted(declared_evidence(source).populations))
+        if is_custom_source(source)
+        else ()
+    )
     context = EvidenceExecutionContext(
         provider,
         EvidenceScope(
             metrics=tuple(source.context.metrics),
             configs=tuple(declared_configs),
+            populations=populations,
             uptake_facts=() if uptake is None else (uptake.fact,),
             snapshot=True,
             execution=True,

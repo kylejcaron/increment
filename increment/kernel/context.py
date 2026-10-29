@@ -281,6 +281,7 @@ class EvidenceExecutionContext:
         requested = EvidenceScope(
             metrics=scope.metrics,
             population=scope.population,
+            populations=scope.populations,
             grain=scope.grain,
             breakouts=scope.breakouts,
             configs=scope.configs,
@@ -414,10 +415,29 @@ class EvidenceExecutionContext:
         if id(_loader_owner(source)) != self._source_identity:
             _refuse("kernel.context.undeclared_stream", stream="source_ref")
 
+    def validate_population(self, population: str) -> None:
+        declared_populations = set(self.scope.populations) or {self.scope.population}
+        if population not in declared_populations:
+            _refuse("kernel.context.undeclared_stream", stream=f"population:{population}")
+
+    def validate_typed_request(self, request: object) -> None:
+        population = (
+            "triggered"
+            if getattr(request, "kind", None) == "triggered"
+            else getattr(request, "population", self.scope.population)
+        )
+        self.validate_population(str(population))
+
     def validate_request(
-        self, source: object, metrics: Sequence[object], configs: Sequence[object]
+        self,
+        source: object,
+        metrics: Sequence[object],
+        configs: Sequence[object],
+        *,
+        population: str | None = None,
     ) -> None:
         self.validate_source(source)
+        self.validate_population(self.scope.population if population is None else population)
         declared_metrics = {str(getattr(metric, "name", metric)) for metric in self.scope.metrics}
         if any(str(getattr(metric, "name", metric)) not in declared_metrics for metric in metrics):
             _refuse("kernel.context.undeclared_stream", stream="metric")

@@ -125,6 +125,9 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
     return EvidenceScope(
         metrics=metrics,
         population=requests[0].population if requests else "assigned",
+        populations=tuple(
+            sorted({population for request in requests for population in request.populations})
+        ),
         grain=next((request.grain for request in requests if request.grain is not None), None),
         dimension=next((request.dimension for request in requests if request.dimension), None),
         estimands=next(
@@ -200,6 +203,7 @@ def load_evidence_scope(
         scope = EvidenceScope(
             metrics=request.metrics,
             population="assigned",
+            populations=request.populations,
             grain=request.grain,
             dimension=request.dimension,
             estimands=request.estimands,

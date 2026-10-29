@@ -659,6 +659,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return EvidenceScope(
             metrics=metrics,
             population=requests[0].population if requests else "assigned",
+            populations=tuple(
+                sorted({population for request in requests for population in request.populations})
+            ),
             grain=grain,
             dimension=next(
                 (request.dimension for request in requests if request.dimension is not None), None

@@ -103,6 +103,55 @@ def _rows(n=4000, tau=2.0, compliance=0.5, one_sided=True, seed=7, metric="rev")
     return rows
 
 
+@pytest.mark.integration
+def test_triggered_only_provider_never_receives_assigned_outcome_reads():
+    from dataclasses import replace
+
+    from increment.errors import CapabilityError
+
+    class TriggeredOnlySource(FakeMomentSource):
+        def __init__(self):
+            super().__init__(
+                _rows(n=200),
+                metrics=[METRIC],
+                capabilities={"total"},
+                design=_design(),
+            )
+            self.populations = []
+            self.evidence = replace(self.evidence, populations=frozenset({"triggered"}))
+
+        def moments(self, metric, **kwargs):
+            if isinstance(metric, MomentsRequest):
+                self.populations.append(metric.population)
+                if metric.population != "triggered":
+                    raise AssertionError("assigned observations are forbidden")
+            return super().moments(metric, **kwargs)
+
+    source = TriggeredOnlySource()
+    try:
+        triggered = readouts.run(
+            source,
+            metrics=["rev"],
+            estimands=("itt",),
+            _population="triggered",
+        )
+        assert triggered
+        assert {row.analysis_population for row in triggered} == {"triggered"}
+        assert source.populations and set(source.populations) == {"triggered"}
+        read_count = len(source.populations)
+
+        with pytest.raises(CapabilityError):
+            readouts.run(
+                source,
+                metrics=["rev"],
+                estimands=("itt",),
+                _population="assigned",
+            )
+        assert len(source.populations) == read_count
+    finally:
+        source.close()
+
+
 class FakeMomentSource:
     """Literal outcome rows and uptake counts for readout orchestration tests.
 
@@ -943,6 +992,39 @@ class _DeclaredMomentProvider:
         return getattr(self._source, name)
 
 
+def test_context_requires_declared_uptake_stream_before_late_read():
+    from increment import EvidenceExecutionContext, EvidenceScope
+    from increment.errors import CodedError
+
+    source = FakeMomentSource(
+        _rows(n=40),
+        metrics=[METRIC],
+        capabilities={"total"},
+        design=_design(uptake={"fact": "help_click"}),
+    )
+    provider = _DeclaredMomentProvider(source)
+    context = EvidenceExecutionContext(
+        cast(Any, provider),
+        EvidenceScope(metrics=(METRIC,), configs=tuple(source.context.configs), execution=True),
+        run_id="missing-uptake-inventory",
+    )
+    context.open()
+    try:
+        from increment import readouts
+
+        with pytest.raises(CodedError) as refused:
+            readouts.run(
+                cast(Any, provider),
+                estimands=("late",),
+                execution_context=context,
+            )
+        assert refused.value.code == "kernel.context.undeclared_stream"
+        assert refused.value.context == {"stream": "fact:help_click"}
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
 def test_unadjusted_daily_and_asof_lift_support_declared_moment_provider():
     design = Randomized(control_group="control")
     rows = [dict(r, ds=date(2025, 1, 1)) for r in _rows(n=100, seed=32)]

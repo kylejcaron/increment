@@ -818,6 +818,12 @@ def test_reports_both_populations_and_the_triggered_effect_is_undiluted(tmp_path
     triggered_rows = rows.filter(lambda row: row.analysis_population == "triggered")
     assert {row.multiplicity_status for row in triggered_rows} == {"declared_plan"}
     assert triggered_rows.metadata.scope.families == families
+    import json
+
+    serialized = json.loads(triggered_rows.model_dump_json())
+    assert serialized["metadata"]["scope"]["populations"] == ["assigned", "triggered"]
+    assert {row.analysis_population for row in triggered_rows} == {"triggered"}
+    assert "triggered population" in repr(triggered_rows)
 
     # The table adapter must carry the population axis through the same
     # assigned/triggered result pair; otherwise the two rows collide in the
