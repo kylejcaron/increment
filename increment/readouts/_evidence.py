@@ -291,11 +291,53 @@ def evidence_scope(
 def evidence_scope(
     src: EvidenceProvider, scope: EvidenceScope
 ) -> AbstractContextManager[EvidenceProvider]: ...
+
+
+@overload
+def evidence_scope(
+    src: EvidenceSource, scope: EvidenceScope
+) -> AbstractContextManager[EvidenceSource]: ...
+
+
 def evidence_scope(
     src: EvidenceSource, scope: EvidenceScope
 ) -> AbstractContextManager[EvidenceSource]:
     """Pin the requested source view and reduction lifetime for one readout."""
     return _evidence_scope(src, scope)
+
+
+def acquire_observational_inputs(
+    src: EvidenceSource,
+    metrics: Sequence[Any],
+    *,
+    population: Literal["assigned", "triggered"] = "assigned",
+) -> tuple[Any, Any]:
+    """Acquire moments and memoized unit rows from the readout-owned source view."""
+    from increment.estimation.adjust import ObservationalEvidence
+
+    evidence = ObservationalEvidence(
+        {
+            metric.name: tuple(load_moments(src, MomentsRequest(metric, population=population)))
+            for metric in metrics
+        },
+        cluster=src.context.cluster,
+    )
+    frames: dict[tuple[str, tuple[str, ...]], Any] = {}
+
+    def unit_frame(metric, covariates):
+        key = (metric.name, tuple(covariates))
+        if key not in frames:
+            frames[key] = load_unit_rows(
+                src,
+                UnitRowsRequest(
+                    metric=metric,
+                    covariates=key[1],
+                    population=population,
+                ),
+            )
+        return frames[key]
+
+    return evidence, unit_frame
 
 
 @contextmanager

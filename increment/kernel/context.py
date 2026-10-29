@@ -33,19 +33,16 @@ def _artifact_streams(source: object) -> Mapping[str, str] | None:
     return MappingProxyType({identity: identity})
 
 
-def _source_labels(definitions: Any) -> dict[str, str]:
-    labels = {fact_source.sql: fact_source.name for fact_source in definitions.fact_sources}
-    labels.update(
-        {dimension.sql: f"dimension:{dimension.name}" for dimension in definitions.dim_sources}
-    )
-    labels.update(
-        {
-            exposure.sql: f"exposure:{exposure.name}"
-            for exposure in definitions.exposures
-            if exposure.sql is not None
-        }
-    )
-    return labels
+def _source_labels(definitions: Any) -> dict[str, tuple[str, ...]]:
+    labels: dict[str, list[str]] = {}
+    for fact_source in definitions.fact_sources:
+        labels.setdefault(fact_source.sql, []).append(fact_source.name)
+    for dimension in definitions.dim_sources:
+        labels.setdefault(dimension.sql, []).append(f"dimension:{dimension.name}")
+    for exposure in definitions.exposures:
+        if exposure.sql is not None:
+            labels.setdefault(exposure.sql, []).append(f"exposure:{exposure.name}")
+    return {query: tuple(names) for query, names in labels.items()}
 
 
 def _captured_streams(source: object, definitions: Any) -> Mapping[str, str] | None:
@@ -53,7 +50,9 @@ def _captured_streams(source: object, definitions: Any) -> Mapping[str, str] | N
     if tables is None:
         return None
     labels = _source_labels(definitions)
-    streams = {labels.get(query, f"source:{query}"): labels.get(query, query) for query in tables}
+    streams = {
+        label: query for query in tables for label in labels.get(query, (f"source:{query}",))
+    }
     return MappingProxyType(dict(sorted(streams.items())))
 
 
@@ -132,10 +131,10 @@ def _adjustment_fact_names(experiment: Any, definitions: Any) -> set[str]:
     unit = getattr(experiment, "unit", None)
     names: set[str] = set()
     for covariate in getattr(design, "covariates", ()):
-        property_name = getattr(covariate, "property", None)
-        if property_name is None:
-            continue
+        property_name = getattr(covariate, "property", covariate)
         declared_source = getattr(covariate, "source", None)
+        if not isinstance(property_name, str):
+            continue
         candidates = [
             fact_source
             for fact_source in definitions.fact_sources
@@ -143,8 +142,7 @@ def _adjustment_fact_names(experiment: Any, definitions: Any) -> set[str]:
             and (declared_source is None or fact_source.name == declared_source)
             and any(prop.name == property_name for prop in definitions.properties_of(fact_source))
         ]
-        if len(candidates) == 1:
-            names.add(candidates[0].name)
+        names.update(fact_source.name for fact_source in candidates)
     return names
 
 
@@ -346,6 +344,70 @@ class EvidenceExecutionContext:
     @property
     def requested_coherence(self) -> ExecutionMode:
         return self._requested_coherence
+
+    def validate_observational_streams(self, source: object, design: object) -> None:
+        """Check bound adjustment sources before the readout issues any evidence request."""
+        self._require_open()
+        self.validate_source(source)
+        if getattr(design, "mechanism", None) != "observational":
+            return
+        owner = _loader_owner(self.provider)
+        definitions = getattr(owner, "_defs", None)
+        experiment = getattr(owner, "_experiment", None)
+        if definitions is None or experiment is None:
+            return
+        unit = getattr(experiment, "unit", None)
+        declared = getattr(getattr(experiment, "design", None), "covariates", ())
+        requested = getattr(getattr(design, "adjustment", None), "covariates", ())
+        fact_sources = {fact_source.name: fact_source for fact_source in definitions.fact_sources}
+        for request in requested:
+            property_name = getattr(request, "property", request)
+            bindings = [
+                binding
+                for binding in declared
+                if getattr(binding, "property", binding) == property_name
+            ]
+            sources = {
+                getattr(binding, "source", None)
+                for binding in bindings
+                if getattr(binding, "source", None) is not None
+            }
+            if not sources:
+                sources = {
+                    fact_source.name
+                    for fact_source in definitions.fact_sources
+                    if unit in fact_source.entities
+                    and any(
+                        prop.name == property_name
+                        for prop in definitions.properties_of(fact_source)
+                    )
+                }
+            if not sources:
+                # No source advertises this property. Defer to the provider so
+                # its established covariate-capability refusal remains distinct.
+                continue
+            if len(sources) != 1:
+                _refuse(
+                    "kernel.context.undeclared_stream",
+                    stream=f"covariate:{property_name}",
+                )
+            stream = next(iter(sources))
+            if stream not in fact_sources:
+                _refuse("kernel.context.undeclared_stream", stream=f"fact:{stream}")
+            mode = self._effective_modes.get(stream)
+            if mode is None:
+                _refuse("kernel.context.undeclared_stream", stream=stream)
+            if (
+                self.coherence == "captured"
+                and mode != "provider"
+                and (mode != "captured" or stream not in self._snapshot_manifest)
+            ):
+                snapshot_id = self._snapshot_manifest.get(stream)
+                _refuse(
+                    "kernel.snapshot.integrity",
+                    stream=stream,
+                    snapshot_id=snapshot_id,
+                )
 
     def validate_source(self, source: object) -> None:
         if id(_loader_owner(source)) != self._source_identity:

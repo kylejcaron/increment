@@ -10,7 +10,6 @@ from increment._readout_request import _raise as _raise_readout_request
 from increment._source_types import is_custom_source
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.declarations import Method
-from increment.estimation.adjust import bind_unit_frame_memo, observational_evidence
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
@@ -29,6 +28,7 @@ from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
 from increment.readouts._evidence import (
     _builtin_source,
+    acquire_observational_inputs,
     artifact_provenance,
     evidence_scope,
     prior_exclusions,
@@ -145,6 +145,15 @@ def run(
     # before any source snapshot or evidence read begins.
     for config in configs:
         _config_snapshot(config, design)
+    if design.mechanism == "observational" and not isinstance(
+        src.context.plan.inference, SEQUENTIAL_POLICIES
+    ):
+        from increment.estimation.adjust import _validate_adjustment_methods
+        from increment.readouts._common import _runtime_methods
+
+        for config in configs:
+            _validate_adjustment_methods(_runtime_methods(config, design))
+
     # Raw frames and method-scoped covariates share one capture across the
     # selected metrics, including their common observation horizon. An empty
     # selection reads nothing. Request validation is complete before capture.
@@ -232,6 +241,7 @@ def run(
         context.validate_request(src, selected, configs)
         manager = context.borrow()
     with manager as scoped:
+        context.validate_observational_streams(src, design)
         rows = _run_prepared(
             _builtin_source(scoped),
             selected,
@@ -548,8 +558,9 @@ def _run_prepared(  # noqa: PLR0915
 
         # The one moments reduction per metric: it gates on a treatment arm, and sizes every
         # family and routing level, and every estimate and FCR re-estimate reads it.
-        evidence = observational_evidence(src, selected, population=population)
-        unit_frame_memo = bind_unit_frame_memo(src, population=population)
+        evidence, unit_frame_memo = acquire_observational_inputs(
+            src, selected, population=population
+        )
         if selected:
             _refuse_if_no_treatment_arm(
                 set().union(*(evidence.arms(metric) for metric in selected)),

@@ -30,9 +30,7 @@ _REFUSALS = refusals(
         "kernel.request.invalid": "Invalid analysis request: {field}",
         "kernel.request.unportable": "Request kind {kind!r} field {field!r} is not portable",
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",
-        "kernel.request.datetime_timezone": (
-            "Request datetime field {field!r} must be timezone-aware"
-        ),
+        "kernel.request.datetime_timezone": "Request datetime field {field!r} must be timezone-aware",
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
         "kernel.context.closed": "Execution context is closed",
         "kernel.context.undeclared_stream": "Execution context does not declare stream {stream!r}",

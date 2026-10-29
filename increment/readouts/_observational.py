@@ -7,7 +7,7 @@ from increment._policy_alpha import resolve_cell_alpha
 from increment._source_types import _BuiltinMomentSource
 from increment.estimation.adjust import (
     ObservationalEvidence,
-    _estimate_ate,
+    _estimate_ate_data,
     judge_shared_prior_scales,
     weight_diagnostics_projection,
 )
@@ -36,6 +36,45 @@ if TYPE_CHECKING:
     from increment.estimation.inference import Prior
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
+
+
+def _estimate_ate_from_evidence(  # noqa: PLR0913
+    design: Observational,
+    metric: Metric,
+    *,
+    methods: list[Method],
+    roles: Mapping[str, Any],
+    prior: Prior | None,
+    alpha: float,
+    value_scale: Mapping[str, ValueScale] | None,
+    null_abs: Mapping[str, float] | None,
+    alternatives: Mapping[str, str] | None,
+    evidence: ObservationalEvidence,
+    unit_frame_memo: Any,
+    family_member: bool = False,
+    route_tail: float | None = None,
+) -> DecisionComputation[LiftEstimate]:
+    return _estimate_ate_data(
+        design,
+        metrics=(metric,),
+        cluster=evidence.cluster,
+        methods=methods,
+        prior=prior,
+        alpha=alpha,
+        alternative="two-sided",
+        value_scale=value_scale,
+        null_lifts=None,
+        null_abs=null_abs,
+        alternatives=alternatives,
+        scales={metric.name: (value_scale or {}).get(metric.name, "relative")},
+        _raise_if_empty=False,
+        resolved_method_roles=roles,
+        method_roles=roles,
+        evidence=evidence,
+        family_member=family_member,
+        route_tail=route_tail,
+        unit_frame_memo=unit_frame_memo,
+    )
 
 
 def _estimate_observational(
@@ -100,21 +139,16 @@ def _estimate_observational(
             else 0
         )
         alpha = resolve_cell_alpha(plan, procedure, n_arms=n_arms, view=None)
-        computation = _estimate_ate(
-            src,
+        computation = _estimate_ate_from_evidence(
             design,
+            metric,
             methods=methods_by_metric[metric.name],
-            metrics=[metric],
-            method_roles=_runtime_method_roles(methods_by_metric[metric.name]),
+            roles=_runtime_method_roles(methods_by_metric[metric.name]),
             prior=config.prior,
-            prior_shared=config.prior_is_global,
             alpha=alpha,
-            alternative="two-sided",
             value_scale=value_scale,
             null_abs=resolved_null_abs or None,
             alternatives=resolved_alternatives or None,
-            _raise_if_empty=False,
-            _prior_scale_judged=True,
             evidence=evidence,
             unit_frame_memo=unit_frame_memo,
         )
@@ -191,23 +225,18 @@ def _estimate_observational_secondary_family(
         metric: Metric, alpha: float, *, family_member: bool = False
     ) -> DecisionComputation[LiftEstimate]:
         config = config_by_name[metric.name]
-        computation = _estimate_ate(
-            src,
+        computation = _estimate_ate_from_evidence(
             design,
+            metric,
             methods=methods_by_metric[metric.name],
-            metrics=[metric],
-            method_roles=roles_by_metric[metric.name],
+            roles=roles_by_metric[metric.name],
             prior=config.prior,
-            prior_shared=config.prior_is_global,
             alpha=alpha,
-            alternative="two-sided",
             value_scale=value_scale,
             null_abs=resolved_null_abs or None,
             alternatives=resolved_alternatives or None,
-            _raise_if_empty=False,
-            _prior_scale_judged=True,
-            unit_frame_memo=unit_frame_memo,
             evidence=evidence,
+            unit_frame_memo=unit_frame_memo,
             family_member=family_member,
         )
         if computations is not None:
@@ -290,23 +319,18 @@ def _estimate_observational_secondary_family(
         config = config_by_name[metric.name]
         procedure = plan.procedures[metric.name]
         selected_alpha = _fcr_alpha_for(procedure.alternative, fcr_alpha)
-        computation = _estimate_ate(
-            src,
+        computation = _estimate_ate_from_evidence(
             design,
+            metric,
             methods=methods_by_metric[metric.name][:1],
-            metrics=[metric],
-            method_roles=roles_by_metric[metric.name],
+            roles=roles_by_metric[metric.name],
             prior=config.prior,
-            prior_shared=config.prior_is_global,
             alpha=selected_alpha,
-            alternative="two-sided",
             value_scale=value_scale,
             null_abs=resolved_null_abs or None,
             alternatives=resolved_alternatives or None,
-            _raise_if_empty=False,
-            _prior_scale_judged=True,
-            unit_frame_memo=unit_frame_memo,
             evidence=evidence,
+            unit_frame_memo=unit_frame_memo,
             route_tail=fcr_route_tail(procedure.alternative, fcr_alpha),
         )
         if computations is not None:

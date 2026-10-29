@@ -30,6 +30,21 @@ def test_run_captures_scope_and_persists_mode_metadata(tmp_path):
 
 
 @pytest.mark.integration
+def test_nonsequential_run_accepts_evidence_provider_wrapped_source(tmp_path):
+    from increment.evidence import evidence_provider
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    try:
+        rows = run(evidence_provider(source))
+        assert rows
+        assert rows.metadata is not None
+        assert rows.metadata.coherence == "captured"
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
 def test_run_live_mode_is_retained_and_qualified(tmp_path):
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
     source = cast(Any, held_source(analysis))

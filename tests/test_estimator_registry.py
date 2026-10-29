@@ -526,8 +526,13 @@ def test_multicovariate_load_resolves_to_its_fit_callable():
     assert load("randomized.cuped_multicovariate") is fit_cuped_multicovariate
 
 
-def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import():
+@pytest.mark.integration
+def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import(
+    tmp_path, monkeypatch
+):
+
     from increment.declarations import MomentsSpec, UnitRowsSpec, unregister_estimator
+    from tests.covariate_cases import categorical_defs_and_con
 
     estimator_id = "observational.lazy_validation_probe"
     selector = "lazy_validation_probe"
@@ -542,30 +547,30 @@ def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import()
             needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")),),
         )
     )
+    defs_path, connection, _ = categorical_defs_and_con(tmp_path)
+    analysis = Analysis.from_definitions("cat_test", defs_path, connection, store="none")
+    warehouse_reads = []
+    original_create_table = connection.create_table
+    original_to_pyarrow = connection.to_pyarrow
+
+    def count_create_table(*args, **kwargs):
+        warehouse_reads.append("create_table")
+        return original_create_table(*args, **kwargs)
+
+    def count_to_pyarrow(*args, **kwargs):
+        warehouse_reads.append("to_pyarrow")
+        return original_to_pyarrow(*args, **kwargs)
+
+    monkeypatch.setattr(connection, "create_table", count_create_table)
+    monkeypatch.setattr(connection, "to_pyarrow", count_to_pyarrow)
     try:
-        frame = pd.DataFrame(
-            {
-                "unit": range(8),
-                "arm": ["control"] * 4 + ["treatment"] * 4,
-                "outcome": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
-                "x": [0, 1, 0, 1, 0, 1, 0, 1],
-            }
-        )
-        analysis = Analysis.from_unit_summary(
-            frame,
-            unit="unit",
-            group="arm",
-            metrics={"outcome": "mean"},
-            design=Observational(
-                control_group="control",
-                adjustment=AdjustmentSet(covariates=("x",)),
-                gate=IdentificationGate(overlap="trim"),
-            ),
-        )
         with pytest.raises(CodedError) as exc:
             analysis.run(decision_method=Method(name=selector, variance_reduction="cuped"))
         assert exc.value.code == "adjust.variance_reduction.unsupported"
+        assert warehouse_reads == []
     finally:
+        analysis.close()
+        connection.disconnect()
         unregister_estimator(estimator_id)
 
 
