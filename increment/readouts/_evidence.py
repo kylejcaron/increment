@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, cast, overload
 
@@ -100,7 +101,7 @@ class DayAxisSlice:
     view: Any
     dimension: str | None
     source_name: str | None
-    edge_source: Any | None = None
+    observation_edges: Mapping[str, tuple[date, date | None]] | None = None
     experiment: Any | None = None
 
 
@@ -1228,6 +1229,33 @@ def _trigger_edge_source(src: Any) -> Any:
     return src
 
 
+def _acquire_triggered_observation_edges(
+    src: Any, request: DayAxisRequest
+) -> Mapping[str, tuple[date, date | None]] | None:
+    if request.population != "triggered":
+        return None
+    experiment = request.experiment or _trigger_experiment(src)
+    trigger_declared = (experiment is not None and experiment.trigger is not None) or getattr(
+        getattr(src, "context", None), "trigger_name", None
+    ) is not None
+    if not trigger_declared:
+        return None
+    edge_source = _trigger_edge_source(src)
+    if not callable(getattr(edge_source, "triggered_observation_edges", None)):
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            src,
+            "triggered_observation_edges",
+            tuple(sorted(declared_evidence(src).operations)),
+            route="triggered daily readouts need trigger observation edges; "
+            "use Analysis.from_definitions or Analysis.from_unit_day_artifact",
+        )
+    return {
+        metric.name: edge_source.triggered_observation_edges(metric) for metric in request.metrics
+    }
+
+
 def _trigger_metadata_source(src: Any) -> Any | None:
     owner = _scope_owner(src)
     for root in (src, owner):
@@ -1439,9 +1467,6 @@ def load_day_axis_rows(
                         if experiment is request.experiment
                         else replace(request, experiment=experiment)
                     )
-                    trigger_declared = (
-                        experiment is not None and experiment.trigger is not None
-                    ) or context_trigger is not None
                     if (
                         request.population == "triggered"
                         and context_trigger is not None
@@ -1456,28 +1481,12 @@ def load_day_axis_rows(
                             tuple(sorted(declared_evidence(pinned).operations)),
                             route="triggered day-axis filling needs experiment reconstruction metadata",
                         )
-                    edge_source = _trigger_edge_source(pinned)
-                    if (
-                        request.population == "triggered"
-                        and trigger_declared
-                        and not callable(getattr(edge_source, "triggered_observation_edges", None))
-                    ):
-                        from increment._evidence_refusals import refuse_operation
-
-                        refuse_operation(
-                            pinned,
-                            "triggered_observation_edges",
-                            tuple(sorted(declared_evidence(pinned).operations)),
-                            route="triggered daily readouts need trigger observation edges; "
-                            "use Analysis.from_definitions or Analysis.from_unit_day_artifact",
-                        )
                     # Custom typed moments can preserve trigger-aware scoped semantics.
                     # A typed adapter may wrap a built-in loader; unwrap only for the
                     # loader-backed day-axis route.
                     pinned_loader = _builtin_source(pinned)
                     if is_builtin_source(pinned_loader):
                         delegated = _load_day_axis_rows(pinned_loader, scoped_request)
-                        edge_source = _trigger_edge_source(delegated.source.src)
                         for item in delegated.slices:
                             yield DayAxisSlice(
                                 item.rows,
@@ -1487,11 +1496,12 @@ def load_day_axis_rows(
                                 item.source_name
                                 or (bound_identity.source if bound_identity is not None else None)
                                 or source_name,
-                                edge_source,
+                                item.observation_edges,
                                 experiment,
                             )
                         continue
                     require_request_evidence(pinned, scoped_request)
+                    observation_edges = _acquire_triggered_observation_edges(pinned, scoped_request)
                     for item in _MomentsDayAxis(
                         pinned, validate_daily_readout=route != NATIVE_ROUTE
                     ).slices(scoped_request):
@@ -1503,7 +1513,7 @@ def load_day_axis_rows(
                             item.source_name
                             or (bound_identity.source if bound_identity is not None else None)
                             or source_name,
-                            edge_source,
+                            observation_edges,
                             experiment,
                         )
 
@@ -1573,7 +1583,12 @@ def _load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxis
             else source_for_population(_builtin_source(src), request.population)
         )
         evidence = _MomentsDayAxis(source, validate_daily_readout=route != NATIVE_ROUTE)
-    return DayAxisRows(evidence, route, evidence.slices(request))
+    observation_edges = _acquire_triggered_observation_edges(evidence.src, request)
+    return DayAxisRows(
+        evidence,
+        route,
+        (replace(item, observation_edges=observation_edges) for item in evidence.slices(request)),
+    )
 
 
 def load_breakout_method_moments(

@@ -255,7 +255,17 @@ def test_consumers_read_sources_only_through_evidence_requests():
     violations: list[str] = []
     for path in consumers:
         rel = path.relative_to(root)
-        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "src"
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "source"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "evidence"
+            ):
+                violations.append(f"{rel}:{node.lineno}: private day-axis adapter reach-in")
             if not isinstance(node, ast.Call):
                 continue
             func = node.func

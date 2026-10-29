@@ -8,7 +8,7 @@ cohort; outcome rows retain their own matching first stages.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -268,7 +268,7 @@ def validate_day_axis(
         return
     if (
         route in (MOMENTS_ROUTE, ARTIFACT_ROUTE)
-        and declared_evidence(src).shape != "unit_panel"
+        and req.grain not in declared_evidence(src).grains
         and not checkpoint_asof
     ):
         from increment._evidence_refusals import refuse_grain
@@ -1051,7 +1051,7 @@ def _fill_triggered_early_look_rows(
     metrics: Sequence[Metric],
     experiment: Experiment | None,
     source: _BuiltinMomentSource,
-    edge_source: Any,
+    observation_edges: Mapping[str, tuple[dt.date, dt.date | None]] | None,
     source_name: str | None,
 ) -> list[dict[str, Any]]:
     """Keep zero-population arms/days visible in triggered day-axis evidence."""
@@ -1063,9 +1063,7 @@ def _fill_triggered_early_look_rows(
     metric_by_name = {metric.name: metric for metric in metrics}
     templates: dict[tuple[str, str | None], dict[str, Any]] = {}
     present: set[tuple[dt.date, str, str, str | None]] = set()
-    observation_edges = {
-        metric.name: edge_source.triggered_observation_edges(metric) for metric in metrics
-    }
+    edge_by_metric = observation_edges or {}
     ends: dict[str, dt.date] = {}
     for row in rows:
         metric = str(row["metric"])
@@ -1079,7 +1077,7 @@ def _fill_triggered_early_look_rows(
         templates.setdefault((metric, segment), row)
         present.add((day, metric, str(row["group_id"]), segment))
         ends[metric] = max(ends.get(metric, day), day)
-    for metric_name, (observed_end, certified_end) in observation_edges.items():
+    for metric_name, (observed_end, certified_end) in edge_by_metric.items():
         end = observed_end
         if certified_end is not None:
             end = min(end, certified_end)
@@ -1526,7 +1524,7 @@ class DayAxisReadouts:
                 metrics=evidence_slice.metrics,
                 experiment=self._experiment or evidence_slice.experiment,
                 source=self._src,
-                edge_source=evidence_slice.edge_source or evidence.source.src,
+                observation_edges=evidence_slice.observation_edges,
                 source_name=evidence_slice.source_name,
             )
             day_values = _run_daily_values(
@@ -1789,11 +1787,7 @@ class DayAxisReadouts:
                 metrics=evidence_slice.metrics,
                 experiment=self._experiment or evidence_slice.experiment,
                 source=self._src,
-                edge_source=(
-                    self._src
-                    if evidence is None
-                    else evidence_slice.edge_source or evidence.source.src
-                ),
+                observation_edges=evidence_slice.observation_edges,
                 source_name=evidence_slice.source_name,
             )
             names = {m.name for m in evidence_slice.metrics}
