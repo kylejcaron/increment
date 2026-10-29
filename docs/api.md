@@ -420,10 +420,13 @@ artifact published from that analysis.
 
 `Analysis.allocation_history(population=...)` returns a PyArrow table with
 `experiment_id`, `analysis_population`, `ds`, `group_id`, `n_daily`, and
-`n_cumulative`, ordered by population, date, and arm. Assigned cohorts start on
-their first assignment; triggered cohorts start at their first eligible trigger.
-Both require a native definitions-backed analysis. Non-native, artifact, and
-clustered sources refuse with `CapabilityError`.
+`n_cumulative`, ordered by population, date, and arm. Native assigned cohorts
+are binned by first exposure date; triggered cohorts start at their first
+eligible trigger. Artifact-backed assigned history is available only when the
+artifact retains assignment identity rows, and remains aggregate rather than
+per-unit replay data; otherwise it refuses with
+`evidence.assignment.identity_unavailable`. Triggered artifact history is not
+available. Clustered sources refuse with `CapabilityError`.
 
 ### Mixed-covariate fixed-horizon CUPED
 

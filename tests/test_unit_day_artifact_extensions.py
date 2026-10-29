@@ -1472,6 +1472,25 @@ def test_clustered_artifact_publishes_cluster_grain_randomization_counts(tmp_pat
         grain, counts, _adopted_units = adopted.triggered_counts()
         assert grain == "cluster"
         assert counts == expected_counts
+        from increment.evidence import (
+            AssignmentEvidence,
+            AssignmentRequest,
+            evidence_provider,
+            request_evidence,
+        )
+
+        assignment = cast(
+            AssignmentEvidence,
+            request_evidence(
+                evidence_provider(adopted),
+                AssignmentRequest(experiment="exp"),
+            ),
+        )
+        assert assignment.independence_grain == "cluster"
+        assert {arm: count for _, _, arm, count in assignment.arm_counts} == {
+            "C": 10,
+            "T": 10,
+        }
     finally:
         adopted.close()
 

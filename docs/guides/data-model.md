@@ -937,6 +937,13 @@ their published evidence:
 | `trigger_population` plus `assignment_counts` | `triggered_counts` |
 | `trigger_population` plus `assignment_counts` and the metric's `trigger_measure_stats` | metric-specific `triggered_source` outcomes |
 
+An `assignment_counts` extension with an `assignment_rows` relation also retains
+row-level assignment identity. It enables typed assignment evidence and daily
+`allocation_history()`; count-only artifacts report reduced assignment evidence
+and refuse identity-dependent history with
+`evidence.assignment.identity_unavailable`. History is an aggregate by exposure
+day and arm, not per-unit data for assignment replay verification.
+
 `cluster_identity`, `cuped_preperiod`, and `encouragement_uptake` provide
 relation evidence consumed by the corresponding total/day reductions; they do
 not add a generic operation. The extension catalog is closed and immutable: a

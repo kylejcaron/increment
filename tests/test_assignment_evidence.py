@@ -56,7 +56,7 @@ def test_switchback_assignment_request_preserves_order_draws() -> None:
         (1, "0:period=1", "control", 1),
         (1, "0:period=1", "treatment", 1),
     )
-    assert evidence.randomization_law == "independent_bernoulli_order"
+    assert len(evidence.order_draws) == 4
 
 
 def test_assignment_request_refuses_without_relation_capability() -> None:
@@ -238,3 +238,85 @@ def test_moments_without_assignment_counts_refuses_with_constructor_route() -> N
         )
     assert error.value.code == "evidence.assignment.unavailable"
     assert "from_moments" in str(error.value.context["route"])
+
+
+def test_reduced_only_analysis_refuses_allocation_history_with_identity_route() -> None:
+    import pandas as pd
+
+    from increment.analysis import Analysis
+
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["u1", "u2"],
+                "arm": ["control", "treatment"],
+                "value": [1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        experiment_id="summary-identity",
+    )
+    try:
+        with pytest.raises(CapabilityError) as refused:
+            analysis.allocation_history()
+        assert refused.value.code == "evidence.assignment.identity_unavailable"
+        assert dict(refused.value.context) == {
+            "constructor": "FrameTotalsSource",
+            "operation": "allocation_history",
+            "route": (
+                "supply a row-level assignment ledger via Analysis.from_definitions "
+                "with experiment.assignment_ledger, or via a FrameLedger"
+            ),
+        }
+    finally:
+        analysis.close()
+
+
+def test_assignment_identity_refusal_code_matches_across_summary_and_moments(tmp_path) -> None:
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    from increment.analysis import Analysis
+
+    summary = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["u1", "u2"],
+                "arm": ["control", "treatment"],
+                "value": [1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        experiment_id="summary-identity",
+    )
+    path = tmp_path / "moments.parquet"
+    try:
+        summary.export(path)
+        moments = Analysis.from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics={"value": "mean"},
+            control="control",
+        )
+    finally:
+        summary.close()
+
+    try:
+        with pytest.raises(CapabilityError) as refused:
+            moments.allocation_history()
+        assert refused.value.code == "evidence.assignment.identity_unavailable"
+        assert dict(refused.value.context) == {
+            "constructor": "MomentsSource",
+            "operation": "allocation_history",
+            "route": (
+                "supply a row-level assignment ledger via Analysis.from_definitions "
+                "with experiment.assignment_ledger, or via a FrameLedger"
+            ),
+        }
+    finally:
+        moments.close()

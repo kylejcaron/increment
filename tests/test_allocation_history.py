@@ -325,7 +325,12 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
     try:
         with pytest.raises(CapabilityError) as refused:
             source.allocation_history()
-        assert refused.value.code == "evidence.operation_unavailable"
+        expected_code = (
+            "evidence.assignment.identity_unavailable"
+            if ingress in {"from_unit_summary", "from_unit_panel", "from_switchback_panel"}
+            else "evidence.operation_unavailable"
+        )
+        assert refused.value.code == expected_code
         assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
         source.close()

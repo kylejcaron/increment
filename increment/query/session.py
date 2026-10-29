@@ -55,10 +55,7 @@ from increment.query.artifact_digest import (
 )
 from increment.query.artifact_digest import REFUSALS as DIGEST_REFUSALS
 from increment.query.fact_resolution import _dim_joined_fact_table
-from increment.query.schemas import (
-    ARTIFACT_RELATION_PRIMARY_KEYS,
-    ARTIFACT_RELATION_SCHEMAS,
-)
+from increment.query.schemas import ARTIFACT_RELATION_PRIMARY_KEYS, ARTIFACT_RELATION_SCHEMAS
 from increment.semantics.artifact import (
     ArtifactContext,
     ArtifactRelationRef,
@@ -67,6 +64,17 @@ from increment.semantics.artifact import (
     UnitDayArtifactRef,
 )
 from increment.semantics.models import Definitions, FactSource
+
+
+def _extension_relation_refs(extensions: Any) -> tuple[Any, ...]:
+    refs: list[Any] = []
+    for extension in extensions:
+        refs.append(extension.relation)
+        identity_relation = getattr(extension, "identity_relation", None)
+        if identity_relation is not None:
+            refs.append(identity_relation)
+    return tuple(refs)
+
 
 _ARTIFACT_STORE_NAMESPACE = RefusalSpec(
     "artifact.store.namespace",
@@ -949,7 +957,7 @@ class WarehouseArtifactStore:
         if manifest.manifest_sha256 != manifest_sha256(manifest):
             _raise("query.session.warehouse_artifact.manifest_digest_does")
         refs = [manifest.base.exposures, manifest.base.measure_stats]
-        refs.extend(extension.relation for extension in manifest.extensions)
+        refs.extend(_extension_relation_refs(manifest.extensions))
         if len({ref.relation.name for ref in refs}) != len(refs):
             _raise("query.session.warehouse_artifact.manifest_relation_locators")
         if any(
@@ -1039,8 +1047,8 @@ class WarehouseArtifactStore:
                     manifest.base.exposures.relation.name: manifest.base.exposures,
                     manifest.base.measure_stats.relation.name: manifest.base.measure_stats,
                     **{
-                        extension.relation.relation.name: extension.relation
-                        for extension in manifest.extensions
+                        ref.relation.name: ref
+                        for ref in _extension_relation_refs(manifest.extensions)
                     },
                 }
                 generation = _StoredGeneration(
@@ -1101,7 +1109,7 @@ class WarehouseArtifactStore:
             (
                 manifest.base.exposures,
                 manifest.base.measure_stats,
-                *(extension.relation for extension in manifest.extensions),
+                *_extension_relation_refs(manifest.extensions),
             )
         )
         created_snapshots: list[tuple[str, Any]] = []
@@ -1290,7 +1298,7 @@ class WarehouseArtifactStore:
                 generation_id=str(generation_id),
             )
         relation_refs = [manifest.base.exposures, manifest.base.measure_stats]
-        relation_refs.extend(extension.relation for extension in manifest.extensions)
+        relation_refs.extend(_extension_relation_refs(manifest.extensions))
         for relation_ref in relation_refs:
             self.validate_locator(
                 relation_ref.relation,

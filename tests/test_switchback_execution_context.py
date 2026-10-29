@@ -194,3 +194,14 @@ def test_switchback_neighboring_integer_oracle():
 
     assert result.estimate.lb == pytest.approx(1.5 - radius)
     assert result.estimate.ub == pytest.approx(1.5 + radius)
+
+
+def test_switchback_run_uses_period_exposure_join_without_leaking_identity_objects():
+    (result,) = _run(_analysis())
+
+    assert result.n_cycles == 6
+    assert result.ct_cycles == 3
+    assert result.tc_cycles == 3
+    assert not hasattr(result, "frame")
+    assert not hasattr(result, "relation")
+    assert not hasattr(result, "provider")

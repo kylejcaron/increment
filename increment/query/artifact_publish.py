@@ -42,6 +42,7 @@ from increment.query.builders import (
 from increment.query.fact_resolution import _find_fact_source, _resolve_value_column
 from increment.query.schemas import ARTIFACT_RELATION_SCHEMAS
 from increment.semantics.artifact import (
+    AssignmentCountsExtension,
     BaseRelations,
     Freshness,
     MeasureManifest,
@@ -406,6 +407,18 @@ class ArtifactPublisher:
                 and entry.request not in requested
             ):
                 requested.append(entry.request)
+        if (
+            self._experiment.assignment_ledger is not None
+            and getattr(source.context.design, "mechanism", None) != "encouragement"
+            and not any(request.kind == "assignment_counts" for request in requested)
+        ):
+            for entry in unit_day_artifact_extension_catalog(context):
+                if entry.request.kind == "assignment_counts":
+                    assigned_request = entry.request.model_copy(
+                        update={"populations": ("assigned",)}
+                    )
+                    if assigned_request not in requested:
+                        requested.append(assigned_request)
         if getattr(source.context.design, "mechanism", None) == "encouragement":
             for entry in unit_day_artifact_extension_catalog(context):
                 if (
@@ -449,6 +462,13 @@ class ArtifactPublisher:
             if covariate.measure is not None:
                 measure_source, _ = _find_fact_source(self._defs, covariate.measure.fact)
                 extra_sources.add(measure_source.name)
+        from increment._evidence_types import AssignmentRequest
+
+        assignment_requests = (
+            (AssignmentRequest(experiment=self._experiment.name),)
+            if any(request.kind == "assignment_counts" for request in requested)
+            else ()
+        )
         with (
             source._pinned_source_execution(
                 metrics=self._metrics,
@@ -459,6 +479,7 @@ class ArtifactPublisher:
                     if request.kind == "encouragement_uptake"
                 ),
                 site_volume_metrics=site_volume_metrics,
+                assignment_requests=assignment_requests,
             ) as pinned,
             ExitStack() as materializations,
         ):
@@ -807,6 +828,19 @@ class ArtifactPublisher:
         for requested in extensions:
             request = getattr(requested, "request", requested)
             entry = catalog_entries.get(request)
+            if (
+                entry is None
+                and request.kind == "assignment_counts"
+                and set(request.populations) == {"assigned"}
+            ):
+                entry = next(
+                    (
+                        candidate
+                        for candidate in catalog_entries.values()
+                        if candidate.request.kind == "assignment_counts"
+                    ),
+                    None,
+                )
             if entry is None:
                 kind = str(getattr(request, "kind", "unknown"))
                 reason = "request is absent from the trusted extension catalog"
@@ -1355,19 +1389,31 @@ class ArtifactPublisher:
                         source._unassigned_assignment_units or 0,
                     ),
                 }
-            extension_refs.append(
-                cast(Any, encode_extension)(
-                    source,
-                    spec.entry.request,
-                    publication,
-                    context=context,
-                    rows=encoded_rows,
-                    definition=json.loads(spec.entry.canonical_definition_json),
-                    source_recipe=json.loads(spec.entry.canonical_source_recipe_json),
-                    experiment_id=self._experiment.name,
-                    execute=self._con.to_pyarrow,
-                )
+            extension = cast(Any, encode_extension)(
+                source,
+                spec.entry.request,
+                publication,
+                context=context,
+                rows=encoded_rows,
+                definition=json.loads(spec.entry.canonical_definition_json),
+                source_recipe=json.loads(spec.entry.canonical_source_recipe_json),
+                experiment_id=self._experiment.name,
+                execute=self._con.to_pyarrow,
             )
+            if spec.kind == "assignment_counts":
+                identity_rows = source.assignment_identity_rows()
+                if identity_rows is not None:
+                    relation = publication.write_relation(
+                        "assignment_rows", _extension_table(identity_rows, "assignment_rows")
+                    )
+                    extension = AssignmentCountsExtension.model_validate(
+                        {
+                            **extension.model_dump(mode="python"),
+                            "extension_version": 5,
+                            "identity_relation": relation,
+                        }
+                    )
+            extension_refs.append(extension)
         extension_refs.sort(
             key=lambda extension: (
                 extension.kind,
