@@ -1481,7 +1481,15 @@ def dump_collection(results):
         "sequential_snapshot": None
         if results.sequential_snapshot is None
         else results.sequential_snapshot.model_dump(mode="json"),
-        "rows": [row.model_dump(mode="json") for row in results],
+        "rows": [
+            row.model_dump(
+                mode="json",
+                exclude={"allocation_alpha"}
+                if getattr(row, "allocation_alpha", None) is None
+                else None,
+            )
+            for row in results
+        ],
     }
     if getattr(results, "_persisted_cells", None) is not None:
         payload["persisted_cells"] = [cell.to_payload() for cell in results._persisted_cells]

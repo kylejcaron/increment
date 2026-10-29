@@ -214,6 +214,11 @@ def bh_select(p_values: Sequence[float], q: float) -> tuple[list[int], float]:
     return _bh_step_up(p_values, q)
 
 
+def log_e_threshold(alpha: Fraction | float) -> Fraction | float:
+    """Return the certified log-evidence cutoff for a one-sided level."""
+    return (-log_interval(Fraction(alpha))).hi
+
+
 def e_bh_select(log_e_values: Sequence[Fraction | float], q: Fraction | float) -> list[int]:
     """Log-domain e-BH with an upward-enclosed canonical threshold.
 
@@ -722,7 +727,6 @@ _FAMILY_FIELDS = (
 )
 #: Reissued interval fields and their disclosures; everything else is the row's own. A
 #: delta-route conversion row reissued below its dense level becomes an exact binomial row, so
-#: the reference and the route evidence travel with the interval.
 _INTERVAL_FIELDS = (
     "lift",
     "binomial_set",
@@ -736,7 +740,10 @@ _INTERVAL_FIELDS = (
     "abs_alpha",
     "abs_reference_kind",
     "abs_reference_df",
+    "allocation_alpha",
     "note",
+    "relative_error_code",
+    "relative_error_context",
 )
 #: Each selected row is capped at its own nominal level below, so selection runs uncapped.
 _UNCAPPED = math.nextafter(1.0, 0.0)
@@ -946,12 +953,22 @@ def _stamped[R: BaseModel](row: R, view: LiftEstimate | None, **family: object) 
     fields = type(row).model_fields
     data: dict[str, Any] = {name: getattr(row, name) for name in fields}
     if view is not None:
-        data.update({name: getattr(view, name) for name in _INTERVAL_FIELDS})
+        data.update({name: getattr(view, name) for name in _INTERVAL_FIELDS if name in fields})
         if "scale" in fields:
             data["scale"] = view.scale
     data.update(family)
     data["multiplicity_status"] = "exploratory_family"
     return type(row)(**data)
+
+
+def _nominal_call_alpha(row: LiftEstimate | BreakoutEstimate) -> float | None:
+    view = row._family_view()
+    if view is None:
+        return None
+    from increment.estimation._fcr_reinterval import classify, nominal_alpha
+
+    construction, _ = classify(view)
+    return None if construction is None else nominal_alpha(view, construction)
 
 
 def select_exploratory_family(
@@ -963,9 +980,9 @@ def select_exploratory_family(
     ``BreakoutEstimate`` rows (one per metric, arm and segment). Every decision row is one
     hypothesis of a single family at FDR level ``q``; the rows come back in the same order and
     types. Each carries ``discovery``, ``family_axes`` (``("metric", "arm")``, plus
-    ``"segment"`` when any row is a segment cell), ``family_q``, ``family_threshold`` (the
-    realized ``R*q/m``, ``None`` when nothing is selected) and ``family_size`` (``m``), so a row
-    read alone states which family corrected it.
+    ``family_q``, ``family_threshold`` (the realized ``R*q/m``, ``None`` when nothing is selected),
+    ``family_nominal_alpha`` (the original level for selected rows and their reissue cap), and
+    ``family_size`` (``m``). Only selected rows are reissued and carry a nominal alpha.
 
     Selection is ``select_family`` over each member's family evidence -- the p-value the
     estimators themselves emit, which for a delta-route conversion row is the composite of its
@@ -1014,7 +1031,6 @@ def select_exploratory_family(
         _UNCAPPED,
         computation=_exploratory_computation(tested),
     )
-    from increment.estimation._fcr_reinterval import reinterval_selected
 
     axes = ("metric", "arm", "segment") if any(m.scope for m in tested) else ("metric", "arm")
     family = {
@@ -1032,7 +1048,22 @@ def select_exploratory_family(
         selected = family_discovery(outcome, member.key)
         view = member.view
         if selected and view is not None:
-            assert outcome.realized_threshold is not None
-            view = reinterval_selected(view, member.construction, outcome.realized_threshold)
-        corrected.append(_stamped(member.row, view, discovery=selected, **family))
+            from increment.estimation._fcr_reinterval import nominal_alpha, reinterval_selected
+
+            construction = member.construction
+            threshold = outcome.realized_threshold
+            assert construction is not None and threshold is not None
+            alpha = min(threshold, nominal_alpha(view, construction))
+            source_view = view
+            view = reinterval_selected(view, construction, threshold)
+            view = source_view._with_reissued_allocation(view, alpha)
+        corrected.append(
+            _stamped(
+                member.row,
+                view,
+                discovery=selected,
+                family_nominal_alpha=_nominal_call_alpha(member.row) if selected else None,
+                **family,
+            )
+        )
     return tuple(corrected)

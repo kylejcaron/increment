@@ -361,6 +361,12 @@ def to_frame[M: BaseModel](
         None,
     )
     projection_columns = _frame_columns(model, estimate_field, binomial_set_field)
+    if "allocation_alpha" in projection_columns and not any(
+        getattr(estimate, "allocation_alpha", None) is not None for estimate in estimates
+    ):
+        projection_columns = tuple(
+            name for name in projection_columns if name != "allocation_alpha"
+        )
     if columns is None:
         selected = tuple(projection_columns)
     else:

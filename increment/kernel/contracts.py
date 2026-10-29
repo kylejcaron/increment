@@ -4,7 +4,7 @@ import dataclasses
 import hashlib
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast, runtime_checkable
@@ -16,7 +16,12 @@ from pydantic_core import PydanticSerializationError
 from increment import _evidence_types
 from increment._canonical import CanonicalJSONError, canonical_json_bytes
 from increment._evidence_types import BreakoutIdentity
-from increment.declarations import CellKey, Method
+from increment.declarations import (
+    VARIANCE_REDUCTION,
+    CellKey,
+    Method,
+    estimator_id_for_selector,
+)
 from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
 from increment.semantics.models import Metric
 
@@ -166,6 +171,12 @@ class CellIdentity(_ContractModel):
         return contract_hash("cell_identity", payload)
 
 
+def method_estimator_id(method: Method) -> str | None:
+    if method.is_observational:
+        return estimator_id_for_selector(method.name)
+    return VARIANCE_REDUCTION.get(method.variance_reduction)
+
+
 def metric_hash(metric: BaseModel) -> str:
     return contract_hash("metric", metric.model_dump(mode="json"))
 
@@ -246,6 +257,76 @@ class Registration(_ContractModel):
 
     def matches(self, plan: Any) -> bool:
         return self.registration_hash == type(self).from_plan(plan).registration_hash
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledPlanBinding:
+    """Versioned portable plan payload bound to a hash-only registration."""
+
+    registration_hash: str
+    version: Literal[1]
+    _payload: Mapping[str, object] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.version != 1 or not self.registration_hash:
+            _refuse("kernel.request.invalid", field="compiled plan binding")
+        payload = _freeze_descriptor_value(dict(self._payload))
+        if not isinstance(payload, Mapping):
+            _refuse("kernel.request.invalid", field="compiled plan payload")
+        object.__setattr__(self, "_payload", payload)
+        if not Registration(registration_hash=self.registration_hash).matches(self.resolve()):
+            _refuse("kernel.request.invalid", field="registration/plan mismatch")
+
+    @classmethod
+    def from_plan(cls, registration: Registration, plan: Any) -> CompiledPlanBinding:
+        from importlib import import_module
+
+        encode = import_module("increment.decision_wire").compiled_plan_to_dict
+        return cls(registration.registration_hash, 1, encode(plan))
+
+    @property
+    def plan_payload(self) -> dict[str, object]:
+        return cast(dict[str, object], _thaw_descriptor_value(self._payload))
+
+    def resolve(self) -> Any:
+        from importlib import import_module
+
+        decode = import_module("increment.decision_wire").compiled_plan_from_dict
+        return decode(self.plan_payload)
+
+    def validate(self, registration: Registration) -> Any:
+        plan = self.resolve()
+        if self.registration_hash != registration.registration_hash or not registration.matches(
+            plan
+        ):
+            _refuse("kernel.request.invalid", field="registration/plan mismatch")
+        return plan
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "registration_hash": self.registration_hash,
+            "plan_payload": self.plan_payload,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> CompiledPlanBinding:
+        return cls(
+            registration_hash=cast(str, payload["registration_hash"]),
+            version=cast(Literal[1], payload["version"]),
+            _payload=cast(Mapping[str, object], payload["plan_payload"]),
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return self.canonical_payload()
+
+
+def _thaw_descriptor_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_descriptor_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_descriptor_value(item) for item in value]
+    return value
 
 
 def analysis_spec_hash(
@@ -387,20 +468,20 @@ class AnalysisRequest:
             _refuse("kernel.request.invalid", field="requests")
         for request in self.requests:
             fields = request.fields
-            for field in ("population", "grain", "completed_windows_only"):
-                value = fields.get(field)
-                if field == "population" and request.kind == "CountsRequest":
+            for field_name in ("population", "grain", "completed_windows_only"):
+                value = fields.get(field_name)
+                if field_name == "population" and request.kind == "CountsRequest":
                     if fields.get("kind") == "triggered":
                         value = "triggered"
                 expected = (
                     self.scope.population
-                    if field == "population"
+                    if field_name == "population"
                     else self.scope.grain
-                    if field == "grain"
+                    if field_name == "grain"
                     else self.scope.completion_policy
                 )
                 if value is not None and value != expected:
-                    _refuse("kernel.request.scope_mismatch", kind=request.kind, field=field)
+                    _refuse("kernel.request.scope_mismatch", kind=request.kind, field=field_name)
 
             if request.kind == "DayAxisRequest":
                 caller = fields.get("caller")
@@ -444,13 +525,13 @@ class AnalysisRequest:
             ):
                 _refuse("kernel.request.invalid", field="requests")
             fields: dict[str, object] = {}
-            for field in dataclasses.fields(request):
+            for request_field in dataclasses.fields(request):
                 try:
-                    value = _request_value(getattr(request, field.name))
+                    value = _request_value(getattr(request, request_field.name))
                     canonical_json_bytes(value)
                 except (CanonicalJSONError, PydanticSerializationError):
-                    _refuse("kernel.request.unportable", kind=kind, field=field.name)
-                fields[field.name] = value
+                    _refuse("kernel.request.unportable", kind=kind, field=request_field.name)
+                fields[request_field.name] = value
             descriptors.append(RequestDescriptor(kind=kind, fields=fields))
         if not descriptors:
             _refuse("kernel.request.invalid", field="requests")

@@ -140,6 +140,23 @@ def test_secondary_cuped_fcr_reintervalizes_without_refitting(ingress):
 
 
 @pytest.mark.integration
+def test_selected_cuped_fcr_row_respects_plan_alpha_on_reissue():
+    from increment.errors import CodedError
+
+    row = next(
+        row
+        for row in _family_analysis("from_unit_summary", 0.2).run()
+        if row.metric == "secondary_mean"
+    )
+
+    assert row.discovery is True
+    assert row.family_threshold is not None and row.family_threshold >= 0.08
+    with pytest.raises(CodedError) as raised:
+        row.reintervalize(0.08)
+    assert raised.value.code == "results.operation.alpha_above_allocation"
+
+
+@pytest.mark.integration
 @pytest.mark.slow
 def test_complete_cuped_yaml_guide_examples_execute(tmp_path):
     """Execute both experiment YAML examples in the guide against real DuckDB facts."""

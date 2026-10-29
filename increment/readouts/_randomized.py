@@ -90,6 +90,8 @@ def _stamp_fcr_selected_rows(
                             "role": "secondary",
                             "discovery": family_discovery(outcome, key),
                             **family_record,
+                            # Only selected rows were reissued at the FCR alpha.
+                            "family_nominal_alpha": None,
                         }
                     )
                 )
@@ -179,9 +181,11 @@ def _secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_recor
                 "family_threshold": (
                     family_record["family_threshold"] if row.method_role == "decision" else None
                 ),
-                "family_size": family_record["family_size"]
-                if row.method_role == "decision"
-                else None,
+                "family_size": (
+                    family_record["family_size"] if row.method_role == "decision" else None
+                ),
+                # No interval was reissued when the family produced no selected member.
+                "family_nominal_alpha": None,
             }
         )
         for metric, *_rest in family
@@ -395,6 +399,7 @@ def _estimate_randomized_secondary_family(  # noqa: PLR0913
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
         "family_size": outcome.n_family,
+        "family_nominal_alpha": plan.alpha,
     }
     if fcr_alpha is None:
         out.extend(_secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_record))

@@ -256,6 +256,17 @@ def test_unselected_rows_keep_their_nominal_interval_and_selected_rows_are_widen
     assert widened.value == nominal.value
 
 
+def test_selected_exploratory_row_keeps_its_nominal_allocation():
+    row = _wald_row("m", 6.0, alpha=0.05)
+    (selected,) = select_exploratory_family([row], q=0.1)
+    assert isinstance(selected, LiftEstimate)
+
+    assert selected.family_threshold == pytest.approx(0.1)
+    with pytest.raises(CodedError) as raised:
+        selected.reintervalize(0.08)
+    assert raised.value.code == "results.operation.alpha_above_allocation"
+
+
 def _segments(rows) -> list[BreakoutEstimate]:
     return [row for row in rows if isinstance(row, BreakoutEstimate)]
 
@@ -311,6 +322,48 @@ def test_wald_rows_are_reissued_as_their_estimator_builds_them(alternative, refe
         assert row.abs_lb is not None and nominal[index].abs_lb is not None
         assert row.abs_lb < nominal[index].abs_lb
         assert row.reference_kind == nominal[index].reference_kind
+
+
+def test_selected_t_reissue_withholds_only_unrepresentable_relative_interval():
+    row = _wald_row(
+        "m",
+        6.0,
+        se=0.01,
+        dof=10.0,
+        abs_diff=0.1,
+        abs_se=1e-15,
+        abs_dof=10.0,
+    )
+    assert isinstance(row, LiftEstimate) and row.lift is not None
+    (selected,) = select_exploratory_family([row], q=0.05)
+    assert isinstance(selected, LiftEstimate)
+
+    reissued = selected.reissue(1e-100)
+
+    assert reissued.lift is not None
+    assert reissued.lift.alpha is None
+    assert reissued.lift.log_mean == row.lift.log_mean
+    assert reissued.lift.log_se == row.lift.log_se
+    assert reissued.abs_lb is not None and reissued.abs_ub is not None
+    assert reissued.relative_error_code is not None
+    assert reissued.relative_unavailable_reason is None
+    assert reissued.p_value() == row.p_value()
+    from increment.result_envelope import ResultCell
+
+    (restored,) = ResultCell.from_arrow(ResultCell.to_arrow(reissued.as_cells()))
+    restored_row = restored.retained_row()
+    assert restored_row.p_value() == row.p_value()
+    assert restored_row.relative_error_code == reissued.relative_error_code
+
+
+def test_family_stamping_preserves_overflow_reason_from_initial_selection():
+    row = _wald_row("m", 2820.0, se=0.25)
+
+    (selected,) = select_exploratory_family([row], q=1e-100)
+
+    assert selected.discovery is True
+    assert selected.relative_error_code is not None
+    assert selected.relative_error_context is not None
 
 
 # --- equivalence with run_breakout(correction="bh") -------------------------------------
@@ -637,6 +690,30 @@ def test_fieller_rows_are_reissued_from_their_joint_reference(alternative):
         _close((row.abs_lb, row.abs_ub), (expected.abs_lb, expected.abs_ub))
         assert expected.abs_alpha is not None and row.abs_alpha == expected.abs_alpha
         assert row.relative_confidence_set.alternative == alternative
+
+
+def test_directional_joint_row_retains_its_call_level_nominal_alpha():
+    metric = MeanMetric(name="m", entity="u", fact="f", aggregation="sum")
+
+    def totals(center):
+        return [center + 0.1 * ((i % 5) - 2) for i in range(60)]
+
+    row = estimate_lift(
+        [metric],
+        [_cluster_row("C", totals(0.5)), _cluster_row("T", totals(1.0))],
+        control_group="C",
+        cluster="store",
+        alpha=0.05,
+        alternative="greater",
+    ).results[0]
+    assert row.relative_confidence_set is not None
+    assert row.relative_confidence_set.alpha == pytest.approx(0.05)
+
+    (family_row,) = select_exploratory_family([row], q=0.99)
+    assert isinstance(family_row, LiftEstimate)
+    assert family_row.discovery is True
+    assert family_row.family_nominal_alpha == pytest.approx(0.05)
+    assert family_row.allocation_alpha == pytest.approx(0.05)
 
 
 @pytest.mark.parametrize(

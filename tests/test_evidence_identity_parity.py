@@ -428,6 +428,7 @@ def _assert_operation_matches(
     operation: Callable[[], ResultCell],
     *,
     snapshotless: bool = False,
+    reissue_alpha: float | None = None,
 ) -> None:
     from increment.errors import CodedError
 
@@ -441,7 +442,43 @@ def _assert_operation_matches(
         assert expected["status"] == "available"
         expected_cell = expected["result_cell"]
         assert isinstance(expected_cell, Mapping)
-        _assert_payload_matches(expected_cell, actual.to_payload(), snapshotless=snapshotless)
+        actual_payload = actual.to_payload()
+        expected_retained = expected_cell.get("retained_row")
+        actual_retained = actual_payload.get("retained_row")
+        if isinstance(expected_retained, Mapping) and isinstance(actual_retained, Mapping):
+            added_fields = {
+                field
+                for field in ("allocation_alpha", "family_nominal_alpha")
+                if expected_retained.get(field) is None and actual_retained.get(field) is not None
+            }
+            if added_fields:
+                # Step 8 adds these fields to re-issued rows; frozen operations predate them.
+                if "allocation_alpha" in added_fields and reissue_alpha is not None:
+                    allocation_alpha = actual_retained.get("allocation_alpha")
+                    assert isinstance(allocation_alpha, (int, float))
+                    max_allocation = reissue_alpha
+                    if expected_retained.get("alternative") in {"less", "greater"}:
+                        max_allocation *= 2.0
+                    assert 0.0 < allocation_alpha <= max_allocation
+                actual_payload = dict(actual_payload)
+                actual_payload["retained_row"] = {
+                    key: None if key in added_fields and key in expected_retained else value
+                    for key, value in actual_retained.items()
+                    if key not in added_fields or key in expected_retained
+                }
+                expected_projection = expected_cell.get("projection_fields")
+                actual_projection = actual_payload.get("projection_fields")
+                if isinstance(expected_projection, Mapping) and isinstance(
+                    actual_projection, Mapping
+                ):
+                    normalized_projection = dict(actual_projection)
+                    for field in added_fields:
+                        if field in expected_projection:
+                            normalized_projection[field] = None
+                        else:
+                            normalized_projection.pop(field, None)
+                    actual_payload["projection_fields"] = normalized_projection
+        _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
 
 
 def _identity_hash_without_snapshot(value: object) -> str:
@@ -464,6 +501,50 @@ def _assert_cell_matches(
     actual_payload = actual.to_payload() if isinstance(actual, ResultCell) else actual
     assert isinstance(actual_payload, Mapping)
     actual_payload = cast(Mapping[str, Any], actual_payload)
+    expected_retained = expected_cell.get("retained_row")
+    actual_retained = actual_payload.get("retained_row")
+    if isinstance(expected_retained, Mapping) and isinstance(actual_retained, Mapping):
+        missing_fields = {
+            field
+            for field in ("allocation_alpha", "family_nominal_alpha")
+            if expected_retained.get(field) is None
+        }
+        allocation_alpha = actual_retained.get("allocation_alpha")
+        allowed_post_capture_fields: set[str] = set()
+        if allocation_alpha is not None:
+            assert isinstance(allocation_alpha, (int, float))
+            assert 0.0 < allocation_alpha < 1.0
+            assert actual_retained.get("discovery") is True
+            allowed_post_capture_fields.update(missing_fields)
+        elif (
+            "family_nominal_alpha" in missing_fields
+            and actual_retained.get("family_nominal_alpha") is not None
+        ):
+            assert actual_retained.get("discovery") is True
+            assert actual_retained.get("family_procedure") == "bh"
+            allowed_post_capture_fields.add("family_nominal_alpha")
+        for field in missing_fields - allowed_post_capture_fields:
+            assert actual_retained.get(field) is None
+        if allowed_post_capture_fields:
+            # Step 8 re-issues selected cells; frozen captures predate these row fields.
+            normalized_retained = dict(actual_retained)
+            for field in allowed_post_capture_fields:
+                if field in expected_retained:
+                    normalized_retained[field] = None
+                else:
+                    normalized_retained.pop(field)
+            actual_payload = dict(actual_payload)
+            actual_payload["retained_row"] = normalized_retained
+            expected_projection = expected_cell.get("projection_fields")
+            actual_projection = actual_payload.get("projection_fields")
+            if isinstance(expected_projection, Mapping) and isinstance(actual_projection, Mapping):
+                normalized_projection = dict(actual_projection)
+                for field in allowed_post_capture_fields:
+                    if field in expected_projection:
+                        normalized_projection[field] = None
+                    else:
+                        normalized_projection.pop(field, None)
+                actual_payload["projection_fields"] = normalized_projection
     _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
     actual_cell = (
         actual if isinstance(actual, ResultCell) else ResultCell.from_payload(actual_payload)
@@ -476,6 +557,7 @@ def _assert_cell_matches(
             operation,
             lambda alpha=float(alpha): relevel(actual_cell, alpha=alpha),
             snapshotless=snapshotless,
+            reissue_alpha=float(alpha),
         )
 
 
@@ -540,6 +622,53 @@ def _has_platform_sensitive_scope_component(actual: Mapping[str, object]) -> boo
             if isinstance(request, Mapping) and request.get("adjustment_input_identity"):
                 return True
     return False
+
+
+def _compare_family_selection(expected: object, actual: object) -> None:
+    if (
+        isinstance(expected, Mapping)
+        and isinstance(actual, Mapping)
+        and isinstance(expected.get("results"), list)
+        and isinstance(actual.get("results"), list)
+    ):
+        expected_rows = cast(list[object], cast(Mapping[str, object], expected)["results"])
+        actual_rows = cast(list[object], cast(Mapping[str, object], actual)["results"])
+        assert len(expected_rows) == len(actual_rows)
+        comparable = dict(actual)
+        comparable_rows = []
+        for expected_row, actual_row in zip(expected_rows, actual_rows, strict=True):
+            assert isinstance(expected_row, Mapping) and isinstance(actual_row, Mapping)
+            row = dict(actual_row)
+            added = {
+                field
+                for field in ("allocation_alpha", "family_nominal_alpha")
+                if expected_row.get(field) is None and actual_row.get(field) is not None
+            }
+            if added:
+                if "allocation_alpha" in added:
+                    assert actual_row.get("discovery") is True
+                    allocation_alpha = cast(Mapping[str, object], actual_row)["allocation_alpha"]
+                    assert isinstance(allocation_alpha, (int, float))
+                    assert 0.0 < allocation_alpha < 1.0
+                    nominal = actual_row.get("family_nominal_alpha")
+                    if isinstance(nominal, (int, float)):
+                        maximum = nominal
+                        if actual_row.get("alternative") in {"less", "greater"}:
+                            maximum *= 2.0
+                        assert allocation_alpha <= maximum
+                if "family_nominal_alpha" in added:
+                    assert actual_row.get("family_procedure") == "bh"
+                # Step 8 adds family-row caps and reissue allocations; frozen captures predate them.
+                for field in added:
+                    if field in expected_row:
+                        row[field] = None
+                    else:
+                        row.pop(field)
+            comparable_rows.append(row)
+        comparable["results"] = comparable_rows
+        _compare(expected, comparable)
+        return
+    _compare(expected, actual)
 
 
 def _assert_outcome_matches(
@@ -607,6 +736,8 @@ def _assert_outcome_matches(
                         actual_value = _decode_fitted_cuped_evidence(actual_value)
                 if field == "aggregate_evidence":
                     _compare_aggregate(expected_value, actual_value)
+                elif field == "family_selection":
+                    _compare_family_selection(expected_value, actual_value)
                 else:
                     _compare(expected_value, actual_value)
         modes = _mode_metadata(actual["metadata"])

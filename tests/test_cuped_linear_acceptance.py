@@ -87,6 +87,44 @@ def test_cuped_linear_breakout_emits_complete_per_cell_family_evidence() -> None
     assert all(row.family_axes == ("metric", "arm", "segment") for row in rows)
     assert all(row.family_procedure == "bh" for row in rows)
     assert {row.dimension_value for row in rows} == {"north", "south"}
+    import json
+
+    from increment.estimation.decision_types import PValueEvidence
+    from increment.result_envelope import (
+        ResultCell,
+        combine_family_evidence,
+        compare_margin,
+        family_evidence,
+    )
+
+    cells = rows.as_cells()
+    restored_cells = [
+        [
+            ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+            ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+        ]
+        for cell in cells
+    ]
+    expected = {
+        cell.identity.hash() for cell, row in zip(cells, rows, strict=True) if row.discovery
+    }
+    family_level = rows[0].family_q
+    assert family_level is not None
+    for codec_index in range(2):
+        round_tripped = [pair[codec_index] for pair in restored_cells]
+        for row, cell in zip(rows, round_tripped, strict=True):
+            adapted = family_evidence(cell)
+            assert isinstance(adapted.evidence, PValueEvidence)
+            assert adapted.evidence.p_value == row.p_value()
+            assert compare_margin(cell, margin=row.null_lift, scale="relative") == row.stat_sig()
+        assert (
+            combine_family_evidence(
+                tuple(family_evidence(cell) for cell in round_tripped),
+                procedure="bh",
+                level=family_level,
+            )
+            == expected
+        )
 
 
 def test_cuped_linear_breakout_localizes_unsupported_category_cell() -> None:
@@ -104,6 +142,24 @@ def test_cuped_linear_breakout_localizes_unsupported_category_cell() -> None:
     assert by_segment["unsupported"].lift is None
     assert by_segment["unsupported"].excluded == "estimation_failed"
     assert all(row.family_axes == ("metric", "arm", "segment") for row in rows)
+    import json
+
+    from increment.result_envelope import ResultCell, family_evidence
+
+    unsupported = next(row for row in rows if row.dimension_value == "unsupported")
+    cell = next(
+        cell
+        for row, cell in zip(rows, rows.as_cells(), strict=True)
+        if row.dimension_value == "unsupported"
+    )
+    restored = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+    for candidate in restored:
+        evidence = family_evidence(candidate)
+        assert evidence.evidence is None
+        assert evidence.reason_code == unsupported.failure_code
 
 
 class _UnreadSource:
@@ -405,7 +461,7 @@ def test_cuped_linear_absolute_ratio_projection_failure_preserves_log_ratio() ->
 
 
 def test_cuped_ratio_overflow_roundtrip_reissues_withheld_alpha() -> None:
-    from increment.result_envelope import ResultCell
+    from increment.result_envelope import ResultCell, relevel
 
     metric = MetricSpec(
         name="revenue_per_order",
@@ -439,10 +495,27 @@ def test_cuped_ratio_overflow_roundtrip_reissues_withheld_alpha() -> None:
     (row,) = (estimate for estimate in estimates if estimate.group_id == "treatment")
 
     assert row.multiplicity_status == "declared_plan"
+    assert "allocation_alpha" not in row.model_dump(mode="json")
+    json_replayed = type(row).model_validate_json(row.model_dump_json())
+    (original_cell,) = ResultCell.from_arrow(ResultCell.to_arrow(row.as_cells()))
+    arrow_replayed = original_cell.retained_row()
+
+    from increment.errors import CodedError
+
+    for reopened in (json_replayed, arrow_replayed):
+        with pytest.raises(CodedError) as refused:
+            reopened.reintervalize(0.1)
+        assert refused.value.code == "results.operation.alpha_above_allocation"
     withheld = row.reintervalize(1e-200)
     assert withheld.lift is not None and withheld.lift.alpha is None
     (cell,) = ResultCell.from_arrow(ResultCell.to_arrow(withheld.as_cells()))
     replayed = cell.retained_row()
 
-    reissued = replayed.reintervalize(0.1)
-    assert reissued.lift is not None and reissued.lift.alpha == pytest.approx(0.1)
+    with pytest.raises(CodedError) as refused:
+        replayed.reintervalize(0.1)
+    assert refused.value.code == "results.operation.alpha_above_allocation"
+    limited = relevel(original_cell, alpha=1e-200)
+    limited_row = limited.retained_row()
+    with pytest.raises(CodedError) as refused:
+        limited_row.reintervalize(0.1)
+    assert refused.value.code == "results.operation.alpha_above_allocation"

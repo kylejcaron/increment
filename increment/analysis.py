@@ -45,6 +45,7 @@ from increment._analysis_config import (
     UNSET,
     ResolvedMetricConfig,
     _Unset,
+    effective_methods,
     normalize_display_correction,
     overlay_configs,
     select_exploratory_metrics,
@@ -97,6 +98,7 @@ from increment.decision import (
 )
 from increment.errors import (
     CapabilityError,
+    CodedError,
     InvalidRequestError,
     RefusalSpec,
     UnsupportedRequestError,
@@ -262,6 +264,11 @@ _REFUSALS = refusals(
             ),
         ),
         "facade.analysis.source_context_design_disagrees_arm": "source context design disagrees with Analysis construction",
+        "store.run.legacy_analysis_required": RefusalSpec(
+            "store.run.legacy_analysis_required",
+            InvalidRequestError,
+            template="Switchback results do not have a registered family decision plan; use {route}",
+        ),
     },
 )
 SOURCE_CONTEXT_DESIGN_DISAGREES_ARM = _REFUSALS[
@@ -756,6 +763,29 @@ class Analysis:
     @property
     def _metrics(self) -> list[Metric]:
         return list(self._context.metrics)
+
+    def _execution_config_for_cell(self, cell: Any) -> tuple[Any, tuple[Method, ...]]:
+        key = cell.identity.key
+        if key.metric == "uptake" and key.estimand == "compliance":
+            uptake = getattr(self._design, "uptake", None)
+            if uptake is not None:
+                return uptake, (Method(name="unadjusted"),)
+
+        configs = getattr(self._context, "configs", None)
+        if configs is None:
+            raise CodedError(
+                "Execution method identity is unavailable",
+                code="store.run.identity_incomplete",
+                context={"field": "method_identity"},
+            )
+        config = next((item for item in configs if item.metric.name == key.metric), None)
+        if config is None:
+            raise CodedError(
+                "Cell metric has no execution configuration",
+                code="store.run.identity_incomplete",
+                context={"field": "metric_identity"},
+            )
+        return config.metric, tuple(effective_methods(config, design=self._design))
 
     @property
     def _design(self) -> Randomized | Encouragement | Observational | None:
@@ -2375,6 +2405,14 @@ class Analysis:
     def metrics(self) -> list[Metric]:
         """All metrics and guardrails for this experiment."""
         return list(self._metrics)
+
+    @property
+    def compiled_decision_plan(self) -> CompiledDecisionPlan:
+        """The immutable decision plan this analysis will execute."""
+        plan = getattr(self, "_plan", None)
+        if plan is None:
+            _raise("store.run.legacy_analysis_required", route="Analysis.run()")
+        return plan
 
     @property
     def available_metrics(self) -> list[Metric]:

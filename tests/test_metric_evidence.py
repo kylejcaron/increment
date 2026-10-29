@@ -51,7 +51,14 @@ def _strict_nested_close(expected, actual) -> bool:
 
 def _assert_replay_rows_close(expected, actual):
     # Reuse the parity harness structure/null check, then pin floats more tightly.
-    assert nested_close(expected, actual)
+    assert nested_close(expected, actual), [
+        {
+            key: (expected_row.get(key), actual_row.get(key))
+            for key in expected_row.keys() | actual_row.keys()
+            if not nested_close(expected_row.get(key), actual_row.get(key))
+        }
+        for expected_row, actual_row in zip(expected, actual, strict=True)
+    ]
     assert _strict_nested_close(expected, actual), (
         "replay numeric differences exceed rtol=1e-12, atol=1e-15"
     )
@@ -142,6 +149,41 @@ def _normalize_warehouse_replay_rows(rows):
     return normalized
 
 
+def _normalize_step8_replay_rows(expected, actual):
+    """Ignore only post-capture family fields on rows proven selected/reissued."""
+    normalized = []
+    step8_fields = {"allocation_alpha", "family_nominal_alpha"}
+    for expected_row, actual_row in zip(expected, actual, strict=True):
+        additions = {
+            field
+            for field in step8_fields
+            if expected_row.get(field) is None and actual_row.get(field) is not None
+        }
+        assert set(actual_row) - set(expected_row) <= step8_fields
+        if additions:
+            assert actual_row.get("discovery") is True
+            if "allocation_alpha" in additions:
+                allocation_alpha = actual_row["allocation_alpha"]
+                assert isinstance(allocation_alpha, (int, float))
+                assert 0.0 < allocation_alpha < 1.0
+            if "family_nominal_alpha" in additions:
+                family_alpha = actual_row["family_nominal_alpha"]
+                assert isinstance(family_alpha, (int, float))
+                assert 0.0 < family_alpha < 1.0
+        normalized_row = dict(actual_row)
+        for field in step8_fields:
+            if field not in expected_row:
+                normalized_row.pop(field, None)
+            elif field in additions:
+                normalized_row[field] = None
+        normalized.append(normalized_row)
+
+    def sort_key(row):
+        return json.dumps(row, sort_keys=True)
+
+    return sorted(expected, key=sort_key), sorted(normalized, key=sort_key)
+
+
 def test_warehouse_replay_comparison_ignores_denominator_support_order():
     rows = [
         {
@@ -225,6 +267,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             if name in {"mixed_warehouse", "mixed_fitted_replay"}:
                 expected_rows = _normalize_warehouse_replay_rows(expected_rows)
                 replay_rows = _normalize_warehouse_replay_rows(replay_rows)
+            expected_rows, replay_rows = _normalize_step8_replay_rows(expected_rows, replay_rows)
             _assert_replay_rows_close(expected_rows, replay_rows)
 
         checkpoint_data = json.loads((_FIXTURES / "checkpoint.json").read_text())

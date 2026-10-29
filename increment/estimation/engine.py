@@ -3975,7 +3975,9 @@ def reintervalize_cuped_decision(
     unavailable cell carrying the refusal, so its siblings' rows survive.
     """
     try:
-        return row.reintervalize(alpha, interval_alternative=alternative)
+        return row.reintervalize(alpha, interval_alternative=alternative).model_copy(
+            update={"allocation_alpha": None}
+        )
     except CodedError as exc:
         return _cuped_linear_unavailable_row(
             metric,

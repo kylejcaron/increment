@@ -5,6 +5,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from increment._run import RunResult, run
     from increment._study import ParallelStudyEnvelope, StudyEnvelope, SwitchbackStudyEnvelope
     from increment.absorption import absorb_factor
     from increment.analysis import Analysis, fit_predeclared_adjustment
@@ -233,6 +234,8 @@ except PackageNotFoundError:  # pragma: no cover - source tree without an instal
 
 __all__ = [
     "Analysis",
+    "RunResult",
+    "run",
     "moments_from_summaries",
     "MetricTrends",
     "Definitions",
@@ -443,6 +446,8 @@ _LAZY_IMPORTS = {
     "impute": ("increment.impute", None),
     "MetricTrends": ("increment.reporting", "MetricTrends"),
     "Analysis": ("increment.analysis", "Analysis"),
+    "RunResult": ("increment._run", "RunResult"),
+    "run": ("increment._run", "run"),
     "SourceSnapshotEvidence": ("increment.query.session", "SourceSnapshotEvidence"),
     "MetricSpec": ("increment.frame", "MetricSpec"),
     "CupedCovariate": ("increment.semantics.models", "CupedCovariate"),

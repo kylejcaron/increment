@@ -108,7 +108,8 @@ def nominal_alpha(view: LiftEstimate, construction: Construction) -> float:
 
 
 def _wald_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
-    """``infer_lift``'s interval from the persisted constructor moments at *alpha*."""
+    """``infer_lift``'s interval from persisted constructor moments at *alpha*."""
+    from increment.errors import CodedError
     from increment.estimation.inference import _resolve_fixed_horizon
 
     assert view.lift is not None
@@ -123,17 +124,37 @@ def _wald_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
         prior=None,
     )
     assert reference.crit is not None
-    lower, upper = wald_bounds(mu, reference.crit * sigma, 1.0, what="FCR relative interval")
-    updates: dict[str, object] = {
-        "lift": view.lift.model_copy(
+    updates: dict[str, object] = {}
+    try:
+        lower, upper = wald_bounds(mu, reference.crit * sigma, 1.0, what="FCR relative interval")
+        if view.scale == "log":
+            lower = resolvable_expm1(lower, what="FCR relative lower bound")
+            upper = resolvable_expm1(upper, what="FCR relative upper bound")
+    except CodedError as exc:
+        updates.update(
+            {
+                "lift": view.lift.model_copy(
+                    update={
+                        "lb": None,
+                        "ub": None,
+                        "alpha": None,
+                        "level": None,
+                        "open_side": None,
+                    }
+                ),
+                "relative_error_code": exc.code,
+                "relative_error_context": exc.context,
+            }
+        )
+    else:
+        updates["lift"] = view.lift.model_copy(
             update={
-                "lb": resolvable_expm1(lower, what="FCR relative lower bound"),
-                "ub": resolvable_expm1(upper, what="FCR relative upper bound"),
+                "lb": lower,
+                "ub": upper,
                 "level": math.fsum((1.0, -reference.alpha_eff)),
                 "alpha": reference.alpha_eff,
             }
         )
-    }
     if view.abs_lb is not None or view.abs_ub is not None:
         assert view.abs_diff is not None and view.abs_se is not None
         abs_reference = _resolve_fixed_horizon(
@@ -368,5 +389,6 @@ def reinterval_selected(
     """
     if construction == "unavailable" and not _has_additive_interval(view):
         return view
-    cap = nominal_alpha(view, construction)
-    return reinterval_at_fcr(view, construction, min(realized_threshold, cap))
+    return reinterval_at_fcr(
+        view, construction, min(realized_threshold, nominal_alpha(view, construction))
+    )

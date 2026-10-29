@@ -8,6 +8,260 @@ from pathlib import Path
 import pytest
 
 
+def test_stored_margin_comparison_survives_json_and_arrow():
+    import json
+
+    from increment.errors import CodedError
+    from increment.result_envelope import Operation, ResultCell, compare_margin
+
+    _data, _design = _relevel_test_data()
+    row, _withheld = _relevel_test_t_rows(_data, _design)
+    cell = ResultCell.from_row(row)
+    restored = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+
+    for candidate in restored:
+        assert Operation.COMPARE_MARGIN in candidate.supports["sampling"]
+        assert compare_margin(candidate, margin=row.null_lift, scale="relative") == row.stat_sig()
+        margin = row.null_lift + 0.1
+        expected = row.model_copy(update={"null_lift": margin, "null_abs": None}).stat_sig()
+        assert compare_margin(candidate, margin=margin, scale="relative") == expected
+        absolute_margin = row.null_abs or 0.0
+        absolute_expected = row.model_copy(
+            update={"null_lift": 0.0, "null_abs": absolute_margin}
+        ).stat_sig()
+        assert (
+            compare_margin(candidate, margin=absolute_margin, scale="absolute") == absolute_expected
+        )
+
+    unavailable = ResultCell.from_report_payload(
+        row_kind="sensitivity",
+        identity=cell.identity,
+        label=cell.label,
+        row=row,
+    )
+    with pytest.raises(CodedError) as raised:
+        compare_margin(unavailable, margin=0.0, scale="relative")
+    assert raised.value.code == "results.operation.unsupported"
+
+
+def test_native_absolute_margin_matches_public_decision_after_codecs():
+    from increment.breakout.estimates import BreakoutEstimates
+    from increment.errors import CodedError
+    from increment.result_envelope import ResultCell, compare_margin
+    from tests.breakout.test_heterogeneity import _absolute_breakout_estimate
+    from tests.estimation.test_decision_stats import _absolute_linear_est
+
+    rows = (
+        _absolute_linear_est(mu=1.0, sigma=0.2),
+        _absolute_breakout_estimate("A", value=1.0, se=0.2),
+    )
+    for row in rows:
+        cell = (
+            BreakoutEstimates([row]).as_cells()[0]
+            if isinstance(row, type(rows[1]))
+            else ResultCell.from_row(row)
+        )
+        restored = (
+            ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+            ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+        )
+        expected = row.model_copy(update={"null_lift": 0.0, "null_abs": None}).stat_sig()
+        assert expected is True
+        for candidate in restored:
+            assert compare_margin(candidate, margin=0.0, scale="absolute") == expected
+            with pytest.raises(CodedError) as raised:
+                compare_margin(candidate, margin=0.0, scale="relative")
+            assert raised.value.code == "results.operation.unsupported"
+
+
+def test_absolute_margin_refuses_when_retained_additive_bounds_are_absent():
+    from increment.errors import CodedError
+    from increment.result_envelope import ResultCell, compare_margin
+
+    row, _ = _relevel_test_t_rows(*_relevel_test_data())
+    row = row.model_copy(update={"abs_lb": None, "abs_ub": None, "abs_alpha": None})
+    cell = ResultCell.from_row(row)
+    with pytest.raises(CodedError) as raised:
+        compare_margin(cell, margin=0.0, scale="absolute")
+    assert raised.value.code == "results.operation.unsupported"
+
+
+def test_sequential_bonferroni_recomputes_at_requested_level():
+    import math
+
+    from increment import SequentialCell
+    from increment.decision import AsymptoticSequentialEvidence
+    from increment.frame import MetricSpec
+    from increment.result_envelope import ResultCell, combine_family_evidence, family_evidence
+    from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
+
+    metric = MetricSpec(name="outcome", type="mean")
+    registered_cell = SequentialCell(
+        metric="outcome", group_id="treatment", family=True, alpha=0.05
+    )
+    rows = _analysis(
+        _frame([1, 2, 3] * 20, [1.49, 2.49, 3.49] * 20),
+        [metric],
+        _plan([metric], cells=[registered_cell], secondary=True),
+    ).run()
+    cell = ResultCell.from_row(rows[0])
+    retained = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+    for candidate in retained:
+        item = family_evidence(candidate)
+        assert isinstance(item.evidence, AsymptoticSequentialEvidence)
+        result = item.evidence.result
+        from fractions import Fraction
+
+        for level in (0.05, 0.01):
+            alpha = Fraction(str(level))
+            expected = result._denominator_resolved(alpha) and result.log_e >= math.log(1 / level)
+            assert (
+                item.identity_hash
+                in combine_family_evidence((item,), procedure="bonferroni", level=level)
+            ) is expected
+
+
+def test_registered_likelihood_family_evidence_survives_codecs():
+    import math
+    from fractions import Fraction
+
+    from increment import AlwaysValid, SequentialCell
+    from increment.decision import AsymptoticSequentialEvidence, EValueEvidence
+    from increment.estimation.family import e_bh_select
+    from increment.result_envelope import ResultCell, combine_family_evidence, family_evidence
+    from tests.sequential_cases import capture, estimate_sequential, records, registration
+
+    registered_cells = (
+        SequentialCell(metric="outcome", group_id="treatment", alpha=Fraction(1, 20), family=True),
+        SequentialCell(
+            metric="outcome", group_id="never-enrolled", alpha=Fraction(1, 20), family=True
+        ),
+        SequentialCell(
+            metric="outcome", group_id="also-never-enrolled", alpha=Fraction(1, 20), family=True
+        ),
+    )
+    registered = registration(cells=registered_cells)
+    bundle = estimate_sequential(
+        capture(registered, records([0] * 6, [1, 1, 1, 0, 0, 0])),
+        AlwaysValid(registration=registered),
+    )
+    likelihood_cells = tuple(ResultCell.from_row(row) for row in bundle.results)
+    from increment.frame import MetricSpec
+    from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
+
+    metric = MetricSpec(name="outcome", type="mean")
+    sequential_cell = SequentialCell(
+        metric="outcome", group_id="treatment", family=True, alpha=0.05
+    )
+    asymptotic_rows = _analysis(
+        _frame([1, 2, 3] * 30, [7, 10, 13] * 30),
+        [metric],
+        _plan([metric], cells=[sequential_cell], secondary=True),
+    ).run()
+    cells = (*likelihood_cells, ResultCell.from_row(asymptotic_rows[0]))
+    retained = (
+        tuple(ResultCell.from_payload(json.loads(json.dumps(item.to_payload()))) for item in cells),
+        ResultCell.from_arrow(ResultCell.to_arrow(cells)),
+    )
+    for restored in retained:
+        evidence = tuple(family_evidence(candidate) for candidate in restored)
+        likelihood_evidence = [
+            item for item in evidence if isinstance(item.evidence, EValueEvidence)
+        ]
+        assert len(likelihood_evidence) == 3
+        missing = next(
+            item
+            for item in likelihood_evidence
+            if isinstance(item.evidence, EValueEvidence)
+            and item.evidence.checkpoint.status == "missing"
+        )
+        assert isinstance(missing.evidence, EValueEvidence)
+        assert missing.evidence.log_e == float("-inf")
+        assert len(evidence) == 4
+        assert any(isinstance(item.evidence, AsymptoticSequentialEvidence) for item in evidence)
+        logs = []
+        for item in evidence:
+            if isinstance(item.evidence, EValueEvidence):
+                logs.append(item.evidence.log_e)
+            elif isinstance(item.evidence, AsymptoticSequentialEvidence):
+                logs.append(item.evidence.result.log_e)
+            else:
+                raise AssertionError("expected retained sequential evidence")
+        expected_e_bh = frozenset(
+            evidence[index].identity_hash for index in e_bh_select(logs, 0.05)
+        )
+        assert combine_family_evidence(evidence, procedure="e_bh", level=0.05) == expected_e_bh
+        threshold = Fraction(1, 20) / len(evidence)
+        log_threshold = math.log(1 / float(threshold))
+        expected_bonferroni = set()
+        for item in evidence:
+            if isinstance(item.evidence, EValueEvidence):
+                rejects = item.evidence.log_e >= log_threshold
+            elif isinstance(item.evidence, AsymptoticSequentialEvidence):
+                result = item.evidence.result
+                rejects = result._denominator_resolved(threshold) and result.log_e >= log_threshold
+            else:
+                raise AssertionError("expected retained sequential evidence")
+            if rejects:
+                expected_bonferroni.add(item.identity_hash)
+        assert combine_family_evidence(evidence, procedure="bonferroni", level=0.05) == frozenset(
+            expected_bonferroni
+        )
+
+
+def test_typed_family_evidence_recomputes_bh_after_both_codecs():
+    import json
+
+    from increment.estimation.decision_types import PValueEvidence
+    from increment.result_envelope import ResultCell, combine_family_evidence, family_evidence
+
+    selected, unselected = _relevel_test_family_rows(*_relevel_test_data())
+    cells = [ResultCell.from_row(row) for row in (selected, unselected)]
+    expected = {
+        cell.identity.hash()
+        for cell, row in zip(cells, (selected, unselected), strict=True)
+        if row.discovery
+    }
+    round_trips = (
+        [ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))) for cell in cells],
+        ResultCell.from_arrow(ResultCell.to_arrow(cells)),
+    )
+    for restored in round_trips:
+        evidence = tuple(family_evidence(cell) for cell in restored)
+        assert all(isinstance(item.evidence, PValueEvidence) for item in evidence)
+        assert combine_family_evidence(evidence, procedure="bh", level=0.05) == expected
+        bonferroni = frozenset(
+            item.identity_hash
+            for item in evidence
+            if isinstance(item.evidence, PValueEvidence) and item.evidence.p_value <= 0.025
+        )
+        assert combine_family_evidence(evidence, procedure="bonferroni", level=0.05) == bonferroni
+
+
+def test_set_only_winsor_does_not_support_margin_comparison_after_codecs():
+    from increment.errors import CodedError
+    from increment.result_envelope import Operation, ResultCell, compare_margin
+
+    data, design = _relevel_test_data()
+    row = _relevel_test_winsor_row(data, design)
+    cell = ResultCell.from_row(row)
+    restored = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+    for candidate in restored:
+        assert Operation.COMPARE_MARGIN not in candidate.supports["sampling"]
+        with pytest.raises(CodedError) as raised:
+            compare_margin(candidate, margin=row.null_lift + 0.05, scale="relative")
+        assert raised.value.code == "results.operation.unsupported"
+
+
 @pytest.mark.integration
 def test_seeded_lift_cells_round_trip_retained_row_and_legacy_interval(seeded_con, seeded_defs):
     import increment.result_envelope as result_envelope
@@ -179,14 +433,74 @@ def test_family_reissue_caps_threshold_at_each_rows_allocated_alpha(seeded_con, 
     assert corrected[1].lift.alpha == pytest.approx(0.01)
     high_budget = row.reintervalize(0.03)
     low_budget_expected = low_budget.reintervalize(0.01)
-    assert low_budget_expected.lift is not None
+    assert isinstance(high_budget, LiftEstimate)
+    assert isinstance(low_budget_expected, LiftEstimate)
     assert high_budget.lift is not None
-    assert (corrected[0].lift.lb, corrected[0].lift.ub) == pytest.approx(
+    assert low_budget_expected.lift is not None
+    from increment.errors import CodedError
+
+    assert isinstance(corrected[0], LiftEstimate)
+    high_budget_row = corrected[0]
+    low_budget_row = corrected[1]
+    assert isinstance(low_budget_row, LiftEstimate)
+    with pytest.raises(CodedError) as raised:
+        high_budget_row.reintervalize(0.031)
+    assert raised.value.code == "results.operation.alpha_above_allocation"
+    with pytest.raises(CodedError) as low_budget_refusal:
+        low_budget_row.reintervalize(0.02)
+    assert low_budget_refusal.value.code == "results.operation.alpha_above_allocation"
+    assert high_budget_row.lift is not None and high_budget.lift is not None
+    assert (high_budget_row.lift.lb, high_budget_row.lift.ub) == pytest.approx(
         (high_budget.lift.lb, high_budget.lift.ub)
     )
-    assert (corrected[1].lift.lb, corrected[1].lift.ub) == pytest.approx(
+    assert low_budget_expected.lift is not None and low_budget_row.lift is not None
+    assert (low_budget_row.lift.lb, low_budget_row.lift.ub) == pytest.approx(
         (low_budget_expected.lift.lb, low_budget_expected.lift.ub)
     )
+
+
+@pytest.mark.integration
+def test_additive_only_primary_reintervalizes_from_its_absolute_reference():
+    import pandas as pd
+
+    from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
+    from increment.estimation.results import LiftEstimate
+
+    data = pd.DataFrame(
+        [
+            {"unit": f"{group}-{index}", "arm": group, "value": value}
+            for group, values in (
+                ("control", [1.0, 2.0, 3.0, 4.0, 5.0]),
+                ("treatment", [-4.0, -3.0, -2.0, -1.0, 0.0]),
+            )
+            for index, value in enumerate(values)
+        ]
+    )
+    rows = Analysis.from_unit_summary(
+        data,
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+        plan=AnalysisPlan(alpha=0.05, primary="value"),
+    ).run()
+    row = next(
+        candidate
+        for candidate in rows
+        if isinstance(candidate, LiftEstimate) and candidate.group_id == "treatment"
+    )
+
+    assert row.lift is None
+    assert row.abs_reference_kind == "t"
+    assert row.abs_lb is not None and row.abs_ub is not None
+    reissued = row.reintervalize(0.01)
+    assert reissued.lift is None
+    assert reissued.abs_alpha == pytest.approx(0.01)
+    assert reissued.abs_lb is not None and reissued.abs_ub is not None
 
 
 @pytest.mark.integration
@@ -712,6 +1026,23 @@ def test_arrow_decoder_validates_construction_tag_and_row_consistency(seeded_con
         assert raised.value.code == "results.cell.schema_unsupported"
 
 
+def _assert_sequential_family_evidence_survives_codecs(cell, row):
+    from increment.estimation.decision_types import AsymptoticSequentialEvidence
+    from increment.estimation.family import e_bh_select
+    from increment.result_envelope import ResultCell, combine_family_evidence, family_evidence
+
+    evidence_cells = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+    )
+    expected = set(e_bh_select([row.sequential_result.log_e], 0.05))
+    for restored_cell in evidence_cells:
+        (stored_evidence,) = (family_evidence(restored_cell),)
+        assert isinstance(stored_evidence.evidence, AsymptoticSequentialEvidence)
+        selected = combine_family_evidence((stored_evidence,), procedure="e_bh", level=0.05)
+        assert bool(selected) is bool(expected)
+
+
 def test_asymptotic_sequential_component_retains_checkpoint_and_registration_alpha():
     from increment.estimation.sequential_result import AsymptoticSequentialResult
     from increment.frame import MetricSpec
@@ -735,6 +1066,7 @@ def test_asymptotic_sequential_component_retains_checkpoint_and_registration_alp
     assert row.sequential_result is not None
     assert decoded_row.sequential_result.checkpoint == row.sequential_result.checkpoint
     assert decoded_row.sequential_result.decision_alpha == row.sequential_result.decision_alpha
+    _assert_sequential_family_evidence_survives_codecs(cell, row)
     assert decoded.supports["sequential"] == frozenset()
     assert Operation.RELEVEL not in decoded.supports["sequential"]
     assert decoded.summary is not None
@@ -772,6 +1104,16 @@ def test_asymptotic_sequential_component_retains_checkpoint_and_registration_alp
         decision_scope_complete=False,
     )
     unavailable_cell = ResultCell.from_row(unavailable)
+    from increment.result_envelope import family_evidence
+
+    triggered_round_trips = (
+        ResultCell.from_payload(json.loads(json.dumps(unavailable_cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([unavailable_cell]))[0],
+    )
+    for retained in triggered_round_trips:
+        evidence = family_evidence(retained)
+        assert evidence.evidence is None
+        assert evidence.reason_code == "readout.cell.unsupported_request"
     output = render(AnalysisEnvelope((unavailable_cell,), metadata=None), "full")
     assert "triggered_chain_uncommitted" in output
     from fractions import Fraction
@@ -1239,7 +1581,7 @@ def test_unsupported_sampling_constructions_refuse_without_losing_reason(seeded_
     from increment.estimation.armstats import ArmStats
     from increment.estimation.inference import infer_independent_mean
     from increment.estimation.winsor import estimate_winsor_lift
-    from increment.result_envelope import ResultCell, relevel
+    from increment.result_envelope import ResultCell, compare_margin, relevel
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
 
     rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
@@ -1288,6 +1630,9 @@ def test_unsupported_sampling_constructions_refuse_without_losing_reason(seeded_
     ):
         cell = ResultCell.from_row(row)
         assert cell.supports["sampling"] == frozenset()
+        with pytest.raises(CodedError) as raised:
+            compare_margin(cell, margin=0.0, scale="relative")
+        assert raised.value.code == "results.operation.unsupported"
         restored = ResultCell.from_payload(cell.to_payload())
         status = restored.components["sampling"][0]
         if row is winsor:

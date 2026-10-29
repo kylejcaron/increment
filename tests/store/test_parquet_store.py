@@ -349,11 +349,16 @@ def test_history_keeps_additive_se_and_df_for_clustered_large_offset(tmp_path):
         scope = cell.identity.scope
         assert cell.identity.metric_hash is not None
         assert scope is not None
+        assert cell.identity.estimator_id is not None
+        assert cell.identity.method_config_hash is not None
+        assert cell.identity.method_instance_id is not None
         history = store.history(
             "offset",
             HistorySelector(
-                cell.identity.metric_hash,
+                metric_hash=cell.identity.metric_hash,
                 estimator_id=cell.identity.estimator_id,
+                method_config_hash=cell.identity.method_config_hash,
+                method_instance_id=cell.identity.method_instance_id,
                 scope_hash=scope.hash(),
                 role=cell.identity.key.method_role,
             ),
@@ -380,7 +385,14 @@ def test_public_analysis_cells_round_trip_through_parquet_store(tmp_path):
         assert handle.run.source_content_digest == run.source_content_digest
         history = store.history(
             "exp",
-            HistorySelector("metric", estimator_id="t", scope_hash=scope.hash(), role="decision"),
+            HistorySelector(
+                metric_hash="metric",
+                estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
+                scope_hash=scope.hash(),
+                role="decision",
+            ),
         )
         assert history.schema.field("point").type == pa.float64()
         assert history.num_rows == 1
@@ -391,10 +403,12 @@ def test_public_analysis_cells_round_trip_through_parquet_store(tmp_path):
         contrast = store.history(
             "exp",
             HistorySelector(
-                "metric",
-                contrast="control:treatment",
+                metric_hash="metric",
                 estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
                 scope_hash=scope.hash(),
+                contrast="control:treatment",
                 role="decision",
             ),
         )
@@ -403,6 +417,18 @@ def test_public_analysis_cells_round_trip_through_parquet_store(tmp_path):
         for name in ("point", "lower", "upper", "se", "df"):
             assert arrow.schema.field(name).type == pa.float64()
         expected_se = rows[0].lift.log_se if rows[0].lift is not None else None
+        mismatched_method = store.history(
+            "exp",
+            HistorySelector(
+                metric_hash="metric",
+                estimator_id="t",
+                method_config_hash="different-config",
+                method_instance_id="instance",
+                scope_hash=scope.hash(),
+                role="decision",
+            ),
+        )
+        assert mismatched_method.num_rows == 0
         assert arrow["se"].to_pylist()[0] == pytest.approx(expected_se)
 
         conflicting_cells = tuple(
@@ -477,13 +503,93 @@ def test_run_rejects_cell_provenance_from_another_execution():
         bad_cells = (
             replace(
                 cells[0],
-                provenance=replace(cells[0].provenance, execution_identity_hash="other-exec"),
+                provenance=replace(
+                    cells[0].provenance,
+                    run_id="other-run",
+                    execution_identity_hash="other-implementation-pin",
+                ),
             ),
             *cells[1:],
         )
         with pytest.raises(CodedError) as error:
             _run(rows, bad_cells, scope)
         assert error.value.code == "store.run.provenance_mismatch"
+    finally:
+        analysis.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("experiment_id", "other-experiment", "store.run.identity_mismatch"),
+        ("analysis_spec_hash", "other-spec", "store.run.scope_mapping_invalid"),
+    ],
+)
+def test_run_rejects_cell_spec_or_experiment_outside_manifest(field, value, code):
+    analysis = _analysis()
+    try:
+        rows = analysis.run()
+        cells, scope = _cells(rows)
+        identity = cells[0].identity.model_copy(update={field: value})
+        bad_cell = replace(cells[0], identity=identity)
+        with pytest.raises(CodedError) as error:
+            _run(rows, (bad_cell, *cells[1:]), scope)
+        assert error.value.code == code
+    finally:
+        analysis.close()
+
+
+def test_run_rejects_cell_snapshot_that_differs_from_identity():
+    analysis = _analysis()
+    try:
+        rows = analysis.run()
+        cells, scope = _cells(rows)
+        bad_cell = replace(cells[0], source_snapshot_id="other-snapshot")
+        with pytest.raises(CodedError) as error:
+            _run(rows, (bad_cell, *cells[1:]), scope)
+        assert error.value.code == "store.run.identity_mismatch"
+    finally:
+        analysis.close()
+
+
+def test_run_rejects_population_scope_that_differs_from_cell():
+    analysis = _analysis()
+    try:
+        rows = analysis.run()
+        cells, scope = _cells(rows)
+        identity = cells[0].identity.model_copy(
+            update={"scope": Scope(view="run", grain="total", population="triggered")}
+        )
+        bad_cell = replace(cells[0], identity=identity)
+        with pytest.raises(CodedError) as error:
+            _run(rows, (bad_cell, *cells[1:]), scope)
+        assert error.value.code == "store.run.identity_mismatch"
+    finally:
+        analysis.close()
+
+
+def test_run_rejects_mismatched_segment_scope_descriptor():
+    analysis = _analysis()
+    try:
+        rows = analysis.run()
+        cells, scope = _cells(rows)
+        key = cells[0].identity.key.model_copy(
+            update={"kind": "segment", "dimension": "country", "dimension_value": "US"}
+        )
+        identity = cells[0].identity.model_copy(
+            update={
+                "key": key,
+                "scope": Scope(
+                    view="breakout",
+                    grain="total",
+                    segment=({"property": "other_dimension", "source": None},),
+                ),
+            }
+        )
+        bad_cell = replace(cells[0], identity=identity)
+        with pytest.raises(CodedError) as error:
+            _run(rows, (bad_cell, *cells[1:]), scope)
+        assert error.value.code == "store.run.identity_mismatch"
     finally:
         analysis.close()
 
@@ -575,8 +681,10 @@ def test_open_run_ignores_corrupt_records_for_other_experiments(tmp_path):
         history = store.history(
             "exp-a",
             HistorySelector(
-                "metric",
+                metric_hash="metric",
                 estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
                 scope_hash=scope_a.hash(),
                 role="decision",
             ),
@@ -664,7 +772,16 @@ def test_malformed_run_manifest_is_reported_during_discovery(tmp_path, manifest_
         assert error.value.code == "store.run.corrupt"
 
         with pytest.raises(CodedError) as error:
-            store.history("exp", HistorySelector("metric"))
+            store.history(
+                "exp",
+                HistorySelector(
+                    "metric",
+                    estimator_id="t",
+                    method_config_hash="config",
+                    method_instance_id="instance",
+                    scope_hash="scope",
+                ),
+            )
         assert error.value.code == "store.run.corrupt"
     finally:
         analysis.close()
@@ -817,7 +934,16 @@ def test_latest_and_history_reject_unreadable_committed_parquet_records(tmp_path
 
         for operation in (
             lambda: store.open_run("exp", "spec"),
-            lambda: store.history("exp", HistorySelector("metric")),
+            lambda: store.history(
+                "exp",
+                HistorySelector(
+                    metric_hash="metric",
+                    estimator_id="t",
+                    method_config_hash="config",
+                    method_instance_id="instance",
+                    scope_hash=scope.hash(),
+                ),
+            ),
         ):
             with pytest.raises(CodedError) as error:
                 operation()
@@ -836,8 +962,48 @@ def test_contrast_selector_matches_control_labels_containing_colons(tmp_path):
 
         history = store.history(
             "exp",
-            HistorySelector("metric", contrast="control:v1:treatment"),
+            HistorySelector(
+                metric_hash="metric",
+                estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
+                scope_hash=scope.hash(),
+                contrast="control:v1:treatment",
+            ),
         )
         assert history.num_rows == 1
+    finally:
+        analysis.close()
+
+
+def test_compiled_plan_binding_round_trips_with_run_manifest(tmp_path):
+    from increment import AnalysisPlan
+    from increment.frame import MetricSpec, synthesise_metric
+    from increment.kernel.contracts import CompiledPlanBinding, Registration
+    from increment.plan import compile_decision_plan
+
+    analysis = _analysis()
+    try:
+        rows = analysis.run()
+        cells, scope = _cells(rows)
+        compiled = compile_decision_plan(
+            AnalysisPlan(primary="revenue"),
+            [synthesise_metric(MetricSpec(name="revenue", type="mean"))],
+            path="frame",
+        )
+        registration = Registration.from_plan(compiled)
+        run = replace(
+            _run(rows, cells, scope),
+            registration_hash=registration.registration_hash,
+            decision_plan=CompiledPlanBinding.from_plan(registration, compiled),
+        )
+        store = ParquetResultsStore(tmp_path)
+        store.put(run)
+
+        restored = store.open_run("exp", "spec", "run-1").run
+
+        assert restored.manifest_version == 3
+        assert restored.decision_plan == run.decision_plan
+        assert restored.manifest_hash == run.manifest_hash
     finally:
         analysis.close()

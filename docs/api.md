@@ -52,6 +52,9 @@ change without notice.
 - Release note (bug fix): portable cell summaries follow the row's requested
   effect scale and retain an available relative lift when an additive sidecar
   cannot be projected. A different-scale fallback is labeled explicitly.
+- Release note (bug fix): re-issuing a row beyond its registered plan or selected
+  family alpha refuses with `results.operation.alpha_above_allocation`; register
+  the new alpha in the analysis plan and rerun instead.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
@@ -168,10 +171,13 @@ intervals, at the same or a lower alpha than already stored; it can preserve or
 widen the interval, but cannot narrow it. Directional intervals with an open
 endpoint are not relevelable. Requests that would narrow an interval refuse
 with `results.operation.alpha_above_allocation`. This cell operation is
-separate from `LiftEstimate.reintervalize(alpha)`, which keeps its existing
-row-level reissue behavior. For multiplicity correction, pass retained lift
-rows to `select_exploratory_family()`; it derives the family cutoff and returns
-corrected estimates.
+separate from `LiftEstimate.reintervalize(alpha)`, which rebuilds from the
+retained row but refuses requests above the row's registered plan or selected
+family allocation with `results.operation.alpha_above_allocation`. Register a
+new alpha in the analysis plan and rerun rather than widening an existing result.
+For multiplicity correction, pass retained lift rows to
+`select_exploratory_family()`; it derives the family cutoff and returns corrected
+estimates.
 
 Save `ReadoutResults` JSON to preserve and reopen a complete result collection.
 Use `ResultCell` or `AnalysisEnvelope` for portable per-cell summaries,

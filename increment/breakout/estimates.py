@@ -4075,6 +4075,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 **family_record,
                 "family_procedure": "bh",
                 "discovery": family_discovery(outcome, key),
+                "family_nominal_alpha": (alpha if family_discovery(outcome, key) else None),
             }
         )
     selected_keys = outcome.selected
@@ -4100,6 +4101,11 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_nominal_alpha": (
+                        alpha
+                        if estimate.method_role == "decision" and family_discovery(outcome, key)
+                        else None
+                    ),
                     "family_procedure": "bh" if estimate.method_role == "decision" else None,
                 }
             )
@@ -4189,6 +4195,11 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_nominal_alpha": (
+                        family_record["family_nominal_alpha"]
+                        if estimate.method_role == "decision" and family_discovery(outcome, key)
+                        else None
+                    ),
                     "family_procedure": "bh" if estimate.method_role == "decision" else None,
                 }
             )
@@ -4254,6 +4265,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 n_control=original.n_control,
                 low_reliability=original.low_reliability,
                 family_procedure="bh",
+                family_nominal_alpha=alpha,
                 **family_fields,
             )
             continue
@@ -4267,7 +4279,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             low_reliability=original.low_reliability,
             role="exploratory",
             **family_fields,
-        ).model_copy(update={"family_procedure": "bh"})
+        ).model_copy(update={"family_procedure": "bh", "family_nominal_alpha": alpha})
     return results
 
 

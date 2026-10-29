@@ -86,6 +86,53 @@ def test_directional_t_reintervalization_matches_estimator_alpha_convention():
     assert projected.require_lift().ub == pytest.approx(math.expm1(0.2 + critical * 0.05))
 
 
+def test_directional_primary_can_repeat_the_same_reissue_alpha():
+    row = _t_row(alternative="greater").model_copy(update={"role": "primary"})
+    reissued = row.reissue(0.05)
+
+    assert reissued.allocation_alpha == pytest.approx(0.1)
+    assert reissued.reissue(0.05).lift == reissued.lift
+
+
+def test_directional_primary_can_repeat_overflowed_reissue_without_additive_sidecar():
+    row = _t_row(alternative="greater").model_copy(
+        update={
+            "role": "primary",
+            "abs_diff": None,
+            "abs_se": None,
+            "abs_lb": None,
+            "abs_ub": None,
+            "abs_alpha": None,
+        }
+    )
+    assert row.allocation_alpha is None
+    reissued = row.reissue(1e-100)
+    assert reissued.allocation_alpha == pytest.approx(2e-100)
+    assert reissued.lift is not None and reissued.lift.alpha is None
+
+    repeated = reissued.reissue(1e-100)
+    assert repeated.lift == reissued.lift
+
+
+def test_directional_primary_overflow_respects_changed_interval_alternative():
+    row = _t_row(alternative="greater").model_copy(
+        update={
+            "role": "primary",
+            "abs_diff": None,
+            "abs_se": None,
+            "abs_lb": None,
+            "abs_ub": None,
+            "abs_alpha": None,
+        }
+    )
+    reissued = row.reissue(1e-100, interval_alternative="two-sided")
+
+    with pytest.raises(CodedError) as raised:
+        reissued.reissue(1.5e-100)
+
+    assert raised.value.code == "results.operation.alpha_above_allocation"
+
+
 def test_student_t_absolute_margin_p_value_uses_retained_degrees_of_freedom():
     row = _t_row(alternative="greater").model_copy(update={"null_abs": 0.0})
 
