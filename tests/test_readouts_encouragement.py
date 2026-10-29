@@ -700,6 +700,19 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         plan=plan,
     )
     source.capture_sequential(finalized=True, as_of=date(2025, 1, 15))
+    itt_only = readouts.run(source, estimands=("itt",))
+    itt_and_compliance = readouts.run(source, estimands=("itt", "compliance"))
+    assert {row.estimand for row in itt_only} == {"itt"}
+    assert {row.estimand for row in itt_and_compliance} == {"itt", "compliance"}
+    assert itt_only[0].source_snapshot_id != itt_and_compliance[0].source_snapshot_id
+    default_methods = readouts.run(source, estimands=("itt", "compliance"))
+    extra_method = readouts.run(
+        source,
+        sensitivity_methods=(Method.unadjusted(name="companion"),),
+        estimands=("itt", "compliance"),
+    )
+    assert {row.method for row in extra_method} >= {"unadjusted", "companion"}
+    assert default_methods[0].source_snapshot_id != extra_method[0].source_snapshot_id
     results = readouts.asof_lift(
         source, estimands=("itt", "compliance"), completed_windows_only=True
     )

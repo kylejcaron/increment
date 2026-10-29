@@ -2586,18 +2586,52 @@ class Analysis:
         """
         from increment.readouts._evidence import load_sequential_capture
 
-        return load_sequential_capture(
-            cast(Any, self._state.source),
-            SequentialCaptureRequest(
-                finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
-            ),
+        source = cast(Any, self._state.source)
+        request = SequentialCaptureRequest(
+            finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
         )
+        context = _current_execution_context()
+        if context is None:
+            return load_sequential_capture(source, request)
+
+        from increment._source_types import is_custom_source
+        from increment.readouts._evidence import _builtin_source
+
+        context.validate_request(
+            source, tuple(source.context.metrics), tuple(source.context.configs)
+        )
+        with context.borrow() as scoped:
+            capture_source = scoped if is_custom_source(source) else _builtin_source(scoped)
+            snapshot = load_sequential_capture(capture_source, request)
+        if not is_custom_source(source):
+            from increment.sequential_source import adopt_source_snapshot
+
+            snapshot = adopt_source_snapshot(source, snapshot)
+        return snapshot
 
     def sequential_snapshot(self, *, previous=None):
         """Retrieve a current exact checkpoint, optionally proving its parent."""
         from increment.readouts._evidence import current_source_snapshot
 
-        return current_source_snapshot(cast(Any, self._state.source), previous=previous)
+        source = cast(Any, self._state.source)
+        context = _current_execution_context()
+        if context is None:
+            return current_source_snapshot(source, previous=previous)
+
+        from increment._source_types import is_custom_source
+        from increment.readouts._evidence import _builtin_source
+
+        context.validate_request(
+            source, tuple(source.context.metrics), tuple(source.context.configs)
+        )
+        with context.borrow() as scoped:
+            snapshot_source = scoped if is_custom_source(source) else _builtin_source(scoped)
+            snapshot = current_source_snapshot(snapshot_source, previous=previous)
+        if not is_custom_source(source):
+            from increment.sequential_source import adopt_source_snapshot
+
+            snapshot = adopt_source_snapshot(source, snapshot)
+        return snapshot
 
     def __repr__(self) -> str:
         study = getattr(self._state, "study", None)
@@ -2872,10 +2906,6 @@ class Analysis:
                     ),
                 )
             return rows
-        if _execution_context is not None:
-            from increment.kernel.contracts import _refuse as _kernel_refuse
-
-            _kernel_refuse("kernel.request.invalid", field="_execution_context")
         selected = select_metrics(cast("Sequence[Metric]", self._metrics), metrics, caller="run")
 
         def request(chosen: Sequence[Metric]) -> WholeWindowRequest:

@@ -61,7 +61,9 @@ def _run(frame, spec, plan):
         design=_DESIGN,
         exposure_date="exposure",
     )
-    return analysis, analysis.run()[0]
+    from increment.readouts import run_scoped
+
+    return analysis, run_scoped(analysis, lambda: analysis.run()[0])
 
 
 _ASYMPTOTIC = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))

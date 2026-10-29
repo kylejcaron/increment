@@ -71,6 +71,7 @@ def _snapshot_identity(
     trigger_name,
     assignment_counts,
     *,
+    configs=None,
     source=None,
     component_source: str | None = None,
     dimension: str | None = None,
@@ -136,12 +137,33 @@ def _snapshot_identity(
                     )
                 )
         source = composite_source(components)
+    compliance_only = estimands is not None and set(estimands) == {"compliance"}
+    requested_metric_names = None if metrics is None or compliance_only else set(metrics)
+    method_configs = []
+    for config in sorted(configs or (), key=lambda item: item.metric.name):
+        if requested_metric_names is not None and config.metric.name not in requested_metric_names:
+            continue
+        effective_methods = (
+            ()
+            if config.methods_explicitly_empty
+            else (() if config.decision_defaulted else (config.decision_method,))
+            + config.sensitivity_methods
+        )
+        source_methods = config.source_methods
+        if effective_methods != source_methods:
+            method_configs.append(
+                {
+                    "metric": config.metric.name,
+                    "decision_method": config.decision_method.model_dump(mode="json"),
+                    "sensitivity_methods": [
+                        method.model_dump(mode="json") for method in config.sensitivity_methods
+                    ],
+                }
+            )
     request = {
         "view": "run",
         "population": "assigned",
-        "metrics": None
-        if metrics is None or (estimands is not None and set(estimands) == {"compliance"})
-        else sorted(metrics),
+        "metrics": None if metrics is None or compliance_only else sorted(metrics),
         "estimands": None if estimands is None else sorted(estimands),
         "registration_id": snapshot.registration_id,
         "alpha": plan.alpha,
@@ -149,6 +171,8 @@ def _snapshot_identity(
         "trigger_declared": trigger_name is not None,
         "source_identity": source_identity_record,
     }
+    if method_configs:
+        request["method_configs"] = method_configs
     if trigger_name is not None:
         request["trigger_name"] = trigger_name
     preimage = {
@@ -334,6 +358,7 @@ def scope_sequential_results(
         estimands,
         trigger_name,
         integrity_counts,
+        configs=configs,
         source=existing_source,
         source_identity_record=source_identity(src),
     )

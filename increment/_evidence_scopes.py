@@ -136,6 +136,7 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
         snapshot=any(request.snapshot for request in requests),
         execution=any(request.execution for request in requests),
         include_breakouts=any(request.include_breakouts for request in requests),
+        checkpoint_only=any(request.checkpoint_only for request in requests),
     )
 
 
@@ -159,17 +160,30 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
     with ExitStack() as stack:
         source = loader_source(src)
         if scope.snapshot and "readout_snapshot" in declared_evidence(source).operations:
-            source = stack.enter_context(
-                cast(Any, source).readout_snapshot(
-                    metrics=scope.metrics,
-                    population=scope.population,
-                    include_breakouts=scope.include_breakouts or bool(scope.breakouts),
-                    breakouts=scope.breakouts,
-                    configs=scope.configs,
-                    uptake_facts=scope.uptake_facts,
-                )
-            )
-        if scope.execution and "readout_execution" in declared_evidence(source).operations:
+            snapshot_options: dict[str, Any] = {
+                "metrics": scope.metrics,
+                "population": scope.population,
+                "include_breakouts": scope.include_breakouts or bool(scope.breakouts),
+                "breakouts": scope.breakouts,
+                "configs": scope.configs,
+                "uptake_facts": scope.uptake_facts,
+            }
+            if (
+                scope.checkpoint_only
+                and scope.execution
+                and scope.grain is None
+                and scope.dimension is None
+                and not scope.breakouts
+                and not scope.include_breakouts
+                and getattr(source, "supports_retained_snapshot_integrity_reuse", False)
+            ):
+                snapshot_options["reuse_retained_snapshot_integrity"] = True
+            source = stack.enter_context(cast(Any, source).readout_snapshot(**snapshot_options))
+        if (
+            scope.execution
+            and not scope.checkpoint_only
+            and "readout_execution" in declared_evidence(source).operations
+        ):
             stack.enter_context(cast(Any, source).readout_execution())
         yield source
 

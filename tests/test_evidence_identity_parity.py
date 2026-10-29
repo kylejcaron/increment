@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
@@ -22,6 +23,7 @@ from tests.parity_harness.registrations_line2 import (
     LINE2_PAIRS,
     line2_actual_outcome,
 )
+from tests.parity_harness.registrations_line3 import LINE3_PAIRS, line3_actual_outcome
 from tests.parity_harness.registrations_line6 import ADAPTERS as _LINE6_ADAPTERS
 from tests.parity_harness.registrations_line6 import PAIRS as _LINE6_PAIRS
 
@@ -244,25 +246,88 @@ def test_qr_snapshot_normalization_sorts_families_and_compares_fit_numbers() -> 
     assert expected_normalized["ordered_values"] == actual_normalized["ordered_values"]
 
 
-# Deliberate changes made after the pre-kernel capture, keyed by component and the exact
-# captured status reason. #270 added likelihood sequential results, so a cell with neither
-# sequential kind now states that no sequential result of any kind is retained.
-_POST_CAPTURE_STATUS_REASONS: Mapping[tuple[str, str], str] = {
-    ("sequential", "no asymptotic sequential result is retained"): (
-        "no sequential result is retained"
+# Normalize origin/main's exact post-capture unavailable reason from #261, and #270's
+# likelihood-sequential status only when the current counterpart retains that result.
+_POST_CAPTURE_STATUS_REASONS: Mapping[
+    tuple[str, str, str | None, str, str | None],
+    tuple[str, str | None, str, str | None],
+] = {
+    (
+        "sequential",
+        "unavailable",
+        "results.component.unavailable",
+        "no asymptotic sequential result is retained",
+        None,
+    ): (
+        "unavailable",
+        "results.component.unavailable",
+        "no sequential result is retained",
+        None,
+    ),
+    (
+        "sequential",
+        "unavailable",
+        "results.component.unavailable",
+        "no sequential result is retained",
+        None,
+    ): (
+        "available",
+        None,
+        "likelihood sequential geometry is retained; no portable operation is registered",
+        "likelihood_sequential",
     ),
 }
 
 
-def _with_post_capture_reasons(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Express captured reasons in current wording; cells restored from stored payloads
-    retain the captured wording, so both sides of a comparison are normalized."""
+def _status_key(
+    name: str, component: Mapping[str, Any]
+) -> tuple[str, str, str | None, str, str | None]:
+    status = component["status"]
+    return (
+        name,
+        status["state"],
+        status.get("code"),
+        status.get("reason"),
+        component.get("kind"),
+    )
+
+
+def _with_post_capture_reasons(
+    payload: Mapping[str, Any], *, actual: Mapping[str, Any] | None = None
+) -> Mapping[str, Any]:
+    """Normalize only the captured status records changed by #270."""
     migrated = copy.deepcopy(dict(payload))
+    current = None if actual is None else actual.get("components", {}).get("sequential")
+    likelihood_available = current is not None and _status_key("sequential", current) == (
+        "sequential",
+        "available",
+        None,
+        "likelihood sequential geometry is retained; no portable operation is registered",
+        "likelihood_sequential",
+    )
     for name, component in migrated.get("components", {}).items():
-        status = component["status"]
-        replacement = _POST_CAPTURE_STATUS_REASONS.get((name, status.get("reason")))
-        if replacement is not None and component.get("kind") is None:
-            status["reason"] = replacement
+        key = _status_key(name, component)
+        if (
+            key in _POST_CAPTURE_STATUS_REASONS
+            and key[3] == "no asymptotic sequential result is retained"
+        ):
+            replacement = _POST_CAPTURE_STATUS_REASONS[key]
+            state, code, reason, kind = replacement
+            component["status"]["state"] = state
+            component["status"]["code"] = code
+            component["status"]["reason"] = reason
+            component["kind"] = kind
+            key = _status_key(name, component)
+        replacement = None
+        if name == "sequential" and likelihood_available:
+            replacement = _POST_CAPTURE_STATUS_REASONS.get(key)
+        if replacement is not None:
+            state, code, reason, kind = replacement
+            component["status"]["state"] = state
+            component["status"]["code"] = code
+            component["status"]["reason"] = reason
+            component["reason"] = reason if kind is not None else component.get("reason")
+            component["kind"] = kind
     return migrated
 
 
@@ -318,11 +383,39 @@ def _decode_fitted_cuped_evidence(value: Any) -> Any:
     return value
 
 
+def _with_post_capture_summary_intervals(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """#276 made sequential summaries list their retained bounds as one interval.
+
+    The pre-kernel capture recorded the same bounds with no interval. Only that exact
+    change is accepted: the captured summary has no intervals, and the actual summary
+    lists exactly its own, unchanged lower and upper bounds.
+    """
+    summary = expected.get("summary")
+    actual_summary = actual.get("summary")
+    if not isinstance(summary, Mapping) or not isinstance(actual_summary, Mapping):
+        return expected
+    bounds = (summary.get("lower"), summary.get("upper"))
+    if tuple(summary.get("intervals") or ()) != () or bounds == (None, None):
+        return expected
+    actual_intervals = [tuple(item) for item in actual_summary.get("intervals") or ()]
+    if actual_intervals != [(actual_summary.get("lower"), actual_summary.get("upper"))]:
+        return expected
+    migrated = copy.deepcopy(dict(expected))
+    migrated["summary"] = {**summary, "intervals": [list(bounds)]}
+    return migrated
+
+
 def _assert_payload_matches(
     expected: Mapping[str, Any], actual: Mapping[str, Any], *, snapshotless: bool = False
 ) -> None:
-    canonical_expected = ResultCell.from_payload(expected).to_payload()
-    expected_payload = _comparable_payload(_with_post_capture_reasons(canonical_expected))
+    canonical_expected = _with_post_capture_summary_intervals(
+        ResultCell.from_payload(expected).to_payload(), actual
+    )
+    expected_payload = _comparable_payload(
+        _with_post_capture_reasons(canonical_expected, actual=actual)
+    )
     actual_payload = _comparable_payload(_with_post_capture_reasons(actual))
     if snapshotless:
         expected_payload = _without_snapshot_identity(expected_payload)
@@ -516,18 +609,17 @@ def _assert_outcome_matches(
                     _compare_aggregate(expected_value, actual_value)
                 else:
                     _compare(expected_value, actual_value)
-        return _mode_metadata(actual["metadata"])
+        modes = _mode_metadata(actual["metadata"])
+        if modes:
+            return modes
+        return cast(Mapping[str, object], actual.get("_execution_modes", {}))
     return {}
 
 
 def _line1_read(analysis: Any, case: Any) -> Any:
-    metrics = None if case.metrics is None else list(case.metrics)
-    return analysis.run(
-        estimands=case.estimands,
-        prior=case.prior,
-        metrics=metrics,
-        decision_method=case.decision_method,
-    )
+    from tests.parity_harness.runner import _read
+
+    return _read(analysis, case)
 
 
 def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
@@ -582,7 +674,9 @@ def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, 
         return _line1_read(analysis, case), counts
 
 
-def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:
+def _line1_actual_outcome(
+    scenario_id: str, ingress: str, *, scoped: bool = False
+) -> Mapping[str, object]:
     """The current outcome of a registered pair under the capture's recorded conditions.
 
     The frozen capture ran every DuckDB connection with ``threads=1``
@@ -590,9 +684,6 @@ def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object
     ``_single_thread_duckdb``); the actual side reuses that same helper so a
     comparison never mixes multi-threaded reduction order into the oracle.
     """
-    from contextlib import ExitStack
-
-    # Capture component kinds at the snapshot-hash seam to select QR normalization by evidence.
     from increment.readouts import _design_scope, _randomized_scope
     from scripts.capture_evidence_identity import _single_thread_duckdb
 
@@ -623,7 +714,7 @@ def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object
     with _single_thread_duckdb(), ExitStack() as stack:
         _enter_patch(stack, _design_scope, "_design_snapshot_id", capture_design_scope)
         _enter_patch(stack, _randomized_scope, "_randomized_snapshot_id", capture_randomized_scope)
-        outcome = _line1_outcome(scenario_id, ingress)
+        outcome = _line1_outcome(scenario_id, ingress, scoped=scoped)
     if outcome.get("kind") == "cells":
         return {
             **outcome,
@@ -633,7 +724,7 @@ def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object
     return outcome
 
 
-def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # noqa: PLR0915
+def _line1_outcome(scenario_id: str, ingress: str, *, scoped: bool = False) -> Mapping[str, object]:  # noqa: PLR0915
     import json
     import warnings
     from contextlib import ExitStack
@@ -657,6 +748,7 @@ def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # n
         }
 
     aggregate_rows: list[dict[str, object]] = []
+    execution_modes: dict[str, object] = {}
     payloads: dict[str, object] = {}
     try:
         if ingress == "from_moments":
@@ -689,19 +781,44 @@ def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # n
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                results, read_count = _run_with_read_counter(analysis, case)
+
+                def capture_execution_modes(context):
+                    execution_modes.update(
+                        coherence=context.coherence,
+                        effective_modes=dict(context.effective_modes),
+                    )
+
+                def operation():
+                    if scoped and case.sequential:
+                        as_of = getattr(analysis, "_sequential_as_of", None)
+                        snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
+                        analysis.capture_sequential(finalized=True, **snapshot_kwargs)
+                    return _run_with_read_counter(analysis, case)
+
+                if scoped:
+                    from increment.readouts import run_scoped
+
+                    results, read_count = run_scoped(
+                        analysis, operation, on_context=capture_execution_modes
+                    )
+                else:
+                    results, read_count = operation()
             assert all(count == 1 for count in read_count.values()), (
                 f"{scenario_id}/{ingress} performed repeated captured reads: {read_count}"
             )
             metadata_value = getattr(results, "metadata", None)
+            daily_values = []
             cells = []
             for row in results:
-                cells.extend(
-                    row.as_cells(
-                        metadata_value,
-                        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                if hasattr(row, "as_cells"):
+                    cells.extend(
+                        row.as_cells(
+                            metadata_value,
+                            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                        )
                     )
-                )
+                else:
+                    daily_values.append(row.model_dump(mode="json"))
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 population_identity = _population_identity(analysis, case, cells)
@@ -747,11 +864,16 @@ def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # n
         outcome = {
             "kind": "cells",
             "cells": cells_by_hash,
-            "daily_values": [],
+            "daily_values": daily_values,
             "family_selection": family_selection,
             "metadata": AnalysisEnvelope(tuple(cells), metadata_value).to_payload()["metadata"],
             "population_identity": population_identity,
         }
+        if execution_modes:
+            outcome["_execution_modes"] = execution_modes
+        source_metadata = getattr(results, "source", None)
+        if isinstance(source_metadata, Mapping):
+            outcome["source_components"] = source_metadata.get("components", ())
         aggregate = _aggregate_evidence(payloads, aggregate_rows)
         if aggregate is not None:
             payload_ref = cast(Mapping[str, Any], aggregate["moments"])
@@ -763,6 +885,13 @@ def _line1_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # n
 
 
 NEW_PATH_ADAPTERS = dict.fromkeys(_LINE1_PAIRS, _line1_actual_outcome)
+
+REGISTERED = {**REGISTERED, "line2": LINE2_PAIRS, "line3": LINE3_PAIRS}
+NEW_PATH_ADAPTERS = {
+    **NEW_PATH_ADAPTERS,
+    **dict.fromkeys(LINE2_PAIRS, line2_actual_outcome),
+    **dict.fromkeys(LINE3_PAIRS, line3_actual_outcome),
+}
 
 REGISTERED = {**REGISTERED, "line2": LINE2_PAIRS | LINE2_ASOF_PAIRS}
 NEW_PATH_ADAPTERS = {
@@ -815,6 +944,37 @@ def test_line1_registration_inventory_matches_frozen_capture() -> None:
         for kind in ("cells", "refusal", "absent")
     }
     assert counts == {"cells": 144, "refusal": 19, "absent": 37}
+
+
+def test_line3_registration_inventory_matches_frozen_capture() -> None:
+    captured = _capture()["scenarios"]
+    expected_scenarios = {
+        "audit-sequential-messy-mean-conversion",
+        "audit-sequential-missing-zero",
+        "exact_binomial_beyond_the_former_arm_ceiling",
+        "scalar_sequential_fixed_threshold_winsor",
+        "scalar_sequential_mean_cuped_asymptotic",
+        "sequential-mixed-quantile-catalog-checkpoint",
+        "sequential_asymptotic_mean_revenue",
+        "sequential_automatic_multi_arm_exact",
+        "sequential_boolean_segments_automatic_asymptotic_mean",
+        "sequential_boolean_segments_automatic_exact_bernoulli",
+        "sequential_boolean_segments_registered_asymptotic_mean",
+        "sequential_boolean_segments_registered_exact_bernoulli",
+        "sequential_explicit_registration_native_artifact_identity",
+        "sequential_registered_registration_native_artifact_identity",
+    }
+    expected_pairs = {
+        (scenario_id, ingress)
+        for scenario_id in expected_scenarios
+        for ingress in ("from_definitions", "from_moments", "from_unit_panel", "from_unit_summary")
+    }
+    assert LINE3_PAIRS == expected_pairs
+    counts = {
+        kind: sum(captured[scenario][ingress]["kind"] == kind for scenario, ingress in LINE3_PAIRS)
+        for kind in ("cells", "refusal", "absent")
+    }
+    assert counts == {"cells": 42, "refusal": 14, "absent": 0}
 
 
 @pytest.mark.integration

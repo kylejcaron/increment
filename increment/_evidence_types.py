@@ -252,6 +252,7 @@ class EvidenceScope:
     snapshot: bool = False
     execution: bool = False
     include_breakouts: bool = False
+    checkpoint_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

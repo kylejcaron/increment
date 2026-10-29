@@ -210,6 +210,17 @@ def _loader_owner(source: object) -> object:
     return source.source if isinstance(source, _OwnedLoaderAdapter) else source
 
 
+class _OwnedLoaderAdapter:
+    """Marker for internal adapters whose ``source`` is the owned loader."""
+
+    __slots__ = ()
+    source: Any
+
+
+def _loader_owner(source: object) -> object:
+    return source.source if isinstance(source, _OwnedLoaderAdapter) else source
+
+
 @runtime_checkable
 class EvidenceProvider(Protocol):
     """Primitive request interface for custom evidence providers.

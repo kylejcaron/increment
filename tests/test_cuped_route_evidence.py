@@ -458,6 +458,7 @@ def test_sequential_matching_recipe_can_be_relabelled_without_new_state(scalar):
     companion = registered.model_copy(update={"name": "companion"})
     standalone = run(source, decision_method=renamed, sensitivity_methods=())
     together = run(source, decision_method=renamed, sensitivity_methods=(companion,))
+    assert standalone[0].source_snapshot_id != together[0].source_snapshot_id
     assert {row.method: row.method_role for row in together} == {
         "renamed": "decision",
         "companion": "sensitivity",

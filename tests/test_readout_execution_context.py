@@ -1199,47 +1199,6 @@ def test_frame_panel_context_snapshots_mutable_pandas_panel():
 
 
 @pytest.mark.integration
-def test_undeclared_breakout_dimension_refuses_before_the_read(tmp_path, monkeypatch):
-    from increment import EvidenceScope
-    from increment.errors import CodedError
-    from increment.evidence import evidence_provider
-    from increment.kernel.context import EvidenceExecutionContext
-
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
-    owner = evidence_provider(source)
-    context = EvidenceExecutionContext(
-        owner,
-        EvidenceScope(
-            metrics=tuple(source.context.metrics),
-            configs=tuple(source.context.configs),
-            breakouts=(),
-            execution=True,
-        ),
-        run_id="undeclared-breakout",
-    )
-    captures = 0
-    original = source.readout_snapshot
-
-    def count_capture(*args, **kwargs):
-        nonlocal captures
-        captures += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(source, "readout_snapshot", count_capture)
-    try:
-        context.open()
-        opened = captures
-        with pytest.raises(CodedError) as refused:
-            analysis._run_breakout(_execution_context=context)
-        assert refused.value.code == "kernel.context.undeclared_stream"
-        assert captures == opened
-    finally:
-        context.close()
-        analysis.close()
-
-
-@pytest.mark.integration
 def test_frame_panel_context_snapshots_mutable_polars_panel():
     import narwhals as nw
     import polars as pl
@@ -1464,7 +1423,7 @@ def test_windowed_daily_scope_does_not_extend_past_metric_window():
 
 
 @pytest.mark.integration
-def test_daily_missing_date_keeps_exact_segment_arm_cell(tmp_path):
+def test_daily_missing_date_keeps_exact_segment_arm_cell_without_extra_event(tmp_path):
     from datetime import date
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True, window_days=2)
@@ -1850,3 +1809,185 @@ def test_standalone_daily_lift_rejects_sequential_plan_before_snapshot(tmp_path,
         assert snapshots == 0
     finally:
         analysis.close()
+
+
+@pytest.mark.integration
+def test_undeclared_breakout_dimension_refuses_before_the_read(tmp_path, monkeypatch):
+    from increment import EvidenceExecutionContext, EvidenceScope
+    from increment.errors import CodedError
+    from increment.evidence import evidence_provider
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    owner = evidence_provider(source)
+    context = EvidenceExecutionContext(
+        owner,
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+            breakouts=(),
+            execution=True,
+        ),
+        run_id="undeclared-breakout",
+    )
+    captures = 0
+    original = source.readout_snapshot
+
+    def count_capture(*args, **kwargs):
+        nonlocal captures
+        captures += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source, "readout_snapshot", count_capture)
+    try:
+        context.open()
+        opened = captures
+        with pytest.raises(CodedError) as refused:
+            analysis._run_breakout(_execution_context=context)
+        assert refused.value.code == "kernel.context.undeclared_stream"
+        assert captures == opened
+    finally:
+        context.close()
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_line2_owner_reuses_one_capture_for_primary_and_auxiliary_readouts(tmp_path, monkeypatch):
+    from increment.readouts import run_scoped
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    captures = 0
+    original = source.readout_snapshot
+
+    def count_capture(*args, **kwargs):
+        nonlocal captures
+        captures += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source, "readout_snapshot", count_capture)
+    try:
+        with pytest.warns():
+            results = run_scoped(analysis, breakout_correction="none")
+        assert set(results) == {"run", "breakout", "daily", "daily_lift", "asof", "asof_lift"}
+        assert captures == 1
+        for collection in results.values():
+            assert collection.metadata is not None
+            assert collection.metadata.coherence == "captured"
+    finally:
+        analysis.close()
+
+
+def test_sequential_run_pins_the_registered_family_and_records_mode():
+    from increment.frame import MetricSpec
+    from tests.test_sequential_public_sources import _analysis, _frame, gaussian_plan
+
+    specs = [
+        MetricSpec(name="outcome", type="conversion"),
+        MetricSpec(name="sibling", type="conversion"),
+    ]
+    frame = _frame([0, 1] * 24, [1, 1] * 24)
+    frame["sibling"] = frame["outcome"]
+    analysis = _analysis(
+        frame,
+        specs,
+        gaussian_plan(specs, law="bernoulli", source_id="experiment", unit="unit", group="arm"),
+    )
+    try:
+        rows = analysis.run(metrics=["outcome"])
+        assert rows
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.coherence == "captured"
+        assert set(metadata.effective_modes.values()) == {"captured"}
+        family_metrics = {
+            member.metric for family in metadata.scope.families for member in family.members
+        }
+        assert {"outcome", "sibling"} <= family_metrics
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_daily_missing_date_keeps_exact_segment_arm_cell(tmp_path):
+    from datetime import date
+
+    analysis, (_, con) = definitions_source(
+        tmp_path, return_analysis=True, window_days=2, return_connection=True
+    )
+    try:
+        con.raw_sql(
+            "INSERT INTO raw_events (user_id, ts, event, group_id, country_code, revenue) "
+            "VALUES ('u3', TIMESTAMP '2026-01-03 12:00:00', 'purchase', NULL, 'US', 4.0)"
+        )
+        with pytest.warns():
+            rows = analysis.run_daily(metrics=["revenue"], dimension="country")
+        missing = [
+            row
+            for row in rows
+            if row.ds == date(2026, 1, 2)
+            and row.dimension_value == "US"
+            and row.group_id == "treatment"
+        ]
+        assert len(missing) == 1
+        assert missing[0].value is None
+        assert missing[0].unavailable == "few_units"
+    finally:
+        analysis.close()
+
+
+def test_sequential_continuation_and_readout_share_run_owner():
+    from increment.frame import MetricSpec
+    from increment.readouts import run_scoped
+    from tests.test_sequential_public_sources import _analysis, _frame, gaussian_plan
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    frame = _frame([0, 1] * 24, [1, 1] * 24)
+    analysis = _analysis(
+        frame,
+        specs,
+        gaussian_plan(specs, law="bernoulli", source_id="experiment", unit="unit", group="arm"),
+    )
+
+    def two_looks():
+        first = analysis.capture_sequential(finalized=True, freeze=("outcome",))
+        second = analysis.capture_sequential(finalized=True, previous=first)
+        rows = analysis.run()
+        return first, second, rows
+
+    try:
+        first, second, rows = run_scoped(analysis, two_looks)
+        second.verify_parent(first)
+        assert second.frozen == first.frozen
+        assert rows
+        assert rows.metadata is not None
+        assert rows.metadata.coherence == "captured"
+        assert analysis.sequential_snapshot().prefix_id == second.prefix_id
+    finally:
+        analysis.close()
+
+
+def test_sequential_rewritten_prefix_refuses_through_run_owner():
+    from increment.errors import CodedError
+    from increment.frame import MetricSpec
+    from increment.readouts import run_scoped
+    from tests.test_sequential_public_sources import _analysis, _frame, gaussian_plan
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    plan = gaussian_plan(specs, law="bernoulli", source_id="experiment", unit="unit", group="arm")
+    original = _analysis(_frame([0, 1] * 24, [1, 1] * 24), specs, plan)
+    rewritten_frame = _frame([1, 0] * 24, [1, 1] * 24)
+    rewritten = _analysis(rewritten_frame, specs, plan)
+    previous = original.capture_sequential(finalized=True, freeze=("outcome",))
+    try:
+        with pytest.raises(CodedError) as refusal:
+            run_scoped(
+                rewritten,
+                lambda: rewritten.capture_sequential(
+                    finalized=True, previous=previous, freeze=("outcome",)
+                ),
+            )
+        assert refusal.value.code == "sequential.continuation.rewrite"
+    finally:
+        original.close()
+        rewritten.close()

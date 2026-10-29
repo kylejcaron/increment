@@ -290,6 +290,7 @@ class EvidenceExecutionContext:
             ),
             execution=True,
             include_breakouts=scope.include_breakouts,
+            checkpoint_only=self.scope.checkpoint_only,
         )
         try:
             result = cast(EvidenceProvider, self.provider).scope(requested)

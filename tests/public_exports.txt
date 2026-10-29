@@ -183,6 +183,7 @@ DayAxisRows: Return the acquired rows and route for a daily or as-of request.
 EvidenceCapabilities: Declare the evidence a custom provider can supply.
 EvidenceProvider: Implement typed statistical evidence for a custom data source.
 EvidenceScope: Describe evidence to keep available during one analysis.
+EvidenceExecutionContext: Reuse one captured or live evidence scope across readout operations.
 EvidenceScopeResult: Return the open source view for an evidence scope.
 MethodFitAnswer: Return method-specific adjustment evidence from a custom provider.
 MethodFitRequest: Request method-specific adjustment evidence from a custom provider.

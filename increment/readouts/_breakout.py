@@ -560,6 +560,13 @@ def _breakout_impl(
     from increment.kernel.contracts import Scope
     from increment.readouts._design_scope import _config_snapshot
 
+    operation_scope = Scope(
+        view="breakout",
+        grain="total",
+        population=analysis_population,
+        segment=BreakoutIdentity(dimension, source_name),
+    )
+
     segment = BreakoutIdentity(dimension, source_name)
     operation_scope = Scope(
         view="breakout",

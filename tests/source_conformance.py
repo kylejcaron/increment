@@ -358,6 +358,7 @@ def definitions_source(
     sql_exposures: bool = False,
     return_analysis: bool = False,
     window_days: int | None = 1,
+    return_connection: bool = False,
 ) -> tuple[Any, Any]:
     """Build an in-memory definitions source with one breakout.
 
@@ -493,9 +494,9 @@ def definitions_source(
         ),
     )
     experiment = analysis.experiment
-    return (analysis if return_analysis else analysis._src), (
-        experiment.breakouts[0] if experiment.breakouts else None
-    )
+    subject = analysis if return_analysis else analysis._src
+    breakout = experiment.breakouts[0] if experiment.breakouts else None
+    return (subject, (breakout, con)) if return_connection else (subject, breakout)
 
 
 def unit_day_artifact_source(tmp_path: Path) -> Any:

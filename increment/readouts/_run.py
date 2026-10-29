@@ -30,7 +30,7 @@ from increment.readouts._evidence import (
     _builtin_source,
     acquire_observational_inputs,
     artifact_provenance,
-    evidence_scope,
+    has_verified_sequential_checkpoint,
     prior_exclusions,
 )
 from increment.readouts._metric_rows import load_metric_evidence
@@ -158,39 +158,45 @@ def run(
     # selected metrics, including their common observation horizon. An empty
     # selection reads nothing. Request validation is complete before capture.
     design_summary_only = _design_compliance_only(src, estimands)
-    needs_live_evidence = (bool(selected) or design_summary_only) and not isinstance(
-        src.context.plan.inference, SEQUENTIAL_POLICIES
-    )
-    needs_snapshot = needs_live_evidence and (
-        design.mechanism == "observational"
-        or (
-            not design_summary_only
-            and any(
-                method.variance_reduction in ("cuped", "cuped_multicovariate")
-                for config in configs
-                for method in effective_methods(config, design=design)
+    sequential = isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES)
+    needs_live_evidence = (bool(selected) or design_summary_only) and not sequential
+    needs_snapshot = sequential or (
+        needs_live_evidence
+        and (
+            design.mechanism == "observational"
+            or (
+                not design_summary_only
+                and any(
+                    method.variance_reduction in ("cuped", "cuped_multicovariate")
+                    for config in configs
+                    for method in effective_methods(config, design=design)
+                )
             )
-        )
-        or any(
-            getattr(getattr(metric, "winsorization", None), "has_percentile", False)
-            for metric in selected
+            or any(
+                getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+                for metric in selected
+            )
         )
     )
     uptake = getattr(design, "uptake", None)
+    capture_all_sequential_family = sequential and not design_summary_only
+    scope_metrics = tuple(src.context.metrics) if capture_all_sequential_family else tuple(selected)
+    scope_configs = tuple(src.context.configs) if capture_all_sequential_family else tuple(configs)
+    checkpoint_only = (
+        sequential
+        and not design_summary_only
+        and bool(selected)
+        and has_verified_sequential_checkpoint(src)
+    )
     scope = EvidenceScope(
-        metrics=tuple(selected),
+        metrics=scope_metrics,
         population=_population,
-        configs=tuple(configs),
+        configs=scope_configs,
         uptake_facts=() if uptake is None else (uptake.fact,),
         snapshot=needs_snapshot,
-        execution=needs_live_evidence,
+        execution=bool(selected) or design_summary_only,
+        checkpoint_only=checkpoint_only,
     )
-    if execution_context is not None and isinstance(
-        src.context.plan.inference, SEQUENTIAL_POLICIES
-    ):
-        from increment.kernel.contracts import _refuse
-
-        _refuse("kernel.request.invalid", field="execution_context")
     if not selected and not design_summary_only:
         return _as_collection(
             _run_prepared(
@@ -205,21 +211,6 @@ def run(
                 scope_active=False,
             )
         )
-    if isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES):
-        with evidence_scope(src, scope) as scoped:
-            rows = _run_prepared(
-                _builtin_source(scoped),
-                selected,
-                configs,
-                prior=prior,
-                by=by,
-                estimands=estimands,
-                value_scale=value_scale,
-                population=_population,
-                scope_active=is_custom_source(src),
-                snapshot_source=src,
-            )
-        return _as_collection(rows)
     from uuid import uuid4
 
     from increment.kernel.context import EvidenceExecutionContext
@@ -417,13 +408,28 @@ def _run_prepared(  # noqa: PLR0915
 
         _refuse_segmented_registration(plan.inference)
         snapshot = current_source_snapshot(src if snapshot_source is None else snapshot_source)
+        from dataclasses import replace
+
+        selected_names = {config.metric.name for config in configs}
+        sequential_configs = (
+            *configs,
+            *(
+                replace(
+                    config,
+                    sensitivity_methods=(),
+                    source_methods=(config.decision_method,),
+                )
+                for config in src.context.configs
+                if config.metric.name not in selected_names
+            ),
+        )
         rows = sequential_readout(
             src,
             metrics=selected,
             estimands=estimands,
             snapshot=snapshot,
             _include_unrequested=True,
-            configs=configs,
+            configs=sequential_configs,
         )
         return scope_sequential_results(
             src,
@@ -432,7 +438,7 @@ def _run_prepared(  # noqa: PLR0915
             base_roster=preflight_roster,
             metrics=[metric.name for metric in selected],
             estimands=estimands,
-            configs=configs,
+            configs=sequential_configs,
         )
     call_prior = cast("Prior | None", None if prior is UNSET else prior)
     cluster = src.context.cluster
