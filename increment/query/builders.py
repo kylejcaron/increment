@@ -1634,7 +1634,9 @@ def _censor_to_observable_window(
     elif isinstance(data_as_of, dt.date):
         as_of_date = data_as_of
     else:
-        resolved = execute(ibis.memtable({"_": [0]}).mutate(_as_of=data_as_of))[0]["_as_of"]
+        resolved = execute(ibis.literal(0).name("_").as_table().mutate(_as_of=data_as_of))[0][
+            "_as_of"
+        ]
         as_of_date = (
             None
             if resolved is None or resolved != resolved

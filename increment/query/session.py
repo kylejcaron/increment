@@ -89,7 +89,10 @@ _REFUSALS = refusals(
         "query.session.snapshot.materialization_failed": RefusalSpec(
             "query.session.snapshot.materialization_failed",
             CapabilityError,
-            template="source snapshot requires warehouse TEMP tables; live fallback is forbidden",
+            template=(
+                "source snapshot requires warehouse TEMP tables; use coherence='live' "
+                "when a live read is acceptable"
+            ),
         ),
         "query.session.qr_scratch_cleanup_failed": RefusalSpec(
             "query.session.qr_scratch_cleanup_failed",
@@ -1631,18 +1634,6 @@ def _warehouse_artifact_qr_scratch(con: SQLBackend) -> Iterator[_WarehouseQrScra
         yield scratch
 
 
-def _is_postgres_privilege_error(error: BaseException) -> bool:
-    current: BaseException | None = error
-    while current is not None:
-        if (
-            getattr(current, "sqlstate", None) == "42501"
-            or getattr(current, "pgcode", None) == "42501"
-        ):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
 class WarehouseSession:
     """One ibis connection's fact-table cache and TEMP-table mechanics.
 
@@ -1746,22 +1737,130 @@ class WarehouseSession:
             self._arrow_cache_bytes += result_size
         return result
 
-    def source_sql(self, sql: str) -> Table:
-        """Resolve source SQL against this operation's captured inputs, if any.
+    def _postgres_plain_relation(self, sql: str) -> Table | None:
+        """Resolve an unmodified table SELECT without TEMP-view introspection."""
+        from sqlglot import exp
 
-        PostgreSQL introspects source SQL through a TEMP view; on a role without TEMP the
-        backend's raw privilege error is reported as the snapshot capability refusal.
-        """
+        try:
+            query = sqlglot.parse_one(sql, read=self._defs.dialect)
+        except sqlglot.ParseError:
+            return None
+        if not isinstance(query, exp.Select):
+            return None
+        from_clause = query.args.get("from_")
+        if (
+            len(query.expressions) != 1
+            or not isinstance(query.expressions[0], exp.Star)
+            or any(value is not None for value in query.expressions[0].args.values())
+            or not isinstance(from_clause, exp.From)
+            or not isinstance(from_clause.this, exp.Table)
+        ):
+            return None
+        if any(
+            value is not None
+            for key, value in query.args.items()
+            if key not in {"expressions", "from_"}
+        ):
+            return None
+
+        table = from_clause.this
+        identifier = table.this
+        if (
+            not isinstance(identifier, exp.Identifier)
+            or table.catalog
+            or any(
+                value is not None
+                for key, value in table.args.items()
+                if key not in {"this", "db", "catalog"}
+            )
+        ):
+            return None
+
+        relation = table.sql(dialect="postgres", comments=False).replace("'", "''")
+        statement = (
+            "SELECT n.nspname, c.relname FROM pg_catalog.pg_class AS c "
+            "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+            f"WHERE c.oid = pg_catalog.to_regclass('{relation}')"
+        )
+        with cast(Any, self._con).raw_sql(statement) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        schema, name = row
+        return cast(Any, self._con).table(name, database=(schema,))
+
+    def _postgres_sql_relation(self, sql: str) -> Table:
+        """Infer a PostgreSQL query's schema without creating a temporary view."""
+        backend = cast(Any, self._con)
+        query = backend._transpile_sql(sql, dialect=self._defs.dialect)
+        parsed = sqlglot.parse_one(query, read="postgres")
+        if isinstance(parsed, sqlglot.exp.Block):
+            statements = [
+                expression
+                for expression in parsed.expressions
+                if not isinstance(expression, sqlglot.exp.Semicolon)
+            ]
+            if len(statements) != 1:
+                return backend.sql(sql, dialect=self._defs.dialect)
+            parsed = statements[0]
+        if parsed is None:
+            return backend.sql(sql, dialect=self._defs.dialect)
+        statement = (
+            sqlglot.select("*")
+            .from_(parsed.subquery("_increment_live_source"))
+            .limit(0)
+            .sql(dialect="postgres", comments=False)
+        )
+        with backend.raw_sql(statement) as cursor:
+            description = cursor.description
+            if description is None:
+                return backend.sql(sql, dialect=self._defs.dialect)
+            columns = tuple(description)
+
+        type_oids = ", ".join(
+            str(oid) for oid in sorted({int(column.type_code) for column in columns})
+        )
+        type_query = (
+            "SELECT t.oid, CASE WHEN EXISTS ("
+            "SELECT 1 FROM pg_catalog.pg_enum AS e WHERE e.enumtypid = t.oid"
+            ") THEN 'enum' ELSE pg_catalog.format_type(t.oid, NULL) END "
+            "FROM pg_catalog.pg_type AS t "
+            f"WHERE t.oid IN ({type_oids})"
+        )
+        with backend.raw_sql(type_query) as cursor:
+            type_names = dict(cursor.fetchall())
+
+        type_mapper = backend.compiler.type_mapper
+        fields = {}
+        for column in columns:
+            oid = int(column.type_code)
+            type_name = type_names[oid]
+            type_display = getattr(column, "type_display", None)
+            if type_display is not None and ("(" in type_display or type_display.endswith("[]")):
+                if type_display.startswith("bpchar"):
+                    type_display = f"character{type_display.removeprefix('bpchar')}"
+                type_name = type_display
+            else:
+                precision = getattr(column, "precision", None)
+                if type_name == "numeric" and precision is not None:
+                    scale = getattr(column, "scale", None) or 0
+                    type_name = f"numeric({precision}, {scale})"
+            fields[column.name] = type_mapper.from_string(type_name, nullable=True)
+        schema = ibis.schema(fields)
+        return backend.sql(sql, dialect=self._defs.dialect, schema=schema)
+
+    def source_sql(self, sql: str) -> Table:
+        """Resolve SQL to the live source or operation's captured inputs."""
         if self._source_tables is not None:
             if sql not in self._source_tables:
                 _raise("query.session.snapshot.source_missing")
             return self._source_tables[sql]
-        try:
-            return self._con.sql(sql, dialect=self._defs.dialect)
-        except Exception as exc:
-            if self._con.name == "postgres" and _is_postgres_privilege_error(exc):
-                self._require_snapshot_temp_privilege()
-            raise
+        if self._con.name == "postgres":
+            relation = self._postgres_plain_relation(sql)
+            if relation is not None:
+                return relation
+            return self._postgres_sql_relation(sql)
+        return self._con.sql(sql, dialect=self._defs.dialect)
 
     def preflight_fact_source_schema(
         self, fact_source: FactSource, *, require_event: bool = True

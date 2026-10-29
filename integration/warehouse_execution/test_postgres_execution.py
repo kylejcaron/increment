@@ -1283,6 +1283,198 @@ def test_postgres_cuped_without_temp_privilege_refuses_before_unit_transfer(
         admin.close()
 
 
+def test_postgres_live_definitions_run_without_temp_privilege(postgres_con, tmp_path):  # noqa: PLR0915
+    """Live first-invocation reads work without TEMP; captured reads still refuse."""
+    import os
+    from decimal import Decimal
+
+    import ibis
+    import psycopg
+    import yaml
+
+    from increment import Analysis
+    from increment.errors import CodedError
+    from increment.estimation.engine import Method
+    from increment.query.session import WarehouseSession
+
+    suffix = uuid4().hex[:10]
+    database = f"live_no_temp_{suffix}"
+    role = f"live_role_{suffix}"
+    password = uuid4().hex
+    env = os.environ
+    admin = psycopg.connect(
+        host=env["INCREMENT_TEST_POSTGRES_HOST"],
+        port=int(env["INCREMENT_TEST_POSTGRES_PORT"]),
+        user=env["INCREMENT_TEST_POSTGRES_USER"],
+        password=env["INCREMENT_TEST_POSTGRES_PASSWORD"],
+        dbname=env["INCREMENT_TEST_POSTGRES_DB"],
+        autocommit=True,
+    )
+    database_admin = restricted = analysis = projected_live_analysis = projected_analysis = None
+    try:
+        admin.execute(f'CREATE DATABASE "{database}"')
+        admin.execute(f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'")
+        admin.execute(f'REVOKE TEMPORARY ON DATABASE "{database}" FROM PUBLIC')
+        database_admin = ibis.postgres.connect(
+            host=env["INCREMENT_TEST_POSTGRES_HOST"],
+            port=int(env["INCREMENT_TEST_POSTGRES_PORT"]),
+            user=env["INCREMENT_TEST_POSTGRES_USER"],
+            password=env["INCREMENT_TEST_POSTGRES_PASSWORD"],
+            database=database,
+        )
+        restricted = ibis.postgres.connect(
+            host=env["INCREMENT_TEST_POSTGRES_HOST"],
+            port=int(env["INCREMENT_TEST_POSTGRES_PORT"]),
+            user=role,
+            password=password,
+            database=database,
+        )
+        database_admin.create_table(
+            "Évents",
+            obj=[
+                {
+                    "user_id": Decimal(user_id),
+                    "ts": dt.datetime(2025, 1, 10 if event == "purchase" else 1, 9),
+                    "event": event,
+                    "experiment_id": "exp",
+                    "group_id": group,
+                    "value": value,
+                    "numeric_array": [Decimal("123456789012345678901234567890")],
+                }
+                for user_id, group, event, value in (
+                    ("123456789012345678901234567890", "control", "enrolled", 0.0),
+                    ("123456789012345678901234567890", "control", "purchase", 1.0),
+                    ("223456789012345678901234567890", "treatment", "enrolled", 0.0),
+                    ("223456789012345678901234567890", "treatment", "purchase", 2.0),
+                )
+            ],
+            schema=ibis.schema(
+                {
+                    "user_id": "decimal(38, 0)",
+                    "ts": "timestamp",
+                    "event": "string",
+                    "experiment_id": "string",
+                    "group_id": "string",
+                    "value": "float64",
+                    "numeric_array": "array<decimal(38, 0)>",
+                }
+            ),
+        )
+        with database_admin.raw_sql('ALTER TABLE public."Évents" ALTER COLUMN event TYPE CHAR(16)'):
+            pass
+        with database_admin.raw_sql("CREATE SCHEMA analytics"):
+            pass
+        with database_admin.raw_sql(f'GRANT SELECT ON TABLE public."Évents" TO "{role}"'):
+            pass
+        with database_admin.raw_sql(f'GRANT USAGE ON SCHEMA analytics TO "{role}"'):
+            pass
+        with restricted.raw_sql("SET search_path TO analytics, public"):
+            pass
+        assert not admin.execute(
+            "SELECT has_database_privilege(%s, %s, 'TEMP')", (role, database)
+        ).fetchone()[0]
+
+        definitions = {
+            "dialect": "postgres",
+            "fact_sources": [
+                {
+                    "name": "events",
+                    "sql": "SELECT * FROM Évents /* plain source */",
+                    "timestamp_column": "ts",
+                    "entities": ["user_id"],
+                    "facts": [
+                        {"name": "enrolled", "column": None},
+                        {"name": "purchase", "column": "value"},
+                    ],
+                }
+            ],
+            "exposures": [{"name": "enrolled", "fact": "enrolled"}],
+            "metrics": [
+                {
+                    "name": "purchase_rate",
+                    "type": "conversion",
+                    "entity": "user_id",
+                    "fact": "purchase",
+                    "window_days": 7,
+                }
+            ],
+            "experiments": [
+                {
+                    "name": "exp",
+                    "exposure": "enrolled",
+                    "unit": "user_id",
+                    "start": "2025-01-01",
+                    "end": "2025-01-01",
+                    "observation_end": "2025-01-10",
+                    "control_group": "control",
+                    "plan": {"secondaries": ["purchase_rate"]},
+                }
+            ],
+        }
+        definitions_path = tmp_path / "live-no-temp.yaml"
+        definitions_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+        analysis = Analysis.from_definitions("exp", definitions_path, restricted)
+
+        # This must be the first warehouse operation; SQL schema introspection
+        # must not need to create a temporary view behind the caller's back.
+        result = analysis.run(coherence="live", decision_method=Method(name="unadjusted"))
+        assert result
+        with pytest.raises(CodedError) as refusal:
+            analysis.run(coherence="captured", decision_method=Method(name="unadjusted"))
+        assert refusal.value.code == "query.session.snapshot.materialization_failed"
+        projected_definitions = {
+            **definitions,
+            "fact_sources": [
+                {
+                    **definitions["fact_sources"][0],
+                    "sql": (
+                        "SELECT user_id, ts, event, experiment_id, group_id, value, numeric_array "
+                        "FROM Évents /* projected source */"
+                    ),
+                }
+            ],
+        }
+        projected_live_path = tmp_path / "live-no-temp-projected.yaml"
+        projected_live_path.write_text(yaml.safe_dump(projected_definitions, sort_keys=False))
+        projected_live_analysis = Analysis.from_definitions("exp", projected_live_path, restricted)
+        assert projected_live_analysis.run(
+            coherence="live", decision_method=Method(name="unadjusted")
+        )
+        array_session = WarehouseSession(restricted, defs=Definitions(dialect="postgres"))
+        array_source = array_session.source_sql(projected_definitions["fact_sources"][0]["sql"])
+        array_values = restricted.to_pyarrow(array_source.select("numeric_array"))
+        assert array_values.column("numeric_array").to_pylist()[0] == [
+            Decimal("123456789012345678901234567890")
+        ]
+
+        captured_definitions = {
+            **projected_definitions,
+            "experiments": [dict(definitions["experiments"][0])],
+        }
+        captured_definitions["experiments"][0].pop("end")
+        captured_definitions["experiments"][0].pop("observation_end")
+        projected_path = tmp_path / "captured-no-temp-projected.yaml"
+        projected_path.write_text(yaml.safe_dump(captured_definitions, sort_keys=False))
+        projected_analysis = Analysis.from_definitions("exp", projected_path, restricted)
+        with pytest.raises(CodedError) as projected_refusal:
+            projected_analysis.run(coherence="captured", decision_method=Method(name="unadjusted"))
+        assert projected_refusal.value.code == "query.session.snapshot.materialization_failed"
+    finally:
+        if analysis is not None:
+            analysis.close()
+        if projected_analysis is not None:
+            projected_analysis.close()
+        if projected_live_analysis is not None:
+            projected_live_analysis.close()
+        if restricted is not None:
+            restricted.disconnect()
+        if database_admin is not None:
+            database_admin.disconnect()
+        admin.execute(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+        admin.execute(f'DROP ROLE IF EXISTS "{role}"')
+        admin.close()
+
+
 @pytest.mark.warehouse_postgres
 def test_postgres_boolean_mean_metric_matches_duckdb_and_local_fit(postgres_con, tmp_path):
     """A boolean-valued mean traverses the native PostgreSQL readout and CUPED fit."""
