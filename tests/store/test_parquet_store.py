@@ -203,6 +203,9 @@ def test_analysis_run_persists_public_cells_without_identity_rewrites(tmp_path):
         rows = analysis.run(store=store)
         run = store.open_run("exp", rows.metadata.analysis_spec_hash, rows.metadata.run_id).run
         cells = run.cells
+        assert run.metadata is not None
+        changed = replace(run, metadata=run.metadata.model_copy(update={"coherence": "live"}))
+        assert changed.manifest_hash != run.manifest_hash
         assert cells
         assert all(cell.identity.source_snapshot_id for cell in cells)
         assert all(cell.identity.source_content_digest for cell in cells)

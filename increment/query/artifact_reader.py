@@ -20,8 +20,10 @@ import ibis
 import ibis.expr.types as ir
 
 from increment._evidence_types import (
+    BreakoutIdentity,
     ComplianceArm,
     ComplianceSummary,
+    EvidenceScope,
     SourceContext,
     invalid_compliance_state,
     raise_legacy_compliance_state,
@@ -891,6 +893,81 @@ class ArtifactMomentSource(SequentialSourceMixin):
         self._ratio_semantics: dict[str, tuple[str, int | None, str, int | None]] = {}
         self._source_context: SourceContext | None = None
         self.operations: frozenset[SourceOperation] = ARTIFACT_OPERATIONS
+
+    def capture_requirements(self, requests: Sequence[Any]) -> Any:
+        """Include the readouts' resolved configurations in the artifact scope."""
+
+        metrics_by_name = {
+            metric.name: metric for request in requests for metric in request.metrics
+        }
+        configs = list(
+            dict.fromkeys(config for request in requests for config in request.configs or ())
+        )
+        breakouts = list(
+            dict.fromkeys(breakout for request in requests for breakout in request.breakouts)
+        )
+        for request in requests:
+            if not request.include_breakouts or request.breakouts:
+                continue
+            from increment.query.source import _artifact_source_context
+
+            experiment, _ = _artifact_source_context(self._manifest.context)
+            breakouts.extend(
+                BreakoutIdentity(item.property, item.source)
+                for item in experiment.breakouts
+                if request.dimension is None or item.property == request.dimension
+            )
+        breakouts = tuple(dict.fromkeys(breakouts))
+        uptake_facts = list(
+            dict.fromkeys(fact for request in requests for fact in request.uptake_facts)
+        )
+        design = self.context.design
+        if isinstance(design, Encouragement) and design.uptake is not None:
+            if any(
+                request.grain in {"total", "daily"}
+                or (
+                    request.grain == "asof"
+                    and (
+                        request.estimands is None
+                        or bool({"compliance", "late"}.intersection(request.estimands))
+                    )
+                )
+                for request in requests
+            ):
+                if design.uptake.fact not in uptake_facts:
+                    uptake_facts.append(design.uptake.fact)
+        return EvidenceScope(
+            metrics=tuple(metrics_by_name.values()),
+            population=requests[0].population if requests else "assigned",
+            populations=tuple(
+                sorted({population for request in requests for population in request.populations})
+            ),
+            grain=next(
+                (
+                    grain
+                    for grain in ("asof", "daily", "total")
+                    if any(request.grain == grain for request in requests)
+                ),
+                None,
+            ),
+            dimension=next(
+                (request.dimension for request in requests if request.dimension is not None),
+                None,
+            ),
+            estimands=next(
+                (request.estimands for request in requests if request.estimands is not None),
+                None,
+            ),
+            breakouts=breakouts,
+            configs=(
+                tuple(configs) if any(request.configs is not None for request in requests) else None
+            ),
+            uptake_facts=tuple(uptake_facts),
+            snapshot=any(request.snapshot for request in requests),
+            execution=any(request.execution for request in requests),
+            include_breakouts=any(request.include_breakouts for request in requests),
+            checkpoint_only=any(request.checkpoint_only for request in requests),
+        )
 
     @classmethod
     def open(

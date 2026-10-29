@@ -1754,7 +1754,7 @@ class AnalysisEnvelope:
         metadata = payload.get("metadata")
         return cls(
             tuple(ResultCell.from_payload(cell) for cell in payload["cells"]),
-            None if metadata is None else ReadoutMetadata.model_validate(metadata),
+            None if metadata is None else ReadoutMetadata.from_saved_payload(metadata),
         )
 
     def to_arrow(self, *, include_capture_metadata: bool = True) -> pa.Table:
@@ -1770,7 +1770,9 @@ class AnalysisEnvelope:
     @classmethod
     def from_arrow(cls, table: pa.Table) -> AnalysisEnvelope:
         encoded = (table.schema.metadata or {}).get(_METADATA_KEY)
-        metadata = None if encoded is None else ReadoutMetadata.model_validate(json.loads(encoded))
+        metadata = (
+            None if encoded is None else ReadoutMetadata.from_saved_payload(json.loads(encoded))
+        )
         return cls(tuple(ResultCell.from_arrow(table)), metadata)
 
 

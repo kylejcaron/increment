@@ -24,6 +24,7 @@ from increment.estimation.readout_types import (
     ReadoutScope,
     SamplingInference,
     SourceReadoutScope,
+    _record_order,
     cell_order,
 )
 from increment.estimation.results import LiftEstimate
@@ -499,7 +500,7 @@ def scope_sequential_results(
                 "readout.scope.cell_incomplete",
                 cell={"record_type": type(record).__name__, "value": repr(record)},
             )
-        return record.source_snapshot_id, cell_order(record.cell)
+        return _record_order(record)
 
     metadata = ReadoutMetadata(
         scope=scope,

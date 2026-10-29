@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
+from increment._canonical import canonical_json_bytes
 from increment.kernel.contracts import CellIdentity, CompiledPlanBinding
 from increment.result_envelope import AnalysisEnvelope
 from increment.store._refusals import refuse_store
@@ -100,7 +102,7 @@ class ParquetResultsStore:
                 "decision_plan": (
                     None if run.decision_plan is None else run.decision_plan.to_payload()
                 ),
-                "manifest_hash": run.manifest_hash,
+                "manifest_hash": run._current_manifest_hash(),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -126,7 +128,22 @@ class ParquetResultsStore:
     def _load(self, path: Path) -> Run:
         table = pq.read_table(path)
         manifest = json.loads(table.schema.metadata[b"increment.run_manifest.v2"])
+        encoded_metadata = (table.schema.metadata or {}).get(b"increment.readout_metadata")
+        stored_metadata_sha256 = (
+            None
+            if encoded_metadata is None
+            else "sha256:"
+            + hashlib.sha256(canonical_json_bytes(json.loads(encoded_metadata))).hexdigest()
+        )
         envelope = AnalysisEnvelope.from_arrow(table)
+        normalized_metadata_sha256 = (
+            None
+            if envelope.metadata is None
+            else "sha256:"
+            + hashlib.sha256(
+                canonical_json_bytes(envelope.metadata.model_dump(mode="json"))
+            ).hexdigest()
+        )
         run = Run(
             experiment_id=manifest["experiment_id"],
             run_id=manifest["run_id"],
@@ -148,6 +165,8 @@ class ParquetResultsStore:
                 if manifest.get("decision_plan") is None
                 else CompiledPlanBinding.from_payload(manifest["decision_plan"])
             ),
+            _stored_metadata_sha256=stored_metadata_sha256,
+            _normalized_metadata_sha256=normalized_metadata_sha256,
         )
         if (
             run.manifest_hash != manifest["manifest_hash"]

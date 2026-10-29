@@ -51,6 +51,9 @@ example, when the database role lacks TEMP privileges); live results are
 qualified as live and lose the guarantee that separate reads observe one common
 source state.
 
+Artifact-backed analyses use immutable data and are always effectively captured,
+regardless of the requested `coherence` value.
+
 The effective per-stream mode map shows what actually happened. `live` means
 no common pinned snapshot is guaranteed, so separate reads may observe
 different source states. `provider` means a custom evidence provider owns the
