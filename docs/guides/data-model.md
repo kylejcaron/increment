@@ -145,6 +145,86 @@ analyzed as arms; the default refuses them.
     conditions: the default `"error"` refuses, while `"warn"` and `"exclude"`
     remove them and report each count separately in diagnostics.
 
+## Versioned assignment evidence
+
+`AssignmentRequest` acquires reduced assignment evidence separately from the
+existing aggregate `CountsRequest(kind="assignment")` and `ComplianceRequest`.
+It reports arm counts by allocation version and period, the assignment
+independence grain, and any declared allocation probabilities. `AssignmentEvidence`
+is reduced metadata and does not return ledger rows or event timestamps. When a
+source retains allocated/exposed/triggered timestamps, the public
+`FrameLedger.reduce(...).rows` API preserves them independently; unknown times
+remain null, and first exposure is never substituted for allocation.
+
+Warehouse-backed definitions can bind an identity-bearing relation directly on
+an experiment. The query must return one row per assignment key, and `roles`
+maps the semantic fields to the relation's actual column names:
+
+```yaml
+experiments:
+  - name: checkout
+    # Existing experiment fields omitted.
+    assignment_ledger:
+      sql: SELECT * FROM analytics.assignment_ledger
+      roles:
+        unit: subject_id
+        experiment: experiment_id
+        arm: assigned_arm
+        version: allocation_version
+        period: allocation_period
+        allocated_at: allocated_at
+        exposed_at: first_exposed_at
+        triggered_at: first_triggered_at
+```
+
+The `unit`, `experiment`, `arm`, and `version` roles are required. `cluster`,
+`period`, `layer`, and the three event-time roles are optional; omitted event
+times stay unknown. Requests reduce this relation inside the warehouse source
+boundary and return only immutable `AssignmentEvidence`.
+
+```python
+import pandas as pd
+from increment.evidence import AssignmentRequest, evidence_provider, request_evidence
+from increment.frame import from_unit_summary
+
+source = from_unit_summary(
+    pd.DataFrame({"unit": ["u1", "u2"], "arm": ["control", "treatment"], "value": [1.0, 2.0]}),
+    unit="unit",
+    group="arm",
+    control="control",
+    metrics={"value": "mean"},
+    experiment_id="checkout",
+)
+evidence = request_evidence(
+    evidence_provider(source),
+    AssignmentRequest(experiment="checkout", population="assigned"),
+)
+```
+
+The selection is deliberately explicit: a missing version or period is
+accepted only when the source has one unambiguous value. Switchback callers may
+request `all_periods=True`; observation-day columns are not allocation periods.
+The one-shot group-column compatibility evidence is version 1 with a null
+period and null event times, and is not a replay certificate. Sources without
+assignment capability refuse the relation request with
+[`evidence.assignment.unavailable`](refusals.md#find-the-next-step-by-code-family)
+before data access; aggregate counts and compliance requests keep their existing
+behavior.
+
+The assignment relation does not change estimator behavior. CUPED, ratio
+metrics, winsorization, sequential inference, breakouts, and multiplicity keep
+their existing method-specific contracts; this request does not infer
+eligibility or create a new analysis method. Cluster assignments report the
+cluster as the independence grain and require consistent unit-to-cluster
+membership and arm allocation. Replay is `not_certified` without a replay
+specification; sampled verification remains a sample check and never certifies
+the full ledger. See [Assignment and exposure roadmap issue #93](https://github.com/increment/Increment/issues/93)
+and downstream work in [#83](https://github.com/increment/Increment/issues/83),
+[#91](https://github.com/increment/Increment/issues/91),
+[#92](https://github.com/increment/Increment/issues/92),
+[#78](https://github.com/increment/Increment/issues/78), and
+[#95](https://github.com/increment/Increment/issues/95).
+
 ## The definitions directory
 
 Definitions are YAML files; the loader merges every `.yaml` and `.yml` file in
@@ -588,6 +668,37 @@ What a clustered experiment supports:
     probabilities qualify for anytime-valid SRM; blocked or exact-balance
     cluster protocols do not. Fixed-look Pearson inference remains available
     as an explicit option.
+
+## Assignment evidence and replay
+
+The assignment evidence request is distinct from `CountsRequest(kind="assignment")`,
+which remains an aggregate count operation. Assignment rows use an explicit
+identity key `(unit or cluster, experiment, version, period)`; a period is not
+the panel's outcome date. Allocation, first exposure and trigger timestamps are
+separate nullable fields. Unknown times remain null.
+
+When a source retains no assignment relation or exact reduced assignment
+evidence, the typed request refuses with `evidence.assignment.unavailable`.
+Do not infer assignment identities from aggregate counts. Mixed allocation
+versions require an explicit version selection. A source retaining only
+one-shot counts refuses unsupported version or period selections with
+`evidence.assignment.selection_unavailable`; switchback consumers may
+explicitly select all periods. Design declarations are authoritative for
+randomization law, target probabilities, independence grain and carryover;
+assignment-integrity checks derive those inputs from the declared design,
+not replay metadata. `AssignmentSpec` contains only deterministic replay inputs
+(the salt, bucket allocation, hash and encoding, and eligible roster). It
+cannot override the design's integrity declaration. Legacy schema documents
+that embed integrity declarations are rejected with
+`evidence.assignment.invalid`.
+The public `increment.evidence.replay` helper returns a validated identity
+ledger. Warehouse adapters apply experiment/version selection before reading
+assignment rows; exposure joins return only period/arm tuples and a
+next-period neighbour-arm lookup. Full and sampled replay checks are distinct;
+without a replay declaration, the ledger is `not_certified`, not disproven.
+Assignment evidence is needed for the versioned allocation and exposure work
+tracked in #93 and is a prerequisite for follow-on assignment and network
+readouts (#83, #91, #92, #78, #95).
 
 ??? info "Statistical details"
     With `cluster` declared (or `from_unit_summary(..., cluster="store_id")` on

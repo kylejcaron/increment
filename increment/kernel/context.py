@@ -8,7 +8,13 @@ from types import MappingProxyType, TracebackType
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from increment._evidence_types import BreakoutIdentity, EvidenceScope, EvidenceStream
+from increment._evidence_types import (
+    AssignmentEvidence,
+    AssignmentRequest,
+    BreakoutIdentity,
+    EvidenceScope,
+    EvidenceStream,
+)
 from increment._source_types import (
     EvidenceProvider,
     _loader_owner,
@@ -292,6 +298,7 @@ class EvidenceExecutionContext:
             execution=True,
             include_breakouts=scope.include_breakouts,
             checkpoint_only=self.scope.checkpoint_only,
+            assignment_requests=self.scope.assignment_requests,
         )
         try:
             result = cast(EvidenceProvider, self.provider).scope(requested)
@@ -307,6 +314,15 @@ class EvidenceExecutionContext:
                     streams = (EvidenceStream("provider", "provider"),)
                 else:
                     names = {str(getattr(metric, "name", metric)) for metric in requested.metrics}
+                    names.update(
+                        f"assignment:{request.experiment}:{request.version}:"
+                        f"{request.period}:{request.population}"
+                        for request in requested.assignment_requests
+                    )
+                    names.update(
+                        f"breakout:{breakout.property}:{breakout.source}"
+                        for breakout in requested.breakouts
+                    )
                     names.update(f"fact:{fact}" for fact in requested.uptake_facts)
                     streams = tuple(EvidenceStream(name, name) for name in sorted(names))
             capture_status = result.capture_status or "live"
@@ -466,6 +482,21 @@ class EvidenceExecutionContext:
                     "kernel.context.undeclared_stream",
                     stream=f"breakout:{getattr(identity, 'property', '')}:{getattr(identity, 'source', None)}",
                 )
+
+    def validate_assignment_request(self, request: AssignmentRequest) -> None:
+        """Require assignment selection to have been inventoried before scope capture."""
+        self.validate_source(_loader_owner(self.provider))
+        if request not in self.scope.assignment_requests:
+            _refuse("kernel.context.undeclared_stream", stream="assignment")
+
+    def assignment(self, request: AssignmentRequest) -> AssignmentEvidence:
+        """Read assignment evidence only through this context's pinned provider."""
+        self.validate_assignment_request(request)
+        provider = self._require_open()
+        method = getattr(provider, "assignment", None)
+        if not callable(method):
+            _refuse("kernel.context.undeclared_stream", stream="assignment_provider")
+        return cast(AssignmentEvidence, method(request))
 
     def _require_open(self) -> EvidenceProvider:
         if self._state != "open" or self._scoped_provider is None:

@@ -826,6 +826,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
             sequential_capture="asof",
             scalar=None,
             available_covariates=None,
+            assignment_relation=(
+                "reduced"
+                if any(ext.kind == "assignment_counts" for ext in self._manifest.extensions)
+                else "none"
+            ),
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

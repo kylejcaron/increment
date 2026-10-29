@@ -10,6 +10,7 @@ queries, or touch a database.
 """
 
 from increment.errors import DefinitionError
+from increment.semantics.assignment import AssignmentSpec
 from increment.semantics.loader import load
 from increment.semantics.models import (
     ActiveMetric,
@@ -37,6 +38,7 @@ from increment.semantics.models import (
 )
 
 __all__ = [
+    "AssignmentSpec",
     "ActiveMetric",
     "ConversionMetric",
     "CupedCovariate",

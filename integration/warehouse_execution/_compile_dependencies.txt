@@ -1,6 +1,7 @@
 # Traced on commit: 2ccd632647f50435524d359ff556bf10f20d44b6
 increment
 increment._analysis_config
+increment._assignment_refusals
 increment._artifact_identity
 increment._breakout_readouts
 increment._canonical

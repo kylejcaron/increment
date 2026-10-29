@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import hashlib
+import json
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
+
+
+def refuse_assignment_invalid(reason: str, *, details: object = None) -> NoReturn:
+    from increment._assignment_refusals import refuse_assignment_invalid as refuse
+
+    refuse(reason, details=details)
+
+
+def refuse_assignment_replay_mismatch(*, details: object = None) -> NoReturn:
+    from increment._assignment_refusals import (
+        refuse_assignment_replay_mismatch as refuse,
+    )
+
+    refuse(details=details)
+
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -128,7 +147,205 @@ class SwitchbackAssignment(_AssignmentModel):
 Assignment = Annotated[ParallelAssignment | SwitchbackAssignment, Field(discriminator="kind")]
 
 
+@dataclass(frozen=True, slots=True)
+class AssignmentSpec:
+    """Portable replay inputs for an assignment ledger."""
+
+    salt: str
+    bucket_count: int
+    allocation: tuple[tuple[str, tuple[int, ...]], ...]
+    hash_function: str = "sha256"
+    encoding: str = "utf-8"
+    eligible_units: tuple[str, ...] | None = None
+    schema_version: int = 1
+    experiment: str = ""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.schema_version, bool) or self.schema_version != 1:
+            refuse_assignment_invalid("unsupported_schema_version", details=self.schema_version)
+        if self.bucket_count < 1 or isinstance(self.bucket_count, bool):
+            refuse_assignment_invalid("invalid_bucket_count", details=self.bucket_count)
+        if self.hash_function != "sha256" or self.encoding != "utf-8":
+            refuse_assignment_invalid("unsupported_hash_encoding")
+        if not self.salt:
+            refuse_assignment_invalid("missing_replay_salt")
+        buckets = [bucket for _, selected in self.allocation for bucket in selected]
+        if not self.allocation or len({arm for arm, _ in self.allocation}) != len(self.allocation):
+            refuse_assignment_invalid("invalid_allocation_arms")
+        if sorted(buckets) != list(range(self.bucket_count)):
+            refuse_assignment_invalid("invalid_allocation_bucket_partition")
+        if self.eligible_units is not None and len(set(self.eligible_units)) != len(
+            self.eligible_units
+        ):
+            refuse_assignment_invalid("duplicate_eligible_unit")
+
+    def to_json(self) -> str:
+        """Encode a stable, versioned representation."""
+        return json.dumps(
+            {
+                "schema_version": self.schema_version,
+                "experiment": self.experiment,
+                "salt": self.salt,
+                "bucket_count": self.bucket_count,
+                "allocation": [[arm, list(buckets)] for arm, buckets in self.allocation],
+                "hash_function": self.hash_function,
+                "encoding": self.encoding,
+                "eligible_units": self.eligible_units,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+
+    @classmethod
+    def from_json(cls, payload: str) -> AssignmentSpec:
+        """Decode only the current schema and reject unknown fields."""
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            refuse_assignment_invalid("invalid_schema_json")
+        if not isinstance(data, dict):
+            refuse_assignment_invalid("invalid_schema_document")
+        if data.get("schema_version") != 1:
+            refuse_assignment_invalid(
+                "unsupported_schema_version", details=data.get("schema_version")
+            )
+        allowed = {
+            "schema_version",
+            "experiment",
+            "salt",
+            "bucket_count",
+            "allocation",
+            "hash_function",
+            "encoding",
+            "eligible_units",
+        }
+        unknown = set(data) - allowed
+        design_fields = unknown & {
+            "randomization_law",
+            "probabilities",
+            "independence_grain",
+            "carryover_order",
+            "schedule",
+        }
+        if design_fields:
+            refuse_assignment_invalid(
+                "design_declaration_conflict",
+                details=sorted(str(field) for field in design_fields),
+            )
+        if unknown:
+            refuse_assignment_invalid(
+                "unknown_schema_fields", details=sorted(str(field) for field in unknown)
+            )
+        try:
+            data["allocation"] = tuple((arm, tuple(buckets)) for arm, buckets in data["allocation"])
+            if data.get("eligible_units") is not None:
+                data["eligible_units"] = tuple(data["eligible_units"])
+            return cls(**data)
+        except (KeyError, TypeError, ValueError) as error:
+            refuse_assignment_invalid("invalid_schema_document", details=str(error))
+        raise AssertionError("unreachable")
+
+    def _bucket(self, unit: str) -> int:
+        if not isinstance(unit, str) or not unit:
+            refuse_assignment_invalid("invalid_unit_identity", details=unit)
+        raw = json.dumps([self.salt, unit], ensure_ascii=False, separators=(",", ":")).encode(
+            self.encoding
+        )
+        digest = hashlib.new(self.hash_function, raw).digest()
+        return int.from_bytes(digest[:8], "big") % self.bucket_count
+
+    def replay(
+        self, units: Iterable[str], *, allow_eligible_subset: bool = False
+    ) -> tuple[dict[str, Any], ...]:
+        """Recreate assignments for the full eligible roster or an explicit subset."""
+        selected = tuple(units)
+        if len(set(selected)) != len(selected):
+            refuse_assignment_invalid("duplicate_replay_unit")
+        if self.eligible_units is not None:
+            eligible = set(self.eligible_units)
+            selected_set = set(selected)
+            valid = (
+                selected_set.issubset(eligible)
+                if allow_eligible_subset
+                else selected_set == eligible
+            )
+            if not valid:
+                refuse_assignment_invalid("replay_eligibility_mismatch")
+        bucket_to_arm = {bucket: arm for arm, buckets in self.allocation for bucket in buckets}
+        return tuple(
+            {
+                "unit": unit,
+                "experiment": self.experiment,
+                "arm": bucket_to_arm[self._bucket(unit)],
+                "period": None,
+                "version": 1,
+                "layer": None,
+                "allocated_at": None,
+                "exposed_at": None,
+                "triggered_at": None,
+            }
+            for unit in selected
+        )
+
+    def verify(
+        self, ledger: Iterable[Mapping[str, Any]], sample: Iterable[str] | None = None
+    ) -> str:
+        """Check replayed assignments, distinguishing a sample from full verification."""
+        rows = tuple(ledger)
+        try:
+            identities = []
+            for row in rows:
+                unit = row["unit"]
+                experiment = row["experiment"]
+                version = row["version"]
+                period = row["period"]
+                arm = row["arm"]
+                if (
+                    not isinstance(unit, str)
+                    or not isinstance(experiment, str)
+                    or isinstance(version, bool)
+                    or not isinstance(version, int)
+                    or (period is not None and not isinstance(period, str))
+                    or not isinstance(arm, str)
+                ):
+                    refuse_assignment_replay_mismatch(details="invalid ledger identity types")
+                identities.append(((unit, experiment, version, period), arm))
+            by_unit = {identity[0][0]: identity for identity in identities}
+        except (KeyError, TypeError, ValueError) as error:
+            refuse_assignment_replay_mismatch(details=f"invalid ledger identity: {error}")
+        if len(by_unit) != len(rows):
+            refuse_assignment_replay_mismatch(details="duplicate ledger unit identities")
+        if (
+            sample is None
+            and self.eligible_units is not None
+            and set(by_unit) != set(self.eligible_units)
+        ):
+            refuse_assignment_replay_mismatch(details="ledger does not match declared eligibility")
+        units = tuple(sample) if sample is not None else tuple(sorted(by_unit))
+        if any(unit not in by_unit for unit in units):
+            refuse_assignment_replay_mismatch(details="sample contains an unmatched identity")
+        for row in self.replay(units, allow_eligible_subset=sample is not None):
+            actual_identity, actual_arm = by_unit[row["unit"]]
+            expected_identity = (
+                row["unit"],
+                row["experiment"],
+                row["version"],
+                row["period"],
+            )
+            if actual_identity != expected_identity or actual_arm != row["arm"]:
+                refuse_assignment_replay_mismatch(
+                    details={
+                        "unit": row["unit"],
+                        "expected": expected_identity,
+                        "actual": actual_identity,
+                    }
+                )
+        return "sampled_check" if sample is not None else "verified_full"
+
+
 __all__ = [
+    "AssignmentSpec",
     "Assignment",
     "IndependentBernoulliOrder",
     "ParallelAssignment",

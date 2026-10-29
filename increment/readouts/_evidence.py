@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, cast, overload
 
 from increment._evidence_loaders import (
@@ -13,6 +14,7 @@ from increment._evidence_loaders import (
 )
 from increment._evidence_loaders import route_provider_request as _route_provider_request
 from increment._evidence_refusals import (
+    refuse_assignment_invalid,
     refuse_joint_grouping,
     require_evidence,
     require_population,
@@ -20,6 +22,8 @@ from increment._evidence_refusals import (
 from increment._evidence_scopes import SCOPE_OWNERS, loader_source, scope_source
 from increment._evidence_types import (
     ArtifactProvenance,
+    AssignmentEvidence,
+    AssignmentRequest,
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
     BreakoutRoute,
@@ -429,6 +433,61 @@ def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:
         return CountEvidence(request.population, "unit", source.unit_counts())
     grain, counts, units = cast(Any, source).triggered_counts()
     return CountEvidence("triggered", grain, counts, units)
+
+
+def load_assignment(src: EvidenceSource, request: AssignmentRequest) -> AssignmentEvidence:
+    """Acquire assignment evidence through the designated source boundary."""
+    if request.experiment != src.context.study_id:
+        from increment._evidence_refusals import refuse_assignment_selection
+
+        refuse_assignment_selection(src, requested=request.experiment, offered=src.context.study_id)
+    identity_operation = getattr(src, "identity_assignment_evidence", None)
+    if callable(identity_operation):
+        evidence = identity_operation(request)
+        if evidence is not None:
+            return evidence
+    operation = getattr(src, "assignment_evidence", None)
+    if callable(operation):
+        return operation(request)
+    declaration = declared_evidence(src)
+    if declaration.assignment_relation != "reduced":
+        from increment._evidence_refusals import refuse_assignment
+
+        refuse_assignment(src, offered=declaration.assignment_relation)
+    if request.version not in (None, 1) or request.period is not None:
+        from increment._evidence_refusals import refuse_assignment_selection
+
+        refuse_assignment_selection(
+            src,
+            requested={"version": request.version, "period": request.period},
+            offered={"version": (1,), "period": (None,)},
+        )
+    counts = load_counts(src, CountsRequest(kind="assignment", population=request.population))
+    allocation = getattr(src.context.design, "allocation", None)
+    probabilities: tuple[tuple[str, float], ...] = ()
+    if isinstance(allocation, Mapping):
+        try:
+            weights = tuple((str(arm), Decimal(str(weight))) for arm, weight in allocation.items())
+        except (InvalidOperation, TypeError, ValueError):
+            refuse_assignment_invalid("invalid_allocation_weight")
+        if weights:
+            if any(not weight.is_finite() or weight <= 0 for _, weight in weights):
+                refuse_assignment_invalid("invalid_allocation_weight")
+            scale = max(weight for _, weight in weights)
+            scaled = tuple((arm, weight / scale) for arm, weight in weights)
+            total = sum((weight for _, weight in scaled), Decimal(0))
+            probabilities = tuple(sorted((arm, float(weight / total)) for arm, weight in scaled))
+    return AssignmentEvidence(
+        experiment=request.experiment,
+        population=request.population,
+        versions=(1,),
+        periods=(None,),
+        arm_counts=tuple(
+            (1, None, str(arm), int(count)) for arm, count in sorted(counts.counts.items())
+        ),
+        independence_grain="cluster" if src.context.cluster else "unit",
+        probabilities=probabilities,
+    )
 
 
 def method_fit_input_digest(src: EvidenceSource, request: MethodFitRequest) -> str | None:

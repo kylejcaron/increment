@@ -196,6 +196,7 @@ class EvidenceCapabilities:
     available_covariates: frozenset[str] | None
     sql_grains: frozenset[Grain] = frozenset()
     capture: Literal["snapshot", "immutable", "live"] = "live"
+    assignment_relation: Literal["none", "ledger", "reduced"] = "none"
 
 
 class _OwnedLoaderAdapter:

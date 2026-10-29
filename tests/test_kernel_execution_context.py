@@ -330,3 +330,52 @@ def test_captured_context_refuses_when_its_pinned_stream_disappears(tmp_path):
     finally:
         context.close()
         analysis.close()
+
+
+def test_assignment_request_must_be_declared_and_uses_the_pinned_provider() -> None:
+    from increment.evidence import AssignmentEvidence, AssignmentRequest
+
+    request = AssignmentRequest(experiment="exp", version=1)
+
+    class AssignmentProvider(_Provider):
+        def __init__(self, count):
+            super().__init__()
+            self.count = count
+            self.captured = None
+
+        def scope(self, request):
+            self.requests.append(request)
+
+            @contextmanager
+            def entered():
+                yield self.captured
+
+            return EvidenceScopeResult(entered(), request, capture_status="captured")
+
+        def assignment(self, selected):
+            assert selected == request
+            return AssignmentEvidence(
+                experiment="exp",
+                population="assigned",
+                versions=(1,),
+                periods=(None,),
+                arm_counts=((1, None, "control", self.count),),
+                independence_grain="unit",
+            )
+
+    captured = AssignmentProvider(7)
+    provider = AssignmentProvider(2)
+    provider.captured = captured
+    scope = EvidenceScope(assignment_requests=(request,))
+    context = EvidenceExecutionContext(cast(Any, provider), scope, run_id="assignment")
+    pinned = context.open()
+    assert provider.requests[0].assignment_requests == (request,)
+    provider.count = 99
+    evidence = context.assignment(request)
+    assert evidence.arm_counts == ((1, None, "control", 7),)
+    assert pinned is captured
+    assert any(stream.startswith("assignment:exp:") for stream in context.effective_modes)
+    with pytest.raises(CodedError) as refused:
+        context.assignment(AssignmentRequest(experiment="other"))
+    assert refused.value.code == "kernel.context.undeclared_stream"
+    context.close()

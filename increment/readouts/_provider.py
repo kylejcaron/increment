@@ -4,6 +4,8 @@ from typing import Any
 
 from increment._evidence_refusals import require_evidence
 from increment._evidence_types import (
+    AssignmentEvidence,
+    AssignmentRequest,
     BreakoutMethodMomentsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
@@ -101,6 +103,13 @@ class _BuiltInEvidenceProvider(_OwnedLoaderAdapter):
         from increment.readouts._evidence import load_counts
 
         return load_counts(self.source, request)
+
+    def assignment(self, request: AssignmentRequest) -> AssignmentEvidence:
+        """Validate and delegate assignment acquisition to the evidence boundary."""
+        _validate(self.source, request)
+        from increment.readouts._evidence import load_assignment
+
+        return load_assignment(self.source, request)
 
     def capture_sequential(self, request: SequentialCaptureRequest) -> SequentialCapture:
         _validate(self.source, request)

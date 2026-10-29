@@ -1438,6 +1438,7 @@ class MomentsSource(SequentialSourceMixin):
                 covariate_grains=None,
             ),
             available_covariates=None,
+            assignment_relation="reduced" if self._assignment_counts is not None else "none",
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:

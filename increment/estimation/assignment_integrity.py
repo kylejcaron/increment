@@ -12,6 +12,9 @@ from increment.errors import CapabilityError, RefusalSpec
 from increment.estimation.diagnostics import sample_ratio_mismatch
 from increment.semantics.design import Encouragement, Observational, Randomized
 
+if TYPE_CHECKING:
+    from increment.estimation.readout_types import IntegrityResult
+
 ALLOCATION_SCHEME_MISSING_REFUSAL = RefusalSpec(
     "integrity.allocation_scheme_missing",
     CapabilityError,
@@ -33,9 +36,6 @@ ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL = RefusalSpec(
     keys=frozenset({"population"}),
 )
 
-if TYPE_CHECKING:
-    from increment.estimation.readout_types import IntegrityResult
-
 
 def assignment_integrity(
     design: object,
@@ -45,14 +45,9 @@ def assignment_integrity(
     randomization_grain: Literal["unit", "cluster"] | None = None,
     cumulative: bool = True,
     constant_allocation: bool = True,
+    order_draws: tuple[tuple[str, str], ...] = (),
 ) -> IntegrityResult:
-    """Classify the declared law, then check a compatible cumulative prefix.
-
-    ``counts`` must be experiment-level assignment counts at the randomization
-    grain, not metric observations or encouragement uptake counts. Call once
-    per source snapshot; retain the assigned result when displaying triggered
-    rows. Non-rejection is neither certification nor a historical alarm log.
-    """
+    """Classify a declared assignment law using only its matching randomization grain."""
     from increment.estimation.readout_types import IntegrityResult
 
     allocation = getattr(design, "allocation", None)
@@ -66,6 +61,63 @@ def assignment_integrity(
         "randomization_grain": randomization_grain,
         "context": {},
     }
+    from increment.semantics.assignment import SwitchbackAssignment
+
+    if isinstance(design, SwitchbackAssignment):
+        sequence = design.sequence
+        probabilities = {"ct": sequence.probability_ct, "tc": 1.0 - sequence.probability_ct}
+        expected_grain = sequence.independence_unit
+        common.update(
+            expected=probabilities,
+            randomization_grain=expected_grain,
+            context={"randomization_law": sequence.scheme},
+        )
+        if not constant_allocation:
+            common["observed"] = None
+            return IntegrityResult(
+                **common,
+                status="not_checked_missing_declaration",
+                code="integrity.allocation_missing_or_nonconstant",
+            )
+        if population == "triggered":
+            common["observed"] = None
+            return IntegrityResult(
+                **common,
+                status="not_checked_missing_counts",
+                code="integrity.triggered_population_not_checked",
+            )
+        observed = {name: sum(order == name for _, order in order_draws) for name in probabilities}
+        common["observed"] = observed
+        if not cumulative or not order_draws:
+            return IntegrityResult(
+                **common,
+                status="not_checked_missing_counts",
+                code="integrity.counts_missing",
+            )
+        result = sample_ratio_mismatch(
+            observed,
+            expected=probabilities,
+            inference="always_valid",
+            alpha=0.001,
+            grain="unit",
+        )
+        return IntegrityResult(
+            status="failed" if result.is_srm else "not_rejected",
+            analysis_population=population,
+            construction="always_valid",
+            alpha=result.alpha,
+            observed=result.observed,
+            expected=result.expected,
+            randomization_grain=expected_grain,
+            code=None,
+            context={
+                **common["context"],
+                "order_draws": len(order_draws),
+                "log_e_value": result.log_e_value,
+                "unassigned_units": result.unassigned_units,
+                "mixed_assignment_units": result.mixed_assignment_units,
+            },
+        )
     if isinstance(design, Observational):
         return IntegrityResult(**common, status="not_applicable", code=None)
     if not isinstance(design, (Randomized, Encouragement)):

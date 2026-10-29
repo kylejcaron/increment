@@ -251,9 +251,10 @@ class EvidenceScope:
     configs: tuple[Any, ...] | None = None
     uptake_facts: tuple[str, ...] = ()
     snapshot: bool = False
-    execution: bool = False
     include_breakouts: bool = False
     checkpoint_only: bool = False
+    execution: bool = False
+    assignment_requests: tuple[AssignmentRequest, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +263,33 @@ class ComplianceRequest:
     as_of: object | None = None
     completed_windows_only: bool = False
     population: Literal["assigned", "triggered"] = "assigned"
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentRequest:
+    """Select one experiment's assignment evidence without pooling identities."""
+
+    experiment: str
+    version: int | None = None
+    period: str | None = None
+    population: Literal["assigned", "triggered"] = "assigned"
+    all_periods: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentEvidence:
+    """Backend-neutral, reduced assignment data for one request."""
+
+    experiment: str
+    population: str
+    versions: tuple[int, ...]
+    periods: tuple[str | None, ...]
+    arm_counts: tuple[tuple[int, str | None, str, int], ...]
+    independence_grain: str
+    probabilities: tuple[tuple[str, float], ...] = ()
+    replay_status: str = "not_certified"
+    order_draws: tuple[tuple[str, str], ...] = ()
+    randomization_law: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -2375,9 +2375,42 @@ def local_day(value: datetime, offset: timedelta) -> date:
     return (value.astimezone(UTC) + offset).date()
 
 
+class AssignmentLedgerBinding(_Base):
+    """Identity-bearing warehouse relation and its semantic column roles."""
+
+    sql: str
+    roles: Mapping[str, str]
+
+    @field_validator("sql")
+    @classmethod
+    def _nonblank_assignment_sql(cls, value: str) -> str:
+        if not value.strip():
+            _definition_refusal(
+                "definition.non_empty_string",
+                "assignment ledger SQL cannot be blank",
+            )
+        return value
+
+    @field_validator("roles")
+    @classmethod
+    def _freeze_assignment_roles(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        if not value or any(
+            not isinstance(key, str) or not isinstance(column, str) for key, column in value.items()
+        ):
+            _definition_refusal(
+                "definition.non_empty_string",
+                "assignment ledger roles must map semantic names to column names",
+            )
+        return MappingProxyType(dict(value))
+
+    @field_serializer("roles")
+    def _serialize_assignment_roles(self, value: Mapping[str, str]) -> dict[str, str]:
+        return dict(value)
+
+
 class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     _explicit_only_fields: ClassVar[frozenset[str]] = frozenset(
-        {"day_boundary", "allocation", "allocation_scheme", "design"}
+        {"day_boundary", "allocation", "allocation_scheme", "design", "assignment_ledger"}
     )
 
     name: str
@@ -2414,6 +2447,8 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     #: resolved_design(). mechanism: "randomized" is not a valid value
     #: here: the top-level fields are randomized's only spelling.
     design: ExperimentDesignDeclaration | None = None
+    #: Explicit identity-bearing assignment relation for row-level evidence.
+    assignment_ledger: AssignmentLedgerBinding | None = None
     breakouts: tuple[Breakout, ...] = ()
     factors: tuple[Factor, ...] = ()
     #: Fixed-offset day boundary for calendar-day bucketing (default "UTC");

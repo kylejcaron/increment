@@ -285,6 +285,7 @@ class FrameSwitchbackSource:
             sequential_capture="none",
             scalar=None,
             available_covariates=None,
+            assignment_relation="reduced",
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -307,12 +308,16 @@ class FrameSwitchbackSource:
         stats: Mapping[str, ContrastStats],
         planning: Mapping[str, _PlanningMoments | None],
         roster: Sequence[str],
+        assignment_evidence: Any,
+        order_cycles: Sequence[tuple[str, str, str]],
     ) -> None:
         self._context = context
         self._diagnostics = diagnostics
         self._stats = dict(stats)
         self._planning = dict(planning)
         self._roster = tuple(roster)
+        self._assignment_evidence = assignment_evidence
+        self._order_cycles = tuple(order_cycles)
 
     @property
     def context(self) -> ContrastContext:
@@ -325,6 +330,67 @@ class FrameSwitchbackSource:
     @property
     def diagnostics(self) -> SwitchbackAssignmentDiagnostic:
         return self._diagnostics
+
+    def assignment_evidence(self, request: Any) -> Any:
+        """Return retained switchback arm counts and independent order draws."""
+        from increment._assignment_refusals import refuse_assignment_selection
+        from increment._evidence_types import AssignmentEvidence
+
+        evidence = self._assignment_evidence
+        if (
+            request.experiment != evidence.experiment
+            or request.version not in (None, 1)
+            or request.population != "assigned"
+        ):
+            refuse_assignment_selection(
+                self,
+                requested={
+                    "experiment": request.experiment,
+                    "version": request.version,
+                    "population": request.population,
+                },
+                offered={
+                    "experiment": evidence.experiment,
+                    "version": (1,),
+                    "population": "assigned",
+                },
+            )
+        if request.period is not None:
+            selected = (request.period,)
+        elif request.all_periods:
+            selected = evidence.periods
+        elif len(evidence.periods) == 1:
+            selected = evidence.periods
+        else:
+            refuse_assignment_selection(
+                self,
+                requested={"period": None},
+                offered={"periods": evidence.periods, "route": "set all_periods=True"},
+            )
+        missing = tuple(item for item in selected if item not in evidence.periods)
+        if missing:
+            refuse_assignment_selection(
+                self,
+                requested={"period": missing},
+                offered={"periods": evidence.periods},
+            )
+        selected_cycles = {item.split(":period=", maxsplit=1)[0] for item in selected}
+        return AssignmentEvidence(
+            experiment=evidence.experiment,
+            population=request.population,
+            versions=evidence.versions,
+            periods=selected,
+            arm_counts=tuple(item for item in evidence.arm_counts if item[1] in selected),
+            independence_grain=evidence.independence_grain,
+            probabilities=evidence.probabilities,
+            replay_status=evidence.replay_status,
+            order_draws=tuple(
+                (block, order)
+                for cycle, block, order in self._order_cycles
+                if cycle in selected_cycles
+            ),
+            randomization_law=evidence.randomization_law,
+        )
 
     @property
     def metrics(self) -> tuple[Metric, ...]:
@@ -1142,6 +1208,66 @@ def _build_shared_stats(  # noqa: PLR0913
     return stats, planning
 
 
+def _reduce_switchback_assignment_schedule(
+    *,
+    experiment: str,
+    schedule: Any,
+    cycles: Sequence[int],
+    shared: bool,
+    block_orders: np.ndarray | None,
+    probability_ct: float,
+    randomization_law: str,
+    independence_grain: str,
+    control_arm: str,
+    treatment_arm: str,
+) -> tuple[Any, tuple[tuple[str, str, str], ...]]:
+    from collections import Counter
+
+    from increment._assignment_refusals import refuse_assignment_invalid
+    from increment._evidence_types import AssignmentEvidence
+
+    counts: Counter[tuple[int, str, str]] = Counter()
+    periods: list[str] = []
+    order_cycles: list[tuple[str, str, str]] = []
+    for unit_index, unit in enumerate(schedule.units):
+        for cycle_index, cycle in enumerate(cycles):
+            if shared:
+                if block_orders is None:
+                    refuse_assignment_invalid("missing_shared_block_orders")
+                control_first = bool(block_orders[cycle_index])
+            else:
+                control_first = bool(schedule.control_first[unit_index, cycle_index])
+            cycle_id = str(cycle)
+            first_period = f"{cycle_id}:period=0"
+            second_period = f"{cycle_id}:period=1"
+            if first_period not in periods:
+                periods.extend((first_period, second_period))
+            first_arm, second_arm = (
+                (control_arm, treatment_arm) if control_first else (treatment_arm, control_arm)
+            )
+            counts[(1, first_period, first_arm)] += 1
+            counts[(1, second_period, second_arm)] += 1
+            block = f"block:{cycle_id}" if shared else f"unit-cycle:{unit}:{cycle_id}"
+            if not shared or unit_index == 0:
+                order_cycles.append((cycle_id, block, "ct" if control_first else "tc"))
+    evidence = AssignmentEvidence(
+        experiment=experiment,
+        population="assigned",
+        versions=(1,),
+        periods=tuple(periods),
+        arm_counts=tuple(
+            sorted(
+                (version, period, arm, count) for (version, period, arm), count in counts.items()
+            )
+        ),
+        independence_grain=independence_grain,
+        probabilities=(("ct", probability_ct), ("tc", 1.0 - probability_ct)),
+        randomization_law=randomization_law,
+        order_draws=tuple((block, order) for _, block, order in order_cycles),
+    )
+    return evidence, tuple(order_cycles)
+
+
 def from_switchback_panel(  # noqa: PLR0915
     frame: IntoDataFrame,
     *,
@@ -1560,12 +1686,26 @@ def from_switchback_panel(  # noqa: PLR0915
         carryover_order=window.carryover_order,
         integrity_failures=(),
     )
+    assignment_evidence, order_cycles = _reduce_switchback_assignment_schedule(
+        experiment=context.study_id,
+        schedule=schedule,
+        cycles=cycles,
+        shared=is_shared,
+        block_orders=block_orders,
+        probability_ct=p_ct,
+        randomization_law=assignment.sequence.scheme,
+        independence_grain=assignment.sequence.independence_unit,
+        control_arm=control,
+        treatment_arm=treatment,
+    )
     return FrameSwitchbackSource(
         context=context,
         diagnostics=diagnostics,
         stats=stats,
         planning=planning,
         roster=sorted(str(value) for value in units),
+        assignment_evidence=assignment_evidence,
+        order_cycles=order_cycles,
     )
 
 
