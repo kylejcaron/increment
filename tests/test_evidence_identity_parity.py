@@ -22,6 +22,8 @@ from tests.parity_harness.registrations_line2 import (
     LINE2_PAIRS,
     line2_actual_outcome,
 )
+from tests.parity_harness.registrations_line6 import ADAPTERS as _LINE6_ADAPTERS
+from tests.parity_harness.registrations_line6 import PAIRS as _LINE6_PAIRS
 
 # Line-one owns whole-window parity pairs not assigned to lines 2–7.
 _LINE1_SCENARIOS = frozenset(
@@ -169,6 +171,31 @@ def _compare(expected: Any, actual: Any, path: str = "") -> None:
         assert isinstance(actual, (list, tuple)) and len(expected) == len(actual)
         for index, (left, right) in enumerate(zip(expected, actual, strict=True)):
             _compare(left, right, f"{path}.{index}")
+    else:
+        assert expected == actual
+
+
+def _compare_aggregate(expected: Any, actual: Any) -> None:
+    """Compare aggregate moment inputs at a practical floating-point tolerance.
+
+    Reduction order and platform math libraries move low bits; a centered sum whose true
+    value is zero lands anywhere within accumulated rounding. Values within ``TOLERANCE``
+    of zero are equal, and others must agree to ``rel_tol=1e-9``.
+    """
+    if isinstance(expected, float) or isinstance(actual, float):
+        assert isinstance(expected, (int, float)) and not isinstance(expected, bool)
+        assert isinstance(actual, (int, float)) and not isinstance(actual, bool)
+        if abs(expected) <= TOLERANCE and abs(actual) <= TOLERANCE:
+            return
+        assert math.isclose(expected, actual, rel_tol=1e-9, abs_tol=TOLERANCE)
+    elif isinstance(expected, Mapping):
+        assert isinstance(actual, Mapping) and expected.keys() == actual.keys()
+        for key in expected:
+            _compare_aggregate(expected[key], actual[key])
+    elif isinstance(expected, (list, tuple)):
+        assert isinstance(actual, (list, tuple)) and len(expected) == len(actual)
+        for left, right in zip(expected, actual, strict=True):
+            _compare_aggregate(left, right)
     else:
         assert expected == actual
 
@@ -359,14 +386,65 @@ def _assert_cell_matches(
         )
 
 
+def _identity_fields(cell: object) -> Mapping[str, object]:
+    if isinstance(cell, ResultCell):
+        identity = cell.identity
+    else:
+        payload = cast(Mapping[str, Any], cell).get("result_cell", cell)
+        identity = ResultCell.from_payload(cast(Mapping[str, Any], payload)).identity
+    return identity.model_dump(mode="json")
+
+
+def _assert_same_cell_keys(
+    expected: Mapping[Any, Any], actual: Mapping[Any, Any], snapshot_inputs: object = None
+) -> None:
+    """Compare identity keys, naming the differing identity fields and the actual snapshot's
+    hashed inputs when they disagree."""
+    if expected.keys() == actual.keys():
+        return
+    expected_fields = [_identity_fields(cell) for cell in expected.values()]
+    actual_fields = [_identity_fields(cell) for cell in actual.values()]
+    differing = sorted(
+        {
+            name
+            for left, right in zip(expected_fields, actual_fields, strict=False)
+            for name in left.keys() | right.keys()
+            if left.get(name) != right.get(name)
+        }
+    )
+    details = {
+        name: (
+            [fields.get(name) for fields in expected_fields],
+            [fields.get(name) for fields in actual_fields],
+        )
+        for name in differing
+    }
+    raise AssertionError(
+        f"cell identity keys differ in fields {differing}: {details}; "
+        f"actual snapshot inputs: {snapshot_inputs}"
+    )
+
+
 def _has_platform_sensitive_scope_component(actual: Mapping[str, object]) -> bool:
+    """Whether the snapshot hashes bits that legitimately differ across platforms.
+
+    LAPACK QR fit outputs differ at machine epsilon across BLAS builds. Per-unit
+    adjustment covariates hash raw float bits; the harness draws them with NumPy
+    distributions, which NumPy documents may differ across platforms through libm.
+    Values are still compared at the established tolerance.
+    """
     components = actual.get("_scope_evidence_components", ())
-    if not isinstance(components, (list, tuple)):
-        return False
-    for item in components:
-        if isinstance(item, Mapping):
-            kind = item.get("kind")
-            if isinstance(kind, str) and kind.startswith("warehouse_qr:"):
+    if isinstance(components, (list, tuple)):
+        for item in components:
+            if isinstance(item, Mapping):
+                kind = item.get("kind")
+                if isinstance(kind, str) and kind.startswith("warehouse_qr:"):
+                    return True
+    inputs = actual.get("_scope_snapshot_inputs", ())
+    if isinstance(inputs, (list, tuple)):
+        for item in inputs:
+            request = item.get("request") if isinstance(item, Mapping) else None
+            if isinstance(request, Mapping) and request.get("adjustment_input_identity"):
                 return True
     return False
 
@@ -380,7 +458,7 @@ def _assert_outcome_matches(
         assert expected["stage"] == actual["stage"]
         assert _json_context(expected["context"]) == _json_context(actual["context"])
         if "aggregate_evidence" in expected:
-            assert expected["aggregate_evidence"] == actual["aggregate_evidence"]
+            _compare_aggregate(expected["aggregate_evidence"], actual["aggregate_evidence"])
     elif expected["kind"] == "absent":
         assert expected["reason"] == actual["reason"]
     elif expected["kind"] == "cells":
@@ -404,7 +482,9 @@ def _assert_outcome_matches(
             cells_to_compare = expected_by_identity.items()
             actual_cells_by_identity = actual_by_identity
         else:
-            assert expected_cells.keys() == actual_cells.keys()
+            _assert_same_cell_keys(
+                expected_cells, actual_cells, actual.get("_scope_snapshot_inputs")
+            )
             cells_to_compare = expected_cells.items()
             actual_cells_by_identity = actual_cells
         for identity, expected_cell in cells_to_compare:
@@ -432,8 +512,8 @@ def _assert_outcome_matches(
                     if field == "aggregate_evidence":
                         expected_value = _decode_fitted_cuped_evidence(expected_value)
                         actual_value = _decode_fitted_cuped_evidence(actual_value)
-                if field == "aggregate_evidence" and not snapshotless:
-                    assert expected_value == actual_value
+                if field == "aggregate_evidence":
+                    _compare_aggregate(expected_value, actual_value)
                 else:
                     _compare(expected_value, actual_value)
         return _mode_metadata(actual["metadata"])
@@ -517,15 +597,27 @@ def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object
     from scripts.capture_evidence_identity import _single_thread_duckdb
 
     scope_components: list[dict[str, Any]] = []
+    snapshot_inputs: list[dict[str, Any]] = []
     original_design_snapshot_id = _design_scope._design_snapshot_id
     original_randomized_snapshot_id = _randomized_scope._randomized_snapshot_id
 
-    def capture_design_scope(src: Any, source: Mapping[str, Any], request: Mapping[str, Any]):
+    def record(source: Mapping[str, Any], request: Mapping[str, Any]) -> None:
         scope_components.extend(source.get("components", ()))
+        snapshot_inputs.append(
+            {
+                "components": [
+                    (item.get("kind"), item.get("sha256")) for item in source.get("components", ())
+                ],
+                "request": _json_context(dict(request)),
+            }
+        )
+
+    def capture_design_scope(src: Any, source: Mapping[str, Any], request: Mapping[str, Any]):
+        record(source, request)
         return original_design_snapshot_id(src, source, request)
 
     def capture_randomized_scope(source: Mapping[str, Any], request: Mapping[str, Any]):
-        scope_components.extend(source.get("components", ()))
+        record(source, request)
         return original_randomized_snapshot_id(source, request)
 
     with _single_thread_duckdb(), ExitStack() as stack:
@@ -533,7 +625,11 @@ def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object
         _enter_patch(stack, _randomized_scope, "_randomized_snapshot_id", capture_randomized_scope)
         outcome = _line1_outcome(scenario_id, ingress)
     if outcome.get("kind") == "cells":
-        return {**outcome, "_scope_evidence_components": scope_components}
+        return {
+            **outcome,
+            "_scope_evidence_components": scope_components,
+            "_scope_snapshot_inputs": snapshot_inputs,
+        }
     return outcome
 
 
@@ -677,6 +773,10 @@ NEW_PATH_ADAPTERS = {
 
 REGISTERED = {**REGISTERED, **_line5.REGISTERED}
 NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_line5.NEW_PATH_ADAPTERS}
+
+
+REGISTERED = {**REGISTERED, "line6": _LINE6_PAIRS}
+NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE6_ADAPTERS}
 
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
@@ -1104,26 +1204,25 @@ def test_frozen_capture_rejects_aggregate_moment_envelope_mismatch() -> None:
         _assert_outcome_matches(expected, actual)
 
 
-def test_aggregate_moment_inputs_are_compared_exactly() -> None:
-    expected = {
-        "kind": "cells",
-        "cells": {},
-        "metadata": None,
-        "aggregate_evidence": {
-            "status": "available",
-            "moments_format": 13,
-            "moments": [{"cy1": 0.123456789}],
-        },
-    }
-    _assert_outcome_matches(expected, expected)
-    actual = {
-        **expected,
-        "aggregate_evidence": {
-            "status": "available",
-            "moments_format": 13,
-            "moments": [{"cy1": 0.1234567891}],
-        },
-    }
+def test_aggregate_moment_inputs_match_at_practical_tolerance() -> None:
+    def outcome(cy1: float, cy2: float) -> dict[str, Any]:
+        return {
+            "kind": "cells",
+            "cells": {},
+            "metadata": None,
+            "aggregate_evidence": {
+                "status": "available",
+                "moments_format": 13,
+                "moments": [{"cy1": cy1, "cy2": cy2}],
+            },
+        }
 
+    expected = outcome(-2.1316282072803006e-14, 31.807265452763186)
+    # Rounding noise around a zero centered sum and a last-bit difference agree.
+    _assert_outcome_matches(expected, outcome(-1.7763568394002505e-14, 31.807265452763183))
+    _assert_outcome_matches(expected, outcome(0.0, 31.807265452763186))
+    # A material difference does not.
     with pytest.raises(AssertionError):
-        _assert_outcome_matches(expected, actual)
+        _assert_outcome_matches(expected, outcome(0.0, 31.80729))
+    with pytest.raises(AssertionError):
+        _assert_outcome_matches(expected, outcome(1e-6, 31.807265452763186))

@@ -3408,3 +3408,24 @@ def test_allow_single_level_categorical_hands_its_null_rows_to_the_learner_as_na
     oracle_table = raw_table(oracle_units).append_column("region_null", carrier)
     oracle = run(oracle_table, ("spend", "region_null"), _NanIndicatorLogistic)
     assert_rows_match(oracle, actual, skip=("note",))
+
+
+def test_observational_estimator_default_matches_explicit_iptw():
+    source = _src()
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("z",)))
+    implicit = estimate_ate(source, design).results
+    explicit = estimate_ate(source, design, methods=[Method(name="iptw")]).results
+    assert implicit
+    assert explicit == implicit
+
+
+def test_observational_estimator_returns_public_adjusted_rows():
+    source = _src()
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("z",)))
+    computation = estimate_ate(source, design, methods=[Method(name="iptw")])
+    assert computation.results
+    assert all(row.metric == "revenue" for row in computation.results)
+    assert all(
+        row.require_lift().lb is not None and row.require_lift().ub is not None
+        for row in computation.results
+    )

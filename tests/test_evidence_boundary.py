@@ -7,7 +7,6 @@ EVIDENCE_METHODS = frozenset({"unit_frame", "moments"})
 _SOURCE_NAMES = frozenset({"src", "source"})
 _ALLOWED = {
     ("adjust.py", "estimate_ate"),
-    ("adjust.py", "_estimate_ate"),
     ("adjust.py", "observational_evidence"),
     ("adjust.py", "bind_unit_frame_memo.read"),
     ("quantile.py", "estimate_quantile_lift"),

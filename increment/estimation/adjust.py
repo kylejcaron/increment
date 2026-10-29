@@ -917,7 +917,7 @@ def _warn_unsupported_ratio_metrics(
     return warned
 
 
-def _estimate_ate(  # noqa: PLR0913, PLR0915
+def _estimate_ate(  # noqa: PLR0913
     src: EvidenceSource,
     design: Observational,
     *,
@@ -1018,7 +1018,56 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                 metric for metric in selected if getattr(metric, "winsorization", None) is not None
             ]
         evidence = observational_evidence(src, moment_metrics)
-    cluster = evidence.cluster
+    unit_frame_memo = unit_frame_memo or bind_unit_frame_memo(src)
+    return _estimate_ate_data(
+        design,
+        metrics=selected,
+        cluster=cluster,
+        methods=methods,
+        prior=prior,
+        alpha=alpha,
+        alternative=alternative,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+        scales=scales,
+        _raise_if_empty=_raise_if_empty,
+        resolved_method_roles=resolved_method_roles,
+        prewarned_unsupported=prewarned_unsupported,
+        method_roles=method_roles,
+        evidence=evidence,
+        family_member=family_member,
+        route_tail=route_tail,
+        unit_frame_memo=unit_frame_memo or bind_unit_frame_memo(src),
+    )
+
+
+def _estimate_ate_data(  # noqa: PLR0913
+    design: Observational,
+    *,
+    metrics: Sequence[Metric],
+    cluster: str | None,
+    methods: list[Method],
+    prior: Prior | None,
+    alpha: float,
+    alternative: str,
+    value_scale: Mapping[str, ValueScale] | None,
+    null_lifts: Mapping[str, float] | None,
+    null_abs: Mapping[str, float] | None,
+    alternatives: Mapping[str, str] | None,
+    scales: Mapping[str, ValueScale],
+    _raise_if_empty: bool,
+    resolved_method_roles: Mapping[str, Literal["decision", "sensitivity"]],
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    evidence: ObservationalEvidence,
+    family_member: bool,
+    route_tail: float | None,
+    unit_frame_memo: Callable[[Metric, Sequence[str]], Any],
+    prewarned_unsupported: Container[tuple[str, str]] = frozenset(),
+) -> DecisionComputation[LiftEstimate]:
+    """Estimate from materialized observational values without accessing a source."""
+    selected = list(metrics)
     winsor_diagnostics: dict[str, dict[str, _WinsorizationFields]] = {}
     for raw_metric in selected:
         declared_metric = raw_metric
@@ -1033,7 +1082,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     results: list[LiftEstimate] = []
     refused_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
-    unit_frame_memo = unit_frame_memo or bind_unit_frame_memo(src)
+    # Acquisition is owned by the caller; only materialized values enter this kernel.
     for method in methods:
         if _is_unadjusted_method(method):
             any_attempted = True

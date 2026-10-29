@@ -303,3 +303,71 @@ def test_sensitivity_report_row_round_trips_as_report_only_cell():
         assert ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0].row_payload == cell.row_payload
     finally:
         analysis.close()
+
+
+@pytest.mark.integration
+def test_conversion_family_confounding_sensitivity_keeps_fcr_identity():
+    from increment import AnalysisPlan
+
+    rng = np.random.default_rng(52)
+    n = 12_000
+    segment = rng.integers(0, 2, size=n)
+    treatment = rng.random(n) < np.where(segment == 0, 0.35, 0.65)
+    arm = np.where(treatment, "treatment", "control")
+    primary = rng.random(n) < np.where(
+        treatment, np.where(segment == 0, 0.38, 0.52), np.where(segment == 0, 0.10, 0.20)
+    )
+    secondary = rng.random(n) < np.where(
+        treatment, np.where(segment == 0, 0.45, 0.60), np.where(segment == 0, 0.08, 0.18)
+    )
+    analysis = Analysis.from_unit_summary(
+        pl.DataFrame(
+            {
+                "unit": np.arange(n),
+                "arm": arm,
+                "segment": segment,
+                "primary": primary.astype(int),
+                "secondary": secondary.astype(int),
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics=[
+            MetricSpec(name="primary", type="conversion"),
+            MetricSpec(name="secondary", type="conversion"),
+        ],
+        design=_design(),
+        plan=AnalysisPlan(primary="primary", secondaries=["secondary"], q=0.2),
+    )
+    decision_method = Method(name="iptw")
+    sensitivity_methods = [Method(name="aipw"), Method(name="unadjusted")]
+    rows = analysis.run(
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+    )
+    assert rows.metadata is not None
+    assert rows.metadata.coherence == "captured"
+    secondary_rows = [row for row in rows if row.metric == "secondary"]
+    assert {(row.method, row.method_role) for row in secondary_rows} == {
+        ("iptw", "decision"),
+        ("aipw", "sensitivity"),
+        ("unadjusted", "sensitivity"),
+    }
+    selected = next(row for row in secondary_rows if row.method == "iptw")
+    assert isinstance(selected, LiftEstimate)
+    assert selected.discovery is True
+    assert selected.family_axes == ("metric", "arm")
+    assert selected.family_q == pytest.approx(0.2)
+    assert selected.require_lift().lb is not None
+    assert selected.require_lift().ub is not None
+    result = confounding_sensitivity(selected)
+    lift = selected.require_lift()
+    assert result.observed_risk_ratio == pytest.approx(1 + lift.value)
+    assert result.interval_level == lift.level
+    assert result.population == selected.population
+    assert result.source_snapshot_id == selected.source_snapshot_id
+    assert result.bias_factor_point == pytest.approx(math.sqrt(result.observed_risk_ratio))
+    assert result.bias_factor_interval is not None
+    assert result.assumptions
+    assert result.robustness_not_identification is True
+    analysis.close()
