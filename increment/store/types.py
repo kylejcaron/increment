@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime
 from typing import Protocol, cast
 
@@ -40,6 +41,10 @@ class Run:
     cell_scope_hashes: tuple[tuple[str, str], ...] = ()
     manifest_version: int = 2
     decision_plan: CompiledPlanBinding | None = None
+    _stored_metadata_sha256: str | None = dataclass_field(default=None, repr=False, compare=False)
+    _normalized_metadata_sha256: str | None = dataclass_field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:  # noqa: C901
         for field in ("experiment_id", "run_id", "analysis_spec_hash", "execution_identity_hash"):
@@ -222,6 +227,28 @@ class Run:
 
     @property
     def manifest_hash(self) -> str:
+        """Identity of the committed metadata, retaining stored order while unchanged."""
+        current_metadata_sha256 = self._metadata_sha256()
+        stored_metadata_sha256 = (
+            self._stored_metadata_sha256
+            if self._normalized_metadata_sha256 == current_metadata_sha256
+            else None
+        )
+        return self._manifest_hash(stored_metadata_sha256 or current_metadata_sha256)
+
+    def _current_manifest_hash(self) -> str:
+        """Hash the current canonical representation for newly written stores."""
+        return self._manifest_hash(self._metadata_sha256())
+
+    def _metadata_sha256(self) -> str:
+        return (
+            "sha256:"
+            + hashlib.sha256(
+                canonical_json_bytes(cast(ReadoutMetadata, self.metadata).model_dump(mode="json"))
+            ).hexdigest()
+        )
+
+    def _manifest_hash(self, metadata_sha256: str) -> str:
         payload: dict[str, object] = {
             "manifest_version": self.manifest_version,
             "experiment_id": self.experiment_id,
@@ -242,10 +269,7 @@ class Run:
                 ]
                 for cell in sorted(self.cells, key=lambda item: item.identity.hash())
             ],
-            "metadata_sha256": "sha256:"
-            + hashlib.sha256(
-                canonical_json_bytes(cast(ReadoutMetadata, self.metadata).model_dump(mode="json"))
-            ).hexdigest(),
+            "metadata_sha256": metadata_sha256,
             "captured_at": self.captured_at.isoformat(),
             "committed_at": self.committed_at.isoformat(),
         }

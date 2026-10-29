@@ -509,6 +509,11 @@ class ReadoutMetadata(_ReadoutModel):
             }
         )
 
+    @classmethod
+    def from_saved_payload(cls, payload: object) -> ReadoutMetadata:
+        """Decode canonical metadata, normalizing the prior snapshot-first record order."""
+        return cls.model_validate(_normalize_saved_metadata_order(payload))
+
     @model_validator(mode="after")
     def _records_are_unique_and_scoped(self):
         seen = set()
@@ -556,15 +561,7 @@ class ReadoutMetadata(_ReadoutModel):
                 cell_key=None,
                 reason="metadata record union mismatch",
             )
-        if (
-            tuple(
-                sorted(
-                    self.cells,
-                    key=lambda record: (record.source_snapshot_id, cell_order(record.cell)),
-                )
-            )
-            != self.cells
-        ):
+        if tuple(sorted(self.cells, key=_record_order)) != self.cells:
             refuse_readout("readout.serialization.noncanonical_order", section="metadata cells")
         return self
 
@@ -1066,8 +1063,45 @@ def _merge_source_scopes(left, right, ids):
     return sources, result_source
 
 
-def _record_order(record: CellRecord) -> tuple[str, bytes]:
-    return record.source_snapshot_id, cell_order(record.cell)
+def _record_order(record: CellRecord) -> tuple[int, str, bytes]:
+    population_rank = 0 if record.cell.analysis_population == "assigned" else 1
+    return population_rank, record.source_snapshot_id, cell_order(record.cell)
+
+
+def _normalize_saved_metadata_order(payload: object) -> object:
+    """Normalize saved metadata cells from the previous snapshot-first order."""
+    if not isinstance(payload, Mapping):
+        return payload
+    raw_records = payload.get("cells")
+    if not isinstance(raw_records, (list, tuple)):
+        return payload
+    old_entries: list[tuple[str, bytes, Mapping[str, object]]] = []
+    new_entries: list[tuple[int, str, bytes, Mapping[str, object]]] = []
+    for raw_record in raw_records:
+        if not isinstance(raw_record, Mapping):
+            return payload
+        record = cast(Mapping[str, object], raw_record)
+        source_id, raw_cell = record.get("source_snapshot_id"), record.get("cell")
+        if not isinstance(source_id, str) or not isinstance(raw_cell, Mapping):
+            return payload
+        cell = cast(Mapping[str, object], raw_cell)
+        population = cell.get("analysis_population")
+        if population == "assigned":
+            population_rank = 0
+        elif population == "triggered":
+            population_rank = 1
+        else:
+            return payload
+        encoded_cell = canonical_json_bytes(cell)
+        old_entries.append((source_id, encoded_cell, record))
+        new_entries.append((population_rank, source_id, encoded_cell, record))
+    new_order = [entry[3] for entry in sorted(new_entries, key=lambda entry: entry[:3])]
+    if list(raw_records) == new_order:
+        return payload
+    old_order = [entry[2] for entry in sorted(old_entries, key=lambda entry: entry[:2])]
+    if list(raw_records) != old_order:
+        return payload
+    return {**payload, "cells": new_order}
 
 
 def _merge_cell_identities(
@@ -1355,7 +1389,7 @@ class ReadoutResults:
         metadata = (
             None
             if payload.get("metadata") is None
-            else ReadoutMetadata.model_validate(payload["metadata"])
+            else ReadoutMetadata.from_saved_payload(payload["metadata"])
         )
         if metadata is not None and metadata.scope.snapshot_id != payload.get("snapshot_id"):
             refuse_readout(

@@ -79,6 +79,10 @@ moments, artifact, and checkpoint formats.
 
 ### Portable result cells
 
+Decoders accept saved metadata cells in either the previous source-snapshot-first
+order or the current population-first order, and normalize reopened metadata to
+the current order.
+
 Serialize the collection and reopen it with its dedicated decoder:
 
 ```python

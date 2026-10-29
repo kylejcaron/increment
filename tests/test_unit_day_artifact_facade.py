@@ -639,6 +639,22 @@ def _purchase_lift(analysis: Analysis) -> float:
     )
 
 
+@pytest.mark.integration
+def test_artifact_run_is_effectively_captured_when_live_is_requested() -> None:
+    con, native, context, store, ref = _published()
+    try:
+        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
+            results = adopted.run(metrics=["purchase_rate"], coherence="live")
+            assert results
+            assert results.metadata is not None
+            assert results.metadata.coherence == "captured"
+            assert results.metadata.effective_modes
+            assert set(results.metadata.effective_modes.values()) == {"captured"}
+    finally:
+        native.close()
+        con.disconnect()
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one() -> None:
@@ -895,9 +911,32 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
     }
     ref = native.publish_unit_day_artifact(store, extensions=selected)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
-    assert rows
-    assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
+    try:
+        first = adopted.run(metrics=["purchase_rate"])
+        second = adopted.run(metrics=["purchase_rate"])
+        assert first and second
+        assert {row.analysis_population for row in first} == {"assigned", "triggered"}
+        assert first.metadata is not None and second.metadata is not None
+
+        def order(result):
+            assert result.metadata is not None
+            return tuple(
+                (
+                    record.cell.analysis_population,
+                    record.cell.metric,
+                    record.cell.group_id,
+                )
+                for record in result.metadata.cells
+            )
+
+        first_order = order(first)
+        assert first_order == order(second)
+        populations = tuple(item[0] for item in first_order)
+        assert populations == tuple(sorted(populations))
+    finally:
+        adopted.close()
+        native.close()
+        _con.disconnect()
 
 
 # Guards site-volume lookup from confusing a metric's logical name with its physical measure key.

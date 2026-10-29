@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import pickle
 from fractions import Fraction
-from typing import cast
+from typing import Any, cast
 
 import ibis
 import numpy as np
@@ -276,6 +277,163 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         history = analysis.run_asof_lift(population="triggered")
         assert [(row.analysis_population, row.ds) for row in history] == [("triggered", _LATER)]
         assert history[0].sequential_result == triggered.require_sequential_result()
+    finally:
+        analysis.close()
+
+
+def _triggered_source_first_metadata(metadata_payload: dict[str, Any]) -> dict[str, Any]:
+    triggered_first = json.loads(json.dumps(metadata_payload))
+    scope = triggered_first["scope"]
+    source_id = next(iter(scope["by_source"]))
+    source = scope["by_source"].pop(source_id)
+    legacy_source_ids = {"triggered": "a-triggered", "assigned": "z-assigned"}
+    for population, legacy_source_id in legacy_source_ids.items():
+        source_cells = [
+            cell for cell in scope["cells"] if cell["analysis_population"] == population
+        ]
+        source_decision_cells = [
+            cell for cell in scope["decision_cells"] if cell["analysis_population"] == population
+        ]
+        scope["by_source"][legacy_source_id] = {
+            **source,
+            "source_snapshot_id": legacy_source_id,
+            "cells": source_cells,
+            "decision_cells": source_decision_cells,
+            "rosters": [
+                roster
+                for roster in source["rosters"]
+                if roster["analysis_population"] == population
+            ],
+            "integrity": [
+                result
+                for result in source["integrity"]
+                if result["analysis_population"] == population
+            ],
+            "decision_complete_by_population": {
+                population: source["decision_complete_by_population"][population]
+            },
+        }
+        for record in triggered_first["cells"]:
+            if record["cell"]["analysis_population"] == population:
+                record["source_snapshot_id"] = legacy_source_id
+    scope["families"] = []
+    triggered_first["cells"] = sorted(
+        triggered_first["cells"],
+        key=lambda record: (
+            record["source_snapshot_id"],
+            json.dumps(record["cell"], sort_keys=True, separators=(",", ":")),
+        ),
+    )
+    return triggered_first
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_triggered_sequential_metadata_orders_mixed_direction_cells(tmp_path):
+    plan = (
+        "      primary: revenue\n"
+        "      guardrails: [{metric: guard, margin: 0.1}]\n"
+        "      alternative: two-sided\n"
+        "      inference:\n"
+        "        kind: asymptotic_mean\n"
+    )
+    definitions = _definitions(plan=plan, secondaries=("guard",)).replace(
+        "  - name: guard\n    type: mean\n",
+        "  - name: guard\n    type: mean\n    preferred_direction: decrease\n",
+        1,
+    )
+    path = tmp_path / "defs.yml"
+    path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(secondaries=("guard",)))
+    analysis = Analysis.from_definitions("exp", path, con, source_snapshot_evidence=_CERTIFIED)
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        rows = analysis.run()
+        assert rows.metadata is not None
+        legacy_metadata = rows.metadata
+        assert legacy_metadata is not None
+        cells = rows.metadata.cells
+        assert {record.cell.alternative for record in cells if record.cell.metric == "revenue"} == {
+            "two-sided"
+        }
+        assert {record.cell.alternative for record in cells if record.cell.metric == "guard"} == {
+            "less"
+        }
+        populations = [record.cell.analysis_population for record in cells]
+        assert populations == sorted(populations, key={"assigned": 0, "triggered": 1}.__getitem__)
+        legacy = json.loads(rows.model_dump_json())
+        legacy_rows = rows
+        legacy_metadata_payload = legacy["metadata"]
+        legacy_records = sorted(
+            legacy_metadata_payload["cells"],
+            key=lambda record: (
+                record["source_snapshot_id"],
+                json.dumps(record["cell"], sort_keys=True, separators=(",", ":")),
+            ),
+        )
+        legacy_metadata_payload["cells"] = legacy_records
+        restored = ReadoutResults.model_validate_json(json.dumps(legacy))
+        restored_metadata = restored.metadata
+        assert restored_metadata is not None
+        assert restored_metadata.cells == legacy_metadata.cells
+
+        triggered_first = _triggered_source_first_metadata(legacy_metadata_payload)
+        assert [record["source_snapshot_id"] for record in triggered_first["cells"]] == [
+            "a-triggered",
+            "a-triggered",
+            "z-assigned",
+            "z-assigned",
+        ]
+        assert [
+            (record["cell"]["metric"], record["cell"]["analysis_population"])
+            for record in triggered_first["cells"]
+        ] == [
+            ("guard", "triggered"),
+            ("revenue", "triggered"),
+            ("guard", "assigned"),
+            ("revenue", "assigned"),
+        ]
+        restored_old_order = type(legacy_metadata).from_saved_payload(triggered_first)
+        assert [
+            (record.cell.metric, record.cell.analysis_population)
+            for record in restored_old_order.cells
+        ] == [
+            ("guard", "assigned"),
+            ("revenue", "assigned"),
+            ("guard", "triggered"),
+            ("revenue", "triggered"),
+        ]
+        assert [record.source_snapshot_id for record in restored_old_order.cells] == [
+            "z-assigned",
+            "z-assigned",
+            "a-triggered",
+            "a-triggered",
+        ]
+        malformed = json.loads(rows.model_dump_json())
+        malformed["metadata"]["cells"].reverse()
+        with pytest.raises(CodedError) as raised:
+            ReadoutResults.model_validate_json(json.dumps(malformed))
+        assert raised.value.code == "readout.serialization.noncanonical_order"
+        from increment.result_envelope import AnalysisEnvelope
+
+        envelope = AnalysisEnvelope(tuple(legacy_rows.as_cells()), legacy_metadata)
+        legacy_envelope = envelope.to_payload(include_capture_metadata=True)
+        legacy_envelope["metadata"]["cells"] = legacy_records
+        restored_payload = AnalysisEnvelope.from_payload(legacy_envelope)
+        restored_payload_metadata = restored_payload.metadata
+        assert restored_payload_metadata is not None
+        assert restored_payload_metadata.cells == legacy_metadata.cells
+        arrow = envelope.to_arrow()
+        arrow_metadata = dict(arrow.schema.metadata or {})
+        arrow_metadata[b"increment.readout_metadata"] = json.dumps(
+            legacy_envelope["metadata"]
+        ).encode("utf-8")
+        legacy_arrow = arrow.replace_schema_metadata(arrow_metadata)
+        restored_arrow = AnalysisEnvelope.from_arrow(legacy_arrow)
+        restored_arrow_metadata = restored_arrow.metadata
+        assert restored_arrow_metadata is not None
+        assert restored_arrow_metadata.cells == legacy_metadata.cells
     finally:
         analysis.close()
 

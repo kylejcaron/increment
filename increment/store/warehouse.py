@@ -79,7 +79,7 @@ class WarehouseResultsStore:
                 "decision_plan": (
                     None if run.decision_plan is None else run.decision_plan.to_payload()
                 ),
-                "manifest_hash": run.manifest_hash,
+                "manifest_hash": run._current_manifest_hash(),
             },
             sort_keys=True,
             separators=(",", ":"),

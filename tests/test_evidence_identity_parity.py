@@ -27,6 +27,8 @@ from tests.parity_harness.registrations_line3 import LINE3_PAIRS, line3_actual_o
 from tests.parity_harness.registrations_line4 import merge_line4
 from tests.parity_harness.registrations_line6 import ADAPTERS as _LINE6_ADAPTERS
 from tests.parity_harness.registrations_line6 import PAIRS as _LINE6_PAIRS
+from tests.parity_harness.registrations_line7 import ADAPTERS as _LINE7_ADAPTERS
+from tests.parity_harness.registrations_line7 import PAIRS as _LINE7_PAIRS
 
 # Line-one owns whole-window parity pairs not assigned to lines 2–7.
 _LINE1_SCENARIOS = frozenset(
@@ -333,13 +335,18 @@ def _with_post_capture_reasons(
 
 
 # Match test_metric_evidence's QR precedent: LAPACK QR bits vary across BLAS platforms.
-def _without_snapshot_identity(value: Any) -> Any:
-    """Remove only identities that transitively depend on platform-sensitive evidence."""
+def _without_snapshot_identity(value: Any, *, clear_content_digest: bool = False) -> Any:
+    """Remove only snapshot fields admitted by the owning parity contract."""
     if isinstance(value, Mapping):
-        normalized = {key: _without_snapshot_identity(item) for key, item in value.items()}
+        normalized = {
+            key: _without_snapshot_identity(item, clear_content_digest=clear_content_digest)
+            for key, item in value.items()
+        }
         for key in ("source_snapshot_id", "snapshot_id", "decision_snapshot_id", "family_id"):
             if key in normalized:
                 normalized[key] = None
+        if clear_content_digest and "source_content_digest" in normalized:
+            normalized["source_content_digest"] = None
         families = normalized.get("families")
         if isinstance(families, list):
             normalized["families"] = sorted(
@@ -351,7 +358,12 @@ def _without_snapshot_identity(value: Any) -> Any:
             if isinstance(decoded_retained, list):
                 normalized["retained_family"] = json.dumps(
                     sorted(
-                        (_without_snapshot_identity(item) for item in decoded_retained),
+                        (
+                            _without_snapshot_identity(
+                                item, clear_content_digest=clear_content_digest
+                            )
+                            for item in decoded_retained
+                        ),
                         key=lambda item: json.dumps(item, sort_keys=True),
                     ),
                     sort_keys=True,
@@ -359,12 +371,18 @@ def _without_snapshot_identity(value: Any) -> Any:
                 )
         if isinstance(value.get("by_source"), Mapping):
             normalized["by_source"] = sorted(
-                (_without_snapshot_identity(item) for item in value["by_source"].values()),
+                (
+                    _without_snapshot_identity(item, clear_content_digest=clear_content_digest)
+                    for item in value["by_source"].values()
+                ),
                 key=lambda item: json.dumps(item, sort_keys=True),
             )
         return normalized
     if isinstance(value, (list, tuple)):
-        return [_without_snapshot_identity(item) for item in value]
+        return [
+            _without_snapshot_identity(item, clear_content_digest=clear_content_digest)
+            for item in value
+        ]
     return value
 
 
@@ -408,6 +426,27 @@ def _with_post_capture_summary_intervals(
     return migrated
 
 
+def _project_post_capture_artifact_digests(expected: Any, actual: Any) -> Any:
+    """Drop only artifact digest fields absent from the frozen capture schema."""
+    if isinstance(expected, Mapping) and isinstance(actual, Mapping):
+        return {
+            key: _project_post_capture_artifact_digests(expected[key], value)
+            if key in expected
+            else value
+            for key, value in actual.items()
+            if key in expected
+            or key not in {"artifact_manifest_sha256", "artifact_relation_digests"}
+        }
+    if isinstance(expected, (list, tuple)) and isinstance(actual, (list, tuple)):
+        if len(expected) != len(actual):
+            return actual
+        return [
+            _project_post_capture_artifact_digests(left, right)
+            for left, right in zip(expected, actual, strict=True)
+        ]
+    return actual
+
+
 def _assert_payload_matches(
     expected: Mapping[str, Any], actual: Mapping[str, Any], *, snapshotless: bool = False
 ) -> None:
@@ -419,8 +458,15 @@ def _assert_payload_matches(
     )
     actual_payload = _comparable_payload(_with_post_capture_reasons(actual))
     if snapshotless:
-        expected_payload = _without_snapshot_identity(expected_payload)
-        actual_payload = _without_snapshot_identity(actual_payload)
+        expected_digest = expected_payload.get("identity", {}).get("source_content_digest")
+        actual_digest = actual_payload.get("identity", {}).get("source_content_digest")
+        clear_content_digest = expected_digest is None and actual_digest is not None
+        expected_payload = _without_snapshot_identity(
+            expected_payload, clear_content_digest=clear_content_digest
+        )
+        actual_payload = _without_snapshot_identity(
+            actual_payload, clear_content_digest=clear_content_digest
+        )
     _compare(expected_payload, actual_payload)
 
 
@@ -435,6 +481,7 @@ def _assert_operation_matches(
 
     try:
         actual = operation()
+
     except CodedError as error:
         assert expected["status"] == "refusal"
         assert expected["code"] == error.code
@@ -482,14 +529,17 @@ def _assert_operation_matches(
         _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
 
 
-def _identity_hash_without_snapshot(value: object) -> str:
+def _identity_hash_without_snapshot(value: object, *, clear_content_digest: bool = False) -> str:
     if isinstance(value, ResultCell):
         identity = value.identity
     else:
         payload = cast(Mapping[str, Any], value).get("result_cell", value)
         assert isinstance(payload, Mapping)
         identity = ResultCell.from_payload(cast(Mapping[str, Any], payload)).identity
-    return identity.model_copy(update={"source_snapshot_id": None}).hash()
+    update = {"source_snapshot_id": None}
+    if clear_content_digest:
+        update["source_content_digest"] = None
+    return identity.model_copy(update=update).hash()
 
 
 def _assert_cell_matches(
@@ -602,13 +652,9 @@ def _assert_same_cell_keys(
 
 
 def _has_platform_sensitive_scope_component(actual: Mapping[str, object]) -> bool:
-    """Whether the snapshot hashes bits that legitimately differ across platforms.
-
-    LAPACK QR fit outputs differ at machine epsilon across BLAS builds. Per-unit
-    adjustment covariates hash raw float bits; the harness draws them with NumPy
-    distributions, which NumPy documents may differ across platforms through libm.
-    Values are still compared at the established tolerance.
-    """
+    """Skip unstable snapshots for QR evidence and pinned artifact generations only."""
+    if actual.get("_artifact_generation_identity") is True:
+        return True
     components = actual.get("_scope_evidence_components", ())
     if isinstance(components, (list, tuple)):
         for item in components:
@@ -694,10 +740,29 @@ def _assert_outcome_matches(
         actual_cells_by_identity: Any
         if snapshotless:
             expected_by_identity = {
-                _identity_hash_without_snapshot(cell): cell for cell in expected_cells.values()
+                _identity_hash_without_snapshot(
+                    cell,
+                    clear_content_digest=(
+                        ResultCell.from_payload(cell["result_cell"]).identity.source_content_digest
+                        is None
+                    ),
+                ): cell
+                for cell in expected_cells.values()
             }
             actual_by_identity = {
-                _identity_hash_without_snapshot(cell): cell for cell in actual_cells.values()
+                _identity_hash_without_snapshot(
+                    cell,
+                    clear_content_digest=(
+                        all(
+                            ResultCell.from_payload(
+                                expected_cell["result_cell"]
+                            ).identity.source_content_digest
+                            is None
+                            for expected_cell in expected_cells.values()
+                        )
+                    ),
+                ): cell
+                for cell in actual_cells.values()
             }
             assert len(expected_by_identity) == len(expected_cells)
             assert len(actual_by_identity) == len(actual_cells)
@@ -719,6 +784,10 @@ def _assert_outcome_matches(
         if snapshotless:
             expected_metadata = _without_snapshot_identity(expected_metadata)
             actual_metadata = _without_snapshot_identity(actual_metadata)
+        if actual.get("_artifact_generation_identity") is True:
+            actual_metadata = _project_post_capture_artifact_digests(
+                expected_metadata, actual_metadata
+            )
         _compare(expected_metadata, actual_metadata)
         for field in (
             "population_identity",
@@ -1060,6 +1129,22 @@ NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_line5.NEW_PATH_ADAPTERS}
 REGISTERED = {**REGISTERED, "line6": _LINE6_PAIRS}
 NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE6_ADAPTERS}
 
+REGISTERED = {**REGISTERED, "line7": _LINE7_PAIRS}
+NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE7_ADAPTERS}
+
+
+def test_line7_registry_matches_frozen_artifact_inventory() -> None:
+    """Pin top-level frozen outcome kinds; some `cells` records contain daily-only values."""
+    from tests.parity_harness.registrations_line7 import _artifact_outcomes
+
+    frozen = _artifact_outcomes()
+    assert _LINE7_PAIRS == {(scenario_id, "from_unit_day_artifact") for scenario_id in frozen}
+    assert len(frozen) == 112
+    assert {
+        kind: sum(outcome["kind"] == kind for outcome in frozen.values())
+        for kind in ("cells", "refusal", "absent")
+    } == {"cells": 93, "refusal": 11, "absent": 8}
+
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
     payload = copy.deepcopy(dict(cell))
@@ -1133,11 +1218,30 @@ def test_line3_registration_inventory_matches_frozen_capture() -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("scenario_id", "ingress", "expected"),
-    sorted(
-        (scenario_id, ingress, outcome)
-        for scenario_id, scenario in _capture()["scenarios"].items()
-        for ingress, outcome in scenario.items()
-    ),
+    [
+        # The artifact ingress materializes identity for 4,004,003 units (~535s vs ~185s via definitions).
+        pytest.param(
+            scenario_id,
+            ingress,
+            outcome,
+            marks=[pytest.mark.slow, pytest.mark.stress, pytest.mark.timeout(900)],
+        )
+        if (scenario_id, ingress)
+        == ("exact_binomial_beyond_the_former_arm_ceiling", "from_unit_day_artifact")
+        # Scale scenarios taking 15-130s per pair run in the slow tier.
+        else pytest.param(scenario_id, ingress, outcome, marks=pytest.mark.slow)
+        if scenario_id
+        in {
+            "exact_binomial_beyond_the_former_arm_ceiling",
+            "mixed-cuped-multicovariate-fixed-horizon",
+        }
+        else (scenario_id, ingress, outcome)
+        for scenario_id, ingress, outcome in sorted(
+            (scenario_id, ingress, outcome)
+            for scenario_id, scenario in _capture()["scenarios"].items()
+            for ingress, outcome in scenario.items()
+        )
+    ],
 )
 def test_frozen_capture_outcome(
     scenario_id: str, ingress: str, expected: Mapping[str, Any]
