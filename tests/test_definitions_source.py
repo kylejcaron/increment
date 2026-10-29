@@ -386,6 +386,25 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
     )
 
 
+@pytest.mark.integration
+def test_run_daily_shares_native_day_source_across_selected_metrics(seeded_analysis, monkeypatch):
+    source = _native_source(seeded_analysis)
+    source_type = type(source)
+    original = source_type.day_source
+    acquired: list[tuple[str, ...]] = []
+
+    def counted(self, *, metrics, population="assigned"):
+        acquired.append(tuple(metric.name for metric in metrics))
+        return original(self, metrics=metrics, population=population)
+
+    monkeypatch.setattr(source_type, "day_source", counted)
+    selected = seeded_analysis.metrics[:2]
+    rows = seeded_analysis.run_daily(metrics=list(selected))
+
+    assert rows
+    assert acquired == [tuple(metric.name for metric in selected)]
+
+
 @pytest.mark.slow
 def test_panel_cache_distinguishes_same_name_metric_variant(seeded_analysis):
     """A caller's same-name metric variant must not reuse the declared panel."""
@@ -500,6 +519,34 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
     # row, CA=treatment; src_b: MX); cross-source mixups would still pass above.
     assert {e.dimension_value for e in results if e.source == "src_a"} == {"CA"}
     assert {e.dimension_value for e in results if e.source == "src_b"} == {"MX"}
+
+
+def test_multi_source_day_axis_moments_refuse_before_acquisition(cross_source_con, monkeypatch):
+    from increment.errors import CapabilityError
+
+    analysis = _analysis_with_cross_source_breakouts(cross_source_con)
+    source = _native_source(analysis)
+    source_type = type(source)
+    original = source_type.day_source
+    acquired: list[object] = []
+
+    def counted(self, *, metrics, population="assigned"):
+        acquired.append(tuple(metric.name for metric in metrics))
+        return original(self, metrics=metrics, population=population)
+
+    monkeypatch.setattr(source_type, "day_source", counted)
+    with pytest.raises(CapabilityError) as refused:
+        evidence_provider(source).moments(
+            MomentsRequest(
+                analysis.metrics[0],
+                grain="daily",
+                by=("country",),
+                experiment=analysis.experiment,
+            )
+        )
+
+    assert refused.value.code == "evidence.breakout_unavailable"
+    assert acquired == []
 
 
 # run_breakout genuinely reads the pre-period covariate (unlike the day-axis

@@ -189,8 +189,7 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
     class Provider:
         def __init__(self) -> None:
             self.context = source.context
-            self.evidence = replace(source.evidence)
-            self.shape = source.shape
+            self.evidence = replace(source.evidence, kind="moments", shape=None)
             self.operations = source.operations
             self.capabilities = source.capabilities
 
@@ -199,7 +198,7 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
             raise AttributeError("custom providers declare breakouts in evidence")
 
         def __getattr__(self, name):
-            if name == "breakouts":
+            if name in {"breakouts", "shape"}:
                 raise AttributeError(name)
             return getattr(source, name)
 
@@ -242,11 +241,15 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
             return None
 
     provider = Provider()
+    assert not hasattr(provider, "shape")
     analysis = Analysis._from_source(cast(Any, provider))
     try:
         results = analysis.run_daily(dimension="country")
         assert results
         assert {row.dimension_value for row in results} == {"uk", "us"}
+        asof_results = analysis.run_asof()
+        assert asof_results
+        assert {row.metric for row in asof_results} == {"y"}
     finally:
         analysis.close()
         original.close()
