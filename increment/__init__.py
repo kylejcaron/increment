@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         warehouse_cuped_fit_evidence,
     )
     from increment.frame import MetricSpec
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.logged_policy import (
         LoggedTrace,
         PolicyRegistry,
@@ -415,6 +416,7 @@ __all__ = [
     "EvidenceProvider",
     "EvidenceScope",
     "EvidenceScopeResult",
+    "EvidenceExecutionContext",
     "MethodFitAnswer",
     "MethodFitRequest",
     "MetricEvidence",
@@ -681,6 +683,7 @@ _LAZY_IMPORTS = {
     "EvidenceProvider": ("increment.evidence", "EvidenceProvider"),
     "EvidenceScope": ("increment.evidence", "EvidenceScope"),
     "EvidenceScopeResult": ("increment.evidence", "EvidenceScopeResult"),
+    "EvidenceExecutionContext": ("increment.kernel.context", "EvidenceExecutionContext"),
     "MethodFitAnswer": ("increment.evidence", "MethodFitAnswer"),
     "MethodFitRequest": ("increment.evidence", "MethodFitRequest"),
     "MetricEvidence": ("increment.evidence", "MetricEvidence"),

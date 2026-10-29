@@ -171,6 +171,71 @@ def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
 
 
 @pytest.mark.integration
+def test_uncertified_source_rechecks_assignment_integrity_between_runs(tmp_path):
+    import warnings
+
+    events = _events(n_per_arm=10)
+    rows = events.to_pylist()
+    control_assignment = next(
+        row for row in rows if row["user_id"] == "C0" and row["event"] == "enrolled"
+    )
+    rows.append({**control_assignment, "group_id": "T"})
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(rows, schema=events.schema))
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path, trigger=None),
+        con,
+        on_mixed_assignment="warn",
+    )
+    try:
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            analysis.run()
+            analysis.run()
+        assert warning_codes(recorded) == [
+            "query.integrity.mixed_assignments_excluded",
+            "query.integrity.mixed_assignments_excluded",
+        ]
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_certified_source_rechecks_integrity_after_assignment_change(tmp_path):
+    import warnings
+
+    events = _events(n_per_arm=10)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=events)
+    cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path, trigger=None),
+        con,
+        on_mixed_assignment="warn",
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {}),
+    )
+    try:
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            analysis.run()
+            control_assignment = next(
+                row
+                for row in events.to_pylist()
+                if row["user_id"] == "C0" and row["event"] == "enrolled"
+            )
+            con.insert(
+                "events",
+                obj=pa.Table.from_pylist([{**control_assignment, "group_id": "T"}]),
+            )
+            analysis.run()
+        assert warning_codes(recorded) == ["query.integrity.mixed_assignments_excluded"]
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
 @pytest.mark.slow
 def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
     path = _write_defs(tmp_path)
@@ -2461,10 +2526,9 @@ def test_triggered_run_does_not_retest_assigned_law_on_selected_counts(tmp_path)
     assert retained.integrity[0] == scopes["assigned"].integrity[0]
 
 
-def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, monkeypatch):
+def _registered_sequential_trigger_fixture(tmp_path, monkeypatch, *, store="auto"):
     import datetime as dt
 
-    from increment.readouts import _sequential_scope
     from tests.binary_sequential_cases import definitions_yaml, event_rows, unit_rows
     from tests.sequential_cases import registered_native
 
@@ -2506,16 +2570,16 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
     definitions_path.write_text(definitions)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(events))
-    query_calls = []
-    armed = False
-    for method in ("execute", "to_pyarrow"):
+    warehouse_calls = []
+    armed = [False]
+    for method in ("execute", "to_pyarrow", "create_table"):
         original = getattr(con, method, None)
         if original is not None:
 
             def guard_query(*args, _method=method, _original=original, **kwargs):
-                if armed:
-                    query_calls.append(_method)
-                    raise AssertionError("run() must not query the warehouse after capture")
+                if armed[0]:
+                    warehouse_calls.append(_method)
+                    raise AssertionError("run() must not query or materialize after capture")
                 return _original(*args, **kwargs)
 
             monkeypatch.setattr(con, method, guard_query)
@@ -2525,8 +2589,33 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
             "exp",
             definitions_path,
             con,
+            store=store,
             source_snapshot_evidence=SourceSnapshotEvidence(certified, {"events": certified}),
         )
+    )
+    return con, analysis, units, warehouse_calls, armed, definitions_path
+
+
+def _assert_live_assignment_counts_refuse(analysis):
+    from increment.readouts import run_scoped
+
+    with pytest.raises(InvalidRequestError) as count_refusal:
+        analysis.unit_counts()
+    assert count_refusal.value.code == "query.integrity.mixed_assignment_units"
+    with pytest.raises(InvalidRequestError) as scoped_count_refusal:
+        run_scoped(analysis, analysis.unit_counts)
+    assert scoped_count_refusal.value.code == "query.integrity.mixed_assignment_units"
+
+
+@pytest.mark.parametrize("store", ["auto", "always"])
+def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, monkeypatch, store):
+    import datetime as dt
+
+    from increment.readouts import _sequential_scope
+    from tests.sequential_cases import registered_native
+
+    con, analysis, units, warehouse_calls, armed, definitions_path = (
+        _registered_sequential_trigger_fixture(tmp_path, monkeypatch, store=store)
     )
     analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
     snapshot = analysis.sequential_snapshot()
@@ -2556,17 +2645,19 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
         return original_integrity(*args, **kwargs)
 
     monkeypatch.setattr(_sequential_scope, "assignment_integrity", counted_integrity)
-    armed = True
+    armed[0] = True
     results = analysis.run()
+    repeated_results = analysis.run()
 
     (scope,) = results.metadata.scope.by_source.values()
     (integrity,) = scope.integrity
-    assert query_calls == []
-    assert len(integrity_calls) == 1
+    assert warehouse_calls == []
+    assert len(integrity_calls) == 2
     # Triggered counts are not assignment-law evidence: integrity stays assigned.
     assert integrity.analysis_population == "assigned"
     assert integrity.observed == snapshot.assignment_counts
     assert integrity.observed == {"control": 500, "treatment": 500}
+    assert repeated_results == results
     by_population = {row.analysis_population: row for row in results}
     assert by_population["triggered"].require_sequential_result().checkpoint.population == (
         "triggered"
@@ -2576,6 +2667,45 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
     }
     assert {("assignment_counts", "assigned"), ("assignment_counts", "triggered")} <= components
     assert {("sequential_prefix", "assigned"), ("sequential_prefix", "triggered")} <= components
+    armed[0] = False
+    control = next(unit for unit in units if unit["variant"] == "control")
+    changed_at = dt.datetime(2025, 2, 1, tzinfo=dt.UTC)
+    con.insert(
+        "events",
+        obj=[
+            {
+                "user_id": control["user_id"],
+                "ts": dt.datetime(2025, 1, 10, 8, tzinfo=dt.UTC),
+                "event": "enrolled",
+                "experiment_id": "exp",
+                "group_id": "treatment",
+            }
+        ],
+    )
+    _assert_live_assignment_counts_refuse(analysis)
+    from increment.query.session import WarehouseArtifactStore
+
+    store = WarehouseArtifactStore(con, schema_name="sequential_integrity")
+    with pytest.raises(InvalidRequestError) as publication_refusal:
+        analysis.publish_unit_day_artifact(store)
+    assert publication_refusal.value.code == "query.integrity.mixed_assignment_units"
+    with pytest.raises(InvalidRequestError) as recapture_refusal:
+        analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
+    assert recapture_refusal.value.code == "query.integrity.mixed_assignment_units"
+    changed_analysis = registered_native(
+        Analysis.from_definitions(
+            "exp",
+            definitions_path,
+            con,
+            source_snapshot_evidence=SourceSnapshotEvidence(changed_at, {"events": changed_at}),
+        )
+    )
+    try:
+        with pytest.raises(InvalidRequestError) as refusal:
+            changed_analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
+        assert refusal.value.code == "query.integrity.mixed_assignment_units"
+    finally:
+        changed_analysis.close()
 
 
 def test_srm_population_triggered_refuses_on_a_seam_instance():

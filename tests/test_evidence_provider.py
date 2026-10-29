@@ -2632,8 +2632,15 @@ def test_custom_provider_sequential_run_uses_its_current_checkpoint(con) -> None
                 close=lambda: None,
             )
         )
-        actual = list(provider_analysis.run())
+        from increment.readouts import run_scoped
+
+        result = run_scoped(provider_analysis, provider_analysis.run)
+        actual = list(result)
         assert actual == expected
+        metadata = result.metadata
+        assert metadata is not None
+        assert metadata.coherence is None
+        assert set(metadata.effective_modes.values()) == {"provider"}
     finally:
         if provider_analysis is not None:
             provider_analysis.close()

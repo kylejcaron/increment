@@ -3052,6 +3052,8 @@ def test_custom_provider_without_sequential_snapshot_refuses_before_moments(con)
     original = registered_native(_analysis_with_asof_events(con, sequential=True))
     source = cast(Any, held_source(original))
     delegate = evidence_provider(source)
+    from contextlib import contextmanager
+
     checkpoint = delegate.capture_sequential(
         SequentialCaptureRequest(finalized=True, as_of=date(2025, 7, 1))
     )
@@ -3065,8 +3067,36 @@ def test_custom_provider_without_sequential_snapshot_refuses_before_moments(con)
             moments_reads.append(request)
             return delegate.moments(request)
 
+        def breakout_method_moments(self, request):
+            return delegate.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            return delegate.unit_rows(request)
+
+        def method_fit(self, request):
+            return delegate.method_fit(request)
+
+        def compliance(self, request):
+            return delegate.compliance(request)
+
+        def compliance_series(self, request):
+            return delegate.compliance_series(request)
+
+        def counts(self, request):
+            return delegate.counts(request)
+
         def capture_sequential(self, request):
             return checkpoint
+
+        def scope(self, request):
+            result = delegate.scope(request)
+
+            @contextmanager
+            def scoped_source():
+                with result.source:
+                    yield self
+
+            return replace(result, source=scoped_source())
 
         def __getattr__(self, name):
             if name == "sequential_snapshot":

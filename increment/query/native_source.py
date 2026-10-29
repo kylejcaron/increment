@@ -11,6 +11,7 @@ import datetime as dt
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -186,6 +187,11 @@ class _ScalarBreakoutPreparation:
     refusals: dict[str, list[tuple[str, str, RefusalSpec, Mapping[str, object]]]]
 
 
+_RETAINED_SNAPSHOT_INTEGRITY_SOURCES: ContextVar[tuple[int, ...]] = ContextVar(
+    "_RETAINED_SNAPSHOT_INTEGRITY_SOURCES", default=()
+)
+
+
 class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin):
     """MomentSource over the definitions/ibis pipeline - the warehouse
     sibling of SqlPanelSource, FrameTotalsSource, FramePanelSource,
@@ -204,6 +210,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     new source through the appropriate constructor.
 
     """
+
+    supports_retained_snapshot_integrity_reuse: bool = True
 
     capabilities: frozenset[Grain] = frozenset({"total", "daily", "asof"})
     operations: frozenset[SourceOperation] = frozenset(
@@ -342,6 +350,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._mixed_assignment_units: int | None = None
         self._unassigned_assignment_units: int | None = None
         self._mixed_assignment_fingerprint: int | None = None
+        self._mixed_assignment_prefix_id: str | None = None
+        self._retained_snapshot_integrity = False
         self._mixed_assignment_warned = False
         self._union_horizon_cache: ir.Scalar | None = None
         self._union_horizon_metric_cache: dict[tuple[Metric, ...], ir.Scalar] = {}
@@ -453,9 +463,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Enforce assignment integrity, refreshing only for live warehouse inputs."""
         if self._assignment_validation_depth:
             return
-        # A pinned session's source tables are immutable for this source's
-        # lifetime. Re-running the same integrity aggregate per readout only
-        # recompiles and executes an identical query.
+        retained_snapshot = getattr(self, "_sequential_snapshot", None)
+        # A checkpoint's counts are authoritative only inside its checkpoint-backed run scope.
+        retained_integrity = (
+            self._retained_snapshot_integrity
+            and retained_snapshot is not None
+            and retained_snapshot.finalized
+            and retained_snapshot.assignment_counts is not None
+            and self._mixed_assignment_prefix_id == retained_snapshot.prefix_id
+            and id(self) in _RETAINED_SNAPSHOT_INTEGRITY_SOURCES.get()
+        )
+        if retained_integrity:
+            enforce_mixed_assignments(
+                retained_snapshot.assignment_counts.get(MIXED_ASSIGNMENT_LABEL, 0),
+                self._on_mixed_assignment,
+                unassigned_count=retained_snapshot.assignment_counts.get(UNASSIGNED_LABEL, 0),
+                already_warned=self._mixed_assignment_warned,
+            )
+            return
         if (
             self._session._source_tables is not None
             and self._mixed_assignment_fingerprint is not None
@@ -464,9 +489,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             assert self._unassigned_assignment_units is not None
             self._mixed_assignment_warned = enforce_mixed_assignments(
                 self._mixed_assignment_units,
-                getattr(self, "_on_mixed_assignment", "error"),
+                self._on_mixed_assignment,
                 unassigned_count=self._unassigned_assignment_units,
-                already_warned=getattr(self, "_mixed_assignment_warned", False),
+                already_warned=self._mixed_assignment_warned,
             )
             return
         exposure_events_table = self._build_exposure_events_table()
@@ -475,6 +500,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._mixed_assignment_units = mixed
         self._unassigned_assignment_units = unassigned
         self._mixed_assignment_fingerprint = fingerprint
+        sequential_snapshot = getattr(self, "_sequential_snapshot", None)
+        self._mixed_assignment_prefix_id = (
+            sequential_snapshot.prefix_id
+            if sequential_snapshot is not None and sequential_snapshot.finalized
+            else None
+        )
         if previous_fingerprint is not None and previous_fingerprint != fingerprint:
             self._invalidate_materialization()
         self._mixed_assignment_warned = enforce_mixed_assignments(
@@ -495,6 +526,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._mixed_assignment_units = pinned._mixed_assignment_units
         self._unassigned_assignment_units = pinned._unassigned_assignment_units
         self._mixed_assignment_fingerprint = fingerprint
+        self._mixed_assignment_prefix_id = pinned._mixed_assignment_prefix_id
         self._mixed_assignment_warned = pinned._mixed_assignment_warned
 
     @contextmanager
@@ -640,6 +672,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             snapshot=any(request.snapshot for request in requests),
             execution=any(request.execution for request in requests),
             include_breakouts=any(request.include_breakouts for request in requests),
+            checkpoint_only=any(request.checkpoint_only for request in requests),
         )
 
     def evidence_scope_breakout_streams(
@@ -956,7 +989,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
-        pinned._mixed_assignment_warned = self._mixed_assignment_warned
         for source in sources.values():
             validate_fact_source_schema(
                 pinned._session.source_sql(source.sql),
@@ -1072,13 +1104,34 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         include_breakouts: bool = False,
         breakouts: Sequence[BreakoutIdentity] = (),
         configs: Sequence[ResolvedMetricConfig] | None = None,
+        reuse_retained_snapshot_integrity: bool = False,
     ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
         ``include_breakouts`` also captures each declared breakout's property stream, so a
         segment or dimensioned readout of the pinned source reads the same execution snapshot
         as the headline instead of failing on, or silently re-reading, an unpinned stream.
+
         """
+        # A finalized retained checkpoint owns both the result rows and assignment counts.
+        # Reopening a live pin here would mix that checkpoint with warehouse state.
+        retained = getattr(self, "_sequential_snapshot", None)
+        if (
+            reuse_retained_snapshot_integrity
+            and retained is not None
+            and retained.finalized
+            and retained.assignment_counts is not None
+            and self._retained_snapshot_integrity
+            and self._mixed_assignment_prefix_id == retained.prefix_id
+        ):
+            token = _RETAINED_SNAPSHOT_INTEGRITY_SOURCES.set(
+                (*_RETAINED_SNAPSHOT_INTEGRITY_SOURCES.get(), id(self))
+            )
+            try:
+                yield self if population == "assigned" else self.triggered_source()
+            finally:
+                _RETAINED_SNAPSHOT_INTEGRITY_SOURCES.reset(token)
+            return
         selected_breakouts = tuple(
             Breakout(property=item.property, source=item.source) for item in breakouts
         )
@@ -4401,7 +4454,18 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     "triggered", None if previous is None else previous.triggered
                 )
             snapshot = capture_population("assigned", previous, triggered)
+        return self._retain_sequential_snapshot_integrity(snapshot)
+
+    def _retain_sequential_snapshot_integrity(self, snapshot):
         self._sequential_snapshot = snapshot
+        if snapshot.finalized and snapshot.assignment_counts is not None:
+            self._retained_snapshot_integrity = True
+            self._mixed_assignment_prefix_id = snapshot.prefix_id
+            self._mixed_assignment_units = snapshot.assignment_counts.get(MIXED_ASSIGNMENT_LABEL, 0)
+            self._unassigned_assignment_units = snapshot.assignment_counts.get(UNASSIGNED_LABEL, 0)
+        else:
+            self._retained_snapshot_integrity = False
+            self._mixed_assignment_prefix_id = None
         return snapshot
 
     def breakout_unit_frame(

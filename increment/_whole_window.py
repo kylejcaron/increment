@@ -238,7 +238,12 @@ class WholeWindowReadouts:
                     prior=req.prior,
                     value_scale=req.value_scale,
                     _population="assigned",
-                    coherence=req.coherence,
+                    coherence=(
+                        req.coherence
+                        if execution_context is None
+                        else execution_context.requested_coherence
+                    ),
+                    execution_context=execution_context,
                 )
             )
             return _select_population(result, req.population)

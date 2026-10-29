@@ -13,11 +13,41 @@ control-free segments and suppresses late rows after a weak first stage.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any, Literal
+
+from increment.kernel.context import EvidenceExecutionContext
 from increment.readouts._asof import asof_lift
 from increment.readouts._breakout import breakout
 from increment.readouts._daily import daily
 from increment.readouts._run import arm_moments, run
 from increment.readouts._srm import srm
+
+
+def run_scoped(
+    analysis: Any,
+    operation: Callable[[], Any] | None = None,
+    *,
+    coherence: Literal["captured", "live"] = "captured",
+    include_breakouts: bool = False,
+    on_context: Callable[[EvidenceExecutionContext], None] | None = None,
+    **options: Any,
+) -> Any:
+    """Run related analysis readouts or operations under one shared evidence capture."""
+    if operation is None:
+        from increment.readouts._line2 import run_scoped_line2
+
+        return run_scoped_line2(analysis, coherence=coherence, **options)
+    from increment.readouts._line3 import run_scoped_line3
+
+    return run_scoped_line3(
+        analysis,
+        operation,
+        coherence=coherence,
+        include_breakouts=include_breakouts,
+        on_context=on_context,
+    )
+
 
 __all__ = [
     "arm_moments",
@@ -25,5 +55,6 @@ __all__ = [
     "breakout",
     "daily",
     "run",
+    "run_scoped",
     "srm",
 ]

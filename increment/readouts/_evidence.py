@@ -306,6 +306,18 @@ def evidence_scope(
     return _evidence_scope(src, scope)
 
 
+def has_verified_sequential_checkpoint(src: EvidenceSource) -> bool:
+    """Return whether the source retains a finalized, integrity-checked checkpoint."""
+    snapshot = getattr(src, "_sequential_snapshot", None)
+    return (
+        snapshot is not None
+        and snapshot.finalized
+        and snapshot.assignment_counts is not None
+        and getattr(src, "_retained_snapshot_integrity", False)
+        and getattr(src, "_mixed_assignment_prefix_id", None) == snapshot.prefix_id
+    )
+
+
 def acquire_observational_inputs(
     src: EvidenceSource,
     metrics: Sequence[Any],

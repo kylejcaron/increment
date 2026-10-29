@@ -162,7 +162,7 @@ def test_sequential_readout_refuses_execution_context_before_evidence_read():
     try:
         with pytest.raises(InvalidRequestError) as refused:
             run(source, execution_context=context)
-        assert refused.value.code == "kernel.request.invalid"
+        assert refused.value.code == "kernel.context.closed"
     finally:
         analysis.close()
 
