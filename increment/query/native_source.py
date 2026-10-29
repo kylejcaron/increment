@@ -1080,6 +1080,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for sql in exposure_sql_queries & column_projections.keys():
             required_columns = {"unit_id", "ts", "group_id", "experiment_id"}
             column_projections[sql] = tuple(sorted(set(column_projections[sql]) | required_columns))
+        if queries:
+            self._session._require_snapshot_temp_privilege()
         enrolled = self._scope_enrolled_units()
         # The generous lower margin limits only the snapshot copy, not builder
         # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
@@ -1260,6 +1262,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             finally:
                 _RETAINED_SNAPSHOT_INTEGRITY_SOURCES.reset(token)
             return
+        if self._session._source_tables is None:
+            self._session._require_snapshot_temp_privilege()
         selected_breakouts = tuple(
             Breakout(property=item.property, source=item.source) for item in breakouts
         )

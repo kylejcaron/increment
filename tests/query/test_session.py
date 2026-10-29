@@ -89,24 +89,256 @@ def _session():
     )
 
 
-def test_live_postgres_source_sql_does_not_require_temp_privilege():
-    class LivePostgres:
+def _postgres_sql_backend(
+    *,
+    description=None,
+    type_rows=((20, "bigint"),),
+    sql_result="live relation",
+    probe_error=None,
+):
+    class Cursor:
+        def __init__(self, *, description=None, rows=()):
+            self.description = description
+            self._rows = rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def fetchall(self):
+            return self._rows
+
+    class TypeMapper:
+        def from_string(self, name, *, nullable):
+            assert nullable
+            name = {
+                "bigint": "int64",
+                "timestamp without time zone": "timestamp",
+            }.get(name, name)
+            if name.startswith("numeric("):
+                name = name.replace("numeric(", "decimal(", 1)
+            if name.endswith("[]"):
+                name = f"array<{name[:-2]}>"
+            if name.startswith("character("):
+                return ibis.dtype("string")
+            return ibis.dtype(name)
+
+    class Postgres:
+        name = "postgres"
+        compiler = SimpleNamespace(type_mapper=TypeMapper())
+
+        def __init__(self):
+            self.probe = None
+            self.schema = None
+
+        def _transpile_sql(self, query, *, dialect):
+            self.input_dialect = dialect
+            return query
+
+        def raw_sql(self, statement):
+            if "LIMIT 0" in statement:
+                self.probe = statement
+                if probe_error is not None:
+                    raise probe_error
+                columns = description or (SimpleNamespace(name="value", type_code=20),)
+                return Cursor(description=columns)
+            assert "pg_catalog.pg_type" in statement
+            return Cursor(rows=type_rows)
+
+        def sql(self, statement, *, dialect, schema):
+            self.statement = statement
+            self.dialect = dialect
+            self.schema = schema
+            return sql_result
+
+    return Postgres()
+
+
+def _postgres_catalog_backend(row, expected, relation):
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def fetchone(self):
+            return row
+
+    class Postgres:
         name = "postgres"
 
-        def sql(self, statement, *, dialect):
-            assert statement == "SELECT 1"
-            assert dialect == "postgres"
-            return "live relation"
+        def raw_sql(self, statement):
+            assert expected in statement
+            return Cursor()
 
-        def raw_sql(self, _statement):
-            pytest.fail("live source access must not check TEMP privilege")
+        def table(self, name, *, database):
+            self.table_name = name
+            self.database = database
+            return relation
 
+    return Postgres()
+
+
+@pytest.mark.parametrize("sql", ["SELECT 1", "SELECT 1 -- source", "SELECT 1; -- source"])
+def test_live_postgres_source_sql_does_not_require_temp_privilege(sql):
+    backend = _postgres_sql_backend()
     session = WarehouseSession(
-        LivePostgres(),  # type: ignore[ty:invalid-argument-type]
+        backend,
         defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
     )
 
-    assert session.source_sql("SELECT 1") == "live relation"
+    assert session.source_sql(sql) == "live relation"
+    assert "LIMIT 0" in backend.probe
+    assert "-- source" not in backend.probe
+    assert backend.schema["value"] == ibis.dtype("int64")
+
+
+def test_snapshot_schema_declaration_refuses_before_temp_capability_check():
+    from increment.errors import DefinitionError
+    from increment.semantics.models import FactSource
+
+    backend = _postgres_sql_backend(
+        description=(
+            SimpleNamespace(name="user_id", type_code=20),
+            SimpleNamespace(name="event_at", type_code=1114),
+        ),
+        type_rows=((20, "bigint"), (1114, "timestamp without time zone")),
+        sql_result=SimpleNamespace(columns=("user_id", "event_at")),
+    )
+    source = FactSource.model_construct(
+        name="purchase_rows",
+        sql="SELECT user_id, event_at FROM analytics.event_log",
+        timestamp_column="event_at",
+        entities=("user_id",),
+        facts=(),
+    )
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    with pytest.raises(DefinitionError) as error:
+        session.preflight_fact_source_schema(source, require_event=True)
+
+    assert error.value.code == "definition.fact_source.missing_columns"
+    assert error.value.context["missing"] == ("event",)
+
+
+def test_live_postgres_plain_table_source_resolves_through_catalog_without_temp_introspection():
+    relation = object()
+    backend = _postgres_catalog_backend(
+        ("public", "events"), 'to_regclass(\'"public"."events"\')', relation
+    )
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql('SELECT * FROM "public"."events"') is relation
+    assert backend.table_name == "events"
+    assert backend.database == ("public",)
+
+
+def test_live_postgres_unqualified_table_uses_search_path_and_folds_identifiers():
+    relation = object()
+    backend = _postgres_catalog_backend(("public", "events"), "to_regclass('EVENTS')", relation)
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql("SELECT * FROM EVENTS") is relation
+    assert backend.table_name == "events"
+    assert backend.database == ("public",)
+
+
+def test_live_postgres_catalog_preserves_non_ascii_unquoted_identifier():
+    relation = object()
+    backend = _postgres_catalog_backend(("public", "Évents"), "to_regclass('Évents')", relation)
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql("SELECT * FROM Évents") is relation
+    assert backend.table_name == "Évents"
+    assert backend.database == ("public",)
+
+
+def test_live_postgres_plain_table_catalog_lookup_ignores_identifier_comments():
+    relation = object()
+    backend = _postgres_catalog_backend(("public", "events"), "to_regclass('events')", relation)
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql("SELECT * FROM events /* source */") is relation
+    assert backend.table_name == "events"
+
+
+def test_live_postgres_table_lookup_preserves_quoted_namespaces():
+    relation = object()
+    backend = _postgres_catalog_backend(
+        ("schema.with.dot", "Mixed Events"),
+        'to_regclass(\'"schema.with.dot"."Mixed Events"\')',
+        relation,
+    )
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql('SELECT * FROM "schema.with.dot"."Mixed Events"') is relation
+    assert backend.table_name == "Mixed Events"
+    assert backend.database == ("schema.with.dot",)
+
+
+def test_live_postgres_pg_temp_alias_resolves_physical_schema():
+    relation = object()
+    backend = _postgres_catalog_backend(
+        ("pg_temp_42", "events"), "to_regclass('pg_temp.events')", relation
+    )
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql("SELECT * FROM pg_temp.events") is relation
+    assert backend.table_name == "events"
+    assert backend.database == ("pg_temp_42",)
+
+
+@pytest.mark.parametrize(
+    ("sql", "sql_dialect"),
+    [
+        ("SELECT * FROM ONLY events", "postgres"),
+        ("SELECT * FROM events TABLESAMPLE SYSTEM (0)", "postgres"),
+        ("SELECT * FROM events AS source", "postgres"),
+        ("SELECT * REPLACE (0 AS value) FROM events", "duckdb"),
+        ("SELECT * EXCLUDE (value) FROM events", "duckdb"),
+        ("SELECT * RENAME (value AS amount) FROM events", "duckdb"),
+    ],
+)
+def test_live_postgres_table_lookup_preserves_table_modifiers(sql, sql_dialect):
+    relation = object()
+    backend = _postgres_sql_backend(sql_result=relation)
+
+    def unexpected_table(*_args, **_kwargs):
+        pytest.fail("modified relation SQL must not be simplified to a table")
+
+    backend.table = unexpected_table
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect=sql_dialect),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    assert session.source_sql(sql) is relation
+    assert backend.statement == sql
+    assert backend.dialect == sql_dialect
 
 
 def test_captured_postgres_sources_require_temp_privilege():
@@ -143,81 +375,46 @@ def test_captured_postgres_sources_require_temp_privilege():
     assert error.value.code == "query.session.snapshot.materialization_failed"
 
 
-def test_snapshot_schema_declaration_refuses_before_temp_capability_check():
-    from increment.errors import DefinitionError
-    from increment.semantics.models import FactSource
-
-    class Postgres:
-        name = "postgres"
-
-        def sql(self, *_args, **_kwargs):
-            return SimpleNamespace(columns=("user_id", "event_at"))
-
-        def raw_sql(self, _statement):
-            pytest.fail("a declaration refusal must precede TEMP privilege checks")
-
-    source = FactSource.model_construct(
-        name="purchase_rows",
-        sql="SELECT user_id, event_at FROM analytics.event_log",
-        timestamp_column="event_at",
-        entities=("user_id",),
-        facts=(),
-    )
-    session = WarehouseSession(
-        Postgres(),  # type: ignore[ty:invalid-argument-type]
-        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
-    )
-
-    with pytest.raises(DefinitionError) as error:
-        session.preflight_fact_source_schema(source, require_event=True)
-
-    assert error.value.code == "definition.fact_source.missing_columns"
-    assert error.value.context["missing"] == ("event",)
-
-
-def test_sql_source_privilege_error_maps_to_temp_capability_refusal():
-    from increment.errors import CapabilityError
-    from increment.semantics.models import FactSource
-
+def test_live_sql_privilege_error_is_not_mapped_to_snapshot_refusal():
     class PrivilegeError(Exception):
         sqlstate = "42501"
 
-    class Cursor:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return None
-
-        def fetchone(self):
-            return (False,)
-
-    class Postgres:
-        name = "postgres"
-
-        def sql(self, *_args, **_kwargs):
-            raise PrivilegeError("permission denied")
-
-        def raw_sql(self, statement):
-            assert "has_database_privilege" in statement
-            return Cursor()
-
-    source = FactSource.model_construct(
-        name="purchase_rows",
-        sql="SELECT user_id FROM analytics.event_log",
-        timestamp_column="event_at",
-        entities=("user_id",),
-        facts=(),
-    )
+    backend = _postgres_sql_backend(probe_error=PrivilegeError("permission denied"))
     session = WarehouseSession(
-        Postgres(),  # type: ignore[ty:invalid-argument-type]
+        backend,
         defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
     )
 
-    with pytest.raises(CapabilityError) as error:
-        session.preflight_fact_source_schema(source, require_event=True)
+    with pytest.raises(PrivilegeError):
+        session.source_sql("SELECT user_id FROM analytics.event_log")
+    assert "has_database_privilege" not in backend.probe
 
-    assert error.value.code == "query.session.snapshot.materialization_failed"
+
+def test_postgres_sql_schema_preserves_numeric_precision():
+    backend = _postgres_sql_backend(
+        description=(
+            SimpleNamespace(name="unit_id", type_code=1700, precision=38, scale=0),
+            SimpleNamespace(
+                name="unit_ids",
+                type_code=1231,
+                precision=38,
+                scale=0,
+                type_display="numeric(38,0)[]",
+            ),
+            SimpleNamespace(name="event", type_code=1042, type_display="bpchar(16)"),
+        ),
+        type_rows=((1231, "numeric[]"), (1700, "numeric"), (1042, "character(16)")),
+    )
+    session = WarehouseSession(
+        backend,
+        defs=SimpleNamespace(dialect="postgres"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+    session.source_sql("SELECT unit_id FROM events")
+
+    assert backend.schema["unit_id"] == ibis.dtype("decimal(38, 0)")
+    assert backend.schema["unit_ids"] == ibis.dtype("array<decimal(38, 0)>")
+    assert backend.schema["event"] == ibis.dtype("string")
 
 
 def _readout_source(snapshots):
