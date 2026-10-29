@@ -5,6 +5,16 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, NoReturn
 
+from increment._assignment_refusals import (
+    ASSIGNMENT_INVALID,
+    ASSIGNMENT_REPLAY_MISMATCH,
+    ASSIGNMENT_SELECTION_UNAVAILABLE,
+    ASSIGNMENT_UNAVAILABLE,
+)
+from increment._assignment_refusals import refuse_assignment as _refuse_assignment
+from increment._assignment_refusals import (
+    refuse_assignment_selection as _refuse_assignment_selection,
+)
 from increment._source_types import PROVIDER_UNAVAILABLE
 from increment.errors import CapabilityError, RefusalSpec, refuse
 
@@ -31,6 +41,7 @@ UNIT_ROWS_UNAVAILABLE = _spec("evidence.unit_rows_unavailable", "unit rows")
 RAW_OUTCOMES_UNAVAILABLE = _spec("evidence.raw_outcomes_unavailable", "raw outcomes")
 CLUSTER_UNAVAILABLE = _spec("evidence.cluster_unavailable", "cluster evidence")
 COVARIATE_UNAVAILABLE = _spec("evidence.covariate_unavailable", "covariates")
+
 OPERATION_UNAVAILABLE = _spec("evidence.operation_unavailable", "operation")
 JOINT_GROUPING_UNAVAILABLE = RefusalSpec(
     "evidence.joint_grouping_unavailable",
@@ -63,6 +74,10 @@ EVIDENCE_REFUSALS = {
         PROVIDER_UNAVAILABLE,
         JOINT_GROUPING_UNAVAILABLE,
         UNSUPPORTED_REQUEST,
+        ASSIGNMENT_UNAVAILABLE,
+        ASSIGNMENT_SELECTION_UNAVAILABLE,
+        ASSIGNMENT_INVALID,
+        ASSIGNMENT_REPLAY_MISMATCH,
     )
 }
 
@@ -74,22 +89,6 @@ def refuse_joint_grouping(src: object, requested: Sequence[str], offered: object
         requested=tuple(requested),
         offered=offered,
     )
-
-
-EVIDENCE_REFUSALS = {
-    spec.code: spec
-    for spec in (
-        GRAIN_UNAVAILABLE,
-        BREAKOUT_UNAVAILABLE,
-        UNIT_ROWS_UNAVAILABLE,
-        RAW_OUTCOMES_UNAVAILABLE,
-        CLUSTER_UNAVAILABLE,
-        COVARIATE_UNAVAILABLE,
-        OPERATION_UNAVAILABLE,
-        PROVIDER_UNAVAILABLE,
-        UNSUPPORTED_REQUEST,
-    )
-}
 
 
 def refuse_grain(
@@ -185,10 +184,64 @@ def refuse_raw_outcomes(src: object, *, offered: object, route: str) -> NoReturn
     )
 
 
+def refuse_assignment(src: object, *, offered: str) -> NoReturn:
+    """Refuse an assignment evidence request before source access."""
+    from increment._source_types import declared_evidence
+
+    instructions = {
+        "definitions": "use Analysis.from_definitions(...) with experiment.assignment_ledger and semantic roles",
+        "artifact": "publish retained assignment_counts with from_unit_day_artifact or use from_definitions with an identity ledger",
+        "unit_summary": "retain unit and group columns with Analysis.from_unit_summary",
+        "unit_panel": "retain a unit-stable group column with Analysis.from_unit_panel",
+        "moments": "retain exact assignment_counts when using Analysis.from_moments",
+        "switchback": "retain cycle, period and group roles with Analysis.from_switchback_panel",
+    }
+    guidance = instructions.get(
+        declared_evidence(src).kind,
+        "declare assignment_relation and implement EvidenceProvider.assignment",
+    )
+    _refuse_assignment(src, offered=offered, route=guidance)
+
+
+def refuse_assignment_selection(src: object, *, requested: object, offered: object) -> NoReturn:
+    """Refuse a scope that aggregate assignment evidence cannot select."""
+    _refuse_assignment_selection(src, requested=requested, offered=offered)
+
+
+def refuse_assignment_invalid(reason: str, *, details: object = None) -> NoReturn:
+    from increment._assignment_refusals import refuse_assignment_invalid as refuse
+
+    refuse(reason, details=details)
+
+
+def refuse_assignment_replay_mismatch(*, details: object = None) -> NoReturn:
+    from increment._assignment_refusals import refuse_assignment_replay_mismatch as refuse
+
+    refuse(details=details)
+
+
 def _has_count_method(source: object, kind: str) -> bool:
     from increment._source_types import declared_evidence
 
     return kind in declared_evidence(source).count_grains
+
+
+def _require_assignment_capability(src: object, request: object) -> bool:
+    from increment._evidence_types import AssignmentRequest, EvidenceScope
+    from increment._source_types import declared_evidence
+
+    if isinstance(request, EvidenceScope):
+        for assignment_request in request.assignment_requests:
+            _require_assignment_capability(src, assignment_request)
+        return False
+    if not isinstance(request, AssignmentRequest):
+        return False
+    declaration = declared_evidence(src)
+    if declaration.assignment_relation == "none":
+        refuse_assignment(src, offered=declaration.assignment_relation)
+    if request.population not in declaration.populations:
+        _require_population(src, request.population, declaration.populations)
+    return True
 
 
 def _request_requirements(  # noqa: PLR0915
@@ -312,7 +365,8 @@ def _request_requirements(  # noqa: PLR0915
             is_builtin_source(src)
             and request.kind == "assignment"
             and (
-                "cluster" in declaration.count_grains
+                "unit" in declaration.count_grains
+                or "cluster" in declaration.count_grains
                 or (
                     declaration.kind == "artifact"
                     and "artifact_experiment" in declaration.operations
@@ -407,8 +461,9 @@ def require_evidence(
     covariates: Sequence[str] = (),
     operation: str | None = None,
 ) -> None:
+    assignment_request = request is not None and _require_assignment_capability(src, request)
     population = None
-    if request is not None:
+    if request is not None and not assignment_request:
         (
             grain,
             by,

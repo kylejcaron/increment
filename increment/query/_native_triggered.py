@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment._evidence_types import ComplianceSummary, SourceContext
+from increment._evidence_types import AssignmentRequest, ComplianceSummary, SourceContext
 from increment.query._native_refusals import _refuse_operation
 from increment.semantics.design import Encouragement
 from increment.semantics.models import Metric
@@ -78,6 +78,11 @@ class TriggeredPopulationSource:
     @property
     def source_name(self) -> str | None:
         return getattr(self._source, "source_name", None)
+
+    def identity_assignment_evidence(self, request: AssignmentRequest) -> Any:
+        """Delegate identity evidence to the underlying ledger-owning source."""
+        operation = getattr(self._source, "identity_assignment_evidence", None)
+        return operation(request) if callable(operation) else None
 
     def moments(
         self,
@@ -201,6 +206,7 @@ class TriggeredPopulationSource:
         include_breakouts: bool = False,
         breakouts: Sequence[Any] = (),
         configs: Sequence[ResolvedMetricConfig] | None = None,
+        assignment_requests: Sequence[AssignmentRequest] = (),
     ) -> Iterator[EvidenceSource]:
         with self._source.readout_snapshot(
             metrics=metrics,
@@ -209,6 +215,7 @@ class TriggeredPopulationSource:
             include_breakouts=include_breakouts,
             breakouts=breakouts,
             configs=configs,
+            assignment_requests=assignment_requests,
         ) as pinned:
             yield self if pinned is self._source else pinned.triggered_source()
 

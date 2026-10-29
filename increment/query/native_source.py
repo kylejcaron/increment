@@ -34,7 +34,12 @@ from increment._cuped_evidence import (
     portable_cuped_rows,
     portable_requests,
 )
-from increment._evidence_types import BreakoutIdentity, EvidenceScope
+from increment._evidence_types import (
+    AssignmentEvidence,
+    AssignmentRequest,
+    BreakoutIdentity,
+    EvidenceScope,
+)
 from increment._frame_validation import (
     COVARIATE_COLUMN_MISSING as _NATIVE_COVARIATE_MISSING,
 )
@@ -272,6 +277,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 covariate_grains=None,
             ),
             available_covariates=None,
+            assignment_relation=(
+                "ledger" if self._experiment.assignment_ledger is not None else "reduced"
+            ),
             sql_grains=frozenset({"total"}),
         )
 
@@ -676,6 +684,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             execution=any(request.execution for request in requests),
             include_breakouts=any(request.include_breakouts for request in requests),
             checkpoint_only=any(request.checkpoint_only for request in requests),
+            assignment_requests=tuple(
+                item for request in requests for item in request.assignment_requests
+            ),
         )
 
     def evidence_scope_breakout_streams(
@@ -694,6 +705,53 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 continue
             bindings[breakout] = source.name
         return bindings
+
+    def identity_assignment_evidence(self, request: AssignmentRequest) -> AssignmentEvidence | None:
+        """Reduce an explicitly role-mapped assignment relation inside the query boundary."""
+        binding = self._experiment.assignment_ledger
+        if binding is None:
+            return None
+        if request.experiment != self.context.study_id:
+            from increment._evidence_refusals import refuse_assignment_selection
+
+            refuse_assignment_selection(
+                self,
+                requested={"experiment": request.experiment},
+                offered={"experiment": self.context.study_id},
+            )
+        from decimal import Decimal
+
+        from increment.query.ledger import Ledger
+
+        roles = binding.roles
+        ledger = Ledger(self._session.source_sql(binding.sql), roles)
+        reduced = ledger.reduce(
+            experiment=request.experiment,
+            population=request.population,
+            version=request.version,
+            period=request.period,
+            all_periods=request.all_periods,
+            key="cluster" if self._experiment.cluster is not None else None,
+        )
+        allocation = getattr(self.context.design, "allocation", None)
+        probabilities: tuple[tuple[str, float], ...] = ()
+        if allocation:
+            weights = tuple((str(arm), Decimal(str(value))) for arm, value in allocation.items())
+            scale = max(weight for _, weight in weights)
+            total = sum((weight / scale for _, weight in weights), Decimal(0))
+            probabilities = tuple(
+                sorted((arm, float((weight / scale) / total)) for arm, weight in weights)
+            )
+        return AssignmentEvidence(
+            experiment=request.experiment,
+            population=request.population,
+            versions=reduced.versions,
+            periods=reduced.periods,
+            arm_counts=reduced.arm_counts,
+            independence_grain=reduced.independence_grain,
+            probabilities=probabilities,
+            randomization_law=getattr(self.context.design, "allocation_scheme", None),
+        )
 
     def evidence_scope_streams(self, scope: Any) -> Mapping[str, str]:
         tables = self._session._source_tables
@@ -749,6 +807,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             streams[source.name] = source.name
             dimensions.update(source.dims)
         streams.update({f"dimension:{name}": f"dimension:{name}" for name in dimensions})
+        for request in scope.assignment_requests:
+            if self._experiment.assignment_ledger is not None:
+                stream = f"assignment-ledger:{request.experiment}"
+                streams[stream] = stream
 
         for name in (self._experiment.exposure, self._experiment.trigger):
             if name is None:
@@ -768,7 +830,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
         if tables is None:
             return dict(sorted(streams.items()))
+        return self._captured_streams(tables)
 
+    def _captured_streams(self, tables: Any) -> Mapping[str, str]:
         labels: dict[str, set[str]] = {}
         for source in self._defs.fact_sources:
             labels.setdefault(source.sql, set()).add(source.name)
@@ -777,6 +841,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for exposure in self._defs.exposures:
             if exposure.sql is not None:
                 labels.setdefault(exposure.sql, set()).add(f"exposure:{exposure.name}")
+        if self._experiment.assignment_ledger is not None:
+            labels.setdefault(self._experiment.assignment_ledger.sql, set()).add(
+                f"assignment-ledger:{self._experiment.name}"
+            )
         captured_streams: dict[str, str] = {}
         for query in tables:
             identities = labels.get(query)
@@ -795,6 +863,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
         snapshot_horizon_relation: Table | None = None,
+        assignment_requests: Sequence[AssignmentRequest] = (),
     ) -> DefinitionsMomentSource:
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
@@ -842,6 +911,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 assert exposure.fact is not None
                 add_fact(exposure.fact, unscoped=True)
+        if assignment_requests and self._experiment.assignment_ledger is not None:
+            ledger = self._experiment.assignment_ledger
+            ledger_sql = ledger.sql
+            if ledger_sql not in queries:
+                queries.append(ledger_sql)
+            unscoped_queries.add(ledger_sql)
+            column_projections[ledger_sql] = tuple(
+                sorted(set(column_projections.get(ledger_sql, ())) | set(ledger.roles.values()))
+            )
         if metrics is None:
             uptake = getattr(self._context.design, "uptake", None)
             if uptake is not None:
@@ -1059,6 +1137,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
         snapshot_horizon_relation: Table | None = None,
+        assignment_requests: Sequence[AssignmentRequest] = (),
     ):
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         pinned = self._pinned_source(
@@ -1068,6 +1147,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             site_volume_metrics=site_volume_metrics,
             configs=configs,
             snapshot_horizon_relation=snapshot_horizon_relation,
+            assignment_requests=assignment_requests,
         )
         try:
             yield pinned
@@ -1108,6 +1188,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         breakouts: Sequence[BreakoutIdentity] = (),
         configs: Sequence[ResolvedMetricConfig] | None = None,
         reuse_retained_snapshot_integrity: bool = False,
+        assignment_requests: Sequence[Any] = (),
     ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
@@ -1168,6 +1249,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             extra_sources=extra_sources,
             configs=configs,
             snapshot_horizon_relation=snapshot_horizon_relation,
+            assignment_requests=tuple(assignment_requests),
         ) as pinned:
             previous_horizon = pinned._fixed_event_horizon
             previous_override = pinned._has_fixed_event_horizon_override

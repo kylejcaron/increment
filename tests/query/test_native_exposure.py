@@ -427,3 +427,120 @@ experiments:
     analysis = Analysis.from_definitions("exp", defs_path, con)
 
     assert _enrolled_by_arm(analysis) == {"control": 1, "treatment": 1}
+
+
+def test_definitions_assignment_ledger_uses_explicit_role_mapping(tmp_path):
+    from increment.evidence import (
+        AssignmentEvidence,
+        AssignmentRequest,
+        EvidenceScope,
+        evidence_provider,
+        request_evidence,
+    )
+
+    yaml = """
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: enrolled
+        column: null
+      - name: purchase
+        column: value
+exposures:
+  - name: enrolled
+    fact: enrolled
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: purchase
+    window_days: 7
+experiments:
+  - name: exp
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01T00:00:00
+    control_group: control
+    plan: {secondaries: [revenue]}
+    assignment_ledger:
+      sql: SELECT * FROM events
+      roles:
+        unit: subject
+        experiment: experiment_key
+        arm: arm_name
+        version: allocation_version
+        period: allocation_period
+        allocated_at: allocation_time
+        exposed_at: first_exposure_time
+        triggered_at: first_trigger_time
+"""
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=[
+            {
+                "user_id": "u1",
+                "ts": dt.datetime(2025, 1, 1, 9),
+                "event": "enrolled",
+                "group_id": "control",
+                "value": 10.0,
+                "subject": "u1",
+                "experiment_key": "exp",
+                "arm_name": "control",
+                "allocation_version": 3,
+                "allocation_period": "global",
+                "allocation_time": dt.datetime(2024, 12, 31, 10),
+                "first_exposure_time": dt.datetime(2025, 1, 1, 9),
+                "first_trigger_time": None,
+            },
+            {
+                "user_id": "u2",
+                "ts": dt.datetime(2025, 1, 1, 9),
+                "event": "enrolled",
+                "group_id": "treatment",
+                "value": 12.0,
+                "subject": "u2",
+                "experiment_key": "exp",
+                "arm_name": "treatment",
+                "allocation_version": 3,
+                "allocation_period": "global",
+                "allocation_time": dt.datetime(2024, 12, 31, 11),
+                "first_exposure_time": dt.datetime(2025, 1, 1, 10),
+                "first_trigger_time": dt.datetime(2025, 1, 1, 12),
+            },
+        ],
+    )
+    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    try:
+        request = AssignmentRequest(experiment="exp", version=3, period="global")
+        provider = evidence_provider(_native_source(analysis))
+        with pytest.raises(CapabilityError) as refused:
+            request_evidence(
+                provider,
+                AssignmentRequest(experiment="other", version=3, period="global"),
+            )
+        assert refused.value.code == "evidence.assignment.selection_unavailable"
+        scoped = provider.scope(
+            EvidenceScope(
+                metrics=provider.context.metrics,
+                population="assigned",
+                snapshot=True,
+                assignment_requests=(request,),
+            )
+        )
+        assert scoped.capture_status == "captured"
+        with scoped.source as pinned:
+            evidence = cast(
+                AssignmentEvidence,
+                request_evidence(evidence_provider(pinned), request),
+            )
+        assert evidence.population == "assigned"
+        assert evidence.versions == (3,)
+        assert evidence.periods == ("global",)
+        assert evidence.arm_counts == ((3, "global", "control", 1), (3, "global", "treatment", 1))
+    finally:
+        analysis.close()
+        con.disconnect()

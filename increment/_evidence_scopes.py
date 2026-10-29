@@ -48,6 +48,11 @@ def _scope_streams(source: EvidenceSource, scope: EvidenceScope) -> tuple[Eviden
         names.update(
             f"breakout:{breakout.property}:{breakout.source}" for breakout in scope.breakouts
         )
+        names.update(
+            f"assignment:{request.experiment}:{request.version}:"
+            f"{request.period}:{request.population}"
+            for request in scope.assignment_requests
+        )
         streams = MappingProxyType(dict.fromkeys(sorted(names), "captured"))
     return tuple(
         EvidenceStream(identity, physical) for identity, physical in sorted(streams.items())
@@ -140,6 +145,9 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
         execution=any(request.execution for request in requests),
         include_breakouts=any(request.include_breakouts for request in requests),
         checkpoint_only=any(request.checkpoint_only for request in requests),
+        assignment_requests=tuple(
+            item for request in requests for item in request.assignment_requests
+        ),
     )
 
 
@@ -166,6 +174,7 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
             snapshot_options: dict[str, Any] = {
                 "metrics": scope.metrics,
                 "population": scope.population,
+                "assignment_requests": scope.assignment_requests,
                 "include_breakouts": scope.include_breakouts or bool(scope.breakouts),
                 "breakouts": scope.breakouts,
                 "configs": scope.configs,
@@ -213,6 +222,7 @@ def load_evidence_scope(
             snapshot=request.snapshot,
             execution=request.execution,
             include_breakouts=request.include_breakouts,
+            assignment_requests=request.assignment_requests,
         )
 
     evidence = declared_evidence(src)

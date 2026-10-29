@@ -7,10 +7,13 @@ each request against that declaration before dispatch.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, cast
 
 from increment._evidence_refusals import refuse_unsupported_request, require_evidence
 from increment._evidence_types import (
+    AssignmentEvidence,
+    AssignmentRequest,
     BreakoutCell,
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
@@ -55,6 +58,10 @@ from increment._source_types import (
     refuse_provider_unavailable,
 )
 from increment.readouts._provider import _BuiltInEvidenceProvider
+
+if TYPE_CHECKING:
+    from increment._frame_ledger import FrameLedger
+    from increment.semantics.assignment import AssignmentSpec
 
 
 def _validate(provider: Any, request: object) -> None:
@@ -110,6 +117,14 @@ def request_evidence(provider: EvidenceProvider, request: object) -> object:
             # The built-in adapter answers from its loader's own retained checkpoint.
             return loader_snapshot(source, previous=request.previous)
         return current_source_snapshot(provider, previous=request.previous)
+    if isinstance(request, AssignmentRequest):
+        require_evidence(source, request=request)
+        method = getattr(provider, "assignment", None)
+        if method is None:
+            from increment._evidence_refusals import refuse_assignment
+
+            refuse_assignment(source, offered="declared capability without provider method")
+        return method(request)
     names = {
         BreakoutMethodMomentsRequest: "breakout_method_moments",
         MomentsRequest: "moments",
@@ -132,12 +147,39 @@ def request_evidence(provider: EvidenceProvider, request: object) -> object:
     return getattr(provider, method)(request)
 
 
+def replay(spec: AssignmentSpec, units: Iterable[str]) -> FrameLedger:
+    """Replay a versioned assignment spec into a validated identity ledger."""
+    import pyarrow as pa
+
+    from increment._frame_ledger import FrameLedger
+
+    rows = spec.replay(units)
+    schema = pa.schema(
+        [
+            ("unit", pa.string()),
+            ("experiment", pa.string()),
+            ("arm", pa.string()),
+            ("period", pa.string()),
+            ("version", pa.int64()),
+            ("layer", pa.string()),
+            ("allocated_at", pa.timestamp("us")),
+            ("exposed_at", pa.timestamp("us")),
+            ("triggered_at", pa.timestamp("us")),
+        ]
+    )
+    frame = pa.Table.from_pylist(rows, schema=schema)
+    return FrameLedger(frame, roles={name: name for name in frame.column_names})
+
+
 __all__ = [
     "BreakoutCell",
     "BreakoutRoute",
     "BreakoutIdentity",
     "BreakoutSlice",
     "BreakoutSlices",
+    "AssignmentEvidence",
+    "FrameLedger",
+    "AssignmentRequest",
     "BreakoutSlicesRequest",
     "BreakoutUnitRows",
     "BreakoutUnitRowsRequest",
@@ -170,8 +212,17 @@ __all__ = [
     "SourceContext",
     "UnitRows",
     "UnitRowsRequest",
+    "replay",
     "evidence_provider",
     "request_evidence",
     "require_evidence",
     "warehouse_cuped_fit_evidence",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "FrameLedger":
+        from increment._frame_ledger import FrameLedger
+
+        return FrameLedger
+    raise AttributeError(name)

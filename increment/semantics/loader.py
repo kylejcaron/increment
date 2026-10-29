@@ -209,6 +209,15 @@ def load(path: str | Path) -> Definitions:
     for ex in raw.get("exposures", []):
         sql = ex.get("sql") or ""
         _check_sql(dialect, sql, f"exposure '{ex.get('name', '?')}'", path_obj)
+    for experiment in raw.get("experiments", []):
+        binding = experiment.get("assignment_ledger")
+        if binding is not None:
+            _check_sql(
+                dialect,
+                binding.get("sql", "") if isinstance(binding, Mapping) else "",
+                f"assignment ledger for experiment '{experiment.get('name', '?')}'",
+                path_obj,
+            )
 
     # Reject `metrics:`/`guardrails:` directly on an experiment (they belong under
     # `plan:`). Checked on the raw dict -- once validated, `extra="forbid"` alone

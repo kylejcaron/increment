@@ -29,6 +29,7 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 
 from increment._evidence_types import (
+    AssignmentRequest,
     ComplianceArm,
     ComplianceSummary,
     SourceContext,
@@ -285,6 +286,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             breakouts=tuple(self.breakouts),
             shape=self.shape,
             operations=self.operations,
+            capture="snapshot",
             unit_rows=True,
             raw_outcomes=True,
             method_fit="local",
@@ -313,7 +315,7 @@ class FrameTotalsSource(SequentialSourceMixin):
                 covariate_grains=None,
             ),
             available_covariates=frozenset(self._frame.columns),
-            capture="snapshot",
+            assignment_relation="reduced",
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -339,9 +341,18 @@ class FrameTotalsSource(SequentialSourceMixin):
         include_breakouts: bool = False,
         breakouts: Sequence[Any] = (),
         configs: Sequence[Any] | None = None,
+        assignment_requests: Sequence[AssignmentRequest] = (),
     ):
         """Pin the caller-owned dataframe as it exists at scope entry."""
-        del metrics, population, uptake_facts, include_breakouts, breakouts, configs
+        del (
+            metrics,
+            population,
+            uptake_facts,
+            include_breakouts,
+            breakouts,
+            configs,
+            assignment_requests,
+        )
         frame = self._frame.to_native()
         clone = getattr(frame, "clone", None)
         if callable(clone):
@@ -1310,6 +1321,7 @@ class _RestrictedSummaryBreakoutSource:
         include_breakouts: bool = False,
         breakouts: Sequence[Any] = (),
         configs: Sequence[Any] | None = None,
+        assignment_requests: Sequence[AssignmentRequest] = (),
     ) -> Iterator[_RestrictedSummaryBreakoutSource]:
         with self._source.readout_snapshot(
             metrics=metrics,
@@ -1318,6 +1330,7 @@ class _RestrictedSummaryBreakoutSource:
             include_breakouts=include_breakouts,
             breakouts=breakouts,
             configs=configs,
+            assignment_requests=assignment_requests,
         ) as source:
             yield _RestrictedSummaryBreakoutSource(source, self._covariate_columns)
 
@@ -1482,6 +1495,7 @@ class FramePanelSource(SequentialSourceMixin):
                 covariate_grains=self.scalar_covariate_grains,
             ),
             available_covariates=frozenset(frame.columns),
+            assignment_relation="reduced",
         )
 
     def declaration_identity(self) -> Mapping[str, Any]:
@@ -1507,9 +1521,18 @@ class FramePanelSource(SequentialSourceMixin):
         include_breakouts: bool = False,
         breakouts: Sequence[Any] = (),
         configs: Sequence[Any] | None = None,
+        assignment_requests: Sequence[AssignmentRequest] = (),
     ):
         """Snapshot mutable pandas and Polars panel evidence at readout start."""
-        del metrics, population, uptake_facts, include_breakouts, breakouts, configs
+        del (
+            metrics,
+            population,
+            uptake_facts,
+            include_breakouts,
+            breakouts,
+            configs,
+            assignment_requests,
+        )
         pinned = copy(self)
         snapshots: list[tuple[str, nw.DataFrame[Any] | None]] = []
         for attribute in (

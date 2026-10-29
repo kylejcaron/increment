@@ -410,3 +410,59 @@ experiments:
     assert integrity.context["unassigned_units"] == 1
     assert scope.source_snapshot_id != next(iter(baseline.metadata.scope.by_source))
     assert [row.group_id for row in audited] == ["T"]
+
+
+def test_switchback_integrity_uses_declared_assignment_law():
+    from increment.estimation.assignment_integrity import assignment_integrity
+    from increment.semantics.assignment import (
+        SharedScheduleOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+
+    design = SwitchbackAssignment(
+        sequence=SharedScheduleOrder(probability_ct=0.5),
+        window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+    )
+    result = assignment_integrity(
+        design,
+        {"control": 40, "treatment": 40},
+        order_draws=tuple((f"block-{index}", "ct") for index in range(1_000)),
+    )
+    assert result.status == "failed"
+    assert result.observed == {"ct": 1_000, "tc": 0}
+    assert result.expected == {"ct": 0.5, "tc": 0.5}
+    assert result.randomization_grain == "shared_block"
+
+
+def test_switchback_integrity_respects_nonconstant_probability_declaration():
+    from increment.estimation.assignment_integrity import assignment_integrity
+    from increment.semantics.assignment import (
+        SharedScheduleOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+
+    design = SwitchbackAssignment(
+        sequence=SharedScheduleOrder(probability_ct=0.5),
+        window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+    )
+    result = assignment_integrity(
+        design,
+        None,
+        order_draws=(("block-1", "ct"), ("block-2", "tc")),
+        constant_allocation=False,
+    )
+    assert result.status == "not_checked_missing_declaration"
+
+
+def test_nonconstant_design_allocation_is_not_inferred():
+    from increment.estimation.assignment_integrity import assignment_integrity
+
+    result = assignment_integrity(
+        _design(),
+        {"control": 0, "treatment": 1_000},
+        constant_allocation=False,
+    )
+    assert result.status == "not_checked_missing_declaration"
+    assert result.code == "integrity.allocation_missing_or_nonconstant"

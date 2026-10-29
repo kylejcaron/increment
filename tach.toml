@@ -42,7 +42,7 @@ depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.semantics"
-depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals"]
 
 [[modules]]
 path = "increment._canonical"
@@ -125,7 +125,16 @@ depends_on = ["increment._evidence_types", "increment.errors"]
 
 [[modules]]
 path = "increment._evidence_refusals"
-depends_on = ["increment._source_types", "increment._evidence_types", "increment.errors"]
+depends_on = ["increment._assignment_refusals", "increment._source_types", "increment._evidence_types", "increment.errors"]
+[[modules]]
+path = "increment._assignment_refusals"
+depends_on = ["increment.errors"]
+[[modules]]
+path = "increment._assignment_ledger_contract"
+depends_on = ["increment._assignment_refusals", "increment._identity"]
+[[modules]]
+path = "increment._frame_ledger"
+depends_on = ["increment._assignment_ledger_contract", "increment._assignment_refusals"]
 
 [[modules]]
 path = "increment._trigger_integrity"
@@ -392,7 +401,7 @@ depends_on = [
 [[modules]]
 path = "increment.switchback"
 depends_on = [
-  "increment._source_types",
+  "increment._source_types", "increment._assignment_refusals", "increment._evidence_types",
   "increment._frame_validation", "increment._metric_specs", "increment._study",
   "increment.decision", "increment.errors", "increment.estimation", "increment.power.switchback", "increment.semantics",
   "increment._unit_cycle",
@@ -411,6 +420,7 @@ depends_on = [
   "increment._source_identity", "increment.sequential_source", "increment.sequential_state",
   "increment.declarations",
   "increment._artifact_identity",
+  "increment._assignment_ledger_contract", "increment._frame_ledger",
 ]
 
 [[modules]]
@@ -670,7 +680,7 @@ depends_on = [
 path = "increment.evidence"
 depends_on = [
   "increment._evidence_refusals", "increment._evidence_types",
-  "increment._source_types", "increment.readouts",
+  "increment._source_types", "increment.readouts", "increment._frame_ledger",
 ]
 
 [[interfaces]]
@@ -775,6 +785,7 @@ expose = [
   "CountsRequest", "CountEvidence", "SequentialCaptureRequest", "SequentialCapture",
   "SequentialSnapshotRequest",
   "EvidenceScopeResult",
+  "AssignmentEvidence", "AssignmentRequest",
   "_WarehouseCupedFitEvidence", "warehouse_cuped_fit_evidence",
   "SourceContext", "ComplianceArm", "ComplianceSummary",
   "unit_frame_covariate_columns", "raise_legacy_compliance_state",
