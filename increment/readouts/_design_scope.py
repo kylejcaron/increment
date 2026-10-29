@@ -232,7 +232,7 @@ def resolve_roster(
                     }
                 except CapabilityError:
                     pass
-        integrity_counts = counts if not is_clustered or population == "assigned" else None
+        integrity_counts = counts if population == "assigned" else None
     else:
         counts = base_roster.counts
         integrity_counts = base_roster.integrity_counts

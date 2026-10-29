@@ -38,11 +38,48 @@ to its identity and the same snapshot. Breakout rows name the source the
 experiment declares for each breakout; when the experiment leaves a breakout's
 source unnamed, a provider's rows leave it unnamed too.
 
-Triggered daily and as-of readouts need trigger observation edges. They must be
-available from the provider or from the built-in loader yielded by its scope;
-otherwise the readout refuses with `evidence.operation_unavailable`. A source
-that neither declares `EvidenceCapabilities` nor implements `EvidenceProvider`
-refuses before reading with `evidence.provider_unavailable`.
+Triggered daily and as-of readouts need two separate kinds of evidence:
+trigger observation edges for each metric, and the experiment reconstruction
+metadata used to build the complete day axis (including zero-population early
+look cells). The provider must expose that metadata as `experiment` or
+`artifact_experiment`, or pass it as `DayAxisRequest.experiment` when serving a
+request. Supply the complete experiment metadata, including `trigger`, `unit`,
+`exposure`, `start`, `control_group`, plan, and breakouts for requested
+dimensions. The provider must also implement `triggered_observation_edges(metric)`
+and declare the triggered population. Missing reconstruction metadata or trigger
+edges refuses before reading.
+
+For an existing `EvidenceProvider`, the metadata fields and edge method can be
+provided like this:
+
+```python
+from datetime import date, datetime
+from types import SimpleNamespace
+
+from increment import AnalysisPlan
+from increment.semantics.models import Experiment
+
+provider = SimpleNamespace()
+provider.experiment = Experiment(
+    name="trial",
+    exposure="assigned",
+    trigger="seen",
+    unit="user_id",
+    start=datetime(2025, 1, 1),
+    control_group="control",
+    plan=AnalysisPlan(),
+)
+provider.triggered_observation_edges = lambda metric: (
+    date(2025, 1, 1),
+    date(2025, 1, 7),
+)
+```
+
+The [runnable custom-provider example](https://github.com/kylejcaron/increment/blob/main/examples/custom_evidence_provider.py)
+shows the provider interface; add the trigger metadata and edge method when
+serving triggered day-axis requests. A source that neither declares
+`EvidenceCapabilities` nor implements `EvidenceProvider` refuses before
+reading with `evidence.provider_unavailable`.
 
 The same declared provider/acquisition boundary serves lower-level estimator
 facades such as `estimate_ate()`. Its supplied source must declare
