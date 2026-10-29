@@ -1411,6 +1411,7 @@ class DayAxisReadouts:
         daily_lift: Callable[..., DailyLiftEstimates],
         execution_context=None,
         metadata_context=None,
+        scope_is_pinned: bool = False,
     ) -> None:
         self._src = src
         self._plan = plan
@@ -1419,6 +1420,7 @@ class DayAxisReadouts:
         self._daily_lift = daily_lift
         self._execution_context = execution_context
         self._metadata_context = metadata_context
+        self._scope_is_pinned = scope_is_pinned
 
     def resolve_lift_options(
         self,
@@ -1440,12 +1442,56 @@ class DayAxisReadouts:
     def _route(self) -> DayAxisRoute:
         return day_axis_route(self._src)
 
+    def validate_request(self, req: DayAxisRequest, *, lift: bool = False) -> None:
+        """Validate a day-axis request without acquiring evidence."""
+        req = replace(req, experiment=self._experiment)
+        route = self._route()
+        if lift:
+            _validate_lift_request(
+                req,
+                src=self._src,
+                design=self._design,
+                plan=self._plan,
+                route=route,
+                experiment=self._experiment,
+            )
+        else:
+            validate_day_axis(
+                req,
+                src=self._src,
+                design=self._design,
+                plan=self._plan,
+                route=route,
+                experiment=self._experiment,
+            )
+
     def values(self, req: DayAxisRequest, *, scope=None) -> DailyMetricValues:
+
         req = replace(req, experiment=self._experiment)
         scope = _day_axis_scope(req) if scope is None else scope
+        route = self._route()
+        validate_day_axis(
+            req,
+            src=self._src,
+            design=self._design,
+            plan=self._plan,
+            route=route,
+            experiment=self._experiment,
+        )
         if self._execution_context is not None:
             context = self._execution_context
-            context.validate_request(self._src, req.metrics, ())
+            context.validate_typed_request(req)
+            context.validate_request(self._src, req.metrics, (), population=req.population)
+            if req.grain == "asof" and isinstance(self._design, Encouragement):
+                from increment._evidence_types import ComplianceSeriesRequest
+
+                context.validate_typed_request(
+                    ComplianceSeriesRequest(
+                        design=self._design,
+                        completed_windows_only=req.completed_windows_only,
+                        population=req.population,
+                    )
+                )
             if req.dimension is not None:
                 from increment._evidence_types import BreakoutIdentity
 
@@ -1468,17 +1514,9 @@ class DayAxisReadouts:
                     experiment=self._experiment,
                     daily_lift=self._daily_lift,
                     metadata_context=context,
+                    scope_is_pinned=True,
                 ).values(req, scope=scope)
-        route = self._route()
-        validate_day_axis(
-            req,
-            src=self._src,
-            design=self._design,
-            plan=self._plan,
-            route=route,
-            experiment=self._experiment,
-        )
-        evidence = load_day_axis_rows(self._src, req)
+        evidence = load_day_axis_rows(self._src, req, scope_is_pinned=self._scope_is_pinned)
         results: list[DailyMetricValue] = []
         failure_rows: list[dict[str, Any]] = []
         for evidence_slice in evidence.slices:
@@ -1541,6 +1579,17 @@ class DayAxisReadouts:
     ) -> DailyLiftEstimates:
         req = replace(req, experiment=self._experiment)
         scope = _day_axis_scope(req) if scope is None else scope
+        route = self._route()
+        from increment._analysis_config import validate_scalar_route
+
+        _, requested_estimands, encouragement_design = _validate_lift_request(
+            req,
+            src=self._src,
+            design=self._design,
+            plan=self._plan,
+            route=route,
+            experiment=self._experiment,
+        )
         opts = options or LiftOptions.resolve(
             self._src,
             req.metrics,
@@ -1551,8 +1600,13 @@ class DayAxisReadouts:
         )
         if self._execution_context is not None:
             context = self._execution_context
-            if req.estimands != ("compliance",) or req.dimension is not None:
-                context.validate_request(self._src, req.metrics, opts.configs)
+            if requested_estimands == ("compliance",) and req.dimension is None:
+                context.validate_source(self._src)
+            context.validate_typed_request(req)
+            if requested_estimands != ("compliance",) or req.dimension is not None:
+                context.validate_request(
+                    self._src, req.metrics, opts.configs, population=req.population
+                )
             if req.dimension is not None:
                 from increment._evidence_types import BreakoutIdentity
 
@@ -1575,6 +1629,7 @@ class DayAxisReadouts:
                     experiment=self._experiment,
                     daily_lift=self._daily_lift,
                     metadata_context=context,
+                    scope_is_pinned=True,
                 ).lift(
                     req,
                     decision_method=decision_method,
@@ -1583,17 +1638,6 @@ class DayAxisReadouts:
                     scope=scope,
                     options=opts,
                 )
-        route = self._route()
-        from increment._analysis_config import validate_scalar_route
-
-        _, requested_estimands, encouragement_design = _validate_lift_request(
-            req,
-            src=self._src,
-            design=self._design,
-            plan=self._plan,
-            route=route,
-            experiment=self._experiment,
-        )
         if req.grain == "asof" and getattr(self._plan.inference, "registration", None) is not None:
             if req.dimension is not None:
                 from increment.sequential_state import sequential_refuse
@@ -1735,6 +1779,7 @@ class DayAxisReadouts:
                     experiment=self._experiment,
                     covariate_metrics=covariate_metrics,
                 ),
+                scope_is_pinned=self._scope_is_pinned,
             )
             evidence_slices = evidence.slices
         for evidence_slice in evidence_slices:

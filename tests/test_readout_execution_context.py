@@ -1991,3 +1991,254 @@ def test_sequential_rewritten_prefix_refuses_through_run_owner():
     finally:
         original.close()
         rewritten.close()
+
+
+@pytest.mark.integration
+def test_borrowed_context_rejects_an_undeclared_population_before_read(tmp_path):
+    from increment import EvidenceExecutionContext, EvidenceScope
+    from increment.errors import CodedError
+    from increment.evidence import evidence_provider
+    from increment.readouts import run
+
+    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    context = EvidenceExecutionContext(
+        evidence_provider(source),
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            population="assigned",
+            configs=tuple(source.context.configs),
+            execution=True,
+        ),
+        run_id="undeclared-population",
+    )
+    try:
+        context.open()
+        with pytest.raises(CodedError) as refused:
+            run(source, _population="triggered", execution_context=context)
+        assert refused.value.code == "kernel.context.undeclared_stream"
+        assert refused.value.context == {"stream": "population:triggered"}
+    finally:
+        context.close()
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_line_four_daily_readout_preserves_triggered_population(tmp_path):
+    from increment.readouts import run_scoped
+
+    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
+    try:
+        result = run_scoped(analysis, population="triggered", readouts=("daily",))["daily"]
+        assert result
+        assert {row.analysis_population for row in result} == {"triggered"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_typed_trigger_population_requests_are_rejected_before_reads():
+    from increment import EvidenceExecutionContext, EvidenceScope
+    from increment.errors import CodedError
+    from increment.evidence import (
+        ComplianceSeriesRequest,
+        CountsRequest,
+        evidence_provider,
+    )
+    from tests.test_compliance_summary import witness
+
+    source = witness()
+    context = EvidenceExecutionContext(
+        evidence_provider(source),
+        EvidenceScope(
+            metrics=tuple(source.context.metrics),
+            configs=tuple(source.context.configs),
+            populations=("assigned",),
+        ),
+        run_id="typed-population-gate",
+    )
+    requests = (
+        CountsRequest(kind="triggered"),
+        CountsRequest(kind="unit", population="triggered"),
+        ComplianceSeriesRequest(design=source.context.design, population="triggered"),
+    )
+    try:
+        for request in requests:
+            with pytest.raises(CodedError) as refused:
+                context.validate_typed_request(request)
+            assert refused.value.code == "kernel.context.undeclared_stream"
+            assert refused.value.context == {"stream": "population:triggered"}
+    finally:
+        source.close()
+
+
+@pytest.mark.integration
+def test_metric_free_custom_compliance_retains_provider_mode():
+    from increment import EvidenceExecutionContext, EvidenceScope
+    from increment.evidence import evidence_provider
+    from increment.readouts import run as readout_run
+    from tests.test_readouts_encouragement import METRIC, FakeMomentSource, _design, _rows
+
+    source = FakeMomentSource(
+        _rows(n=200),
+        metrics=[METRIC],
+        capabilities={"total"},
+        design=_design(),
+    )
+    context = EvidenceExecutionContext(
+        evidence_provider(source),
+        EvidenceScope(
+            population="assigned",
+            populations=("assigned",),
+            uptake_facts=("help_click",),
+            execution=True,
+        ),
+        run_id="metric-free-provider-compliance",
+    )
+    try:
+        with context.evidence_scope():
+            rows = readout_run(
+                source,
+                metrics=[],
+                estimands=("compliance",),
+                execution_context=context,
+            )
+        assert rows
+        assert rows.metadata is not None
+        assert rows.metadata.coherence is None
+        assert rows.metadata.effective_modes
+        assert set(rows.metadata.effective_modes.values()) == {"provider"}
+        assert "provider" in rows.model_dump_json()
+        assert "provider" in repr(rows)
+    finally:
+        source.close()
+
+
+@pytest.mark.integration
+def test_triggered_day_axis_borrows_the_run_capture(tmp_path):
+    from increment.errors import CodedError
+    from increment.readouts import run_scoped
+
+    analysis, (_, connection) = definitions_source(
+        tmp_path,
+        trigger=True,
+        sql_exposures=True,
+        return_analysis=True,
+        return_connection=True,
+    )
+    try:
+        expected = analysis.run_daily(population="triggered")
+
+        def mutate_after_run(_context):
+            assert analysis.run()
+            connection.raw_sql("DELETE FROM raw_events WHERE event = 'purchase'")
+
+        try:
+            actual = run_scoped(
+                analysis,
+                lambda: analysis.run_daily(population="triggered"),
+                population="triggered",
+                readouts=("run", "daily"),
+                on_context=mutate_after_run,
+            )
+        except CodedError as refused:
+            assert refused.code == "kernel.snapshot.integrity"
+        else:
+            expected_by_cell = {
+                (row.metric, row.group_id, row.ds): (
+                    row.n,
+                    None if row.value is None else row.value.value,
+                )
+                for row in expected
+            }
+            actual_by_cell = {
+                (row.metric, row.group_id, row.ds): (
+                    row.n,
+                    None if row.value is None else row.value.value,
+                )
+                for row in actual
+            }
+            assert actual_by_cell.keys() == expected_by_cell.keys()
+            for identity, (n, value) in expected_by_cell.items():
+                actual_n, actual_value = actual_by_cell[identity]
+                assert actual_n == n
+                assert actual_value == pytest.approx(value)
+            assert {row.analysis_population for row in actual} == {"triggered"}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_compliance_only_day_axis_rejects_another_analysis_source():
+    from increment.errors import CodedError
+    from increment.readouts import run_scoped
+    from tests.source_conformance import encouragement_panel_analysis
+
+    owner = encouragement_panel_analysis()
+    other = encouragement_panel_analysis()
+    try:
+        with pytest.raises(CodedError) as refused:
+            run_scoped(
+                owner,
+                lambda: other.run_asof_lift(estimands=("compliance",)),
+                population="assigned",
+                readouts=("asof_lift",),
+            )
+        assert refused.value.code == "kernel.context.undeclared_stream"
+        assert refused.value.context == {"stream": "source_ref"}
+    finally:
+        owner.close()
+        other.close()
+
+
+@pytest.mark.integration
+def test_scoped_run_declares_both_triggered_populations(tmp_path):
+    from increment.readouts import run_scoped
+
+    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
+    try:
+        results = (
+            run_scoped(analysis, readouts=("run",))["run"],
+            run_scoped(analysis, lambda: analysis.run()),
+        )
+        for rows in results:
+            assert {"assigned", "triggered"} <= {row.analysis_population for row in rows}
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_scoped_run_result_supports_pickle_and_deepcopy(tmp_path):
+    import copy
+    import pickle
+
+    from increment.readouts import run_scoped
+
+    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
+    try:
+        rows = run_scoped(analysis, readouts=("run",))["run"]
+        for restored in (pickle.loads(pickle.dumps(rows)), copy.deepcopy(rows)):
+            assert restored.metadata is not None
+            assert restored.metadata.effective_modes == rows.metadata.effective_modes
+            assert tuple(restored) == tuple(rows)
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_scoped_callback_uses_its_actual_encouragement_estimands():
+    from increment.readouts import run_scoped
+    from tests.source_conformance import encouragement_panel_analysis
+
+    analysis = encouragement_panel_analysis()
+    try:
+        rows = run_scoped(
+            analysis,
+            lambda: analysis.run_daily_lift(estimands=("itt",)),
+            population="assigned",
+            readouts=("daily_lift",),
+        )
+        assert rows
+        assert {row.estimand for row in rows} == {"itt"}
+    finally:
+        analysis.close()

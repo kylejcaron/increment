@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast, overload
 
@@ -1280,7 +1280,9 @@ class _NativeDayAxis:
         yield from _rows(self.src, req)
 
 
-def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisRows:
+def load_day_axis_rows(
+    src: EvidenceSource, request: DayAxisRequest, *, scope_is_pinned: bool = False
+) -> DayAxisRows:
     """Acquire daily/as-of rows using the evidence route declared by ``src``."""
     require_request_evidence(src, request)
     if is_custom_source(src):
@@ -1351,7 +1353,12 @@ def load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisR
 
         def scoped_slices() -> Iterator[DayAxisSlice]:
             for (source_name, scope), (_, _, breakouts) in zip(scopes, partitions, strict=True):
-                with evidence_scope(src, scope) as pinned:
+                manager = (
+                    evidence_scope(src, scope)
+                    if not scope_is_pinned or is_custom_source(src)
+                    else nullcontext(src)
+                )
+                with manager as pinned:
                     experiment = request.experiment or _trigger_experiment(pinned)
                     if experiment is not None and bound_identity is not None:
                         scoped_source = bound_identity.source or source_name

@@ -24,6 +24,7 @@ from tests.parity_harness.registrations_line2 import (
     line2_actual_outcome,
 )
 from tests.parity_harness.registrations_line3 import LINE3_PAIRS, line3_actual_outcome
+from tests.parity_harness.registrations_line4 import merge_line4
 from tests.parity_harness.registrations_line6 import ADAPTERS as _LINE6_ADAPTERS
 from tests.parity_harness.registrations_line6 import PAIRS as _LINE6_PAIRS
 
@@ -806,7 +807,7 @@ def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, 
 
 
 def _line1_actual_outcome(
-    scenario_id: str, ingress: str, *, scoped: bool = False
+    scenario_id: str, ingress: str, *, scoped: bool = False, line4: bool = False
 ) -> Mapping[str, object]:
     """The current outcome of a registered pair under the capture's recorded conditions.
 
@@ -845,7 +846,7 @@ def _line1_actual_outcome(
     with _single_thread_duckdb(), ExitStack() as stack:
         _enter_patch(stack, _design_scope, "_design_snapshot_id", capture_design_scope)
         _enter_patch(stack, _randomized_scope, "_randomized_snapshot_id", capture_randomized_scope)
-        outcome = _line1_outcome(scenario_id, ingress, scoped=scoped)
+        outcome = _line1_outcome(scenario_id, ingress, scoped=scoped, line4=line4)
     if outcome.get("kind") == "cells":
         return {
             **outcome,
@@ -855,7 +856,9 @@ def _line1_actual_outcome(
     return outcome
 
 
-def _line1_outcome(scenario_id: str, ingress: str, *, scoped: bool = False) -> Mapping[str, object]:  # noqa: PLR0915
+def _line1_outcome(  # noqa: PLR0915
+    scenario_id: str, ingress: str, *, scoped: bool = False, line4: bool = False
+) -> Mapping[str, object]:
     import json
     import warnings
     from contextlib import ExitStack
@@ -920,13 +923,25 @@ def _line1_outcome(scenario_id: str, ingress: str, *, scoped: bool = False) -> M
                     )
 
                 def operation():
-                    if scoped and case.sequential:
+                    if (scoped or line4) and case.sequential:
                         as_of = getattr(analysis, "_sequential_as_of", None)
                         snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
                         analysis.capture_sequential(finalized=True, **snapshot_kwargs)
                     return _run_with_read_counter(analysis, case)
 
-                if scoped:
+                if line4:
+                    from increment.readouts import run_scoped
+
+                    readouts = ("run",) if case.view is None else (case.view,)
+                    results, read_count = run_scoped(
+                        analysis,
+                        operation,
+                        population=case.population,
+                        readouts=readouts,
+                        include_breakouts=bool(case.breakout_dimension),
+                        on_context=capture_execution_modes,
+                    )
+                elif scoped:
                     from increment.readouts import run_scoped
 
                     results, read_count = run_scoped(
@@ -1017,6 +1032,11 @@ def _line1_outcome(scenario_id: str, ingress: str, *, scoped: bool = False) -> M
 
 NEW_PATH_ADAPTERS = dict.fromkeys(_LINE1_PAIRS, _line1_actual_outcome)
 
+
+def _line4_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:
+    return _line1_actual_outcome(scenario_id, ingress, line4=True)
+
+
 REGISTERED = {**REGISTERED, "line2": LINE2_PAIRS, "line3": LINE3_PAIRS}
 NEW_PATH_ADAPTERS = {
     **NEW_PATH_ADAPTERS,
@@ -1029,6 +1049,8 @@ NEW_PATH_ADAPTERS = {
     **NEW_PATH_ADAPTERS,
     **dict.fromkeys(LINE2_PAIRS | LINE2_ASOF_PAIRS, line2_actual_outcome),
 }
+
+REGISTERED, NEW_PATH_ADAPTERS = merge_line4(REGISTERED, NEW_PATH_ADAPTERS, _line4_actual_outcome)
 
 
 REGISTERED = {**REGISTERED, **_line5.REGISTERED}

@@ -197,6 +197,14 @@ def run_scoped_line2(
         if "run" in selected or "breakout" in selected
         else None
     )
+    experiment = getattr(analysis, "_experiment", None)
+    scope_populations = set()
+    if "run" in selected and getattr(experiment, "trigger", None) is not None:
+        scope_populations.update(("assigned", "triggered"))
+    elif is_custom_source(source):
+        scope_populations.update(declared_evidence(source).populations)
+    if breakout_population is not None:
+        scope_populations.add(breakout_population)
     scope = capture_requirements(
         source,
         (
@@ -204,6 +212,7 @@ def run_scoped_line2(
                 metrics=scope_metrics,
                 configs=scope_configs,
                 population=breakout_population or "assigned",
+                populations=tuple(sorted(scope_populations)),
                 grain=grain,
                 breakouts=selected_breakouts,
                 snapshot=True,

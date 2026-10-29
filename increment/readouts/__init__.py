@@ -34,6 +34,17 @@ def run_scoped(
     **options: Any,
 ) -> Any:
     """Run related analysis readouts or operations under one shared evidence capture."""
+    if "population" in options:
+        from increment.readouts._line4 import run_scoped_line4
+
+        return run_scoped_line4(
+            analysis,
+            operation,
+            coherence=coherence,
+            include_breakouts=include_breakouts,
+            on_context=on_context,
+            **options,
+        )
     if operation is None:
         from increment.readouts._line2 import run_scoped_line2
 

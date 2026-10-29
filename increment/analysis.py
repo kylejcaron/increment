@@ -2988,6 +2988,19 @@ class Analysis:
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
+        if _execution_context is not None and rows.metadata is not None:
+            metadata = rows.metadata
+            rows._metadata = type(metadata).model_validate(
+                {
+                    **metadata.__dict__,
+                    "coherence": (
+                        None
+                        if "provider" in _execution_context.effective_modes.values()
+                        else _execution_context.coherence
+                    ),
+                    "effective_modes": dict(_execution_context.effective_modes),
+                }
+            )
         rows._default_backend = getattr(self, "_input_backend", None)
         if store is not None:
             from uuid import uuid4
@@ -3938,9 +3951,9 @@ class Analysis:
         return _execution_context_scope(context)
 
     def _validate_day_axis_before_context(self, req: DayAxisRequest, execution_context=None):
-        if execution_context is None and (
-            req.dimension is not None
-            or (not is_custom_source(self._src) and req.population != "triggered")
+        if req.population == "triggered" or (
+            execution_context is None
+            and (req.dimension is not None or not is_custom_source(self._src))
         ):
             from increment._day_axis import validate_day_axis
 
@@ -3974,6 +3987,38 @@ class Analysis:
             daily_lift=self._daily_lift,
             execution_context=execution_context,
         )
+
+    def _preflight_line4_views(
+        self,
+        *,
+        population: Literal["assigned", "triggered"],
+        readouts: Sequence[Literal["run", "daily", "daily_lift", "asof", "asof_lift"]],
+    ) -> None:
+        """Validate line-four day-axis requests before its scope opens."""
+        caller_by_name: dict[
+            str, Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
+        ] = {
+            "daily": "run_daily",
+            "daily_lift": "run_daily_lift",
+            "asof": "run_asof",
+            "asof_lift": "run_asof_lift",
+        }
+        day_axis = self._day_axis()
+        experiment = getattr(self._state, "experiment", None)
+        for name in readouts:
+            if name == "run":
+                continue
+            grain = "daily" if name.startswith("daily") else "asof"
+            request = DayAxisRequest(
+                caller=caller_by_name[name],
+                grain=grain,
+                metrics=tuple(self._metrics),
+                dimension=None,
+                estimands=None,
+                population=population,
+                experiment=experiment,
+            )
+            day_axis.validate_request(request, lift=name.endswith("_lift"))
 
     def run_daily_lift(
         self,

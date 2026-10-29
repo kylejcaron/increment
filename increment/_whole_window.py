@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
-from increment._evidence_types import EvidenceScope, SourceContext
+from increment._evidence_types import CountsRequest, EvidenceScope, SourceContext
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
@@ -272,14 +272,25 @@ class WholeWindowReadouts:
 
             return LiftEstimates()
         if execution_context is not None:
+            has_trigger = self._experiment is not None and self._experiment.trigger is not None
+            required_populations = (
+                ("assigned", "triggered")
+                if req.population is None and has_trigger
+                else (req.population or "assigned",)
+            )
+            for population in required_populations:
+                execution_context.validate_population(population)
             if (
                 route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
                 and self._experiment is not None
                 and self._experiment.trigger is not None
                 and req.population in (None, "triggered")
             ):
-                with execution_context.borrow() as provider:
-                    self._validate_trigger(_builtin_source(provider))
+                execution_context.validate_typed_request(
+                    CountsRequest(kind="triggered", population="triggered")
+                )
+                with execution_context.borrow() as pinned:
+                    self._validate_trigger(_builtin_source(pinned))
             return self._run_seam_family(req, execution_context)
         if (
             not is_custom_source(self._src)
@@ -317,6 +328,7 @@ class WholeWindowReadouts:
                 EvidenceScope(
                     metrics=tuple(selected),
                     population="triggered" if req.population == "triggered" else "assigned",
+                    populations=populations,
                     configs=tuple(configs),
                     uptake_facts=() if uptake is None else (uptake.fact,),
                     snapshot=True,
