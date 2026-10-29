@@ -444,6 +444,12 @@ alpha. Registered sequential rows have no p-value (`p_value()` refuses); their
 it is the raw family selection result, not another significance verdict, and can
 differ from `r.stat_sig()`.
 
+`r.reintervalize(alpha)` rebuilds a row's interval from retained evidence.
+For a registered plan or selected family row, `alpha` cannot exceed its
+declared or selected allocation; a larger request refuses with
+`results.operation.alpha_above_allocation`. Re-run with a new registered plan
+to change the planned alpha instead of widening a result after analysis.
+
 ??? info "Statistical details: decision level and disclosures"
     For fixed-horizon rows, the decision compares the p-value with the level
     shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a

@@ -9,7 +9,12 @@ import pyarrow as pa
 
 from increment._canonical import canonical_json_bytes
 from increment.estimation.readout_types import ReadoutMetadata
-from increment.kernel.contracts import CellIdentity, contract_hash
+from increment.kernel.contracts import (
+    BreakoutIdentity,
+    CellIdentity,
+    CompiledPlanBinding,
+    contract_hash,
+)
 from increment.result_envelope import (
     AnalysisEnvelope,
     ResultCell,
@@ -34,8 +39,9 @@ class Run:
     scope_analysis_hashes: tuple[str, ...] = ()
     cell_scope_hashes: tuple[tuple[str, str], ...] = ()
     manifest_version: int = 2
+    decision_plan: CompiledPlanBinding | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901
         for field in ("experiment_id", "run_id", "analysis_spec_hash", "execution_identity_hash"):
             if not getattr(self, field):
                 refuse_store(
@@ -71,17 +77,48 @@ class Run:
                 expected=len(expected),
                 actual=len(actual),
             )
-        if any(cell.identity.experiment_id != self.experiment_id for cell in self.cells):
-            refuse_store(
-                "store.run.identity_mismatch",
-                "Run header disagrees with cell identity",
-                field="experiment_id",
-            )
         for cell in self.cells:
+            identity = cell.identity
+            if (
+                identity.source_snapshot_id is None
+                or identity.scope is None
+                or cell.source_snapshot_id is None
+            ):
+                refuse_store(
+                    "store.run.identity_incomplete",
+                    "Cell snapshot and scope identity are required",
+                    field="source_snapshot_id/scope",
+                )
+            expected_segment = (
+                (
+                    BreakoutIdentity(
+                        property=identity.key.dimension or "",
+                        source=identity.key.source,
+                    ),
+                )
+                if identity.key.kind == "segment"
+                else ()
+            )
+            if (
+                cell.source_snapshot_id != identity.source_snapshot_id
+                or identity.key.analysis_population != identity.scope.population
+                or identity.scope.segment != expected_segment
+            ):
+                refuse_store(
+                    "store.run.identity_mismatch",
+                    "Cell identity disagrees with its snapshot or scope",
+                    field="source_snapshot_id/population/segment",
+                )
+            if identity.experiment_id != self.experiment_id:
+                refuse_store(
+                    "store.run.identity_mismatch",
+                    "Run header disagrees with cell identity",
+                    field="experiment_id",
+                )
             if (
                 cell.provenance.run_id != self.run_id
                 or cell.provenance.execution_identity_hash != self.execution_identity_hash
-                or cell.provenance.source_content_digest != cell.identity.source_content_digest
+                or cell.provenance.source_content_digest != identity.source_content_digest
             ):
                 refuse_store(
                     "store.run.provenance_mismatch",
@@ -100,6 +137,14 @@ class Run:
                 "Cell artifact relation digests disagree within the run",
                 run_id=self.run_id,
             )
+        if self.decision_plan is not None:
+            if self.registration_hash != self.decision_plan.registration_hash:
+                refuse_store(
+                    "store.run.identity_mismatch",
+                    "Compiled decision plan differs from the run registration",
+                )
+            if self.manifest_version < 3:
+                object.__setattr__(self, "manifest_version", 3)
         scopes = self.scope_analysis_hashes or (self.analysis_spec_hash,)
         if len(set(scopes)) != len(scopes) or not scopes or (self.analysis_spec_hash not in scopes):
             refuse_store("store.run.scope_manifest_invalid", "Run scope manifest is invalid")
@@ -177,41 +222,38 @@ class Run:
 
     @property
     def manifest_hash(self) -> str:
-        return "sha256:" + contract_hash(
-            "store_run_manifest_v2",
-            {
-                "manifest_version": self.manifest_version,
-                "experiment_id": self.experiment_id,
-                "run_id": self.run_id,
-                "analysis_spec_hash": self.analysis_spec_hash,
-                "execution_identity_hash": self.execution_identity_hash,
-                "registration_hash": self.registration_hash,
-                "source_content_digest": self.source_content_digest,
-                "artifact_manifest_sha256": self.artifact_manifest_sha256,
-                "artifact_relation_digests": [
-                    list(item) for item in self.artifact_relation_digests
-                ],
-                "cell_scope_hashes": [list(item) for item in self.cell_scope_hashes],
-                "scope_analysis_hashes": list(self.scope_analysis_hashes),
-                "expected_roster": [identity.hash() for identity in self.expected_roster],
-                "cell_payload_sha256": [
-                    [
-                        cell.identity.hash(),
-                        "sha256:"
-                        + hashlib.sha256(canonical_json_bytes(cell.to_payload())).hexdigest(),
-                    ]
-                    for cell in sorted(self.cells, key=lambda item: item.identity.hash())
-                ],
-                "metadata_sha256": "sha256:"
-                + hashlib.sha256(
-                    canonical_json_bytes(
-                        cast(ReadoutMetadata, self.metadata).model_dump(mode="json")
-                    )
-                ).hexdigest(),
-                "captured_at": self.captured_at.isoformat(),
-                "committed_at": self.committed_at.isoformat(),
-            },
-        )
+        payload: dict[str, object] = {
+            "manifest_version": self.manifest_version,
+            "experiment_id": self.experiment_id,
+            "run_id": self.run_id,
+            "analysis_spec_hash": self.analysis_spec_hash,
+            "execution_identity_hash": self.execution_identity_hash,
+            "registration_hash": self.registration_hash,
+            "source_content_digest": self.source_content_digest,
+            "artifact_manifest_sha256": self.artifact_manifest_sha256,
+            "artifact_relation_digests": [list(item) for item in self.artifact_relation_digests],
+            "cell_scope_hashes": [list(item) for item in self.cell_scope_hashes],
+            "scope_analysis_hashes": list(self.scope_analysis_hashes),
+            "expected_roster": [identity.hash() for identity in self.expected_roster],
+            "cell_payload_sha256": [
+                [
+                    cell.identity.hash(),
+                    "sha256:" + hashlib.sha256(canonical_json_bytes(cell.to_payload())).hexdigest(),
+                ]
+                for cell in sorted(self.cells, key=lambda item: item.identity.hash())
+            ],
+            "metadata_sha256": "sha256:"
+            + hashlib.sha256(
+                canonical_json_bytes(cast(ReadoutMetadata, self.metadata).model_dump(mode="json"))
+            ).hexdigest(),
+            "captured_at": self.captured_at.isoformat(),
+            "committed_at": self.committed_at.isoformat(),
+        }
+        if self.manifest_version >= 3:
+            payload["decision_plan"] = (
+                None if self.decision_plan is None else self.decision_plan.canonical_payload()
+            )
+        return "sha256:" + contract_hash(f"store_run_manifest_v{self.manifest_version}", payload)
 
 
 class RunHandle(Protocol):
@@ -225,9 +267,11 @@ class RunHandle(Protocol):
 @dataclass(frozen=True, slots=True)
 class HistorySelector:
     metric_hash: str
+    estimator_id: str
+    method_config_hash: str
+    method_instance_id: str
+    scope_hash: str
     contrast: str | None = None
-    estimator_id: str | None = None
-    scope_hash: str | None = None
     role: str | None = None
 
 

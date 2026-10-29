@@ -204,3 +204,5 @@ require_evidence: Validate a typed evidence request before a source reads data.
 BreakoutRoute: Identify which source route can supply a breakout request.
 DayAxisRoute: Identify the source route used for daily or as-of evidence.
 ScalarEvidenceDeclaration: Declare scalar evidence behavior in a custom provider's capabilities.
+RunResult: Return stored result cells, effects, and final decision verdicts from an analysis run.
+run: Register an analysis before execution, persist its result cells, then decide from the validated run.

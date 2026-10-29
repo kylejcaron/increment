@@ -307,14 +307,33 @@ class ResultCell:
         for name in ("sampling", "posterior", "sequential"):
             status, state = components[name]
             operations: set[Operation] = set()
-            if (
+            if name == "sampling" and state is not None:
+                row = None
+                try:
+                    row = _restore_row(state.fields)
+                except CodedError:
+                    if status.state in {"available", "advisory"}:
+                        raise
+                if row is not None and status.state in {"available", "advisory"}:
+                    if _can_reconstruct_relevel(row) and _retained_relevel_alpha(row) is not None:
+                        operations.add(Operation.RELEVEL)
+                if (
+                    row is not None
+                    and status.state in {"available", "advisory"}
+                    and row.sampling_available is not False
+                    and row.quantile_p_value is None
+                    and row.independent_mean_reference is None
+                    and row.confidence_set is None
+                ):
+                    operations.add(Operation.COMPARE_MARGIN)
+            elif (
                 name == "sampling"
-                and status.state in {"available", "advisory"}
-                and state is not None
+                and self.row_payload is not None
+                and self.row_kind in {"breakout", "daily_lift", "asof_lift"}
             ):
-                row = _restore_row(state.fields)
-                if _can_reconstruct_relevel(row) and _retained_relevel_alpha(row) is not None:
-                    operations.add(Operation.RELEVEL)
+                row = self._projection_row()
+                if getattr(row, "sampling_available", True) is not False:
+                    operations.add(Operation.COMPARE_MARGIN)
             support[name] = frozenset(operations)
         object.__setattr__(self, "supports", MappingProxyType(support))
 
@@ -902,8 +921,14 @@ class ResultCell:
                 code="results.cell.schema_unsupported",
                 context={"row_kind": row_kind},
             )
-        row = None if row_dump is None else _restore_row(row_dump)
         comp_data = payload["components"]
+        row = None
+        if row_dump is not None:
+            try:
+                row = _restore_row(row_dump)
+            except CodedError:
+                if comp_data["sampling"]["status"]["state"] in {"available", "advisory"}:
+                    raise
         components: dict[Literal["sampling", "posterior", "sequential"], Component] = {}
         for name in ("sampling", "posterior", "sequential"):
             component = comp_data[name]
@@ -935,7 +960,15 @@ class ResultCell:
                     context={"kind": kind},
                 )
             if row_kind != "lift_estimate" and (
-                construction is not None or kind is not None or component.get("supports")
+                construction is not None
+                or kind is not None
+                or (
+                    component.get("supports")
+                    and not (
+                        row_kind in {"breakout", "daily_lift", "asof_lift"}
+                        and set(component["supports"]) <= {Operation.COMPARE_MARGIN.value}
+                    )
+                )
             ):
                 raise CodedError(
                     "Non-lift report row carries lift component state",
@@ -1054,7 +1087,13 @@ class ResultCell:
         for entry in table.to_pylist():
             components = {}
             row_dump = None if entry["retained_row"] is None else json.loads(entry["retained_row"])
-            row = None if row_dump is None else _restore_row(row_dump)
+            row = None
+            if row_dump is not None:
+                try:
+                    row = _restore_row(row_dump)
+                except CodedError:
+                    if entry["sampling"]["status"] in {"available", "advisory"}:
+                        raise
             construction, reason = (
                 (None, "no retained sampling row") if row is None else classify(row)
             )
@@ -1082,7 +1121,13 @@ class ResultCell:
                     or (name == "sequential" and sequential_available)
                 )
                 expected_construction = construction if has_state else None
-                if stored_construction != expected_construction:
+                unavailable_sampling_row = (
+                    row is None
+                    and name == "sampling"
+                    and comp["status"] == "unavailable"
+                    and stored_construction == "unavailable"
+                )
+                if stored_construction != expected_construction and not unavailable_sampling_row:
                     raise CodedError(
                         "Mismatched result-cell construction",
                         code="results.cell.schema_unsupported",
@@ -1308,6 +1353,308 @@ def relevel(cell: ResultCell, *, alpha: float) -> ResultCell:
     _require(cell, Operation.RELEVEL)
     updated = _conservative_relevel(cell.retained_row(), alpha)
     return _replace_row(cell, updated)
+
+
+def compare_margin(
+    cell: ResultCell, *, margin: float, scale: Literal["relative", "absolute"]
+) -> bool | None:
+    """Compare a retained sampling result with a margin on its declared scale."""
+    _require(cell, Operation.COMPARE_MARGIN)
+    sampling_state = cell.components["sampling"][1]
+    row = cell.retained_row() if sampling_state is not None else cell._projection_row()
+    if scale not in {"relative", "absolute"}:
+        raise CodedError(
+            "Unsupported result operation",
+            code="results.operation.unsupported",
+            context={"operation": Operation.COMPARE_MARGIN.value, "scale": scale},
+        )
+    if scale == "relative" and row.value_scale == "absolute":
+        raise CodedError(
+            "Unsupported result operation",
+            code="results.operation.unsupported",
+            context={
+                "operation": Operation.COMPARE_MARGIN.value,
+                "reason": "relative margins are unavailable for native absolute-scale results",
+                "scale": scale,
+            },
+        )
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        return (
+            confidence_set.relative.excludes(margin)
+            if scale == "relative"
+            else confidence_set.additive.excludes(margin)
+        )
+    if row.sequential_result is not None:
+        retained_margin = row.null_lift if scale == "relative" else row.null_abs
+        if retained_margin != margin:
+            raise CodedError(
+                "Unsupported result operation",
+                code="results.operation.unsupported",
+                context={
+                    "operation": Operation.COMPARE_MARGIN.value,
+                    "reason": "registered sequential margins cannot be changed after estimation",
+                    "scale": scale,
+                },
+            )
+        return row.stat_sig()
+    if (
+        scale == "absolute"
+        and row.value_scale != "absolute"
+        and (getattr(row, "abs_lb", None) is None or getattr(row, "abs_ub", None) is None)
+    ):
+        raise CodedError(
+            "Unsupported result operation",
+            code="results.operation.unsupported",
+            context={
+                "operation": Operation.COMPARE_MARGIN.value,
+                "reason": "absolute sampling bounds are unavailable",
+                "scale": scale,
+            },
+        )
+    if scale == "absolute" and row.value_scale == "absolute":
+        candidate = row.model_copy(update={"null_lift": margin, "null_abs": None})
+    else:
+        candidate = row.model_copy(
+            update=(
+                {"null_lift": margin, "null_abs": None}
+                if scale == "relative"
+                else {"null_lift": 0.0, "null_abs": margin}
+            )
+        )
+    return candidate.stat_sig()
+
+
+@dataclass(frozen=True, slots=True)
+class StoredFamilyEvidence:
+    identity_hash: str
+    construction: str | None
+    value_scale: str | None
+    evidence: object | None
+    reason_code: str | None = None
+    reason: str | None = None
+    nominal_alpha: float | None = None
+
+
+def family_evidence(cell: ResultCell) -> StoredFamilyEvidence:
+    """Adapt retained construction state to the typed evidence used by a family rule."""
+    from increment.estimation.decision_types import (
+        ArmHypothesisKey,
+        AsymptoticSequentialEvidence,
+        EValueEvidence,
+        PValueEvidence,
+        SegmentHypothesisKey,
+    )
+    from increment.estimation.sequential_result import (
+        AsymptoticSequentialResult,
+        SequentialInferenceResult,
+    )
+
+    status, state = cell.components["sampling"]
+    construction = None if state is None else state.construction
+    scale = cell.identity.key.value_scale
+    if state is None and not (
+        cell.row_payload is not None and cell.row_kind in {"breakout", "daily_lift", "asof_lift"}
+    ):
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            status.code or "results.component.unavailable",
+            status.reason or "sampling evidence is unavailable",
+        )
+    report_row = state is None
+    row = cell.retained_row() if state is not None else cell._projection_row()
+    construction = construction or getattr(row, "reference_kind", None) or cell.row_kind
+    set_only = getattr(row, "confidence_set", None) is not None
+    if status.state == "unavailable" and not (report_row or set_only):
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            status.code or "results.component.unavailable",
+            status.reason or "sampling evidence is unavailable",
+        )
+    if getattr(row, "sampling_available", True) is False and not set_only:
+        reason_code = (
+            getattr(row, "sampling_reason_code", None)
+            or getattr(row, "failure_code", None)
+            or status.code
+            or "results.component.unavailable"
+        )
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            reason_code,
+            status.reason or "sampling evidence is unavailable",
+        )
+    if row.method_role != "decision":
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            "decision.family.non_decision_cell",
+            "sensitivity rows are not family hypotheses",
+        )
+    hypothesis = cell.identity.key.hypothesis()
+    if not isinstance(hypothesis, (ArmHypothesisKey, SegmentHypothesisKey)):
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            "decision.family.unsupported_hypothesis",
+            "contrast hypotheses do not use the arm/segment family evidence adapter",
+        )
+    sequential = row.sequential_result
+    nominal_alpha = getattr(row, "family_nominal_alpha", None) or getattr(
+        row, "allocation_alpha", None
+    )
+    if isinstance(sequential, SequentialInferenceResult):
+        evidence = EValueEvidence(
+            hypothesis=hypothesis,
+            method=row.method,
+            log_e=sequential.log_e,
+            process="raw_likelihood_v1",
+            checkpoint=sequential.checkpoint,
+            certificate=sequential.certificate,
+        )
+        return StoredFamilyEvidence(
+            cell.identity.hash(), construction, scale, evidence, nominal_alpha=nominal_alpha
+        )
+    if isinstance(sequential, AsymptoticSequentialResult):
+        evidence = AsymptoticSequentialEvidence(
+            hypothesis=hypothesis, method=row.method, result=sequential
+        )
+        return StoredFamilyEvidence(
+            cell.identity.hash(), construction, scale, evidence, nominal_alpha=nominal_alpha
+        )
+    p_value = row.p_value()
+    if p_value is None:
+        return StoredFamilyEvidence(
+            cell.identity.hash(),
+            construction,
+            scale,
+            None,
+            getattr(row, "p_value_reason_code", None)
+            or getattr(row, "failure_code", None)
+            or status.code
+            or "decision.evidence.unavailable",
+            status.reason
+            or getattr(row, "unavailable", None)
+            or "retained construction has no family p-value",
+        )
+    evidence = PValueEvidence(
+        hypothesis, row.method, p_value, row.reference_kind or construction or "unknown"
+    )
+    return StoredFamilyEvidence(
+        cell.identity.hash(), construction, scale, evidence, nominal_alpha=nominal_alpha
+    )
+
+
+def combine_family_evidence(
+    evidence: Sequence[StoredFamilyEvidence],
+    *,
+    procedure: Literal["none", "bh", "e_bh", "bonferroni"],
+    level: float,
+) -> frozenset[str]:
+    """Apply a fixed-roster family rule to typed evidence retained by ResultCells."""
+    from fractions import Fraction
+
+    from increment.estimation.decision_types import (
+        AsymptoticSequentialEvidence,
+        EValueEvidence,
+        PValueEvidence,
+    )
+    from increment.estimation.family import bh_select, e_bh_select
+
+    if not evidence or any(item.evidence is None for item in evidence):
+        raise CodedError(
+            "Family evidence is incomplete",
+            code="results.operation.unsupported",
+            context={
+                "operation": Operation.COMBINE_FAMILY.value,
+                "members": tuple(item.identity_hash for item in evidence if item.evidence is None),
+                "reasons": tuple(
+                    (item.reason_code, item.reason) for item in evidence if item.evidence is None
+                ),
+            },
+        )
+    values = tuple(item.evidence for item in evidence)
+    selected: set[int]
+    if procedure == "bh":
+        if any(not isinstance(item, PValueEvidence) for item in values):
+            raise CodedError(
+                "BH requires p-value evidence",
+                code="results.operation.unsupported",
+                context={"operation": Operation.COMBINE_FAMILY.value, "procedure": procedure},
+            )
+        selected_indices, _threshold = bh_select(
+            [item.p_value for item in values if isinstance(item, PValueEvidence)], level
+        )
+        selected = set(selected_indices)
+    elif procedure == "e_bh":
+        logs: list[float | Fraction] = []
+        for retained, item in zip(evidence, values, strict=True):
+            if isinstance(item, EValueEvidence):
+                logs.append(item.log_e)
+            elif isinstance(item, AsymptoticSequentialEvidence):
+                if retained.nominal_alpha is None:
+                    if item.result.checkpoint.model.law == "ratio_mean":
+                        raise CodedError(
+                            "Ratio e-BH requires the family level stored with the result",
+                            code="results.operation.unsupported",
+                            context={
+                                "operation": Operation.COMBINE_FAMILY.value,
+                                "procedure": procedure,
+                                "identity_hash": retained.identity_hash,
+                            },
+                        )
+                    logs.append(item.result.log_e)
+                    continue
+                nominal_alpha = Fraction(str(retained.nominal_alpha))
+                logs.append(
+                    item.result.log_e
+                    if item.result._denominator_resolved(nominal_alpha)
+                    else float("-inf")
+                )
+            else:
+                raise CodedError(
+                    "e-BH requires e-value evidence",
+                    code="results.operation.unsupported",
+                    context={"operation": Operation.COMBINE_FAMILY.value, "procedure": procedure},
+                )
+        selected = set(e_bh_select(logs, level))
+    else:
+        from increment.estimation.family import log_e_threshold
+
+        selected = set()
+        threshold = Fraction(str(level))
+        if procedure == "bonferroni":
+            threshold /= len(values)
+        log_threshold = log_e_threshold(threshold)
+        for index, item in enumerate(values):
+            if isinstance(item, PValueEvidence):
+                rejects = item.p_value <= float(threshold)
+            elif procedure == "bonferroni" and isinstance(item, EValueEvidence):
+                rejects = item.log_e >= log_threshold
+            elif procedure == "bonferroni" and isinstance(item, AsymptoticSequentialEvidence):
+                result = item.result
+                rejects = result._denominator_resolved(threshold) and result.log_e >= log_threshold
+            else:
+                raise CodedError(
+                    "Family procedure and retained evidence do not match",
+                    code="results.operation.unsupported",
+                    context={"operation": Operation.COMBINE_FAMILY.value, "procedure": procedure},
+                )
+            if rejects:
+                selected.add(index)
+    return frozenset(evidence[index].identity_hash for index in selected)
 
 
 def _reinterval(cell: ResultCell, *, threshold: float) -> ResultCell:

@@ -227,8 +227,12 @@ def test_unadjusted_exploratory_rows_can_reintervalize_above_plan_alpha(warehous
             decision_method=Method(name="unadjusted")
         )
     )
-    reissued = declared[0].reintervalize(0.1)
-    assert reissued.lift is not None and reissued.lift.alpha == pytest.approx(0.1)
+
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        declared[0].reintervalize(0.1)
+    assert raised.value.code == "results.operation.alpha_above_allocation"
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")

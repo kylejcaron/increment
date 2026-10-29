@@ -832,6 +832,82 @@ def test_reports_both_populations_and_the_triggered_effect_is_undiluted(tmp_path
     assert "(triggered)" in html
 
 
+def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path):
+    from increment import run
+    from increment.kernel.contracts import Registration
+
+    analysis = _analysis(tmp_path, _events(trigger_rate=0.2, effect=0.5))
+    compiled = analysis.compiled_decision_plan
+    registration = Registration.from_plan(compiled)
+    try:
+        result = run(
+            analysis,
+            registration,
+            compiled,
+            experiment_id="exp",
+            analysis_spec_hash="sha256:" + "a" * 64,
+            execution_identity_hash="sha256:" + "b" * 64,
+            run_id="run-triggered-family-scopes",
+        )
+    finally:
+        analysis.close()
+
+    metadata = result.run.metadata
+    assert result.decisions.program.status == "not_evaluated"
+    assert "decision.primary.not_evaluated" in result.decisions.program.reason_codes
+    assert metadata is not None
+    declared = {
+        (family.source_snapshot_id, str(family.analysis_population)): family
+        for family in metadata.scope.families
+        if family.name == "secondary"
+    }
+    verdicts = {
+        (family.source_snapshot_id, family.analysis_population): family
+        for family in result.decisions.families
+    }
+    assert set(verdicts) == set(declared)
+    assert {population for _, population in verdicts} == {"assigned", "triggered"}
+    for scope_key, verdict in verdicts.items():
+        declaration = declared[scope_key]
+        assert {member.identity_hash for member in verdict.members} == {
+            next(
+                cell.identity.hash()
+                for cell in result.cells
+                if cell.identity.source_snapshot_id == declaration.source_snapshot_id
+                and cell.identity.key == key
+            )
+            for key in declaration.members
+        }
+        assert all(
+            cell.identity.key.analysis_population == declaration.analysis_population
+            for cell in result.cells
+            if cell.identity.hash() in {member.identity_hash for member in verdict.members}
+        )
+
+    from dataclasses import replace
+
+    from increment.decide import decide
+    from increment.store.types import pinned_run
+
+    reversed_metadata = metadata.model_copy(
+        update={
+            "scope": metadata.scope.model_copy(
+                update={"families": tuple(reversed(metadata.scope.families))}
+            )
+        }
+    )
+    reordered = decide(
+        pinned_run(replace(result.run, metadata=reversed_metadata)), registration, compiled
+    )
+    assert [
+        (family.source_snapshot_id, family.analysis_population, family.family_id)
+        for family in reordered.families
+    ] == sorted(
+        (family.source_snapshot_id, family.analysis_population, family.family_id)
+        for family in result.decisions.families
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingresses(
@@ -1064,10 +1140,16 @@ def test_triggered_analysis_store_uses_triggered_scope_for_history(tmp_path):
         assert cell.identity.scope is not None
         assert cell.identity.scope.population == "triggered"
         assert cell.identity.metric_hash is not None
+        assert cell.identity.estimator_id is not None
+        assert cell.identity.method_config_hash is not None
+        assert cell.identity.method_instance_id is not None
         history = store.history(
             "exp",
             HistorySelector(
-                cell.identity.metric_hash,
+                metric_hash=cell.identity.metric_hash,
+                estimator_id=cell.identity.estimator_id,
+                method_config_hash=cell.identity.method_config_hash,
+                method_instance_id=cell.identity.method_instance_id,
                 scope_hash=cell.identity.scope.hash(),
             ),
         )

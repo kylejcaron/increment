@@ -467,14 +467,16 @@ Those finite-sample bounds require exact-law guardrails. Asymptotic guardrails
 inherit the approximation and one-sided both-tails qualification below; the
 intersection-union argument does not remove either qualification.
 
-Increment reports each guardrail's own SAFE/HARM label; it does not compute
-or display an aggregate ship/no-ship verdict. The `alpha` guarantee above
-applies to the compound "ship only if every guardrail is SAFE" rule —
-reading several guardrail labels without applying that rule (for example,
-shipping when most, but not all, guardrails are SAFE) falls back to the
-weaker union bound (`k * alpha` across `k` guardrails) on the joint
-probability that at least one label is a false SAFE, not the tighter
-single-`alpha` IUT bound.
+The legacy `Analysis.run()` facade reports each guardrail's own SAFE/HARM
+label. The additive `increment.run()` facade also reports an aggregate
+program verdict, but returns `pass` only when every required primary and
+guardrail result is available and assignment integrity is qualified. A
+caller using only the legacy labels must apply the compound
+"ship only if every guardrail is SAFE" rule. Reading several guardrail
+labels without applying that rule (for example, shipping when most, but
+not all, guardrails are SAFE) has only the weaker union bound (`k * alpha`
+across `k` guardrails) on the joint probability that at least one label is
+a false SAFE, not the tighter single-`alpha` IUT bound.
 
 ### Secondaries: false discovery rate control at `q` for every in-family secondary
 

@@ -1213,6 +1213,9 @@ class LiftEstimate(_RowIdentity):
     abs_reference_kind: Literal["normal", "t"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
+    allocation_alpha: float | None = Field(
+        default=None, exclude_if=lambda value: value is None, gt=0.0, lt=1.0, allow_inf_nan=False
+    )
     # The central-equivalent alpha the additive interval was cut at, in `Estimate.alpha`'s
     # convention: a directional row carries the doubled call alpha. Set with abs_lb/abs_ub;
     # None for a row serialized before it was persisted.
@@ -1300,6 +1303,7 @@ class LiftEstimate(_RowIdentity):
     _check_absolute_reference: ClassVar[Any] = model_validator(mode="after")(
         _validate_absolute_reference_fields
     )
+
     _check_delta_evidence: ClassVar[Any] = model_validator(mode="after")(_validate_delta_evidence)
 
     @field_serializer("ds", when_used="json")
@@ -1756,36 +1760,121 @@ class LiftEstimate(_RowIdentity):
 
         return [ResultCell.from_row(self, metadata, created_at=created_at)]
 
+    def _reissue_allocation(self) -> float | None:
+        allocations: list[float] = []
+        if self.family_procedure is not None:
+            if self.family_nominal_alpha is not None:
+                allocations.append(self.family_nominal_alpha)
+            if self.allocation_alpha is not None:
+                allocations.append(self.allocation_alpha)
+            if self.discovery and self.family_threshold is not None:
+                allocations.append(self.family_threshold)
+        elif self.role == "primary":
+            if self.allocation_alpha is not None:
+                allocations.append(self.allocation_alpha)
+            if self.lift is not None and self.lift.alpha is not None:
+                allocations.append(self.lift.alpha)
+            if self.abs_alpha is not None:
+                allocations.append(self.abs_alpha)
+            if self.confidence_set is not None:
+                allocations.append(self.confidence_set.alpha)
+            if self.relative_confidence_set is not None:
+                allocations.append(self.relative_confidence_set.alpha)
+            if self.alternative != "two-sided":
+                allocations = [value / 2.0 for value in allocations]
+        return min(allocations) if allocations else None
+
+    def _with_reissued_allocation(self, row: LiftEstimate, alpha: float) -> LiftEstimate:
+        allocation = self._reissue_allocation()
+        directional_primary = (
+            row.role == "primary"
+            and row.alternative != "two-sided"
+            and self.family_procedure is None
+        )
+        stored_alpha = (
+            row.lift.alpha
+            if row.lift is not None and row.lift.alpha is not None
+            else row.abs_alpha
+            if row.abs_alpha is not None
+            else alpha * 2.0
+            if directional_primary
+            else alpha
+        )
+        call_alpha = stored_alpha / 2.0 if directional_primary else stored_alpha
+        if allocation is None or call_alpha < allocation:
+            allocation = call_alpha
+        if directional_primary:
+            allocation *= 2.0
+        return row.model_copy(update={"allocation_alpha": allocation})
+
     def reintervalize(
         self, alpha: float, *, interval_alternative: str | None = None
     ) -> LiftEstimate:
-        """Rebuild central persisted inference; bootstrap roots are never regenerated.
+        """Rebuild this row's interval using its stored decision allocation."""
+        return self.reissue(alpha, interval_alternative=interval_alternative)
 
-        A ``t`` row rebuilds its log-scale relative interval and, when it carries
-        them, its additive statistics. A relative endpoint the new level pushes
-        outside float64 withholds only that interval: the point and the log-scale
-        statistics the row was selected on are kept, so its sampling p-value is
-        unchanged, and the refusal is recorded in ``relative_error_code``. A row
-        whose relative projection was already withheld rebuilds its additive
-        interval only.
+    def reissue(self, alpha: float, *, interval_alternative: str | None = None) -> LiftEstimate:
+        """Rebuild persisted inference without widening its declared allocation.
+
+        Selected family rows use their stored construction and threshold: conversion
+        rows are rerouted against retained counts, while constructions without a
+        retained reissue path refuse. Unadjusted rows retain the general
+        reintervalization behavior below. A ``t`` row rebuilds its log-scale and
+        retained additive intervals; endpoints outside float64 withhold only the
+        affected interval and record the refusal code.
         """
-        if self.reference_kind == "t" and self.reference_df is not None:
-            relative = (
-                self.lift is not None
-                and self.lift.log_mean is not None
-                and self.lift.log_se is not None
+        allocation = self._reissue_allocation()
+        if allocation is not None and alpha > allocation:
+            raise CodedError(
+                "Reissued interval exceeds the row's declared or selected alpha allocation.",
+                code="results.operation.alpha_above_allocation",
+                context={"requested_alpha": alpha, "allocated_alpha": allocation},
             )
-            additive = (
-                self.abs_diff is not None
-                and self.abs_se is not None
-                and self.abs_reference_df is not None
-            )
-            if relative or (
-                additive and self.lift is None and self.relative_unavailable_reason is not None
-            ):
-                return self._reintervalize_t(
-                    alpha, interval_alternative, relative=relative, additive=additive
+        if self.family_procedure is not None and self.discovery is True:
+            if interval_alternative is not None and interval_alternative != self.alternative:
+                raise CodedError(
+                    "A selected family interval must retain its registered alternative.",
+                    code="results.operation.unsupported",
+                    context={
+                        "operation": "reinterval",
+                        "reason": "family reissue cannot change the registered alternative",
+                    },
                 )
+            from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+
+            construction, reason = classify(self)
+            if construction is None:
+                raise CodedError(
+                    "The selected family interval cannot be reissued from retained state.",
+                    code="results.operation.unsupported",
+                    context={"operation": "reinterval", "reason": reason},
+                )
+            return self._with_reissued_allocation(
+                reinterval_at_fcr(self, construction, alpha), alpha
+            )
+
+        relative = (
+            self.reference_kind == "t"
+            and self.reference_df is not None
+            and self.lift is not None
+            and self.lift.log_mean is not None
+            and self.lift.log_se is not None
+        )
+        additive = (
+            self.abs_diff is not None
+            and self.abs_se is not None
+            and self.abs_reference_kind == "t"
+            and self.abs_reference_df is not None
+        )
+        if relative or (
+            additive and self.lift is None and self.relative_unavailable_reason is not None
+        ):
+            return self._with_reissued_allocation(
+                self._reintervalize_t(
+                    alpha, interval_alternative, relative=relative, additive=additive
+                ),
+                alpha,
+            )
         if self.confidence_set is None:
             winsor_refuse(
                 "reinversion_required", "This operation requires a persisted winsor confidence set."
@@ -1807,14 +1896,17 @@ class LiftEstimate(_RowIdentity):
             if isinstance(region.reference, BootstrapReference | InfluenceReference)
             else None,
         )
-        return self.model_copy(
-            update={
-                "confidence_set": result.confidence_set,
-                "lift": result.lift,
-                "abs_lb": result.abs_lb,
-                "abs_ub": result.abs_ub,
-                "abs_alpha": result.abs_alpha,
-            }
+        return self._with_reissued_allocation(
+            self.model_copy(
+                update={
+                    "confidence_set": result.confidence_set,
+                    "lift": result.lift,
+                    "abs_lb": result.abs_lb,
+                    "abs_ub": result.abs_ub,
+                    "abs_alpha": result.abs_alpha,
+                }
+            ),
+            alpha,
         )
 
     def _reintervalize_t(

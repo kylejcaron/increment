@@ -110,11 +110,11 @@ path = "increment.result_envelope"
 depends_on = [
   "increment.errors",
   "increment.estimation",
+  "increment.estimation.decision_types",
   "increment.kernel.contracts",
   "increment._interpretation",
   "increment.estimation.sequential_result",
 ]
-
 [[modules]]
 path = "increment._labels"
 depends_on = []
@@ -879,4 +879,34 @@ depends_on = [
   "increment.declarations",
   "increment.errors",
   "increment.semantics",
+]
+
+[[modules]]
+path = "increment.decide"
+depends_on = [
+  "increment.declarations",
+  "increment.kernel.contracts",
+  "increment.plan",
+  "increment.semantics",
+  "increment.decide.family",
+  "increment.store",
+]
+
+[[modules]]
+path = "increment.decide.family"
+depends_on = [
+  "increment.estimation",
+  "increment.estimation.decision_types",
+  "increment.estimation.sequential",
+]
+
+[[modules]]
+path = "increment._run"
+depends_on = [
+  "increment._interpretation",
+  "increment.errors",
+  "increment.kernel.contracts",
+  "increment.result_envelope",
+  "increment.store",
+  "increment.decide",
 ]

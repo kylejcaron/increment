@@ -1060,9 +1060,17 @@ experiments:
                     == native_results["assigned"].reintervalize(0.01).confidence_set
                 )
                 assert (
-                    result.reintervalize(0.1).confidence_set
-                    == native_results["assigned"].reintervalize(0.1).confidence_set
+                    result.reintervalize(0.02).confidence_set
+                    == native_results["assigned"].reintervalize(0.02).confidence_set
                 )
+                from increment.errors import CodedError
+
+                with pytest.raises(CodedError) as result_refusal:
+                    result.reintervalize(0.1)
+                with pytest.raises(CodedError) as native_refusal:
+                    native_results["assigned"].reintervalize(0.1)
+                assert result_refusal.value.code == native_refusal.value.code
+                assert result_refusal.value.code == "results.operation.alpha_above_allocation"
             assert result.abs_diff == 0
             assert WinsorRawState.model_validate_json(restored.model_dump_json()) == restored
             restored_triggered = raw_state_from_source(adopted.triggered_source(), trusted)

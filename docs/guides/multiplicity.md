@@ -192,3 +192,26 @@ quantile estimate unavailable even for an unselected arm.
 
 !!! warning "Dependence and repeated discovery sets"
     Fixed-horizon BH assumes independence or positive dependence (PRDS) across the metric x arm x segment family, and this is not checked -- read [Fixed-horizon FDR control assumes a dependence condition that is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked). An always-valid discovery set's guarantee holds for the current date; the union across dates is not controlled -- read [Stopping-date guarantees require the registered reveal contract](../limitations.md#stopping-date-guarantees-require-the-registered-reveal-contract).
+
+The decision plan fixes hypotheses, alternatives, margins, and sequential
+registration before evidence is read. A final family verdict uses the complete
+stored roster after estimation; it does not authorize a new hypothesis or
+change the registered inference. BH, e-BH, and Bonferroni here are fixed-roster
+procedures, not online FDR control across experiments.
+
+## Two-phase stored runs
+
+The additive top-level `increment.run()` accepts an existing `Analysis`, its
+hash-only `Registration`, and the matching compiled plan. It validates the plan
+before calling `Analysis.run()`, then creates a validated in-memory `Run` from
+the resulting cells. Passing a `ResultsStore` persists and reopens that pinned
+run before final verdicts are computed; without a store, the same evaluator
+uses the validated in-memory run. `RunResult` exposes the cells, effect
+projections, and final decisions. Existing `Analysis.run()` return types are
+unchanged.
+
+An optional `DecisionLog` records fixed-family events only after the run and
+decisions validate. Its replay resolves each event's pinned run and uses the
+versioned compiled-plan payload stored with the run and event. The source
+family roster remains fixed for replay; this is not online FDR across runs.
+

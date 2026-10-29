@@ -211,7 +211,22 @@ def test_switchback_store_projects_typed_uncertainty_into_history(tmp_path):
         run = handle.run
         cell = run.cells[0]
         assert cell.identity.metric_hash is not None
-        history = store.history("switchback", HistorySelector(cell.identity.metric_hash))
+        identity = cell.identity
+        assert identity.metric_hash is not None
+        assert identity.estimator_id is not None
+        assert identity.method_config_hash is not None
+        assert identity.method_instance_id is not None
+        assert identity.scope is not None
+        history = store.history(
+            "switchback",
+            HistorySelector(
+                metric_hash=identity.metric_hash,
+                estimator_id=identity.estimator_id,
+                method_config_hash=identity.method_config_hash,
+                method_instance_id=identity.method_instance_id,
+                scope_hash=identity.scope.hash(),
+            ),
+        )
         assert history["se"].to_pylist() == [result.standard_error]
         assert history["df"].to_pylist() == [result.dof]
         assert history["se"].to_pylist()[0] == pytest.approx(72.0)

@@ -137,6 +137,12 @@ class TestASelectedMemberIsReissuedByItsCounts:
             assert row.family_threshold is not None
             assert row.family_threshold < nominal.delta_evidence.dense_level
             assert row.reference_kind == "binomial" and row.binomial_set is not None
+            reissue_alpha = row.family_threshold / 2
+            reissued = row.reintervalize(reissue_alpha)
+            assert reissued.binomial_set is not None
+            assert reissued.reference_kind == "binomial"
+            direct = row.reissue(reissue_alpha)
+            assert direct == reissued
             assert row.stat_sig() is True
             p_value = row.p_value()
             assert p_value is not None and p_value < row.family_threshold

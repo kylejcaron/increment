@@ -162,7 +162,17 @@ def test_warehouse_store_publishes_and_pins_complete_run():
         )
         handle = store.open_run("exp", "spec", "one")
         assert handle.run.manifest_hash == run.manifest_hash
-        history = store.history("exp", HistorySelector("metric", contrast="control:treatment"))
+        history = store.history(
+            "exp",
+            HistorySelector(
+                metric_hash="metric",
+                estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
+                scope_hash=Scope(view="run", grain="total").hash(),
+                contrast="control:treatment",
+            ),
+        )
         assert history.num_rows == 1
         assert handle.envelope().cells == cells
         with pytest.raises(CodedError) as duplicate:
@@ -278,7 +288,17 @@ def test_warehouse_discovery_ignores_corrupt_payloads_for_other_experiments():
         )
 
         assert store.open_run("exp-a", "spec-a").run.run_id == "one"
-        history = store.history("exp-a", HistorySelector("metric"))
+        assert healthy.cells[0].identity.scope is not None
+        history = store.history(
+            "exp-a",
+            HistorySelector(
+                "metric",
+                estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
+                scope_hash=healthy.cells[0].identity.scope.hash(),
+            ),
+        )
         assert history.num_rows == 1
     finally:
         analysis.close()
@@ -307,7 +327,16 @@ def test_warehouse_latest_and_history_reject_unreadable_committed_records():
 
         for operation in (
             lambda: store.open_run("exp", "spec"),
-            lambda: store.history("exp", HistorySelector("metric")),
+            lambda: store.history(
+                "exp",
+                HistorySelector(
+                    metric_hash="metric",
+                    estimator_id="t",
+                    method_config_hash="config",
+                    method_instance_id="instance",
+                    scope_hash=older.expected_roster[0].scope.hash(),
+                ),
+            ),
         ):
             with pytest.raises(CodedError) as error:
                 operation()
@@ -329,7 +358,14 @@ def test_warehouse_contrast_matches_control_labels_containing_colons():
 
         history = store.history(
             "exp",
-            HistorySelector("metric", contrast="control:v1:treatment"),
+            HistorySelector(
+                metric_hash="metric",
+                estimator_id="t",
+                method_config_hash="config",
+                method_instance_id="instance",
+                scope_hash=Scope(view="run", grain="total").hash(),
+                contrast="control:v1:treatment",
+            ),
         )
         assert history.num_rows == 1
     finally:
