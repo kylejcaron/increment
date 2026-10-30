@@ -1,3 +1,12 @@
+layers = [
+  "artifacts",
+  "program",
+  "observational",
+  "designs",
+  "core",
+]
+layers_explicit_depends_on = true
+
 source_roots = ["."]
 root_module = "ignore"
 exact = true
@@ -6,21 +15,26 @@ forbid_circular_dependencies = true
 
 [[modules]]
 path = "increment._literals"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment._immutable"
+layer = "core"
 depends_on = ["increment._display"]
 
 [[modules]]
 path = "increment"
+layer = "core"
 depends_on = []
 [[modules]]
 path = "increment.errors"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment.store"
+layer = "core"
 depends_on = [
   "increment._canonical",
   "increment.errors",
@@ -30,59 +44,73 @@ depends_on = [
 ]
 [[modules]]
 path = "increment._multiplicity"
+layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.sequential_state"]
 
 [[modules]]
 path = "increment._finite_sample_refusals"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.compatibility"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.semantics"
+layer = "core"
 depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals"]
 
 [[modules]]
 path = "increment._canonical"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment._artifact_identity"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment._identity"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment._display"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment._unit_cycle"
+layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.semantics"]
 
 [[modules]]
 path = "increment._window"
+layer = "core"
 depends_on = ["increment.semantics", "increment.errors"]
 
 [[modules]]
 path = "increment._study"
+layer = "core"
 depends_on = ["increment.semantics", "increment.errors"]
 
 [[modules]]
 path = "increment._policy_alpha"
+layer = "core"
 depends_on = ["increment.compatibility"]
 
 [[modules]]
 path = "increment._source_operations"
+layer = "core"
 depends_on = ["increment.errors"]
 
 
 [[modules]]
 path = "increment._health"
+layer = "core"
 depends_on = [
   "increment._evidence_types",
   "increment.estimation",
@@ -91,22 +119,27 @@ depends_on = [
 ]
 [[modules]]
 path = "increment._plan_compatibility"
+layer = "core"
 depends_on = ["increment._literals", "increment.errors"]
 
 [[modules]]
 path = "increment._compatibility_inspector"
+layer = "core"
 depends_on = ["increment.compatibility", "increment.errors"]
 
 [[modules]]
 path = "increment.impute"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.results"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment.result_envelope"
+layer = "core"
 depends_on = [
   "increment.errors",
   "increment.estimation",
@@ -117,32 +150,40 @@ depends_on = [
 ]
 [[modules]]
 path = "increment._labels"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment._source_types"
+layer = "core"
 depends_on = ["increment._evidence_types", "increment.errors"]
 
 [[modules]]
 path = "increment._evidence_refusals"
+layer = "core"
 depends_on = ["increment._assignment_refusals", "increment._source_types", "increment._evidence_types", "increment.errors"]
 [[modules]]
 path = "increment._assignment_refusals"
+layer = "core"
 depends_on = ["increment.errors"]
 [[modules]]
 path = "increment._assignment_ledger_contract"
+layer = "core"
 depends_on = ["increment._assignment_refusals", "increment._identity"]
 [[modules]]
 path = "increment._frame_ledger"
+layer = "core"
 depends_on = ["increment._assignment_ledger_contract", "increment._assignment_refusals"]
 
 [[modules]]
 path = "increment._trigger_integrity"
+layer = "core"
 depends_on = ["increment.errors"]
 
 
 [[modules]]
 path = "increment._evidence_loaders"
+layer = "core"
 depends_on = [
   "increment._evidence_types",
   "increment._evidence_refusals",
@@ -152,14 +193,17 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimation.advisory"
+layer = "core"
 depends_on = ["increment._canonical", "increment._immutable"]
 
 [[modules]]
 path = "increment._interpretation"
+layer = "core"
 depends_on = ["increment.estimation"]
 
 [[modules]]
 path = "increment.estimation.decision_types"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment.errors", "increment.estimation._certified", "increment.estimation._sequential_likelihood",
@@ -171,14 +215,17 @@ depends_on = [
 # Numerical state and inference policy leaves must not depend on estimator dispatch.
 [[modules]]
 path = "increment.estimation._certified"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.estimation._sequential_likelihood"
+layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.estimation._certified"]
 
 [[modules]]
 path = "increment.estimation._sequential_inversion"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment.errors", "increment.estimation._certified", "increment._display",
@@ -187,6 +234,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimation.asymptotic_mean"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment.errors", "increment.estimation._certified",
@@ -195,6 +243,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimation.asymptotic_joint"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment.errors", "increment.estimation._sequential_likelihood",
@@ -203,6 +252,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimation.sequential_result"
+layer = "core"
 depends_on = [
   "increment.errors", "increment.estimation._certified",
   "increment.estimation._sequential_inversion", "increment.estimation._sequential_likelihood",
@@ -212,10 +262,12 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimation.sequential"
+layer = "core"
 depends_on = ["increment.errors", "increment.semantics"]
 
 [[modules]]
 path = "increment.sequential_state"
+layer = "core"
 depends_on = [
   "increment.errors", "increment.estimation._sequential_likelihood", "increment.semantics",
   "increment._immutable", "increment._day_axis_labels",
@@ -223,10 +275,12 @@ depends_on = [
 
 [[modules]]
 path = "increment._day_axis_labels"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.sequential_source"
+layer = "core"
 depends_on = [
   "increment._analysis_config",
   "increment.errors", "increment.estimation.asymptotic_mean", "increment.estimation.sequential",
@@ -236,12 +290,14 @@ depends_on = [
 
 [[modules]]
 path = "increment._metric_specs"
+layer = "core"
 depends_on = ["increment._finite_sample_refusals", "increment._literals", "increment.errors", "increment.estimation", "increment.semantics"]
 
 # Shared source and decision types live in leaf modules, keeping the core
 # decision/plan/source/request/config dependency graph acyclic.
 [[modules]]
 path = "increment.decision"
+layer = "core"
 depends_on = [
   "increment._literals", "increment._multiplicity",
   "increment._plan_compatibility", "increment._source_types", "increment._study",
@@ -253,6 +309,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.plan"
+layer = "core"
 depends_on = [
   "increment._literals", "increment._multiplicity",
   "increment._analysis_config", "increment._plan_compatibility",
@@ -261,6 +318,7 @@ depends_on = [
 ]
 [[modules]]
 path = "increment.decision_wire"
+layer = "core"
 depends_on = [
   "increment._canonical",
   "increment._literals", "increment._multiplicity",
@@ -273,10 +331,12 @@ depends_on = [
 
 [[modules]]
 path = "increment._source_identity"
+layer = "core"
 depends_on = ["increment._canonical"]
 
 [[modules]]
 path = "increment._cuped_evidence"
+layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._evidence_types", "increment._source_identity",
   "increment.errors", "increment.estimation",
@@ -285,6 +345,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.sources"
+layer = "core"
 depends_on = [
   "increment._canonical", "increment._cuped_evidence", "increment._evidence_refusals", "increment._evidence_types", "increment._immutable", "increment._source_identity",
   "increment.estimation.decision_types",
@@ -295,6 +356,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._readout_request"
+layer = "core"
 depends_on = [
   "increment._analysis_config",
   "increment._literals",
@@ -307,27 +369,33 @@ depends_on = [
 
 [[modules]]
 path = "increment._analysis_config"
+layer = "core"
 depends_on = ["increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.errors", "increment.sequential_state"]
 
 [[modules]]
 path = "increment._moment_plan"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment.estimation._score_design"
+layer = "core"
 depends_on = []
 
 [[modules]]
 path = "increment._bernoulli_moments"
+layer = "core"
 depends_on = []
 
 
 [[modules]]
 path = "increment._evidence_types"
+layer = "core"
 depends_on = ["increment._moment_plan", "increment.errors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation"
+layer = "core"
 depends_on = [
   "increment._finite_sample_refusals",
   "increment._literals", "increment._multiplicity",
@@ -350,27 +418,33 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimation.confounding"
+layer = "core"
 depends_on = ["increment.errors", "increment.estimation"]
 
 [[modules]]
 path = "increment._lift_options"
+layer = "core"
 depends_on = ["increment._analysis_config", "increment.estimation"]
 
 [[modules]]
 path = "increment._frame_moments"
+layer = "core"
 depends_on = ["increment._frame_panel", "increment._frame_validation", "increment._moment_plan", "increment._window", "increment.errors", "increment.semantics", "increment.sources"]
 
 
 [[modules]]
 path = "increment._frame_panel"
+layer = "core"
 depends_on = ["increment._day_axis_labels", "increment._frame_validation", "increment._window", "increment.errors", "increment.sources"]
 
 [[modules]]
 path = "increment._frame_validation"
+layer = "core"
 depends_on = ["increment._labels", "increment._metric_specs", "increment.errors", "increment.estimation", "increment.plan", "increment.semantics", "increment.sources"]
 
 [[modules]]
 path = "increment._frame_sequential"
+layer = "core"
 depends_on = [
   "increment._frame_moments", "increment._frame_panel",
   "increment.sequential_source", "increment.sequential_state",
@@ -378,6 +452,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.frame"
+layer = "core"
 depends_on = [
   "increment._evidence_types",
   "increment._source_types",
@@ -394,6 +469,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.summaries"
+layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._moment_plan", "increment._source_identity",
   "increment._bernoulli_moments", "increment.decision_wire", "increment.errors",
@@ -401,6 +477,7 @@ depends_on = [
 ]
 [[modules]]
 path = "increment.switchback"
+layer = "core"
 depends_on = [
   "increment._source_types", "increment._assignment_refusals", "increment._evidence_types",
   "increment._frame_validation", "increment._metric_specs", "increment._study",
@@ -410,6 +487,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.query"
+layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._cuped_evidence", "increment._evidence_types", "increment._immutable", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
   "increment._evidence_refusals",
@@ -426,6 +504,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.power"
+layer = "core"
 depends_on = [
   "increment.estimation",
   "increment.power.core", "increment.power.curve", "increment.power.pairwise", "increment.power.switchback", "increment.power.unit_cycle",
@@ -433,6 +512,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.power.core"
+layer = "core"
 depends_on = [
   "increment._finite_sample_refusals", "increment._literals", "increment.compatibility", "increment.decision", "increment.errors",
   "increment.estimation", "increment.estimation.sequential", "increment.semantics",
@@ -442,10 +522,12 @@ depends_on = [
 
 [[modules]]
 path = "increment.power.pairwise"
+layer = "core"
 depends_on = ["increment._finite_sample_refusals", "increment.compatibility", "increment.decision", "increment.errors", "increment.estimation", "increment.power._shared", "increment.power.core"]
 
 [[modules]]
 path = "increment.power.sequential"
+layer = "core"
 depends_on = [
   "increment.errors", "increment.estimation.asymptotic_mean", "increment.estimation.sequential",
   "increment.power._search", "increment.power._validation", "increment.sequential_state",
@@ -453,10 +535,12 @@ depends_on = [
 
 [[modules]]
 path = "increment.power._search"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.power.switchback"
+layer = "core"
 depends_on = [
   "increment.compatibility", "increment.errors", "increment.estimation", "increment.estimation.decision_types",
   "increment.power._noncentral_t", "increment.power._search", "increment.semantics",
@@ -464,10 +548,12 @@ depends_on = [
 
 [[modules]]
 path = "increment.power.curve"
+layer = "core"
 depends_on = ["increment._literals", "increment.decision", "increment.errors", "increment.estimation", "increment.power.core"]
 
 [[modules]]
 path = "increment.power.unit_cycle"
+layer = "core"
 depends_on = [
   "increment._unit_cycle", "increment.errors", "increment.estimation.decision_types",
   "increment.power._search", "increment.semantics",
@@ -475,26 +561,32 @@ depends_on = [
 
 [[modules]]
 path = "increment.power._binomial"
+layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.estimation"]
 
 [[modules]]
 path = "increment.power._validation"
+layer = "core"
 depends_on = ["increment.errors"]
 
 
 [[modules]]
 path = "increment.power._shared"
+layer = "core"
 depends_on = ["increment._finite_sample_refusals", "increment.errors", "increment.power._noncentral_t", "increment.power._validation", "increment.semantics"]
 [[modules]]
 path = "increment.power._noncentral_t"
+layer = "core"
 depends_on = ["increment._literals", "increment.estimation"]
 
 [[modules]]
 path = "increment.breakout.projection"
+layer = "core"
 depends_on = ["increment._canonical", "increment._literals", "increment.errors", "increment.estimation", "increment.estimation.sequential_result"]
 
 [[modules]]
 path = "increment.breakout.estimates"
+layer = "core"
 depends_on = [
   "increment._literals", "increment._moment_plan", "increment._canonical", "increment._immutable",
   "increment._display", "increment._analysis_config", "increment._evidence_types",
@@ -508,6 +600,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.breakout"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment.breakout.estimates", "increment.estimation", "increment.semantics", "increment.errors",
@@ -516,6 +609,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._whole_window"
+layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._day_axis", "increment._evidence_types", "increment._readout_request",
   "increment.breakout.estimates",
@@ -526,6 +620,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._breakout_readouts"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._evidence_types",
@@ -540,6 +635,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._sitewide"
+layer = "core"
 depends_on = [
   "increment._source_operations", "increment._source_types", "increment._whole_window", "increment.errors",
   "increment._evidence_refusals",
@@ -549,6 +645,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._planning_baseline"
+layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._evidence_types",
   "increment.errors",
@@ -559,6 +656,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._analysis_execution"
+layer = "core"
 depends_on = [
   "increment._literals", "increment._cuped_evidence",
   "increment.cate",
@@ -580,16 +678,19 @@ depends_on = [
 
 [[modules]]
 path = "increment.analysis"
+layer = "core"
 depends_on = [
   "increment._analysis_execution", "increment.builders",
 ]
 
 [[modules]]
 path = "increment._sequential_readouts"
+layer = "core"
 depends_on = ["increment.estimation", "increment.sequential_source", "increment.sequential_state", "increment._analysis_config"]
 
 [[modules]]
 path = "increment.readouts"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment._frame_panel",
@@ -611,6 +712,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._day_axis"
+layer = "core"
 depends_on = [
   "increment._frame_panel", "increment._immutable",
   "increment.kernel.contracts",
@@ -627,6 +729,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._evidence_dispatch"
+layer = "core"
 depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._readout_request", "increment.decision",
@@ -640,14 +743,17 @@ depends_on = [
 
 [[modules]]
 path = "increment.cate"
+layer = "core"
 depends_on = ["increment._evidence_refusals", "increment._evidence_types", "increment._identity", "increment._source_types", "increment.errors", "increment.estimation", "increment.readouts", "increment.sources"]
 
 [[modules]]
 path = "increment.absorption"
+layer = "core"
 depends_on = ["increment.estimation", "increment.errors"]
 
 [[modules]]
 path = "increment.tables"
+layer = "core"
 depends_on = [
   "increment._canonical",
   "increment.breakout.estimates", "increment.estimation", "increment.errors",
@@ -656,18 +762,22 @@ depends_on = [
 
 [[modules]]
 path = "increment.dashboard"
+layer = "core"
 depends_on = ["increment._canonical", "increment._interpretation", "increment._source_operations", "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.tables"]
 
 [[modules]]
 path = "increment.reporting"
+layer = "core"
 depends_on = ["increment._literals", "increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
 
 [[modules]]
 path = "increment.logged_policy"
+layer = "core"
 depends_on = ["increment._identity", "increment.compatibility", "increment.errors", "increment.estimation"]
 
 [[modules]]
 path = "increment.simulate"
+layer = "core"
 depends_on = [
   "increment.winsor",
   "increment.decision", "increment.power",
@@ -678,6 +788,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._evidence_scopes"
+layer = "core"
 depends_on = [
   "increment._evidence_loaders",
   "increment._evidence_types",
@@ -687,6 +798,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.evidence"
+layer = "core"
 depends_on = [
   "increment._evidence_refusals", "increment._evidence_types",
   "increment._source_types", "increment.readouts", "increment._frame_ledger",
@@ -838,14 +950,17 @@ expose = [
 
 [[modules]]
 path = "increment.winsor"
+layer = "core"
 depends_on = ["increment._winsor_errors", "increment._winsor_rank", "increment.errors"]
 
 [[modules]]
 path = "increment._winsor_errors"
+layer = "core"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment._winsor_rank"
+layer = "core"
 depends_on = ["increment._winsor_errors"]
 
 [[interfaces]]
@@ -862,6 +977,7 @@ expose = ["day_axis_time_basis", "day_axis_source_partitions"]
 
 [[modules]]
 path = "increment.declarations"
+layer = "core"
 depends_on = [
   "increment.errors",
   "increment.semantics",
@@ -873,26 +989,32 @@ depends_on = [
 
 [[modules]]
 path = "increment.estimators"
+layer = "core"
 depends_on = ["increment.estimators.registry"]
 
 [[modules]]
 path = "increment.estimators.registry"
+layer = "core"
 depends_on = ["increment.declarations", "increment._evidence_types", "increment._evidence_refusals", "increment.errors"]
 
 [[modules]]
 path = "increment.estimation._adjust.iptw"
+layer = "observational"
 depends_on = ["increment._literals", "increment.declarations", "increment.estimation"]
 
 [[modules]]
 path = "increment.estimation._adjust.aipw"
+layer = "observational"
 depends_on = ["increment._literals", "increment.declarations", "increment.estimation"]
 
 [[modules]]
 path = "increment.estimation._adjust.dml"
+layer = "observational"
 depends_on = ["increment._literals", "increment.declarations", "increment.errors", "increment.estimation"]
 
 [[modules]]
 path = "increment.kernel"
+layer = "core"
 depends_on = [
   "increment._canonical",
   "increment._evidence_refusals",
@@ -907,12 +1029,14 @@ depends_on = [
 
 [[modules]]
 path = "increment.kernel.context"
+layer = "core"
 depends_on = [
   "increment._evidence_types", "increment._source_types", "increment.kernel.contracts",
 ]
 
 [[modules]]
 path = "increment._runnability"
+layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._day_axis",
   "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
@@ -924,6 +1048,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._analysis_kernel_adapter"
+layer = "core"
 depends_on = [
   "increment._source_types",
   "increment.decision",
@@ -935,6 +1060,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.builders"
+layer = "core"
 depends_on = [
   "increment._analysis_kernel_adapter",
   "increment._analysis_execution",
@@ -946,6 +1072,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.kernel.contracts"
+layer = "core"
 depends_on = [
   "increment._canonical",
   "increment._evidence_types",
@@ -956,6 +1083,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.decide"
+layer = "core"
 depends_on = [
   "increment.declarations",
   "increment.kernel.contracts",
@@ -967,6 +1095,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.decide.family"
+layer = "core"
 depends_on = [
   "increment.estimation",
   "increment.estimation.decision_types",
@@ -975,6 +1104,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._run"
+layer = "core"
 depends_on = [
   "increment._interpretation",
   "increment.errors",
@@ -984,3 +1114,4 @@ depends_on = [
   "increment.store",
   "increment.decide",
 ]
+

@@ -1,0 +1,71 @@
+core = [
+  "increment",
+  "increment._*",
+  "increment.semantics*",
+  "increment.estimation*",
+  "increment.estimators*",
+  "increment.declarations*",
+  "increment.kernel*",
+  "increment.decision*",
+  "increment.plan*",
+  "increment.power*",
+  "increment.results",
+  "increment.result_envelope",
+  "increment.decide*",
+  "increment._evidence*",
+  "increment._source*",
+  "increment.evidence*",
+  "increment.query*",
+  "increment.sources",
+  "increment.frame",
+  "increment.readouts*",
+  "increment.breakout*",
+  "increment.builders",
+  "increment.analysis",
+  "increment._analysis*",
+  "increment.summaries",
+  "increment.switchback",
+  "increment.winsor*",
+  "increment.errors",
+  "increment.compatibility",
+  "increment.store*",
+  "increment.sequential*",
+  "increment.metric*",
+  "increment.absorption",
+  "increment.tables",
+  "increment.dashboard",
+  "increment.reporting",
+  "increment.logged_policy",
+  "increment.rational*",
+  "increment.impute",
+  "increment.simulate*",
+  "increment._day_axis*",
+  "increment._trigger*",
+  "increment._assignment*",
+  "increment._frame*",
+  "increment._whole_window",
+  "increment._breakout*",
+  "increment._sitewide",
+  "increment._planning*",
+  "increment._sequential*",
+  "increment.cate",
+]
+
+designs = ["test_extensions.designs"]
+
+
+observational = [
+  "test_extensions.observational",
+  "increment.estimation._adjust*",
+  "increment.estimation.observational*",
+  "increment.estimation.targeting*",
+  "increment.targeting*",
+]
+
+
+
+program = [
+  "increment.program*",
+]
+
+artifacts = []
