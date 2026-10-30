@@ -3,7 +3,8 @@
 from fractions import Fraction
 from typing import NoReturn
 
-from increment import (
+from increment.estimation.sequential_runtime import _evaluate_sequential_diagnostic
+from increment.estimators import (
     AlwaysValid,
     JointReveal,
     PredictivePrior,
@@ -13,10 +14,9 @@ from increment import (
     SequentialRegistration,
     capture_sequential_snapshot,
 )
-from increment import (
+from increment.estimators import (
     estimate_sequential as _public_estimate_sequential,
 )
-from increment.estimation.sequential_runtime import _evaluate_sequential_diagnostic
 from increment.semantics.models import InferenceSpec, MeanMetric
 from increment.sequential_state import _capture_sequential_diagnostic_snapshot
 

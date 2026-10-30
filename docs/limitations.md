@@ -1901,7 +1901,7 @@ finite-cluster validity.
     With an `Observational` design, `validate_cate`, `targeting_rule`, and `select_targeting_rule` use doubly-robust scores; `Randomized` keeps IPW scores.
     Observational GATES and the holdout ATE summarize score means, not raw-outcome Welch contrasts; identification still requires conditional ignorability and overlap.
     When holdout trimming removes units, `CateValidation.population == "overlap_subpopulation"`: AUTOC, Qini, and GATES describe that retained population, not the full one.
-    [`estimate_cate`][increment.estimate_cate] remains randomized-only (`cate.identification.randomized_only`); its per-unit point predictions are not doubly robust.
+    [`estimate_cate`][increment.estimators.estimate_cate] remains randomized-only (`cate.identification.randomized_only`); its per-unit point predictions are not doubly robust.
 
     Declared clusters retain unit-level scores and outcomes. `cluster_weight="member_count"`
     weights members equally; `"equal"` gives each retained cluster total weight one and
@@ -1913,7 +1913,7 @@ finite-cluster validity.
     Clustered DR nuisance models are fitted once on the training half, with frozen
     heldout predictions. Ranks, empirical GATES/CLAN cutoffs, and policy values are
     recomputed in a whole-cluster bootstrap (default
-    [`ClusterBootstrap(seed=0, repetitions=999)`][increment.ClusterBootstrap]).
+    [`ClusterBootstrap(seed=0, repetitions=999)`][increment.estimators.ClusterBootstrap]).
     Randomized pure-arm clusters are resampled within
     arms; pooled DR and mixed-arm clusters have no arm stratum. Repeated cluster
     draws are separate sampled instances. Weighted empirical cutoffs keep tied scores

@@ -49,7 +49,7 @@ class TestGaussianScorePlanning:
 def test_unchanged_prefix_advances_reveal_cursor():
     from datetime import date
 
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from tests.sequential_cases import records, registration
 
     reg = registration()
@@ -80,7 +80,7 @@ def test_unchanged_prefix_advances_reveal_cursor():
 def test_reveal_cursor_refuses_mixed_datetime_timezone_awareness():
     from datetime import UTC, datetime
 
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from tests.sequential_cases import records, registration
 
     reg = registration()
@@ -110,7 +110,7 @@ def test_reveal_cursor_refuses_mixed_datetime_timezone_awareness():
 def test_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix():
     from datetime import date
 
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from tests.sequential_cases import records, registration
 
     reg = registration()
@@ -146,7 +146,7 @@ def test_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix():
 def test_string_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix(
     previous_cursor, requested_cursor
 ):
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from tests.sequential_cases import records, registration
 
     reg = registration()
@@ -178,7 +178,7 @@ def test_string_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix(
 def test_unchanged_prefix_without_cursor_preserves_asof_label(operation):
     from datetime import date
 
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from increment.sequential_source import link_snapshot
     from tests.sequential_cases import records, registration
 
@@ -217,7 +217,7 @@ def test_unchanged_prefix_without_cursor_preserves_asof_label(operation):
 def test_bernoulli_negative_null_ratio_refused():
     from fractions import Fraction
 
-    from increment import SequentialCell, SequentialRegistration
+    from increment.estimators import SequentialCell, SequentialRegistration
     from tests.sequential_cases import registration
 
     base = registration()
@@ -237,7 +237,7 @@ def test_bernoulli_negative_null_ratio_refused():
 
 
 def _bernoulli_checkpoint(control=(0, 1, 0, 1, 0, 0, 1, 0), treatment=(1, 1, 0, 1, 1, 0, 1, 1)):
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
     from tests.sequential_cases import (
         capture,
         estimate_sequential,
@@ -252,7 +252,7 @@ def _bernoulli_checkpoint(control=(0, 1, 0, 1, 0, 0, 1, 0), treatment=(1, 1, 0, 
 
 
 def _scalar_mean_checkpoint():
-    from increment import AsymptoticMean, estimate_sequential
+    from increment.estimators import AsymptoticMean, estimate_sequential
     from tests.asymptotic_cases import mean_capture, mean_records, mean_registration
 
     reg = mean_registration()
@@ -335,7 +335,7 @@ class TestCheckpointMemoKey:
 
 
 def _beta(a, b):
-    from increment import PredictivePrior
+    from increment.estimators import PredictivePrior
 
     return PredictivePrior(kind="beta", a=a, b=b).model_dump()
 

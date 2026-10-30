@@ -431,8 +431,8 @@ class TestSequentialDeclaresTheBoundaryReference:
 
 
 def test_switchback_study_envelope_refuses_an_allocation_with_two_treatment_arms():
-    from increment import SwitchbackStudyEnvelope
     from increment.errors import InvalidRequestError
+    from increment.estimators import SwitchbackStudyEnvelope
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,

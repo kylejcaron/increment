@@ -12,7 +12,8 @@ For trigger-declared experiments, breakout output includes assigned and triggere
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, MetricSpec, segment_heterogeneity, segment_rollout_recommendation
+from increment import Analysis, MetricSpec
+from increment.estimators import segment_heterogeneity, segment_rollout_recommendation
 
 rng = np.random.default_rng(21)
 n = 4000

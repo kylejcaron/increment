@@ -16,7 +16,8 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence, from_definitions, run
+from increment import Analysis, from_definitions, run
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import (
     CapabilityError,
     DefinitionError,
@@ -186,7 +187,7 @@ def test_kernel_run_preserves_triggered_population_identity(tmp_path):
     try:
         result = run(experiment, resolver, analysis_options={"population": "triggered"})
     finally:
-        resolver._analysis.close()
+        cast(Any, resolver)._analysis.close()
 
     assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
 
@@ -1234,8 +1235,8 @@ def test_no_trigger_declared_leaves_every_row_assigned(tmp_path):
 
 
 def _assert_population_scoped_consumers(rows):
-    from increment import segment_heterogeneity, segment_rollout_recommendation
     from increment.breakout.estimates import BreakoutEstimates
+    from increment.estimators import segment_heterogeneity, segment_rollout_recommendation
 
     by_population = {
         population: [row for row in rows if row.analysis_population == population]

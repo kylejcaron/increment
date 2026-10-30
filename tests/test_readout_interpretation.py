@@ -30,9 +30,9 @@ def test_low_reliability_interval_is_qualified_in_shared_interpretation():
 
 
 def test_sequential_breakout_rejection_overrides_low_reliability_suppression():
-    from increment import AsymptoticMean, SequentialCell, estimate_sequential
     from increment._interpretation import render_effect_interpretation
     from increment.breakout.estimates import BreakoutEstimate
+    from increment.estimators import AsymptoticMean, SequentialCell, estimate_sequential
     from tests.asymptotic_cases import mean_capture, mean_records, mean_registration
 
     registration = mean_registration(

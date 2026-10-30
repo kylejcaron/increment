@@ -65,8 +65,8 @@ class TestEValueEvidenceCertified:
     def test_changed_log_cannot_relabel_actual_likelihood(self, bad_log):
         from dataclasses import replace
 
-        from increment import AlwaysValid, estimate_sequential
         from increment.errors import CapabilityError
+        from increment.estimators import AlwaysValid, estimate_sequential
         from tests.sequential_cases import (
             capture,
             records,
@@ -90,8 +90,8 @@ class TestEValueEvidenceCertified:
 
     @pytest.mark.slow
     def test_actual_evidence_requires_its_verified_source_prefix(self):
-        from increment import AlwaysValid, estimate_sequential
         from increment.errors import CapabilityError
+        from increment.estimators import AlwaysValid, estimate_sequential
         from tests.sequential_cases import (
             capture,
             records,

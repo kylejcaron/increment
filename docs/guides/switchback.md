@@ -22,10 +22,9 @@ step** cell. Pass the column names for `unit`, `cycle`, `period`, `step`, and
 ```python
 # The frame has columns: store_id, cycle, period, step, arm, orders.
 # `panel` is an eager pandas, polars, or pyarrow frame prepared by the caller.
-from increment import (
-    Analysis,
+from increment import Analysis, Randomized
+from increment.estimators import (
     IndependentBernoulliOrder,
-    Randomized,
     SharedScheduleOrder,
     SwitchbackAssignment,
     SwitchbackWindow,
@@ -231,9 +230,8 @@ import math
 
 import pandas as pd
 
-from increment import (
-    Analysis,
-    Randomized,
+from increment import Analysis, Randomized
+from increment.estimators import (
     SharedScheduleOrder,
     SwitchbackAssignment,
     SwitchbackWindow,

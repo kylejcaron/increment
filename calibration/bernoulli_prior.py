@@ -92,7 +92,7 @@ def cell_name(cell: dict) -> str:
 
 
 def registration(declared_rate: str, weight: int | None):
-    from increment import (
+    from increment.estimators import (
         JointReveal,
         PredictivePrior,
         SequentialCell,
@@ -157,13 +157,13 @@ def _records(rng, look: int, batch: int, control_rate: float, treatment_rate: fl
 def run_cell(cell: dict) -> dict:
     import numpy as np
 
-    from increment import AlwaysValid, capture_sequential_snapshot, estimate_sequential
     from increment.estimation._certified import log_interval
     from increment.estimation.sequential_result import (
         SequentialCheckpoint,
         checkpoint_certificate,
         clear_checkpoint_memos,
     )
+    from increment.estimators import AlwaysValid, capture_sequential_snapshot, estimate_sequential
 
     reg = registration(cell["declared_rate"], cell["weight"])
     policy = AlwaysValid(registration=reg)

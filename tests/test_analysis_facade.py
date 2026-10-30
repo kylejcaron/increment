@@ -13,7 +13,7 @@ from uuid import uuid4
 import ibis
 import pytest
 
-from increment import Analysis, IdentificationError, Method
+from increment import Analysis, Method
 from increment.breakout.estimates import (
     BreakoutEstimates,
     DailyLiftEstimates,
@@ -28,6 +28,7 @@ from increment.errors import (
 )
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.results import LiftEstimate
+from increment.estimators import IdentificationError
 from increment.frame import MetricSpec
 from increment.query.artifact_contract import ArtifactContractError
 from increment.readouts import _run as run_readout
@@ -1816,7 +1817,7 @@ def test_analysis_run_native_routed_refuses_call_time_epistemic_policy_kwargs(
     kwarg at all), so e.g. `run(alpha=0.30)` silently kept `level=0.9`
     and `run(margins={...})` silently left `null_lift=0.0`. Each must
     now raise TypeError naming itself instead of no-oping."""
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
 
     a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     baseline = _lift_rows(a.run(decision_method=Method(name="unadjusted")))

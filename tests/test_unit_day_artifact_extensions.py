@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 
-from increment import SourceSnapshotEvidence
+from increment.artifacts import SourceSnapshotEvidence
 from increment.evidence import EvidenceCapabilities
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import (
@@ -1433,7 +1433,8 @@ def test_clustered_artifact_publishes_cluster_grain_randomization_counts(tmp_pat
     grain='cluster'. Publishing unit counts there inflates cluster-robust n."""
     import ibis
 
-    from increment import Analysis, SourceSnapshotEvidence
+    from increment import Analysis
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
     from increment.query.source import open_artifact

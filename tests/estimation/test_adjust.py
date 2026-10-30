@@ -12,7 +12,7 @@ import pyarrow as pa
 import pytest
 from scipy.special import expit
 
-from increment import Analysis, IdentificationError
+from increment import Analysis
 from increment.errors import (
     CapabilityError,
     IncrementRuntimeWarning,
@@ -26,6 +26,7 @@ from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutco
 from increment.estimation.adjust import estimate_ate
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
+from increment.estimators import IdentificationError
 from increment.evidence import (
     ComplianceRequest,
     ComplianceSeriesRequest,

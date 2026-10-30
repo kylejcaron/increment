@@ -1,8 +1,8 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from increment import ParallelStudyEnvelope, SwitchbackStudyEnvelope
 from increment.errors import InvalidRequestError
+from increment.estimators import ParallelStudyEnvelope, SwitchbackStudyEnvelope
 from increment.semantics.assignment import (
     Assignment,
     IndependentBernoulliOrder,

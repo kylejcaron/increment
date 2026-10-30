@@ -61,7 +61,7 @@ def test_wire_group_sequential_payload_refuses_with_the_invalid_inference_code()
 
 
 def test_registration_payload_carrying_finite_looks_refuses_as_legacy():
-    from increment import SequentialRegistration
+    from increment.estimators import SequentialRegistration
     from tests.sequential_cases import registration
 
     payload = {**registration().model_dump(), "finite_looks": [200], "cumulative_spending": [F(1)]}

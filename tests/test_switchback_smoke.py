@@ -6,15 +6,15 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import (
-    Analysis,
+from increment import Analysis
+from increment.errors import InvalidRequestError
+from increment.estimation.contrast_results import ContrastResult, ContrastResults
+from increment.estimators import (
     IndependentBernoulliOrder,
     SharedScheduleOrder,
     SwitchbackAssignment,
     SwitchbackWindow,
 )
-from increment.errors import InvalidRequestError
-from increment.estimation.contrast_results import ContrastResult, ContrastResults
 from increment.semantics.design import Randomized
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.tables import contrast_results_to_readout

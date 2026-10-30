@@ -9,7 +9,8 @@ from pathlib import Path
 import ibis
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.dashboard import (
     DashboardConfig,
     load_explore,

@@ -1400,7 +1400,7 @@ def test_always_valid_margin_bearing_secondary_discovery_matches_stat_sig():
     )
     from fractions import Fraction
 
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
 
     metric_specs = [MetricSpec(name="m_a", type="conversion", preferred_direction="increase")]
     plan = gaussian_plan(
@@ -1834,7 +1834,7 @@ def _p_value_from_estimate(lift) -> float:
 
 @pytest.mark.slow
 def test_breakout_av_plan_inherited_no_kwarg():
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
 
     specs = [MetricSpec(name=name, type="conversion") for name in ("m_a", "m_b")]
     cells = tuple(
@@ -2001,7 +2001,7 @@ def test_registered_sequential_breakout_tests_a_plan_bound_margin_against_its_re
     margin's implied tail instead of being refused."""
     from fractions import Fraction
 
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
 
     specs = [MetricSpec(name="m_a", type="conversion", preferred_direction="increase")]
     cells = tuple(
@@ -2582,7 +2582,7 @@ def test_directional_secondary_fcr_dispatches_on_returned_inference(kind, altern
     )
     from fractions import Fraction
 
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
     from tests.test_sequential_public_sources import gaussian_plan
 
     plan = AnalysisPlan(alternative=alternative)

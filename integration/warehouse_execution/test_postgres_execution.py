@@ -12,7 +12,8 @@ from uuid import uuid4
 
 import pytest
 
-from increment import Analysis, MetricTrends
+from increment import Analysis
+from increment.estimators import MetricTrends
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import Definitions
 from integration.warehouse_execution import _suite

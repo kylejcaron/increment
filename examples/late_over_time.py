@@ -16,14 +16,16 @@ def _():
         Encouragement,
         ExclusionRestriction,
         InferenceSpec,
-        JointReveal,
         MetricSpec,
+        UptakeSpec,
+    )
+    from increment.estimators import (
+        JointReveal,
         PredictivePrior,
         SequentialCell,
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
-        UptakeSpec,
         sequential_definition_id,
     )
     from increment.frame import synthesise_metric

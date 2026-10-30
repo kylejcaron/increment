@@ -161,7 +161,8 @@ def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
 
 
 def test_dropped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path):
-    from increment import IncrementWarning, MetricSpec
+    from increment import MetricSpec
+    from increment.estimators import IncrementWarning
 
     frame = pd.DataFrame(
         {
@@ -413,7 +414,7 @@ def test_boolean_design_allocation_is_frozen_and_collisions_are_coded():
 
 
 def test_public_constructor_refuses_old_boolean_registration_with_replay_route():
-    from increment import SequentialRegistration
+    from increment.estimators import SequentialRegistration
     from increment.frame import MetricSpec, synthesise_metric
     from increment.semantics.models import AnalysisPlan, InferenceSpec
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id

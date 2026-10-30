@@ -14,7 +14,8 @@ def _():
     import numpy as np
     import pyarrow as pa
 
-    from increment import Analysis, SourceSnapshotEvidence
+    from increment import Analysis
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
 
     return (

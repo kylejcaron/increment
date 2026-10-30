@@ -1381,7 +1381,7 @@ class TestOneSidedInferAte:
 def test_always_valid_one_sided_minimum_alpha_retains_exact_bound():
     from fractions import Fraction
 
-    from increment import SequentialCell, estimate_sequential
+    from increment.estimators import SequentialCell, estimate_sequential
     from tests.sequential_cases import capture, records
 
     tiny = math.nextafter(0.0, 1.0)

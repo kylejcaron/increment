@@ -16,7 +16,8 @@ import warnings
 import ibis
 import pytest
 
-from increment import Analysis, MetricTrends
+from increment import Analysis
+from increment.estimators import MetricTrends
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis_like

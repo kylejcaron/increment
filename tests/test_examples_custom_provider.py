@@ -7,8 +7,9 @@ from typing import cast
 import pytest
 from pydantic import TypeAdapter
 
-from increment import CapabilityError, Metric
+from increment import Metric
 from increment.estimation.engine import estimate_lift
+from increment.estimators import CapabilityError
 from increment.evidence import (
     DayAxisRequest,
     EvidenceProvider,

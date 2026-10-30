@@ -2765,7 +2765,8 @@ def test_mixed_readout_emits_winsor_and_adjusted_other_metric(other_adjustment):
 def test_mixed_native_readout_pins_selected_metrics_before_source_mutation(population):
     """A readout taken through a snapshot pinned before an upstream mutation
     reports the pinned numbers; the mutation only shows up on a fresh read."""
-    from increment import SourceSnapshotEvidence, readouts
+    from increment import readouts
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.semantics.models import AnalysisPlan, Winsorization
     from tests.analysis_factory import _native_source, make_analysis
     from tests.test_sequential_public_sources import _native_fixture

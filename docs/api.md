@@ -10,7 +10,7 @@ are in `increment.power`.
     options:
       inherited_members: true
 
-::: increment.MetricTrends
+::: increment.estimators.MetricTrends
 
 ::: increment.Definitions
 
@@ -31,6 +31,10 @@ The policy covers:
 
 - documented workflow and configuration imports from `increment`;
 - documented result types in `increment.results` and solvers in `increment.power`;
+- stable artifact, digest, estimator, and evidence exports from
+  `increment.artifacts`, `increment.digest`, `increment.estimators`, and
+  `increment.evidence`. Existing family namespaces such as `increment.power`
+  remain available;
 - result fields and schemas, including row sets, null reasons, and interval
   reference/guarantee labels;
 - stable refusal codes and named context fields;
@@ -45,10 +49,18 @@ change without notice.
   DuckDB, and any pandas/Polars versions) when you need to reproduce a result.
 - Breaking changes may occur between 0.x prereleases. Each is listed in the
   release notes (the `Breaking changes` section, from pull requests labelled
-  `breaking`) with the affected paths and a migration route. There is no
-  1.0 stability promise or deprecation window.
+  `breaking`) with the affected paths and a migration route.
+- 1.0 stability is not promised. Alpha API cutovers remove obsolete paths
+  directly and document their replacements without deprecation warnings.
 - A bug fix may change a previously incorrect numerical answer. Release notes
   describe the correction; compatibility does not preserve wrong values.
+
+- Release note (breaking API cutover): specialist names are no longer exported
+  from the package root. Import artifact, digest, estimator, and evidence names
+  from `increment.artifacts`, `increment.digest`, `increment.estimators`, and
+  `increment.evidence` respectively. Source-loading estimation facades remain
+  available without deprecation warnings; data-only estimation kernels do not
+  load sources.
 - Release note (bug fix): portable cell summaries follow the row's requested
   effect scale and retain an available relative lift when an additive sidecar
   cannot be projected. A different-scale fallback is labeled explicitly.
@@ -314,7 +326,7 @@ construction details and operation limits.
     `Experiment.observation_horizon_day`,
     `increment.query.artifact_contract.open_trusted_manifest_snapshot`,
     `WarehouseArtifactStore.abandon_generation(artifact_id, generation_id)`,
-    and the `roles=` argument of `increment.impute.pooled_mean`. The abandon
+    and the `roles=` argument of `increment.estimators.impute.pooled_mean`. The abandon
     call durably hides a generation even if no manifest row exists and is safe
     to repeat. `pooled_mean` without `roles=` still fills but warns with
     `impute.pooled_mean_role_undeclared`.
@@ -390,7 +402,7 @@ string-keyed tables. Other key types are refused at dump time with
 for typed keys. Built-in `TARGET_POLICY_V1` uses integer keys and is Python-only.
 
 ```python
-from increment import TabularPolicy
+from increment.estimators import TabularPolicy
 
 policy = TabularPolicy(
     policy_id="p",
@@ -491,16 +503,16 @@ Pass added metrics in `metrics=` to pin them in `Analysis.dashboard_snapshot`.
 
 ::: increment.Method
 
-::: increment.Normal
+::: increment.estimators.Normal
 
 ## Dataframe entry points
 
 ::: increment.MetricSpec
 
 
-::: increment.to_frame
+::: increment.estimators.to_frame
 
-::: increment.impute
+::: increment.estimators.impute
 
 ## Designs
 
@@ -520,23 +532,23 @@ Pass added metrics in `metrics=` to pin them in `Analysis.dashboard_snapshot`.
 
 ## Assignment and study contracts
 
-::: increment.Assignment
+::: increment.estimators.Assignment
 
-::: increment.ParallelAssignment
+::: increment.estimators.ParallelAssignment
 
-::: increment.IndependentBernoulliOrder
+::: increment.estimators.IndependentBernoulliOrder
 
-::: increment.SharedScheduleOrder
+::: increment.estimators.SharedScheduleOrder
 
-::: increment.SwitchbackWindow
+::: increment.estimators.SwitchbackWindow
 
-::: increment.SwitchbackAssignment
+::: increment.estimators.SwitchbackAssignment
 
-::: increment.ParallelStudyEnvelope
+::: increment.estimators.ParallelStudyEnvelope
 
-::: increment.SwitchbackStudyEnvelope
+::: increment.estimators.SwitchbackStudyEnvelope
 
-::: increment.StudyEnvelope
+::: increment.estimators.StudyEnvelope
 
 The artifact API controls how immutable unit-day data is published and adopted.
 The store authorizes namespaces; callers provide trusted context and pinned
@@ -569,19 +581,19 @@ and digest helpers.
 These are Pydantic models and tagged unions importable from `increment`; see
 `increment.semantics.artifact` for full field detail.
 
-::: increment.RelationLocator
+::: increment.artifacts.RelationLocator
 
-::: increment.RelationRole
+::: increment.artifacts.RelationRole
 
-::: increment.BaseRelations
+::: increment.artifacts.BaseRelations
 
-::: increment.Freshness
+::: increment.artifacts.Freshness
 
-::: increment.SimpleMetricMeasure
+::: increment.artifacts.SimpleMetricMeasure
 
-::: increment.RatioMetricMeasure
+::: increment.artifacts.RatioMetricMeasure
 
-::: increment.MetricMeasure
+::: increment.artifacts.MetricMeasure
 
 ### Artifact extensions
 
@@ -592,33 +604,33 @@ and outcomes, uptake, and site-volume extensions.
 
 Requests validate extension definitions before publication.
 
-::: increment.ExtensionRequestBase
+::: increment.artifacts.ExtensionRequestBase
 
-::: increment.BreakoutDimensionRequest
+::: increment.artifacts.BreakoutDimensionRequest
 
-::: increment.FactorDimensionRequest
+::: increment.artifacts.FactorDimensionRequest
 
-::: increment.ClusterIdentityRequest
+::: increment.artifacts.ClusterIdentityRequest
 
-::: increment.CupedPreperiodRequest
+::: increment.artifacts.CupedPreperiodRequest
 
-::: increment.AssignmentCountsRequest
+::: increment.artifacts.AssignmentCountsRequest
 
-::: increment.TriggerPopulationRequest
-::: increment.TriggerMeasureStatsRequest
+::: increment.artifacts.TriggerPopulationRequest
+::: increment.artifacts.TriggerMeasureStatsRequest
 
-::: increment.EncouragementUptakeRequest
+::: increment.artifacts.EncouragementUptakeRequest
 
-::: increment.SiteVolumeRequest
+::: increment.artifacts.SiteVolumeRequest
 
-::: increment.UnitCovariateRequest
+::: increment.artifacts.UnitCovariateRequest
 
-::: increment.UnitCovariateLevelRequest
+::: increment.artifacts.UnitCovariateLevelRequest
 
 ### Artifact publication and storage
 
 `Analysis.from_definitions(..., source_snapshot_evidence=...)` accepts
-`increment.SourceSnapshotEvidence` only when the source provides a timezone-aware
+`increment.artifacts.SourceSnapshotEvidence` only when the source provides a timezone-aware
 event-time cutoff and, optionally, certified per-feed completeness times.
 Without a cutoff, Increment does not invent one: assigned-only operations remain
 available, but triggered membership, triggered outcomes, and trigger-evidence
@@ -628,21 +640,21 @@ experiment end do not prove completeness. Triggered artifact outcome requests
 select one `trigger_measure_stats` item per `(trigger, metric)`, bound to the
 version-3 membership digest and the same pinned cutoff.
 
-::: increment.SourceSnapshotEvidence
+::: increment.artifacts.SourceSnapshotEvidence
 
 
 Publication connects validated context to immutable snapshots in the
 authorized artifact store.
 
-::: increment.ArtifactPublication
+::: increment.artifacts.ArtifactPublication
 
-::: increment.ArtifactSnapshot
+::: increment.artifacts.ArtifactSnapshot
 
-::: increment.ArtifactStore
+::: increment.artifacts.ArtifactStore
 
-::: increment.compile_unit_day_artifact_context
+::: increment.artifacts.compile_unit_day_artifact_context
 
-::: increment.unit_day_artifact_extension_catalog
+::: increment.artifacts.unit_day_artifact_extension_catalog
 
 ### Digests and hashing
 
@@ -651,35 +663,35 @@ across publication and requests.
 
 ::: increment.query.artifact_digest.ArtifactDigestError
 
-::: increment.DigestType
+::: increment.digest.DigestType
 
-::: increment.FieldSpec
+::: increment.digest.FieldSpec
 
-::: increment.RelationDigests
+::: increment.digest.RelationDigests
 
-::: increment.canonical_schema_bytes
+::: increment.digest.canonical_schema_bytes
 
-::: increment.canonical_row_bytes
+::: increment.digest.canonical_row_bytes
 
-::: increment.canonical_rows_bytes
+::: increment.digest.canonical_rows_bytes
 
-::: increment.canonical_json_bytes
+::: increment.digest.canonical_json_bytes
 
-::: increment.schema_sha256
+::: increment.digest.schema_sha256
 
-::: increment.content_sha256
+::: increment.digest.content_sha256
 
-::: increment.digest_relation
+::: increment.digest.digest_relation
 
-::: increment.manifest_sha256
+::: increment.digest.manifest_sha256
 
-::: increment.context_sha256
+::: increment.digest.context_sha256
 
-::: increment.request_sha256
+::: increment.digest.request_sha256
 
-::: increment.extension_definition_sha256
+::: increment.digest.extension_definition_sha256
 
-::: increment.extension_source_provenance_sha256
+::: increment.digest.extension_source_provenance_sha256
 
 ## Logged-policy evaluation
 
@@ -693,13 +705,13 @@ record-level `logging_distributions=`, or frame
 same for either route.
 
 
-::: increment.estimate_policy_contrast
+::: increment.estimators.estimate_policy_contrast
 
-::: increment.LoggedTrace
+::: increment.estimators.LoggedTrace
 
-::: increment.PolicyRegistry
+::: increment.estimators.PolicyRegistry
 
-::: increment.TabularPolicy
+::: increment.estimators.TabularPolicy
 
 ::: increment.results.PolicyValueContrast
 
@@ -737,43 +749,43 @@ See [ordinary continuous monitoring](guides/sequential-inference.md#ordinary-con
 for assumptions, finalization, and the qualified asymptotic guarantee.
 
 
-::: increment.AlwaysValid
+::: increment.estimators.AlwaysValid
 
-::: increment.AsymptoticMean
+::: increment.estimators.AsymptoticMean
 
-::: increment.ScalarMeanModel
+::: increment.estimators.ScalarMeanModel
 
-::: increment.AsymptoticSequentialEvidence
+::: increment.estimators.AsymptoticSequentialEvidence
 
-::: increment.AsymptoticSequentialResult
+::: increment.estimators.AsymptoticSequentialResult
 
-::: increment.SequentialRegistration
+::: increment.estimators.SequentialRegistration
 
-::: increment.PredeclaredAdjustment
+::: increment.estimators.PredeclaredAdjustment
 
-::: increment.fit_predeclared_adjustment
+::: increment.estimators.fit_predeclared_adjustment
 
-::: increment.SequentialModel
+::: increment.estimators.SequentialModel
 
-::: increment.SequentialCell
+::: increment.estimators.SequentialCell
 
-::: increment.SequentialCompliancePolicy
+::: increment.estimators.SequentialCompliancePolicy
 
-::: increment.SequentialSnapshot
+::: increment.estimators.SequentialSnapshot
 
-::: increment.snapshot_from_json
+::: increment.estimators.snapshot_from_json
 
-::: increment.capture_sequential_snapshot
+::: increment.estimators.capture_sequential_snapshot
 
-::: increment.declare_sequential_freeze
+::: increment.estimators.declare_sequential_freeze
 
-::: increment.estimate_sequential
+::: increment.estimators.estimate_sequential
 
-::: increment.sequential_definition_id
+::: increment.estimators.sequential_definition_id
 
-::: increment.PredictivePrior
+::: increment.estimators.PredictivePrior
 
-::: increment.JointReveal
+::: increment.estimators.JointReveal
 
 ## Power planning
 
@@ -828,47 +840,47 @@ different approximations and limits.
 
 ::: increment.estimation.arm_contract.ArmPlanningProcedure
 
-::: increment.SummaryStats
+::: increment.estimators.SummaryStats
 
-::: increment.Baseline
+::: increment.estimators.Baseline
 
-::: increment.SwitchbackBaseline
+::: increment.estimators.SwitchbackBaseline
 
-::: increment.ProspectiveAssumptionProvenance
+::: increment.estimators.ProspectiveAssumptionProvenance
 
-::: increment.UnitCycleReference
+::: increment.estimators.UnitCycleReference
 
-::: increment.UnitCycleTApproximation
+::: increment.estimators.UnitCycleTApproximation
 
-::: increment.UnitCycleVarianceEnvelope
+::: increment.estimators.UnitCycleVarianceEnvelope
 
-::: increment.PowerDesign
+::: increment.estimators.PowerDesign
 
-::: increment.required_sample_size
+::: increment.estimators.required_sample_size
 
-::: increment.achieved_power
+::: increment.estimators.achieved_power
 
-::: increment.minimum_detectable_effect
+::: increment.estimators.minimum_detectable_effect
 
-::: increment.power_curve
+::: increment.estimators.power_curve
 
-::: increment.switchback_required_blocks_or_units
+::: increment.estimators.switchback_required_blocks_or_units
 
-::: increment.switchback_achieved_power
+::: increment.estimators.switchback_achieved_power
 
-::: increment.switchback_minimum_detectable_effect
+::: increment.estimators.switchback_minimum_detectable_effect
 
-::: increment.unit_cycle_power_lower_bound
+::: increment.estimators.unit_cycle_power_lower_bound
 
 ## Diagnostics and robustness
 
-::: increment.sample_ratio_mismatch
+::: increment.estimators.sample_ratio_mismatch
 
-::: increment.allocation_posterior_bands
+::: increment.estimators.allocation_posterior_bands
 
-::: increment.absorb_factor
+::: increment.estimators.absorb_factor
 
-`increment.confounding_sensitivity` reports a marginal conversion risk-ratio interval for an observational `LiftEstimate`; `increment.results.ConfoundingSensitivity` is its receive-only result type.
+`increment.estimators.confounding_sensitivity` reports a marginal conversion risk-ratio interval for an observational `LiftEstimate`; `increment.results.ConfoundingSensitivity` is its receive-only result type.
 
 `Analysis.health_check()` combines assignment balance, triggered-cohort
 balance, descriptive trigger rates, retained source-maturity/completeness
@@ -885,7 +897,7 @@ looks, stops, and freezes use only already-revealed triggered-chain data.
 Assigned results must not reveal future triggered outcomes, including for the
 same metric. The health check does not verify an analyst's decision rule.
 
-::: increment.confounding_sensitivity
+::: increment.estimators.confounding_sensitivity
 
 ::: increment.results.ConfoundingSensitivity
 
@@ -1000,23 +1012,23 @@ give evidence for those procedures, not for a separate `estimate_cate` fit.
     `targeting_rule`, and `select_targeting_rule` delegate to the same source
     APIs.
 
-::: increment.Covariate
+::: increment.estimators.Covariate
 
-::: increment.ClusterBootstrap
+::: increment.estimators.ClusterBootstrap
 
-::: increment.estimate_cate
+::: increment.estimators.estimate_cate
 
-::: increment.validate_cate
+::: increment.estimators.validate_cate
 
-::: increment.select_targeting_rule
+::: increment.estimators.select_targeting_rule
 
-::: increment.targeting_rule
+::: increment.estimators.targeting_rule
 
 ## Segment analysis and rollout
 
-::: increment.segment_heterogeneity
+::: increment.estimators.segment_heterogeneity
 
-::: increment.segment_contrast
+::: increment.estimators.segment_contrast
 
 
 Rollout recommendations give each usable segment equal weight. Exposure-
@@ -1028,7 +1040,7 @@ weighted recommendations are not supported.
     the adopted unweighted correction. A weighted headline without an honest
     correction for selection bias would be misleading.
 
-::: increment.segment_rollout_recommendation
+::: increment.estimators.segment_rollout_recommendation
 
 ## Exploratory multiplicity
 
@@ -1078,9 +1090,9 @@ exactly, with their one-sided geometry, and are not excluded.
 
 ::: increment.IdentificationGate
 
-::: increment.IdentificationError
+::: increment.estimators.IdentificationError
 
-::: increment.CapabilityError
+::: increment.estimators.CapabilityError
 
 ### Errors and refusals
 
@@ -1105,7 +1117,7 @@ outcomes. `InvalidRequestError` codes and their `context`:
 - `cate.identification.unsupported_max_smd` (`caller`, `max_smd`): the
   observational `max_smd` balance gate is not implemented for this path.
 
-::: increment.CodedError
+::: increment.estimators.CodedError
 
 `CodedModel`, `CodedValidationMixin` and `unwrap_coded` are public from
 `increment.errors`, not the root `increment` namespace.
@@ -1137,7 +1149,8 @@ locations when loading YAML definitions.
 ```python
 from pydantic import TypeAdapter, ValidationError
 
-from increment import DefinitionError, Definitions
+from increment.estimators import DefinitionError
+from increment import Definitions
 from increment.errors import unwrap_coded
 
 try:
@@ -1153,19 +1166,19 @@ except ValidationError as exc:
 
 ::: increment.errors.CodedModel
 
-::: increment.DefinitionError
+::: increment.estimators.DefinitionError
 
-::: increment.InvalidRequestError
+::: increment.estimators.InvalidRequestError
 
-::: increment.RefusalSpec
+::: increment.estimators.RefusalSpec
 
 ::: increment.errors.RETIRED_CODES
 
-::: increment.UnsupportedRequestError
+::: increment.estimators.UnsupportedRequestError
 
-::: increment.WireFormatError
+::: increment.estimators.WireFormatError
 
-::: increment.refuse
+::: increment.estimators.refuse
 
 ::: increment.errors.refusals
 
@@ -1189,7 +1202,7 @@ Filter and assert on `.code` rather than message text:
 ```python
 import warnings
 
-from increment import IncrementWarning
+from increment.estimators import IncrementWarning
 
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")

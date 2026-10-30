@@ -47,7 +47,7 @@ def _bound(specs, inference, *, design=DESIGN, **plan):
 
 def _manual(specs, roster, *, design=DESIGN, baseline_rate=None, q=F(0.1)):
     """The explicit registration a caller would write for these cells."""
-    from increment import JointReveal, SequentialModel, SequentialRegistration
+    from increment.estimators import JointReveal, SequentialModel, SequentialRegistration
     from increment.sequential_source import (
         bernoulli_prior,
         frame_observation_mapping,
@@ -115,7 +115,7 @@ def test_segment_free_plans_keep_their_stored_registration_identity():
 
 
 def test_always_valid_multi_arm_registers_every_arm_at_its_role_allocation():
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
     from increment.semantics.design import Randomized
     from increment.sequential_source import registration_id
 
@@ -166,7 +166,7 @@ def test_always_valid_multi_arm_registers_every_arm_at_its_role_allocation():
 
 
 def test_always_valid_multi_arm_uptake_cells_share_the_compliance_allocation():
-    from increment import SequentialCompliancePolicy
+    from increment.estimators import SequentialCompliancePolicy
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     design = Encouragement(
@@ -203,8 +203,8 @@ def test_segmented_family_compliance_refuses_before_automatic_binding(kind):
     import copy
     import pickle
 
-    from increment import SequentialCompliancePolicy
     from increment.errors import CapabilityError
+    from increment.estimators import SequentialCompliancePolicy
 
     with pytest.raises(CapabilityError) as raised:
         AnalysisPlan(
@@ -226,7 +226,7 @@ def test_segmented_family_compliance_refuses_before_automatic_binding(kind):
 
 
 def test_always_valid_segments_fix_one_cell_per_metric_arm_and_level_before_data():
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
     from increment.sequential_source import registration_id
 
     specs = [
@@ -283,7 +283,8 @@ def test_always_valid_segments_carry_the_declared_bh_view_level():
     requires the registration to carry that level: the automatic roster is
     allocated and registered at the view's q (never above each cell's compiled
     level), the same registration a caller writes by hand at that q."""
-    from increment import MultiplicitySpec, SequentialCell
+    from increment import MultiplicitySpec
+    from increment.estimators import SequentialCell
     from increment.sequential_source import registration_id
 
     specs = [

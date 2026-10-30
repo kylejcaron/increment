@@ -8,8 +8,8 @@ import math
 import numpy as np
 import pytest
 
-from increment import PowerDesign
 from increment.estimation.sequential import GaussianScoreMixture
+from increment.estimators import PowerDesign
 from increment.power import Baseline, achieved_power, required_sample_size
 from increment.semantics.models import InferenceSpec
 from tests.power._procedures import make_procedure

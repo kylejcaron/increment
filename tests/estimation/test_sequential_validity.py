@@ -92,8 +92,8 @@ def _raw_null_rejections(
     from fractions import Fraction
     from functools import cache
 
-    from increment import AlwaysValid, estimate_sequential
     from increment.estimation._sequential_likelihood import BernoulliState, BetaPrior
+    from increment.estimators import AlwaysValid, estimate_sequential
     from tests.estimation._sequential_events import bernoulli_noncrossing_screen
     from tests.sequential_cases import capture, records, registration
 
@@ -227,8 +227,8 @@ def _registered_gaussian_null(
     than an abstention, so a rate of zero cannot be an artifact of a route
     that abstained throughout.
     """
-    from increment import AlwaysValid
     from increment.estimation.sequential_runtime import _evaluate_sequential_diagnostic
+    from increment.estimators import AlwaysValid
     from increment.sequential_state import _capture_sequential_diagnostic_snapshot
     from tests.sequential_cases import records, registration
 
@@ -318,9 +318,9 @@ def test_registered_gaussian_runtime_public_facade_refuses_its_own_law(law):
     this fails and the calibrated gates have to be re-pointed at the public
     route rather than silently understating what they cover.
     """
-    from increment import AlwaysValid, capture_sequential_snapshot
-    from increment import estimate_sequential as public_estimate_sequential
     from increment.errors import CapabilityError
+    from increment.estimators import AlwaysValid, capture_sequential_snapshot
+    from increment.estimators import estimate_sequential as public_estimate_sequential
     from increment.sequential_state import _capture_sequential_diagnostic_snapshot
     from tests.sequential_cases import records, registration
 
@@ -380,8 +380,8 @@ def test_registered_ratio_gaussian_runtime_route_smoke():
     carries a single unit, so the singular-prefix abstention is crossed on
     the way rather than routed around.
     """
-    from increment import AlwaysValid
     from increment.estimation.sequential_runtime import _evaluate_sequential_diagnostic
+    from increment.estimators import AlwaysValid
     from increment.sequential_state import _capture_sequential_diagnostic_snapshot
     from tests.sequential_cases import records, registration
 

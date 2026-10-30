@@ -8,7 +8,8 @@ from typing import cast
 
 from pydantic import TypeAdapter
 
-from increment import CapabilityError, Metric
+from increment import Metric
+from increment.estimators import CapabilityError
 from increment.evidence import (
     BreakoutMethodMomentsRequest,
     ComplianceRequest,

@@ -189,7 +189,7 @@ def test_analysis_plan_forbids_extra_fields():
 
 
 def test_registered_inference_round_trip_preserves_actual_decision():
-    from increment import AlwaysValid, estimate_sequential
+    from increment.estimators import AlwaysValid, estimate_sequential
     from tests.sequential_cases import capture, records, registration
 
     spec = InferenceSpec(kind="always_valid", registration=registration("bernoulli"))

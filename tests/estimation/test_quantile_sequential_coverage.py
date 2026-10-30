@@ -9,9 +9,9 @@ before outcomes are requested. No refused case is counted as coverage.
 
 import pytest
 
-from increment import AlwaysValid
 from increment.errors import CapabilityError
 from increment.estimation.quantile import estimate_quantile_lift
+from increment.estimators import AlwaysValid
 from increment.semantics.models import QuantileMetric
 from tests.sequential_cases import registration
 

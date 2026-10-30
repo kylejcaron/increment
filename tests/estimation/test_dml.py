@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 from scipy.special import expit
 
-from increment import Analysis, IdentificationError
+from increment import Analysis
 from increment.errors import InvalidRequestError
 from increment.estimation._adjust.dml import _dml_theta
 from increment.estimation._adjust.learners import RidgeOutcome
@@ -18,6 +18,7 @@ from increment.estimation._adjust.overlap import _fold_ids
 from increment.estimation.adjust import estimate_ate
 from increment.estimation.armstats import ScoreStats
 from increment.estimation.engine import Method
+from increment.estimators import IdentificationError
 from increment.frame import from_unit_summary
 from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
 from tests.analysis_factory import lift_rows

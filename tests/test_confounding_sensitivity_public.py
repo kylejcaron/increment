@@ -15,9 +15,9 @@ from increment import (
     Method,
     MetricSpec,
     Observational,
-    confounding_sensitivity,
 )
 from increment.errors import CodedError, UnsupportedRequestError
+from increment.estimators import confounding_sensitivity
 from increment.results import ConfoundingSensitivity, LiftEstimate
 from tests.capability_consumers_scalar import CONFOUNDING_SENSITIVITY, completed, refused
 from tests.parity_harness.cases import (

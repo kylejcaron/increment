@@ -2,8 +2,8 @@ from __future__ import annotations
 
 
 def test_public_compliance_contract_round_trips_wire_values():
-    from increment import ComplianceSummary as PackageComplianceSummary
     from increment.evidence import ComplianceSummary
+    from increment.evidence import ComplianceSummary as PackageComplianceSummary
     from increment.sources import ComplianceArm
 
     summary = ComplianceSummary(

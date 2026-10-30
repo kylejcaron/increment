@@ -5,7 +5,6 @@ from typing import cast
 import numpy as np
 import pytest
 
-from increment import IdentificationError
 from increment.errors import (
     CapabilityError,
     InvalidRequestError,
@@ -15,14 +14,20 @@ from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
 from increment.estimation.encouragement import _late_relative, _nn_estimate, estimate_encouragement
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
+from increment.estimators import IdentificationError
 from increment.semantics.design import Encouragement
 from increment.semantics.models import MeanMetric, RatioMetric, RetentionMetric
 from tests.warning_codes import warning_codes
 
 
 def _sequential_policy(*, uptake=False):
-    from increment import PredictivePrior, SequentialCell, SequentialModel, SequentialRegistration
     from increment.estimation.sequential import AsymptoticMean
+    from increment.estimators import (
+        PredictivePrior,
+        SequentialCell,
+        SequentialModel,
+        SequentialRegistration,
+    )
     from tests.asymptotic_cases import mean_model
     from tests.sequential_cases import registration
 

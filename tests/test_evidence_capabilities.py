@@ -592,8 +592,8 @@ def test_triggered_cluster_declaration_matches_cluster_counts(tmp_path) -> None:
 def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
     import pyarrow as pa
 
-    from increment import InvalidRequestError
     from increment.estimation.engine import Method
+    from increment.estimators import InvalidRequestError
 
     if constructor == "summary":
         frame = unit_summary_table().append_column("pre", pa.array(["not numeric"] * 8))
@@ -631,7 +631,7 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
 
 
 def test_undeclared_custom_source_refuses_with_the_shared_code() -> None:
-    from increment import CapabilityError
+    from increment.estimators import CapabilityError
     from increment.readouts import daily, run
 
     analysis = Analysis.from_unit_summary(
@@ -695,8 +695,8 @@ def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
 def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
     import pyarrow as pa
 
-    from increment import InvalidRequestError
     from increment.estimation.engine import Method
+    from increment.estimators import InvalidRequestError
 
     rows = unit_panel_table().to_pylist()
     frame = pa.Table.from_pylist([{**row, "pre": float(int(row["user_id"][1:]))} for row in rows])
@@ -1135,7 +1135,7 @@ def _triggered_analysis(tmp_path, *, cluster=False):
     import ibis
     import yaml
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
 
     events = []
     for index, group in enumerate(("control", "control", "treatment", "treatment")):
@@ -1418,7 +1418,7 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.errors import InvalidRequestError
     from increment.query.session import WarehouseArtifactStore
     from tests.test_analysis_trigger import (

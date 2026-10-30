@@ -642,7 +642,7 @@ unbounded. `require_lift()` returns the point or raises a coded refusal, for
 when a missing point should stop the program rather than be handled:
 
 ```python
-from increment import CodedError
+from increment.estimators import CodedError
 
 row = next(r for r in results if r.metric == "converted")
 assert row.lift is None and row.reference_kind == "binomial"
@@ -918,12 +918,8 @@ its null. This panel has four independent blocks over a three-unit roster:
 ```python
 import math
 
-from increment import (
-    Randomized,
-    SharedScheduleOrder,
-    SwitchbackAssignment,
-    SwitchbackWindow,
-)
+from increment import Randomized
+from increment.estimators import SharedScheduleOrder, SwitchbackAssignment, SwitchbackWindow
 
 orders = [("control", "treatment")] * 2 + [("treatment", "control")] * 2
 shifts = [-1, 1, -2, 2]

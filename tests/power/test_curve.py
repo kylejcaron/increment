@@ -6,9 +6,9 @@ from typing import Any, Literal
 
 import pytest
 
-from increment import power_curve
 from increment.errors import InvalidRequestError
 from increment.estimation.sequential import GaussianScoreMixture
+from increment.estimators import power_curve
 from increment.power import Baseline, PowerDesign, achieved_power, minimum_detectable_effect
 from increment.power._validation import _require_finite, _require_relative_domain
 from increment.results import PowerCurve, PowerCurvePoint

@@ -31,15 +31,16 @@ import pyarrow.parquet as pq
 import pytest
 from ibis.backends.sql import SQLBackend
 
-from increment import SequentialCell, SourceSnapshotEvidence
 from increment._analysis_config import UNSET, _Unset
 from increment.analysis import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.conversion_delta import delta_interval
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal, Prior
 from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimators import SequentialCell
 from increment.frame import CupedCovariate, MetricSpec
 from increment.plan import bind_automatic_sequential_plan
 from increment.query.artifact_contract import ArtifactStore, unit_day_artifact_extension_catalog
@@ -1376,7 +1377,7 @@ def _sequential_structured_order_probe() -> None:
     This is intentionally a probe, not another parity constructor: the public
     parity row continues to use the ordinary/native calendar mapping above.
     """
-    from increment import snapshot_from_json
+    from increment.estimators import snapshot_from_json
     from increment.sequential_state import declare_sequential_freeze_cells
 
     rows = ds.event_rows()
@@ -3937,7 +3938,7 @@ def _uptake_timestamp_boundaries_case(
 def _assert_missing_exclusion_precedes_data(_constructor: str, analysis: Analysis) -> None:
     from unittest.mock import patch
 
-    from increment import IdentificationError
+    from increment.estimators import IdentificationError
 
     def unread(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("A missing LATE assumption must refuse before reading data")

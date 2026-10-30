@@ -2,7 +2,12 @@
 
 from fractions import Fraction as F
 
-from increment import JointReveal, ScalarMeanModel, SequentialCell, SequentialRegistration
+from increment.estimators import (
+    JointReveal,
+    ScalarMeanModel,
+    SequentialCell,
+    SequentialRegistration,
+)
 
 
 def mean_model(metric="outcome", *, rho=F(1, 10), start_count=2, law="scalar_mean"):
@@ -61,7 +66,7 @@ def mean_records(control, treatment, *, metrics=("outcome",), segment=None, offs
 
 
 def mean_capture(registration, records, **kwargs):
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
 
     return capture_sequential_snapshot(
         registration,

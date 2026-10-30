@@ -659,7 +659,7 @@ def test_trigger_declared_public_run_matches_legacy_population_results(tmp_path)
     import ibis
     import pyarrow as pa
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.estimation.results import LiftEstimate
 
     definitions = tmp_path / "trigger.yml"

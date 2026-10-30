@@ -10,15 +10,9 @@ import pytest
 from increment import (
     AdjustmentSet,
     Analysis,
-    CountsRequest,
-    EvidenceCapabilities,
     IdentificationGate,
-    MethodFitRequest,
     MetricSpec,
-    MomentsRequest,
     Observational,
-    UnitRowsRequest,
-    require_evidence,
 )
 from increment.declarations import ADJUSTMENTS, EstimatorRef, Method, MomentsSpec, UnitRowsSpec
 from increment.errors import CodedError
@@ -30,6 +24,14 @@ from increment.estimators.registry import (
     randomized_estimator_id,
     register,
     routes,
+)
+from increment.evidence import (
+    CountsRequest,
+    EvidenceCapabilities,
+    MethodFitRequest,
+    MomentsRequest,
+    UnitRowsRequest,
+    require_evidence,
 )
 
 

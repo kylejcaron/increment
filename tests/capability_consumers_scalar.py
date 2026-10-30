@@ -184,7 +184,7 @@ IMPUTE_POOLED_MEAN = ConsumerContract(
         *(
             _e(
                 f"{ingress}-outcome-role-refused",
-                "increment.impute.pooled_mean",
+                "increment.estimators.impute.pooled_mean",
                 ingress,
                 f"frame prepared for {ingress} with declared roles; the outcome column is rejected before any requested column is filled",
                 "refused",
@@ -200,7 +200,7 @@ IMPUTE_POOLED_MEAN = ConsumerContract(
         *(
             _e(
                 f"{ingress}-undeclared-role-warning",
-                "increment.impute.pooled_mean",
+                "increment.estimators.impute.pooled_mean",
                 ingress,
                 f"frame prepared for {ingress} without declared roles; filled columns emit one coded warning with per-column counts",
                 "supported",
@@ -255,7 +255,7 @@ IMPUTE_POOLED_MEAN = ConsumerContract(
         *(
             _e(
                 f"{ingress}-missing-policy-not-declarable",
-                "increment.impute.pooled_mean",
+                "increment.estimators.impute.pooled_mean",
                 ingress,
                 "a warehouse experiment declares metrics over event facts, not a prepared frame",
                 "not_comparable",
@@ -269,7 +269,7 @@ IMPUTE_POOLED_MEAN = ConsumerContract(
         ),
         _e(
             "from_moments-no-per-unit-rows",
-            "increment.impute.pooled_mean",
+            "increment.estimators.impute.pooled_mean",
             "from_moments",
             "a portable cube holds arm moments only",
             "not_comparable",

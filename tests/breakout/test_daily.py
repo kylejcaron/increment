@@ -1403,7 +1403,12 @@ class TestRunDailyLiftAlwaysValidInference:
         assert raised.value.code == "sequential.route.unsupported"
 
     def test_asof_projection_preserves_selected_procedure_after_json_replay(self):
-        from increment import AlwaysValid, SequentialCell, SequentialModel, SequentialRegistration
+        from increment.estimators import (
+            AlwaysValid,
+            SequentialCell,
+            SequentialModel,
+            SequentialRegistration,
+        )
         from increment.tables import estimates_to_readout
         from tests.sequential_cases import capture, records
         from tests.sequential_cases import registration as make_registration
@@ -1477,8 +1482,13 @@ class TestRunDailyLiftAlwaysValidInference:
 def test_segmented_sequential_daily_lift_preserves_source_through_restore():
     import pickle
 
-    from increment import AlwaysValid, SequentialCell, SequentialModel, SequentialRegistration
     from increment.breakout.estimates import run_daily_lift
+    from increment.estimators import (
+        AlwaysValid,
+        SequentialCell,
+        SequentialModel,
+        SequentialRegistration,
+    )
     from tests.sequential_cases import capture, records
     from tests.sequential_cases import registration as make_registration
 
@@ -1659,7 +1669,7 @@ class TestDailyLiftEstimate:
     def test_rich_repr_preserves_point_free_sequential_interval_geometry(self):
         from rich.pretty import pretty_repr
 
-        from increment import AlwaysValid, estimate_sequential
+        from increment.estimators import AlwaysValid, estimate_sequential
         from tests.sequential_cases import capture, records, registration
 
         reg = registration("bernoulli")
@@ -1839,8 +1849,8 @@ class TestDailyLiftEstimate:
 
     @pytest.mark.parametrize("relabel", [False, True])
     def test_public_replay_preserves_bernoulli_reference_label(self, relabel):
-        from increment import estimate_sequential
         from increment.errors import CapabilityError
+        from increment.estimators import estimate_sequential
         from tests.sequential_cases import registered_bernoulli
 
         snapshot, policy = registered_bernoulli(n=4)
@@ -1907,9 +1917,9 @@ class TestDailyLiftEstimate:
     )
     def test_sequential_checkpoint_rejects_mixed_authoritative_payload(self, field):
         """A checkpoint-backed sequential view cannot carry fixed/joint sidecars."""
-        from increment import estimate_sequential
         from increment.errors import CapabilityError
         from increment.estimation.results import JointContrastReference, RelativeConfidenceSet
+        from increment.estimators import estimate_sequential
         from tests.sequential_cases import registered_bernoulli
 
         snapshot, policy = registered_bernoulli(n=4)

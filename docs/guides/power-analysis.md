@@ -11,7 +11,7 @@ arm:
 
 <!-- skip: next "enumerating the conversion count lattice takes about a minute" -->
 ```python
-from increment import Baseline
+from increment.estimators import Baseline
 from increment.power import ArmPlanningProcedure, required_sample_size
 
 plan = required_sample_size(
@@ -67,7 +67,7 @@ analysis that will consume the result. `ArmPlanningProcedure.standard(metric_typ
 builds the ordinary fixed-horizon one:
 
 ```python
-from increment import Baseline, PowerDesign
+from increment.estimators import Baseline, PowerDesign
 from increment.power import (
     ArmPlanningProcedure,
     achieved_power,

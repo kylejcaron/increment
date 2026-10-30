@@ -3252,7 +3252,7 @@ class Definitions(_Base):
                         f"experiment '{experiment.name}': metric '{metric_name}' is report-only "
                         f"(type '{index.report_only[metric_name]}') -- it has no per-unit "
                         f"variance, so the estimation engine cannot serve it; use it via "
-                        f"increment.MetricTrends instead",
+                        f"increment.estimators.MetricTrends instead",
                     )
                 )
 

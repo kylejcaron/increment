@@ -282,7 +282,7 @@ def test_measurement_gate_requires_baseline_repetitions_to_agree():
 @pytest.mark.integration
 def test_stress_workload_inserts_the_requested_number_of_rows(tmp_path):
     from calibration.kernel_context_measurement import _append_units
-    from increment import UnitRowsRequest, evidence_provider
+    from increment.evidence import UnitRowsRequest, evidence_provider
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 

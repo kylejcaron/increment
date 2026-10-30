@@ -96,7 +96,7 @@ def _retention_metric(threshold_days: int | tuple[int, int]) -> RetentionMetric:
 def _registered_case(*, alternative="two-sided", alpha=None):
     from fractions import Fraction as F
 
-    from increment import SequentialCell, SequentialRegistration
+    from increment.estimators import SequentialCell, SequentialRegistration
     from tests.sequential_cases import capture, registration
 
     base = registration("gaussian")
@@ -134,7 +134,6 @@ def _registered_case(*, alternative="two-sided", alpha=None):
     ],
 )
 def test_sequential_replay_rejects_fixed_horizon_metadata(foreign_reference):
-    from increment import estimate_sequential
     from increment.errors import CodedError
     from increment.estimation.binomial_rr import confidence_interval, nuisance_beta
     from increment.estimation.results import (
@@ -142,6 +141,7 @@ def test_sequential_replay_rejects_fixed_horizon_metadata(foreign_reference):
         BINOMIAL_NUMERICAL_QUALIFICATION,
         BinomialConfidenceSet,
     )
+    from increment.estimators import estimate_sequential
     from tests.sequential_cases import registered_bernoulli
 
     snapshot, policy = registered_bernoulli(n=4)
@@ -376,7 +376,7 @@ class TestOneSidedInferLift:
 
 
 def _wire_reveal():
-    from increment import JointReveal
+    from increment.estimators import JointReveal
 
     return JointReveal(
         filtration_id="joint-units-v1",
@@ -392,7 +392,7 @@ def _wire_registration(law):
     """One registration per digested state shape: counts, one rational moment, two."""
     from fractions import Fraction as F
 
-    from increment import (
+    from increment.estimators import (
         PredictivePrior,
         SequentialCell,
         SequentialModel,
@@ -520,7 +520,7 @@ def _wire_looks(law):
 
 def _wire_snapshot(law):
     """Append every look onto the previous verified checkpoint, as a producer does."""
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from increment.sequential_state import _capture_sequential_diagnostic_snapshot
 
     registration = _wire_registration(law)
@@ -717,7 +717,7 @@ class TestSnapshotWireIdentity:
         The identity check is O(records) per validation, not O(records x looks):
         a deep ancestry must not multiply the number of record serializations.
         """
-        from increment import capture_sequential_snapshot
+        from increment.estimators import capture_sequential_snapshot
         from increment.sequential_state import SequentialSnapshot, UnitRecordProof
 
         registration = _wire_registration("scalar_mean")

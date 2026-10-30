@@ -11,7 +11,13 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis, Covariate, estimate_cate, targeting_rule, validate_cate
+    from increment import Analysis
+    from increment.estimators import (
+        Covariate,
+        estimate_cate,
+        targeting_rule,
+        validate_cate,
+    )
     from increment.frame import from_unit_summary
 
     return (

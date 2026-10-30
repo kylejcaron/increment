@@ -11,7 +11,8 @@ import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence, readouts, run, runnable
+from increment import Analysis, readouts, run, runnable
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning, IncrementWarning
 from increment.estimation.encouragement import (
     _arm_stats_from_compliance,

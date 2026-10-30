@@ -1230,7 +1230,7 @@ def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
         ),
     )
     try:
-        from increment import CountEvidence, CountsRequest, evidence_provider
+        from increment.evidence import CountEvidence, CountsRequest, evidence_provider
         from tests.analysis_factory import held_source
 
         retained = evidence_provider(held_source(restored)).counts(

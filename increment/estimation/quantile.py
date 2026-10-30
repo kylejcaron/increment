@@ -84,7 +84,12 @@ if TYPE_CHECKING:
 
 import numpy as np
 
-from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
+from increment.errors import (
+    InvalidRequestError,
+    RefusalSpec,
+    raiser,
+    refusals,
+)
 from increment.estimation.variance import stable_log_ratio
 
 # Quantile Welch references remain disabled until independently calibrated.
@@ -795,6 +800,8 @@ def estimate_quantile_lift(
     _return_computation: Literal[True],
     **kwargs: Any,
 ) -> DecisionComputation[LiftEstimate]: ...
+
+
 def estimate_quantile_lift(
     src: Any,
     metric: Any,

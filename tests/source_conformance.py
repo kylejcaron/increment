@@ -158,7 +158,8 @@ def _artifact_analysis(tmp_path: Path) -> Any:
     import ibis
 
     from examples._seed import seed_event_log
-    from increment import Analysis, SourceSnapshotEvidence
+    from increment import Analysis
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
     from tests.test_unit_day_artifact_facade import _definitions
@@ -368,7 +369,8 @@ def definitions_source(
     import ibis
     import yaml
 
-    from increment import Analysis, SourceSnapshotEvidence
+    from increment import Analysis
+    from increment.artifacts import SourceSnapshotEvidence
 
     rows = []
     for index, (group, country, value) in enumerate(

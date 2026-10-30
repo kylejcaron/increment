@@ -448,7 +448,7 @@ class TestNumericalStability:
 class TestRefusals:
     @pytest.mark.slow
     def test_sequential_binary_counts_use_the_actual_beta_likelihood(self):
-        from increment import estimate_sequential
+        from increment.estimators import estimate_sequential
         from tests.sequential_cases import (
             capture,
             records,

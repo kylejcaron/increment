@@ -11,8 +11,8 @@ import yaml
 from pydantic import ValidationError
 
 import increment
-from increment import CapabilityError, MetricTrends
 from increment.errors import InvalidRequestError
+from increment.estimators import CapabilityError, MetricTrends
 from increment.semantics.models import Definitions
 from tests._unit_boundary import backend_fixture
 
@@ -1272,7 +1272,7 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
     import ibis
     import pytest
 
-    from increment import CapabilityError, MetricTrends
+    from increment.estimators import CapabilityError, MetricTrends
     from increment.semantics.models import Definitions
 
     defs = {
@@ -1330,7 +1330,7 @@ def test_report_to_frame_default_works_without_pandas():
 import sys
 import ibis
 import polars as pl
-from increment import MetricTrends
+from increment.estimators import MetricTrends
 from increment.semantics.models import Definitions
 from tests.test_reporting import DEFS, KW, ORDER_ROWS, ROWS
 con = ibis.duckdb.connect()

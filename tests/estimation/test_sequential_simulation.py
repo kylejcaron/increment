@@ -27,9 +27,9 @@ import numpy as np
 import pytest
 
 from calibration.stopping import FixedDesign, build_rule
-from increment import capture_sequential_snapshot
 from increment.estimation._sequential_likelihood import GaussianState
 from increment.estimation.family import e_bh_select
+from increment.estimators import capture_sequential_snapshot
 from increment.sequential_state import _capture_sequential_diagnostic_snapshot
 from tests.estimation import _sequential_simulation as sim
 from tests.estimation._sequential_acceptance import (
@@ -77,7 +77,6 @@ def _batches(case, seed=None):
 
 def _public_record(case, batches):
     """The raw public path over explicit batches, as ``campaign_replication`` drives it."""
-    from increment import estimate_sequential
     from increment.estimation.decision_types import sequential_hypothesis_key
     from increment.estimation.family import select_sequential_family
     from increment.estimation.sequential_runtime import (
@@ -86,6 +85,7 @@ def _public_record(case, batches):
         evaluate_checkpoint,
         reinvert_selected,
     )
+    from increment.estimators import estimate_sequential
     from increment.sequential_state import declare_sequential_freeze_cells
     from tests.estimation._sequential_acceptance import (
         CERTIFICATION_DESIGN,
@@ -435,7 +435,7 @@ def test_every_grid_state_gives_the_public_decision(arm_counts):
         assert (control.n, control.successes) == (n_control, successes_control)
         assert (treatment.n, treatment.successes) == (n_treated, successes_treated)
 
-        from increment import estimate_sequential
+        from increment.estimators import estimate_sequential
 
         bundle = estimate_sequential(snapshot, resolved.policy)
         deployed = bundle.results[0].require_exact_sequential_result()

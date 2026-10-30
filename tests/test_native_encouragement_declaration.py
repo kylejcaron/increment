@@ -7,7 +7,8 @@ from typing import Any, cast
 import ibis
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.evidence import (
     ComplianceRequest,
     ComplianceSeriesRequest,

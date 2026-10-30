@@ -901,7 +901,7 @@ def campaign_identity(cases):
 
 def campaign_declaration(case):
     """Recover the original experiment with explicit scalar-mean diagnostics."""
-    from increment import (
+    from increment.estimators import (
         AlwaysValid,
         AsymptoticMean,
         ScalarMeanModel,
@@ -1108,11 +1108,11 @@ def campaign_replication(case, rng, declaration, checkpoint, *, interim_geometry
     interval census. A caller that will not read them turns it off; nothing a
     gate decides depends on either.
     """
-    from increment import capture_sequential_snapshot, estimate_sequential
     from increment.estimation.decision_types import sequential_hypothesis_key
     from increment.estimation.family import select_sequential_family
     from increment.estimation.sequential_result import SequentialInferenceResult, _point
     from increment.estimation.sequential_runtime import _evaluate_sequential_diagnostic
+    from increment.estimators import capture_sequential_snapshot, estimate_sequential
     from increment.sequential_state import (
         _capture_sequential_diagnostic_snapshot,
         declare_sequential_freeze_cells,

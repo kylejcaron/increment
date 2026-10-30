@@ -5,9 +5,10 @@ from fractions import Fraction
 
 import pytest
 
-from increment import Analysis, SequentialCompliancePolicy, SequentialRegistration
+from increment import Analysis
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import CapabilityError, InvalidRequestError
+from increment.estimators import SequentialCompliancePolicy, SequentialRegistration
 from increment.frame import MetricSpec, synthesise_metric
 from increment.results import LiftEstimate
 from increment.semantics.design import Randomized
@@ -67,7 +68,7 @@ def gaussian_plan(
     """Registered test declarations, independent of all observed values."""
     from fractions import Fraction
 
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
 
     design = Randomized(control_group="control")
     base = registration(law)
@@ -145,7 +146,7 @@ def _row(analysis):
 
 
 def test_sequential_readout_refuses_execution_context_before_evidence_read():
-    from increment import EvidenceScope
+    from increment.evidence import EvidenceScope
     from increment.kernel.context import EvidenceExecutionContext
     from increment.readouts import run
     from increment.readouts._provider import native_scope_provider
@@ -301,7 +302,7 @@ def test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy
 
     import pyarrow.parquet as pq
 
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from increment.semantics.design import Randomized
     from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource, export_source_moments
 
@@ -383,8 +384,8 @@ def test_checkpoint_assignment_counts_are_immutable_after_validation():
 def test_continuation_without_new_capture_counts_does_not_reuse_parent_totals():
     from typing import cast
 
-    from increment import capture_sequential_snapshot
     from increment.estimation.assignment_integrity import assignment_integrity
+    from increment.estimators import capture_sequential_snapshot
     from tests.sequential_cases import records
 
     declaration = registration("bernoulli")
@@ -813,7 +814,7 @@ def test_registered_asof_secondary_family_is_joint_per_look():
         MetricSpec(name=name, type="conversion", window_days=2)
         for name in ("outcome", "other", "third")
     ]
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
 
     cells = (
         SequentialCell(metric="outcome", group_id="treatment", family=False, alpha=Fraction(1, 20)),
@@ -1032,7 +1033,7 @@ def _fixture_trigger_event(unit: str) -> dict:
 def _certified_fixture_evidence():
     from datetime import UTC, datetime
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
 
     certified = datetime(2025, 1, 31, tzinfo=UTC)
     return SourceSnapshotEvidence(certified, {"events": certified, "uptake_events": certified})
@@ -1106,7 +1107,7 @@ def _native_fixture(
         )
     if triggered:
         _declare_fixture_trigger(definition)
-    from increment import SequentialCell, SequentialModel
+    from increment.estimators import SequentialCell, SequentialModel
     from increment.semantics.design import Encouragement
 
     design: Randomized | Encouragement = Randomized(control_group="control")
@@ -1274,7 +1275,7 @@ def test_from_definitions_auto_binding_preserves_omitted_q(tmp_path):
             assert bound_plan.inference is not None
             assert bound_plan.inference.registration is not None
             assert "q" not in bound_plan.model_fields_set
-            from increment import compile_unit_day_artifact_context
+            from increment.artifacts import compile_unit_day_artifact_context
 
             context = compile_unit_day_artifact_context("experiment", auto_defs)
             assert "plan_q_explicit" not in json.loads(context.canonical_json)
@@ -1565,8 +1566,8 @@ def test_assignment_validation_cannot_split_the_source_snapshot(monkeypatch, pub
 def test_metric_free_sequential_frames_require_uptake_only_registration(tmp_path, observable):
     import pyarrow.parquet as pq
 
-    from increment import SequentialCell
     from increment.errors import CodedError
+    from increment.estimators import SequentialCell
     from increment.semantics.design import Encouragement
 
     design = Encouragement.model_validate(
@@ -1964,7 +1965,7 @@ def _role_plan(specs, *, alpha, q):
     """Always-valid plan carrying a primary, two family secondaries and a guardrail."""
     from fractions import Fraction
 
-    from increment import (
+    from increment.estimators import (
         JointReveal,
         PredictivePrior,
         SequentialCell,

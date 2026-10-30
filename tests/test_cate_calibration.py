@@ -73,7 +73,6 @@ import pytest
 from scipy.special import expit
 from scipy.stats import t
 
-from increment import IdentificationError
 from increment.cate import estimate_cate, validate_cate
 from increment.errors import InvalidRequestError
 from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutcome
@@ -85,6 +84,7 @@ from increment.estimation.targeting import (
     targeting_rule_arrays,
     validate_cate_arrays,
 )
+from increment.estimators import IdentificationError
 from increment.frame import MetricSpec, from_unit_summary, synthesise_metric
 from increment.semantics.design import (
     AdjustmentSet,
@@ -2021,7 +2021,7 @@ def test_e6v0_original_varying_noise_cluster_public_replay(
     """Record actual public behavior, not a Monte Carlo error-control certificate."""
     import json
 
-    from increment import ClusterBootstrap, select_targeting_rule, targeting_rule
+    from increment.estimators import ClusterBootstrap, select_targeting_rule, targeting_rule
 
     table, source = _e6v0_original_cluster_source(
         members_per_cluster, intervention_grain=intervention_grain, n_clusters=n_clusters
@@ -2095,8 +2095,8 @@ def test_e6v0_original_varying_noise_cluster_public_replay(
 def test_nested_selection_cannot_recover_rank_by_adding_cluster_members(
     members_per_cluster, intervention_grain
 ):
-    from increment import select_targeting_rule
     from increment.errors import InvalidRequestError
+    from increment.estimators import select_targeting_rule
 
     _, source = _e6v0_original_cluster_source(
         members_per_cluster, intervention_grain=intervention_grain, n_clusters=16

@@ -18,7 +18,8 @@ import narwhals as nw
 import pandas as pd
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning
 from increment.estimation.engine import Method
 from increment.plan import bind_automatic_sequential_plan

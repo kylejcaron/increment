@@ -15,11 +15,12 @@ import pyarrow as pa
 import pytest
 from scipy.stats import norm
 
-from increment import readouts, select_targeting_rule
+from increment import readouts
 from increment.cate import estimate_cate, targeting_rule, validate_cate
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.cate import CateResult, Covariate, fit_cate
 from increment.estimation.targeting import CateValidation, TargetingRule
+from increment.estimators import select_targeting_rule
 from increment.frame import MetricSpec, from_unit_summary, synthesise_metric
 from increment.results import TargetingSelection
 from increment.semantics.design import Randomized
@@ -64,7 +65,7 @@ def _assert_policy_roundtrip(policy, cols, ids):
 
 
 def _source_parity_reports(source, frame, *, cluster_weight, clustered):
-    from increment import ClusterBootstrap
+    from increment.estimators import ClusterBootstrap
 
     options: dict = {
         "control": "control",
@@ -482,7 +483,7 @@ def test_cate_and_validation_settings_change_cell_identity():
 
 
 def test_full_width_bootstrap_seeds_give_distinct_validation_identities():
-    from increment import ClusterBootstrap
+    from increment.estimators import ClusterBootstrap
 
     def cell(seed: int):
         return validate_cate(
@@ -1598,7 +1599,7 @@ class TestClusterTransport:
     @pytest.mark.slow
     @pytest.mark.parametrize("weighting", ["member_count", "equal"])
     def test_observational_design_preserves_mixed_treatment_dependence_clusters(self, weighting):
-        from increment import ClusterBootstrap
+        from increment.estimators import ClusterBootstrap
         from increment.semantics.design import AdjustmentSet, Observational
 
         src = _cluster_source(
@@ -2094,7 +2095,7 @@ def test_public_equal_cluster_weighting_refuses_before_reading_unclustered_sourc
 
 @pytest.mark.parametrize("caller", ["validate", "rule", "selection"])
 def test_public_validation_rechecks_forged_bootstrap_before_loading_units(caller, monkeypatch):
-    from increment import ClusterBootstrap
+    from increment.estimators import ClusterBootstrap
 
     source = _source()
     options = ClusterBootstrap().model_copy(update={"seed": True})
@@ -2132,7 +2133,7 @@ def test_public_validation_rechecks_forged_bootstrap_before_loading_units(caller
 
 @pytest.mark.parametrize("options", [{"seed": True}, {"seed": 0.5}, {"repetitions": 1}])
 def test_bootstrap_options_reject_invalid_integer_controls(options):
-    from increment import ClusterBootstrap
+    from increment.estimators import ClusterBootstrap
 
     with pytest.raises(InvalidRequestError) as error:
         ClusterBootstrap.model_validate(options)
@@ -2160,7 +2161,8 @@ def test_public_incompatible_deployment_refuses_before_loading_units(caller, mon
 @pytest.mark.slow
 @pytest.mark.parametrize("weighting", ["member_count", "equal"])
 def test_analysis_delegates_preserve_cluster_intervention_and_portable_prediction(weighting):
-    from increment import Analysis, ClusterBootstrap
+    from increment import Analysis
+    from increment.estimators import ClusterBootstrap
     from increment.results import ClusterScore
 
     table = _cluster_frame()
@@ -2273,8 +2275,8 @@ def _assert_c01_public_fit_covariance(data, fit, weighting):
 @pytest.mark.parametrize("weighting", ["member_count", "equal"])
 @pytest.mark.parametrize("replication", [1, 5, 20, 100])
 def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, replication):
-    from increment import ClusterBootstrap
     from increment.estimation.crossfit import outer_split
+    from increment.estimators import ClusterBootstrap
 
     data, source = _c01_pattern_source(replication)
     d, ids = data["d"], data["cluster_ids"]

@@ -349,25 +349,21 @@ def test_one_call_serves_a_multi_metric_source_with_one_metric_absolute():
     metrics per method and does not catch the mu0 guard's ValueError, so a
     near-zero metric aborted every sibling. Keyed per metric, the near-zero
     metric goes absolute and the normal metric keeps its relative row -
-    one call, no abort, no warning."""
+    one call, no abort, and no unexpected advisories."""
     table = _oracle_table(n=1000)
     revenue = np.asarray(table["revenue"].to_numpy()) + 10.0
     table = table.append_column("healthy", pa.array(revenue))
     src = _src(table, metrics={"revenue": "mean", "healthy": "mean"})
 
-    with pytest.warns() as record:
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
         rows = estimate_ate(
             src,
             _DESIGN,
             methods=[Method(name="iptw")],
             value_scale={"revenue": "absolute"},
         ).results
-        # Nothing this call does should warn; assert against an intentional
-        # sentinel so `pytest.warns` itself has something to catch.
-        import warnings
-
-        warnings.warn("sentinel", UserWarning, stacklevel=1)
-    assert [str(w.message) for w in record] == ["sentinel"]
+    assert not record
 
     by_metric = {row.metric: row for row in rows}
     assert set(by_metric) == {"revenue", "healthy"}

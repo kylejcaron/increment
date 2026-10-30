@@ -4,10 +4,11 @@ import warnings
 
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec, Normal
+from increment import Analysis, AnalysisPlan, MetricSpec
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.priors import StudentTPrior
+from increment.estimators import Normal
 
 
 def _panel_analysis(**overrides):

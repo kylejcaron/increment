@@ -7,7 +7,8 @@
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, MetricSpec, Normal
+from increment import Analysis, MetricSpec
+from increment.estimators import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior
 
 rng = np.random.default_rng(6)

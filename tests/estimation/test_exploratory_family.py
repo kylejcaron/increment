@@ -922,8 +922,8 @@ def test_a_legacy_wald_row_keeps_its_relative_level_and_gains_the_alpha_it_was_r
 
 
 def _sequential_row():
-    from increment import SequentialCell, estimate_sequential
     from increment.estimation.sequential import AlwaysValid
+    from increment.estimators import SequentialCell, estimate_sequential
     from tests.sequential_cases import capture, records, registration
 
     reg = registration(cells=(SequentialCell(metric="outcome", group_id="treatment", family=True),))
