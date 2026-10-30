@@ -125,9 +125,9 @@ class _BuiltInEvidenceProvider(_OwnedLoaderAdapter):
 
     def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
         _validate(self.source, request)
-        from increment._evidence_scopes import load_evidence_scope
+        from increment.readouts._evidence import acquire_evidence_scope
 
-        return load_evidence_scope(self.source, request, _BuiltInEvidenceProvider)
+        return acquire_evidence_scope(self.source, request, _BuiltInEvidenceProvider)
 
 
 def native_scope_provider(source: Any) -> EvidenceProvider:
