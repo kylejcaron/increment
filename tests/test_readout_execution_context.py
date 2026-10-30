@@ -795,6 +795,317 @@ def test_standalone_value_read_skips_separately_sourced_cuped_covariate(
         analysis.close()
 
 
+@pytest.mark.parametrize("missing_history_source", [None, "profiles_a", "profiles_b"])
+@pytest.mark.integration
+def test_captured_run_pins_each_source_for_same_property_covariates(
+    tmp_path, missing_history_source
+):
+    import datetime as dt
+
+    import yaml
+
+    from increment import Analysis
+    from tests.covariate_cases import categorical_defs_and_con
+
+    path, con, units = categorical_defs_and_con(tmp_path)
+    definitions = yaml.safe_load(path.read_text())
+    experiment = definitions["experiments"][0]
+    experiment.pop("design")
+    experiment["n_pre_periods"] = 14
+    experiment["plan"] = {
+        "primary": {
+            "metric": "revenue",
+            "decision_method": {
+                "name": "linear",
+                "variance_reduction": "cuped_multicovariate",
+                "covariates": [
+                    {
+                        "name": "region_a",
+                        "kind": "categorical",
+                        "property": "region",
+                        "source": "profiles_a",
+                    },
+                    {
+                        "name": "region_b",
+                        "kind": "categorical",
+                        "property": "region",
+                        "source": "profiles_b",
+                    },
+                ],
+            },
+        }
+    }
+    for name in ("profiles_a", "profiles_b"):
+        definitions["fact_sources"].append(
+            {
+                "name": name,
+                "sql": f"SELECT * FROM {name}",
+                "timestamp_column": "ts",
+                "entities": ["user_id"],
+                "facts": [{"name": f"{name}_marker", "column": None}],
+                "properties": [
+                    {
+                        "name": "region",
+                        "column": "region",
+                        "dtype": "string",
+                        "as_of": "pre_exposure",
+                    }
+                ],
+            }
+        )
+        con.create_table(
+            name,
+            obj=[
+                {
+                    "user_id": unit,
+                    "ts": dt.datetime(2025, 7, 20),
+                    "region": (
+                        values["region"]
+                        if name == "profiles_a"
+                        else ("east", "west", "north")[int(unit[1:]) % 3]
+                    ),
+                    "event": "profile",
+                }
+                for unit, values in units.items()
+            ],
+        )
+    if missing_history_source is not None:
+        con.raw_sql(f"DELETE FROM {missing_history_source}")
+    path.write_text(yaml.safe_dump(definitions))
+    analysis = Analysis.from_definitions("cat_test", path, con, store="none")
+    try:
+        captured_rows = analysis.run(coherence="captured")
+        (captured,) = captured_rows
+        from increment.estimation.results import LiftEstimate
+
+        assert isinstance(captured, LiftEstimate)
+        if missing_history_source is not None:
+            assert captured.lift is None
+            return
+        live_rows = analysis.run(coherence="live")
+        (live,) = live_rows
+        assert isinstance(live, LiftEstimate)
+        assert captured.require_lift().value is not None
+        assert live.require_lift().value is not None
+        assert captured.require_lift().value == pytest.approx(live.require_lift().value)
+        assert captured_rows.metadata is not None
+        assert {"profiles_a", "profiles_b"} <= set(captured_rows.metadata.effective_modes)
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_captured_run_keeps_unbounded_properties_for_shared_sql(tmp_path):
+    import datetime as dt
+
+    import yaml
+
+    from increment import Analysis
+    from tests.covariate_cases import categorical_defs_and_con
+
+    path, con, units = categorical_defs_and_con(tmp_path)
+    definitions = yaml.safe_load(path.read_text())
+    experiment = definitions["experiments"][0]
+    experiment.pop("design")
+    experiment["n_pre_periods"] = 14
+    experiment["plan"] = {
+        "primary": {
+            "metric": "revenue",
+            "decision_method": {
+                "name": "scalar",
+                "variance_reduction": "cuped",
+                "covariates": [
+                    {
+                        "name": "tenure",
+                        "kind": "continuous",
+                        "property": "tenure",
+                        "source": "profiles",
+                    }
+                ],
+            },
+        }
+    }
+    definitions["fact_sources"] = [
+        {
+            "name": "events",
+            "sql": "SELECT * FROM exposure_rows",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "exposure", "column": None}],
+            "properties": [],
+        },
+        {
+            "name": "z_revenue",
+            "sql": "SELECT * FROM outcome_rows",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "purchase", "column": "revenue"}],
+            "properties": [],
+        },
+        {
+            "name": "profiles",
+            "sql": "SELECT * FROM outcome_rows",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "profile_marker", "column": None}],
+            "properties": [
+                {
+                    "name": "tenure",
+                    "column": "tenure",
+                    "dtype": "float",
+                    "as_of": "pre_exposure",
+                }
+            ],
+        },
+    ]
+    con.create_table(
+        "exposure_rows",
+        obj=[
+            {
+                "user_id": unit,
+                "ts": dt.datetime(2025, 8, 1),
+                "event": "exposure",
+                "experiment_id": "cat_test",
+                "group_id": values["variant"],
+            }
+            for unit, values in units.items()
+        ],
+    )
+    outcome_rows = []
+    for index, (unit, values) in enumerate(units.items()):
+        outcome_rows.extend(
+            [
+                {
+                    "user_id": unit,
+                    "ts": dt.datetime(2025, 6, 15),
+                    "event": "profile",
+                    "revenue": 0.0,
+                    "tenure": values["tenure"],
+                },
+                {
+                    "user_id": unit,
+                    "ts": dt.datetime(2025, 8, 3),
+                    "event": "purchase",
+                    "revenue": values["revenue"],
+                },
+                {
+                    "user_id": unit,
+                    "ts": dt.datetime(2025, 8, 10),
+                    "event": "purchase",
+                    "revenue": float(index % 2),
+                },
+            ]
+        )
+    con.create_table("outcome_rows", obj=outcome_rows)
+    path.write_text(yaml.safe_dump(definitions))
+    analysis = Analysis.from_definitions("cat_test", path, con, store="none")
+    try:
+        from increment.estimation.results import LiftEstimate
+
+        live_rows = analysis.run(coherence="live")
+        (live,) = live_rows
+        assert isinstance(live, LiftEstimate)
+        assert live.lift is not None, live.model_dump()
+        captured_rows = analysis.run(coherence="captured")
+        (captured,) = captured_rows
+        assert isinstance(captured, LiftEstimate)
+        assert captured.require_lift().value == pytest.approx(live.require_lift().value)
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_snapshot_ignores_ambiguous_covariate_on_unselected_metric(tmp_path):
+    import datetime as dt
+
+    import yaml
+
+    from increment import Analysis
+    from increment.errors import CodedError
+    from tests.covariate_cases import categorical_defs_and_con
+
+    path, con, units = categorical_defs_and_con(tmp_path)
+    definitions = yaml.safe_load(path.read_text())
+    definitions["metrics"].append(
+        {
+            "name": "other_revenue",
+            "type": "mean",
+            "entity": "user_id",
+            "fact": "purchase",
+            "aggregation": "sum",
+            "window_days": 7,
+        }
+    )
+    experiment = definitions["experiments"][0]
+    experiment.pop("design")
+    experiment["n_pre_periods"] = 14
+    experiment["plan"] = {
+        "primary": "revenue",
+        "secondaries": [
+            {
+                "metric": "other_revenue",
+                "decision_method": {
+                    "name": "linear",
+                    "variance_reduction": "cuped_multicovariate",
+                    "covariates": [{"name": "region", "kind": "categorical"}],
+                },
+            }
+        ],
+    }
+    definitions["fact_sources"].append(
+        {
+            "name": "profiles",
+            "sql": "SELECT * FROM profiles",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "profile", "column": None}],
+            "properties": [
+                {
+                    "name": "region",
+                    "column": "region",
+                    "dtype": "string",
+                    "as_of": "pre_exposure",
+                }
+            ],
+        }
+    )
+    con.create_table(
+        "profiles",
+        obj=[
+            {
+                "user_id": unit,
+                "ts": dt.datetime(2025, 7, 20),
+                "region": values["region"],
+                "event": "profile",
+            }
+            for unit, values in units.items()
+        ],
+    )
+    path.write_text(yaml.safe_dump(definitions))
+    analysis = Analysis.from_definitions("cat_test", path, con, store="none")
+    try:
+        with pytest.raises(CodedError) as ambiguous:
+            analysis.run(metrics=["other_revenue"])
+        assert ambiguous.value.code == "source.native.covariate_ambiguous"
+
+        expected_counts = {
+            group: sum(values["variant"] == group for values in units.values())
+            for group in ("control", "treatment")
+        }
+        assert analysis.unit_counts() == expected_counts
+
+        assert analysis.allocation_history().num_rows > 0
+
+        def read_snapshot(pinned: Analysis) -> Any:
+            return pinned.unit_counts()
+
+        assert analysis.dashboard_snapshot(read_snapshot, metrics=[]) == expected_counts
+        result = analysis.dashboard_snapshot(read_snapshot, metrics=[analysis.metrics[0]])
+        assert result == expected_counts
+    finally:
+        analysis.close()
+
+
 @pytest.mark.integration
 def test_public_breakout_override_does_not_change_sibling_daily_lift():
     from increment import Method

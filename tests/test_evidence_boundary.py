@@ -286,3 +286,34 @@ def test_consumers_read_sources_only_through_evidence_requests():
                     f"{rel}:{node.lineno}: {func.id}() on a source outside acquisition"
                 )
     assert not violations, "\n".join(violations)
+
+
+def test_execution_context_reads_stream_inventory_from_evidence_scope() -> None:
+    root = Path(__file__).parents[1] / "increment"
+    path = root / "kernel" / "context.py"
+    tree = ast.parse(path.read_text(), filename=str(path))
+    forbidden_attributes = {
+        "_adjustment_fact_names",
+        "_source_tables",
+        "_defs",
+        "_experiment",
+        "_resolve_unit_covariate_source",
+    }
+    violations = [
+        f"{path.relative_to(root)}:{node.lineno}: loader-owned {node.attr}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr in forbidden_attributes
+    ]
+    violations.extend(
+        f"{path.relative_to(root)}:{node.lineno}: loader-owned {node.value}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in forbidden_attributes
+    )
+    violations.extend(
+        f"{path.relative_to(root)}:{node.lineno}: loader-owned {node.id}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "_adjustment_fact_names"
+    )
+    assert not violations, "\n".join(violations)

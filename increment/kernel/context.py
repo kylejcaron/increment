@@ -14,213 +14,13 @@ from increment._evidence_types import (
     BreakoutIdentity,
     EvidenceScope,
     EvidenceStream,
+    evidence_streams_for_scope,
 )
-from increment._source_types import (
-    EvidenceProvider,
-    _loader_owner,
-    is_builtin_source,
-    is_custom_source,
-)
+from increment._source_types import EvidenceProvider, _loader_owner, is_custom_source
 from increment.kernel.contracts import _refuse
 
 ExecutionMode = Literal["captured", "live"]
 EffectiveMode = Literal["captured", "live", "provider"]
-
-
-def _artifact_streams(source: object) -> Mapping[str, str] | None:
-    manifest = getattr(source, "_manifest", None)
-    if manifest is None:
-        return None
-    artifact_id = getattr(manifest, "artifact_id", None)
-    generation_id = getattr(manifest, "generation_id", None)
-    if artifact_id is None or generation_id is None:
-        return None
-    identity = f"artifact:{artifact_id}:{generation_id}"
-    return MappingProxyType({identity: identity})
-
-
-def _source_labels(definitions: Any) -> dict[str, tuple[str, ...]]:
-    labels: dict[str, list[str]] = {}
-    for fact_source in definitions.fact_sources:
-        labels.setdefault(fact_source.sql, []).append(fact_source.name)
-    for dimension in definitions.dim_sources:
-        labels.setdefault(dimension.sql, []).append(f"dimension:{dimension.name}")
-    for exposure in definitions.exposures:
-        if exposure.sql is not None:
-            labels.setdefault(exposure.sql, []).append(f"exposure:{exposure.name}")
-    return {query: tuple(names) for query, names in labels.items()}
-
-
-def _captured_streams(source: object, definitions: Any) -> Mapping[str, str] | None:
-    tables = getattr(getattr(source, "_session", None), "_source_tables", None)
-    if tables is None:
-        return None
-    labels = _source_labels(definitions)
-    streams = {
-        label: query for query in tables for label in labels.get(query, (f"source:{query}",))
-    }
-    return MappingProxyType(dict(sorted(streams.items())))
-
-
-def _declared_fact_names(
-    definitions: Any,
-    metrics: Sequence[object],
-    configs: Sequence[object],
-    breakouts: Sequence[object],
-    uptake_facts: Sequence[str],
-) -> tuple[set[str], set[str]]:
-    fact_by_name = {fact_source.name: fact_source for fact_source in definitions.fact_sources}
-    dimension_names = {dimension.name for dimension in definitions.dim_sources}
-    requested_dimensions: set[str] = set()
-    fact_names = set(uptake_facts)
-    for metric in metrics:
-        numerator = getattr(metric, "numerator", None)
-        denominator = getattr(metric, "denominator", None)
-        if numerator is not None and denominator is not None:
-            fact_names.update((numerator.fact, denominator.fact))
-        else:
-            fact = getattr(metric, "fact", None)
-            if fact is not None:
-                fact_names.add(fact)
-    for config in configs:
-        for covariate in getattr(config, "covariates", ()):
-            measure = getattr(covariate, "measure", None)
-            if measure is not None:
-                fact_names.add(measure.fact)
-            declared_source = getattr(covariate, "source", None)
-            property_name = getattr(covariate, "property", None) or getattr(covariate, "name", None)
-            _add_declared_source(
-                definitions,
-                declared_source,
-                property_name,
-                fact_by_name,
-                dimension_names,
-                requested_dimensions,
-                fact_names,
-            )
-    for breakout in breakouts:
-        _add_declared_source(
-            definitions,
-            getattr(breakout, "source", None),
-            getattr(breakout, "property", None),
-            fact_by_name,
-            dimension_names,
-            requested_dimensions,
-            fact_names,
-        )
-    return fact_names, requested_dimensions
-
-
-def _add_declared_source(
-    definitions: Any,
-    declared_source: str | None,
-    property_name: str | None,
-    fact_by_name: Mapping[str, Any],
-    dimension_names: set[str],
-    requested_dimensions: set[str],
-    fact_names: set[str],
-) -> None:
-    if declared_source is not None and declared_source in fact_by_name:
-        fact_names.add(declared_source)
-    elif declared_source in dimension_names:
-        requested_dimensions.add(declared_source)
-    elif property_name is not None:
-        fact_names.update(
-            fact_source.name
-            for fact_source in definitions.fact_sources
-            if any(prop.name == property_name for prop in fact_source.properties)
-        )
-
-
-def _adjustment_fact_names(experiment: Any, definitions: Any) -> set[str]:
-    design = getattr(experiment, "design", None)
-    unit = getattr(experiment, "unit", None)
-    names: set[str] = set()
-    for covariate in getattr(design, "covariates", ()):
-        property_name = getattr(covariate, "property", covariate)
-        declared_source = getattr(covariate, "source", None)
-        if not isinstance(property_name, str):
-            continue
-        candidates = [
-            fact_source
-            for fact_source in definitions.fact_sources
-            if unit in fact_source.entities
-            and (declared_source is None or fact_source.name == declared_source)
-            and any(prop.name == property_name for prop in definitions.properties_of(fact_source))
-        ]
-        names.update(fact_source.name for fact_source in candidates)
-    return names
-
-
-def _declared_streams(
-    source: object,
-    definitions: Any,
-    metrics: Sequence[object],
-    configs: Sequence[object],
-    breakouts: Sequence[object],
-    uptake_facts: Sequence[str],
-) -> Mapping[str, str]:
-    fact_by_name = {fact_source.name: fact_source for fact_source in definitions.fact_sources}
-    dimension_by_name = {dimension.name: dimension for dimension in definitions.dim_sources}
-    fact_owner = {
-        fact.name: fact_source
-        for fact_source in definitions.fact_sources
-        for fact in fact_source.facts
-    }
-    fact_names, requested_dimensions = _declared_fact_names(
-        definitions, metrics, configs, breakouts, uptake_facts
-    )
-    experiment = getattr(source, "_experiment", None)
-    fact_names.update(_adjustment_fact_names(experiment, definitions))
-    streams: dict[str, str] = {}
-    if experiment is not None:
-        exposure_by_name = {exposure.name: exposure for exposure in definitions.exposures}
-        for name in (experiment.exposure, experiment.trigger):
-            if name is None or name not in exposure_by_name:
-                continue
-            exposure = exposure_by_name[name]
-            if exposure.fact is None:
-                streams[f"exposure:{name}"] = f"exposure:{name}"
-            else:
-                fact_names.add(exposure.fact)
-    for name in fact_names:
-        fact_source = fact_by_name.get(name, fact_owner.get(name))
-        if fact_source is None:
-            continue
-        streams[fact_source.name] = fact_source.name
-        requested_dimensions.update(fact_source.dims)
-    for name in requested_dimensions:
-        if name in dimension_by_name:
-            streams[f"dimension:{name}"] = f"dimension:{name}"
-    return MappingProxyType(dict(sorted(streams.items())))
-
-
-def _pinned_streams(
-    provider: EvidenceProvider,
-    metrics: Sequence[object],
-    configs: Sequence[object],
-    breakouts: Sequence[object],
-    uptake_facts: Sequence[str],
-) -> Mapping[str, str]:
-    source = _loader_owner(provider)
-    if (
-        is_builtin_source(source)
-        and type(source).__module__ == "increment.query._native_triggered"
-        and type(source).__name__ == "TriggeredPopulationSource"
-    ):
-        source = cast(Any, source)._source
-    artifact_streams = _artifact_streams(source)
-    if artifact_streams is not None:
-        return artifact_streams
-    definitions = getattr(source, "_defs", None)
-    if definitions is None:
-        stream_names = {str(getattr(metric, "name", metric)) for metric in metrics}
-        stream_names.update(f"fact:{fact}" for fact in uptake_facts)
-        return MappingProxyType(dict.fromkeys(sorted(stream_names), "captured"))
-    captured = _captured_streams(source, definitions)
-    if captured is not None:
-        return captured
-    return _declared_streams(source, definitions, metrics, configs, breakouts, uptake_facts)
 
 
 @dataclass(slots=True)
@@ -252,15 +52,16 @@ class EvidenceExecutionContext:
     _breakout_streams: Mapping[BreakoutIdentity, str] = field(
         init=False, default_factory=lambda: MappingProxyType({})
     )
+    _covariate_streams: Mapping[str, tuple[str, ...]] = field(
+        init=False, default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         self._state = "unopened"
         self._stack = ExitStack()
         self._scoped_provider: EvidenceProvider | None = None
-        self._snapshot_manifest: Mapping[str, str] = MappingProxyType({})
         self._breakout_streams = MappingProxyType({})
-        self._effective_modes: Mapping[str, EffectiveMode] = MappingProxyType({})
-        self._pinned_stream_inventory: Mapping[str, str] = MappingProxyType({})
+        self._covariate_streams = MappingProxyType({})
         requested_coherence = self.coherence
         self._source_identity = id(_loader_owner(self.provider))
         if requested_coherence not in ("captured", "live"):
@@ -306,6 +107,7 @@ class EvidenceExecutionContext:
             self._stream_resolver = result.stream_resolver
             self._scoped_provider = scoped
             self._breakout_streams = result.breakout_streams
+            self._covariate_streams = result.covariate_streams
             streams = result.streams or (
                 result.stream_resolver(scoped) if result.stream_resolver is not None else ()
             )
@@ -313,18 +115,10 @@ class EvidenceExecutionContext:
                 if provider_owned:
                     streams = (EvidenceStream("provider", "provider"),)
                 else:
-                    names = {str(getattr(metric, "name", metric)) for metric in requested.metrics}
-                    names.update(
-                        f"assignment:{request.experiment}:{request.version}:"
-                        f"{request.period}:{request.population}"
-                        for request in requested.assignment_requests
+                    streams = evidence_streams_for_scope(
+                        cast(Any, _loader_owner(scoped)),
+                        requested,
                     )
-                    names.update(
-                        f"breakout:{breakout.property}:{breakout.source}"
-                        for breakout in requested.breakouts
-                    )
-                    names.update(f"fact:{fact}" for fact in requested.uptake_facts)
-                    streams = tuple(EvidenceStream(name, name) for name in sorted(names))
             capture_status = result.capture_status or "live"
             effective_coherence: ExecutionMode | None = None if provider_owned else capture_status
             effective_mode: EffectiveMode = "provider" if provider_owned else capture_status
@@ -364,68 +158,28 @@ class EvidenceExecutionContext:
         return self._requested_coherence
 
     def validate_observational_streams(self, source: object, design: object) -> None:
-        """Check bound adjustment sources before the readout issues any evidence request."""
+        """Check adjustment dependencies against the captured loader inventory."""
         self._require_open()
         self.validate_source(source)
         if getattr(design, "mechanism", None) != "observational":
             return
-        owner = _loader_owner(self.provider)
-        definitions = getattr(owner, "_defs", None)
-        experiment = getattr(owner, "_experiment", None)
-        if definitions is None or experiment is None:
-            return
-        unit = getattr(experiment, "unit", None)
-        declared = getattr(getattr(experiment, "design", None), "covariates", ())
         requested = getattr(getattr(design, "adjustment", None), "covariates", ())
-        fact_sources = {fact_source.name: fact_source for fact_source in definitions.fact_sources}
-        for request in requested:
-            property_name = getattr(request, "property", request)
-            bindings = [
-                binding
-                for binding in declared
-                if getattr(binding, "property", binding) == property_name
-            ]
-            sources = {
-                getattr(binding, "source", None)
-                for binding in bindings
-                if getattr(binding, "source", None) is not None
-            }
-            if not sources:
-                sources = {
-                    fact_source.name
-                    for fact_source in definitions.fact_sources
-                    if unit in fact_source.entities
-                    and any(
-                        prop.name == property_name
-                        for prop in definitions.properties_of(fact_source)
+        for covariate in requested:
+            property_name = getattr(covariate, "property", covariate)
+            for stream in self._covariate_streams.get(property_name, ()):
+                mode = self._effective_modes.get(stream)
+                if mode is None:
+                    _refuse("kernel.context.undeclared_stream", stream=stream)
+                if (
+                    self.coherence == "captured"
+                    and mode != "provider"
+                    and (mode != "captured" or stream not in self._snapshot_manifest)
+                ):
+                    _refuse(
+                        "kernel.snapshot.integrity",
+                        stream=stream,
+                        snapshot_id=self._snapshot_manifest.get(stream),
                     )
-                }
-            if not sources:
-                # No source advertises this property. Defer to the provider so
-                # its established covariate-capability refusal remains distinct.
-                continue
-            if len(sources) != 1:
-                _refuse(
-                    "kernel.context.undeclared_stream",
-                    stream=f"covariate:{property_name}",
-                )
-            stream = next(iter(sources))
-            if stream not in fact_sources:
-                _refuse("kernel.context.undeclared_stream", stream=f"fact:{stream}")
-            mode = self._effective_modes.get(stream)
-            if mode is None:
-                _refuse("kernel.context.undeclared_stream", stream=stream)
-            if (
-                self.coherence == "captured"
-                and mode != "provider"
-                and (mode != "captured" or stream not in self._snapshot_manifest)
-            ):
-                snapshot_id = self._snapshot_manifest.get(stream)
-                _refuse(
-                    "kernel.snapshot.integrity",
-                    stream=stream,
-                    snapshot_id=snapshot_id,
-                )
 
     def validate_source(self, source: object) -> None:
         if id(_loader_owner(source)) != self._source_identity:

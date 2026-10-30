@@ -1686,27 +1686,26 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
 
 @pytest.mark.integration
 def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
-    from increment import BreakoutIdentity, EvidenceScope
+    from increment import BreakoutIdentity, EvidenceScope, evidence_provider
     from tests.analysis_factory import held_source
 
     analysis, con = _selected_breakout_sources(tmp_path)
     source = cast(Any, held_source(analysis))
+    provider = evidence_provider(source)
     selected = BreakoutIdentity("region", "profiles")
     try:
-        explicit = source.capture_requirements(
-            (
-                EvidenceScope(
-                    metrics=tuple(source.context.metrics),
-                    breakouts=(selected,),
-                    include_breakouts=False,
-                ),
+        explicit = provider.scope(
+            EvidenceScope(
+                metrics=tuple(source.context.metrics),
+                breakouts=(selected,),
+                include_breakouts=False,
             )
         )
-        assert explicit.breakouts == (selected,)
-        expanded = source.capture_requirements(
-            (EvidenceScope(metrics=tuple(source.context.metrics), include_breakouts=True),)
+        assert explicit.scope.breakouts == (selected,)
+        expanded = provider.scope(
+            EvidenceScope(metrics=tuple(source.context.metrics), include_breakouts=True)
         )
-        assert expanded.breakouts == tuple(
+        assert expanded.scope.breakouts == tuple(
             BreakoutIdentity(item.property, item.source) for item in analysis.experiment.breakouts
         )
     finally:

@@ -40,6 +40,7 @@ from increment._evidence_types import (
     AssignmentRequest,
     BreakoutIdentity,
     EvidenceScope,
+    evidence_scope_dependencies,
 )
 from increment._frame_validation import (
     COVARIATE_COLUMN_MISSING as _NATIVE_COVARIATE_MISSING,
@@ -611,83 +612,46 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         events = self._build_events_table_for_exposure(self._experiment.exposure, dim_joined=False)
         return events.select("unit_id", "experiment_id").distinct()
 
-    def capture_requirements(self, requests: Sequence[EvidenceScope]) -> EvidenceScope:
-        """Derive pinned streams from the builders selected by a readout batch."""
-        metrics_by_name = {
-            metric.name: metric for request in requests for metric in request.metrics
-        }
-        configs_list: list[ResolvedMetricConfig] = []
-        for request in requests:
-            for config in request.configs or ():
-                if config not in configs_list:
-                    configs_list.append(config)
-        metrics = tuple(metrics_by_name.values())
-        configs = tuple(configs_list)
-        breakouts: list[BreakoutIdentity] = []
-        for request in requests:
-            if request.breakouts:
-                selected = request.breakouts
-            elif not request.include_breakouts:
-                continue
-            elif request.dimension is not None:
-                selected = tuple(
-                    BreakoutIdentity(item.property, item.source)
-                    for item in self._experiment.breakouts
-                    if item.property == request.dimension
-                )
-            else:
-                selected = tuple(
-                    BreakoutIdentity(item.property, item.source)
-                    for item in self._experiment.breakouts
-                )
-            breakouts.extend(selected)
-        breakouts = list(dict.fromkeys(breakouts))
-        uptake_facts = list(
-            dict.fromkeys(fact for request in requests for fact in request.uptake_facts)
-        )
-        design = self._context.design
-        if isinstance(design, Encouragement) and design.uptake is not None:
-            if any(
-                request.grain in {"total", "daily"}
-                or (
-                    request.grain == "asof"
-                    and (
-                        request.estimands is None
-                        or bool({"compliance", "late"}.intersection(request.estimands))
+    def evidence_scope_covariate_streams(
+        self, scope: EvidenceScope
+    ) -> Mapping[str, tuple[str, ...]]:
+        dependencies = evidence_scope_dependencies(scope)
+        bindings: dict[str, list[str]] = {}
+        adjustments = dependencies["adjustments"]
+        if adjustments is None:
+            adjustments = tuple(
+                config for config in self._context.configs if config.metric in scope.metrics
+            )
+        for config in adjustments:
+            for method in effective_methods(config, design=self.context.design):
+                for covariate in method.covariates or ():
+                    covariate = self._resolve_covariate_binding(covariate, config.metric)
+                    if isinstance(covariate, CupedCovariateBinding) and covariate.measure:
+                        continue
+                    property_name = getattr(covariate, "property", None) or covariate.name
+                    source = self._resolve_unit_covariate_source(
+                        property_name,
+                        declared_source=getattr(covariate, "source", None),
+                        kind=getattr(covariate, "kind", None),
                     )
-                )
-                for request in requests
-            ):
-                if design.uptake.fact not in uptake_facts:
-                    uptake_facts.append(design.uptake.fact)
-        grains = {request.grain for request in requests}
-        grain = next(
-            (candidate for candidate in ("asof", "daily", "total") if candidate in grains), None
-        )
-        return EvidenceScope(
-            metrics=metrics,
-            population=requests[0].population if requests else "assigned",
-            populations=tuple(
-                sorted({population for request in requests for population in request.populations})
-            ),
-            grain=grain,
-            dimension=next(
-                (request.dimension for request in requests if request.dimension is not None), None
-            ),
-            estimands=next(
-                (request.estimands for request in requests if request.estimands is not None), None
-            ),
-            breakouts=tuple(breakouts),
-            configs=configs if any(request.configs is not None for request in requests) else None,
-            uptake_facts=tuple(uptake_facts),
-            snapshot=any(request.snapshot for request in requests),
-            execution=any(request.execution for request in requests),
-            include_breakouts=any(request.include_breakouts for request in requests),
-            checkpoint_only=any(request.checkpoint_only for request in requests),
-            assignment_requests=tuple(
-                item for request in requests for item in request.assignment_requests
-            ),
-        )
+                    source_names = bindings.setdefault(property_name, [])
+                    if source.name not in source_names:
+                        source_names.append(source.name)
+        design = self._experiment.design
+        if isinstance(design, ObservationalDeclaration):
+            for covariate in design.covariates:
+                property_name = covariate.property
+                source_name = self._resolve_unit_covariate_source(
+                    property_name,
+                    declared_source=covariate.source,
+                    kind=getattr(covariate, "kind", None),
+                ).name
+                source_names = bindings.setdefault(property_name, [])
+                if source_name not in source_names:
+                    source_names.append(source_name)
+        return {
+            property_name: tuple(source_names) for property_name, source_names in bindings.items()
+        }
 
     def evidence_scope_breakout_streams(
         self, scope: EvidenceScope
@@ -797,10 +761,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return tuple(rows)
 
-    def evidence_scope_streams(self, scope: Any) -> Mapping[str, str]:
+    def evidence_scope_streams(self, scope: EvidenceScope) -> Mapping[str, str]:
+        dependencies = evidence_scope_dependencies(scope)
         tables = self._session._source_tables
-        fact_names = set(scope.uptake_facts)
-        for metric in scope.metrics:
+        fact_names = set(dependencies["uptake"])
+        for metric in dependencies["outcomes"]:
             numerator = getattr(metric, "numerator", None)
             denominator = getattr(metric, "denominator", None)
             if numerator is not None and denominator is not None:
@@ -809,21 +774,21 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 fact_names.add(metric.fact)
 
         sources: dict[str, FactSource] = {}
-        for config in scope.configs or ():
+        for config in dependencies["adjustments"] or ():
             for method in effective_methods(config, design=self.context.design):
                 for covariate in method.covariates or ():
                     covariate = self._resolve_covariate_binding(covariate, config.metric)
                     if isinstance(covariate, CupedCovariateBinding) and covariate.measure:
                         fact_names.add(covariate.measure.fact)
-                    else:
-                        property_name = getattr(covariate, "property", None) or covariate.name
-                        source = self._resolve_unit_covariate_source(
-                            property_name,
-                            declared_source=getattr(covariate, "source", None),
-                            kind=getattr(covariate, "kind", None),
-                        )
-                        sources[source.name] = source
-        for breakout in scope.breakouts:
+        fact_sources = {source.name: source for source in self._defs.fact_sources}
+        sources.update(
+            {
+                source_name: fact_sources[source_name]
+                for source_names in self.evidence_scope_covariate_streams(scope).values()
+                for source_name in source_names
+            }
+        )
+        for breakout in dependencies["breakouts"]:
             try:
                 source = _resolve_breakout_fact_source(
                     self._defs,
@@ -833,14 +798,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             except CodedError:
                 continue
             sources[source.name] = source
-        if isinstance(self._experiment.design, ObservationalDeclaration):
-            for covariate in self._experiment.design.covariates:
-                source = self._resolve_unit_covariate_source(
-                    covariate.property,
-                    declared_source=covariate.source,
-                    kind=getattr(covariate, "kind", None),
-                )
-                sources[source.name] = source
 
         streams: dict[str, str] = {}
         for fact in fact_names:
@@ -851,7 +808,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             streams[source.name] = source.name
             dimensions.update(source.dims)
         streams.update({f"dimension:{name}": f"dimension:{name}" for name in dimensions})
-        for request in scope.assignment_requests:
+        for request in dependencies["assignments"]:
             if self._experiment.assignment_ledger is not None:
                 stream = f"assignment-ledger:{request.experiment}"
                 streams[stream] = stream
@@ -912,11 +869,27 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
             return self
-        sources: dict[str, FactSource] = {}
+        capture_scope = EvidenceScope(
+            metrics=tuple(self._horizon_metrics if metrics is None else metrics),
+            configs=tuple(self._context.configs if configs is None else configs),
+            uptake_facts=tuple(uptake_facts),
+            assignment_requests=tuple(assignment_requests),
+        )
+        dependencies = evidence_scope_dependencies(capture_scope)
+        requested_configs = tuple(
+            config
+            for config in dependencies["adjustments"]
+            if metrics is None or config.metric in metrics
+        )
+        capture_scope = replace(capture_scope, configs=requested_configs)
+        capture_streams = self.evidence_scope_streams(capture_scope)
+        covariate_streams = self.evidence_scope_covariate_streams(capture_scope)
+        fact_sources = {source.name: source for source in self._defs.fact_sources}
+        sources = {name: fact_sources[name] for name in capture_streams if name in fact_sources}
         event_source_names: set[str] = set()
         required_facts: set[str] = set()
         queries: list[str] = []
-        column_hints: dict[str, tuple[str | None, str | None]] = {}
+        column_hint_candidates: dict[str, list[tuple[str | None, str | None]]] = {}
         column_projections: dict[str, tuple[str, ...]] = {}
         # Exposure/trigger SQL stays unscoped: it defines enrollment and the
         # observation window, so filtering it by those same values is circular.
@@ -936,7 +909,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Freshness sees every unit in each requested metric's fact stream,
         # not just the enrolled units retained for outcome reduction.
         freshness_source_names: set[str] = set()
-        horizon_metrics = self._horizon_metrics if metrics is None else tuple(metrics)
+        horizon_metrics = dependencies["outcomes"]
         for metric in horizon_metrics:
             if isinstance(metric, RatioMetric):
                 freshness_source_names.add(add_fact(metric.numerator.fact))
@@ -955,7 +928,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 assert exposure.fact is not None
                 add_fact(exposure.fact, unscoped=True)
-        if assignment_requests and self._experiment.assignment_ledger is not None:
+        if dependencies["assignments"] and self._experiment.assignment_ledger is not None:
             ledger = self._experiment.assignment_ledger
             ledger_sql = ledger.sql
             if ledger_sql not in queries:
@@ -968,52 +941,30 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             uptake = getattr(self._context.design, "uptake", None)
             if uptake is not None:
                 add_fact(uptake.fact)
-        for fact in uptake_facts:
+        for fact in dependencies["uptake"]:
             add_fact(fact)
 
         # Sources read only for a breakout/factor/covariate property lookup:
         # `_build_breakout_properties_table` takes the latest value over the
         # whole source (static) or strictly before exposure (pre_exposure),
         # so these never get the window's lower time bound either.
-        property_source_names: set[str] = set(extra_sources)
+        property_source_names = set(extra_sources) | {
+            source_name
+            for source_names in covariate_streams.values()
+            for source_name in source_names
+        }
         for source_name in extra_sources:
             source = next(fs for fs in self._defs.fact_sources if fs.name == source_name)
             sources[source.name] = source
-        # An observational design's covariates are read the same way a
-        # breakout property is (see below): pin them unconditionally, since
-        # every readout of this design needs `unit_frame`'s covariate join
-        # to resolve, not only an explicit publish request.
-
-        self._add_observational_covariate_sources(sources, property_source_names)
-        requested_configs = self._context.configs if configs is None else configs
         for config in requested_configs:
-            if metrics is not None and config.metric not in metrics:
-                continue
-            methods = effective_methods(config, design=self.context.design)
-            for covariate in (
-                covariate for method in methods for covariate in method.covariates or ()
-            ):
-                covariate = self._resolve_covariate_binding(covariate, config.metric)
-                if isinstance(covariate, CupedCovariateBinding) and covariate.measure is not None:
-                    add_fact(covariate.measure.fact)
-                else:
-                    property_name = (
-                        covariate.property
-                        if isinstance(covariate, CupedCovariateBinding)
-                        and covariate.property is not None
-                        else covariate.name
-                    )
-                    fact_source = self._resolve_unit_covariate_source(
-                        property_name,
-                        declared_source=(
-                            covariate.source
-                            if isinstance(covariate, CupedCovariateBinding)
-                            else None
-                        ),
-                        kind=covariate.kind,
-                    )
-                    sources[fact_source.name] = fact_source
-                    property_source_names.add(fact_source.name)
+            for method in effective_methods(config, design=self.context.design):
+                for covariate in method.covariates or ():
+                    covariate = self._resolve_covariate_binding(covariate, config.metric)
+                    if (
+                        isinstance(covariate, CupedCovariateBinding)
+                        and covariate.measure is not None
+                    ):
+                        add_fact(covariate.measure.fact)
 
         site_volume_source_names, site_volume_dim_names = self._site_volume_scope_names(
             site_volume_metrics, sources
@@ -1045,12 +996,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 sorted(set(column_projections.get(source.sql, ())) | required_columns)
             )
             queries.append(source.sql)
-            column_hints[source.sql] = self._source_column_hint(
-                source,
-                unscoped_queries=unscoped_queries,
-                site_volume_source_names=site_volume_source_names,
-                freshness_source_names=freshness_source_names,
-                property_source_names=property_source_names,
+            column_hint_candidates.setdefault(source.sql, []).append(
+                self._source_column_hint(
+                    source,
+                    unscoped_queries=unscoped_queries,
+                    site_volume_source_names=site_volume_source_names,
+                    freshness_source_names=freshness_source_names,
+                    property_source_names=property_source_names,
+                )
             )
         dim_by_name = {d.name: d for d in self._defs.dim_sources}
         for dim_name in dimensions:
@@ -1070,16 +1023,25 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 sorted(set(column_projections.get(dim.sql, ())) | required_columns)
             )
             queries.append(dim.sql)
-            if dim_name in site_volume_dim_names or dim_name in freshness_dim_names:
-                column_hints[dim.sql] = (None, None)
-            else:
-                unit_col = dim.entity if dim.entity == self._experiment.unit else None
-                column_hints[dim.sql] = (unit_col, None)
+            hint = (
+                (None, None)
+                if dim_name in site_volume_dim_names or dim_name in freshness_dim_names
+                else (dim.entity if dim.entity == self._experiment.unit else None, None)
+            )
+            column_hint_candidates.setdefault(dim.sql, []).append(hint)
         # A SQL-backed exposure can share a query with a fact or dimension
         # projection. Keep its enrollment coordinates in that physical stream.
         for sql in exposure_sql_queries & column_projections.keys():
             required_columns = {"unit_id", "ts", "group_id", "experiment_id"}
             column_projections[sql] = tuple(sorted(set(column_projections[sql]) | required_columns))
+            column_hint_candidates.setdefault(sql, []).append((None, None))
+        column_hints: dict[str, tuple[str | None, str | None]] = {}
+        for sql, hints in column_hint_candidates.items():
+            unit_col, timestamp_col = hints[0]
+            column_hints[sql] = (
+                unit_col if all(hint[0] == unit_col for hint in hints) else None,
+                timestamp_col if all(hint[1] == timestamp_col for hint in hints) else None,
+            )
         if queries:
             self._session._require_snapshot_temp_privilege()
         enrolled = self._scope_enrolled_units()
