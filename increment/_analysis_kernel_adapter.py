@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal, cast
+from uuid import uuid4
+
+from pydantic_core import PydanticSerializationError
 
 from increment._canonical import declaration_value
 from increment._runnability import (
@@ -34,11 +37,86 @@ def _source_digest(source: Any) -> str | None:
     )
 
 
+def _run_identity_hashes(
+    experiment: Experiment, runtime_options: Mapping[str, object]
+) -> tuple[str, str]:
+    from increment.kernel.experiment import _json_value
+
+    try:
+        analysis_spec_hash = experiment.analysis_spec_hash
+        execution_identity_hash = experiment.execution_identity_hash
+    except CodedError as error:
+        if error.code != "kernel.method.implementation_ref_missing":
+            raise
+        from increment._runnability import scope_operation
+
+        analysis_spec_hash = contract_hash(
+            "analysis_spec.runtime_only",
+            {
+                "experiment_id": experiment.experiment_id,
+                "design": _json_value(experiment.design),
+                "metrics": _json_value(experiment.metrics),
+                "registration_hash": experiment.registration.registration_hash,
+                "source_refs": [item.canonical_payload() for item in experiment.source_refs],
+                "scopes": [item.canonical_payload() for item in experiment.scopes],
+                "operations": {
+                    scope.hash(): scope_operation(experiment, scope) for scope in experiment.scopes
+                },
+                "request_options_runtime": declaration_value(experiment.request_options),
+            },
+        )
+        execution_identity_hash = contract_hash(
+            "execution_identity",
+            {
+                "analysis_spec_hash": analysis_spec_hash,
+                "implementations": [
+                    {
+                        "method_instance_id": key[0],
+                        "learner_role": key[1],
+                        "implementation": value.canonical_payload(),
+                    }
+                    for key, value in sorted(experiment.implementation_refs.items())
+                ],
+                "package_version": experiment.package_version,
+            },
+        )
+    if runtime_options:
+        try:
+            request = _json_value(runtime_options)
+        except CodedError as error:
+            if error.code != "kernel.method.implementation_ref_missing":
+                raise
+            request = {"runtime_options": declaration_value(runtime_options)}
+        except PydanticSerializationError:
+            request = {"runtime_options": declaration_value(runtime_options)}
+        analysis_spec_hash = contract_hash(
+            "analysis_spec.run_options",
+            {"analysis_spec_hash": analysis_spec_hash, "options": request},
+        )
+        execution_identity_hash = contract_hash(
+            "execution_identity",
+            {
+                "analysis_spec_hash": analysis_spec_hash,
+                "implementations": [
+                    {
+                        "method_instance_id": key[0],
+                        "learner_role": key[1],
+                        "implementation": value.canonical_payload(),
+                    }
+                    for key, value in sorted(experiment.implementation_refs.items())
+                ],
+                "package_version": experiment.package_version,
+            },
+        )
+    return analysis_spec_hash, execution_identity_hash
+
+
 def experiment_for_analysis(
     analysis: Any,
     *,
     run_options: dict[str, object] | None = None,
     record_schema: bool = False,
+    return_run_result: bool = False,
 ) -> tuple[Experiment, AnalysisResolver]:
     if run_options is not None:
         run_options = {"population": None, **run_options}
@@ -92,7 +170,9 @@ def experiment_for_analysis(
             "operation_parameters": operation_parameters(analysis),
         },
     )
-    return experiment, AnalysisResolver(analysis, experiment, run_options=run_options)
+    return experiment, AnalysisResolver(
+        analysis, experiment, run_options=run_options, return_run_result=return_run_result
+    )
 
 
 class AnalysisResolver:
@@ -104,16 +184,22 @@ class AnalysisResolver:
         experiment: Experiment,
         *,
         run_options: dict[str, object] | None = None,
+        return_run_result: bool = False,
     ) -> None:
         self._analysis = analysis
         self._source = analysis._state.source
         self._experiment = experiment
         self._run_options = dict(run_options or {})
+        self._return_run_result = return_run_result
+        self._run_result_factory: Callable[..., Any] | None = None
         self.catalog_writer: Callable[[Experiment], None] | None = None
 
     def resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> Any:
         del source_refs, ctx
         return self._source
+
+    def set_run_result_factory(self, factory: Callable[..., Any]) -> None:
+        self._run_result_factory = factory
 
     def verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
         failures = []
@@ -194,6 +280,12 @@ class AnalysisResolver:
         ) != tuple(getattr(self._source, "breakouts", ())):
             self._unavailable(experiment, "segment")
         kwargs = operation_options(experiment, scope, {**self._run_options, **(options or {})})
+        if self._return_run_result and kwargs.get("store") is not None:
+            raise CodedError(
+                "Experiment execution does not support the Analysis.run store option",
+                code="kernel.run.invalid_input",
+                context={"field": "store"},
+            )
         capture = kwargs.pop("capture", None)
         if capture is not None:
             self._analysis.capture_sequential(**capture)
@@ -210,6 +302,30 @@ class AnalysisResolver:
                 ),
             )
             self.catalog_writer(captured)
+        if self._return_run_result:
+            factory = self._run_result_factory
+            if factory is None:
+                self._unavailable(experiment, "RunResult adapter")
+            assert factory is not None
+
+            registration = experiment.registration
+            context = self._analysis._state.source.context
+            compiled_plan = (
+                None if not hasattr(context, "plan") else self._analysis.compiled_decision_plan
+            )
+            analysis_spec_hash, execution_identity_hash = _run_identity_hashes(experiment, kwargs)
+            return factory(
+                self._analysis,
+                result,
+                registration,
+                compiled_plan,
+                experiment_id=experiment.experiment_id,
+                analysis_spec_hash=analysis_spec_hash,
+                execution_identity_hash=execution_identity_hash,
+                run_id=f"run-{uuid4().hex}",
+                declared_scope=scope,
+                identity_options=kwargs,
+            )
         return result
 
     @staticmethod

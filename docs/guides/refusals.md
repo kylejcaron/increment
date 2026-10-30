@@ -36,12 +36,18 @@ similar codes can mean different things.
 | `results.*`, `dashboard.*`, `report.*`, `reporting.*`, `tables.*` | Check result-frame projection columns and the dashboard's documented input/view requirements in the [dashboard guide](dashboard.md); use the underlying readout directly if that view is unavailable. `results.operation.alpha_above_allocation` means a reissued interval exceeds its stored declared or selected family allocation; request an equal or smaller alpha, or use an unadjusted row. |
 | `simulate.*` | Check the simulated design and requested operating characteristic in the [power analysis guide](power-analysis.md); simulated behavior is not a guarantee for a different design. |
 | `kernel.*` | Check the saved or shared analysis description named in the refusal context (`field`, `kind`). A scope, request or method description is inconsistent or cannot be saved portably. Request identity datetimes must include a timezone; aware offsets are normalized to UTC. For `kernel.definitions.catalog_missing`, bind the definitions with a connection to write the offline catalog; for `kernel.definitions.catalog_stale`, rebind after changing the definitions. Rebuild the description from the analysis rather than editing stored identifiers. |
+| `store.*` | The saved run manifest, cell roster, scope map or immutable publication is inconsistent. Keep run IDs unique, publish a complete roster once, and use the pinned `RunHandle` for reads; correct the source run and write a new ID rather than replacing a committed run. |
+| `wire.*` | A result cannot be represented in the portable wire format. `wire.procedure.contrast_context` means a switchback contrast run has in-memory cells and decisions but no portable arm decision plan; keep the result in memory, or use legacy `Analysis.run()` when its `ContrastResults` return contract is required. |
 
-| `store.*` | The saved run manifest, cell roster, scope map or immutable publication is inconsistent. Keep run IDs unique, publish a complete roster once, and use the pinned `RunHandle` for reads; correct the source run and write a new ID rather than replacing a committed run. `store.run.legacy_analysis_required` is unfinished for switchback family decisions; use legacy `Analysis.run()` until a registered decision-plan route is available. |
+`store.run.empty` means an empty metric selection has no result cells to
+persist. Select at least one metric before saving the run; an empty result may
+still be inspected in memory.
 
 `kernel.request.capture_not_supported` means sequential capture or checkpoint
 adoption was placed in saved request options. Call
-`analysis.capture_sequential(...)` on the analysis, then run it.
+`analysis.capture_sequential(...)`, or use
+`resolver.capture_sequential(...)` with the module-builder resolver, then run
+the experiment.
 `kernel.request.population_scope_only` means population was placed in request
 options; set it on `Scope(population=...)` instead.
 `kernel.run.provider_execution_unavailable` means `BoundResolver` verified a

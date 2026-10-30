@@ -218,3 +218,4 @@ from_definitions: Build an experiment from warehouse definitions, or read its of
 from_unit_day_artifact: Build an experiment from a unit-day artifact.
 from_switchback_frame: Build an experiment from a switchback panel.
 from_moments: Build an experiment from retained moments.
+render: Display qualified result cells for review.

@@ -348,8 +348,9 @@ def test_compliance_only_preflight_ignores_retention_configuration(tmp_path):
         requested = replace(experiment, request_options={"estimands": ("compliance",)})
 
         assert runnable(requested, "revenue")["randomized.unadjusted"].static_refusals == ()
-        rows = run(requested, resolver)
-        assert {row.estimand for row in rows} == {"compliance"}
+        result = run(requested, resolver)
+        assert result.cells
+        assert {cell.identity.key.estimand for cell in result.cells} == {"compliance"}
     finally:
         analysis.close()
         con.disconnect()

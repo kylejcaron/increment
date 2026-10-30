@@ -1191,3 +1191,46 @@ def test_public_run_binds_design_level_encouragement_compliance_identity():
     assert compliance.identity.estimator_id == "randomized.unadjusted"
     assert compliance.identity.method_config_hash
     assert compliance.identity.method_instance_id == "uptake:decision:unadjusted"
+
+
+def test_unicode_daily_metadata_order_roundtrips_after_run():
+    from dataclasses import replace
+
+    from increment import from_frame
+    from increment.kernel.contracts import Scope
+    from increment.result_envelope import AnalysisEnvelope
+
+    rows = []
+    for day in ("2025-01-01", "2025-01-02"):
+        for arm, shift in (("control", 0.0), ("z", 1.0), ("é", 2.0)):
+            for unit in range(8):
+                rows.append(
+                    {
+                        "unit": f"{arm}-{day}-{unit}",
+                        "arm": arm,
+                        "day": day,
+                        "value": float(unit) + shift,
+                    }
+                )
+    experiment, resolver = from_frame(
+        pd.DataFrame(rows),
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    scope = Scope(view="daily", grain="daily")
+    requested = replace(
+        experiment,
+        scopes=(scope,),
+        operations={scope.hash(): "run_daily"},
+    )
+
+    result = run(requested, resolver)
+    envelope = AnalysisEnvelope(result.cells, result.run.metadata)
+
+    restored = AnalysisEnvelope.from_payload(envelope.to_payload())
+
+    assert {cell.identity.key.group_id for cell in restored.cells} == {"control", "z", "é"}

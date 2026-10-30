@@ -51,7 +51,6 @@ from increment.winsor import WinsorConfidenceSet
 if TYPE_CHECKING:
     from increment.breakout.estimates import BreakoutEstimate
     from increment.estimation.cate import CateResult
-    from increment.estimation.contrast_results import ContrastResult
     from increment.estimation.decision_types import DecisionFailure
 
 
@@ -1351,9 +1350,10 @@ class SwitchbackEvalResult(_FrozenResultModel):
 
 
 def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
+    from increment._run import run
     from increment.builders import from_switchback_frame
+    from increment.estimation.contrast_results import ContrastResult
     from increment.frame import MetricSpec
-    from increment.kernel.resolver import run
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SharedScheduleOrder,
@@ -1389,8 +1389,9 @@ def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
             ),
         ),
     )
-    result = cast("ContrastResult", run(experiment, resolver)[0])
-    return result.estimate
+    result = run(experiment, resolver)
+    (cell,) = result.cells
+    return ContrastResult.model_validate(cell.to_payload()["row_payload"]["data"]).estimate
 
 
 def run_switchback_end_to_end(

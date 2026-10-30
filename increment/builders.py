@@ -156,7 +156,7 @@ def from_frame(
         analysis = Analysis._from_unit_panel(frame, **kwargs)
     else:
         _refuse("kernel.request.invalid", field="shape must be summary or panel")
-    return _experiment_for_analysis(analysis)
+    return _experiment_for_analysis(analysis, return_run_result=True)
 
 
 def from_definitions(
@@ -233,7 +233,9 @@ def from_definitions(
             _refuse("kernel.request.invalid", field="experiment_name is required")
         experiment_name = definitions.experiments[0].name
     analysis = Analysis._from_definitions(experiment_name, path, con, **kwargs)
-    experiment, resolver = _experiment_for_analysis(analysis, record_schema=record_schema)
+    experiment, resolver = _experiment_for_analysis(
+        analysis, record_schema=record_schema, return_run_result=True
+    )
     if record_schema:
         _write_catalog(path, experiment, definitions_digest)
         resolver.catalog_writer = lambda captured: _write_catalog(
@@ -245,19 +247,23 @@ def from_definitions(
 def from_unit_day_artifact(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
     from increment._analysis_execution import Analysis
 
-    return _experiment_for_analysis(Analysis._from_unit_day_artifact(*args, **kwargs))
+    return _experiment_for_analysis(
+        Analysis._from_unit_day_artifact(*args, **kwargs), return_run_result=True
+    )
 
 
 def from_switchback_frame(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
     from increment._analysis_execution import Analysis
 
-    return _experiment_for_analysis(Analysis._from_switchback_panel(*args, **kwargs))
+    return _experiment_for_analysis(
+        Analysis._from_switchback_panel(*args, **kwargs), return_run_result=True
+    )
 
 
 def from_moments(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
     from increment._analysis_execution import Analysis
 
-    return _experiment_for_analysis(Analysis._from_moments(*args, **kwargs))
+    return _experiment_for_analysis(Analysis._from_moments(*args, **kwargs), return_run_result=True)
 
 
 def from_unit_summary(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:

@@ -16,7 +16,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis, SourceSnapshotEvidence, from_definitions, run
 from increment.errors import (
     CapabilityError,
     DefinitionError,
@@ -168,6 +168,27 @@ def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
         ]
     finally:
         analysis.close()
+
+
+def test_kernel_run_preserves_triggered_population_identity(tmp_path):
+    events = _events(n_per_arm=300, trigger_rate=0.5)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=events)
+    evidence_cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
+    experiment, resolver = from_definitions(
+        "exp",
+        _write_defs(tmp_path),
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            evidence_cutoff, {"events": evidence_cutoff}
+        ),
+    )
+    try:
+        result = run(experiment, resolver, analysis_options={"population": "triggered"})
+    finally:
+        resolver._analysis.close()
+
+    assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
 
 
 @pytest.mark.integration

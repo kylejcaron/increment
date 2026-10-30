@@ -18,6 +18,7 @@ _CODES = (
     "store.run.scope_manifest_invalid",
     "store.run.scope_mapping_invalid",
     "store.run.metadata_mismatch",
+    "store.run.empty",
     "store.run.duplicate",
     "store.run.corrupt",
     "store.run.not_found",

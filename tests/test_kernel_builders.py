@@ -11,12 +11,11 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
-from increment import Analysis, MetricSpec, Randomized, Winsorization, run
+from increment import Analysis, MetricSpec, Randomized, RunResult, Winsorization, run
 from increment.builders import from_definitions, from_frame, from_moments
 from increment.errors import CodedError, IncrementWarning
 from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
-from increment.kernel.resolver import run as run_experiment
 from increment.kernel.resolver import runnable
 from tests.analysis_factory import (
     definitions_inputs,
@@ -101,7 +100,7 @@ def test_from_frame_builder_returns_experiment_and_builtin_resolver():
 
     assert isinstance(experiment, Experiment)
     assert callable(getattr(resolver, "run_experiment", None))
-    assert run_experiment(experiment, resolver)
+    assert run(experiment, resolver)
     assert Experiment.from_json(experiment.to_json()).hash() == experiment.hash()
 
 
@@ -125,11 +124,17 @@ def test_frame_run_matches_analysis_run():
         design=design,
         metrics={"value": "mean"},
     )
-
     actual = run(experiment, resolver)
-
-    assert type(actual) is type(expected)
-    assert list(actual) == list(expected)
+    assert isinstance(actual, RunResult)
+    expected_cells = expected.as_cells()
+    assert len(actual.cells) == len(expected_cells)
+    for actual_cell, expected_cell in zip(actual.cells, expected_cells, strict=True):
+        assert actual_cell.identity.key == expected_cell.identity.key
+        assert actual_cell.summary is not None
+        assert expected_cell.summary is not None
+        assert actual_cell.summary.point == pytest.approx(expected_cell.summary.point, rel=1e-9)
+        assert actual_cell.summary.lower == pytest.approx(expected_cell.summary.lower, rel=1e-9)
+        assert actual_cell.summary.upper == pytest.approx(expected_cell.summary.upper, rel=1e-9)
 
 
 def test_analysis_summary_facade_delegates_to_public_builder():
@@ -145,7 +150,40 @@ def test_analysis_summary_facade_delegates_to_public_builder():
 
     experiment, resolver = facade_binding(analysis)
     assert isinstance(experiment, Experiment)
-    assert list(run(experiment, resolver)) == list(analysis.run())
+    assert isinstance(run(experiment, resolver), RunResult)
+
+
+@pytest.mark.integration
+def test_definition_exploratory_metric_runs_with_cell_identity(seeded_defs, seeded_con):
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.warns(IncrementWarning):
+                baseline = run(experiment, resolver)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.warns(IncrementWarning):
+                result = run(
+                    experiment,
+                    resolver,
+                    analysis_options={"exploratory_metrics": ["aov"]},
+                )
+    finally:
+        analysis = getattr(resolver, "_analysis", None)
+        if analysis is not None:
+            analysis.close()
+
+    assert result.decisions.program == baseline.decisions.program
+    assert isinstance(result, RunResult)
+    exploratory = {
+        cell.identity.hash() for cell in result.cells if cell.identity.key.metric == "aov"
+    }
+    assert exploratory
+    assert {
+        verdict.role for verdict in result.decisions.cells if verdict.identity_hash in exploratory
+    } == {"exploratory"}
 
 
 def test_offline_definitions_builder_refuses_missing_catalog(tmp_path):

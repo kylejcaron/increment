@@ -58,7 +58,11 @@ def persist_results(
     if not cells:
         from increment.store._refusals import refuse_store
 
-        refuse_store("store.run.roster_mismatch", "A run must contain at least one result cell")
+        refuse_store(
+            "store.run.empty",
+            "An empty metric selection cannot be saved",
+            reason="empty_metric_selection",
+        )
     try:
         package_version = version("increment")
     except PackageNotFoundError:

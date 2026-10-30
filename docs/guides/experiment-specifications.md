@@ -10,6 +10,11 @@ exports refuse raw factories even when `implementation_refs` records their
 provenance. An `ImplementationRef` does not replace or reconstruct a raw
 factory; experiments containing one remain in-memory-only.
 
+`run(experiment, resolver)` returns a `RunResult` for a supported single
+scope. If its in-memory learner configuration cannot be serialized,
+`RunResult` remains usable in memory, while storing or serializing it refuses
+with `wire.procedure.runtime_method`.
+
 `Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected scope. Both contain the declared metrics, with any switchback scope-specific selection applied. Each request retains its scope, registration hash, and source-reference name.
 
 `runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. `resolve(estimator_id, experiment, metric)` returns static refusals only when an incompatibility is known.
@@ -74,7 +79,7 @@ The module builders add a tuple-returning path without changing the existing
 `Analysis.from_*` constructors:
 
 ```python
-from increment import Experiment, from_frame, run
+from increment import Experiment, from_frame, render, run
 import pandas as pd
 
 units = pd.DataFrame(
@@ -95,7 +100,8 @@ experiment, resolver = from_frame(
 )
 saved = experiment.to_json()
 restored = Experiment.from_json(saved)
-estimates = run(restored, resolver)
+result = run(restored, resolver)
+print(render(result, "brief"))
 ```
 
 For a registered sequential definition, capture through the resolver returned by
@@ -109,7 +115,7 @@ experiment, resolver = from_definitions(
     "definitions.yml", con, experiment_name="sequential_experiment"
 )
 resolver.capture_sequential(finalized=True, as_of=as_of)
-estimates = run(experiment, resolver)
+result = run(experiment, resolver)
 ```
 
 `from_frame` requires `shape="summary"` or `shape="panel"`. The narrower
@@ -120,15 +126,26 @@ that catalog and refuses when it is missing or stale. An offline definitions
 specification can be inspected with `runnable`, but needs a connection-bound
 resolver to execute.
 
-The bound built-in resolver executes a single run, daily, as-of, or breakout
-scope using the declared metric selection and population. It refuses changed
-designs, decision plans, metric definitions, or unsupported scope coordinates
-with `kernel.run.execution_unavailable`, before reading evidence. Source names,
-URIs, recorded digests, and capabilities must identify the bound source.
-`analysis_options` forwards supported readout options. Persistence arguments
-such as `results_store`, `decision_log`, and `run_id` are not supported by this
-tuple-returning route and refuse with `kernel.run.invalid_input`; use the
+The bound built-in resolver executes one selected run, daily, as-of, breakout,
+or switchback scope using its declared metric selection and population.
+Whole-window `run` scopes, including the switchback contrast view, are evaluated
+against the registered decision plan. Daily, as-of, breakout, compliance-only,
+and exploratory-metric cells are retained with their own roles and receive
+`not_evaluated` verdicts because they are monitoring or exploratory views, not
+whole-experiment tests. A resolver runs one scope at a time even though
+`Experiment.compile()` can describe several scopes. It refuses changed designs,
+decision plans, metric definitions, or unsupported scope coordinates with
+`kernel.run.execution_unavailable`, before reading evidence.
+Source names, URIs, recorded digests, and capabilities must identify the
+bound source.
+`analysis_options` forwards supported readout options. This builder route
+returns a `RunResult` and does not support persistence arguments such as
+`results_store`, `decision_log`, and `run_id`, or the nested legacy
+`analysis_options={"store": ...}` option; these refuse with
+`kernel.run.invalid_input` before evidence is read or written. Use the
 registered-analysis form of `run` when those writes are required.
+`Analysis.run()` remains the compatibility route
+that returns `LiftEstimates` or `ContrastResults`.
 
 Connected definitions builders record dtypes lazily from the selected input
 relations during the first execution, then refresh their offline catalog.
@@ -164,8 +181,9 @@ else:
 ```
 
 `ResultCell` preserves one cell's identity and outcome in a stored run;
-`Decisions` records the verdicts computed from those cells. They are separate
-from the legacy estimate collection returned by the built-in resolver adapter.
+`Decisions` records the verdicts computed from those cells. The legacy
+`Analysis.run()` method returns estimate collections; the top-level
+`run(experiment, resolver)` returns a `RunResult` containing cells and decisions.
 
 ## Frozen-capture construction coverage
 

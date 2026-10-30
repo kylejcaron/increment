@@ -457,9 +457,9 @@ def test_triggered_asof_replays_from_exported_moments(tmp_path):
         assert {row.ds for row in history} == {_LATER}
         from dataclasses import replace
 
+        from increment import run, runnable
         from increment.builders import from_moments
         from increment.kernel.contracts import Scope
-        from increment.kernel.resolver import run, runnable
 
         experiment, resolver = from_moments(
             pq.read_table(path).to_pylist(),
@@ -470,9 +470,11 @@ def test_triggered_asof_replays_from_exported_moments(tmp_path):
         requested = replace(experiment, scopes=(scope,))
         assert runnable(requested, "revenue")["randomized.unadjusted"].static_refusals == ()
         resolved_history = run(requested, resolver)
-        assert resolved_history
-        assert {row.analysis_population for row in resolved_history} == {"triggered"}
-        assert {row.ds for row in resolved_history} == {_LATER}
+        assert resolved_history.cells
+        assert {cell.identity.key.analysis_population for cell in resolved_history.cells} == {
+            "triggered"
+        }
+        assert {cell.identity.key.ds for cell in resolved_history.cells} == {_LATER}
 
     finally:
         analysis.close()

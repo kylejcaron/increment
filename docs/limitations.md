@@ -5,7 +5,7 @@ decision. Start with [At a glance](#at-a-glance), then open the folds for statis
 details, refusal codes and measurements; [Evidence status](validation.md#evidence-status)
 explains how the library labels its evidence.
 
-For a runnable analysis, follow the [quickstart](guides/quickstart.md#one-row-per-randomization-unit).
+For a runnable analysis, follow the [quickstart](guides/quickstart.md#build-and-run-an-experiment).
 
 ## How to read a refusal
 

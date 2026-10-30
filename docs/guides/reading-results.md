@@ -1,13 +1,60 @@
 # Reading results
 
-`Analysis.run()` returns one of two result families. The family fixes the row
-type, but the scale of a value is a property of each row, so check every row
-before comparing or combining rows. First establish population, estimand and
-inference regime; then read the point with its interval or confidence set,
-availability reason and selection qualification. The canonical
-[Multiplicity](multiplicity.md) table explains the existing status literals
-and guarantees; this guide explains how to interpret those disclosures on
-result objects and tables.
+`Analysis.run()` returns one of two legacy result families. The recommended
+`run(experiment, resolver)` builder route returns a `RunResult`: inspect its
+`cells`, `effects`, and `decisions`, or pass it to `render` to retain scope,
+integrity, and availability qualifications. The table and export examples below
+describe the legacy collection APIs; bridge a builder result to them with its
+cells and run metadata:
+
+```python
+import polars as pl
+
+from increment import AnalysisPlan, Randomized, from_frame, run
+from increment.result_envelope import AnalysisEnvelope
+from increment.tables import readout_table
+
+frame = pl.DataFrame(
+    {
+        "unit": ["c1", "c2", "c3", "c4", "t1", "t2", "t3", "t4"],
+        "arm": ["control"] * 4 + ["treatment"] * 4,
+        "value": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
+    }
+)
+experiment, resolver = from_frame(
+    frame,
+    shape="summary",
+    unit="unit",
+    group="arm",
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+    metrics={"value": "mean"},
+    plan=AnalysisPlan(primary="value"),
+)
+result = run(experiment, resolver)
+envelope = AnalysisEnvelope(result.cells, result.run.metadata)
+table = readout_table(envelope)
+```
+
+Only whole-window `run` scopes, including the switchback contrast view, are
+evaluated against the registered decision plan. Daily, as-of, breakout,
+compliance-only, and exploratory-metric cells remain in the result with their
+own roles and have `not_evaluated` verdicts: these are monitoring or exploratory
+views, not tests of the whole experiment.
+Narrowing a run's selected metrics or estimands does not erase its registered
+family roster; unselected members remain visible as `not_evaluated`.
+
+
+The family fixes the row type, but the scale of a value is a property of each
+row, so check every row before comparing or combining rows. First establish
+population, estimand and inference regime; then read the point with its interval
+or confidence set, availability reason and selection qualification. The
+canonical [Multiplicity](multiplicity.md) table explains the existing status
+literals and guarantees; this guide explains how to interpret those disclosures
+on result objects and tables.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|

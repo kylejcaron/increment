@@ -152,7 +152,7 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
         breakouts=["country"],
     )
     daily = replace(experiment, scopes=(Scope(view="daily", grain="daily"),))
-    assert {row.ds for row in run(daily, resolver)} == {
+    assert {cell.identity.key.ds for cell in run(daily, resolver).cells} == {
         pd.Timestamp("2025-01-01").date(),
         pd.Timestamp("2025-01-02").date(),
     }
@@ -169,6 +169,23 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
         ),
     )
     assert not runnable(segmented, "value")["randomized.unadjusted"].static_refusals
+
+    breakout = replace(
+        experiment,
+        scopes=(
+            Scope(
+                view="breakout",
+                grain="total",
+                segment=(BreakoutIdentity(property="country", source=None),),
+            ),
+        ),
+    )
+    breakout_result = run(breakout, resolver)
+    assert breakout_result.cells
+    assert {verdict.status for verdict in breakout_result.decisions.cells} == {"not_evaluated"}
+    assert {
+        code for verdict in breakout_result.decisions.cells for code in verdict.reason_codes
+    } == {"decision.not_evaluated.monitoring_view"}
 
 
 @pytest.mark.parametrize("clear_declared_prior", [False, True])
@@ -278,7 +295,7 @@ def test_preflight_uses_experiment_metric_selection_for_configurations():
         metrics={"value": experiment.metrics["value"]},
     )
 
-    assert [row.metric for row in run(experiment, resolver)] == ["value"]
+    assert [cell.identity.key.metric for cell in run(experiment, resolver).cells] == ["value"]
     assert runnable(experiment, "value")["randomized.unadjusted"].static_refusals == ()
 
 
@@ -358,13 +375,334 @@ def test_encouragement_daily_preflight_matches_saved_estimands(estimands):
     status = runnable(requested, "value")["randomized.unadjusted"]
     if estimands == ("itt",):
         rows = run(requested, resolver)
-        assert rows and {row.estimand for row in rows} == {"itt"}
+        assert rows.cells and {cell.identity.key.estimand for cell in rows.cells} == {"itt"}
         assert status.static_refusals == ()
     else:
         with pytest.raises(CodedError) as error:
             run(requested, resolver)
         assert error.value.code == "readout.estimands.unknown"
         assert error.value.code in {refusal.code for refusal in status.static_refusals}
+
+
+def test_compliance_cell_identity_uses_declared_uptake_fact():
+    from increment import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = _frame().assign(
+        day="2025-01-01",
+        uptake=[0, 1] * 20,
+        clicked=[1, 0] * 20,
+    )
+    metric_hashes = []
+    for fact in ("uptake", "clicked"):
+        experiment, resolver = from_frame(
+            frame,
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            metrics={"value": "mean"},
+            design=Encouragement(
+                control_group="control",
+                uptake=UptakeSpec(fact=fact, window_days=1),
+                exclusion_restriction=ExclusionRestriction(
+                    justification="assignment affects outcomes only through uptake"
+                ),
+            ),
+        )
+        result = run(experiment, resolver, analysis_options={"estimands": ("compliance",)})
+        cell = next(cell for cell in result.cells if cell.identity.key.estimand == "compliance")
+        metric_hashes.append(cell.identity.metric_hash)
+
+    assert len(set(metric_hashes)) == 2
+
+
+def test_daily_lift_run_decisions_are_not_evaluated_against_registered_plan():
+    frame = pd.concat(
+        [
+            _frame()
+            .assign(unit=lambda rows, date=date, repeat=repeat: rows["unit"] + f"-{date}-{repeat}")
+            .assign(day=f"2025-01-0{date}")
+            for date in (1, 2)
+            for repeat in (1, 2)
+        ],
+        ignore_index=True,
+    )
+    frame.loc[frame["arm"] == "treatment", "value"] += 100
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    result = run(replace(experiment, scopes=(Scope(view="daily", grain="daily"),)), resolver)
+    assert result.cells
+    assert {verdict.status for verdict in result.decisions.cells} == {"not_evaluated"}
+    assert {code for verdict in result.decisions.cells for code in verdict.reason_codes} == {
+        "decision.not_evaluated.monitoring_view"
+    }
+
+
+def test_monitoring_scope_is_not_evaluated_against_whole_experiment_plan():
+    from increment import AnalysisPlan
+
+    frame = pd.concat(
+        [_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")],
+        ignore_index=True,
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+        plan=AnalysisPlan(primary="value"),
+    )
+    result = run(replace(experiment, scopes=(Scope(view="daily", grain="daily"),)), resolver)
+
+    assert result.cells
+    assert {cell.identity.key.method_role for cell in result.cells} == {"decision"}
+    assert {verdict.status for verdict in result.decisions.cells} == {"not_evaluated"}
+    assert {verdict.reason_codes for verdict in result.decisions.cells} == {
+        ("decision.not_evaluated.monitoring_view",)
+    }
+    assert {verdict.role for verdict in result.decisions.cells} == {"primary"}
+
+
+def test_partial_run_selection_cannot_pass_omitted_registered_guardrail():
+    from increment import AnalysisPlan
+
+    frame = _frame()
+    for metric in ("primary", "guard_a", "guard_b"):
+        frame[metric] = frame["value"] + np.where(frame["arm"] == "treatment", 100, 0)
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="primary", type="mean"),
+            MetricSpec(name="guard_a", type="mean", preferred_direction="increase"),
+            MetricSpec(name="guard_b", type="mean", preferred_direction="increase"),
+        ],
+        plan=AnalysisPlan(primary="primary", guardrails=("guard_a", "guard_b")),
+    )
+
+    result = run(experiment, resolver, analysis_options={"metrics": ["primary", "guard_a"]})
+
+    assert {verdict.status for verdict in result.decisions.cells} == {"reject"}
+    assert result.decisions.program.status == "not_evaluated"
+
+
+def test_selected_run_retains_unselected_sequential_family_membership():
+    import pandas as pd
+
+    from tests.binary_sequential_cases import DESIGN, ROUTES, analysis_plan, unit_rows
+
+    frame = pd.DataFrame(unit_rows(seed=29, n=180, secondaries=2))
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        exposure_date="enrollment",
+        metrics=[
+            MetricSpec(name="purchase", type="conversion"),
+            MetricSpec(name="secondary_0", type="conversion"),
+            MetricSpec(name="secondary_1", type="conversion"),
+        ],
+        design=DESIGN,
+        plan=analysis_plan(ROUTES["always_valid"].inference, secondaries=2),
+    )
+
+    result = run(
+        experiment,
+        resolver,
+        analysis_options={"metrics": ["purchase"], "estimands": ["itt"]},
+    )
+
+    assert {cell.identity.key.metric for cell in result.cells} == {"purchase"}
+    family_members = {
+        key.metric for family in result.run.metadata.scope.families for key in family.members
+    }
+    assert family_members >= {"purchase", "secondary_0", "secondary_1"}
+    missing = [
+        member
+        for family in result.decisions.families
+        for member in family.members
+        if not member.identity_hash
+    ]
+    assert missing and all(member.status == "not_evaluated" for member in missing)
+
+
+def test_portable_run_result_pickle_round_trip():
+    import pickle
+
+    experiment, resolver = _experiment()
+    result = run(experiment, resolver)
+
+    restored = pickle.loads(pickle.dumps(result))
+
+    assert restored.cells == result.cells
+    assert restored.decisions == result.decisions
+    assert restored.run.decision_plan is not None
+
+
+def test_empty_run_cannot_be_saved_with_registered_refusal(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = _experiment()
+    result = run(experiment, resolver, analysis_options={"metrics": []})
+    store = ParquetResultsStore(tmp_path / "results")
+    with pytest.raises(CodedError) as raised:
+        store.put(result.run)
+
+    assert raised.value.code == "store.run.empty"
+    assert "empty" in str(raised.value).lower()
+    assert not tuple((tmp_path / "results").glob("*.parquet"))
+
+
+def test_unadjusted_encouragement_run_keeps_both_late_value_scales():
+    from increment import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = _frame().assign(uptake=[0, 1] * 20)
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="uptake", window_days=1),
+            exclusion_restriction=ExclusionRestriction(
+                justification="assignment affects outcomes only through uptake"
+            ),
+        ),
+    )
+    result = run(experiment, resolver)
+    late_cells = [cell for cell in result.cells if cell.identity.key.estimand == "late"]
+
+    assert {cell.identity.key.value_scale for cell in late_cells} == {"absolute", "relative"}
+
+
+def test_empty_metric_selection_returns_empty_run_result():
+    experiment, resolver = _experiment()
+
+    with _frame_read_calls() as reads:
+        result = run(experiment, resolver, analysis_options={"metrics": []})
+    assert reads == []
+    assert result.cells == ()
+    assert result.effects == ()
+    assert result.decisions.cells == ()
+
+
+def test_run_options_change_execution_identity():
+    from increment.estimation.engine import Method
+
+    experiment, resolver = _experiment()
+    first = run(experiment, resolver)
+    second = run(experiment, resolver, analysis_options={"decision_method": Method(name="welch")})
+    assert first.run.analysis_spec_hash != second.run.analysis_spec_hash
+    assert first.run.execution_identity_hash != second.run.execution_identity_hash
+
+
+@dataclass
+class _HiddenProbabilityFactory:
+    probability: float = field(repr=False)
+
+    def __call__(self):
+        return _ConfiguredPropensity(self.probability)
+
+
+def test_runtime_callable_overrides_with_identical_repr_change_run_identity():
+    import warnings
+
+    experiment, resolver = _runtime_experiment(_ConfiguredPropensity)
+    factories = (_HiddenProbabilityFactory(0.3), _HiddenProbabilityFactory(0.7))
+    assert repr(factories[0]) == repr(factories[1])
+    hashes = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for factory in factories:
+            result = run(
+                experiment,
+                resolver,
+                analysis_options={
+                    "decision_method": Method(name="iptw", propensity_learner=factory)
+                },
+            )
+            hashes.append(result.run.execution_identity_hash)
+
+    assert hashes[0] != hashes[1]
+
+
+def test_fold_count_method_is_runtime_only():
+    from increment.estimation.engine import Method
+
+    frame = _frame().assign(age=[0, 0, 1, 1] * 10)
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("age",))
+        ),
+    )
+    result = run(
+        experiment,
+        resolver,
+        analysis_options={"decision_method": Method(name="dml", folds=2)},
+    )
+    assert result.run.decision_plan is None
+    assert result.run.decision_plan_unavailable_reason == "wire.procedure.runtime_method"
+    with pytest.raises(CodedError) as error:
+        import pickle
+
+        pickle.dumps(result)
+    assert error.value.code == "wire.procedure.runtime_method"
+
+
+def test_unportable_registered_plan_refuses_storage_before_source_read(tmp_path):
+    from increment.estimation.engine import Method
+    from increment.kernel.contracts import Registration
+    from increment.store import ParquetResultsStore
+    from tests.analysis_factory import held_source, replace_analysis_source
+    from tests.test_metric_evidence import _CountingSource
+
+    analysis = Analysis.from_unit_summary(
+        _frame(),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="value", type="mean", decision_method=Method(name="dml", folds=2))
+        ],
+    )
+    plan = analysis.compiled_decision_plan
+    registration = Registration.from_plan(plan)
+    counted = _CountingSource(held_source(analysis))
+    replace_analysis_source(analysis, counted)
+    with pytest.raises(CodedError) as error:
+        run(
+            analysis,
+            registration,
+            plan,
+            experiment_id="runtime-method",
+            analysis_spec_hash="spec",
+            execution_identity_hash="execution",
+            run_id="run",
+            results_store=ParquetResultsStore(tmp_path / "results"),
+        )
+    assert error.value.code == "wire.procedure.runtime_method"
+    assert counted.unit_frame_reads == 0
 
 
 @pytest.mark.integration
@@ -410,8 +748,18 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
 
     capabilities = requested.source_refs[0].capabilities
     assert capabilities is not None and capabilities.grains == frozenset({"total"})
-    assert list(run(requested, resolver)) == list(expected)
+    from tests.parity_harness.comparison import nested_close
+
+    actual = run(requested, resolver)
+    actual_payloads = [cell.to_payload()["row_payload"]["data"] for cell in actual.cells]
+    expected_payloads = [cell.to_payload()["row_payload"]["data"] for cell in expected.as_cells()]
+    assert nested_close(actual_payloads, expected_payloads)
     assert runnable(requested, "outcome")["randomized.unadjusted"].static_refusals == ()
+    actual_captured = run(requested, resolver, analysis_options={"capture": {"finalized": True}})
+    assert nested_close(
+        [cell.to_payload()["row_payload"]["data"] for cell in actual_captured.cells],
+        [cell.to_payload()["row_payload"]["data"] for cell in expected.as_cells()],
+    )
     values = replace(requested, operations={requested.scopes[0].hash(): "run_asof"})
     assert "evidence.grain_unavailable" in {
         refusal.code
@@ -449,10 +797,10 @@ def test_builder_resolver_can_capture_sequential_checkpoint_before_run():
     scope = Scope(view="asof", grain="asof", completion_policy=True)
     requested = replace(experiment, scopes=(scope,))
 
-    rows = run(requested, resolver)
+    result = run(requested, resolver)
 
-    assert rows
-    assert {row.ds for row in rows} == {1}
+    assert result.cells
+    assert {cell.identity.key.ds for cell in result.cells} == {1}
 
 
 @pytest.mark.parametrize(
@@ -473,6 +821,19 @@ def test_experiment_run_refuses_unsupported_execution_options(option):
         options: dict[str, Any] = {option: "requested"}
         run(experiment, resolver, **options)
     assert error.value.code == "kernel.run.invalid_input"
+
+
+def test_run_rejects_store_in_analysis_options_before_persisting(tmp_path):
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = _experiment()
+    store = ParquetResultsStore(tmp_path / "results")
+
+    with pytest.raises(CodedError) as error:
+        run(experiment, resolver, analysis_options={"store": store})
+
+    assert error.value.code == "kernel.run.invalid_input"
+    assert not tuple((tmp_path / "results").rglob("*.parquet"))
 
 
 class _Propensity:
@@ -593,7 +954,7 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
         offline, _ = from_definitions(path)
         assert offline.hash() == experiment.hash()
         assert resolver.verify(offline.source_refs, resolver.resolve(offline.source_refs)) == []
-    assert run(experiment, resolver, analysis_options={"metrics": ["purchase_rate"]})
+    assert run(experiment, resolver, analysis_options={"metrics": ["purchase_rate"]}).cells
     captured, _ = from_definitions(path)
     assert captured.source_refs[0].schema
     assert not any(name.startswith("unused.") for name in captured.source_refs[0].schema)
@@ -662,7 +1023,7 @@ def test_runtime_callable_configurations_cannot_share_a_bound_resolver():
 @pytest.mark.parametrize("with_reference", [False, True])
 def test_dataclass_learner_factory_stays_callable_until_export(with_reference):
     experiment, resolver = _runtime_experiment(_ConfiguredPropensity)
-    assert run(experiment, resolver)
+    assert run(experiment, resolver).cells
     if with_reference:
         experiment = replace(
             experiment,
@@ -679,6 +1040,25 @@ def test_dataclass_learner_factory_stays_callable_until_export(with_reference):
     assert portable.value.code == "kernel.method.implementation_ref_missing"
 
 
+def test_runtime_callable_run_result_refuses_portable_storage(tmp_path):
+    import pickle
+
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = _runtime_experiment(_ConfiguredPropensity)
+    result = run(experiment, resolver)
+
+    assert result.cells
+    assert result.run.decision_plan is None
+    assert result.run.decision_plan_unavailable_reason == "wire.procedure.runtime_method"
+    with pytest.raises(CodedError) as serialization:
+        pickle.dumps(result)
+    assert serialization.value.code == "wire.procedure.runtime_method"
+    with pytest.raises(CodedError) as portability:
+        ParquetResultsStore(tmp_path).put(result.run)
+    assert portability.value.code == "wire.procedure.runtime_method"
+
+
 def test_frozen_request_options_restore_typed_methods_metrics_and_priors():
     from pydantic import TypeAdapter
 
@@ -692,10 +1072,13 @@ def test_frozen_request_options_restore_typed_methods_metrics_and_priors():
         "metrics": [metric],
         "prior": Normal(mu=0, sigma=1),
     }
-    expected = run(experiment, resolver, analysis_options=options)
+    expected = run(experiment, resolver, analysis_options=options).cells
     requested = replace(experiment, request_options=options)
     restored = Experiment.from_json(requested.to_json())
-    assert list(run(restored, resolver)) == list(expected)
+    actual = run(restored, resolver).cells
+    assert [cell.retained_row().model_dump(mode="json") for cell in actual] == [
+        cell.retained_row().model_dump(mode="json") for cell in expected
+    ]
 
 
 @pytest.mark.parametrize(
@@ -779,11 +1162,19 @@ def test_frozen_metric_keeps_undeclared_direction_on_day_axis(view, grain):
         analysis_options={"metrics": [metric]},
     )
     actual = run(restored, resolver)
-    assert actual.metadata is not None and direct.metadata is not None
-    assert actual.metadata.scope.snapshot_id == direct.metadata.scope.snapshot_id
-    assert [(row.ds, row.metric, row.lift) for row in actual] == [
-        (row.ds, row.metric, row.lift) for row in direct
-    ]
+    from increment.kernel.contracts import metric_hash
+
+    assert actual.cells[0].identity.metric_hash == metric_hash(metric)
+    assert actual.run.metadata is not None and direct.run.metadata is not None
+    assert actual.run.metadata.scope.snapshot_id == direct.run.metadata.scope.snapshot_id
+    if view == "asof":
+        assert {cell.identity.scope.through_day.isoformat() for cell in actual.cells} == {
+            "2025-01-01",
+            "2025-01-02",
+        }
+    assert [
+        (cell.identity.key.ds, cell.identity.key.metric, cell.summary) for cell in actual.cells
+    ] == [(cell.identity.key.ds, cell.identity.key.metric, cell.summary) for cell in direct.cells]
     assert "preferred_direction" not in restored.request_options["metrics"][0]
 
 
@@ -812,8 +1203,8 @@ def test_callable_model_factory_survives_preflight_and_frozen_request():
 
     assert warning_codes(direct_warnings) == warning_codes(frozen_warnings)
     assert nested_close(
-        [row.model_dump(mode="json") for row in frozen],
-        [row.model_dump(mode="json") for row in direct],
+        [cell.retained_row().model_dump(mode="json") for cell in frozen.cells],
+        [cell.retained_row().model_dump(mode="json") for cell in direct.cells],
     )
 
 
@@ -1184,3 +1575,221 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
     assert execution_error.value.code == "estimation.binomial.finite_sample_unavailable"
     assert reads == []
     assert refusal_codes == {execution_error.value.code}
+
+
+@pytest.mark.parametrize(
+    ("view", "grain", "operation"),
+    [
+        ("daily", "daily", "run_daily"),
+        ("asof", "asof", "run_asof"),
+    ],
+)
+def test_value_only_day_axis_builder_operations_return_run_results(view, grain, operation):
+    frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    scope = Scope(view=view, grain=grain)
+    requested = replace(
+        experiment,
+        scopes=(scope,),
+        operations={scope.hash(): operation},
+    )
+
+    result = run(requested, resolver)
+
+    assert result.cells
+    assert all(cell.identity.scope.view == view for cell in result.cells)
+    assert all(cell.identity.key.ds is not None for cell in result.cells)
+    assert all(cell.identity.key.value_scale == "absolute" for cell in result.cells)
+    assert all(cell.identity.estimator_id is None for cell in result.cells)
+    assert result.decisions.run_id == result.run.run_id
+
+
+def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path):
+    import pickle
+
+    from increment.store import ParquetResultsStore
+
+    frame = _frame().assign(age=[0, 0, 1, 1] * 10)
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics=["value"],
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("age",))
+        ),
+    )
+
+    result = run(
+        experiment,
+        resolver,
+        analysis_options={
+            "decision_method": Method(name="iptw", propensity_learner=_ConfiguredPropensity)
+        },
+    )
+
+    assert result.cells
+    assert result.run.decision_plan is None
+    assert result.run.decision_plan_unavailable_reason == "wire.procedure.runtime_method"
+    with pytest.raises(CodedError) as serialization:
+        pickle.dumps(result)
+    assert serialization.value.code == "wire.procedure.runtime_method"
+    with pytest.raises(CodedError) as portability:
+        ParquetResultsStore(tmp_path).put(result.run)
+    assert portability.value.code == "wire.procedure.runtime_method"
+
+
+@pytest.mark.parametrize(("effect", "expected"), [(10.0, "reject"), (0.0, "retain")])
+def test_switchback_run_decides_from_contrast_procedure(effect, expected):
+    from increment import AnalysisPlan, from_switchback_frame
+    from tests.test_frame_switchback import _assignment, _identification
+
+    rows = []
+    for unit in range(12):
+        for cycle in range(4):
+            order = (
+                ("control", "treatment") if (unit + cycle) % 2 == 0 else ("treatment", "control")
+            )
+            control_value = 10.0 + 0.3 * unit + 0.1 * cycle
+            contrast = effect + (unit % 3 - 1) * 0.1 + (cycle % 2 * 2 - 1) * 0.02
+            for period, group in enumerate(order):
+                value = control_value + (contrast if group == "treatment" else 0.0)
+                for step in range(3):
+                    rows.append(
+                        {
+                            "unit": f"u{unit}",
+                            "cycle": cycle,
+                            "period": period,
+                            "step": step,
+                            "group": group,
+                            "mean": 999.0 if step == 0 else value,
+                        }
+                    )
+    experiment, resolver = from_switchback_frame(
+        pd.DataFrame(rows),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"mean": "mean"},
+        identification=_identification(),
+        assignment=_assignment(p_ct=0.5),
+        plan=AnalysisPlan(primary="mean"),
+    )
+
+    result = run(experiment, resolver)
+
+    assert result.decisions.cells[0].status == expected
+    assert result.decisions.program.status == "block"
+    assert "integrity.unsupported_assignment" in result.decisions.program.reason_codes
+
+
+@pytest.mark.slow
+def test_switchback_builder_returns_in_memory_run_result_and_refuses_portable_storage(tmp_path):
+    import pickle
+
+    from increment import from_switchback_frame
+    from increment.store import ParquetResultsStore
+    from tests.test_frame_switchback import _assignment, _identification, _rows
+
+    experiment, resolver = from_switchback_frame(
+        pd.DataFrame(_rows()),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"mean": "mean"},
+        identification=_identification(),
+        assignment=_assignment(),
+    )
+
+    result = run(experiment, resolver)
+
+    assert result.cells
+    assert result.run.decision_plan is None
+    assert result.run.decision_plan_unavailable_reason == "wire.procedure.contrast_context"
+    assert result.decisions.run_id == result.run.run_id
+    with pytest.raises(CodedError) as serialization:
+        pickle.dumps(result)
+    assert serialization.value.code == "wire.procedure.contrast_context"
+    with pytest.raises(CodedError) as portability:
+        ParquetResultsStore(tmp_path).put(result.run)
+    assert portability.value.code == "wire.procedure.contrast_context"
+
+
+def test_switchback_partial_run_selection_cannot_pass_omitted_guardrail():
+    from increment import AnalysisPlan, ExperimentMetric, MetricSpec, from_switchback_frame
+    from tests.test_frame_switchback import _assignment, _identification
+
+    rows = []
+    for unit in range(12):
+        for cycle in range(4):
+            order = (
+                ("control", "treatment") if (unit + cycle) % 2 == 0 else ("treatment", "control")
+            )
+            baseline = 10.0 + 0.3 * unit + 0.1 * cycle
+            for period, group in enumerate(order):
+                for step in range(3):
+                    is_observed = step > 0
+                    treatment = group == "treatment"
+                    rows.append(
+                        {
+                            "unit": f"u{unit}",
+                            "cycle": cycle,
+                            "period": period,
+                            "step": step,
+                            "group": group,
+                            "value": 999.0
+                            if not is_observed
+                            else baseline + (10.0 if treatment else 0.0),
+                            "guard_a": 999.0
+                            if not is_observed
+                            else baseline + (1.0 if treatment else 0.0),
+                            "guard_b": 999.0
+                            if not is_observed
+                            else baseline - (1.0 if treatment else 0.0),
+                        }
+                    )
+    experiment, resolver = from_switchback_frame(
+        pd.DataFrame(rows),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics=[
+            MetricSpec(name="value", type="mean"),
+            MetricSpec(name="guard_a", type="mean", preferred_direction="decrease"),
+            MetricSpec(name="guard_b", type="mean", preferred_direction="decrease"),
+        ],
+        identification=_identification(),
+        assignment=_assignment(),
+        plan=AnalysisPlan(
+            primary="value",
+            guardrails=[
+                ExperimentMetric(metric="guard_a", margin_abs=0.5),
+                ExperimentMetric(metric="guard_b", margin_abs=0.5),
+            ],
+        ),
+    )
+
+    result = run(
+        experiment,
+        resolver,
+        analysis_options={"metrics": ["value", "guard_a"]},
+    )
+
+    assert result.decisions.program.status == "not_evaluated"
+    assert "decision.guardrail.not_evaluated" in result.decisions.program.reason_codes
+    assert "integrity.unsupported_assignment" in result.decisions.program.reason_codes
