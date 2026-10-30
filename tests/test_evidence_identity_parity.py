@@ -817,10 +817,10 @@ def _assert_outcome_matches(
     return {}
 
 
-def _line1_read(analysis: Any, case: Any) -> Any:
+def _line1_read(analysis: Any, ingress: str, case: Any) -> Any:
     from tests.parity_harness.runner import _read
 
-    return _read(analysis, case)
+    return _read(analysis, ingress, case)
 
 
 def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
@@ -829,7 +829,7 @@ def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
     stack.enter_context(patch.object(target, name, replacement))
 
 
-def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, int]]:
+def _run_with_read_counter(analysis: Any, ingress: str, case: Any) -> tuple[Any, Mapping[str, int]]:
     from collections import Counter
     from contextlib import ExitStack
 
@@ -872,7 +872,7 @@ def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, 
                     depth -= 1
 
             _enter_patch(stack, source_type, name, counted)
-        return _line1_read(analysis, case), counts
+        return _line1_read(analysis, ingress, case), counts
 
 
 def _line1_actual_outcome(
@@ -996,7 +996,7 @@ def _line1_outcome(  # noqa: PLR0915
                         as_of = getattr(analysis, "_sequential_as_of", None)
                         snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
                         analysis.capture_sequential(finalized=True, **snapshot_kwargs)
-                    return _run_with_read_counter(analysis, case)
+                    return _run_with_read_counter(analysis, ingress, case)
 
                 if line4:
                     from increment.readouts import run_scoped

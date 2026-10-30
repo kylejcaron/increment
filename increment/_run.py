@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError
@@ -21,9 +21,11 @@ from increment.store import DecisionEvent, DecisionLog, DecisionReference, Resul
 from increment.store.types import RunHandle, run_digest
 
 if TYPE_CHECKING:
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
     from increment.decide.evaluator import Decisions
     from increment.decision import CompiledDecisionPlan
+    from increment.kernel.experiment import Experiment
+    from increment.kernel.resolver import Resolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,20 +184,111 @@ def _execution_identity_fields(analysis: Analysis, cell: ResultCell) -> dict[str
     )
 
 
+@overload
 def run(
-    analysis: Analysis,
-    registration: Registration,
-    compiled_plan: CompiledDecisionPlan,
+    exp: Experiment,
+    registration: Resolver | None = None,
+    compiled_plan: CompiledDecisionPlan | None = None,
     *,
-    experiment_id: str,
-    analysis_spec_hash: str,
-    execution_identity_hash: str,
-    run_id: str,
+    analysis: None = None,
+    resolver: Resolver | None = None,
+    experiment_id: str | None = None,
+    analysis_spec_hash: str | None = None,
+    execution_identity_hash: str | None = None,
+    run_id: str | None = None,
     results_store: ResultsStore | None = None,
     decision_log: DecisionLog | None = None,
     analysis_options: Mapping[str, object] | None = None,
-) -> RunResult:
-    """Run Analysis, validate and store its immutable cells, then decide from that run."""
+) -> Any: ...
+
+
+@overload
+def run(
+    exp: Analysis | None = None,
+    registration: Registration | None = None,
+    compiled_plan: CompiledDecisionPlan | None = None,
+    *,
+    analysis: Analysis | None = None,
+    resolver: None = None,
+    experiment_id: str | None = None,
+    analysis_spec_hash: str | None = None,
+    execution_identity_hash: str | None = None,
+    run_id: str | None = None,
+    results_store: ResultsStore | None = None,
+    decision_log: DecisionLog | None = None,
+    analysis_options: Mapping[str, object] | None = None,
+) -> RunResult: ...
+
+
+def run(
+    exp: Analysis | object | None = None,
+    registration: Registration | object | None = None,
+    compiled_plan: CompiledDecisionPlan | None = None,
+    *,
+    analysis: object | None = None,
+    resolver: object | None = None,
+    experiment_id: str | None = None,
+    analysis_spec_hash: str | None = None,
+    execution_identity_hash: str | None = None,
+    run_id: str | None = None,
+    results_store: ResultsStore | None = None,
+    decision_log: DecisionLog | None = None,
+    analysis_options: Mapping[str, object] | None = None,
+) -> Any:
+    """Run an experiment through its resolver, or a legacy Analysis through its registration."""
+    if exp is not None and analysis is not None:
+        raise CodedError(
+            "Pass either exp or analysis, not both",
+            code="kernel.run.invalid_input",
+            context={"field": "exp"},
+        )
+    exp = analysis if exp is None else exp
+    from increment.kernel.experiment import Experiment
+
+    if isinstance(exp, Experiment):
+        from increment.kernel.resolver import run as run_experiment
+
+        unsupported = {
+            "compiled_plan": compiled_plan,
+            "experiment_id": experiment_id,
+            "analysis_spec_hash": analysis_spec_hash,
+            "execution_identity_hash": execution_identity_hash,
+            "run_id": run_id,
+            "results_store": results_store,
+            "decision_log": decision_log,
+        }
+        supplied = tuple(name for name, value in unsupported.items() if value is not None)
+        if supplied:
+            raise CodedError(
+                "Experiment execution does not support these persistence options",
+                code="kernel.run.invalid_input",
+                context={"fields": supplied},
+            )
+        selected_resolver = resolver if resolver is not None else registration
+        if selected_resolver is None:
+            raise CodedError(
+                "Running an experiment requires a source resolver",
+                code="kernel.run.resolver_missing",
+                context={},
+            )
+        return run_experiment(
+            exp, cast("Resolver", selected_resolver), options=dict(analysis_options or {})
+        )
+    analysis = cast(Any, exp)
+    if (
+        not isinstance(registration, Registration)
+        or compiled_plan is None
+        or experiment_id is None
+        or analysis_spec_hash is None
+        or execution_identity_hash is None
+        or run_id is None
+    ):
+        raise CodedError(
+            "Legacy Analysis runs require a registration, plan, and run identities",
+            code="store.run.identity_incomplete",
+            context={"field": "run_arguments"},
+        )
+    # Legacy calls retain the established Analysis execution and return contract.
     if not registration.matches(compiled_plan):
         raise CodedError(
             "Compiled plan differs from the pre-evidence registration",

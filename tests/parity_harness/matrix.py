@@ -1305,6 +1305,15 @@ def classify(cell: Cell) -> Disposition:
     return Disposition(legs)
 
 
+def iter_request_refusals():
+    """Enumerate refused read requests from the selected matrix and its variants."""
+    for cell in (*parity_matrix_cells(), *iter_asymptotic_retention_cells()):
+        for method, leg in classify(cell).legs.items():
+            for ingress, verdict in leg.items():
+                if isinstance(verdict.outcome, Refuses) and verdict.stage == "request":
+                    yield cell, method, ingress, verdict.outcome.code
+
+
 def _disposition_signature(disposition: Disposition) -> tuple[object, ...]:
     verdicts = tuple(
         (method, ingress, verdict.status)

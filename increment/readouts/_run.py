@@ -157,7 +157,7 @@ def run(
     # Raw frames and method-scoped covariates share one capture across the
     # selected metrics, including their common observation horizon. An empty
     # selection reads nothing. Request validation is complete before capture.
-    design_summary_only = _design_compliance_only(src, estimands)
+    design_summary_only = _design_compliance_only(src.context, estimands)
     sequential = isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES)
     needs_live_evidence = (bool(selected) or design_summary_only) and not sequential
     needs_snapshot = sequential or (
@@ -457,7 +457,7 @@ def _run_prepared(  # noqa: PLR0915
             _raise("readout.encouragement.value_scale")
         if isinstance(plan.inference, SEQUENTIAL_POLICIES):
             _raise("readout.sequential_inference_supported")
-        compliance_only = _design_compliance_only(src, estimands)
+        compliance_only = _design_compliance_only(src.context, estimands)
         if by and compliance_only:
             _raise_readout_request("readout.run.segment_unsupported", metric="uptake")
         rows_by_metric: dict[str, list[Mapping[str, Any]]] = {}

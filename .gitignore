@@ -51,6 +51,7 @@ htmlcov/
 # Generated example data
 /increment_moments.parquet
 /examples/realistic_demo/warehouse/
+.increment-kernel-catalog.json
 
 # Local project tooling
 .kata.local.toml

@@ -282,6 +282,7 @@ class ReadoutRequest:
     q: float | None = None
     value_scale: Mapping[str, ValueScale] = field(default_factory=dict)
     completion_policy: bool = False
+    daily_lift: bool = False
     source: EvidenceSource | None = field(default=None, repr=False, compare=False)
 
     @classmethod
@@ -302,6 +303,7 @@ class ReadoutRequest:
         value_scale: Mapping[str, ValueScale] | None = None,
         completion_policy: bool = False,
         population: Literal["assigned", "triggered"] = "assigned",
+        daily_lift: bool = False,
     ) -> ReadoutRequest:
         if len(metrics) != len(configs):
             _raise("readout.request.readoutrequest_requires_one_resolved")
@@ -342,6 +344,7 @@ class ReadoutRequest:
             q=q,
             value_scale=MappingProxyType(dict(value_scale or {})),
             completion_policy=completion_policy,
+            daily_lift=daily_lift,
         )
         from increment._evidence_refusals import check_method_covariates
 

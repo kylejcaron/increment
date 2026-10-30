@@ -1419,10 +1419,16 @@ class MomentsSource(SequentialSourceMixin):
             method_fit="retained" if retained_fit else "none",
             compliance_axis="total" if self._compliance is not None else "none",
             count_grains=frozenset(count_grains),
-            populations=(
-                frozenset({"triggered"})
-                if self.population == "triggered"
-                else frozenset({"assigned"})
+            populations=frozenset(
+                {self.population}
+                | (
+                    {"triggered"}
+                    if (
+                        getattr(self, "_sequential_snapshot", None) is not None
+                        and self._sequential_snapshot.triggered is not None
+                    )
+                    else set()
+                )
             ),
             sequential_capture=(
                 "replay" if getattr(self, "_sequential_snapshot", None) is not None else "none"

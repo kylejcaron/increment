@@ -9,7 +9,7 @@ from increment._source_types import declared_evidence, is_custom_source
 from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
 
 if TYPE_CHECKING:
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
 
 
 def run_scoped_line3[T](

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import fields, is_dataclass
 from typing import Any, cast
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from increment.analysis import Analysis
-from increment.errors import CodedError
+from increment.errors import CodedError, IncrementWarning
 from increment.evidence import (
     BreakoutMethodMomentsRequest,
     ComplianceRequest,
@@ -31,6 +32,7 @@ from tests.analysis_factory import held_source
 from tests.parity_harness import matrix, matrix_cases
 from tests.parity_harness.cases import _triggered_day_axis_cases
 from tests.parity_harness.comparison import nested_close
+from tests.warning_codes import warning_codes
 
 IDENTITY_FIELDS = {"source_snapshot_id", "family_id"}
 
@@ -158,7 +160,16 @@ def _check(cell: matrix.Cell, ingress: str, mode: str) -> list[str]:
     divergences: list[str] = []
     factory = matrix_cases._Ingress(cell)
     build = factory.definitions if ingress == "from_definitions" else factory.artifact
-    builtin = build()
+    with warnings.catch_warnings(record=True) as construction_warnings:
+        warnings.simplefilter("always", IncrementWarning)
+        builtin = build()
+    metric = matrix_cases.metric_definition(cell)
+    expected_warnings = (
+        ["definition.metric.variable_window_days_none"]
+        if metric["type"] in {"mean", "conversion"} and metric.get("window_days") is None
+        else []
+    )
+    assert warning_codes(construction_warnings) == expected_warnings
     source = held_source(builtin)
     provider = ForwardingProvider(source, scope_mode=mode, experiment=builtin.experiment)
     custom = _analysis_from_provider(provider)
@@ -207,6 +218,7 @@ def _check(cell: matrix.Cell, ingress: str, mode: str) -> list[str]:
 @pytest.mark.integration
 @settings(max_examples=60, deadline=None)
 @given(cell=st.sampled_from(matrix.parity_matrix_cells()))
+@example(cell=matrix.Cell("mean", "run", "none", "utc", "error"))
 def test_forwarding_provider_matches_matrix_cell(cell: matrix.Cell) -> None:
     disposition = matrix.classify(cell)
     if not any(
@@ -250,7 +262,10 @@ def test_forwarding_provider_boundary_cell(cell: matrix.Cell) -> None:
 @pytest.mark.integration
 def test_forwarding_provider_breakout_produces_rows() -> None:
     cell = matrix.Cell("mean", "breakout", "none", "utc", "error")
-    builtin = matrix_cases._Ingress(cell).definitions()
+    with warnings.catch_warnings(record=True) as construction_warnings:
+        warnings.simplefilter("always", IncrementWarning)
+        builtin = matrix_cases._Ingress(cell).definitions()
+    assert warning_codes(construction_warnings) == ["definition.metric.variable_window_days_none"]
     custom = _analysis_from_provider(
         ForwardingProvider(held_source(builtin), scope_mode="self", experiment=builtin.experiment)
     )
@@ -315,9 +330,9 @@ def test_forwarding_provider_triggered_population_boundary(case) -> None:
             custom = _analysis_from_provider(provider)
             try:
 
-                def capture(analysis):
+                def capture(analysis, ingress=ingress):
                     try:
-                        return "result", _payload(_read(analysis, case))
+                        return "result", _payload(_read(analysis, ingress, case))
                     except TypeError as exc:
                         pytest.fail(f"{case.id}: harness TypeError: {exc}", pytrace=True)
                     except CodedError as exc:

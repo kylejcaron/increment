@@ -497,7 +497,7 @@ def _public_callable_parameters() -> dict[str, set[str]]:
     callables = [
         (f"increment.{name}", function) for name, function in _root_export_functions(increment)
     ]
-    for name, value in vars(Analysis).items():
+    for name, value in inspect.getmembers_static(Analysis):
         if name.startswith("_"):
             continue
         function = _unwrapped_function(value)

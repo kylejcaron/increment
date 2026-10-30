@@ -1003,13 +1003,6 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
     if mechanism != "observational":
         for metric_methods in method_catalog:
             _validate_methods(metric_methods)
-    _validate_conversion_inference(
-        metrics,
-        method_catalog,
-        cluster=cluster,
-        priors=[config.prior for config in configs],
-        sequential=isinstance(request.plan.inference, SEQUENTIAL_POLICIES),
-    )
     if view == "daily":
         from increment._evidence_refusals import refuse_winsorized_day_axis
 
@@ -1017,8 +1010,24 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
         reject_unbounded_retention(
             metrics, view, remedy=UNBOUNDED_RETENTION_DAILY_REMEDY, supported_view="asof"
         )
-        # Daily values are descriptive; skip inferential compatibility rules.
+        if request.daily_lift:
+            _validate_conversion_inference(
+                metrics,
+                method_catalog,
+                cluster=cluster,
+                priors=[config.prior for config in configs],
+                sequential=isinstance(request.plan.inference, SEQUENTIAL_POLICIES),
+            )
+        # Daily values are descriptive; only daily lift performs the shared
+        # conversion-inference compatibility check.
         return
+    _validate_conversion_inference(
+        metrics,
+        method_catalog,
+        cluster=cluster,
+        priors=[config.prior for config in configs],
+        sequential=isinstance(request.plan.inference, SEQUENTIAL_POLICIES),
+    )
 
     # A compliance-only request never reads outcome moments, so an outcome band's
     # completion date is irrelevant to it.

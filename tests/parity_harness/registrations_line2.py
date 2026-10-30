@@ -81,7 +81,7 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
                         and ingress == "from_unit_summary"
                     )
                 ):
-                    results = _read(analysis, case)
+                    results = _read(analysis, ingress, case)
                 elif case.decision_method is None:
                     results = analysis.run_breakout(
                         metrics=case.metrics,

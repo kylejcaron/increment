@@ -14,17 +14,18 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._evidence_types import SourceContext
     from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
 
 
-def _design_compliance_only(src: EvidenceSource, estimands: Sequence[str] | None) -> bool:
+def _design_compliance_only(context: SourceContext, estimands: Sequence[str] | None) -> bool:
     """Fixed-horizon compliance needs design state, not outcome configuration."""
     return (
         estimands is not None
         and set(estimands) == {"compliance"}
-        and isinstance(src.context.design, Encouragement)
-        and not isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES)
+        and isinstance(context.design, Encouragement)
+        and not isinstance(context.plan.inference, SEQUENTIAL_POLICIES)
     )
 
 
@@ -44,7 +45,7 @@ def _prepare_run_request(
     selected = select_metrics(cast("Sequence[Metric]", src.context.metrics), metrics, caller="run")
     # Fixed-horizon compliance consumes no outcome configuration.
     # Sequential requests still need their registered metric context.
-    if _design_compliance_only(src, estimands):
+    if _design_compliance_only(src.context, estimands):
         selected = []
     configs = overlay_configs(
         selected,

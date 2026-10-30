@@ -11,7 +11,7 @@ import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence, readouts
+from increment import Analysis, SourceSnapshotEvidence, readouts, run, runnable
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning, IncrementWarning
 from increment.estimation.encouragement import (
     _arm_stats_from_compliance,
@@ -296,6 +296,9 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
         assert [(row.metric, row.estimand) for row in observed] == [("uptake", "compliance")]
         actual = observed[0].require_lift()
         if outcome == "retention":
+            daily = analysis.run_daily_lift(estimands=("compliance",))
+            assert daily
+            assert {(row.metric, row.estimand) for row in daily} == {("uptake", "compliance")}
             assert_support(
                 "encouragement_retention_readouts",
                 "compliance_only_definitions_supported",
@@ -320,6 +323,36 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
         oracle.close()
         con.disconnect()
         oracle_con.disconnect()
+
+
+@pytest.mark.slow
+def test_compliance_only_preflight_ignores_retention_configuration(tmp_path):
+    import pyarrow.parquet as pq
+
+    from increment import from_moments
+
+    analysis, con = _warehouse_compliance_analysis("retention")
+    path = tmp_path / "retention-moments.parquet"
+    try:
+        analysis.export(path)
+        experiment, resolver = from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics=[MetricSpec(name="revenue", type="retention", threshold_days=1)],
+            design=Encouragement(
+                control_group="control",
+                uptake=analysis.experiment.design.uptake,
+                one_sided=analysis.experiment.design.one_sided,
+                exclusion_restriction=analysis.experiment.design.exclusion_restriction,
+            ),
+        )
+        requested = replace(experiment, request_options={"estimands": ("compliance",)})
+
+        assert runnable(requested, "revenue")["randomized.unadjusted"].static_refusals == ()
+        rows = run(requested, resolver)
+        assert {row.estimand for row in rows} == {"compliance"}
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 @pytest.mark.slow

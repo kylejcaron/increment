@@ -455,6 +455,25 @@ def test_triggered_asof_replays_from_exported_moments(tmp_path):
         assert history
         assert {row.analysis_population for row in history} == {"triggered"}
         assert {row.ds for row in history} == {_LATER}
+        from dataclasses import replace
+
+        from increment.builders import from_moments
+        from increment.kernel.contracts import Scope
+        from increment.kernel.resolver import run, runnable
+
+        experiment, resolver = from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        scope = Scope(view="asof", grain="asof", population="triggered")
+        requested = replace(experiment, scopes=(scope,))
+        assert runnable(requested, "revenue")["randomized.unadjusted"].static_refusals == ()
+        resolved_history = run(requested, resolver)
+        assert resolved_history
+        assert {row.analysis_population for row in resolved_history} == {"triggered"}
+        assert {row.ds for row in resolved_history} == {_LATER}
+
     finally:
         analysis.close()
 

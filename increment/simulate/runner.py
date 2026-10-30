@@ -1351,8 +1351,9 @@ class SwitchbackEvalResult(_FrozenResultModel):
 
 
 def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
-    from increment.analysis import Analysis
+    from increment.builders import from_switchback_frame
     from increment.frame import MetricSpec
+    from increment.kernel.resolver import run
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SharedScheduleOrder,
@@ -1367,7 +1368,7 @@ def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
         if scenario.shared_schedule
         else IndependentBernoulliOrder(probability_ct=scenario.probability_ct)
     )
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         panel,
         unit="unit",
         cycle="cycle",
@@ -1388,7 +1389,7 @@ def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
             ),
         ),
     )
-    result = cast("ContrastResult", analysis.run()[0])
+    result = cast("ContrastResult", run(experiment, resolver)[0])
     return result.estimate
 
 

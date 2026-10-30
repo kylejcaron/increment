@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from datetime import UTC, date, datetime
-from typing import cast
+from enum import Enum
+from fractions import Fraction
+from typing import Any, cast
 from uuid import UUID
 
 
@@ -215,3 +218,40 @@ __all__ = [
     "canonical_json_bytes",
     "canonical_json_loads",
 ]
+
+
+def declaration_value(value: Any) -> Any:
+    """Encode source declarations independently of captured row values."""
+    if callable(value):
+        return {
+            "runtime_callable": id(value),
+            "qualified_name": (
+                f"{value.__module__}.{value.__qualname__}"
+                if hasattr(value, "__qualname__")
+                else f"{type(value).__module__}.{type(value).__qualname__}"
+            ),
+        }
+    if hasattr(type(value), "model_fields"):
+        return {name: declaration_value(getattr(value, name)) for name in type(value).model_fields}
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: declaration_value(getattr(value, field.name)) for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {
+            str(name): declaration_value(item)
+            for name, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (tuple, list)):
+        return [declaration_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((declaration_value(item) for item in value), key=repr)
+    if isinstance(value, Fraction):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return f"{type(value).__module__}.{type(value).__qualname__}"

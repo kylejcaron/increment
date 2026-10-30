@@ -64,6 +64,134 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         metafunc.parametrize("cell", _params(cells()))
 
 
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.grid("Every request-stage refusal in the enumerated parity matrix")
+@pytest.mark.parametrize(
+    ("cell", "method", "ingress", "code"),
+    [
+        pytest.param(cell, method, ingress, code, id=f"{cell.id}-{method}-{ingress}")
+        for cell, method, ingress, code in matrix.iter_request_refusals()
+    ],
+)
+def test_runnable_preserves_preflight_refusals(
+    cell, method, ingress, code, monkeypatch, record_property
+):
+    from dataclasses import replace
+
+    from increment import runnable
+    from increment.evidence import BreakoutIdentity
+    from increment.kernel.contracts import Scope
+    from tests.analysis_factory import facade_binding, held_source
+    from tests.parity_harness.cases import _close_parity_analysis
+    from tests.test_metric_evidence import _CountingSource
+
+    outcomes = matrix.classify(cell).outcomes(method)
+    case = (
+        matrix_cases.build_switchback_case(cell, method, outcomes)
+        if ingress == "from_switchback_panel"
+        else matrix_cases.build_case(cell, method, outcomes)
+    )
+    from increment.errors import CodedError
+    from tests.parity_harness.runner import _read
+
+    try:
+        analysis = case.build[ingress]()
+    except CodedError as error:
+        assert error.code == code
+        record_property("refusal_stage", "declaration")
+        return
+    try:
+        binding = facade_binding(analysis)
+        assert binding is not None, f"{ingress} did not use its public experiment builder"
+        experiment, _ = binding
+        scope = Scope(
+            view=cell.view,
+            grain=cell.view if cell.view in {"daily", "asof"} else "total",
+            segment=(BreakoutIdentity("store", None),) if cell.view == "breakout" else (),
+        )
+        operation = (
+            f"run_{cell.view}" + ("_lift" if method == "lift" else "")
+            if cell.view in {"daily", "asof"}
+            else "run_breakout"
+            if cell.view == "breakout"
+            else "run"
+        )
+        if case.sequential:
+            capture_as_of = getattr(analysis, "_sequential_as_of", None)
+            capture = {
+                "finalized": True,
+                "as_of": capture_as_of.isoformat() if capture_as_of is not None else None,
+            }
+            with pytest.raises(CodedError) as refusal:
+                replace(
+                    experiment,
+                    scopes=(scope,),
+                    operations={scope.hash(): operation},
+                    request_options={"capture": capture},
+                )
+            assert refusal.value.code == "kernel.request.capture_not_supported"
+        experiment = replace(
+            experiment,
+            scopes=(scope,),
+            operations={scope.hash(): operation},
+            request_options={},
+        )
+        counted = _CountingSource(held_source(analysis))
+        counted.loader_reads.clear()
+        for name in (
+            "moments",
+            "unit_frame",
+            "unit_counts",
+            "cluster_counts",
+            "assignment_counts",
+            "triggered_counts",
+            "contrast_stats",
+            "breakout_moments_for_method",
+            "_ensure",
+            "fit_cuped_multicovariate",
+            "compliance_summary",
+            "moments_for_method",
+            "_bounded_day_panel",
+            "_day_identity",
+        ):
+            owner = type(counted.source)
+            original = getattr(owner, name, None)
+            if original is not None:
+
+                def track(instance, *args, _name=name, _original=original, **kwargs):
+                    counted.loader_reads.append(_name)
+                    return _original(instance, *args, **kwargs)
+
+                monkeypatch.setattr(owner, name, track)
+        with pytest.raises(CodedError) as legacy:
+            if case.sequential:
+                as_of = getattr(analysis, "_sequential_as_of", None)
+                options = {"as_of": as_of} if as_of is not None else {}
+                analysis.capture_sequential(finalized=True, **options)
+            _read(analysis, ingress, case)
+        assert legacy.value.code == code
+        legacy_reads = tuple(counted.loader_reads)
+        counted.loader_reads.clear()
+        estimator = (
+            "observational.iptw"
+            if cell.option == "observational"
+            else ("randomized.cuped" if cell.option == "cuped" else "randomized.unadjusted")
+        )
+        status = runnable(experiment, "m")[estimator]
+        if case.sequential:
+            record_property("refusal_stage", "construction")
+        elif not legacy_reads:
+            record_property("refusal_stage", "preflight")
+            assert code in {refusal.code for refusal in status.static_refusals}
+        else:
+            record_property("refusal_stage", "data")
+            assert status.deferred_checks
+        assert counted.loader_reads == []
+    finally:
+        _close_parity_analysis(analysis)
+
+
 def _assert_runners_produced_rows(
     case: ParityCase, outcomes: dict[str, matrix.Outcome], result: CaseResult
 ) -> None:
