@@ -257,6 +257,29 @@ class EvidenceScope:
     assignment_requests: tuple[AssignmentRequest, ...] = ()
 
 
+EVIDENCE_REQUEST_DEPENDENCIES: tuple[tuple[str, str, Callable[[Any], str] | None], ...] = (
+    ("outcomes", "metrics", lambda metric: str(getattr(metric, "name", metric))),
+    ("adjustments", "configs", None),
+    ("breakouts", "breakouts", lambda item: f"breakout:{item.property}:{item.source}"),
+    ("uptake", "uptake_facts", lambda fact: f"fact:{fact}"),
+    (
+        "assignments",
+        "assignment_requests",
+        lambda request: (
+            f"assignment:{request.experiment}:{request.version}:"
+            f"{request.period}:{request.population}"
+        ),
+    ),
+)
+
+
+def evidence_scope_dependencies(scope: EvidenceScope) -> Mapping[str, Any]:
+    """Return request dependencies through the single evidence inventory."""
+    return MappingProxyType(
+        {category: getattr(scope, field) for category, field, _ in EVIDENCE_REQUEST_DEPENDENCIES}
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ComplianceRequest:
     design: Encouragement
@@ -465,6 +488,39 @@ class EvidenceStream:
     physical: str
 
 
+def evidence_scope_stream_inventory(scope: EvidenceScope) -> Mapping[str, str]:
+    """Map request dependencies to stable fallback identities for an evidence scope."""
+    dependencies = evidence_scope_dependencies(scope)
+    names = {
+        identify(item)
+        for category, _, identify in EVIDENCE_REQUEST_DEPENDENCIES
+        if identify is not None
+        for item in dependencies[category]
+    }
+    return MappingProxyType(dict.fromkeys(sorted(names), "captured"))
+
+
+def evidence_streams_for_scope(source: object, scope: EvidenceScope) -> tuple[EvidenceStream, ...]:
+    """Resolve loader, artifact, or fallback stream identities for one scope."""
+    inventory = getattr(source, "evidence_scope_streams", None)
+    if callable(inventory):
+        streams = inventory(scope)
+    else:
+        manifest = getattr(source, "_manifest", None)
+        artifact_id = getattr(manifest, "artifact_id", None)
+        generation_id = getattr(manifest, "generation_id", None)
+        if artifact_id is not None and generation_id is not None:
+            identity = f"artifact:{artifact_id}:{generation_id}"
+            streams = {identity: identity}
+        else:
+            streams = None
+    if streams is None:
+        streams = evidence_scope_stream_inventory(scope)
+    return tuple(
+        EvidenceStream(identity, physical) for identity, physical in sorted(streams.items())
+    )
+
+
 CaptureStatus = Literal["captured", "live"]
 
 
@@ -478,6 +534,9 @@ class EvidenceScopeResult:
     stream_resolver: Callable[[Any], tuple[EvidenceStream, ...]] | None = None
     capture_status: CaptureStatus | None = None
     breakout_streams: Mapping[BreakoutIdentity, str] = dataclass_field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    covariate_streams: Mapping[str, tuple[str, ...]] = dataclass_field(
         default_factory=lambda: MappingProxyType({})
     )
 

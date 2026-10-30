@@ -14,6 +14,8 @@ from increment._evidence_types import (
     EvidenceScopeResult,
     EvidenceSource,
     EvidenceStream,
+    evidence_scope_stream_inventory,
+    evidence_streams_for_scope,
 )
 from increment._source_types import (
     EvidenceProvider,
@@ -27,36 +29,8 @@ from increment._source_types import (
 from increment.errors import InvalidRequestError
 
 
-def _artifact_streams(source: object) -> Mapping[str, str] | None:
-    manifest = getattr(source, "_manifest", None)
-    if manifest is None:
-        return None
-    artifact_id = getattr(manifest, "artifact_id", None)
-    generation_id = getattr(manifest, "generation_id", None)
-    if artifact_id is None or generation_id is None:
-        return None
-    identity = f"artifact:{artifact_id}:{generation_id}"
-    return MappingProxyType({identity: identity})
-
-
 def _scope_streams(source: EvidenceSource, scope: EvidenceScope) -> tuple[EvidenceStream, ...]:
-    inventory = getattr(source, "evidence_scope_streams", None)
-    streams = inventory(scope) if callable(inventory) else _artifact_streams(source)
-    if streams is None:
-        names = {str(getattr(metric, "name", metric)) for metric in scope.metrics}
-        names.update(f"fact:{fact}" for fact in scope.uptake_facts)
-        names.update(
-            f"breakout:{breakout.property}:{breakout.source}" for breakout in scope.breakouts
-        )
-        names.update(
-            f"assignment:{request.experiment}:{request.version}:"
-            f"{request.period}:{request.population}"
-            for request in scope.assignment_requests
-        )
-        streams = MappingProxyType(dict.fromkeys(sorted(names), "captured"))
-    return tuple(
-        EvidenceStream(identity, physical) for identity, physical in sorted(streams.items())
-    )
+    return evidence_streams_for_scope(source, scope)
 
 
 def _scope_breakout_streams(
@@ -73,11 +47,17 @@ def _scope_breakout_streams(
     )
 
 
+def _scope_covariate_streams(
+    source: EvidenceSource, scope: EvidenceScope
+) -> Mapping[str, tuple[str, ...]]:
+    resolver = getattr(loader_source(source), "evidence_scope_covariate_streams", None)
+    if callable(resolver):
+        return MappingProxyType(dict(resolver(scope)))
+    return MappingProxyType({})
+
+
 def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope]) -> EvidenceScope:
     """Ask a built-in loader to derive its capture from selected readout requests."""
-    operation = getattr(loader_source(src), "capture_requirements", None)
-    if callable(operation):
-        return operation(tuple(requests))
     metrics_by_name = {metric.name: metric for request in requests for metric in request.metrics}
     configs_list = []
     for request in requests:
@@ -133,7 +113,14 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
         populations=tuple(
             sorted({population for request in requests for population in request.populations})
         ),
-        grain=next((request.grain for request in requests if request.grain is not None), None),
+        grain=next(
+            (
+                candidate
+                for candidate in ("asof", "daily", "total")
+                if any(request.grain == candidate for request in requests)
+            ),
+            None,
+        ),
         dimension=next((request.dimension for request in requests if request.dimension), None),
         estimands=next(
             (request.estimands for request in requests if request.estimands is not None), None
@@ -252,6 +239,7 @@ def load_evidence_scope(
         ),
         capture_status=capture_status,
         breakout_streams=_scope_breakout_streams(src, scope),
+        covariate_streams=_scope_covariate_streams(src, scope),
     )
 
 
@@ -275,7 +263,12 @@ class _SwitchbackScopeProvider(_OwnedLoaderAdapter):
         return EvidenceScopeResult(
             _switchback_scope_source(self.source, request),
             request,
-            streams=tuple(EvidenceStream(metric.name, metric.name) for metric in request.metrics),
+            streams=tuple(
+                EvidenceStream(identity, physical)
+                for identity, physical in evidence_scope_stream_inventory(
+                    EvidenceScope(metrics=request.metrics)
+                ).items()
+            ),
             capture_status="captured" if captured else "live",
         )
 
