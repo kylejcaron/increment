@@ -1154,11 +1154,10 @@ def _estimate_ate_data(  # noqa: PLR0913
                 dispatch_kwargs = adjust_kwargs
                 try:
                     moment_rows = evidence.metric_rows(metric)
+                    from increment.estimation._adjust.common import AdjustmentInputs
+
                     if uses_builtin_adjustment_preflight(method):
-                        from increment.estimation._adjust.common import (
-                            AdjustmentInputs,
-                            adjustment_preflight,
-                        )
+                        from increment.estimation._adjust.common import adjustment_preflight
 
                         roles = {
                             "iptw": ("learner",),
@@ -1180,13 +1179,11 @@ def _estimate_ate_data(  # noqa: PLR0913
                         )
                         dispatch_kwargs = {**adjust_kwargs, "preflight": preflight}
                     frame = unit_frame_memo(metric, design.adjustment.covariates)
-                    adjustment_args = (
-                        (AdjustmentInputs(frame, moment_rows, cluster), metric, design)
-                        if uses_builtin_adjustment_preflight(method)
-                        else (frame, moment_rows, cluster, metric, design)
-                    )
+                    adjustment_inputs = AdjustmentInputs(frame, moment_rows, cluster)
                     adjusted = adjust_fn(
-                        *adjustment_args,
+                        adjustment_inputs,
+                        metric,
+                        design,
                         prior=prior,
                         alpha=alpha,
                         alternative=(alternatives or {}).get(metric.name, alternative),

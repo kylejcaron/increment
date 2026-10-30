@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
+from inspect import signature
 from typing import Any, Literal, cast
 
 from pydantic import (
@@ -91,9 +92,31 @@ _REFUSALS = refusals(
         "estimation.estimator.ref.raw_rows_unsupported": "Observational estimator {estimator_id!r} declares raw unit rows, but observational estimators receive transformed rows; declare UnitRowsSpec(outcome_stage='transformed').",
         "estimation.estimator.ref.already_registered": "Estimator {estimator_id!r} is already registered with a different declaration.",
         "estimation.estimator.implementation.missing_ref": "Implementation for estimator {estimator_id!r} has no declared estimator ref.",
+        "estimation.estimator.adjustment.callback_contract": "Adjustment callback for {estimator_id!r} must accept AdjustmentInputs, Metric and Design, plus the shared adjustment keyword arguments.",
     },
 )
 _refuse = raiser(_REFUSALS)
+_ADJUSTMENT_SHARED_KWARGS = (
+    "prior",
+    "alpha",
+    "alternative",
+    "value_scale",
+    "null_lift",
+    "null_abs",
+    "preferred_direction",
+)
+
+
+def _validate_adjustment_callback(estimator_id: str, fn: Callable[..., Any]) -> None:
+    try:
+        signature(fn).bind(
+            object(),
+            object(),
+            object(),
+            **dict.fromkeys(_ADJUSTMENT_SHARED_KWARGS),
+        )
+    except (TypeError, ValueError):
+        _refuse("estimation.estimator.adjustment.callback_contract", estimator_id=estimator_id)
 
 
 def freeze(value: Any) -> Any:
@@ -505,6 +528,8 @@ def register_implementation(estimator_id: str, fn: Callable[..., Any]) -> None:
     ref = _ESTIMATORS.get(estimator_id)
     if ref is None:
         _refuse("estimation.estimator.implementation.missing_ref", estimator_id=estimator_id)
+    if ref.estimator_id.startswith("observational.") and ref.selector is not None:
+        _validate_adjustment_callback(estimator_id, fn)
     _IMPLEMENTATIONS[estimator_id] = fn
     if ref.selector is not None:
         ADJUSTMENTS._entries.pop(ref.selector, None)
@@ -520,6 +545,7 @@ class AdjustmentRegistry(Registry[AdjustmentFn]):
 
     def register(self, key: str, value: AdjustmentFn) -> None:
         estimator_id = estimator_id_for_selector(key) or f"observational.{key}"
+        _validate_adjustment_callback(estimator_id, value)
         if estimator_id not in _ESTIMATORS:
             register(
                 EstimatorRef(

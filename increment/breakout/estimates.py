@@ -42,7 +42,7 @@ from pydantic import (
     model_validator,
 )
 
-from increment._evidence_refusals import OPERATION_UNAVAILABLE
+from increment._evidence_refusals import refuse_winsorized_day_axis
 from increment._evidence_types import unit_frame_covariate_columns
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import (
@@ -71,7 +71,6 @@ from increment.errors import (
     refusals,
     warn,
 )
-from increment.errors import refuse as _raise_refusal
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
 from increment.estimation.conversion_route import fcr_route_tail
@@ -330,16 +329,10 @@ def reject_retention_metrics(
         _refuse("breakout.retention.daily", fn_name=fn_name, names=names)
 
 
-def reject_winsorized_day_axis(metrics: Sequence[Metric], method: str) -> None:
-    names = [metric.name for metric in metrics if getattr(metric, "winsorization", None)]
-    if names:
-        _raise_refusal(
-            OPERATION_UNAVAILABLE,
-            constructor=method,
-            requested=tuple(names),
-            offered=(),
-            route="use total-grain run() or run_breakout()",
-        )
+def reject_winsorized_day_axis(
+    metrics: Sequence[Metric], method: str, *, grain: Literal["daily", "asof"]
+) -> None:
+    refuse_winsorized_day_axis(metrics, constructor=method, grain=grain)
 
 
 def reject_quantile_metrics(

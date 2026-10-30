@@ -121,7 +121,19 @@ shared refusal path.
 
 
 
-`ADJUSTMENTS` callbacks receive materialized inputs, not a source: `(frame, moment_rows, cluster, metric, design, **kwargs)`. `frame` is the unit-level data for that metric and the design's adjustment covariates; `moment_rows` are the metric's already-reduced arm summaries; `cluster` is the declared cluster column or `None`. Keep kernels data-only and derive cluster behavior from this explicit evidence.
+`ADJUSTMENTS` callbacks receive one contract across built-ins and extensions:
+`(inputs: AdjustmentInputs, metric: Metric, design: Observational, **kwargs)`.
+`inputs.frame` is the unit-level data for the metric and adjustment covariates,
+`inputs.moment_rows` are the metric's reduced arm summaries, and
+`inputs.cluster` is the declared cluster column or `None`. Every callback must
+accept the shared keyword arguments `prior`, `alpha`, `alternative`,
+`value_scale`, `null_lift`, `null_abs`, and `preferred_direction`;
+method-specific keywords are supplied when applicable. Registration validates
+that signature and refuses incompatible callbacks with
+`estimation.estimator.adjustment.callback_contract`. Migrate legacy callbacks
+from `(frame, moment_rows, cluster, metric, design, **kwargs)` by accepting
+`inputs` and reading those three fields from it. Keep kernels data-only; they
+must not reach back into a source.
 
 Every estimator ref carries alternative evidence routes as grouped request specs in `EstimatorRef.needs`. Observational registrations must declare at least one route containing total moments and design-covariate unit rows; the registry converts those specs to the typed evidence requests and checks source capabilities before a run. Extra requests gate runnability, but dispatch does not yet deliver them to callbacks. Add a ref and implementation registration in one plugin module; built-in entries are maintained in `increment/declarations.py`.
 

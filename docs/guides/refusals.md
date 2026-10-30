@@ -41,6 +41,12 @@ similar codes can mean different things.
 `evidence.joint_grouping_unavailable` means the requested grouping properties
 are not all available from one source; declare all grouping properties together on one source
 or use a source that retains them.
+An `estimation.estimator.adjustment.callback_contract` refusal means a
+registered covariate-adjustment callback does not accept the shared
+`AdjustmentInputs`, metric, design, and keyword-argument contract. Migrate it
+to the current callback shape described in the
+[estimator extension guide](../development/adding-an-estimator.md#custom-evidence-providers);
+do not work around the check by registering the legacy positional signature.
 
 A missing treatment arm, for example, means an arm-level contrast cannot be
 estimated; it does not prevent reading arm counts or a separate allocation

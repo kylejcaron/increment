@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis.expr.types as ir
 
+from increment._evidence_refusals import refuse_winsorized_day_axis
 from increment._evidence_types import ComplianceSummary, SourceContext
-from increment.query._native_refusals import _refuse_operation, _winsorization_bounds
+from increment.query._native_refusals import _refuse_operation
 from increment.query.builders import (
     _censor_to_observable_window,
     _final_maturity_day,
@@ -40,7 +41,12 @@ if TYPE_CHECKING:
     from increment.sources import Grain
 
 
-def _refuse_unsupported_day_metric(metric: Metric, *, operation: str) -> None:
+def _refuse_unsupported_day_metric(
+    metric: Metric,
+    *,
+    operation: str,
+    grain: Grain | None = None,
+) -> None:
     """Reject metrics whose declared transformation has no day moments."""
     if metric.type == "quantile":
         _refuse_operation(
@@ -52,18 +58,9 @@ def _refuse_unsupported_day_metric(metric: Metric, *, operation: str) -> None:
                 "a quantile has no moments representation"
             ),
         )
-    winsorization = getattr(metric, "winsorization", None)
-    if winsorization is not None:
-        _refuse_operation(
-            operation=operation,
-            request={"metric": metric.name, "winsorization": _winsorization_bounds(winsorization)},
-            offered=tuple(sorted(_DaySource.capabilities)),
-            route=(
-                "read the winsorized metric through run(), or drop winsorization for "
-                "daily/as-of evidence; day-axis moments cannot apply a whole-window "
-                "transformation"
-            ),
-        )
+    if getattr(metric, "winsorization", None) is not None:
+        day_grain = grain if grain in ("daily", "asof") else None
+        refuse_winsorized_day_axis((metric,), constructor="native source", grain=day_grain)
 
 
 def _refuse_missing_pre_period(
@@ -411,7 +408,7 @@ class _DaySource:
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
-        _refuse_unsupported_day_metric(metric, operation="moments")
+        _refuse_unsupported_day_metric(metric, operation="moments", grain=grain)
         if grain not in self.capabilities:
             from increment._evidence_refusals import require_evidence
 
@@ -509,7 +506,7 @@ class _DaySource:
         The result carries only the resolved source name and materialized rows;
         it never exposes the definitions-layer ``FactSource`` recipe.
         """
-        _refuse_unsupported_day_metric(metric, operation="breakout_moments")
+        _refuse_unsupported_day_metric(metric, operation="breakout_moments", grain=grain)
         if grain not in self.capabilities:
             from increment._evidence_refusals import require_evidence
 

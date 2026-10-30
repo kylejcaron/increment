@@ -1411,13 +1411,33 @@ def test_daily_refuses_fixed_winsorized_panel_values():
     assert raised.value.code == "evidence.operation_unavailable"
 
 
-def test_winsorization_refuses_direct_daily_readout():
+@pytest.mark.parametrize(
+    ("winsorization", "threshold_source", "threshold"),
+    [
+        ({"upper_value": 100.0}, "fixed_value", 100.0),
+        ({"upper_percentile": 0.9}, "percentile", 0.9),
+    ],
+)
+def test_winsorization_refuses_direct_daily_readout(winsorization, threshold_source, threshold):
     from increment import readouts
 
-    source = _winsorized_totals_source({"upper_value": 100.0})
+    source = _winsorized_totals_source(winsorization)
     with pytest.raises(CapabilityError) as exc_info:
         readouts.daily(source)
     assert exc_info.value.code == "evidence.operation_unavailable"
+    assert exc_info.value.context["requested"] == ("revenue",)
+    assert exc_info.value.context["request"] == {
+        "metrics": (
+            {
+                "metric": "revenue",
+                "threshold_source": threshold_source,
+                "thresholds": {"upper": {"source": threshold_source, "value": threshold}},
+            },
+        )
+    }
+    assert exc_info.value.context["route"] == (
+        "use total-grain run() or run_breakout(), or remove winsorization for daily evidence"
+    )
 
 
 def test_daily_skips_inferential_plan_validation():

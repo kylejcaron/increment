@@ -148,6 +148,15 @@ def test_sitewide_evidence_refuses_winsorization_before_raw_work(pricing_analysi
     with pytest.raises(CapabilityError) as raised:
         source.sitewide_evidence(winsorized)
     assert raised.value.code == "evidence.operation_unavailable"
+    assert raised.value.context["request"] == {
+        "metrics": (
+            {
+                "metric": "purchase_rate",
+                "threshold_source": "fixed_value",
+                "thresholds": {"upper": {"source": "fixed_value", "value": 1.0}},
+            },
+        )
+    }
 
 
 @pytest.mark.parametrize(
@@ -552,7 +561,7 @@ def test_native_view_operations_refuse_missing_extension_evidence(pricing_analys
 
 def test_day_source_refuses_winsorized_metrics_before_warehouse_work(pricing_analysis, monkeypatch):
     source = _native_source(pricing_analysis)
-    metric = pricing_analysis.metrics[0].model_copy(
+    metric = next(m for m in pricing_analysis.metrics if m.name == "purchase_rate").model_copy(
         update={"winsorization": Winsorization(upper_value=1.0)}
     )
     monkeypatch.setattr(
@@ -564,6 +573,15 @@ def test_day_source_refuses_winsorized_metrics_before_warehouse_work(pricing_ana
     with pytest.raises(CapabilityError) as raised:
         source.day_source(metrics=(metric,))
     assert raised.value.code == "evidence.operation_unavailable"
+    assert raised.value.context["request"] == {
+        "metrics": (
+            {
+                "metric": "purchase_rate",
+                "threshold_source": "fixed_value",
+                "thresholds": {"upper": {"source": "fixed_value", "value": 1.0}},
+            },
+        )
+    }
 
 
 def test_day_source_validates_metrics_passed_directly(pricing_analysis):
