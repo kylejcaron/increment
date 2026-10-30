@@ -355,6 +355,214 @@ def _analyzed_cluster_mean(
     return 1.0 if abs(mean - 1.0) <= _CLUSTER_MEAN_ROUNDOFF else mean
 
 
+@dataclass(frozen=True, slots=True)
+class _BaselineCheck:
+    field: str | None
+    code: str
+    context: Callable[[Baseline], dict[str, object]]
+    lower: float | None = None
+    lower_inclusive: bool = False
+    upper: float | None = None
+    upper_inclusive: bool = False
+    finite: bool = False
+    predicate: Callable[[Baseline], bool] | None = None
+
+
+def _baseline_check_failed(check: _BaselineCheck, baseline: Baseline) -> bool:
+    if check.finite:
+        assert check.field is not None
+        value = getattr(baseline, check.field)
+        if value is not None:
+            _require_finite(check.field, value)
+        return False
+    if check.predicate is not None:
+        return check.predicate(baseline)
+    assert check.field is not None
+    value = getattr(baseline, check.field)
+    if math.isnan(value):
+        return True
+    return (
+        check.lower is not None
+        and (value < check.lower if check.lower_inclusive else value <= check.lower)
+    ) or (
+        check.upper is not None
+        and (value > check.upper if check.upper_inclusive else value >= check.upper)
+    )
+
+
+_BASELINE_CHECKS = (
+    _BaselineCheck(
+        "mean", "power.finite", lambda b: {"name": "mean", "value": b.mean}, finite=True
+    ),
+    _BaselineCheck("mean", "power.baseline.mean", lambda _: {}, lower=0.0),
+    _BaselineCheck("var", "power.finite", lambda b: {"name": "var", "value": b.var}, finite=True),
+    _BaselineCheck("var", "power.baseline.var_zero_variance", lambda _: {}, lower=0.0),
+    _BaselineCheck("cuped_rho", "power.baseline.cuped_rho", lambda _: {}, lower=-1.0, upper=1.0),
+    _BaselineCheck(
+        "compliance",
+        "power.baseline.compliance",
+        lambda _: {},
+        lower=0.0,
+        upper=1.0,
+        upper_inclusive=True,
+    ),
+    _BaselineCheck(
+        "trigger_rate",
+        "power.baseline.trigger_rate",
+        lambda _: {},
+        lower=0.0,
+        upper=1.0,
+        upper_inclusive=True,
+    ),
+    _BaselineCheck(
+        "icc", "power.baseline.icc", lambda _: {}, lower=0.0, lower_inclusive=True, upper=1.0
+    ),
+    _BaselineCheck(
+        "cluster_icc",
+        "power.baseline.cluster_icc",
+        lambda _: {},
+        lower=0.0,
+        lower_inclusive=True,
+        upper=1.0,
+    ),
+    _BaselineCheck(
+        "cluster_participation",
+        "power.finite",
+        lambda b: {"name": "cluster_participation", "value": b.cluster_participation},
+        finite=True,
+        predicate=lambda b: (
+            b.cluster_participation is not None and not math.isfinite(b.cluster_participation)
+        ),
+    ),
+    _BaselineCheck(
+        "cluster_participation",
+        "power.baseline.cluster_participation",
+        lambda b: {
+            "cluster_participation": b.cluster_participation,
+            "route": "count contributing clusters / assigned clusters in the pilot",
+        },
+        lower=0.0,
+        upper=1.0,
+        upper_inclusive=True,
+        predicate=lambda b: (
+            b.cluster_participation is not None and not 0.0 < b.cluster_participation <= 1.0
+        ),
+    ),
+    _BaselineCheck(
+        None,
+        "power.baseline.cluster_participation_untriggered",
+        lambda b: {
+            "trigger_rate": b.trigger_rate,
+            "cluster_participation": b.cluster_participation,
+            "route": "use full participation for an untriggered population",
+        },
+        predicate=lambda b: b.trigger_rate == 1.0 and b.cluster_participation not in (None, 1.0),
+    ),
+    _BaselineCheck(
+        None,
+        "power.baseline.cluster_participation_triggered",
+        lambda b: {
+            "trigger_rate": b.trigger_rate,
+            "avg_cluster_size": b.avg_cluster_size,
+            "cluster_participation": None,
+            "route": "count contributing clusters / assigned clusters in the pilot",
+        },
+        predicate=lambda b: (
+            b.trigger_rate != 1.0 and b.avg_cluster_size > 1.0 and b.cluster_participation is None
+        ),
+    ),
+    _BaselineCheck(
+        "avg_cluster_size",
+        "power.finite",
+        lambda b: {"name": "avg_cluster_size", "value": b.avg_cluster_size},
+        finite=True,
+    ),
+    _BaselineCheck(
+        "avg_cluster_size",
+        "power.baseline.avg_cluster_size",
+        lambda b: {"avg_cluster_size": b.avg_cluster_size},
+        lower=1.0,
+        lower_inclusive=True,
+    ),
+    _BaselineCheck(
+        "cluster_size_cv",
+        "power.finite",
+        lambda b: {"name": "cluster_size_cv", "value": b.cluster_size_cv},
+        finite=True,
+    ),
+    _BaselineCheck(
+        "cluster_size_cv",
+        "power.baseline.cluster_size_cv",
+        lambda _: {},
+        lower=0.0,
+        lower_inclusive=True,
+    ),
+    _BaselineCheck(
+        None,
+        "power.baseline.cluster_analyzed_mean",
+        lambda b: {
+            "avg_cluster_size": b.avg_cluster_size,
+            "trigger_rate": b.trigger_rate,
+            "cluster_participation": b.cluster_participation,
+            "analyzed_mean": _analyzed_cluster_mean(
+                b.avg_cluster_size, b.trigger_rate, b.cluster_participation or 1.0
+            ),
+            "route": "recount assigned units and contributing pilot clusters",
+        },
+        predicate=lambda b: (
+            b.cluster_participation is not None
+            and (
+                not math.isfinite(
+                    _analyzed_cluster_mean(
+                        b.avg_cluster_size, b.trigger_rate, b.cluster_participation
+                    )
+                )
+                or _analyzed_cluster_mean(
+                    b.avg_cluster_size, b.trigger_rate, b.cluster_participation
+                )
+                < 1.0
+            )
+        ),
+    ),
+    _BaselineCheck(
+        None,
+        "power.baseline.cluster_icc_avg",
+        lambda b: {
+            "cluster_icc": b.cluster_icc,
+            "analyzed_mean": (
+                _analyzed_cluster_mean(
+                    b.avg_cluster_size,
+                    b.trigger_rate,
+                    1.0 if b.cluster_participation is None else b.cluster_participation,
+                )
+                if b.cluster_participation is not None
+                else b.avg_cluster_size
+            ),
+            "route": "use a pilot with within-cluster replication, or leave cluster_icc at 0",
+        },
+        predicate=lambda b: (
+            b.cluster_icc > 0.0
+            and (
+                _analyzed_cluster_mean(
+                    b.avg_cluster_size,
+                    b.trigger_rate,
+                    1.0 if b.cluster_participation is None else b.cluster_participation,
+                )
+                if b.cluster_participation is not None
+                else b.avg_cluster_size
+            )
+            <= 1.0
+        ),
+    ),
+)
+
+
+def _evaluate_baseline_checks(baseline: Baseline) -> None:
+    for check in _BASELINE_CHECKS:
+        if _baseline_check_failed(check, baseline):
+            _raise(check.code, **check.context(baseline))
+
+
 class Baseline(CodedModel, BaseModel):
     """Control-arm assumptions.
 
@@ -416,73 +624,7 @@ class Baseline(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> Baseline:
-        _require_finite("mean", self.mean)
-        if self.mean <= 0:
-            _raise("power.baseline.mean")
-        _require_finite("var", self.var)
-        if self.var <= 0:
-            _raise("power.baseline.var_zero_variance")
-        if not -1 < self.cuped_rho < 1:
-            _raise("power.baseline.cuped_rho")
-        if not 0 < self.compliance <= 1:
-            _raise("power.baseline.compliance")
-        if not 0 < self.trigger_rate <= 1:
-            _raise("power.baseline.trigger_rate")
-        if not 0.0 <= self.icc < 1.0:
-            _raise("power.baseline.icc")
-        if not 0.0 <= self.cluster_icc < 1.0:
-            _raise("power.baseline.cluster_icc")
-        if self.cluster_participation is not None:
-            _require_finite("cluster_participation", self.cluster_participation)
-            if not 0.0 < self.cluster_participation <= 1.0:
-                _raise(
-                    "power.baseline.cluster_participation",
-                    cluster_participation=self.cluster_participation,
-                    route="count contributing clusters / assigned clusters in the pilot",
-                )
-        if self.trigger_rate == 1.0:
-            if self.cluster_participation not in (None, 1.0):
-                _raise(
-                    "power.baseline.cluster_participation_untriggered",
-                    trigger_rate=self.trigger_rate,
-                    cluster_participation=self.cluster_participation,
-                    route="use full participation for an untriggered population",
-                )
-        elif self.avg_cluster_size > 1.0 and self.cluster_participation is None:
-            _raise(
-                "power.baseline.cluster_participation_triggered",
-                trigger_rate=self.trigger_rate,
-                avg_cluster_size=self.avg_cluster_size,
-                cluster_participation=None,
-                route="count contributing clusters / assigned clusters in the pilot",
-            )
-        _require_finite("avg_cluster_size", self.avg_cluster_size)
-        if self.avg_cluster_size < 1.0:
-            _raise("power.baseline.avg_cluster_size", avg_cluster_size=self.avg_cluster_size)
-        _require_finite("cluster_size_cv", self.cluster_size_cv)
-        if self.cluster_size_cv < 0.0:
-            _raise("power.baseline.cluster_size_cv")
-        analyzed_mean = self.avg_cluster_size
-        if self.cluster_participation is not None:
-            analyzed_mean = _analyzed_cluster_mean(
-                self.avg_cluster_size, self.trigger_rate, self.cluster_participation
-            )
-            if not math.isfinite(analyzed_mean) or analyzed_mean < 1.0:
-                _raise(
-                    "power.baseline.cluster_analyzed_mean",
-                    avg_cluster_size=self.avg_cluster_size,
-                    trigger_rate=self.trigger_rate,
-                    cluster_participation=self.cluster_participation,
-                    analyzed_mean=analyzed_mean,
-                    route="recount assigned units and contributing pilot clusters",
-                )
-        if self.cluster_icc > 0.0 and analyzed_mean <= 1.0:
-            _raise(
-                "power.baseline.cluster_icc_avg",
-                cluster_icc=self.cluster_icc,
-                analyzed_mean=analyzed_mean,
-                route="use a pilot with within-cluster replication, or leave cluster_icc at 0",
-            )
+        _evaluate_baseline_checks(self)
         return self
 
     # Computed

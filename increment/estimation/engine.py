@@ -963,6 +963,58 @@ def refuse_cuped_linear_sequential() -> NoReturn:
     _refuse("estimation.engine.cuped_linear_sequential")
 
 
+@dataclass(frozen=True, slots=True)
+class _CupedLinearRule:
+    scope: Literal["request", "metric"]
+    code: str
+    predicate: Callable[[ReadoutRequest, Metric | None], bool]
+    context: Callable[[ReadoutRequest, Metric | None], dict[str, object]]
+    use_sequential_refusal: bool = False
+
+
+def _cuped_linear_metric_context(metric: Metric | None) -> dict[str, object]:
+    if metric is None:
+        raise AssertionError("metric-scoped rule requires a metric")
+    return {"metric": metric.name}
+
+
+_CUPED_LINEAR_RULES = (
+    _CupedLinearRule(
+        "request",
+        "estimation.engine.cuped_linear_cluster",
+        lambda request, _: request.cluster is not None,
+        lambda request, _: {"cluster": request.cluster},
+    ),
+    _CupedLinearRule(
+        "request",
+        "estimation.engine.cuped_linear_sequential",
+        lambda request, _: isinstance(request.plan.inference, SEQUENTIAL_POLICIES),
+        lambda _, __: {},
+        use_sequential_refusal=True,
+    ),
+    _CupedLinearRule(
+        "metric",
+        "estimation.engine.cuped_linear_winsorization",
+        lambda _, metric: bool(
+            getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+        ),
+        lambda _, metric: _cuped_linear_metric_context(metric),
+    ),
+    _CupedLinearRule(
+        "metric",
+        "estimation.engine.cuped_linear_encouragement",
+        lambda request, _: getattr(request.design, "mechanism", None) == "encouragement",
+        lambda _, metric: _cuped_linear_metric_context(metric),
+    ),
+    _CupedLinearRule(
+        "metric",
+        "estimation.engine.cuped_linear_observational",
+        lambda request, _: getattr(request.design, "mechanism", None) == "observational",
+        lambda _, metric: _cuped_linear_metric_context(metric),
+    ),
+)
+
+
 def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
     metrics = tuple(request.metrics)
     methods = request.estimation_methods
@@ -972,20 +1024,19 @@ def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
         )
         for metric, metric_methods in zip(metrics, methods, strict=True)
     }
-    mechanism = getattr(request.design, "mechanism", None)
-    if request.cluster is not None and any(linear_by_metric.values()):
-        _refuse("estimation.engine.cuped_linear_cluster", cluster=request.cluster)
-    if isinstance(request.plan.inference, SEQUENTIAL_POLICIES) and any(linear_by_metric.values()):
-        refuse_cuped_linear_sequential()
+    if not any(linear_by_metric.values()):
+        return
+    for rule in _CUPED_LINEAR_RULES:
+        if rule.scope == "request" and rule.predicate(request, None):
+            if rule.use_sequential_refusal:
+                refuse_cuped_linear_sequential()
+            _refuse(rule.code, **rule.context(request, None))
     for metric in metrics:
         if not linear_by_metric[metric.name]:
             continue
-        if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
-            _refuse("estimation.engine.cuped_linear_winsorization", metric=metric.name)
-        if mechanism == "encouragement":
-            _refuse("estimation.engine.cuped_linear_encouragement", metric=metric.name)
-        if mechanism == "observational":
-            _refuse("estimation.engine.cuped_linear_observational", metric=metric.name)
+        for rule in _CUPED_LINEAR_RULES:
+            if rule.scope == "metric" and rule.predicate(request, metric):
+                _refuse(rule.code, **rule.context(request, metric))
 
 
 def validate_readout_engine(request: ReadoutRequest) -> None:
