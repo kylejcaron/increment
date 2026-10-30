@@ -63,7 +63,7 @@ from increment.tables import estimates_to_readout
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Experiment, Metric
 

@@ -129,6 +129,26 @@ def reject_role_overrides_under_contrast(
             )
 
 
+def validate_contrast_request(
+    *,
+    decision_method: Method | _Unset,
+    sensitivity_methods: Sequence[Method] | _Unset,
+    prior: Prior | None | _Unset,
+    estimands: Sequence[str] | None,
+    value_scale: Mapping[str, ValueScale] | None,
+) -> None:
+    """Validate saved and immediate arguments for a switchback readout."""
+    reject_role_overrides_under_contrast(
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+    )
+    if estimands is not None or value_scale:
+        from increment._evidence_refusals import CONTRAST_UNAVAILABLE
+
+        _refuse(CONTRAST_UNAVAILABLE, method="run")
+
+
 @dataclass(frozen=True, slots=True)
 class WholeWindowRequest:
     """Static inputs for one Analysis.run() call after metric selection."""
@@ -275,7 +295,7 @@ class WholeWindowReadouts:
                 ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
             )
             validate_populations(self._src, populations, operation="run")
-        design_summary_only = _design_compliance_only(self._src, req.estimands)
+        design_summary_only = _design_compliance_only(self._src.context, req.estimands)
         if not req.metrics and not design_summary_only:
             from increment.breakout.estimates import LiftEstimates
 
@@ -405,5 +425,6 @@ __all__ = [
     "WholeWindowReadouts",
     "WholeWindowRequest",
     "reject_role_overrides_under_contrast",
+    "validate_contrast_request",
     "validate_whole_window",
 ]

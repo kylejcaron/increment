@@ -17,7 +17,7 @@ from increment.kernel.context import (
 from increment.semantics.models import Metric
 
 if TYPE_CHECKING:
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
 
 
 def _provider_for(analysis):
@@ -394,6 +394,32 @@ def run_standalone_day_axis_lift(
             or req.grain in scalar_evidence.covariate_grains
         ),
     )
+    if req.caller == "run_daily_lift":
+        from increment._readout_request import ReadoutRequest, validate_request
+        from increment.semantics.design import Encouragement
+
+        compliance_only = (
+            isinstance(analysis._design, Encouragement)
+            and tuple(req.estimands or ()) == ("compliance",)
+            and req.dimension is None
+        )
+        validation_metrics = () if compliance_only else tuple(req.metrics)
+        validation_configs = () if compliance_only else configs
+        validate_request(
+            ReadoutRequest.from_source(
+                analysis._src,
+                metrics=validation_metrics,
+                configs=validation_configs,
+                view="daily",
+                grain="daily",
+                by=() if req.dimension is None else (req.dimension,),
+                dimension=req.dimension,
+                estimands=req.estimands,
+                population=req.population,
+                daily_lift=True,
+            )
+        )
+
     if req.caller == "run_asof_lift":
         from increment._readout_request import ReadoutRequest
         from increment.estimation.encouragement import validate_readout_encouragement

@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment import readouts
 from increment._analysis_config import _Unset, normalize_display_correction
@@ -77,12 +77,20 @@ from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.sources import _BuiltinMomentSource
 
 if TYPE_CHECKING:
+    from increment._evidence_types import SourceContext
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
 
 DayAxisGrain = Literal["daily", "asof"]
+
+
+class _DayAxisSource(Protocol):
+    @property
+    def context(self) -> SourceContext:
+        """Immutable construction state used before evidence is read."""
+        ...
 
 
 _CLUSTERED_DAY_AXIS = RefusalSpec(
@@ -170,15 +178,16 @@ def _resolve_lift_estimands(
     return is_encouragement, requested, design if is_encouragement else None
 
 
-def _validate_lift_request(
+def validate_lift_request(
     req: DayAxisRequest,
     *,
-    src: _BuiltinMomentSource,
+    src: _DayAxisSource,
     design: Randomized | Encouragement | Observational | None,
     plan: CompiledDecisionPlan,
     route: DayAxisRoute,
     experiment: Experiment | None,
 ) -> tuple[bool, tuple[str, ...], Encouragement | None]:
+    """Validate a day-axis lift and normalize its requested estimands."""
     validate_day_axis(
         req,
         src=src,
@@ -219,7 +228,7 @@ def _compliance_readouts(
 def validate_day_axis(
     req: DayAxisRequest,
     *,
-    src: _BuiltinMomentSource,
+    src: _DayAxisSource,
     design: Randomized | Encouragement | Observational | None,
     plan: CompiledDecisionPlan,
     route: DayAxisRoute,
@@ -1445,7 +1454,7 @@ class DayAxisReadouts:
         req = replace(req, experiment=self._experiment)
         route = self._route()
         if lift:
-            _validate_lift_request(
+            validate_lift_request(
                 req,
                 src=self._src,
                 design=self._design,
@@ -1580,7 +1589,7 @@ class DayAxisReadouts:
         route = self._route()
         from increment._analysis_config import validate_scalar_route
 
-        _, requested_estimands, encouragement_design = _validate_lift_request(
+        _, requested_estimands, encouragement_design = validate_lift_request(
             req,
             src=self._src,
             design=self._design,

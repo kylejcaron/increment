@@ -237,25 +237,13 @@ class BreakoutReadouts:
         from increment.breakout.estimates import BreakoutEstimates
 
         registration = getattr(self._src.context.plan.inference, "registration", None)
-        if req.population == "triggered" and registration is not None:
-            from increment.sequential_state import sequential_refuse
-
-            sequential_refuse(
-                "route.unsupported",
-                "registered sequential inference has no triggered breakout construction",
-            )
         if registration is not None:
-            dimensions = sorted({key for cell in registration.roster for key, _ in cell.segment})
-            if len(dimensions) != 1:
-                from increment.sequential_state import sequential_refuse
+            from increment.sequential_source import registered_breakout_dimension
 
-                sequential_refuse(
-                    "route.unsupported",
-                    "a breakout readout requires one registered segment dimension",
-                )
+            dimension = registered_breakout_dimension(registration, population=req.population)
             return readouts.breakout(
                 self._src,
-                dimensions[0],
+                dimension,
                 metrics=[m.name for m in req.metrics],
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,

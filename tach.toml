@@ -262,6 +262,7 @@ depends_on = [
 [[modules]]
 path = "increment.decision_wire"
 depends_on = [
+  "increment._canonical",
   "increment._literals", "increment._multiplicity",
   "increment._immutable",
   "increment.compatibility", "increment.decision", "increment.errors", "increment.estimation",
@@ -518,8 +519,9 @@ path = "increment._whole_window"
 depends_on = [
   "increment._analysis_config", "increment._day_axis", "increment._evidence_types", "increment._readout_request",
   "increment.breakout.estimates",
-  "increment.errors", "increment.kernel", "increment.readouts", "increment.sources",
+  "increment.errors", "increment.readouts", "increment.sources",
   "increment._evidence_refusals",
+  "increment.kernel.context",
 ]
 
 [[modules]]
@@ -533,6 +535,7 @@ depends_on = [
   "increment._metric_specs",
   "increment._evidence_refusals",
   "increment.sequential_state",
+  "increment.sequential_source",
 ]
 
 [[modules]]
@@ -555,7 +558,7 @@ depends_on = [
 ]
 
 [[modules]]
-path = "increment.analysis"
+path = "increment._analysis_execution"
 depends_on = [
   "increment._literals", "increment._cuped_evidence",
   "increment.cate",
@@ -567,12 +570,18 @@ depends_on = [
   "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",
-  "increment.kernel.contracts",
+  "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",
   "increment.frame", "increment.plan",
   "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
-  "increment._health", "increment.store", "increment.kernel.contracts",
+  "increment._health", "increment.store",
+]
+
+[[modules]]
+path = "increment.analysis"
+depends_on = [
+  "increment._analysis_execution", "increment.builders",
 ]
 
 [[modules]]
@@ -593,7 +602,7 @@ depends_on = [
   "increment._source_identity", "increment.estimation", "increment.estimation.advisory", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
   "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders",
-  "increment._evidence_scopes", "increment.kernel",
+  "increment._evidence_scopes", "increment.kernel.context",
   "increment.kernel.contracts",
   "increment._sequential_readouts", "increment.estimation.sequential",
   "increment.declarations",
@@ -624,7 +633,7 @@ depends_on = [
   "increment._source_identity",
   "increment.errors", "increment.estimation", "increment.readouts", "increment.semantics", "increment.sources",
   "increment._evidence_loaders", "increment._evidence_types",
-  "increment._evidence_scopes", "increment.kernel",
+  "increment._evidence_scopes", "increment.kernel.context",
   "increment._unit_cycle",
   "increment.declarations",
 ]
@@ -662,7 +671,7 @@ path = "increment.simulate"
 depends_on = [
   "increment.winsor",
   "increment.decision", "increment.power",
-  "increment.analysis", "increment.cate", "increment.estimation", "increment.frame",
+  "increment.builders", "increment.kernel", "increment.cate", "increment.estimation", "increment.frame",
   "increment.logged_policy", "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.errors",
 ]
@@ -764,7 +773,7 @@ expose = [
 [[interfaces]]
 from = ["increment._day_axis"]
 expose = [
-  "DayAxisReadouts", "EvidenceSlice", "DayAxisRoute", "validate_day_axis",
+  "DayAxisReadouts", "EvidenceSlice", "DayAxisRoute", "validate_day_axis", "validate_lift_request",
   "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED",
 ]
 
@@ -884,7 +893,56 @@ depends_on = ["increment._literals", "increment.declarations", "increment.errors
 
 [[modules]]
 path = "increment.kernel"
-depends_on = ["increment._evidence_types", "increment._source_types", "increment.kernel.contracts"]
+depends_on = [
+  "increment._canonical",
+  "increment._evidence_refusals",
+  "increment._evidence_types",
+  "increment._source_types",
+  "increment._analysis_config", "increment._runnability", "increment.semantics",
+  "increment.declarations",
+  "increment.estimators.registry",
+  "increment.errors",
+  "increment.kernel.contracts",
+]
+
+[[modules]]
+path = "increment.kernel.context"
+depends_on = [
+  "increment._evidence_types", "increment._source_types", "increment.kernel.contracts",
+]
+
+[[modules]]
+path = "increment._runnability"
+depends_on = [
+  "increment._analysis_config", "increment._canonical", "increment._day_axis",
+  "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
+  "increment._source_types", "increment._window", "increment.decision",
+  "increment.declarations", "increment.errors",
+  "increment.estimation", "increment.query", "increment.readouts", "increment.semantics",
+  "increment.sequential_source", "increment._whole_window",
+]
+
+[[modules]]
+path = "increment._analysis_kernel_adapter"
+depends_on = [
+  "increment._source_types",
+  "increment.decision",
+  "increment._canonical", "increment._runnability",
+  "increment.errors",
+  "increment.kernel",
+  "increment.kernel.contracts",
+]
+
+[[modules]]
+path = "increment.builders"
+depends_on = [
+  "increment._analysis_kernel_adapter",
+  "increment._analysis_execution",
+  "increment.errors",
+  "increment.kernel",
+  "increment.kernel.contracts",
+  "increment.semantics",
+]
 
 [[modules]]
 path = "increment.kernel.contracts"
@@ -921,6 +979,7 @@ depends_on = [
   "increment._interpretation",
   "increment.errors",
   "increment.kernel.contracts",
+  "increment.kernel",
   "increment.result_envelope",
   "increment.store",
   "increment.decide",

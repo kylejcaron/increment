@@ -1857,6 +1857,12 @@ class WarehouseSession:
         schema = ibis.schema(fields)
         return backend.sql(sql, dialect=self._defs.dialect, schema=schema)
 
+    def recorded_schema(self, sql: str) -> dict[str, str] | None:
+        """Return dtypes from an already captured relation, without querying."""
+        if self._source_tables is None or sql not in self._source_tables:
+            return None
+        return {column: str(dtype) for column, dtype in self._source_tables[sql].schema().items()}
+
     def source_sql(self, sql: str) -> Table:
         """Resolve SQL to the live source or operation's captured inputs."""
         if self._source_tables is not None:

@@ -43,6 +43,31 @@ def native_connection(source: DefinitionsMomentSource) -> Any:
     return source._con
 
 
+def facade_binding(analysis: Analysis) -> Any:
+    """Return the builder product retained by a public facade constructor."""
+    binding = getattr(analysis, "_kernel_binding", None)
+    if binding is not None:
+        assert binding[1]._source is analysis._state.source
+    return binding
+
+
+def replace_analysis_source(analysis: Analysis, source: object) -> None:
+    """Install a counting source in a fixture's immutable construction state."""
+    object.__setattr__(analysis._state, "source", source)
+
+
+def definitions_inputs(analysis: Analysis) -> tuple[Any, ...]:
+    """Return the original definitions inputs of an in-memory analysis fixture."""
+    source = _native_source(analysis)
+    return (
+        source._defs,
+        source._experiment,
+        source._con,
+        source.context.plan,
+        analysis._on_mixed_assignment,
+    )
+
+
 def lift_rows(results: LiftEstimates | ContrastResults) -> LiftEstimates:
     """Narrow the arm-analysis result union for tests of lift rows."""
     assert isinstance(results, LiftEstimates)

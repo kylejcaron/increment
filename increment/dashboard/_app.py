@@ -78,7 +78,7 @@ from increment.errors import CodedError
 from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
     from increment.estimation.diagnostics import SRMResult
 
 __all__ = ["build_payload", "document", "health_status", "render_dashboard"]

@@ -325,7 +325,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             "unit": self._unit,
             "group": self._group,
             "exposure_date": self._exposure_date,
-            "specs": [spec.model_dump(mode="json") for spec in self._specs],
+            "specs": self._specs,
             "control": self._control,
             "uptake": self._uptake,
             "cluster": self.context.cluster,
@@ -1506,7 +1506,7 @@ class FramePanelSource(SequentialSourceMixin):
             "control": self._control,
             "uptake": self._uptake,
             "window_days": self._window_days,
-            "specs": [spec.model_dump(mode="json") for spec in self._specs],
+            "specs": self._specs,
             "observation_mapping": dict(self._sequential_mapping),
             "breakouts": self.breakouts,
         }

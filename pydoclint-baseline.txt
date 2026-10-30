@@ -2,25 +2,6 @@ increment/absorption.py
     DOC105: Function `absorb_factor`: Argument names match, but type hints in these args do not match: pooling
     DOC502: Function `absorb_factor` has a "Raises" section in the docstring, but there are not "raise" statements in the body
 --------------------
-increment/analysis.py
-    DOC105: Method `Analysis.__init__`: Argument names match, but type hints in these args do not match: store, on_mixed_assignment
-    DOC201: Method `Analysis.materialize` does not have a return section in docstring
-    DOC203: Method `Analysis.materialize` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
-    DOC502: Method `Analysis.materialize` has a "Raises" section in the docstring, but there are not "raise" statements in the body
-    DOC105: Method `Analysis.srm`: Argument names match, but type hints in these args do not match: inference, population
-    DOC502: Method `Analysis.sitewide` has a "Raises" section in the docstring, but there are not "raise" statements in the body
-    DOC101: Method `Analysis.run_breakout`: Docstring contains fewer arguments than in function signature.
-    DOC110: Method `Analysis.run_breakout`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
-    DOC103: Method `Analysis.run_breakout`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [decision_method: Method | _Unset, prior: Prior | None | _Unset, sensitivity_methods: Sequence[Method] | _Unset]. Arguments in the docstring but not in the function signature: [decision_method, sensitivity_methods, prior: ].
-    DOC502: Method `Analysis.run_daily` has a "Raises" section in the docstring, but there are not "raise" statements in the body
-    DOC101: Method `Analysis.run_daily_lift`: Docstring contains fewer arguments than in function signature.
-    DOC103: Method `Analysis.run_daily_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [decision_method: Method | _Unset, sensitivity_methods: Sequence[Method] | _Unset]. Arguments in the docstring but not in the function signature: [decision_method, sensitivity_methods: Method | Sequence[Method] | _Unset].
-    DOC502: Method `Analysis.run_daily_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
-    DOC502: Method `Analysis.run_asof` has a "Raises" section in the docstring, but there are not "raise" statements in the body
-    DOC101: Method `Analysis.run_asof_lift`: Docstring contains fewer arguments than in function signature.
-    DOC103: Method `Analysis.run_asof_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [decision_method: Method | _Unset, sensitivity_methods: Sequence[Method] | _Unset]. Arguments in the docstring but not in the function signature: [decision_method, sensitivity_methods: Method | Sequence[Method] | _Unset].
-    DOC502: Method `Analysis.run_asof_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
---------------------
 increment/breakout/estimates.py
     DOC101: Function `_estimate_encouragement_or_reason`: Docstring contains fewer arguments than in function signature.
     DOC103: Function `_estimate_encouragement_or_reason`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alpha: float, alternative: str, design: Encouragement, estimands: Sequence[str], inference: AsymptoticMean | AlwaysValid | MixedFamily | None, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, methods: list[Method] | None, metrics: Sequence[Metric], prior: Prior | None, summary: list[Mapping[str, Any]]].

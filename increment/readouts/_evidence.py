@@ -182,7 +182,11 @@ def prior_exclusions(src: EvidenceSource) -> tuple[str, ...]:
 
 
 def source_route(src: EvidenceSource) -> SourceRoute:
-    evidence = declared_evidence(src)
+    return declared_source_route(declared_evidence(src))
+
+
+def declared_source_route(evidence: EvidenceCapabilities) -> SourceRoute:
+    """Select the source view using only its evidence declaration."""
     if "artifact_experiment" in evidence.operations:
         return ARTIFACT_ROUTE
     if "moments_source" not in evidence.operations:
@@ -191,7 +195,12 @@ def source_route(src: EvidenceSource) -> SourceRoute:
 
 
 def day_axis_route(src: EvidenceSource) -> DayAxisRoute:
-    route = source_route(src)
+    return declared_day_axis_route(declared_evidence(src))
+
+
+def declared_day_axis_route(evidence: EvidenceCapabilities) -> DayAxisRoute:
+    """Select the day-axis view without acquiring a source."""
+    route = declared_source_route(evidence)
     return MOMENTS_ROUTE if route == PANEL_ROUTE else route
 
 
@@ -643,19 +652,18 @@ def load_sequential_capture(
         # The provider owns its horizon preconditions, continuation proof and freezes.
         require_request_evidence(src, request)
         return cast(Any, src).capture_sequential(request)
-    from increment.sequential_source import adopt_source_snapshot, source_snapshot
-    from increment.sequential_state import declare_sequential_freeze, sequential_refuse
+    from increment.sequential_source import (
+        adopt_source_snapshot,
+        source_snapshot,
+        validate_capture_request,
+    )
+    from increment.sequential_state import declare_sequential_freeze
 
     capture = getattr(src, "capture_sequential", None)
+    validate_capture_request(request, dynamic=capture is not None)
     if capture is None:
-        if not request.finalized or request.as_of is not None:
-            sequential_refuse(
-                "source.invalid", "this source requires its construction-time finalized checkpoint"
-            )
         snapshot = source_snapshot(src, previous=request.previous)
     else:
-        if request.as_of is None:
-            sequential_refuse("source.invalid", "capture requires an explicit as_of horizon")
         snapshot = capture(
             finalized=request.finalized,
             previous=request.previous,
@@ -1218,6 +1226,9 @@ def _validate_daily_readout(src: EvidenceSource, req: DayAxisRequest, metric: An
         view="daily",
         grain="daily",
         by=req.by,
+        estimands=req.estimands,
+        population=req.population,
+        daily_lift=req.caller == "run_daily_lift",
     )
     validate_request(readout_request)
 

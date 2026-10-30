@@ -17,7 +17,7 @@ from increment.errors import CodedError, _freeze
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
     from increment.breakout.estimates import (
         BreakoutEstimates,
         DailyLiftEstimates,

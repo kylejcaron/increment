@@ -239,15 +239,13 @@ def _validate_panel_models(source, registration) -> None:
             continue
         metric = metrics[model.metric]
         last = _final_maturity_day(metric)
-        if (
-            _resolve_window_days(metric) is None
-            or last is None
-            or last >= registration.reveal.longest_window_days
-        ):
-            sequential_refuse(
-                "route.unsupported",
-                "panel metrics need bounded windows covered by the common joint-reveal window",
-            )
+        from increment.sequential_source import validate_capture_window
+
+        validate_capture_window(
+            None if _resolve_window_days(metric) is None or last is None else last + 1,
+            registration,
+            detail="panel metrics need bounded windows covered by the common joint-reveal window",
+        )
         spec = source._specs_by_name[model.metric]
         validate_sequential_transform(spec)
         if adjustment_kind(registration, model.metric) is not None:

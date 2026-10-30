@@ -64,10 +64,10 @@ def test_estimation_reads_sources_only_through_facades():
 
 def test_loader_routes_stay_inside_acquisition_and_facades():  # noqa: C901
     root = Path(__file__).parents[1] / "increment"
-    # The evidence layer plus the analysis facade and its four readout facades.
+    # The evidence layer plus the analysis execution and its four readout facades.
     allowed = {
         Path("readouts/_evidence.py"),
-        Path("analysis.py"),
+        Path("_analysis_execution.py"),
         Path("_day_axis.py"),
         Path("_whole_window.py"),
         Path("_breakout_readouts.py"),

@@ -128,6 +128,8 @@ def freeze(value: Any) -> Any:
 
 
 def thaw(value: Any) -> Any:
+    if callable(value):
+        return value
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, Mapping):

@@ -55,6 +55,13 @@ change without notice.
 - Release note (bug fix): re-issuing a row beyond its registered plan or selected
   family alpha refuses with `results.operation.alpha_above_allocation`; register
   the new alpha in the analysis plan and rerun instead.
+- Release note (API addition): `Experiment` and `SourceReference` describe a registered
+  analysis and its recorded evidence declarations; `runnable()` reports offline
+  unknowns and deferred data checks. Additive module builders `from_frame`,
+  `from_definitions`, `from_unit_day_artifact`, `from_switchback_frame`, and
+  `from_moments` return an experiment/resolver pair. Existing `Analysis`
+  constructors and `run(analysis, registration, compiled_plan, ...)` remain
+  available. See the [experiment specification guide](guides/experiment-specifications.md).
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

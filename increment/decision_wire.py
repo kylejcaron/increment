@@ -695,6 +695,40 @@ def compiled_plan_to_dict(plan: CompiledDecisionPlan) -> dict[str, object]:
     return payload
 
 
+def registration_payload(plan: CompiledDecisionPlan) -> dict[str, object]:
+    """Identify decision declarations, including in-memory learner settings."""
+    from increment._canonical import declaration_value
+
+    runtime: dict[str, object] = {}
+
+    def capture(method: Method, role: str, name: str) -> Method:
+        fields = {
+            field: getattr(method, field)
+            for field in ("propensity_learner", "outcome_learner", "folds")
+        }
+        if any(value is not None for value in fields.values()):
+            runtime[f"{name}:{role}"] = declaration_value(fields)
+        return method.model_copy(update=dict.fromkeys(fields))
+
+    procedures = {}
+    for name, procedure in plan.procedures.items():
+        if isinstance(procedure, (RelativeArmDecisionProcedure, AbsoluteArmDecisionProcedure)):
+            procedure = procedure.model_copy(
+                update={
+                    "decision_method": capture(procedure.decision_method, "decision", name),
+                    "sensitivity_methods": tuple(
+                        capture(method, f"sensitivity:{index}", name)
+                        for index, method in enumerate(procedure.sensitivity_methods)
+                    ),
+                }
+            )
+        procedures[name] = procedure
+    payload = compiled_plan_to_dict(plan.model_copy(update={"procedures": procedures}))
+    if runtime:
+        payload["runtime_methods"] = runtime
+    return payload
+
+
 def _refuse_legacy_plan(payload: Mapping[str, object]) -> None:
     inference = payload.get("inference")
     kind = inference.get("kind") if isinstance(inference, Mapping) else None

@@ -163,11 +163,13 @@ def validate_relational_capture(
                     "binary outcomes require Bernoulli or scalar mean registration",
                 )
             window = resolve_window_days(metric)
-        if window is None or window > registration.reveal.longest_window_days:
-            sequential_refuse(
-                "route.unsupported",
-                "all observation windows must be bounded by the common registered reveal window",
-            )
+        from increment.sequential_source import validate_capture_window
+
+        validate_capture_window(
+            window,
+            registration,
+            detail="all observation windows must be bounded by the common registered reveal window",
+        )
     if previous is not None and previous.registration != registration:
         sequential_refuse("continuation.rewrite", "registration changed before source access")
     return registration, definitions

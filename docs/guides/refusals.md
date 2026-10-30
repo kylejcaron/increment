@@ -35,8 +35,22 @@ similar codes can mean different things.
 | `cate.*`, `logged_policy.*` | Check identification and support assumptions in [heterogeneity](heterogeneity-and-rollout.md) or [logged policies](logged-policy.md); select a supported estimand rather than weakening a validity gate. |
 | `results.*`, `dashboard.*`, `report.*`, `reporting.*`, `tables.*` | Check result-frame projection columns and the dashboard's documented input/view requirements in the [dashboard guide](dashboard.md); use the underlying readout directly if that view is unavailable. `results.operation.alpha_above_allocation` means a reissued interval exceeds its stored declared or selected family allocation; request an equal or smaller alpha, or use an unadjusted row. |
 | `simulate.*` | Check the simulated design and requested operating characteristic in the [power analysis guide](power-analysis.md); simulated behavior is not a guarantee for a different design. |
-| `kernel.*` | Check the saved or shared analysis description named in the refusal context (`field`, `kind`). A scope, request or method description is inconsistent or cannot be saved portably. Request identity datetimes must include a timezone; aware offsets are normalized to UTC. Rebuild the description from the analysis rather than editing stored identifiers. |
+| `kernel.*` | Check the saved or shared analysis description named in the refusal context (`field`, `kind`). A scope, request or method description is inconsistent or cannot be saved portably. Request identity datetimes must include a timezone; aware offsets are normalized to UTC. For `kernel.definitions.catalog_missing`, bind the definitions with a connection to write the offline catalog; for `kernel.definitions.catalog_stale`, rebind after changing the definitions. Rebuild the description from the analysis rather than editing stored identifiers. |
+
 | `store.*` | The saved run manifest, cell roster, scope map or immutable publication is inconsistent. Keep run IDs unique, publish a complete roster once, and use the pinned `RunHandle` for reads; correct the source run and write a new ID rather than replacing a committed run. `store.run.legacy_analysis_required` is unfinished for switchback family decisions; use legacy `Analysis.run()` until a registered decision-plan route is available. |
+
+`kernel.request.capture_not_supported` means sequential capture or checkpoint
+adoption was placed in saved request options. Call
+`analysis.capture_sequential(...)` on the analysis, then run it.
+`kernel.request.population_scope_only` means population was placed in request
+options; set it on `Scope(population=...)` instead.
+`kernel.run.provider_execution_unavailable` means `BoundResolver` verified a
+custom provider but has no execution adapter. Use the resolver returned by a
+module builder to run an experiment.
+
+`kernel.scope.family_mismatch` means a switchback view was requested from an
+ordinary arm experiment. Build a switchback experiment with
+`from_switchback_frame`, or choose its existing run, daily, asof, or breakout view.
 
 `evidence.joint_grouping_unavailable` means the requested grouping properties
 are not all available from one source; declare all grouping properties together on one source

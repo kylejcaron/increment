@@ -1002,6 +1002,39 @@ def _validate_control_labels(registration, design):
         )
 
 
+def registered_breakout_dimension(registration, *, population):
+    """Return the single dimension admitted by a registered segment readout."""
+    if population == "triggered":
+        sequential_refuse(
+            "route.unsupported",
+            "registered sequential inference has no triggered breakout construction",
+        )
+    dimensions = sorted({key for cell in registration.roster for key, _ in cell.segment})
+    if len(dimensions) != 1:
+        sequential_refuse(
+            "route.unsupported",
+            "a breakout readout requires one registered segment dimension",
+        )
+    return dimensions[0]
+
+
+def validate_capture_request(request, *, dynamic):
+    """Check finalized-checkpoint versus horizon-capture request coordinates."""
+    if not dynamic:
+        if not request.finalized or request.as_of is not None:
+            sequential_refuse(
+                "source.invalid", "this source requires its construction-time finalized checkpoint"
+            )
+    elif request.as_of is None:
+        sequential_refuse("source.invalid", "capture requires an explicit as_of horizon")
+
+
+def validate_capture_window(window, registration, *, detail):
+    """Require each observation window to fit the declared common reveal horizon."""
+    if window is None or window > registration.reveal.longest_window_days:
+        sequential_refuse("route.unsupported", detail)
+
+
 def validate_sequential_plan(plan, metrics, design):
     """Check the complete registered decision before any producer reads data."""
     from fractions import Fraction

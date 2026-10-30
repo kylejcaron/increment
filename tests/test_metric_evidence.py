@@ -351,6 +351,7 @@ class _CountingSource(EvidenceProvider):
         self.context = source.context
         self.evidence = source.evidence
         self.unit_frame_reads = 0
+        self.loader_reads: list[str] = []
         self.unit_frame_metrics = []
 
     def __getattr__(self, name):

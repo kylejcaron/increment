@@ -34,7 +34,18 @@ _REFUSALS = refusals(
         "kernel.method.implementation_ref_missing": "Method callable field {field!r} has no implementation reference",
         "kernel.request.invalid": "Invalid analysis request: {field}",
         "kernel.request.unportable": "Request kind {kind!r} field {field!r} is not portable",
+        "kernel.request.capture_not_supported": (
+            "Saved capture is an execution step; call analysis.capture_sequential(...) then run",
+            (),
+        ),
+        "kernel.request.population_scope_only": "Set population on Scope(population=...)",
+        "kernel.run.provider_execution_unavailable": (
+            "BoundResolver verifies providers but cannot execute them; use a bound Analysis resolver",
+            (),
+        ),
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",
+        "kernel.definitions.catalog_missing": "Offline definitions catalog is missing for {path!r}; bind the definitions with a connection first",
+        "kernel.definitions.catalog_stale": "Offline definitions catalog is stale for {path!r}; rebind the definitions with a connection",
         "kernel.request.datetime_timezone": "Request datetime field {field!r} must be timezone-aware",
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
         "kernel.context.closed": "Execution context is closed",
@@ -249,8 +260,8 @@ class Registration(_ContractModel):
     def from_plan(cls, plan: Any) -> Registration:
         from importlib import import_module
 
-        compiled_plan_to_dict = import_module("increment.decision_wire").compiled_plan_to_dict
-        return cls(registration_hash=contract_hash("registration", compiled_plan_to_dict(plan)))
+        encode = import_module("increment.decision_wire").registration_payload
+        return cls(registration_hash=contract_hash("registration", encode(plan)))
 
     def hash(self) -> str:
         return self.registration_hash

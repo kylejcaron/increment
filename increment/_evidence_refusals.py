@@ -16,7 +16,7 @@ from increment._assignment_refusals import (
     refuse_assignment_selection as _refuse_assignment_selection,
 )
 from increment._source_types import PROVIDER_UNAVAILABLE
-from increment.errors import CapabilityError, RefusalSpec, refuse
+from increment.errors import CapabilityError, CodedError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
     from increment._source_types import Grain
@@ -92,6 +92,13 @@ def refuse_winsorized_day_axis(
         offered=(),
         route=f"use total-grain run() or run_breakout(), or remove winsorization for {axis} evidence",
     )
+
+
+CONTRAST_UNAVAILABLE = RefusalSpec(
+    "facade.analysis.contrast_unavailable",
+    CapabilityError,
+    template="{method}() is unavailable for switchback contrast evidence.",
+)
 
 
 GRAIN_UNAVAILABLE = _spec("evidence.grain_unavailable", "grain")
@@ -553,7 +560,7 @@ def check_method_covariates(src: object, metric: str, methods: Sequence[object])
                 checker(metric, methods)
 
 
-def require_evidence(
+def _require_evidence(
     src: object,
     *,
     request: object | None = None,
@@ -663,3 +670,97 @@ def require_evidence(
         )
     ):
         _require_population(src, population, evidence.populations)
+
+
+def require_evidence(
+    src: object,
+    *,
+    request: object | None = None,
+    grain: Grain | None = None,
+    by: Sequence[str] = (),
+    unit_rows: bool = False,
+    raw_outcomes: bool = False,
+    cluster: bool = False,
+    covariates: Sequence[str] = (),
+    operation: str | None = None,
+) -> None:
+    from increment._source_types import declared_evidence
+
+    require_evidence_declaration(
+        declared_evidence(src),
+        source=src,
+        request=request,
+        grain=grain,
+        by=by,
+        unit_rows=unit_rows,
+        raw_outcomes=raw_outcomes,
+        cluster=cluster,
+        covariates=covariates,
+        operation=operation,
+    )
+
+
+def require_evidence_declaration(
+    capabilities: object,
+    *,
+    source: object | None = None,
+    request: object | None = None,
+    grain: Grain | None = None,
+    by: Sequence[str] = (),
+    unit_rows: bool = False,
+    raw_outcomes: bool = False,
+    cluster: bool = False,
+    covariates: Sequence[str] = (),
+    operation: str | None = None,
+) -> None:
+    """Evaluate declared support without a source read or backend access."""
+    from increment._source_types import EvidenceCapabilities
+
+    if not isinstance(capabilities, EvidenceCapabilities):
+        refuse(PROVIDER_UNAVAILABLE, constructor=type(capabilities).__name__)
+    candidate = source if source is not None else _DeclaredEvidence(capabilities)
+    _require_evidence(
+        candidate,
+        request=request,
+        grain=grain,
+        by=by,
+        unit_rows=unit_rows,
+        raw_outcomes=raw_outcomes,
+        cluster=cluster,
+        covariates=covariates,
+        operation=operation,
+    )
+
+
+def require_any_evidence_route(
+    capabilities: object,
+    routes: Sequence[Sequence[object]],
+) -> tuple[CodedError, ...]:
+    """Return route refusals only when every declared alternative is unavailable."""
+    failures: list[CodedError] = []
+    for route in routes:
+        route_failures: list[CodedError] = []
+        for request in route:
+            try:
+                require_evidence_declaration(capabilities, request=request)
+            except CodedError as refusal:
+                route_failures.append(refusal)
+        if not route_failures:
+            return ()
+        failures.extend(route_failures)
+
+    unique: list[CodedError] = []
+    for failure in failures:
+        if not any(
+            existing.code == failure.code and existing.context == failure.context
+            for existing in unique
+        ):
+            unique.append(failure)
+    return tuple(unique)
+
+
+class _DeclaredEvidence:
+    __slots__ = ("evidence",)
+
+    def __init__(self, evidence: object) -> None:
+        self.evidence = evidence

@@ -157,3 +157,13 @@ covariates: Pre-exposure columns needed for per-unit evidence.
 raw_outcomes: Whether pre-transform outcome rows are required.
 src: Statistical evidence source to validate.
 unit_rows: Whether unit-level observations are required.
+exp: Experiment specification to inspect or execute.
+resolver: Runtime source resolver bound to an experiment.
+source_refs: Named source declarations to bind or verify.
+ctx: Optional execution context receiving resolved providers.
+expected_digest: Expected digest for a bound source provider.
+portable: Whether a serialized experiment must omit runtime-only values.
+args: Constructor arguments forwarded to the established Analysis builder.
+kwargs: Named constructor arguments forwarded to the established Analysis builder.
+shape: Unit-summary or unit-panel layout selected from a frame.
+estimator_id: Registered estimator whose declaration is checked.

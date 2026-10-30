@@ -10,7 +10,7 @@ from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
 from increment.readouts._provider import native_scope_provider
 
 if TYPE_CHECKING:
-    from increment.analysis import Analysis
+    from increment._analysis_execution import Analysis
 
 
 def line4_context(

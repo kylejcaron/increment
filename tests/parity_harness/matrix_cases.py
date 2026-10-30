@@ -20,7 +20,6 @@ import pandas as pd
 from increment import Analysis
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate, MetricSpec
-from increment.plan import bind_automatic_sequential_plan
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import (
     AnalysisPlan,
@@ -30,8 +29,6 @@ from increment.semantics.models import (
     MethodSpec,
     Winsorization,
 )
-from increment.sequential_source import native_observation_mapping
-from tests.analysis_factory import make_analysis
 from tests.capability_contracts import CONSTRUCTORS
 
 from . import matrix_data as md
@@ -310,22 +307,17 @@ class _Ingress:
         return md.duckdb_connection(self.rows)
 
     def _native(self, con: Any, defs: Definitions) -> Analysis:
-        if self.cell.option != "sequential":
-            return make_analysis(con, defs, experiment="exp")
-        exp = defs.experiment("exp")
-        assert exp is not None
-        # `Analysis.__init__` binds an automatic sequential plan's registration before
-        # building the source; `make_analysis` compiles the plan as given.
-        bound = bind_automatic_sequential_plan(
-            exp.plan,
-            [m for m in defs.metrics if m.name in exp.metric_names],
-            design=_RANDOMIZED,
-            source_id=exp.name,
-            source_mapping=native_observation_mapping(defs, exp, on_mixed_assignment="error"),
-            pre_period_covariate=exp.n_pre_periods > 0,
-        )
-        analysis = make_analysis(con, defs, experiment="exp", plan=bound)
-        analysis._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "definitions.yaml"
+            path.write_text(yaml.safe_dump(defs.model_dump(mode="json")), encoding="utf-8")
+            analysis = Analysis.from_definitions("exp", path, con)
+        if self.cell.option == "sequential":
+            analysis._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
         return analysis
 
     def definitions(self) -> Analysis:

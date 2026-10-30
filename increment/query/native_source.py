@@ -287,9 +287,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     def declaration_identity(self) -> Mapping[str, Any]:
         """Return source declarations without capture or observation values."""
         return {
-            "experiment": self._experiment.model_dump(mode="json"),
-            "definitions": self._defs.model_dump(mode="json"),
-            "metrics": [metric.model_dump(mode="json") for metric in self._metrics],
+            "experiment": self._experiment,
+            "definitions": self._defs,
+            "metrics": self._metrics,
             "observation_mapping": self._sequential_observation_mapping(),
         }
 
@@ -316,6 +316,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._store: Literal["auto", "always", "none"] = store
         self._on_mixed_assignment: Literal["error", "warn", "exclude"] = on_mixed_assignment
         self._backend = backend
+        self._declaration_schema: dict[str, str] | None = None
         from increment.plan import refuse_observational_relative_margin
 
         refuse_observational_relative_margin(design, plan)
@@ -761,6 +762,32 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return tuple(rows)
 
+    def declaration_schema(self) -> dict[str, str]:
+        """Return recorded input dtypes, enabling capture for subsequent readouts."""
+        if self._declaration_schema is None:
+            self._declaration_schema = {}
+        return dict(self._declaration_schema)
+
+    def _record_declaration_schema(self, captured: DefinitionsMomentSource) -> None:
+        """Retain relation dtypes from the selected inputs of an existing capture."""
+        if self._declaration_schema is None:
+            return
+        queries = {
+            **{source.name: source.sql for source in self._defs.fact_sources},
+            **{f"dimension:{source.name}": source.sql for source in self._defs.dim_sources},
+            **{
+                f"exposure:{exposure.name}": exposure.sql
+                for exposure in self._defs.exposures
+                if exposure.sql is not None
+            },
+        }
+        for name, query in queries.items():
+            columns = captured._session.recorded_schema(query)
+            if columns is not None:
+                self._declaration_schema.update(
+                    {f"{name}.{column}": dtype for column, dtype in columns.items()}
+                )
+
     def evidence_scope_streams(self, scope: EvidenceScope) -> Mapping[str, str]:
         dependencies = evidence_scope_dependencies(scope)
         tables = self._session._source_tables
@@ -1091,6 +1118,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         sequential_snapshot = getattr(self, "_sequential_snapshot", None)
         if sequential_snapshot is not None:
             pinned.adopt_sequential_snapshot(sequential_snapshot)
+        self._record_declaration_schema(pinned)
         return pinned
 
     def _add_observational_covariate_sources(

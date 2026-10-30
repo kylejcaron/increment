@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import inspect
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -88,13 +89,12 @@ import pytest
 from pydantic import ValidationError
 
 from increment import Analysis
-from increment._analysis_config import UNSET
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
 from tests.warning_codes import warning_codes
 
-from .cases import Absence, ParityCase, _close_parity_analysis
+from .cases import UNSET, Absence, ParityCase, _close_parity_analysis
 from .comparison import nested_close
 
 # Dropped from the compared payload only after source identity is checked against the retained
@@ -380,9 +380,12 @@ class CaseResult:
 @allow_declared_overrides
 def _read(
     analysis: Any,
+    name: str,
     case: ParityCase,
     *,
     coherence: Literal["captured", "live"] | None = None,
+    compare_kernel: bool = False,
+    fresh: Callable[[], Any] | None = None,
 ) -> Any:
     """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
     (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and
@@ -403,14 +406,29 @@ def _read(
                 **method_kwargs,
                 **coherence_kwargs,
             )
-        return analysis.run(
-            **estimand_kwargs,
-            **prior_kwargs,
-            **metric_kwargs,
-            **method_kwargs,
-            **coherence_kwargs,
+        if not compare_kernel:
+            return analysis.run(
+                **estimand_kwargs,
+                **prior_kwargs,
+                **metric_kwargs,
+                **method_kwargs,
+                **coherence_kwargs,
+            )
+        return _run_with_kernel_parity(
+            analysis,
+            name,
+            case,
+            fresh,
+            {
+                **estimand_kwargs,
+                **prior_kwargs,
+                **metric_kwargs,
+                **method_kwargs,
+                **coherence_kwargs,
+            },
         )
     dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
+
     population = {"population": case.population}
     match case.view:
         case "daily":
@@ -427,12 +445,80 @@ def _read(
             )
 
 
+def _run_with_kernel_parity(
+    analysis: Any,
+    name: str,
+    case: ParityCase,
+    fresh: Callable[[], Any] | None,
+    options: dict[str, Any],
+) -> Any:
+    """Compare the public Analysis.run path with direct kernel execution."""
+    from increment._analysis_kernel_adapter import experiment_for_analysis
+    from increment.kernel.resolver import run as run_experiment
+
+    public_warnings = []
+    try:
+        with warnings.catch_warnings(record=True) as public_warnings:
+            warnings.simplefilter("always", IncrementWarning)
+            expected = analysis.run(**options)
+    except CodedError as expected_refusal:
+        experiment, resolver = experiment_for_analysis(analysis, run_options=options)
+        try:
+            run_experiment(experiment, resolver)
+        except CodedError as kernel_refusal:
+            if kernel_refusal.code != expected_refusal.code:
+                raise AssertionError(
+                    f"Analysis.run refused with {expected_refusal.code!r} but kernel run "
+                    f"refused with {kernel_refusal.code!r}"
+                ) from kernel_refusal
+        else:
+            raise AssertionError(
+                f"Analysis.run refused with {expected_refusal.code!r} but kernel run succeeded"
+            )
+        raise
+    finally:
+        for warning in public_warnings:
+            warnings.warn_explicit(
+                warning.message, warning.category, warning.filename, warning.lineno
+            )
+
+    # An in-memory live source keeps its reduction cache between runs, and a cached reduction
+    # does not repeat its advisories, so the kernel side runs on its own construction of the
+    # source. Warehouse ingresses read the backend on every live run and hold connections.
+    kernel_analysis = (
+        fresh()
+        if fresh is not None
+        and options.get("coherence") == "live"
+        and name in {"from_unit_panel", "from_unit_summary", "from_switchback_panel"}
+        else analysis
+    )
+    experiment, resolver = experiment_for_analysis(kernel_analysis, run_options=options)
+    from increment.kernel.experiment import Experiment
+
+    restored = Experiment.from_json(experiment.to_json())
+    if restored.hash() != experiment.hash():
+        raise AssertionError("A parity-matrix experiment changed identity after JSON round-trip")
+    with warnings.catch_warnings(record=True) as kernel_warnings:
+        warnings.simplefilter("always", IncrementWarning)
+        actual = run_experiment(restored, resolver)
+    # This second execution has its own advisory channel, not another facade call.
+    assert sorted(warning_codes(kernel_warnings)) == sorted(warning_codes(public_warnings))
+    expected_payload = _normalize(
+        expected, family_for_row=_family_map_for_output(case, name, expected)
+    )
+    actual_payload = _normalize(actual, family_for_row=_family_map_for_output(case, name, actual))
+    if not nested_close(expected_payload, actual_payload):
+        raise AssertionError("Analysis.run and direct kernel run returned different rows")
+    return expected
+
+
 def _read_with_advisories(
     analysis: Any,
     name: str,
     case: ParityCase,
     *,
     coherence: Literal["captured", "live"] | None = None,
+    fresh: Callable[[], Any] | None = None,
 ) -> tuple[Any, int]:
     expected = case.expected_warning_codes.get(name, ())
     with warnings.catch_warnings(record=True) as caught:
@@ -444,9 +530,9 @@ def _read_with_advisories(
         if expected:
             warnings.simplefilter("always", IncrementWarning)
         results = (
-            _read(analysis, case)
+            _read(analysis, name, case, compare_kernel=True, fresh=fresh)
             if coherence is None
-            else _read(analysis, case, coherence=coherence)
+            else _read(analysis, name, case, coherence=coherence, compare_kernel=True, fresh=fresh)
         )
     if case.readout_probe is not None or case.source_probe is not None:
         with warnings.catch_warnings():
@@ -574,7 +660,7 @@ def run_case(
                     f"{case.id}: replayed empty-freeze snapshot could not continue on {name}"
                 )
             results, advisory_counts[name] = _read_with_advisories(
-                analysis, name, case, coherence=coherence
+                analysis, name, case, coherence=coherence, fresh=None if case.sequential else build
             )
             metadata = getattr(results, "metadata", None)
             content_digest = getattr(metadata, "source_content_digest", None)

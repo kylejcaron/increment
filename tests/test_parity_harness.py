@@ -219,6 +219,38 @@ def _case(build, *, waive=None, codes=None, absence=None, refusal_only=False):
     )
 
 
+def test_parity_run_executes_restored_experiment():
+    import sys
+
+    from increment import Experiment
+    from increment.kernel.resolver import run as run_experiment
+
+    decode_code = Experiment.from_json.__func__.__code__
+    execute_code = run_experiment.__code__
+    restored = []
+    executed = []
+    previous = sys.getprofile()
+
+    def observe(frame, event, value):
+        if event == "return" and frame.f_code is decode_code:
+            restored.append(value)
+        elif event == "call" and frame.f_code is execute_code:
+            executed.append(frame.f_locals["exp"])
+        if previous is not None:
+            previous(frame, event, value)
+
+    case = _case({"from_unit_summary": _mean_summary_builder()})
+    try:
+        sys.setprofile(observe)
+        result = run_case(case)
+    finally:
+        sys.setprofile(previous)
+
+    assert_parity(case, result)
+    assert restored
+    assert all(any(actual is saved for actual in executed) for saved in restored)
+
+
 def test_read_with_advisories_rejects_unexpected_warning_codes(monkeypatch):
     import warnings
 
@@ -237,7 +269,7 @@ def test_read_with_advisories_rejects_unexpected_warning_codes(monkeypatch):
         },
     )
 
-    def read_with_extra_warning(_analysis, _case):
+    def read_with_extra_warning(_analysis, _name, _case, **_kwargs):
         warnings.warn(
             IncrementWarning(
                 "CUPED covariate unused",
