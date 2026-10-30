@@ -288,7 +288,7 @@ def validate_day_axis(
             tuple(sorted(declared_evidence(src).grains)),
             route="use a source with the requested day axis",
         )
-    reject_winsorized_day_axis(list(req.metrics), req.caller)
+    reject_winsorized_day_axis(list(req.metrics), req.caller, grain=req.grain)
     if route == NATIVE_ROUTE:
         # Native routes reject quantiles; moments/artifacts retain the broader metric set.
         moments_reason = "per-day moments" if req.grain == "daily" else "as-of moments"

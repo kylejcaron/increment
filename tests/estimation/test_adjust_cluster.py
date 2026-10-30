@@ -632,20 +632,19 @@ def test_registered_adjustment_preserves_producer_weight_diagnostics():
 
     method_name = "test_weight_diagnostics_passthrough"
 
-    import sys
+    received_priors = []
 
-    def plugin(frame, moment_rows, cluster, metric, design, **kwargs):
-        inputs = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs(
-            frame, moment_rows, cluster
-        )
+    def plugin(inputs, metric, design, **kwargs):
+        received_priors.append(kwargs["prior"])
         rows = _iptw_kernel(inputs, metric, design, learner=ConstantPropensity, **kwargs)
         return [row.model_copy(update={"method": method_name}) for row in rows]
 
     from tests.estimation.registry_helpers import registered_adjustment
 
+    prior = Normal(mu=0.0, sigma=0.5)
     with registered_adjustment(method_name, plugin):
         source = _source(_table(k_per_arm=20, m=2, seed=19), cluster=None)
-        computation = estimate_ate(source, DESIGN, methods=[Method(name=method_name)])
+        computation = estimate_ate(source, DESIGN, methods=[Method(name=method_name)], prior=prior)
         assert computation.results
         assert all(row.method == method_name for row in computation.results)
         assert all(row.weight_diagnostics_available is True for row in computation.results)
@@ -653,6 +652,18 @@ def test_registered_adjustment_preserves_producer_weight_diagnostics():
         assert all(
             row.control_weight_n == row.treatment_weight_n == 40 for row in computation.results
         )
+        assert received_priors and all(received == prior for received in received_priors)
+
+
+def test_registered_adjustment_rejects_legacy_callback_signature():
+    from increment.declarations import ADJUSTMENTS
+
+    def legacy_plugin(frame, moment_rows, cluster, metric, design):
+        return []
+
+    with pytest.raises(InvalidRequestError) as exc_info:
+        ADJUSTMENTS.register("test_legacy_adjustment_contract", legacy_plugin)
+    assert exc_info.value.code == "estimation.estimator.adjustment.callback_contract"
 
 
 def test_overlap_trim_recounts_clusters():

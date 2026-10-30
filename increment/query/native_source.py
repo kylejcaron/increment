@@ -34,6 +34,7 @@ from increment._cuped_evidence import (
     portable_cuped_rows,
     portable_requests,
 )
+from increment._evidence_refusals import winsorization_request_payload
 from increment._evidence_types import (
     AssignmentEvidence,
     AssignmentRequest,
@@ -75,7 +76,6 @@ from increment.query._native_refusals import (
     _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
     _percentile_winsorization,
     _refuse_operation,
-    _winsorization_bounds,
 )
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import ArtifactStore
@@ -2809,7 +2809,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if config is not None:
                 _refuse_operation(
                     operation=operation,
-                    request={"metric": metric.name, "winsorization": _winsorization_bounds(config)},
+                    request=winsorization_request_payload((metric,)),
                     offered=tuple(m.name for m in metrics if _percentile_winsorization(m) is None),
                     route=(
                         "use fixed-value winsorization (lower_value/upper_value); breakout "
@@ -3130,10 +3130,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if winsorization is not None:
             _refuse_operation(
                 operation="sitewide_evidence",
-                request={
-                    "metric": metric.name,
-                    "winsorization": _winsorization_bounds(winsorization),
-                },
+                request=winsorization_request_payload((metric,)),
                 offered={"winsorization": None},
                 route=(
                     "use the unwinsorized metric; whole-site outcomes cannot reuse the "

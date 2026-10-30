@@ -23,8 +23,8 @@ Cells: 3,584. Ingress-cells (6 constructors each): 21,504.
 | Status | Cells |
 |---|---|
 | supported | 522 |
-| source_limited | 544 |
-| construction_limited | 1,284 |
+| source_limited | 512 |
+| construction_limited | 1,316 |
 | not_expressible | 960 |
 | unfinished | 274 |
 | unsound | 0 |
@@ -36,10 +36,10 @@ Verdicts are per leg: 5,376 legs carry 32,256 ingress verdicts.
 
 | Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
 |---|---|---|---|---|---|---|
-| from_definitions | 676 | 64 | 440 | 3,976 | 220 | 0 |
-| from_unit_day_artifact | 672 | 64 | 436 | 3,976 | 228 | 0 |
+| from_definitions | 676 | 0 | 504 | 3,976 | 220 | 0 |
+| from_unit_day_artifact | 672 | 0 | 500 | 3,976 | 228 | 0 |
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
-| from_unit_panel | 480 | 984 | 1,876 | 1,632 | 404 | 0 |
+| from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 1,736 | 1,428 | 1,920 | 288 | 0 |
 | from_moments | 144 | 1,582 | 1,628 | 1,728 | 294 | 0 |
 

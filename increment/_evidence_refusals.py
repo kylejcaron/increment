@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Literal, NoReturn
 
 from increment._assignment_refusals import (
     ASSIGNMENT_INVALID,
@@ -20,6 +20,7 @@ from increment.errors import CapabilityError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
     from increment._source_types import Grain
+    from increment.semantics.models import Metric
 
 
 def _spec(code: str, hazard: str) -> RefusalSpec:
@@ -31,7 +32,65 @@ def _spec(code: str, hazard: str) -> RefusalSpec:
             + hazard
             + " {requested!r}; offered: {offered!r}. {route}"
         ),
-        keys=frozenset({"constructor", "requested", "offered", "route"}),
+    )
+
+
+def _winsorization_threshold_context(config: object) -> dict[str, object]:
+    thresholds: dict[str, dict[str, object]] = {}
+    sources: set[str] = set()
+    for side in ("lower", "upper"):
+        percentile = getattr(config, f"{side}_percentile")
+        value = getattr(config, f"{side}_value")
+        if percentile is not None:
+            source, threshold = "percentile", percentile
+        elif value is not None:
+            source, threshold = "fixed_value", value
+        else:
+            continue
+        sources.add(source)
+        thresholds[side] = {"source": source, "value": threshold}
+    return {
+        "threshold_source": next(iter(sources)) if len(sources) == 1 else "mixed",
+        "thresholds": thresholds,
+    }
+
+
+def _winsorization_request(metric: Metric) -> dict[str, object]:
+    config = getattr(metric, "winsorization", None)
+    assert config is not None
+    return {"metric": metric.name, **_winsorization_threshold_context(config)}
+
+
+def winsorization_request_payload(metrics: Sequence[Metric]) -> dict[str, object]:
+    return {
+        "metrics": tuple(
+            _winsorization_request(metric)
+            for metric in metrics
+            if getattr(metric, "winsorization", None) is not None
+        )
+    }
+
+
+def refuse_winsorized_day_axis(
+    metrics: Sequence[Metric],
+    *,
+    constructor: str,
+    grain: Literal["daily", "asof"] | None,
+) -> None:
+    affected = tuple(
+        metric for metric in metrics if getattr(metric, "winsorization", None) is not None
+    )
+    if not affected:
+        return
+    request = winsorization_request_payload(affected)
+    axis = grain if grain is not None else "daily/as-of"
+    refuse(
+        OPERATION_UNAVAILABLE,
+        constructor=constructor,
+        requested=tuple(metric.name for metric in affected),
+        request=request,
+        offered=(),
+        route=f"use total-grain run() or run_breakout(), or remove winsorization for {axis} evidence",
     )
 
 
@@ -50,7 +109,23 @@ ASSIGNMENT_IDENTITY_UNAVAILABLE = RefusalSpec(
     ),
     keys=frozenset({"constructor", "operation", "route"}),
 )
-OPERATION_UNAVAILABLE = _spec("evidence.operation_unavailable", "operation")
+
+
+def _render_operation_unavailable(
+    *, constructor: str, requested: object, offered: object, route: str, request: object = None
+) -> str:
+    _ = request
+    return (
+        f"{constructor} cannot supply requested operation {requested!r}; "
+        f"offered: {offered!r}. {route}"
+    )
+
+
+OPERATION_UNAVAILABLE = RefusalSpec(
+    "evidence.operation_unavailable",
+    CapabilityError,
+    _render_operation_unavailable,
+)
 JOINT_GROUPING_UNAVAILABLE = RefusalSpec(
     "evidence.joint_grouping_unavailable",
     CapabilityError,
@@ -125,15 +200,22 @@ def refuse_breakout(
 
 
 def refuse_operation(
-    src: object, requested: object, offered: Sequence[str], *, route: str
+    src: object,
+    requested: object,
+    offered: Sequence[str],
+    *,
+    route: str,
+    request: object | None = None,
 ) -> NoReturn:
-    refuse(
-        OPERATION_UNAVAILABLE,
-        constructor=type(src).__name__,
-        requested=requested,
-        offered=tuple(offered),
-        route=route,
-    )
+    context: dict[str, object] = {
+        "constructor": type(src).__name__,
+        "requested": requested,
+        "offered": tuple(offered),
+        "route": route,
+    }
+    if request is not None:
+        context["request"] = request
+    refuse(OPERATION_UNAVAILABLE, **context)
 
 
 def refuse_assignment_identity(src: object, *, operation: str) -> NoReturn:

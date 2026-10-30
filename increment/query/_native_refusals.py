@@ -11,9 +11,6 @@ from increment.semantics.models import Metric
 if TYPE_CHECKING:
     from increment.semantics.models import Winsorization
 
-    _ContextScalar = str | int | float | bool | None
-    _ContextValue = _ContextScalar | tuple[_ContextScalar, ...] | Mapping[str, _ContextScalar]
-
 
 _NATIVE_COVARIATE_UNRESOLVED = RefusalSpec(
     "source.native.covariate_unresolved",
@@ -74,40 +71,34 @@ _NATIVE_COMPLIANCE_DESIGN_MISMATCH = RefusalSpec(
 )
 
 
-def _bounded_context_value(value: object) -> object:
-    """One bounded, pickle-safe context value; containers one level deep."""
+def _bounded_context_value(value: object, *, depth: int = 0) -> object:
+    """Bound scalar values while preserving nested request context."""
+    if depth >= 5:
+        return _safe_error_value(value)
     if isinstance(value, Mapping):
-        return {str(key): _safe_error_value(item) for key, item in value.items()}
+        return {
+            str(key): _bounded_context_value(item, depth=depth + 1) for key, item in value.items()
+        }
     if isinstance(value, tuple):
-        return tuple(_safe_error_value(item) for item in value)
+        return tuple(_bounded_context_value(item, depth=depth + 1) for item in value)
     return _safe_error_value(value)
 
 
 def _refuse_operation(
     *,
     operation: str,
-    request: Mapping[str, _ContextValue],
-    offered: _ContextValue,
+    request: Mapping[str, object],
+    offered: object,
     route: str,
 ) -> NoReturn:
-    """Refuse one native operation with its actual request and served capability."""
     _refuse(
         _NATIVE_OPERATION,
         constructor="native source",
         requested=operation,
+        request=_bounded_context_value(request),
         offered=_bounded_context_value(offered),
         route=route,
     )
-
-
-def _winsorization_bounds(winsorization: Winsorization) -> dict[str, float | None]:
-    """The declared winsorization bounds as plain context values."""
-    return {
-        "lower_percentile": winsorization.lower_percentile,
-        "upper_percentile": winsorization.upper_percentile,
-        "lower_value": winsorization.lower_value,
-        "upper_value": winsorization.upper_value,
-    }
 
 
 def _percentile_winsorization(metric: Metric) -> Winsorization | None:

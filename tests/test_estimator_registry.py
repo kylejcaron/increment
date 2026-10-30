@@ -215,10 +215,10 @@ def test_replacing_registered_implementation_invalidates_adjustment_cache():
         needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")),),
     )
 
-    def first():
+    def first(inputs, metric, design, **kwargs):
         return None
 
-    def second():
+    def second(inputs, metric, design, **kwargs):
         return None
 
     register(ref)
@@ -228,6 +228,33 @@ def test_replacing_registered_implementation_invalidates_adjustment_cache():
         register_implementation(estimator_id, second)
         assert load(estimator_id) is second
         assert ADJUSTMENTS.get(selector) is second
+    finally:
+        unregister_estimator(estimator_id)
+
+
+def test_direct_observational_registration_validates_callback_contract():
+    from increment.declarations import register_implementation, unregister_estimator
+
+    estimator_id = "observational.invalid_callback_probe"
+    register(
+        EstimatorRef(
+            estimator_id,
+            "test_module",
+            "estimate",
+            "panel",
+            "ate",
+            "invalid_callback_probe",
+            ((MomentsSpec("total"), UnitRowsSpec(covariates="design")),),
+        )
+    )
+    try:
+
+        def missing_shared_keywords(inputs, metric, design):
+            return []
+
+        with pytest.raises(CodedError) as exc_info:
+            register_implementation(estimator_id, missing_shared_keywords)
+        assert exc_info.value.code == "estimation.estimator.adjustment.callback_contract"
     finally:
         unregister_estimator(estimator_id)
 
@@ -652,8 +679,8 @@ from increment.estimation.results import Estimate, LiftEstimate
 ESTIMATOR_ID = 'observational.dummy'
 CONTRACT = 'panel'
 NEEDS = ((MomentsSpec('total'), UnitRowsSpec(covariates='design')),)
-def estimate(frame, moments, cluster, metric, design, **kwargs):
-    groups = sorted(str(group) for group in frame['group_id'].unique())
+def estimate(inputs, metric, design, **kwargs):
+    groups = sorted(str(group) for group in inputs.frame['group_id'].unique())
     return [LiftEstimate(metric=metric.name, group_id=group, method='dummy', method_role='decision', lift=Estimate(value=0.1), note='registry-sentinel') for group in groups if group != design.control_group]
 register(EstimatorRef(ESTIMATOR_ID, __name__, 'estimate', CONTRACT, 'ate', 'dummy', NEEDS))
 register_implementation(ESTIMATOR_ID, estimate)

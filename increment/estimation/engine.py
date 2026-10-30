@@ -1010,21 +1010,10 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
         priors=[config.prior for config in configs],
         sequential=isinstance(request.plan.inference, SEQUENTIAL_POLICIES),
     )
-    winsorized_names = [
-        metric.name for metric in metrics if getattr(metric, "winsorization", None) is not None
-    ]
     if view == "daily":
-        if winsorized_names:
-            from increment._evidence_refusals import OPERATION_UNAVAILABLE
-            from increment.errors import refuse as refuse_spec
+        from increment._evidence_refusals import refuse_winsorized_day_axis
 
-            refuse_spec(
-                OPERATION_UNAVAILABLE,
-                constructor=request.source_name,
-                requested="daily_winsorization",
-                offered=(),
-                route="use total-grain run() or run_breakout()",
-            )
+        refuse_winsorized_day_axis(metrics, constructor=request.source_name, grain="daily")
         reject_unbounded_retention(
             metrics, view, remedy=UNBOUNDED_RETENTION_DAILY_REMEDY, supported_view="asof"
         )

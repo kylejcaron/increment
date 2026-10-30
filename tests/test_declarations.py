@@ -167,7 +167,7 @@ def test_cell_key_and_hypothesis_read_base_pickles():
 def test_custom_adjustment_registration_classifies_after_import():
     code = (
         "from increment.declarations import ADJUSTMENTS, Method\n"
-        "ADJUSTMENTS.register('custom', lambda: [])\n"
+        "ADJUSTMENTS.register('custom', lambda inputs, metric, design, **kwargs: [])\n"
         "assert Method(name='custom').is_observational\n"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
