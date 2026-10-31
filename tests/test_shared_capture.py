@@ -172,7 +172,17 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
     from increment.result_envelope import AnalysisEnvelope
     from increment.store import ParquetResultsStore
 
-    con = ds.duckdb_connection()
+    rows = ds.event_rows()
+    rows.append(
+        {
+            **next(row for row in rows if row["event"] == "purchase"),
+            "event": "ad_hoc_late",
+            "event_at": datetime(2025, 2, 20),
+            "revenue": 100.0,
+            "sess": None,
+        }
+    )
+    con = ds.duckdb_connection(rows)
     experiment, resolver = _builder(con, tmp_path)
     try:
         scopes = (
@@ -262,6 +272,40 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
         )
         assert {cell.identity.scope.view for cell in day_values.cells} == {"daily", "asof"}
         assert {cell.identity.key.metric for cell in day_values.cells} == {"unregistered_revenue"}
+        running_definitions = ds.definitions_dict(
+            plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]), breakout=True
+        )
+        running_definitions["experiments"][0].pop("end")
+        running_definitions["fact_sources"][0]["facts"].append(
+            {"name": "ad_hoc_late", "column": "revenue"}
+        )
+        running_path = tmp_path / "running-ad-hoc.yaml"
+        running_path.write_text(json.dumps(running_definitions), encoding="utf-8")
+        running_experiment, running_resolver = from_definitions(
+            running_path, con, experiment_name="exp", store="none"
+        )
+        running_experiment = replace(running_experiment, scopes=day_scopes)
+        late_metric = MeanMetric(
+            name="late_ad_hoc",
+            entity="user_id",
+            fact="ad_hoc_late",
+            aggregation="avg_calendar_day",
+        )
+        late_values = run(
+            running_experiment,
+            running_resolver,
+            analysis_options={
+                "metrics": [late_metric],
+                "decision_method": Method(name="unadjusted"),
+            },
+        )
+        for view in ("daily", "asof"):
+            dates = [
+                cell.identity.key.ds
+                for cell in late_values.cells
+                if cell.identity.scope.view == view
+            ]
+            assert max(dates) == datetime(2025, 2, 20).date()
     finally:
         con.disconnect()
 

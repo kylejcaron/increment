@@ -1373,7 +1373,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     for config in template._context.configs
                 ),
             )
-        family_names = tuple(dict.fromkeys(metric.name for metric in template._horizon_metrics))
+        family_names = tuple(
+            dict.fromkeys(metric.name for metric in (*template._horizon_metrics, *metrics))
+        )
         captured_horizons = self._captured_metric_horizons
         has_family_horizon = family_names and all(
             name in captured_horizons for name in family_names
