@@ -850,6 +850,10 @@ expose = [
   "_freeze",
   "_thaw",
   "_safe_error_value",
+  "_advisory_run_scope",
+  "_capture_advisories",
+  "_DeferredAdvisory",
+  "_replay_advisories",
   "CapabilityError",
   "CodedError",
   "CodedModel",
@@ -1043,6 +1047,7 @@ path = "increment.kernel.context"
 layer = "core"
 depends_on = [
   "increment._evidence_types", "increment._source_types", "increment.kernel.contracts",
+  "increment.errors",
 ]
 
 [[modules]]

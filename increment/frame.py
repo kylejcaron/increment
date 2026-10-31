@@ -20,7 +20,7 @@ import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from copy import copy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -119,6 +119,9 @@ from increment.errors import (
     CapabilityError,
     InvalidRequestError,
     RefusalSpec,
+    _capture_advisories,
+    _DeferredAdvisory,
+    _replay_advisories,
     _safe_error_value,
     raiser,
     refusals,
@@ -1433,6 +1436,23 @@ def _same_frame(left: nw.DataFrame[Any] | None, right: nw.DataFrame[Any] | None)
     return bool(left.to_native().equals(right.to_native()))
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _MomentCacheEntry:
+    """A reduction and replayable diagnostics, without retained tracebacks."""
+
+    rows: list[dict[str, Any]]
+    failures: dict[str, _DeferredRefusal]
+    advisories: tuple[_DeferredAdvisory, ...]
+
+    def rows_for(self, metric_name: str) -> list[dict[str, Any]]:
+        """Replay deferred refusals before returning copied rows for one metric."""
+        failure = self.failures.get(metric_name)
+        if failure is not None:
+            failure_spec, context = failure
+            refuse(failure_spec, **context)
+        return [dict(row) for row in self.rows if row["metric"] == metric_name]
+
+
 # from_unit_panel: one row per unit per day.
 
 
@@ -1553,7 +1573,6 @@ class FramePanelSource(SequentialSourceMixin):
             snapshots.append((attribute, frame))
         pinned._identity = None
         pinned._moment_rows_cache = {}
-        pinned._moment_failures_cache = {}
         pinned._scalar_cell_failures = None
         try:
             yield pinned
@@ -1563,7 +1582,6 @@ class FramePanelSource(SequentialSourceMixin):
             ):
                 self._identity = None
                 self._moment_rows_cache = {}
-                self._moment_failures_cache = {}
                 self._scalar_cell_failures = None
             raise
         # Reuse the reduction cache for later exports only while source evidence matches
@@ -1574,12 +1592,10 @@ class FramePanelSource(SequentialSourceMixin):
         if unchanged:
             self._identity = pinned._identity
             self._moment_rows_cache = pinned._moment_rows_cache
-            self._moment_failures_cache = pinned._moment_failures_cache
             self._scalar_cell_failures = pinned._scalar_cell_failures
         else:
             self._identity = None
             self._moment_rows_cache = {}
-            self._moment_failures_cache = {}
             self._scalar_cell_failures = None
 
     # Public constructor signature is the API for frame-backed sources.
@@ -1645,10 +1661,7 @@ class FramePanelSource(SequentialSourceMixin):
         self._unassigned = unassigned
         self._summary_reducer = False
         self._moment_rows_cache: dict[
-            tuple[Grain, str | None, bool, str | None], list[dict[str, Any]]
-        ] = {}
-        self._moment_failures_cache: dict[
-            tuple[Grain, str | None, bool, str | None], dict[str, _DeferredRefusal]
+            tuple[Grain, str | None, bool, str | None], _MomentCacheEntry
         ] = {}
         self._scalar_cell_failures: dict[tuple[str, str, str], _DeferredRefusal] | None = None
         metric_catalog = tuple(
@@ -1809,123 +1822,119 @@ class FramePanelSource(SequentialSourceMixin):
             completed_windows_only if grain == "asof" else False,
             metric.name if self._summary_reducer else None,
         )
-        rows = self._moment_rows_cache.get(cache_key)
-        if rows is None:
-            synthesised = cast("Sequence[Metric]", self._context.metrics)
-            reducer_by = (breakout,) if breakout is not None else ()
-            failures: dict[str, _DeferredRefusal] = {}
-            if grain in ("daily", "asof"):
-                day_panel, bounded_dense = self._bounded_day_panel()
-            if grain == "daily":
-                rows, failures = _daily_moment_rows(
-                    day_panel,
-                    bounded_dense=bounded_dense,
-                    identity=self._day_identity(),
-                    identity_ordinal=self._identity_ordinal,
-                    metrics=self._specs,
-                    synthesised=synthesised,
-                    experiment_id=self._experiment_id,
-                    exposure=self._exposure,
-                    by=reducer_by,
-                )
-            elif grain == "asof":
-                rows, failures = _asof_moment_rows(
-                    day_panel,
-                    self._specs,
-                    _AsOfSettings(
+        entry = self._moment_rows_cache.get(cache_key)
+        if entry is None:
+            with _capture_advisories() as advisories:
+                synthesised = cast("Sequence[Metric]", self._context.metrics)
+                reducer_by = (breakout,) if breakout is not None else ()
+                failures: dict[str, _DeferredRefusal] = {}
+                if grain in ("daily", "asof"):
+                    day_panel, bounded_dense = self._bounded_day_panel()
+                if grain == "daily":
+                    rows, failures = _daily_moment_rows(
+                        day_panel,
+                        bounded_dense=bounded_dense,
                         identity=self._day_identity(),
                         identity_ordinal=self._identity_ordinal,
-                        bounded_dense=bounded_dense,
+                        metrics=self._specs,
                         synthesised=synthesised,
+                        experiment_id=self._experiment_id,
+                        exposure=self._exposure,
+                        by=reducer_by,
+                    )
+                elif grain == "asof":
+                    rows, failures = _asof_moment_rows(
+                        day_panel,
+                        self._specs,
+                        _AsOfSettings(
+                            identity=self._day_identity(),
+                            identity_ordinal=self._identity_ordinal,
+                            bounded_dense=bounded_dense,
+                            synthesised=synthesised,
+                            experiment_id=self._experiment_id,
+                            uptake=self._uptake,
+                            uptake_window_days=self._window_days,
+                            first_exposure=self._first_exposure,
+                            exposure=self._exposure,
+                            completed_windows_only=completed_windows_only,
+                            observation_end=self._observation_end,
+                            fact_max_ds=self._fact_max_ds,
+                            by=reducer_by,
+                        ),
+                    )
+                else:
+                    specs = [self._spec_for(metric)] if self._summary_reducer else self._specs
+                    summary_metrics = [metric] if self._summary_reducer else list(synthesised)
+                    total_panel = self._sparse_panel
+                    summary_roster = (
+                        total_panel.select(*reducer_by, "group_id").unique().rows(named=True)
+                        if self._summary_reducer and reducer_by and specs[0].missing == "drop"
+                        else []
+                    )
+                    covariates, covariate_failures = self._total_covariates(specs)
+                    if self._summary_reducer and specs[0].missing == "drop":
+                        missing = nw.col(specs[0].y_column).is_null()
+                        if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
+                            missing = missing | nw.col(specs[0].y_column).is_nan()
+                        if specs[0].denominator is not None:
+                            denominator = specs[0].denominator
+                            missing = missing | nw.col(denominator).is_null()
+                            if total_panel.schema[denominator] in (nw.Float32, nw.Float64):
+                                missing = missing | nw.col(denominator).is_nan()
+                        total_panel = total_panel.filter(~missing)
+
+                    def scalar_names(spec: MetricSpec) -> tuple[str, ...]:
+                        return tuple(
+                            covariate.name
+                            for method in spec._methods
+                            if method.variance_reduction == "cuped"
+                            for covariate in method.covariates or ()
+                        )
+
+                    usable_pairs = [
+                        (spec, metric)
+                        for spec, metric in zip(specs, summary_metrics, strict=True)
+                        if not (set(scalar_names(spec)) & covariate_failures.keys())
+                    ]
+                    usable_specs = [spec for spec, _metric in usable_pairs]
+                    usable_synthesised = [metric for _spec, metric in usable_pairs]
+                    rows, total_failures = _total_moment_rows(
+                        total_panel,
+                        usable_specs,
+                        synthesised=usable_synthesised,
                         experiment_id=self._experiment_id,
                         uptake=self._uptake,
                         uptake_window_days=self._window_days,
                         first_exposure=self._first_exposure,
                         exposure=self._exposure,
-                        completed_windows_only=completed_windows_only,
                         observation_end=self._observation_end,
                         fact_max_ds=self._fact_max_ds,
                         by=reducer_by,
-                    ),
-                )
-            else:
-                specs = [self._spec_for(metric)] if self._summary_reducer else self._specs
-                summary_metrics = [metric] if self._summary_reducer else list(synthesised)
-                total_panel = self._sparse_panel
-                summary_roster = (
-                    total_panel.select(*reducer_by, "group_id").unique().rows(named=True)
-                    if self._summary_reducer and reducer_by and specs[0].missing == "drop"
-                    else []
-                )
-                covariates, covariate_failures = self._total_covariates(specs)
-                if self._summary_reducer and specs[0].missing == "drop":
-                    missing = nw.col(specs[0].y_column).is_null()
-                    if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
-                        missing = missing | nw.col(specs[0].y_column).is_nan()
-                    if specs[0].denominator is not None:
-                        denominator = specs[0].denominator
-                        missing = missing | nw.col(denominator).is_null()
-                        if total_panel.schema[denominator] in (nw.Float32, nw.Float64):
-                            missing = missing | nw.col(denominator).is_nan()
-                    total_panel = total_panel.filter(~missing)
-
-                def scalar_names(spec: MetricSpec) -> tuple[str, ...]:
-                    return tuple(
-                        covariate.name
-                        for method in spec._methods
-                        if method.variance_reduction == "cuped"
-                        for covariate in method.covariates or ()
+                        covariates=_CovariateReduction(
+                            tables=covariates, cell_failures=self._scalar_cell_failures
+                        ),
                     )
-
-                usable_pairs = [
-                    (spec, metric)
-                    for spec, metric in zip(specs, summary_metrics, strict=True)
-                    if not (set(scalar_names(spec)) & covariate_failures.keys())
-                ]
-                usable_specs = [spec for spec, _metric in usable_pairs]
-                usable_synthesised = [metric for _spec, metric in usable_pairs]
-                rows, total_failures = _total_moment_rows(
-                    total_panel,
-                    usable_specs,
-                    synthesised=usable_synthesised,
-                    experiment_id=self._experiment_id,
-                    uptake=self._uptake,
-                    uptake_window_days=self._window_days,
-                    first_exposure=self._first_exposure,
-                    exposure=self._exposure,
-                    observation_end=self._observation_end,
-                    fact_max_ds=self._fact_max_ds,
-                    by=reducer_by,
-                    covariates=_CovariateReduction(
-                        tables=covariates, cell_failures=self._scalar_cell_failures
-                    ),
-                )
-                if summary_roster and breakout is not None:
-                    _preserve_empty_summary_segments(
-                        rows,
-                        summary_roster,
-                        dimension=breakout,
-                        metric=specs[0].name,
-                        experiment_id=self._experiment_id,
-                    )
-                failures = {
-                    spec.name: covariate_failures[name]
-                    for spec in specs
-                    for name in scalar_names(spec)
-                    if name in covariate_failures
-                }
-                failures.update(total_failures)
-            self._moment_rows_cache[cache_key] = rows
-            self._moment_failures_cache[cache_key] = failures
-        # Data-dependent failures, such as a collapsed percentile bound, are cached
-        # with the rows, so a later direct request still refuses after a sibling
-        # used this batch. Caching only (spec, context) lets refuse() replay any
-        # reducer refusal as a fresh exception without keeping a stale traceback.
-        failure = self._moment_failures_cache.get(cache_key, {}).get(metric.name)
-        if failure is not None:
-            failure_spec, context = failure
-            refuse(failure_spec, **context)
-        return [dict(r) for r in rows if r["metric"] == metric.name]
+                    if summary_roster and breakout is not None:
+                        _preserve_empty_summary_segments(
+                            rows,
+                            summary_roster,
+                            dimension=breakout,
+                            metric=specs[0].name,
+                            experiment_id=self._experiment_id,
+                        )
+                    failures = {
+                        spec.name: covariate_failures[name]
+                        for spec in specs
+                        for name in scalar_names(spec)
+                        if name in covariate_failures
+                    }
+                    failures.update(total_failures)
+            entry = _MomentCacheEntry(rows, failures, tuple(advisories))
+            self._moment_rows_cache[cache_key] = entry
+            _replay_advisories(entry, entry.advisories, already_emitted=True)
+        else:
+            _replay_advisories(entry, entry.advisories)
+        return entry.rows_for(metric.name)
 
     def _total_covariates(
         self, specs: Sequence[MetricSpec]
@@ -2008,7 +2017,6 @@ class FramePanelSource(SequentialSourceMixin):
             configs=overlay_configs((metric,), self.context.configs, methods=[method], prior=None),
         )
         prepared._moment_rows_cache = {}
-        prepared._moment_failures_cache = {}
         prepared._scalar_cell_failures = {}
         refusing = tuple(
             covariate for covariate in method.covariates or () if covariate.missing == "refuse"
