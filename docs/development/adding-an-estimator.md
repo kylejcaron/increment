@@ -10,6 +10,13 @@ For randomized lift, `increment/declarations.py` owns the lightweight `Method`, 
 
 `increment/_moment_plan.py` distinguishes counts, references, centered first moments, and centered second/cross moments. These cannot replace unit records or reconstruct membership and arbitrary distributions. Evidence is distinct too: reasons, guarantees, diagnostics, and source availability answer different questions from numeric moments. Preserve these distinctions through source, estimator, result, serialization, and presentation.
 
+Artifact query contracts live in `increment.query.artifact_ports`; core loaders
+call those contracts rather than artifact implementations. The installed
+distribution declares the `increment.artifacts._query` adapter through its
+`increment.artifact_ports` entry point, loaded only when an artifact operation
+is requested. Keep this composition out of root imports, and preserve saved
+source identities when changing runtime implementation classes.
+
 ## Custom evidence providers
 
 For an `Analysis` backed by custom data, implement `EvidenceProvider` from
