@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import wraps
+from inspect import Parameter, signature
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import builders
 from increment._analysis_execution import Analysis as _Analysis
@@ -41,6 +42,14 @@ def _facade_builder[**P](
         analysis.__dict__["_kernel_binding"] = (experiment, resolver)
         return analysis
 
+    factory_signature = signature(implementation)
+    cast(Any, construct).__signature__ = factory_signature.replace(
+        parameters=(
+            Parameter("cls", Parameter.POSITIONAL_OR_KEYWORD),
+            *factory_signature.parameters.values(),
+        ),
+        return_annotation="Analysis",
+    )
     return classmethod(construct)
 
 
