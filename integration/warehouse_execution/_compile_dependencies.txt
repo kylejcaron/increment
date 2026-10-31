@@ -38,7 +38,6 @@ increment._source_types
 increment._study
 increment._trigger_integrity
 increment._unit_cycle
-increment.readouts._whole_window
 increment._window
 increment._winsor_errors
 increment.analysis
@@ -161,6 +160,7 @@ increment.readouts._requests
 increment.readouts._run
 increment.readouts._source_digest
 increment.readouts._srm
+increment.readouts._whole_window
 increment.semantics
 increment.semantics.artifact
 increment.semantics.assignment
