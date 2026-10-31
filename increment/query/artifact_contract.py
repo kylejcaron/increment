@@ -368,12 +368,12 @@ class ImmutableArtifactPublication:
 
 
 def _model(name: str) -> type[Any]:
-    from increment.semantics import models
+    from increment.semantics import artifact
 
     try:
-        return getattr(models, name)
+        return getattr(artifact, name)
     except AttributeError as exc:  # pragma: no cover
-        raise ImportError(f"increment.semantics.models does not export {name}") from exc
+        raise ImportError(f"increment.semantics.artifact does not define {name}") from exc
 
 
 def _dump_context_plan(plan: Any) -> dict[str, Any]:
