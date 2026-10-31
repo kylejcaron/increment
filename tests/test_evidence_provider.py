@@ -1853,17 +1853,27 @@ def test_custom_triggered_counts_are_not_assigned_integrity_counts() -> None:
 
 def test_custom_provider_covariates_are_checked_from_declaration_before_reads() -> None:
     source = frame_summary_source()
+    reads: list[UnitRowsRequest] = []
 
     class Provider:
         evidence = replace(
             source.evidence,
             available_covariates=frozenset({"segment"}),
         )
+        context = source.context
+
+        def unit_rows(self, request: UnitRowsRequest):
+            reads.append(request)
+            return source.unit_frame(request.metric, covariates=request.covariates)
 
     with pytest.raises(CapabilityError) as exc_info:
-        require_evidence(Provider(), covariates=("missing",))
+        request_evidence(
+            cast(Any, Provider()),
+            UnitRowsRequest(source.context.metrics[0], covariates=("missing",)),
+        )
 
     assert exc_info.value.code == "evidence.covariate_unavailable"
+    assert reads == []
 
 
 def test_scoped_breakout_refuses_undeclared_unit_rows_before_reading() -> None:
@@ -3800,9 +3810,18 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
 
 
 @pytest.mark.integration
-def test_daily_moments_for_a_method_refuse_on_builtin_loaders(tmp_path) -> None:
+def test_daily_moments_for_a_method_refuse_on_builtin_loaders(tmp_path, monkeypatch) -> None:
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
     source = cast(Any, held_source(analysis))
+    reads: list[str] = []
+    for name in ("moments", "moments_for_method"):
+        original = getattr(source, name)
+
+        def counted(*args, _original=original, _name=name, **kwargs):
+            reads.append(_name)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(source, name, counted)
     try:
         metric = source.context.metrics[0]
         with pytest.raises(CodedError) as refused:
@@ -3813,6 +3832,7 @@ def test_daily_moments_for_a_method_refuse_on_builtin_loaders(tmp_path) -> None:
         analysis.close()
 
     assert refused.value.code == "evidence.grain_unavailable"
+    assert reads == []
 
 
 @pytest.mark.integration

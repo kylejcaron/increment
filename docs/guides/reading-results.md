@@ -177,6 +177,13 @@ For a coded cell failure only, `row.reason` returns the persisted
 derived from the failure fields and is not persisted; other unavailable
 sampling, posterior, point, and interval reasons remain on their own fields.
 
+The registered `run()` result keeps live percentile-winsorized estimates and
+confidence-set geometry available for display, while its portable cells
+intentionally omit raw-outcome inference state. Sampling decisions remain
+unavailable for these experimental estimates. Saving or serializing such a
+live result refuses rather than dropping the set or exposing its raw outcomes;
+use `Analysis.run()` when a legacy full-row JSON result is required.
+
 When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
 assigned and triggered results as separate rows. Pass `population="assigned"` or
 `population="triggered"` to select one population; a selected result never pools the two.
