@@ -4,7 +4,7 @@ import json
 import pickle
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -110,6 +110,21 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
     analysis = _analysis(con, running=True)
     try:
         declared = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
+        all_declared = analysis.run(decision_method=Method(name="unadjusted"))
+        full_revenue = next(row for row in all_declared if row.metric == "revenue")
+        narrowed_revenue = next(row for row in declared if row.metric == "revenue")
+        assert nested_close(
+            narrowed_revenue.lift.model_dump(),
+            full_revenue.lift.model_dump(),
+        )
+        panel = cast(Any, con).sql(analysis.panel_sql()["revenue"]).execute()
+        observed_day_counts = panel.groupby("unit_id").size().to_dict()
+        expected_day_counts = {
+            row["user_id"]: (datetime(2025, 1, 25).date() - row["event_at"].date()).days + 1
+            for row in rows
+            if row["event"] == "exposure"
+        }
+        assert observed_day_counts == expected_day_counts
         extra = analysis.run(
             metrics=[],
             exploratory_metrics=["rps", "revenue_cuped"],
@@ -293,19 +308,27 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
         metrics={"value": "mean"},
         breakouts=["country"],
     )
-    segment = (BreakoutIdentity("country", None),)
-    daily_scope = Scope(view="daily", grain="daily", segment=segment)
-    asof_scope = Scope(view="asof", grain="asof", segment=segment)
+    run_scope = Scope(view="run", grain="total")
+    daily_scope = Scope(view="daily", grain="daily")
+    asof_scope = Scope(view="asof", grain="asof")
     encouraged = replace(
         encouraged,
-        scopes=(daily_scope, asof_scope),
+        scopes=(run_scope, daily_scope, asof_scope),
         operations={
+            run_scope.hash(): "run",
             daily_scope.hash(): "run_daily",
             asof_scope.hash(): "run_asof",
         },
     )
-    combined_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": []})
-    assert combined_values.cells == ()
+    empty_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": []})
+    assert empty_values.cells == ()
+    combined_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": ["value"]})
+    assert {cell.identity.scope.view for cell in combined_values.cells} == {
+        "run",
+        "daily",
+        "asof",
+    }
+    assert any(cell.identity.key.estimand == "compliance" for cell in combined_values.cells)
 
 
 def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_path):
