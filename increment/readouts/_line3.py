@@ -29,7 +29,9 @@ def sequential_scope(analysis: Analysis, *, include_breakouts: bool = False) -> 
         )
         covariates = union_covariates((config,), (methods,))
         if covariates and config.covariates != covariates:
-            declared_configs.append(replace(config, covariates=covariates))
+            expanded = replace(config, covariates=covariates)
+            if expanded not in declared_configs:
+                declared_configs.append(expanded)
     experiment = getattr(analysis, "_experiment", None)
     populations = (
         ("assigned", "triggered")

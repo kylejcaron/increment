@@ -97,8 +97,8 @@ def _contrast_operation_scope(analysis, operation: str, options: dict[str, Any])
     from increment._analysis_config import select_metrics
     from increment._day_axis import _TRIGGER_UNSUPPORTED
     from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
-    from increment._whole_window import validate_contrast_request
     from increment.errors import refuse
+    from increment.readouts._whole_window import validate_contrast_request
 
     source = analysis._src
     analysis._exploratory_metrics(options.get("exploratory_metrics"), caller=operation)
@@ -141,9 +141,9 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
     from increment._analysis_config import overlay_configs, select_metrics
     from increment._evidence_scopes import capture_requirements
     from increment._evidence_types import DayAxisRequest
-    from increment._whole_window import WholeWindowRequest, validate_whole_window
     from increment.readouts._design_scope import _config_snapshot
     from increment.readouts._requests import _prepare_run_request
+    from increment.readouts._whole_window import WholeWindowRequest, validate_whole_window
 
     source = analysis._src
     capture = options.get("capture")

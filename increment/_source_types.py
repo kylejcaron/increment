@@ -226,7 +226,11 @@ def _loader_owner(source: object) -> object:
 class EvidenceProvider(Protocol):
     """Primitive request interface for custom evidence providers.
 
-    Providers may additionally implement ``sequential_snapshot(request:
+    Providers declaring ``assignment_relation="ledger"`` or
+    ``assignment_relation="reduced"`` may additionally implement
+    ``assignment(request: AssignmentRequest) -> AssignmentEvidence``. This
+    optional method is deliberately not part of this runtime protocol.
+    Providers may also implement ``sequential_snapshot(request:
     SequentialSnapshotRequest)`` to return their exact current checkpoint;
     that optional method is deliberately not part of this runtime protocol.
     """

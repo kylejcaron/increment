@@ -14,7 +14,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
-import narwhals as nw
 import pandas as pd
 import pytest
 
@@ -998,6 +997,165 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
 
 
 @pytest.mark.integration
+@pytest.mark.slow
+def test_declared_horizon_matches_origin_with_exploratory_metrics():
+    from datetime import timedelta
+
+    plan = AnalysisPlan(primary="revenue", secondaries=["latency"], q=0.1)
+    definitions = ds.definitions_dict(plan=plan)
+    revenue = next(metric for metric in definitions["metrics"] if metric["name"] == "revenue")
+    revenue["aggregation"] = "avg_calendar_day"
+    revenue.pop("window_days")
+    definitions["fact_sources"][0]["facts"].append({"name": "latency_sample", "column": "latency"})
+    definitions["metrics"].append(
+        {
+            "type": "mean",
+            "name": "latency",
+            "entity": "user_id",
+            "fact": "latency_sample",
+            "aggregation": "avg_calendar_day",
+            "preferred_direction": "increase",
+        }
+    )
+    definitions["experiments"][0]["end"] = None
+    rows = ds.event_rows()
+    for row in rows:
+        if row["user_id"] in {"t0", "t1"}:
+            row["event_at"] += timedelta(days=1)
+    rows.extend(
+        [
+            {
+                "user_id": "t0",
+                "event_at": datetime(2025, 1, 25, 12),
+                "event": "latency_sample",
+                "group_id": None,
+                "experiment_id": None,
+                "store_id": None,
+                "revenue": None,
+                "sess": 0,
+                "latency": 5.0,
+            },
+            {
+                "user_id": "t0",
+                "event_at": datetime(2025, 1, 26, 12),
+                "event": "session_end",
+                "group_id": None,
+                "experiment_id": None,
+                "store_id": None,
+                "revenue": None,
+                "sess": 1,
+                "latency": None,
+            },
+        ]
+    )
+    con: Any = ds.duckdb_connection(rows)
+    analysis = make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
+    baseline = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
+    try:
+        combined = analysis.run(
+            metrics=["revenue"],
+            exploratory_metrics=["rps"],
+            decision_method=Method(name="unadjusted"),
+            coherence="captured",
+        )
+        assert combined.metadata is not None
+        assert {
+            cell.metric
+            for source in combined.metadata.scope.by_source.values()
+            for cell in source.cells
+        } == {"revenue", "rps"}
+        con.raw_sql(
+            """
+            UPDATE events SET revenue = revenue * 10
+            WHERE revenue IS NOT NULL
+              AND user_id IN (
+                SELECT user_id FROM events
+                WHERE event = 'exposure' AND group_id = 'treatment'
+              )
+            """
+        )
+        live_after = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
+        combined_revenue = [row for row in combined if row.metric == "revenue"]
+        assert len(combined_revenue) == len(baseline) == 1
+        assert _rows(combined_revenue)[0]["lift"]["value"] == pytest.approx(
+            _rows(baseline)[0]["lift"]["value"]
+        )
+        assert _rows(baseline)[0]["lift"]["value"] == pytest.approx(0.14452380952380658)
+        assert _rows(live_after) != _rows(baseline)
+        restored = type(combined.metadata).model_validate_json(combined.metadata.model_dump_json())
+        assert restored.captures == combined.metadata.captures
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_exploratory_trigger_refuses_before_shared_capture():
+    con = ds.duckdb_connection()
+    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    con.disconnect()
+    try:
+        with pytest.raises(CodedError) as refused:
+            analysis.run(exploratory_metrics=["rps"], population="triggered")
+        assert refused.value.code == "facade.analysis.trigger_unsupported"
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_exploratory_custom_provider_keeps_per_metric_capture_metadata():
+    from increment.evidence import EvidenceProvider, evidence_provider
+    from increment.frame import from_unit_summary
+    from increment.readouts import run
+
+    n_arm = 40
+    frame = pd.DataFrame(
+        {
+            "unit": range(2 * n_arm),
+            "group": ["control"] * n_arm + ["treatment"] * n_arm,
+            "revenue": [float(i % 5 + 1) for i in range(2 * n_arm)],
+            "purchase_rate": [float(i % 2) for i in range(n_arm)]
+            + [float(i % 4 != 0) for i in range(n_arm)],
+        }
+    )
+    source = from_unit_summary(
+        frame,
+        unit="unit",
+        group="group",
+        control="control",
+        metrics={"revenue": "mean", "purchase_rate": "mean"},
+        plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]),
+    )
+    adapter = evidence_provider(source)
+
+    class Provider(EvidenceProvider):
+        evidence = adapter.evidence
+        context = adapter.context
+
+        def __getattr__(self, name):
+            return getattr(adapter, name)
+
+        def scope(self, request):
+            return adapter.scope(request)
+
+    rows = run(
+        Provider(),
+        metrics=["revenue", "purchase_rate"],
+        decision_method=Method(name="unadjusted"),
+        coherence="captured",
+    )
+    metadata = rows.metadata
+    assert metadata is not None
+    assert metadata.effective_modes == {"revenue": "provider", "purchase_rate": "provider"}
+    assert metadata.captures == ()
+    assert len(metadata.scope.by_source) == 1
+    (source_scope,) = metadata.scope.by_source.values()
+    assert {cell.metric for cell in source_scope.cells} == {"revenue", "purchase_rate"}
+    assert {row.source_snapshot_id for row in metadata.cells} == {source_scope.source_snapshot_id}
+
+
+@pytest.mark.integration
 def test_exploratory_live_results_retain_live_coherence_metadata():
     con = ds.duckdb_connection()
     analysis = _analysis(con, AnalysisPlan(primary="revenue"))
@@ -1013,8 +1171,12 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
         assert metadata.effective_modes
         assert set(metadata.effective_modes.values()) == {"live"}
         assert {capture.coherence for capture in metadata.captures} == {"live"}
-        frame = nw.from_native(rows.to_frame(), eager_only=True)
-        assert frame["coherence"].to_list() == ["live"] * len(rows)
+        assert {
+            tuple(sorted({cell.metric for cell in source.cells}))
+            for source in metadata.scope.by_source.values()
+        } == {("rps",), ("revenue",)}
+        assert {len(source.cells) for source in metadata.scope.by_source.values()} == {1}
+        assert len(metadata.captures) == 2
         import json
 
         from increment.tables import estimates_to_readout, readout_table

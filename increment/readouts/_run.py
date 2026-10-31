@@ -158,45 +158,6 @@ def run(
     # selected metrics, including their common observation horizon. An empty
     # selection reads nothing. Request validation is complete before capture.
     design_summary_only = _design_compliance_only(src.context, estimands)
-    sequential = isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES)
-    needs_live_evidence = (bool(selected) or design_summary_only) and not sequential
-    needs_snapshot = sequential or (
-        needs_live_evidence
-        and (
-            design.mechanism == "observational"
-            or (
-                not design_summary_only
-                and any(
-                    method.variance_reduction in ("cuped", "cuped_multicovariate")
-                    for config in configs
-                    for method in effective_methods(config, design=design)
-                )
-            )
-            or any(
-                getattr(getattr(metric, "winsorization", None), "has_percentile", False)
-                for metric in selected
-            )
-        )
-    )
-    uptake = getattr(design, "uptake", None)
-    capture_all_sequential_family = sequential and not design_summary_only
-    scope_metrics = tuple(src.context.metrics) if capture_all_sequential_family else tuple(selected)
-    scope_configs = tuple(src.context.configs) if capture_all_sequential_family else tuple(configs)
-    checkpoint_only = (
-        sequential
-        and not design_summary_only
-        and bool(selected)
-        and has_verified_sequential_checkpoint(src)
-    )
-    scope = EvidenceScope(
-        metrics=scope_metrics,
-        population=_population,
-        configs=scope_configs,
-        uptake_facts=() if uptake is None else (uptake.fact,),
-        snapshot=needs_snapshot,
-        execution=bool(selected) or design_summary_only,
-        checkpoint_only=checkpoint_only,
-    )
     if not selected and not design_summary_only:
         return _as_collection(
             _run_prepared(
@@ -218,6 +179,49 @@ def run(
     from increment.readouts._provider import native_scope_provider
 
     if execution_context is None:
+        sequential = isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES)
+        needs_live_evidence = (bool(selected) or design_summary_only) and not sequential
+        needs_snapshot = sequential or (
+            needs_live_evidence
+            and (
+                design.mechanism == "observational"
+                or (
+                    not design_summary_only
+                    and any(
+                        method.variance_reduction in ("cuped", "cuped_multicovariate")
+                        for config in configs
+                        for method in effective_methods(config, design=design)
+                    )
+                )
+                or any(
+                    getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+                    for metric in selected
+                )
+            )
+        )
+        uptake = getattr(design, "uptake", None)
+        capture_all_sequential_family = sequential and not design_summary_only
+        scope_metrics = (
+            tuple(src.context.metrics) if capture_all_sequential_family else tuple(selected)
+        )
+        scope_configs = (
+            tuple(src.context.configs) if capture_all_sequential_family else tuple(configs)
+        )
+        checkpoint_only = (
+            sequential
+            and not design_summary_only
+            and bool(selected)
+            and has_verified_sequential_checkpoint(src)
+        )
+        scope = EvidenceScope(
+            metrics=scope_metrics,
+            population=_population,
+            configs=scope_configs,
+            uptake_facts=() if uptake is None else (uptake.fact,),
+            snapshot=needs_snapshot,
+            execution=bool(selected) or design_summary_only,
+            checkpoint_only=checkpoint_only,
+        )
         context = EvidenceExecutionContext(
             src if is_custom_source(src) else native_scope_provider(src),
             scope,
@@ -682,6 +686,10 @@ def _run_prepared(  # noqa: PLR0915
         _raise_if_all_lift_cells_refused(refused_cells, computations)
     order = {metric.name: i for i, metric in enumerate(selected)}
     out.sort(key=lambda row: order[row.metric])
+    identity_source = src if snapshot_source is None else snapshot_source
+    identity_plan = _restore_legacy_prior_exclusion(
+        identity_source, configs, identity_source.context.plan
+    )
     return _scoped_randomized_results(
         src,
         selected,
@@ -695,6 +703,8 @@ def _run_prepared(  # noqa: PLR0915
         artifact_provenance(src),
         population,
         preflight_roster,
+        identity_source=identity_source,
+        identity_plan=identity_plan,
     )
 
 

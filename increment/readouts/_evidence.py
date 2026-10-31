@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date
@@ -20,7 +20,7 @@ from increment._evidence_refusals import (
     require_evidence,
     require_population,
 )
-from increment._evidence_scopes import SCOPE_OWNERS, loader_source, scope_source
+from increment._evidence_scopes import SCOPE_OWNERS, loader_source
 from increment._evidence_types import (
     ArtifactProvenance,
     AssignmentEvidence,
@@ -317,7 +317,7 @@ def evidence_scope(
     src: EvidenceSource, scope: EvidenceScope
 ) -> AbstractContextManager[EvidenceSource]:
     """Pin the requested source view and reduction lifetime for one readout."""
-    return _evidence_scope(src, scope)
+    return acquire_evidence_scope(src, scope, lambda scoped: scoped).source
 
 
 def has_verified_sequential_checkpoint(src: EvidenceSource) -> bool:
@@ -366,10 +366,15 @@ def acquire_observational_inputs(
     return evidence, unit_frame
 
 
-@contextmanager
-def _evidence_scope(src: EvidenceSource, scope: EvidenceScope) -> Iterator[EvidenceSource]:
-    with scope_source(src, scope) as scoped:
-        yield scoped
+def acquire_evidence_scope(
+    src: EvidenceSource,
+    scope: EvidenceScope,
+    provider_factory: Callable[[EvidenceSource], Any],
+) -> EvidenceScopeResult:
+    """Open one typed evidence scope through the shared acquisition path."""
+    from increment._evidence_scopes import load_evidence_scope
+
+    return load_evidence_scope(src, scope, provider_factory)
 
 
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:

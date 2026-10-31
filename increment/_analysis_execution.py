@@ -70,13 +70,6 @@ from increment._source_operations import (
 )
 from increment._source_types import declared_evidence, is_custom_source
 from increment._study import ParallelStudyEnvelope
-from increment._whole_window import (
-    WholeWindowReadouts,
-    WholeWindowRequest,
-    _require_analysis_operation,
-    reject_role_overrides_under_contrast,
-    validate_contrast_request,
-)
 from increment.decision import (
     AnalysisState,
     ArmAnalysisState,
@@ -113,6 +106,13 @@ from increment.readouts._evidence import (
     day_axis_route,
     is_artifact_route,
     source_route,
+)
+from increment.readouts._whole_window import (
+    WholeWindowReadouts,
+    WholeWindowRequest,
+    _require_analysis_operation,
+    reject_role_overrides_under_contrast,
+    validate_contrast_request,
 )
 from increment.semantics.models import Breakout, Definitions, Experiment
 from increment.semantics.unit_cycle import UnitCycleReference
@@ -336,12 +336,11 @@ def _stamp_exploratory_rows(rows):
         for row in source_rows
     ]
     if metadata is None:
-        result = LiftEstimates(
+        return LiftEstimates(
             updated,
             source=rows.source,
             default_backend=rows._default_backend,
         )
-        return result
 
     moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
     families: list[FamilyScope] = []
@@ -2477,7 +2476,6 @@ class Analysis:
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-        horizon_metrics: Sequence[Metric] | None = None,
     ) -> Any:
         """Return one native metric's live panel tuple, independent of TEMP tables."""
         from increment.query.native_contract import NativeCoreSource
@@ -2495,7 +2493,6 @@ class Analysis:
             exposures,
             metric,
             population=population,
-            horizon_metrics=horizon_metrics,
         )
 
     def panel_sql(self, breakouts: list[Breakout] | None = None) -> dict[str, str]:
