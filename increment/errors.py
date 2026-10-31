@@ -352,6 +352,14 @@ class RefusalSpec:
             )
 
 
+_BUILTIN_PROVIDER_UNAVAILABLE = RefusalSpec(
+    "package.builtin_provider_unavailable",
+    CodedError,
+    template="Installed support for {feature} is unavailable. Reinstall Increment.",
+    keys=frozenset({"group", "provider", "reason", "count"}),
+)
+
+
 def refuse(spec: RefusalSpec, /, **context: object) -> NoReturn:
     """Render one refusal and raise its declared coded error type."""
     message = spec.render(**context)

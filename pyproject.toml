@@ -82,6 +82,9 @@ dashboard = [
 requires = ["hatchling>=1.32.4", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
+[project.entry-points."increment.artifact_ports"]
+builtin = "increment.artifacts._query:artifact_query_ports"
+
 [dependency-groups]
 dev = [
     "ruff>=0.17.2",
