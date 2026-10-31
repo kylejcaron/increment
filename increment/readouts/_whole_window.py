@@ -284,8 +284,6 @@ class WholeWindowReadouts:
         members = [(self, family.declared)]
         if family.exploratory is not None:
             members.append((family.exploratory.reader, family.exploratory.request))
-        for reader, request in members:
-            reader.validate(request)
 
         prepared = []
         for reader, request in members:
@@ -320,6 +318,8 @@ class WholeWindowReadouts:
                     )
                 )
             )
+        for reader, request in members:
+            reader.validate(request)
         return tuple(prepared)
 
     def run_family(
@@ -331,18 +331,15 @@ class WholeWindowReadouts:
         from increment.breakout.estimates import LiftEstimates, _stamp_exploratory_rows
         from increment.readouts._run_acquisition import RunAcquisitionOwner
 
-        if execution_context is None:
-            prepared = self.prepare_family(family)
-        else:
-            members = [(self, family.declared)]
-            if family.exploratory is not None:
-                members.append((family.exploratory.reader, family.exploratory.request))
-            for reader, request in members:
-                reader.validate(request)
+        prepared = self.prepare_family(family)
 
         def execute(context: EvidenceExecutionContext | None) -> LiftEstimates:
             rows = (
-                self.run(family.declared, execution_context=context)
+                self.run(
+                    family.declared,
+                    execution_context=context,
+                    _prepared=prepared[0],
+                )
                 if family.declared.metrics
                 or _design_compliance_only(self._src.context, family.declared.estimands)
                 else LiftEstimates()
@@ -352,7 +349,11 @@ class WholeWindowReadouts:
                 reader = family.exploratory.reader
                 if context is not None:
                     context.declare_source_alias(reader._src, parent=self._src)
-                extra = reader.run(request, execution_context=context)
+                extra = reader.run(
+                    request,
+                    execution_context=context,
+                    _prepared=prepared[1],
+                )
                 extra = LiftEstimates(
                     [row for row in extra if row.estimand != "compliance"],
                     metadata=extra.metadata,
@@ -398,30 +399,66 @@ class WholeWindowReadouts:
         self,
         req: WholeWindowRequest,
         execution_context: EvidenceExecutionContext | None = None,
+        *,
+        _prepared: PreparedRunAcquisition | None = None,
     ) -> LiftEstimates:
-        route = self.validate(req)
         design_summary_only = _design_compliance_only(self._src.context, req.estimands)
         sequential_compliance = _sequential_compliance_requested(self._src.context, req.estimands)
-        if not req.metrics and not design_summary_only and not sequential_compliance:
-            from increment.breakout.estimates import LiftEstimates
+        registered = getattr(self._plan.inference, "registration", None) is not None
+        needs_trigger_acquisition = (
+            not is_custom_source(self._src)
+            and req.population in (None, "triggered")
+            and self._experiment is not None
+            and self._experiment.trigger is not None
+            and not registered
+            and (req.metrics or design_summary_only)
+        )
+        prepared = _prepared
+        if (not req.metrics or needs_trigger_acquisition) and prepared is None:
             from increment.readouts._run_acquisition import (
                 RunAcquisitionOwner,
                 RunAcquisitionRequest,
             )
 
-            RunAcquisitionOwner.prepare(
-                RunAcquisitionRequest(
+            if needs_trigger_acquisition and execution_context is None:
+                design = self._design
+                scope_population = "triggered" if req.population == "triggered" else "assigned"
+                populations = (
+                    ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
+                )
+                uptake = getattr(design, "uptake", None)
+                acquisition_request = RunAcquisitionRequest(
                     source=self._src,
                     decision_method=req.decision_method,
                     sensitivity_methods=req.sensitivity_methods,
                     prior=req.prior,
-                    metrics=(),
+                    metrics=tuple(metric.name for metric in req.metrics),
+                    estimands=req.estimands,
+                    value_scale=req.value_scale,
+                    request_population=scope_population,
+                    family_population=scope_population,
+                    family_populations=populations,
+                    family_horizon=tuple(self._src.context.metrics),
+                    family_uptake_facts=() if uptake is None else (uptake.fact,),
+                    design=design,
+                )
+            else:
+                acquisition_request = RunAcquisitionRequest(
+                    source=self._src,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    metrics=tuple(metric.name for metric in req.metrics),
                     estimands=req.estimands,
                     value_scale=req.value_scale,
                     request_population=req.population or "assigned",
                     design=self._design,
                 )
-            )
+            prepared = RunAcquisitionOwner.prepare(acquisition_request)
+        route = self.validate(req)
+        if not req.metrics and not design_summary_only and not sequential_compliance:
+            from increment.breakout.estimates import LiftEstimates
+
             return LiftEstimates()
         if getattr(self._plan.inference, "registration", None) is not None:
             result = _as_lift_estimates(
@@ -464,44 +501,12 @@ class WholeWindowReadouts:
                 with execution_context.borrow() as pinned:
                     self._validate_trigger(_builtin_source(pinned))
             return self._run_seam_family(req, execution_context)
-        if (
-            not is_custom_source(self._src)
-            and req.population in (None, "triggered")
-            and self._experiment is not None
-            and self._experiment.trigger is not None
-            and getattr(self._plan.inference, "registration", None) is None
-            and (req.metrics or design_summary_only)
-        ):
+        if needs_trigger_acquisition:
             from uuid import uuid4
 
-            from increment.readouts._run_acquisition import (
-                RunAcquisitionOwner,
-                RunAcquisitionRequest,
-            )
+            from increment.readouts._run_acquisition import RunAcquisitionOwner
 
-            design = self._design
-            scope_population = "triggered" if req.population == "triggered" else "assigned"
-            populations = (
-                ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
-            )
-            uptake = getattr(design, "uptake", None)
-            prepared = RunAcquisitionOwner.prepare(
-                RunAcquisitionRequest(
-                    source=self._src,
-                    decision_method=req.decision_method,
-                    sensitivity_methods=req.sensitivity_methods,
-                    prior=req.prior,
-                    metrics=tuple(metric.name for metric in req.metrics),
-                    estimands=req.estimands,
-                    value_scale=req.value_scale,
-                    request_population=scope_population,
-                    family_population=scope_population,
-                    family_populations=populations,
-                    family_horizon=tuple(self._src.context.metrics),
-                    family_uptake_facts=() if uptake is None else (uptake.fact,),
-                    design=design,
-                )
-            )
+            assert prepared is not None
             with RunAcquisitionOwner.capture(
                 self._src,
                 (prepared,),

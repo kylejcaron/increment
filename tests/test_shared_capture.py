@@ -676,6 +676,7 @@ def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_varian
 
     con = ds.duckdb_connection()
     cast(Any, con).raw_sql("CREATE TABLE alternate_events AS SELECT * FROM events")
+    cast(Any, con).raw_sql("UPDATE alternate_events SET revenue = revenue + 1000")
     experiment, resolver = _builder(con, tmp_path, triggered=True, separate_metric_source=True)
     declared = MeanMetric.model_validate(dict(experiment.metrics["revenue"]))
     variant = declared.model_copy(update={"fact": "alternate_purchase"})
