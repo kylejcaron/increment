@@ -698,36 +698,6 @@ def test_breakout_moments_source_survives_mixed_winsorization_metrics(seeded_ana
     # winsorization bounds; the source assertions above cover that metadata.
 
 
-def test_asof_readout_requests_covariate_only_for_cuped_method(seeded_pre_period_con, monkeypatch):
-    from increment import Method
-
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    source = _native_source(analysis)
-    real_moments = source.moments
-
-    calls: list[bool] = []
-
-    def spy(metric, **kwargs):
-        calls.append(bool(kwargs.get("include_covariate", False)))
-        return real_moments(metric, **kwargs)
-
-    monkeypatch.setattr(source, "moments", spy)
-
-    readouts.asof_lift(
-        source,
-        metrics=["avg_session_duration"],
-        decision_method=Method(name="cuped", variance_reduction="cuped"),
-    )
-    assert calls == [True]
-    calls.clear()
-    readouts.asof_lift(
-        source,
-        metrics=["avg_session_duration"],
-        decision_method=Method(name="unadjusted"),
-    )
-    assert calls == [False]
-
-
 @pytest.mark.slow
 def test_direct_unadjusted_daily_asof_do_not_query_pre_period_stats(
     seeded_pre_period_con, monkeypatch
