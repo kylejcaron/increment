@@ -18,24 +18,524 @@ if TYPE_CHECKING:
 
     from increment._metric_specs import MetricsArg
     from increment.artifacts import SourceSnapshotEvidence
+    from increment.decision import ContrastSource
     from increment.frame import IntoDataFrame
     from increment.query.artifact_contract import ArtifactStore
+    from increment.query.session import WarehouseSession
     from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
     from increment.semantics.design import Encouragement, Observational, Randomized
-    from increment.semantics.models import AnalysisPlan
+    from increment.semantics.models import AnalysisPlan, Definitions
+    from increment.semantics.models import Experiment as AnalysisExperiment
     from increment.semantics.unit_cycle import UnitCycleReference
+    from increment.sources import EvidenceSource
     from increment.switchback import SwitchbackAssignment
 
 
-from increment._analysis_kernel_adapter import (
-    AnalysisResolver as _AnalysisResolver,
-)
+from increment._analysis_kernel_adapter import AnalysisResolver as _AnalysisResolver
 from increment._analysis_kernel_adapter import (
     experiment_for_analysis as _experiment_for_analysis,
 )
-from increment.errors import CodedError
+from increment._binding import SourceBinding, _ArtifactOpenSpec
+from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.kernel.contracts import _refuse
 from increment.kernel.experiment import Experiment
+
+_BINDING_REFUSALS = refusals(
+    InvalidRequestError,
+    {
+        "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
+        "facade.analysis.unknown_experiment": RefusalSpec(
+            "facade.analysis.unknown_experiment",
+            InvalidRequestError,
+            lambda *, requested, available: (
+                f"experiment {requested!r} is not declared in these definitions "
+                f"(available: {list(available)!r})"
+            ),
+        ),
+        "facade.analysis.source_context_design_disagrees_arm": "source context design disagrees with Analysis construction",
+        "facade.analysis.invalid_mixed_assignment_policy": RefusalSpec(
+            "facade.analysis.invalid_mixed_assignment_policy",
+            InvalidRequestError,
+            template="on_mixed_assignment must be 'error', 'warn', or 'exclude', got {on_mixed_assignment!r}",
+        ),
+        "facade.analysis.invalid_store_policy": RefusalSpec(
+            "facade.analysis.invalid_store_policy",
+            InvalidRequestError,
+            template="store must be 'auto', 'always', or 'none'; got {store!r}",
+        ),
+    },
+)
+_bind_raise = raiser(_BINDING_REFUSALS)
+
+
+def _build_state(
+    *,
+    src: Any,
+    defs: Any,
+    experiment: AnalysisExperiment | None,
+    con: SQLBackend | None,
+    session: Any,
+    experiment_name: str,
+    backend: str | None,
+    store: Literal["auto", "always", "none"] = "auto",
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+) -> Any:
+    from increment._study import ParallelStudyEnvelope
+    from increment.decision import (
+        ContrastAnalysisState,
+        ContrastContext,
+        DefinitionsArmAnalysisState,
+        SeamArmAnalysisState,
+    )
+
+    context = src.context
+    if isinstance(context, ContrastContext):
+        return ContrastAnalysisState(source=src, experiment_name=experiment_name)
+    design = context.design
+    study = None if design is None else ParallelStudyEnvelope(identification=design)
+    if defs is None:
+        return SeamArmAnalysisState(source=src, study=study, experiment_name=experiment_name)
+    if study is None:
+        _bind_raise("facade.analysis.definitions_state_requires_identification")
+    return DefinitionsArmAnalysisState(
+        source=src,
+        study=study,
+        definitions=defs,
+        experiment=cast(Any, experiment),
+        connection=cast(Any, con),
+        session=session,
+        experiment_name=experiment_name,
+        backend=backend or "",
+        store=store,
+        on_mixed_assignment=on_mixed_assignment,
+        exposure_lookup={e.name: e for e in defs.exposures},
+    )
+
+
+def bind_source(
+    src: EvidenceSource | ContrastSource,
+    design: Randomized | Encouragement | Observational | None = None,
+    *,
+    defs: Definitions | None = None,
+    experiment: AnalysisExperiment | None = None,
+    con: SQLBackend | None = None,
+    session: WarehouseSession | None = None,
+    experiment_name: str | None = None,
+    backend: str | None = None,
+    store: Literal["auto", "always", "none"] = "auto",
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    artifact_open_spec: _ArtifactOpenSpec | None = None,
+) -> SourceBinding:
+    from increment.decision import ContrastContext
+
+    context = src.context
+    if isinstance(context, ContrastContext):
+        if design is not None and context.study.identification != design:
+            _bind_raise("facade.analysis.source_context_design_disagrees_arm")
+    elif design is not None and context.design != design:
+        _bind_raise("facade.analysis.source_context_design_disagrees_arm")
+
+    state = _build_state(
+        src=src,
+        defs=defs,
+        experiment=experiment,
+        con=con,
+        session=session,
+        experiment_name=experiment_name or src.context.study_id,
+        backend=backend,
+        store=store,
+        on_mixed_assignment=on_mixed_assignment,
+    )
+    return SourceBinding(state, artifact_open=artifact_open_spec)
+
+
+def _bind_definitions(
+    experiment_name: str,
+    definitions_path: str | Path,
+    con: SQLBackend,
+    *,
+    backend: str | None = None,
+    store: Literal["auto", "always", "none"] = "auto",
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+) -> SourceBinding:
+    from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
+    from increment.query.native_source import DefinitionsMomentSource
+    from increment.query.session import WarehouseSession
+    from increment.semantics.loader import load, verify_sql_admission_matches_execution
+    from increment.semantics.models import Experiment as AnalysisExperiment
+    from increment.sequential_source import native_observation_mapping
+
+    if on_mixed_assignment not in ("error", "warn", "exclude"):
+        _bind_raise(
+            "facade.analysis.invalid_mixed_assignment_policy",
+            on_mixed_assignment=on_mixed_assignment,
+        )
+    if store not in ("auto", "always", "none"):
+        _bind_raise("facade.analysis.invalid_store_policy", store=store)
+    defs = load(definitions_path)
+    experiment = defs.experiment(experiment_name)
+    if experiment is None:
+        _bind_raise(
+            "facade.analysis.unknown_experiment",
+            requested=experiment_name,
+            available=tuple(sorted(e.name for e in defs.experiments)),
+        )
+    metrics_by_name = {m.name: m for m in defs.metrics}
+    metrics = [metrics_by_name[name] for name in experiment.metric_names if name in metrics_by_name]
+    design = experiment.resolved_design()
+    experiment_plan = bind_automatic_sequential_plan(
+        experiment.plan,
+        metrics,
+        design=design,
+        source_id=experiment.name,
+        source_mapping=native_observation_mapping(
+            defs, experiment, on_mixed_assignment=on_mixed_assignment
+        ),
+        pre_period_covariate=experiment.n_pre_periods > 0,
+        trigger=experiment.trigger,
+    )
+    if experiment_plan is not experiment.plan:
+        experiment = AnalysisExperiment.model_validate(
+            experiment.model_copy(update={"plan": experiment_plan})
+        )
+        defs = defs.model_copy(
+            update={
+                "experiments": tuple(
+                    experiment if item.name == experiment.name else item
+                    for item in defs.experiments
+                )
+            }
+        )
+    compiled_plan = compile_decision_plan(
+        experiment_plan,
+        metrics,
+        path="warehouse",
+        design=design,
+    )
+    session = WarehouseSession(con, defs, source_snapshot_evidence=source_snapshot_evidence)
+    verify_sql_admission_matches_execution(defs, con)
+    session.drop_materialized()
+    src = DefinitionsMomentSource(
+        session,
+        experiment,
+        metrics,
+        store=store,
+        on_mixed_assignment=on_mixed_assignment,
+        backend=backend,
+        design=design,
+        plan=compiled_plan,
+    )
+    return bind_source(
+        src,
+        design,
+        defs=defs,
+        experiment=experiment,
+        con=con,
+        session=session,
+        experiment_name=experiment_name,
+        backend=backend,
+        store=store,
+        on_mixed_assignment=on_mixed_assignment,
+    )
+
+
+def _input_backend_of(frame: IntoDataFrame) -> Any:
+    import narwhals as nw
+
+    return nw.from_native(frame, eager_only=True).implementation.value
+
+
+def _bind_summary(  # noqa: PLR0913
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    group: str,
+    control: object | None = None,
+    metrics: MetricsArg,
+    experiment_id: str = "frame",
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+    uptake: str | None = None,
+    on_unassigned: Literal["error", "exclude"] = "error",
+    cluster: str | None = None,
+    intervention_grain: Literal["unit", "cluster"] = "unit",
+    exposure_date: str | None = None,
+    breakouts: Sequence[str] = (),
+) -> SourceBinding:
+    from increment.frame import from_unit_summary
+    from increment.query.fact_resolution import _require_design
+
+    _require_design(control, design, constructor="Analysis.from_unit_summary")
+    if control is None:
+        assert design is not None
+        control = str(design.control_group)
+    source = from_unit_summary(
+        frame,
+        unit=unit,
+        group=group,
+        control=cast(str, control),
+        metrics=metrics,
+        experiment_id=experiment_id,
+        uptake=uptake,
+        design=design,
+        plan=plan,
+        on_unassigned=on_unassigned,
+        cluster=cluster,
+        intervention_grain=intervention_grain,
+        exposure_date=exposure_date,
+        breakouts=breakouts,
+    )
+    binding = bind_source(source, source.context.design)
+    return SourceBinding(
+        binding.state, artifact_open=binding.artifact_open, input_backend=_input_backend_of(frame)
+    )
+
+
+def _bind_panel(  # noqa: PLR0913
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    group: str,
+    date: str,
+    control: object | None = None,
+    metrics: MetricsArg,
+    experiment_id: str = "frame",
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+    uptake: str | None = None,
+    exposure_date: str | None = None,
+    observation_end: dt.date | dt.datetime | str | int | float | None = None,
+    breakouts: Sequence[str] = (),
+    on_unassigned: Literal["error", "exclude"] = "error",
+    cluster: str | None = None,
+) -> SourceBinding:
+    from increment.frame import from_unit_panel
+    from increment.query.fact_resolution import _require_design
+
+    _require_design(control, design, constructor="Analysis.from_unit_panel")
+    if control is None:
+        assert design is not None
+        control = str(design.control_group)
+    source = from_unit_panel(
+        frame,
+        unit=unit,
+        group=group,
+        date=date,
+        control=cast(str, control),
+        metrics=metrics,
+        experiment_id=experiment_id,
+        uptake=uptake,
+        design=design,
+        plan=plan,
+        exposure_date=exposure_date,
+        observation_end=observation_end,
+        breakouts=breakouts,
+        on_unassigned=on_unassigned,
+        cluster=cluster,
+    )
+    binding = bind_source(source, source.context.design)
+    return SourceBinding(
+        binding.state, artifact_open=binding.artifact_open, input_backend=_input_backend_of(frame)
+    )
+
+
+def _bind_artifact(
+    store: ArtifactStore,
+    ref: UnitDayArtifactRef,
+    *,
+    expected_context: ArtifactContext,
+    verification: Literal["lazy_digest"] = "lazy_digest",
+) -> SourceBinding:
+    from increment.query.source import open_artifact
+
+    source = open_artifact(
+        store,
+        ref,
+        expected_context=expected_context,
+        verification=verification,
+    )
+    return bind_source(
+        source,
+        source.context.design,
+        artifact_open_spec=_ArtifactOpenSpec(store, ref, expected_context, verification),
+    )
+
+
+def _bind_switchback(
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    cycle: str,
+    period: str,
+    step: str,
+    group: str,
+    metrics: MetricsArg,
+    identification: Randomized,
+    assignment: SwitchbackAssignment,
+    experiment_id: str = "frame",
+    plan: AnalysisPlan | None = None,
+    contrast_references: Mapping[str, UnitCycleReference] | None = None,
+) -> SourceBinding:
+    from increment.switchback import from_switchback_panel
+
+    source = from_switchback_panel(
+        frame,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        group=group,
+        metrics=metrics,
+        identification=identification,
+        assignment=assignment,
+        experiment_id=experiment_id,
+        plan=plan,
+        contrast_references=contrast_references,
+    )
+    binding = bind_source(cast(Any, source), identification)
+    return SourceBinding(
+        binding.state, artifact_open=binding.artifact_open, input_backend=_input_backend_of(frame)
+    )
+
+
+def _bind_moments(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    metrics: MetricsArg,
+    control: object | None = None,
+    experiment_id: str | None = None,
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+) -> SourceBinding:
+    from increment._analysis_config import (
+        refuse_cuped_linear_moments,
+        refuse_missing_scalar_evidence,
+        resolve_configs,
+        validate_scalar_route,
+    )
+    from increment._cuped_evidence import invalid_evidence, method_key
+    from increment._frame_validation import (
+        _coerce_source_metrics,
+        canonical_control_for_moments,
+        canonical_design_for_moments,
+        validate_moments_control,
+    )
+    from increment.frame import synthesise_metric
+    from increment.query.fact_resolution import _require_design
+    from increment.semantics.design import Encouragement, Randomized
+    from increment.sources import MomentsSource, cuped_evidence_items
+
+    design = canonical_design_for_moments(design)
+    _require_design(control, design, constructor="Analysis.from_moments")
+    if control is None:
+        assert design is not None
+        control = canonical_control_for_moments(design.control_group)
+    else:
+        control = canonical_control_for_moments(control)
+    validate_moments_control(rows, control)
+    if design is None:
+        design = MomentsSource.design_summary_design(rows, control_group=control) or Randomized(
+            control_group=control
+        )
+    specs = _coerce_source_metrics(metrics, design=design)
+    evidence_items = cuped_evidence_items(rows, require_plan=plan is None)
+    evidence = {
+        metric: {key: item.kind for key, item in items.items()}
+        for metric, items in evidence_items.items()
+    }
+    portable_metrics: set[str] = set()
+    for spec in specs:
+        for item in evidence_items.get(spec.name, {}).values():
+            if item.kind == "categorical_cells":
+                expected_components = 2 if spec.type == "ratio" else 1
+                actual_components = 0 if item.cells is None else len(item.cells.outcome_references)
+            elif item.kind == "fitted_multicovariate":
+                expected_components = 2 if spec.type == "ratio" else 1
+                actual_components = 0 if item.fit_state is None else len(item.fit_state.slopes)
+            else:
+                continue
+            if actual_components != expected_components:
+                invalid_evidence(
+                    f"{item.kind} evidence for metric {spec.name!r} has "
+                    f"{actual_components} components; expected {expected_components}"
+                )
+        methods_for_metric = (
+            () if spec.decision_method is None else (spec.decision_method,)
+        ) + spec.sensitivity_methods
+        carried = evidence.get(spec.name, {})
+        for method in methods_for_metric:
+            carried_kind = carried.get(method_key(method))
+            if method.variance_reduction == "cuped_multicovariate":
+                if carried_kind not in ("categorical_cells", "fitted_multicovariate"):
+                    refuse_cuped_linear_moments(spec.name)
+                portable_metrics.add(spec.name)
+        if "scalar_moments" in carried.values():
+            for method in methods_for_metric:
+                if (
+                    method.variance_reduction == "cuped"
+                    and carried.get(method_key(method)) != "scalar_moments"
+                ):
+                    refuse_missing_scalar_evidence("Analysis.from_moments", method.name)
+            portable_metrics.add(spec.name)
+            continue
+        requested_covariates = {
+            covariate.name
+            for method in methods_for_metric
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
+        }
+        provenance_names = {
+            str(row["covariate_name"])
+            for row in rows
+            if row.get("metric") == spec.name and row.get("covariate_name") is not None
+        }
+        if requested_covariates and provenance_names and provenance_names != requested_covariates:
+            from increment._analysis_config import refuse_unidentified_scalar_moments
+
+            refuse_unidentified_scalar_moments(spec.name)
+        if requested_covariates and any(
+            row.get("metric") == spec.name
+            and row.get("ref_x") is not None
+            and row.get("x_role") not in (None, "covariate")
+            for row in rows
+        ):
+            from increment._analysis_config import refuse_unidentified_scalar_moments
+
+            refuse_unidentified_scalar_moments(spec.name)
+    metric_catalog = [synthesise_metric(spec) for spec in specs]
+    configs = resolve_configs(
+        metric_catalog,
+        bindings=None,
+        specs={spec.name: spec for spec in specs},
+        methods=None,
+        prior=None,
+    )
+    validate_scalar_route(
+        tuple(config for config in configs if config.metric.name not in portable_metrics),
+        route="Analysis.from_moments",
+        representation="moments",
+        design=design,
+    )
+    if experiment_id is None:
+        experiment_id = (
+            str(rows[0].get("experiment_id", "moments"))
+            if rows
+            and (
+                isinstance(design, Encouragement)
+                or rows[0].get("record_kind") == "sequential_checkpoint"
+            )
+            else "moments"
+        )
+    source = MomentsSource(
+        rows,
+        metrics=metric_catalog,
+        study_id=experiment_id,
+        design=design,
+        plan=plan,
+        configs=configs,
+    )
+    return bind_source(source, design)
 
 
 @contextmanager
@@ -208,6 +708,12 @@ def from_frame(
 ) -> tuple[Experiment, _AnalysisResolver]: ...
 
 
+def _analysis_from_binding(binding: SourceBinding) -> Any:
+    from increment._analysis_execution import Analysis
+
+    return Analysis._from_binding(binding)
+
+
 def from_frame(
     frame: IntoDataFrame,
     *,
@@ -215,15 +721,13 @@ def from_frame(
     **kwargs: Any,
 ) -> tuple[Experiment, _AnalysisResolver]:
     """Build an experiment from a unit-summary or unit-panel frame."""
-    from increment._analysis_execution import Analysis
-
     if shape == "summary":
-        analysis = Analysis._from_unit_summary(frame, **kwargs)
+        binding = _bind_summary(frame, **kwargs)
     elif shape == "panel":
-        analysis = Analysis._from_unit_panel(frame, **kwargs)
+        binding = _bind_panel(frame, **kwargs)
     else:
         _refuse("kernel.request.invalid", field="shape must be summary or panel")
-    return _experiment_for_analysis(analysis, return_run_result=True)
+    return _experiment_for_analysis(_analysis_from_binding(binding), return_run_result=True)
 
 
 def _accept_definitions_arguments[**P, R](builder: Callable[P, R]) -> Callable[P, R]:
@@ -316,7 +820,6 @@ def _from_definitions(
         experiment = Experiment.from_json(json.dumps(payload))
         return experiment, _OfflineResolver(path, str(catalog["definitions_digest"]), experiment)
 
-    from increment._analysis_execution import Analysis
     from increment.semantics.loader import load
 
     definitions_digest = _definitions_digest(path) if _record_schema else ""
@@ -325,7 +828,8 @@ def _from_definitions(
         if len(definitions.experiments) != 1:
             _refuse("kernel.request.invalid", field="experiment_name is required")
         experiment_name = definitions.experiments[0].name
-    analysis = Analysis._from_definitions(
+    assert con is not None
+    binding = _bind_definitions(
         experiment_name,
         path,
         con,
@@ -335,7 +839,9 @@ def _from_definitions(
         source_snapshot_evidence=source_snapshot_evidence,
     )
     experiment, resolver = _experiment_for_analysis(
-        analysis, record_schema=_record_schema, return_run_result=True
+        _analysis_from_binding(binding),
+        record_schema=_record_schema,
+        return_run_result=True,
     )
     if _record_schema:
         _write_catalog(path, experiment, definitions_digest)
@@ -352,11 +858,9 @@ def from_unit_day_artifact(
     expected_context: ArtifactContext,
     verification: Literal["lazy_digest"] = "lazy_digest",
 ) -> tuple[Experiment, _AnalysisResolver]:
-    from increment._analysis_execution import Analysis
-
     return _experiment_for_analysis(
-        Analysis._from_unit_day_artifact(
-            store, ref, expected_context=expected_context, verification=verification
+        _analysis_from_binding(
+            _bind_artifact(store, ref, expected_context=expected_context, verification=verification)
         ),
         return_run_result=True,
     )
@@ -377,25 +881,21 @@ def from_switchback_frame(
     plan: AnalysisPlan | None = None,
     contrast_references: Mapping[str, UnitCycleReference] | None = None,
 ) -> tuple[Experiment, _AnalysisResolver]:
-    from increment._analysis_execution import Analysis
-
-    return _experiment_for_analysis(
-        Analysis._from_switchback_panel(
-            frame,
-            unit=unit,
-            cycle=cycle,
-            period=period,
-            step=step,
-            group=group,
-            metrics=metrics,
-            identification=identification,
-            assignment=assignment,
-            experiment_id=experiment_id,
-            plan=plan,
-            contrast_references=contrast_references,
-        ),
-        return_run_result=True,
+    binding = _bind_switchback(
+        frame,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        group=group,
+        metrics=metrics,
+        identification=identification,
+        assignment=assignment,
+        experiment_id=experiment_id,
+        plan=plan,
+        contrast_references=contrast_references,
     )
+    return _experiment_for_analysis(_analysis_from_binding(binding), return_run_result=True)
 
 
 def from_moments(
@@ -407,19 +907,15 @@ def from_moments(
     design: Randomized | Encouragement | Observational | None = None,
     plan: AnalysisPlan | None = None,
 ) -> tuple[Experiment, _AnalysisResolver]:
-    from increment._analysis_execution import Analysis
-
-    return _experiment_for_analysis(
-        Analysis._from_moments(
-            rows,
-            metrics=metrics,
-            control=control,
-            experiment_id=experiment_id,
-            design=design,
-            plan=plan,
-        ),
-        return_run_result=True,
+    binding = _bind_moments(
+        rows,
+        metrics=metrics,
+        control=control,
+        experiment_id=experiment_id,
+        design=design,
+        plan=plan,
     )
+    return _experiment_for_analysis(_analysis_from_binding(binding), return_run_result=True)
 
 
 def from_unit_summary(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
