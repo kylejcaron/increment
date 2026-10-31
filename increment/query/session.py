@@ -42,18 +42,13 @@ from increment.query.artifact_contract import (
     validate_snapshot_identity,
     validate_trusted_ref,
 )
-from increment.query.artifact_digest import (
-    _SQL_DIGEST_BACKENDS,
-    _SQL_DIGEST_FORMAT_V2,
+from increment.query.artifact_ports import (
     BUCKETED_DIGEST_FORMAT,
     SQL_DIGEST_FORMAT,
-    digest_relation_bucketed,
-    digest_relation_sql_v2,
-    digest_relation_stream,
-    fetch_bounded_arrow,
-    stream_canonical_rows,
+    artifact_query_ports,
 )
-from increment.query.artifact_digest import REFUSALS as DIGEST_REFUSALS
+from increment.query.artifact_ports import SQL_DIGEST_BACKENDS as _SQL_DIGEST_BACKENDS
+from increment.query.artifact_ports import SQL_DIGEST_FORMAT_V2 as _SQL_DIGEST_FORMAT_V2
 from increment.query.fact_resolution import _dim_joined_fact_table
 from increment.query.schemas import ARTIFACT_RELATION_PRIMARY_KEYS, ARTIFACT_RELATION_SCHEMAS
 from increment.semantics.artifact import (
@@ -64,6 +59,30 @@ from increment.semantics.artifact import (
     UnitDayArtifactRef,
 )
 from increment.semantics.models import Definitions, FactSource
+
+
+def _digest_port():
+    return artifact_query_ports().digest
+
+
+def digest_relation_bucketed(*args: Any, **kwargs: Any) -> Any:
+    return _digest_port().digest_relation_bucketed(*args, **kwargs)
+
+
+def digest_relation_sql_v2(*args: Any, **kwargs: Any) -> Any:
+    return _digest_port().digest_relation_sql_v2(*args, **kwargs)
+
+
+def digest_relation_stream(*args: Any, **kwargs: Any) -> Any:
+    return _digest_port().digest_relation_stream(*args, **kwargs)
+
+
+def fetch_bounded_arrow(*args: Any, **kwargs: Any) -> Any:
+    return _digest_port().fetch_bounded_arrow(*args, **kwargs)
+
+
+def stream_canonical_rows(*args: Any, **kwargs: Any) -> Any:
+    return _digest_port().stream_canonical_rows(*args, **kwargs)
 
 
 def _extension_relation_refs(extensions: Any) -> tuple[Any, ...]:
@@ -225,7 +244,7 @@ def _validate_artifact_schema(table: ir.Table, role: str) -> None:
         else:
             continue
         refuse(
-            DIGEST_REFUSALS["artifact.digest.type"],
+            _digest_port().REFUSALS["artifact.digest.type"],
             field=field.name,
             constraint="stored columns need their canonical physical type",
             value={"expected": str(field.type), "stored": stored},
@@ -858,7 +877,7 @@ class WarehouseArtifactStore:
                 table, schema, self._con, primary_key=primary_key
             )
             try:
-                with closing(cast(Any, rows)):
+                with closing(rows):
                     return digest_relation_stream(
                         role, schema, rows, primary_key=primary_key, row_count=row_count
                     )
@@ -946,7 +965,7 @@ class WarehouseArtifactStore:
     def _publish_manifest(
         self, generation: _StoredGeneration, manifest: UnitDayArtifactManifest
     ) -> UnitDayArtifactRef:
-        from increment.query.artifact_digest import manifest_sha256
+        manifest_sha256 = _digest_port().manifest_sha256
 
         if generation.manifest is not None:
             _raise("query.session.warehouse_artifact.publication_handle_sealed")
@@ -1032,7 +1051,7 @@ class WarehouseArtifactStore:
             )
             rows = self._con.to_pyarrow(persisted).to_pylist()
             if rows and rows[0]["manifest_sha256"] == ref.manifest_sha256:
-                from increment.query.artifact_digest import manifest_sha256
+                manifest_sha256 = _digest_port().manifest_sha256
 
                 manifest = UnitDayArtifactManifest.model_validate(
                     json.loads(rows[0]["manifest_json"])
@@ -1206,7 +1225,7 @@ class WarehouseArtifactStore:
             created_snapshots.append((snapshot_name, database))
             return snapshot_table
 
-        from increment.query.sequential_capture import record_batches
+        record_batches = artifact_query_ports().sequential_capture.record_batches
 
         snapshot = ImmutableArtifactSnapshot(
             ref.artifact_id,
@@ -1259,7 +1278,8 @@ class WarehouseArtifactStore:
         already read out of the warehouse before invalidation is not revoked.
         """
         from increment.query.artifact_contract import ArtifactContractError
-        from increment.query.artifact_digest import manifest_sha256
+
+        manifest_sha256 = _digest_port().manifest_sha256
 
         metadata = self._con.table(self._meta_name, database=self._database)
         persisted = metadata.filter(

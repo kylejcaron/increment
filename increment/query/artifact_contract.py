@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         UnitDayArtifactManifest,
         UnitDayArtifactRef,
     )
+from increment._canonical import canonical_json_bytes
 from increment.errors import (
     CodedError,
     InvalidRequestError,
@@ -40,9 +41,13 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.query.artifact_digest import canonical_json
 from increment.semantics.artifact import RelationRole
 from increment.semantics.design import Encouragement
+
+
+def canonical_json(value: object) -> str:
+    return canonical_json_bytes(value).decode()
+
 
 _BINARY64_U = 2.0**-53
 _BINARY64_ETA = 2.0**-1074
