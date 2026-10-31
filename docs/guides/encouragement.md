@@ -138,6 +138,8 @@ For fixed-horizon uptake alone, use `run(estimands=["compliance"])`; no outcome 
 
     The same five constructors support the empty catalog, with `from_moments` replaying the retained checkpoint. A registered compliance-only checkpoint reads uptake and no outcome, so an unbounded retention metric may stay in the catalog when the explicit uptake-only registration is declared over that catalog (an automatic registration would monitor the metric and refuse it, `sequential.route.unsupported`). `from_definitions`, `from_unit_day_artifact` (with the metric declared on the experiment) and `from_moments` (with the metric in `metrics=`) retain it; the dataframe constructors cannot declare it. Requests that consume outcomes, such as ITT, still refuse the retention metric. The empty-catalog path above does not exercise a nonempty catalog.
 
+    For registered `from_unit_panel` data, a combined whole-window and completed as-of uptake-only run retains one capture identity, even when no outcome metrics are requested.
+
     Each metric's LATE uses the first stage on its matching outcome cohort. As-of compliance includes units assigned by the requested day and qualifying uptake through that day; a triggered-population compliance series instead admits units by their first eligible trigger day while retaining assignment-anchored uptake windows.
 
     In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort suppresses that cohort's LATE estimate but retains its planned LATE row as a typed failure (`failure_code="estimation.encouragement.late.weak_first_stage"` and `lift=None`). Other metrics use their own outcome cohorts and can still report LATE when their first stages pass.

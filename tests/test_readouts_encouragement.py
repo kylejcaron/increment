@@ -783,6 +783,31 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     }
     assert all(LiftEstimate.model_validate_json(row.model_dump_json()) == row for row in results)
 
+    from dataclasses import replace
+
+    from increment import run
+    from increment._analysis_kernel_adapter import experiment_for_analysis
+    from increment.kernel.contracts import Scope
+
+    experiment, resolver = experiment_for_analysis(
+        Analysis._from_source(source, design), return_run_result=True
+    )
+    whole_window = Scope(view="run", grain="total")
+    cumulative = Scope(view="asof", grain="asof", completion_policy=True)
+    experiment = replace(
+        experiment,
+        scopes=(whole_window, cumulative),
+        operations={whole_window.hash(): "run", cumulative.hash(): "run_asof_lift"},
+    )
+    combined = run(
+        experiment,
+        resolver,
+        analysis_options={"estimands": ("compliance",)},
+    )
+    assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
+    assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
+    assert len(combined.run.metadata.captures) == 1
+
 
 def test_validate_encouragement_asof_inference_uses_the_retention_band_not_window_days():
     """A `RetentionMetric` has no `window_days` field (its band lives in

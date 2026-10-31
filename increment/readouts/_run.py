@@ -154,10 +154,9 @@ def run(
             _validate_adjustment_methods(_runtime_methods(config, design))
 
     # Raw frames and method-scoped covariates share one capture across the
-    # selected metrics, including their common observation horizon. An empty
-    # selection reads nothing. Request validation is complete before capture.
-    design_summary_only = _design_compliance_only(src.context, estimands)
-    if not selected and not design_summary_only:
+    # selected metrics, including their common observation horizon.
+    # Request validation is complete before capture.
+    if not selected and not prepared.scope.execution:
         return _as_collection(
             _run_prepared(
                 _builtin_source(src),
