@@ -105,7 +105,7 @@ class RunAcquisitionOwner:
             compliance_only = _design_compliance_only(source.context, request.estimands)
             sequential_compliance = _sequential_compliance_requested(
                 source.context, request.estimands
-            )
+            ) and tuple(request.estimands or ()) == ("compliance",)
             omit_outcomes = compliance_only or sequential_compliance
             scope = EvidenceScope(
                 metrics=(

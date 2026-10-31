@@ -164,8 +164,8 @@ def _whole_window_operation_scope(analysis, selected, added, options) -> Evidenc
     )
     prepared = analysis._whole_window().prepare_family(family)
     additional_scopes = ()
-    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES) and any(
-        item.scope.metrics for item in prepared
+    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES) and (
+        options.get("capture") is not None or any(item.scope.metrics for item in prepared)
     ):
         from increment.readouts._line3 import sequential_scope
 
@@ -322,8 +322,8 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
         )
     from increment.estimation.sequential import SEQUENTIAL_POLICIES
 
-    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES) and any(
-        request.metrics for request in requests
+    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES) and (
+        options.get("capture") is not None or any(request.metrics for request in requests)
     ):
         from increment.readouts._line3 import sequential_scope
 

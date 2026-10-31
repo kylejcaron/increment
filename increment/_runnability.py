@@ -171,17 +171,18 @@ def operation_options(
     values = {**typed_request_options(experiment.request_options), **(overrides or {})}
     if values.get("metrics") is None:
         values["metrics"] = list(scope.metrics) or list(experiment.metrics)
+    if "population" not in values:
+        values["population"] = scope.population
+    if scope.view in {"daily", "asof"}:
+        values["dimension"] = scope.segment[0].property if scope.segment else None
     estimands = values.get("estimands")
     if (
         experiment.design.get("mechanism") == "encouragement"
         and estimands is not None
         and tuple(estimands) == ("compliance",)
+        and not values.get("dimension")
     ):
         values["metrics"] = []
-    if "population" not in values:
-        values["population"] = scope.population
-    if scope.view in {"daily", "asof"}:
-        values["dimension"] = scope.segment[0].property if scope.segment else None
     if scope.view == "asof":
         values["completed_windows_only"] = scope.completion_policy
     operation = scope_operation(experiment, scope)

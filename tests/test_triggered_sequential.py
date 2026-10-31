@@ -340,6 +340,55 @@ def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
         analysis.close()
 
 
+def _assert_combined_compliance_family_requests(tmp_path):
+    connection = ibis.duckdb.connect()
+    analysis = None
+    try:
+        data_dir = tmp_path / "combined-compliance"
+        data_dir.mkdir()
+        analysis, _ = _analysis(
+            data_dir,
+            _events(uptake=True),
+            plan=_COMPLIANCE_PLAN,
+            connection=connection,
+            encouragement=True,
+        )
+        from increment._analysis_kernel_adapter import experiment_for_analysis
+
+        experiment, resolver = experiment_for_analysis(analysis, return_run_result=True)
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="run", grain="total", population="triggered"),
+        )
+        combined = replace(experiment, scopes=scopes)
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        mixed = run(
+            combined,
+            resolver,
+            analysis_options={"metrics": ["revenue"], "estimands": ["itt", "compliance"]},
+        )
+        assert {
+            (cell.identity.key.analysis_population, cell.identity.key.metric)
+            for cell in mixed.cells
+        } >= {("assigned", "revenue"), ("triggered", "revenue")}
+        captured = run(
+            combined,
+            resolver,
+            analysis_options={
+                "estimands": ["compliance"],
+                "capture": {"finalized": True, "as_of": _LATER},
+            },
+        )
+        assert {
+            (cell.identity.key.analysis_population, cell.identity.key.estimand)
+            for cell in captured.cells
+        } == {("assigned", "compliance"), ("triggered", "compliance")}
+    finally:
+        if analysis is not None:
+            analysis.close()
+        connection.disconnect()
+
+
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
     analysis, path = _analysis(tmp_path, _events(), connection=connection)
@@ -347,6 +396,7 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
     try:
         _assert_empty_sequential_compliance(tmp_path)
         _assert_selected_registered_family_capture(tmp_path)
+        _assert_combined_compliance_family_requests(tmp_path)
         snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
         assert snapshot.triggered.population == "triggered"
