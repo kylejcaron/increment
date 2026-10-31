@@ -2245,10 +2245,10 @@ def _validation_observations(
 def _fit_observation(
     source: EvidenceSource, target: float, options: dict[str, Any]
 ) -> tuple[ClusteredObservation, str | None]:
-    from increment.cate import estimate_cate
+    from increment.kernel.ports import cate_operations
 
     try:
-        fit = estimate_cate(source, "y", **options)
+        fit = cate_operations().estimate_cate(source, "y", **options)
     except CodedError as exc:
         return _record("fit.ate", exc, target), None
     return _record("fit.ate", fit, target), fit.model_dump_json()
@@ -2263,8 +2263,10 @@ def evaluate_clustered_replication(
     evaluation batch. Their accuracy is gate-conditioned; availability retains
     every attempt. No oracle draws are called exact population truth.
     """
-    from increment.cate import select_targeting_rule, targeting_rule, validate_cate
     from increment.estimation.targeting import ClusterBootstrap
+    from increment.kernel.ports import cate_operations
+
+    operations = cate_operations()
 
     selected = [cell for cell in registration.cells if cell.name == cell_name]
     if len(selected) != 1 or not 0 <= replication < registration.replications:
@@ -2315,7 +2317,7 @@ def evaluate_clustered_replication(
 
     # Run validation even if the fit refused: each public operation owns its support.
     try:
-        validation = validate_cate(
+        validation = operations.validate_cate(
             source,
             "y",
             n_groups=2,
@@ -2326,7 +2328,7 @@ def evaluate_clustered_replication(
     except CodedError as exc:
         validation = exc
     try:
-        rule = targeting_rule(
+        rule = operations.targeting_rule(
             source,
             "y",
             fraction=0.5,
@@ -2341,7 +2343,7 @@ def evaluate_clustered_replication(
         reports.append(("validation", validation.model_dump_json()))
 
     try:
-        selection = select_targeting_rule(
+        selection = operations.select_targeting_rule(
             source,
             "y",
             fractions=(0.0, 0.5, 1.0),

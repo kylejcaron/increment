@@ -17,13 +17,13 @@ from increment.kernel.contracts import (
     CompiledPlanBinding,
     contract_hash,
 )
+from increment.kernel.program_refusals import refuse_store
 from increment.result_envelope import (
     AnalysisEnvelope,
     ResultCell,
     _standard_error,
     _standard_error_df,
 )
-from increment.store._refusals import refuse_store
 
 
 @dataclass(frozen=True, slots=True)

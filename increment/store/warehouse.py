@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from increment.store._refusals import refuse_store
+from increment.kernel.program_refusals import refuse_store
 from increment.store.parquet import ParquetResultsStore
 from increment.store.types import (
     HistorySelector,
