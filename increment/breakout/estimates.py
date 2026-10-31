@@ -1872,7 +1872,7 @@ def _envelope_identity(
         "scope": contracts.Scope(
             view=view,
             grain="total" if view == "breakout" else view,
-            values=view in {"daily", "asof"},
+            values=view in {"daily", "asof"} and isinstance(row, DailyMetricValue),
             through_day=through_day if view == "asof" and isinstance(through_day, date) else None,
             population=getattr(row, "analysis_population", "assigned"),
             time_basis=getattr(row, "ds_basis", "calendar"),

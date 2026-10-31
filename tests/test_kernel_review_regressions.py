@@ -1714,6 +1714,16 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
     assert declarative.cells
     assert all(cell.identity.scope.values for cell in declarative.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in declarative.cells)
+    direct_lifts = getattr(analysis, f"run_{view}_lift")()
+    lift_cell = direct_lifts.as_cells()[0]
+    assert lift_cell.identity.scope.values is False
+    lift_scope = lift_cell.identity.scope.model_copy(
+        update={"through_day": None, "time_basis": "calendar"}
+    )
+    declarative_lift = run(restored.with_views(lift_scope), resolver)
+    assert declarative_lift.cells
+    assert all(cell.identity.scope.values is False for cell in declarative_lift.cells)
+    assert all(cell.identity.key.value_scale == "relative" for cell in declarative_lift.cells)
 
 
 def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path):

@@ -217,7 +217,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import ibis
-import polars as pl
+import pyarrow as pa
 
 from increment import from_definitions, run
 
@@ -234,7 +234,7 @@ rows = [
     for event, kind in ((0, "page_view"), (1, "purchase"))
 ]
 con = ibis.duckdb.connect()
-con.create_table("demo_events", pl.DataFrame(rows).to_arrow())
+con.create_table("demo_events", pa.Table.from_pylist(rows))
 
 with TemporaryDirectory() as definitions:
     Path(definitions, "demo.yaml").write_text(

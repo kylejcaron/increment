@@ -204,6 +204,7 @@ class Experiment:
     def __post_init__(self) -> None:
         scopes = tuple(self.scopes)
         operations = dict(self.operations)
+        migrated_operations: set[str] = set()
         normalized_scopes = []
         for scope in scopes:
             legacy_hash = scope.hash()
@@ -211,8 +212,10 @@ class Experiment:
             expected = {"daily": "run_daily", "asof": "run_asof"}.get(scope.view)
             if expected is not None and operation == expected:
                 scope = scope.model_copy(update={"values": True})
-                operations.pop(legacy_hash, None)
+                migrated_operations.add(legacy_hash)
             normalized_scopes.append(scope)
+        for legacy_hash in migrated_operations:
+            operations.pop(legacy_hash)
         scopes = tuple(normalized_scopes)
         object.__setattr__(self, "scopes", scopes)
         object.__setattr__(self, "operations", MappingProxyType(operations))
@@ -285,16 +288,7 @@ class Experiment:
             for item in payload.get("implementation_refs", ())
         }
         scopes = tuple(Scope.from_payload(item) for item in payload["scopes"])
-        operations = dict(payload.get("operations", {}))
-        migrated_scopes: list[Scope] = []
-        for scope in scopes:
-            legacy_hash = scope.hash()
-            operation = operations.get(legacy_hash)
-            expected = {"daily": "run_daily", "asof": "run_asof"}.get(scope.view)
-            if expected is not None and operation == expected:
-                scope = scope.model_copy(update={"values": True})
-                operations.pop(legacy_hash, None)
-            migrated_scopes.append(scope)
+        operations = payload.get("operations", {})
         return cls(
             experiment_id=str(payload["experiment_id"]),
             design=payload["design"],
@@ -303,7 +297,7 @@ class Experiment:
             source_refs=tuple(
                 SourceReference.from_payload(item) for item in payload["source_refs"]
             ),
-            scopes=tuple(migrated_scopes),
+            scopes=scopes,
             implementation_refs=implementations,
             package_version=str(payload["package_version"]),
             analysis_context=payload.get("analysis_context", {}),

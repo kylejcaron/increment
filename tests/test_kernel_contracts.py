@@ -71,6 +71,17 @@ def test_experiment_declares_distinct_values_and_lift_views_without_changing_lif
     assert tuple(scope.values for scope in migrated.scopes) == (True, True)
     assert migrated.operations == {}
 
+    with pytest.raises(CodedError) as raised:
+        Experiment(
+            experiment_id="duplicate-values-scope",
+            design={},
+            metrics={},
+            registration=Registration(registration_hash="registration"),
+            source_refs=base.source_refs,
+            scopes=(lift, lift),
+            operations={lift.hash(): "run_daily"},
+        )
+    assert raised.value.code == "kernel.request.invalid"
     for scope in (
         PublicScope(view="run", grain="total"),
         PublicScope(
