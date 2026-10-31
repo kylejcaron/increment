@@ -469,6 +469,70 @@ def _assert_combined_compliance_family_requests(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
+def test_registered_combined_compliance_replays_after_event_source_removal(tmp_path):
+    path = tmp_path / "combined-compliance-replay.yml"
+    path.write_text(_definitions(plan=_COMPLIANCE_PLAN, encouragement=True), encoding="utf-8")
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", obj=_events(uptake=True))
+    try:
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
+        cast(Any, resolver).capture_sequential(finalized=True, as_of=_LATER)
+        connection.drop_table("events")
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="run", grain="total", population="triggered"),
+        )
+        combined = replace(experiment, scopes=scopes)
+
+        result = run(combined, resolver, analysis_options={"estimands": ["compliance"]})
+
+        assert {
+            (cell.identity.key.analysis_population, cell.identity.key.estimand)
+            for cell in result.cells
+        } == {("assigned", "compliance"), ("triggered", "compliance")}
+    finally:
+        connection.disconnect()
+
+
+@pytest.mark.integration
+def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path):
+    path = tmp_path / "triggered-daily-family.yml"
+    path.write_text(
+        _definitions(plan="      primary: revenue\n      alternative: two-sided\n"),
+        encoding="utf-8",
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", obj=_events())
+    try:
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            store="none",
+        )
+        connection.drop_table("events")
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="daily", grain="daily", population="triggered"),
+        )
+        operations = {scopes[0].hash(): "run", scopes[1].hash(): "run_daily_lift"}
+        combined = replace(experiment, scopes=scopes, operations=operations)
+
+        with pytest.raises(CodedError) as raised:
+            run(combined, resolver, analysis_options={"metrics": ["revenue"]})
+
+        assert raised.value.code == "source.native.trigger_evidence_required"
+    finally:
+        connection.disconnect()
+
+
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
     analysis, path = _analysis(tmp_path, _events(), connection=connection)
