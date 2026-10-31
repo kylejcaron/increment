@@ -291,7 +291,13 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                     else reader.resolve_lift_options(req.metrics, **overrides).configs
                 )
             breakouts = _selected_breakouts(candidate, req.dimension) if req.dimension else ()
-        scope_breakouts = breakouts if metrics or options.get("capture") is not None else ()
+        scope_breakouts = (
+            breakouts
+            if metrics
+            or options.get("capture") is not None
+            or (operation != "run_breakout" and options.get("dimension") is not None)
+            else ()
+        )
         for config in configs:
             _config_snapshot(config, candidate._design)
         requests.append(

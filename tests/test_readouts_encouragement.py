@@ -1142,6 +1142,8 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
             sensitivity_methods=[Method(name="unadjusted")],
         )
     assert duplicate.value.code == "estimation.engine.method_names_unique"
+    assert analysis.run_daily(metrics=[], dimension="segment") == []
+    assert analysis.run_asof(metrics=[], dimension="segment") == []
 
 
 def test_breakout_emits_late_for_strong_segment_suppresses_weak():
