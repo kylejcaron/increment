@@ -1045,7 +1045,13 @@ class ResultCell:
             "switchback_unit_variance_envelope",
         }
         if row is not None:
-            summary = _report_summary(row, identity)
+            sampling_state = components["sampling"][0].state
+            sequential_state = components["sequential"][0].state
+            summary = (
+                _report_summary(row, identity)
+                if sampling_state in {"available", "advisory"} or sequential_state == "available"
+                else None
+            )
         elif row_payload is not None and row_kind in typed_report_rows:
             typed_row = _restore_typed_report_row(row_kind, row_payload)
             summary = _report_summary(typed_row, identity)

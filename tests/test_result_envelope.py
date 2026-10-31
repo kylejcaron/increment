@@ -2459,6 +2459,54 @@ def test_payload_summary_is_rederived_from_retained_lift_row():
     assert restored.summary == cell.summary
 
 
+def test_prior_bound_unknown_sampling_keeps_summary_unavailable_after_roundtrips():
+    import copy
+    import json
+    import pickle
+
+    import pandas as pd
+
+    from increment import Analysis, MetricSpec
+    from increment.estimation.results import LiftEstimate
+    from increment.result_envelope import ResultCell
+    from increment.semantics.design import Randomized
+
+    rows = Analysis.from_unit_summary(
+        pd.DataFrame(
+            [
+                {
+                    "unit": f"{group}-{index}",
+                    "arm": group,
+                    "value": float(index + (group == "treatment")),
+                }
+                for group in ("control", "treatment")
+                for index in range(8)
+            ]
+        ),
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+    ).run()
+    row = rows[0]
+    assert isinstance(row, LiftEstimate)
+    row = row.model_copy(update={"prior_shrunk": True, "sampling_available": None})
+    cell = ResultCell.from_row(row)
+    assert cell.summary is None
+    restored = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+        pickle.loads(pickle.dumps(cell)),
+        copy.deepcopy(cell),
+    )
+
+    assert all(item.summary is None for item in restored)
+
+
 def test_switchback_payload_summary_keeps_display_alpha_not_procedure_alpha():
     import copy
 
