@@ -1144,7 +1144,7 @@ depends_on = [
   "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
   "increment._source_types", "increment._window", "increment.decision",
   "increment.declarations", "increment.errors",
-  "increment.estimation", "increment.query.artifact_ports", "increment.query", "increment.readouts", "increment.semantics",
+  "increment.estimation", "increment.query.artifact_ports", "increment.readouts", "increment.semantics",
   "increment.sequential_source", "increment.readouts._whole_window",
 ]
 
