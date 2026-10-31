@@ -12,7 +12,7 @@ import pickle
 import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -956,18 +956,57 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
 
 @pytest.mark.integration
 def test_exploratory_metric_families_share_one_capture():
+    from increment.evidence import EvidenceScope, evidence_provider
+    from increment.kernel.context import EvidenceExecutionContext
+    from tests.parity_harness.comparison import nested_close
+
     con = ds.duckdb_connection()
     analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    context = None
     try:
-        rows = analysis.run(
-            exploratory_metrics=["rps"],
-            decision_method=Method(name="unadjusted"),
+
+        def run_exploratory(execution_context=None):
+            with warnings.catch_warnings(record=True) as observed:
+                warnings.simplefilter("always")
+                result = analysis.run(
+                    exploratory_metrics=["rps"], _execution_context=execution_context
+                )
+            assert any(isinstance(item.message, IncrementWarning) for item in observed)
+            return result
+
+        expected = run_exploratory()
+        source = _native_source(analysis)
+        exploratory = source.exploratory_source(
+            metrics=(next(metric for metric in analysis.available_metrics if metric.name == "rps"),)
         )
+        metrics = tuple(exploratory.context.metrics)
+        context = EvidenceExecutionContext(
+            evidence_provider(source),
+            EvidenceScope(
+                metrics=metrics,
+                horizon_metrics=metrics,
+                configs=(*source.context.configs, *exploratory.context.configs),
+                snapshot=True,
+                execution=True,
+            ),
+            run_id="explicit-exploratory-family",
+            coherence="captured",
+            shared_capture=True,
+        )
+        context.open()
+        cast(Any, con).raw_sql("UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'")
+        rows = run_exploratory(context)
+        assert nested_close(_rows(rows), _rows(expected))
         assert rows.metadata is not None
         assert len(rows.metadata.captures) == 1
         assert rows.metadata.captures[0].coherence == "captured"
-        assert {"revenue", "rps"} <= {row.metric for row in rows}
+        with context.borrow() as provider:
+            assert provider is not None
+        repeated = run_exploratory(context)
+        assert nested_close(_rows(repeated), _rows(expected))
     finally:
+        if context is not None:
+            context.close()
         analysis.close()
         con.disconnect()
 
