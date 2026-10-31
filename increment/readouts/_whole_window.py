@@ -405,7 +405,24 @@ class WholeWindowReadouts:
         sequential_compliance = _sequential_compliance_requested(self._src.context, req.estimands)
         if not req.metrics and not design_summary_only and not sequential_compliance:
             from increment.breakout.estimates import LiftEstimates
+            from increment.readouts._run_acquisition import (
+                RunAcquisitionOwner,
+                RunAcquisitionRequest,
+            )
 
+            RunAcquisitionOwner.prepare(
+                RunAcquisitionRequest(
+                    source=self._src,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    metrics=(),
+                    estimands=req.estimands,
+                    value_scale=req.value_scale,
+                    request_population=req.population or "assigned",
+                    design=self._design,
+                )
+            )
             return LiftEstimates()
         if getattr(self._plan.inference, "registration", None) is not None:
             result = _as_lift_estimates(
