@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -19,6 +20,19 @@ _fixture_setup: dict[str, list[str]] = {}
 _collection_imports: dict[str, list[str]] = {}
 _collection_before: dict[str, set[str]] = {}
 _current_item: pytest.Item | None = None
+_catalog_state_key = pytest.StashKey[dict[Path, tuple[bytes, int] | None]]()
+
+
+def _catalog_sidecar_state(root: Path) -> dict[Path, tuple[bytes, int] | None]:
+    state: dict[Path, tuple[bytes, int] | None] = {}
+    for suffix in ("", ".lock"):
+        path = root / "examples" / "definitions" / f".increment-kernel-catalog.json{suffix}"
+        state[path] = (path.read_bytes(), path.stat().st_mtime_ns) if path.exists() else None
+    return state
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    session.config.stash[_catalog_state_key] = _catalog_sidecar_state(session.config.rootpath)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -112,6 +126,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     state = session.config.stash.get(tach_state_key, None)
     if state is not None and isinstance(state.handler, AffectedHandlerWithReport):
         state.handler.pytest_sessionfinish(session, exitstatus)
+    before = session.config.stash[_catalog_state_key]
+    after = _catalog_sidecar_state(session.config.rootpath)
+    changed = [str(path) for path, initial in before.items() if after[path] != initial]
+    if changed:
+        raise AssertionError(f"tests changed shared definitions catalog sidecars: {changed}")
 
 
 class AffectedHandlerWithReport(AffectedHandler):
@@ -208,9 +227,15 @@ def seeded_pre_period_con():
     return con
 
 
-@pytest.fixture(scope="session")
-def seeded_defs():
-    """Definitions PATH for `seeded_con` - Analysis loads the YAML
-    itself and does not accept a pre-loaded Definitions object.
-    """
-    return "examples/definitions"
+@pytest.fixture
+def example_definitions(tmp_path: Path) -> Path:
+    """A per-test copy so binding definitions cannot write into examples/."""
+    target = tmp_path / "example-definitions"
+    shutil.copytree(Path("examples/definitions"), target)
+    return target
+
+
+@pytest.fixture
+def seeded_defs(example_definitions: Path) -> str:
+    """Definitions path for seeded-constructor tests."""
+    return str(example_definitions)
