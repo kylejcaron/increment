@@ -73,6 +73,7 @@ class _ContractModel(CodedModel, BaseModel):
 class Scope(_ContractModel):
     view: Literal["run", "daily", "asof", "breakout", "switchback"]
     grain: Literal["total", "daily", "asof"]
+    values: bool = Field(default=False, exclude_if=lambda value: not value)
     through_day: date | None = None
     day_domain: tuple[date, ...] = ()
     population: Literal["assigned", "triggered"] = "assigned"
@@ -104,9 +105,10 @@ class Scope(_ContractModel):
             or (self.view == "breakout" and self.segment is None)
             or (bool(self.day_domain) and tuple(sorted(set(self.day_domain))) != self.day_domain)
             or (self.view != "switchback" and bool(self.metrics))
+            or (self.values and self.view not in {"daily", "asof"})
         )
         if invalid:
-            _refuse("kernel.scope.invalid", field="view/grain/through_day/segment/metrics")
+            _refuse("kernel.scope.invalid", field="view/grain/through_day/segment/metrics/values")
         return self
 
     def canonical_payload(self) -> dict[str, object]:

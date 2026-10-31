@@ -30,6 +30,68 @@ from increment.kernel.contracts import (
 )
 
 
+def test_experiment_declares_distinct_values_and_lift_views_without_changing_lift_identity():
+    from increment import Experiment, SourceReference
+    from increment import Scope as PublicScope
+
+    lift = PublicScope(view="daily", grain="daily")
+    values = PublicScope(view="daily", grain="daily", values=True)
+    asof_lift = PublicScope(view="asof", grain="asof")
+    base = Experiment(
+        experiment_id="values-and-lift",
+        design={},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(SourceReference(name="source", uri="memory://source"),),
+        scopes=(lift,),
+    )
+
+    declared = base.with_views(lift, values, asof_lift)
+    assert declared.scopes == (lift, values, asof_lift)
+    assert lift.hash() == "ca8dd0beb151c78a6ca4bc73abbae0280268479e0f33cc03d3fab34fcbedd672"
+    assert asof_lift.hash() == "1b21975ed8e30ebfa525e7945cae98190e2449b9da3bfd2a68cd387d9fedfff0"
+    assert "values" not in lift.canonical_payload()
+    assert "values" not in asof_lift.canonical_payload()
+
+    assert declared.source_refs == base.source_refs
+    assert declared.operations == {}
+    assert json.loads(declared.to_json())["operations"] == {}
+    assert declared.scopes[0].hash() == lift.hash()
+    assert declared.scopes[1].canonical_payload()["values"] is True
+    assert declared.scopes[1].hash() != lift.hash()
+    assert base.scopes == (lift,)
+    assert Experiment.from_json(declared.to_json()) == declared
+
+    legacy = json.loads(base.with_views(lift, asof_lift).to_json())
+    legacy["operations"] = {
+        lift.hash(): "run_daily",
+        asof_lift.hash(): "run_asof",
+    }
+    migrated = Experiment.from_json(json.dumps(legacy))
+    assert tuple(scope.values for scope in migrated.scopes) == (True, True)
+    assert migrated.operations == {}
+
+    for scope in (
+        PublicScope(view="run", grain="total"),
+        PublicScope(
+            view="breakout",
+            grain="total",
+            segment=({"property": "country", "source": None},),
+        ),
+        PublicScope(view="switchback", grain="total"),
+    ):
+        with pytest.raises(CodedError) as raised:
+            PublicScope.model_validate({**scope.canonical_payload(), "values": True})
+        assert raised.value.code == "kernel.scope.invalid"
+
+    with pytest.raises(CodedError) as raised:
+        base.with_views()
+    assert raised.value.code == "kernel.request.invalid"
+    with pytest.raises(CodedError) as raised:
+        base.with_views(lift, lift)
+    assert raised.value.code == "kernel.request.invalid"
+
+
 def test_daily_day_and_cumulative_through_day_have_different_scope_hashes():
     day = date(2026, 1, 5)
     daily = Scope(view="daily", grain="daily", through_day=day)

@@ -271,6 +271,17 @@ class Experiment:
             ): ImplementationRef.from_payload(item["implementation"])
             for item in payload.get("implementation_refs", ())
         }
+        scopes = tuple(Scope.from_payload(item) for item in payload["scopes"])
+        operations = dict(payload.get("operations", {}))
+        migrated_scopes: list[Scope] = []
+        for scope in scopes:
+            legacy_hash = scope.hash()
+            operation = operations.get(legacy_hash)
+            expected = {"daily": "run_daily", "asof": "run_asof"}.get(scope.view)
+            if expected is not None and operation == expected:
+                scope = scope.model_copy(update={"values": True})
+                operations.pop(legacy_hash, None)
+            migrated_scopes.append(scope)
         return cls(
             experiment_id=str(payload["experiment_id"]),
             design=payload["design"],
@@ -279,13 +290,19 @@ class Experiment:
             source_refs=tuple(
                 SourceReference.from_payload(item) for item in payload["source_refs"]
             ),
-            scopes=tuple(Scope.from_payload(item) for item in payload["scopes"]),
+            scopes=tuple(migrated_scopes),
             implementation_refs=implementations,
             package_version=str(payload["package_version"]),
             analysis_context=payload.get("analysis_context", {}),
-            operations=payload.get("operations", {}),
+            operations=operations,
             request_options=payload.get("request_options", {}),
         )
+
+    def with_views(self, *scopes: Scope) -> Experiment:
+        """Return this declaration with the selected scopes in declared order."""
+        if not scopes or len({scope.hash() for scope in scopes}) != len(scopes):
+            _refuse("kernel.request.invalid", field="empty or duplicate experiment scopes")
+        return dataclasses.replace(self, scopes=tuple(scopes), operations={})
 
     def hash(self) -> str:
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()

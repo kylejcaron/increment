@@ -14,6 +14,41 @@ factory; experiments containing one remain in-memory-only.
 scopes, sharing one physical evidence capture. `views=(scope, ...)` selects
 declared scopes by their hashes; execution follows declaration order, not
 selection order. Empty, duplicate or undeclared selections refuse before reads.
+
+Declare the result views on the experiment with `with_views`; it returns a new
+experiment and preserves the supplied view order:
+
+```python
+import pandas as pd
+from increment import Scope, from_frame
+
+frame = pd.DataFrame(
+    {
+        "unit": ["u1", "u2", "u3", "u4"],
+        "arm": ["control", "treatment", "control", "treatment"],
+        "day": ["2025-01-01"] * 4,
+        "value": [1.0, 2.0, 3.0, 4.0],
+    }
+)
+experiment, resolver = from_frame(
+    frame,
+    shape="panel",
+    unit="unit",
+    group="arm",
+    date="day",
+    control="control",
+    metrics={"value": "mean"},
+    observation_end="2025-01-02",
+)
+daily_lift = Scope(view="daily", grain="daily")
+daily_values = Scope(view="daily", grain="daily", values=True)
+experiment = experiment.with_views(daily_lift, daily_values)
+```
+
+`values=True` requests per-arm descriptive values for daily or as-of views.
+Without it, those views request lift. Values and lift at the same time
+coordinates are separate scopes; the default lift scope keeps its existing
+canonical identity. Run, breakout and switchback scopes do not support values.
 If an in-memory learner configuration cannot be serialized, `RunResult`
 remains usable in memory, while storing or serializing it refuses with
 `wire.procedure.runtime_method`.
@@ -189,7 +224,9 @@ definitions = Path("definitions")
 shutil.copytree(Path(seed.__file__).parent / "definitions", definitions)
 con = ibis.duckdb.connect()
 seed.seed_event_log(con, with_pre_period=True)
-experiment, resolver = from_definitions("new_onboarding_v2", definitions, con, store="always")
+experiment, resolver = from_definitions(
+    definitions, con, experiment_name="new_onboarding_v2", store="always"
+)
 with resolver:
     result = run(
         experiment,

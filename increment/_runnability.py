@@ -55,7 +55,8 @@ _SCOPE_OPERATIONS = {
     "asof": ("run_asof_lift", "run_asof"),
     "breakout": ("run_breakout",),
 }
-_VALUE_OPERATIONS = frozenset({"run_daily", "run_asof"})
+_VALUE_OPERATION_BY_VIEW = {"daily": "run_daily", "asof": "run_asof"}
+_VALUE_OPERATIONS = frozenset(_VALUE_OPERATION_BY_VIEW.values())
 
 _SCOPE_FAMILY_MISMATCH = RefusalSpec(
     "kernel.scope.family_mismatch",
@@ -70,6 +71,8 @@ _SCOPE_FAMILY_MISMATCH = RefusalSpec(
 
 def scope_operation(experiment: Any, scope: Any) -> str:
     """Resolve a declared operation with the execution default for its scope."""
+    if scope.values:
+        return _VALUE_OPERATION_BY_VIEW[scope.view]
     return experiment.operations.get(scope.hash(), _SCOPE_OPERATIONS[scope.view][0])
 
 
