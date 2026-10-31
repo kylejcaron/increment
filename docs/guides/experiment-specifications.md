@@ -214,25 +214,61 @@ does not close the warehouse connection you supplied:
 
 ```python
 from pathlib import Path
-import shutil
+from tempfile import TemporaryDirectory
 
 import ibis
-import examples._seed as seed
-from increment import Method, from_definitions, run
+import polars as pl
 
-definitions = Path("definitions")
-shutil.copytree(Path(seed.__file__).parent / "definitions", definitions)
+from increment import from_definitions, run
+
+rows = [
+    {
+        "user_id": f"u{index}",
+        "group_id": "control" if index < 4 else "treatment",
+        "experiment_id": "demo",
+        "ts": f"2025-01-01 12:{event:02}:00",
+        "event": kind,
+        "revenue": float(index + 1) if kind == "purchase" else None,
+    }
+    for index in range(8)
+    for event, kind in ((0, "page_view"), (1, "purchase"))
+]
 con = ibis.duckdb.connect()
-seed.seed_event_log(con, with_pre_period=True)
-experiment, resolver = from_definitions(
-    definitions, con, experiment_name="new_onboarding_v2", store="always"
-)
-with resolver:
-    result = run(
-        experiment,
-        resolver,
-        analysis_options={"decision_method": Method(name="cuped", variance_reduction="cuped")},
+con.create_table("demo_events", pl.DataFrame(rows).to_arrow())
+
+with TemporaryDirectory() as definitions:
+    Path(definitions, "demo.yaml").write_text(
+        """\
+dialect: duckdb
+fact_sources:
+  - name: demo_events
+    sql: SELECT * FROM demo_events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: page_view, column: null}
+      - {name: purchase, column: revenue}
+exposures:
+  - {name: enrolled, fact: page_view}
+metrics:
+  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 1}
+experiments:
+  - name: demo
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01
+    end: 2025-01-01
+    observation_end: 2025-01-02
+    control_group: control
+    plan: {primary: revenue}
+""",
+        encoding="utf-8",
     )
+    experiment, resolver = from_definitions(
+        definitions, con, experiment_name="demo", store="always"
+    )
+    with resolver:
+        result = run(experiment, resolver)
 assert result
 assert con.raw_sql("SELECT 1").fetchone()[0] == 1
 con.disconnect()

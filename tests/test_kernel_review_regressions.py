@@ -1646,7 +1646,9 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
         ("asof", "asof", "run_asof"),
     ],
 )
-def test_value_only_day_axis_builder_operations_return_run_results(view, grain, operation):
+def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scopes(
+    view, grain, operation
+):
     frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
     experiment, resolver = from_frame(
         frame,
@@ -1663,15 +1665,55 @@ def test_value_only_day_axis_builder_operations_return_run_results(view, grain, 
         scopes=(scope,),
         operations={scope.hash(): operation},
     )
+    original_hashes = (
+        requested.hash(),
+        requested.analysis_spec_hash,
+        requested.execution_identity_hash,
+    )
+    requested_scope = requested.scopes[0]
+    restored = type(requested).from_json(requested.to_json())
 
-    result = run(requested, resolver)
+    assert requested_scope.values is True
+    assert (
+        restored.hash(),
+        restored.analysis_spec_hash,
+        restored.execution_identity_hash,
+    ) == original_hashes
+
+    result = run(restored, resolver, views=(requested_scope,))
 
     assert result.cells
     assert all(cell.identity.scope.view == view for cell in result.cells)
+    assert all(cell.identity.scope.values for cell in result.cells)
     assert all(cell.identity.key.ds is not None for cell in result.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in result.cells)
     assert all(cell.identity.estimator_id is None for cell in result.cells)
     assert result.decisions.run_id == result.run.run_id
+    returned_scope = result.cells[0].identity.scope.model_copy(
+        update={"through_day": None, "time_basis": "calendar"}
+    )
+    selected = run(restored.with_views(returned_scope), resolver)
+    assert selected.cells
+    assert all(cell.identity.scope.values for cell in selected.cells)
+    assert all(cell.identity.key.value_scale == "absolute" for cell in selected.cells)
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    direct_values = getattr(analysis, f"run_{view}")()
+    direct_cell = direct_values.as_cells()[0]
+    assert direct_cell.identity.scope.values is True
+    direct_scope = direct_cell.identity.scope.model_copy(
+        update={"through_day": None, "time_basis": "calendar"}
+    )
+    declarative = run(restored.with_views(direct_scope), resolver)
+    assert declarative.cells
+    assert all(cell.identity.scope.values for cell in declarative.cells)
+    assert all(cell.identity.key.value_scale == "absolute" for cell in declarative.cells)
 
 
 def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path):

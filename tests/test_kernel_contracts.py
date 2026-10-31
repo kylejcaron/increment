@@ -252,6 +252,33 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
     assert raised.value.code == "kernel.request.invalid"
 
 
+def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():
+    from increment import Experiment, SourceReference
+
+    selector = Scope(
+        view="breakout",
+        grain="total",
+        segment=({"property": "country", "source": None},),
+    )
+    experiment = Experiment(
+        experiment_id="unknown-breakout",
+        design={},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(SourceReference(name="events", uri="frame://events"),),
+        scopes=(selector,),
+    )
+
+    inventory, requests = experiment.compile()
+
+    expected = (("country", None),)
+    assert tuple((item.property, item.source) for item in inventory.breakouts) == expected
+    request_breakouts = cast(
+        tuple[Mapping[str, object], ...], requests[0].requests[0].fields["breakouts"]
+    )
+    assert tuple((item["property"], item["source"]) for item in request_breakouts) == expected
+
+
 def test_temporal_scopes_allow_multiple_sources_of_one_breakout_only():
     Scope(
         view="daily",

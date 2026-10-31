@@ -166,6 +166,7 @@ def declared_breakouts(
         return declarations if scope.view == "breakout" else ()
 
     selected: set[BreakoutIdentity] = set()
+    unresolved: list[BreakoutIdentity] = []
     for selector in scope.segment:
         matches = tuple(
             identity
@@ -179,6 +180,7 @@ def declared_breakouts(
                     "kernel.request.invalid",
                     field=f"unknown breakout selection {selector.property!r}",
                 )
+            unresolved.append(selector)
             continue
         if any(identity in selected for identity in matches):
             _refuse(
@@ -186,7 +188,7 @@ def declared_breakouts(
                 field=f"duplicate breakout selection {selector.property!r}",
             )
         selected.update(matches)
-    return tuple(identity for identity in declarations if identity in selected)
+    return (*tuple(identity for identity in declarations if identity in selected), *unresolved)
 
 
 class ImplementationRef(_ContractModel):

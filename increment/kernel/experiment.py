@@ -202,6 +202,20 @@ class Experiment:
     request_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        scopes = tuple(self.scopes)
+        operations = dict(self.operations)
+        normalized_scopes = []
+        for scope in scopes:
+            legacy_hash = scope.hash()
+            operation = operations.get(legacy_hash)
+            expected = {"daily": "run_daily", "asof": "run_asof"}.get(scope.view)
+            if expected is not None and operation == expected:
+                scope = scope.model_copy(update={"values": True})
+                operations.pop(legacy_hash, None)
+            normalized_scopes.append(scope)
+        scopes = tuple(normalized_scopes)
+        object.__setattr__(self, "scopes", scopes)
+        object.__setattr__(self, "operations", MappingProxyType(operations))
         if "capture" in self.request_options:
             _refuse("kernel.request.capture_not_supported")
         if "population" in self.request_options:
@@ -211,18 +225,16 @@ class Experiment:
         names = tuple(source.name for source in self.source_refs)
         if len(set(names)) != len(names):
             _refuse("kernel.request.invalid", field="duplicate source reference names")
-        scope_hashes = tuple(scope.hash() for scope in self.scopes)
+        scope_hashes = tuple(scope.hash() for scope in scopes)
         if len(set(scope_hashes)) != len(scope_hashes):
             _refuse("kernel.request.invalid", field="duplicate experiment scopes")
         object.__setattr__(self, "design", _freeze(self.design))
         object.__setattr__(self, "metrics", _freeze(self.metrics))
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
-        object.__setattr__(self, "scopes", tuple(self.scopes))
         object.__setattr__(
             self, "implementation_refs", MappingProxyType(dict(self.implementation_refs))
         )
         object.__setattr__(self, "analysis_context", _freeze(self.analysis_context))
-        object.__setattr__(self, "operations", MappingProxyType(dict(self.operations)))
         object.__setattr__(self, "request_options", _freeze(self.request_options))
 
     def canonical_payload(self) -> dict[str, object]:
