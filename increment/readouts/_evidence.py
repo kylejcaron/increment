@@ -877,10 +877,8 @@ class _BreakoutScopedProvider:
                 (f"{self.identity.source}:{self.identity.property}",),
                 route="use the breakout identity bound to this slice",
             )
-        scope = EvidenceScope(
-            metrics=request.metrics,
-            population=request.population,
-            grain=request.grain,
+        scope = replace(
+            request,
             breakouts=tuple(
                 dict.fromkeys(
                     (
@@ -894,10 +892,6 @@ class _BreakoutScopedProvider:
                 )
             ),
             configs=request.configs if request.configs is not None else self.configs,
-            uptake_facts=request.uptake_facts,
-            snapshot=request.snapshot,
-            execution=request.execution,
-            include_breakouts=request.include_breakouts,
         )
         scoped = self.provider.scope(scope)
 
@@ -929,7 +923,9 @@ def _load_borrowed_breakout_slices(
     fallback_source: EvidenceSource | None,
 ) -> BreakoutSlices:
     execution_context.validate_breakouts(request.breakouts)
-    with execution_context.borrow() as provider:
+    with execution_context.borrow(
+        source=fallback_source, metrics=request.metrics, configs=request.configs
+    ) as provider:
         scoped_source = _builtin_source(provider)
         available_metrics = {metric.name for metric in scoped_source.context.metrics}
         exploratory_metrics = tuple(
@@ -1187,6 +1183,7 @@ def _rows(
     req: DayAxisRequest,
     *,
     validate_daily_readout: bool = False,
+    require_uptake: bool | None = None,
 ) -> Iterator[DayAxisSlice]:
     by = req.by or ((req.dimension,) if req.dimension is not None else ())
     for view, metrics in _groups(req):
@@ -1209,10 +1206,13 @@ def _rows(
                 continue
             if validate_daily_readout:
                 _validate_daily_readout(src, req, metric)
+            kwargs = _metric_kwargs(metric, req)
+            if require_uptake is not None:
+                kwargs["require_uptake"] = require_uptake
             rows.extend(
                 cast(
                     "Iterable[dict[str, Any]]",
-                    _builtin_source(src).moments(metric, by=by, **_metric_kwargs(metric, req)),
+                    _builtin_source(src).moments(metric, by=by, **kwargs),
                 )
             )
         yield DayAxisSlice(rows, metrics, view, req.dimension, None)
@@ -1369,6 +1369,15 @@ class _NativeDayAxis:
         self.experiment = experiment
 
     def slices(self, req: DayAxisRequest) -> Iterator[DayAxisSlice]:
+        require_uptake = (
+            req.estimands is not None and any(estimand != "itt" for estimand in req.estimands)
+        ) or (req.caller == "run_asof_lift" and req.estimands is None)
+        if req.completed_windows_only and req.grain == "asof":
+            from increment.semantics.design import Encouragement
+
+            require_uptake = require_uptake or isinstance(self.src.context.design, Encouragement)
+        native_day_source = declared_evidence(self.src).kind != "artifact"
+        uptake_requirement = require_uptake if native_day_source else None
         if req.dimension is not None:
             matching = [
                 breakout
@@ -1380,15 +1389,20 @@ class _NativeDayAxis:
                     rows: list[dict[str, Any]] = []
                     source_name: str | None = None
                     for index, metric in enumerate(metrics):
+                        kwargs = _metric_kwargs(metric, req)
+                        if uptake_requirement is not None:
+                            kwargs["require_uptake"] = uptake_requirement
                         result = cast(Any, self.src).breakout_moments(
-                            metric, breakout, **_metric_kwargs(metric, req)
+                            metric,
+                            breakout,
+                            **kwargs,
                         )
                         rows.extend(result.rows)
                         if index == 0:
                             source_name = result.source_name
                     yield DayAxisSlice(rows, metrics, view, req.dimension, source_name)
             return
-        yield from _rows(self.src, req)
+        yield from _rows(self.src, req, require_uptake=uptake_requirement)
 
 
 def load_day_axis_rows(
@@ -1587,6 +1601,10 @@ def load_builtin_day_moments(src: EvidenceSource, request: MomentsRequest) -> Mo
 def _load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisRows:
     require_request_evidence(src, request)
     route = day_axis_route(src)
+    if route == NATIVE_ROUTE and request.experiment is None:
+        experiment = _trigger_experiment(src)
+        if experiment is not None:
+            request = replace(request, experiment=experiment)
     if route == NATIVE_ROUTE and (
         request.experiment is not None
         or request.caller in ("run_daily_lift", "run_asof_lift")

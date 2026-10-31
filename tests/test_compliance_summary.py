@@ -34,6 +34,37 @@ from tests.analysis_factory import _moment_source
 from tests.warning_codes import warning_codes
 
 
+@pytest.mark.integration
+def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_path):
+    import json
+    from dataclasses import replace
+
+    from increment import run
+    from increment.builders import from_definitions
+    from increment.kernel.contracts import Scope
+    from tests.analysis_factory import definitions_inputs
+
+    analysis, con = _warehouse_compliance_analysis(
+        "retention", unusable_outcome=True, separate_outcome_source=True
+    )
+    definitions, _, _, _, _ = definitions_inputs(analysis)
+    path = tmp_path / "definitions.json"
+    path.write_text(json.dumps(definitions.model_dump(mode="json")), encoding="utf-8")
+    experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")
+    try:
+        scopes = (Scope(view="run", grain="total"), Scope(view="asof", grain="asof"))
+        result = run(
+            replace(experiment, scopes=scopes),
+            resolver,
+            analysis_options={"estimands": ["compliance"]},
+        )
+        assert {cell.identity.scope.view for cell in result.cells} == {"run", "asof"}
+        assert {cell.identity.key.estimand for cell in result.cells} == {"compliance"}
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def _compliance(source, design, **kwargs):
     return cast(
         ComplianceSummary,
@@ -398,6 +429,13 @@ def test_compliance_only_ignores_unusable_outcome_in_separate_shared_sql_source(
         rows = lift_rows(analysis.run(metrics=["revenue"], estimands=("compliance",)))
         assert [(row.metric, row.estimand) for row in rows] == [("uptake", "compliance")]
         assert rows[0].require_lift().value == pytest.approx(0.5)
+        readout_rows = readouts.run(
+            _moment_source(analysis), metrics=["revenue"], estimands=("compliance",)
+        )
+        assert [(row.metric, row.estimand) for row in readout_rows] == [("uptake", "compliance")]
+        day_rows = analysis.run_daily_lift(estimands=("compliance",))
+        assert day_rows
+        assert {(row.metric, row.estimand) for row in day_rows} == {("uptake", "compliance")}
     finally:
         analysis.close()
         con.disconnect()

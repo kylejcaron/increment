@@ -280,17 +280,17 @@ def _validated_envelope(run: RunRecord, handle: RunHandlePort) -> Any:
 def _missing_decision_roles(
     metadata: Any, cells: tuple[Any, ...], procedures: Mapping[str, Any]
 ) -> set[str]:
-    whole_window_run = any(
-        cell.identity.key.estimand != "compliance"
-        and (cell.identity.scope is None or cell.identity.scope.view in {"run", "switchback"})
+    whole_window_sources = {
+        cell.identity.source_snapshot_id
         for cell in cells
-    )
-    if not whole_window_run or metadata is None or metadata.scope is None:
+        if cell.identity.key.method_role == "decision"
+        and cell.identity.key.estimand != "compliance"
+        and (cell.identity.scope is None or cell.identity.scope.view in {"run", "switchback"})
+    }
+    if not whole_window_sources or metadata is None or metadata.scope is None:
         return set()
 
-    source_ids = set(metadata.scope.by_source) or {
-        cell.identity.source_snapshot_id for cell in cells
-    }
+    source_ids = whole_window_sources
     decision_roles = {
         metric: str(getattr(procedure.role, "value", procedure.role))
         for metric, procedure in procedures.items()
@@ -594,6 +594,8 @@ def decide(  # noqa: PLR0915
         cell.identity.hash()
         for cell in envelope.cells
         if cell.identity.key.method_role == "decision"
+        and cell.identity.key.estimand != "compliance"
+        and (cell.identity.scope is None or cell.identity.scope.view in {"run", "switchback"})
     }
     primary = [
         verdict

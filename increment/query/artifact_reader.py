@@ -998,9 +998,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
     def capture_requirements(self, requests: Sequence[Any]) -> Any:
         """Include the readouts' resolved configurations in the artifact scope."""
 
-        metrics_by_name = {
-            metric.name: metric for request in requests for metric in request.metrics
-        }
+        metrics = tuple(dict.fromkeys(metric for request in requests for metric in request.metrics))
         configs = list(
             dict.fromkeys(config for request in requests for config in request.configs or ())
         )
@@ -1037,8 +1035,20 @@ class ArtifactMomentSource(SequentialSourceMixin):
             ):
                 if design.uptake.fact not in uptake_facts:
                     uptake_facts.append(design.uptake.fact)
+        horizon_metrics = tuple(
+            dict.fromkeys(
+                metric
+                for request in requests
+                for metric in (
+                    request.horizon_metrics
+                    if request.horizon_metrics is not None
+                    else tuple(self.context.metrics)
+                )
+            )
+        )
         return EvidenceScope(
-            metrics=tuple(metrics_by_name.values()),
+            metrics=metrics,
+            horizon_metrics=horizon_metrics,
             population=requests[0].population if requests else "assigned",
             populations=tuple(
                 sorted({population for request in requests for population in request.populations})

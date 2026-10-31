@@ -181,6 +181,35 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
         assert actual.require_lift().log_se == pytest.approx(
             expected.require_lift().log_se, rel=1e-10
         )
+
+        import yaml
+
+        from increment.readouts import run_scoped
+
+        definitions = yaml.safe_load(path.read_text())
+        definitions["experiments"][0]["breakouts"] = [{"property": "segment", "source": "events"}]
+        path.write_text(yaml.safe_dump(definitions))
+        with Analysis.from_definitions("cov_test", path, con) as native:
+            (separate_run,) = native.run()
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"fetch_arrow_table\(\) is deprecated",
+                    category=DeprecationWarning,
+                )
+                scoped = run_scoped(
+                    native,
+                    readouts=("run", "breakout"),
+                    breakout_decision_method=Method.unadjusted(),
+                )
+            (shared_run,) = scoped["run"]
+            assert isinstance(shared_run, LiftEstimate) and isinstance(separate_run, LiftEstimate)
+            assert shared_run.require_lift().value == pytest.approx(
+                separate_run.require_lift().value, rel=1e-10
+            )
+            assert shared_run.require_lift().log_se == pytest.approx(
+                separate_run.require_lift().log_se, rel=1e-10
+            )
     finally:
         con.disconnect()
 

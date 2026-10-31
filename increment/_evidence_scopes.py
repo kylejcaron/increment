@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from types import MappingProxyType
 from typing import Any, cast
 
@@ -58,16 +59,34 @@ def _scope_covariate_streams(
 
 def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope]) -> EvidenceScope:
     """Ask a built-in loader to derive its capture from selected readout requests."""
-    metrics_by_name = {metric.name: metric for request in requests for metric in request.metrics}
+    metrics = tuple(dict.fromkeys(metric for request in requests for metric in request.metrics))
     configs_list = []
     for request in requests:
         for config in request.configs or ():
             if config not in configs_list:
                 configs_list.append(config)
-    metrics = tuple(metrics_by_name.values())
     configs = tuple(configs_list)
     breakouts = [item for request in requests for item in request.breakouts]
     source = loader_source(src)
+    horizon_metrics = (
+        tuple(
+            dict.fromkeys(
+                metric
+                for request in requests
+                for metric in (
+                    request.horizon_metrics
+                    if request.horizon_metrics is not None
+                    else tuple(source.context.metrics)
+                )
+            )
+        )
+        if not is_custom_source(src)
+        else tuple(
+            dict.fromkeys(
+                metric for request in requests for metric in request.horizon_metrics or ()
+            )
+        )
+    )
     experiment = getattr(source, "_experiment", None) or getattr(
         source, "artifact_experiment", None
     )
@@ -109,6 +128,7 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
                 uptake_facts.append(uptake.fact)
     return EvidenceScope(
         metrics=metrics,
+        horizon_metrics=horizon_metrics,
         population=requests[0].population if requests else "assigned",
         populations=tuple(
             sorted({population for request in requests for population in request.populations})
@@ -167,6 +187,12 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
                 "configs": scope.configs,
                 "uptake_facts": scope.uptake_facts,
             }
+            if "exploratory_source" in declared_evidence(source).operations:
+                snapshot_options["horizon_metrics"] = (
+                    tuple(source.context.metrics)
+                    if scope.horizon_metrics is None
+                    else scope.horizon_metrics
+                )
             if (
                 scope.checkpoint_only
                 and scope.execution
@@ -196,21 +222,7 @@ def load_evidence_scope(
     require_request_evidence(src, request)
     scope = request
     if not is_custom_source(src) and request.snapshot and request.population == "triggered":
-        scope = EvidenceScope(
-            metrics=request.metrics,
-            population="assigned",
-            populations=request.populations,
-            grain=request.grain,
-            dimension=request.dimension,
-            estimands=request.estimands,
-            breakouts=request.breakouts,
-            configs=request.configs,
-            uptake_facts=request.uptake_facts,
-            snapshot=request.snapshot,
-            execution=request.execution,
-            include_breakouts=request.include_breakouts,
-            assignment_requests=request.assignment_requests,
-        )
+        scope = replace(request, population="assigned")
 
     evidence = declared_evidence(src)
     capture_status = (

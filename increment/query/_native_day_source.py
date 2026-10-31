@@ -123,13 +123,9 @@ class _DaySource:
     retention, through `asof_group_summary` off `build_asof_panel`'s full
     tuple. At either grain, quantile metrics have no moments representation,
     and winsorized metrics cannot apply their whole-window transformation,
-    so both are refused before dispatch. That tuple's uptake fields are
-    populated only when `self._design` is an `Encouragement`;
-    `build_asof_panel` resolves the uptake fact unconditionally whenever
-    that's true, so a caller
-    that ever sets an `Encouragement` design would make
-    `grain="daily"` depend on that resolution too, even though it
-    discards the result.
+    so both are refused before dispatch. Uptake panels are built only when the
+    typed readout operation requests an uptake-dependent estimand; daily/value
+    moments and ITT-only reads never require the uptake fact.
     """
 
     capabilities: frozenset[Grain] = frozenset({"daily", "asof"})
@@ -285,6 +281,7 @@ class _DaySource:
         *,
         dimension: str | None,
         include_covariate: bool,
+        require_uptake: bool = False,
         operation: str,
     ) -> ir.Table:
         """Run parent preflights, then start one lazy day-axis reduction."""
@@ -292,7 +289,7 @@ class _DaySource:
             (metric,),
             dimension=dimension,
             include_covariate=include_covariate,
-            require_uptake=True,
+            require_uptake=require_uptake,
             operation=operation,
         )
         if not self._ready:
@@ -407,7 +404,10 @@ class _DaySource:
         by: Sequence[str] = (),
         completed_windows_only: bool = False,
         include_covariate: bool = False,
+        require_uptake: bool | None = None,
     ) -> list[dict[str, Any]]:
+        if require_uptake is None:
+            require_uptake = grain == "asof"
         _refuse_unsupported_day_metric(metric, operation="moments", grain=grain)
         if grain not in self.capabilities:
             from increment._evidence_refusals import require_evidence
@@ -430,6 +430,7 @@ class _DaySource:
             metric,
             dimension=None,
             include_covariate=include_covariate,
+            require_uptake=require_uptake,
             operation="moments",
         )
 
@@ -445,7 +446,7 @@ class _DaySource:
                 exposures,
                 metric,
                 include_covariate,
-                include_uptake_horizon=True,
+                include_uptake_horizon=require_uptake,
                 completed_windows_only=completed_windows_only,
             )
             asof = asof_group_summary(
@@ -500,12 +501,15 @@ class _DaySource:
         grain: Grain = "daily",
         completed_windows_only: bool = False,
         include_covariate: bool = False,
+        require_uptake: bool | None = None,
     ) -> DimensionedDayEvidence:
         """One declared breakout's dimensioned daily/as-of evidence.
 
         The result carries only the resolved source name and materialized rows;
         it never exposes the definitions-layer ``FactSource`` recipe.
         """
+        if require_uptake is None:
+            require_uptake = grain == "asof"
         _refuse_unsupported_day_metric(metric, operation="breakout_moments", grain=grain)
         if grain not in self.capabilities:
             from increment._evidence_refusals import require_evidence
@@ -517,6 +521,7 @@ class _DaySource:
             metric,
             dimension=breakout.property,
             include_covariate=include_covariate,
+            require_uptake=require_uptake,
             operation="breakout_moments",
         )
         properties_table = self._breakout_properties(fs, breakout.property, exposures)
@@ -533,7 +538,7 @@ class _DaySource:
                 exposures,
                 metric,
                 include_covariate,
-                include_uptake_horizon=True,
+                include_uptake_horizon=require_uptake,
                 completed_windows_only=completed_windows_only,
             )
             dim_panel = join_breakout_dimension(panel, properties_table, by)

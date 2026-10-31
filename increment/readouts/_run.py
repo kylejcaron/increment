@@ -4,10 +4,9 @@ import math
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset, effective_methods
-from increment._evidence_types import EvidenceScope, MetricEvidence, MetricEvidenceRequest
+from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
-from increment._source_types import is_custom_source
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.declarations import Method
 from increment.estimation.results import LiftEstimate
@@ -30,7 +29,6 @@ from increment.readouts._evidence import (
     _builtin_source,
     acquire_observational_inputs,
     artifact_provenance,
-    has_verified_sequential_checkpoint,
     prior_exclusions,
 )
 from increment.readouts._metric_rows import load_metric_evidence
@@ -41,7 +39,8 @@ from increment.readouts._randomized import (
     _estimate_randomized_secondary_family,
 )
 from increment.readouts._randomized_scope import _scoped_randomized_results
-from increment.readouts._requests import _design_compliance_only, _prepare_run_request
+from increment.readouts._requests import _design_compliance_only
+from increment.readouts._run_acquisition import RunAcquisitionOwner, RunAcquisitionRequest
 from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
@@ -130,21 +129,21 @@ def run(
     falls back to its own declared value, then the design default.
     """
     design = _require_design(src, "run")
-    selected, configs = _prepare_run_request(
-        src,
-        decision_method=decision_method,
-        sensitivity_methods=sensitivity_methods,
-        prior=prior,
-        metrics=metrics,
-        by=by,
-        estimands=estimands,
-        value_scale=value_scale,
-        population=_population,
+    prepared = RunAcquisitionOwner.prepare(
+        RunAcquisitionRequest(
+            source=src,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
+            by=by,
+            estimands=estimands,
+            value_scale=value_scale,
+            request_population=_population,
+            design=design,
+        )
     )
-    # Snapshot validation is pure and must refuse non-portable learner factories
-    # before any source snapshot or evidence read begins.
-    for config in configs:
-        _config_snapshot(config, design)
+    selected, configs = prepared.selected, prepared.configs
     if design.mechanism == "observational" and not isinstance(
         src.context.plan.inference, SEQUENTIAL_POLICIES
     ):
@@ -155,10 +154,9 @@ def run(
             _validate_adjustment_methods(_runtime_methods(config, design))
 
     # Raw frames and method-scoped covariates share one capture across the
-    # selected metrics, including their common observation horizon. An empty
-    # selection reads nothing. Request validation is complete before capture.
-    design_summary_only = _design_compliance_only(src.context, estimands)
-    if not selected and not design_summary_only:
+    # selected metrics, including their common observation horizon.
+    # Request validation is complete before capture.
+    if not selected and not prepared.scope.execution:
         return _as_collection(
             _run_prepared(
                 _builtin_source(src),
@@ -174,94 +172,45 @@ def run(
         )
     from uuid import uuid4
 
-    from increment.kernel.context import EvidenceExecutionContext
-    from increment.kernel.contracts import _refuse
-    from increment.readouts._provider import native_scope_provider
+    def execute(context: EvidenceExecutionContext) -> LiftEstimates:
+        context.validate_observational_streams(src, design)
+        with context.borrow(source=src, metrics=selected, configs=configs) as scoped:
+            rows = _run_prepared(
+                _builtin_source(scoped),
+                selected,
+                configs,
+                prior=prior,
+                by=by,
+                estimands=estimands,
+                value_scale=value_scale,
+                population=_population,
+                scope_active=True,
+                snapshot_source=src,
+            )
+        return _as_collection(rows)
 
     if execution_context is None:
-        sequential = isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES)
-        needs_live_evidence = (bool(selected) or design_summary_only) and not sequential
-        needs_snapshot = sequential or (
-            needs_live_evidence
-            and (
-                design.mechanism == "observational"
-                or (
-                    not design_summary_only
-                    and any(
-                        method.variance_reduction in ("cuped", "cuped_multicovariate")
-                        for config in configs
-                        for method in effective_methods(config, design=design)
-                    )
-                )
-                or any(
-                    getattr(getattr(metric, "winsorization", None), "has_percentile", False)
-                    for metric in selected
-                )
-            )
-        )
-        uptake = getattr(design, "uptake", None)
-        capture_all_sequential_family = sequential and not design_summary_only
-        scope_metrics = (
-            tuple(src.context.metrics) if capture_all_sequential_family else tuple(selected)
-        )
-        scope_configs = (
-            tuple(src.context.configs) if capture_all_sequential_family else tuple(configs)
-        )
-        checkpoint_only = (
-            sequential
-            and not design_summary_only
-            and bool(selected)
-            and has_verified_sequential_checkpoint(src)
-        )
-        scope = EvidenceScope(
-            metrics=scope_metrics,
-            population=_population,
-            configs=scope_configs,
-            uptake_facts=() if uptake is None else (uptake.fact,),
-            snapshot=needs_snapshot,
-            execution=bool(selected) or design_summary_only,
-            checkpoint_only=checkpoint_only,
-        )
-        context = EvidenceExecutionContext(
-            src if is_custom_source(src) else native_scope_provider(src),
-            scope,
+        context, result = RunAcquisitionOwner.execute(
+            src,
+            (prepared,),
             run_id=uuid4().hex,
             coherence=coherence,
+            shared_capture=False,
+            executor=lambda owner: (owner, execute(owner)),
         )
-        manager = context.evidence_scope()
     else:
         context = execution_context
-        if context.requested_coherence != coherence:
-            _refuse("kernel.request.invalid", field="coherence")
+        context.validate_requested_coherence(coherence)
         context.validate_request(src, selected, configs, population=_population)
         uptake = getattr(design, "uptake", None)
         if uptake is not None and (
             estimands is None or {"compliance", "late"}.intersection(estimands)
         ):
-            uptake_fact = uptake.fact
-            if uptake_fact not in context.scope.uptake_facts:
-                _refuse(
-                    "kernel.context.undeclared_stream",
-                    stream=f"fact:{uptake_fact}",
-                )
-        manager = context.borrow()
-    with manager as scoped:
-        context.validate_observational_streams(src, design)
-        rows = _run_prepared(
-            _builtin_source(scoped),
-            selected,
-            configs,
-            prior=prior,
-            by=by,
-            estimands=estimands,
-            value_scale=value_scale,
-            population=_population,
-            scope_active=True,
-            snapshot_source=src,
-        )
-    result = _as_collection(rows)
+            context.validate_uptake_fact(uptake.fact)
+        result = execute(context)
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
+        from increment.estimation.readout_types import ReadoutCapture
 
         result._metadata = result.metadata.model_copy(
             update={
@@ -269,6 +218,15 @@ def run(
                     None if "provider" in context.effective_modes.values() else context.coherence
                 ),
                 "effective_modes": _FrozenMapping(context.effective_modes),
+                "captures": (
+                    ReadoutCapture(
+                        snapshot_id=context.run_id,
+                        coherence=context.coherence,
+                        effective_modes=context.effective_modes,
+                    ),
+                )
+                if context.shared_capture
+                else result.metadata.captures,
             }
         )
     return result

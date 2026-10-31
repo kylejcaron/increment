@@ -1427,6 +1427,68 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
         ),
     ),
+    ConsumerContract(
+        "shared_capture",
+        (
+            _expectation(
+                "exploratory_from_definitions",
+                "run(exploratory_metrics=...)",
+                "from_definitions",
+                "declared and exploratory families share physical capture, retaining original family horizons",
+                "supported",
+                "tests.test_shared_capture::test_narrowed_running_family_keeps_unselected_later_horizon",
+            ),
+        )
+        + tuple(
+            _expectation(
+                f"exploratory_{ingress}",
+                "run(exploratory_metrics=...)",
+                ingress,
+                "saved definitions are unavailable; reject the selected whole-window view before reads",
+                "refused",
+                "tests.test_shared_capture::test_shared_capture_capabilities_follow_existing_six_ingress_dispositions",
+                codes=("facade.analysis.exploratory_metrics_source_limited",),
+                reason="Only the definitions ingress can add undeclared saved metrics.",
+                stage="read",
+            )
+            for ingress in (
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_switchback_panel",
+                "from_unit_day_artifact",
+                "from_moments",
+            )
+        )
+        + tuple(
+            _expectation(
+                f"multiview_{ingress}",
+                "run(views=...)",
+                ingress,
+                "whole-window and daily scopes share one capture and retain standalone cells",
+                "supported",
+                "tests.test_shared_capture::test_shared_capture_capabilities_follow_existing_six_ingress_dispositions",
+            )
+            for ingress in ("from_definitions", "from_unit_day_artifact", "from_unit_panel")
+        )
+        + tuple(
+            _expectation(
+                f"multiview_{ingress}",
+                "run(views=...)",
+                ingress,
+                "a later daily scope cannot be served; reject before the whole-window sibling reads",
+                "refused",
+                "tests.test_shared_capture::test_shared_capture_capabilities_follow_existing_six_ingress_dispositions",
+                codes=(code,),
+                reason="Shared execution does not create a temporal axis or a new contrast estimator.",
+                stage="read",
+            )
+            for ingress, code in (
+                ("from_unit_summary", "evidence.grain_unavailable"),
+                ("from_moments", "evidence.grain_unavailable"),
+                ("from_switchback_panel", "facade.analysis.contrast_unavailable"),
+            )
+        ),
+    ),
 )
 
 

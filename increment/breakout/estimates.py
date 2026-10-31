@@ -5640,3 +5640,108 @@ register_collection_types(
     DailyMetricValues,
     LiftEstimates,
 )
+
+
+def _stamp_exploratory_rows(rows: LiftEstimates) -> LiftEstimates:
+    from increment.estimation.multiplicity import multiplicity_status
+    from increment.estimation.readout_types import (
+        CellKey,
+        FamilyScope,
+        ReadoutMetadata,
+        ReadoutScope,
+        cell_order,
+        family_identity,
+    )
+
+    metadata = rows.metadata
+    source_rows = list(rows)
+    updated = [
+        row.model_copy(
+            update={
+                "role": "exploratory",
+                "multiplicity_status": multiplicity_status("exploratory", None),
+            }
+        )
+        for row in source_rows
+    ]
+    if metadata is None:
+        return LiftEstimates(updated, source=rows.source, default_backend=rows._default_backend)
+
+    moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
+    families: list[FamilyScope] = []
+    for declared_family in metadata.scope.families:
+        family = FamilyScope.model_validate(declared_family)
+        assert isinstance(family, FamilyScope)
+        retained = tuple(
+            cell for cell in family.members if (family.source_snapshot_id, cell) not in moved
+        )
+        if retained:
+            retained_family = family.model_copy(update={"members": retained})
+            assert isinstance(retained_family, FamilyScope)
+            families.append(retained_family)
+
+    family_ids = {}
+    by_family = {}
+    for row in source_rows:
+        key = (row.source_snapshot_id, row.analysis_population)
+        by_family.setdefault(key, []).append(CellKey.from_row(row))
+    for (source_id, population), members in by_family.items():
+        family_id = family_identity(source_id, population, "run", None, None, "exploratory")
+        families.append(
+            FamilyScope(
+                family_id=family_id,
+                analysis_population=population,
+                source_snapshot_id=source_id,
+                view="run",
+                dimension=None,
+                source=None,
+                name="exploratory",
+                family=None,
+                members=tuple(sorted(set(members), key=cell_order)),
+                complete=True,
+            )
+        )
+        family_ids[(source_id, population)] = family_id
+    updated = [
+        row.model_copy(
+            update={"family_id": family_ids[(row.source_snapshot_id, row.analysis_population)]}
+        )
+        for row in updated
+    ]
+    scope = ReadoutScope(
+        snapshot_id=metadata.scope.snapshot_id,
+        cells=metadata.scope.cells,
+        decision_cells=metadata.scope.decision_cells,
+        populations=metadata.scope.populations,
+        families=tuple(
+            sorted(
+                families,
+                key=lambda family: (
+                    family.family_id
+                    if isinstance(family, FamilyScope)
+                    else str(family["family_id"])
+                ),
+            )
+        ),
+        by_source=metadata.scope.by_source,
+    )
+    metadata = ReadoutMetadata(
+        scope=scope,
+        cells=metadata.cells,
+        partial=metadata.partial,
+        partial_reason=metadata.partial_reason,
+        source_content_digest_unavailable_reason=metadata.source_content_digest_unavailable_reason,
+        source_content_digest=metadata.source_content_digest,
+        artifact_manifest_sha256=metadata.artifact_manifest_sha256,
+        artifact_relation_digests=metadata.artifact_relation_digests,
+        coherence=metadata.coherence,
+        effective_modes=metadata.effective_modes,
+        captures=metadata.captures,
+    )
+    return LiftEstimates(
+        updated,
+        metadata=metadata,
+        source=rows.source,
+        sequential_snapshot=rows.sequential_snapshot,
+        default_backend=rows._default_backend,
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 from increment._evidence_refusals import require_evidence
 from increment._evidence_types import (
@@ -122,6 +123,24 @@ class _BuiltInEvidenceProvider(_OwnedLoaderAdapter):
         from increment.readouts._evidence import loader_snapshot
 
         return loader_snapshot(self.source, previous=request.previous)
+
+    def readout_view(
+        self,
+        source: object,
+        *,
+        metrics: Sequence[object],
+        configs: Sequence[object] | None = None,
+    ) -> EvidenceProvider:
+        from increment._evidence_scopes import loader_source
+        from increment._source_types import is_builtin_source
+
+        template = loader_source(cast(Any, source))
+        if not is_builtin_source(template):
+            return self
+        view = getattr(self.source, "readout_view", None)
+        if callable(view):
+            return _BuiltInEvidenceProvider(view(template, metrics=metrics, configs=configs))
+        return self
 
     def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
         _validate(self.source, request)

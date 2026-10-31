@@ -253,13 +253,25 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
 
 
 def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_path):
+    from dataclasses import replace
+
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from increment import run
+    from increment.builders import from_definitions
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
+    from increment.kernel.contracts import Scope
 
     defs_path, con, units = categorical_defs_and_con(tmp_path)
+    con.create_table(
+        "covariate_events",
+        obj=con.sql(
+            "SELECT user_id, ts, tenure FROM cat_events "
+            "WHERE event = 'exposure' AND experiment_id IS NULL"
+        ).to_pyarrow(),
+    )
     text = defs_path.read_text()
     text = text.replace(
         "    design:\n"
@@ -270,10 +282,21 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
         "",
     )
     text = text.replace(
+        "exposures:\n",
+        "  - name: preperiod\n"
+        "    sql: SELECT user_id, ts, tenure FROM covariate_events\n"
+        "    timestamp_column: ts\n"
+        "    entities: [user_id]\n"
+        "    facts: []\n"
+        "    properties:\n"
+        "      - {name: tenure, column: tenure, dtype: float, as_of: pre_exposure}\n"
+        "exposures:\n",
+    )
+    text = text.replace(
         "plan: {primary: revenue}",
         "plan: {primary: {metric: revenue, decision_method: {name: scalar, "
         "variance_reduction: cuped, covariates: [{name: pre_tenure, kind: continuous, "
-        "property: tenure, source: events}]}}}",
+        "property: tenure, source: preperiod}]}}}",
     )
     defs_path.write_text(text)
     analysis = Analysis.from_definitions("cat_test", defs_path, con)
@@ -309,6 +332,46 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     assert isinstance(native, LiftEstimate) and isinstance(oracle, LiftEstimate)
     assert native.require_lift().value == pytest.approx(oracle.require_lift().value)
     assert native.require_lift().log_se == pytest.approx(oracle.require_lift().log_se)
+
+    expected = {
+        (row.metric, row.ds.isoformat(), row.group_id): (
+            None if row.value is None else row.value.value,
+            row.n,
+        )
+        for rows in (
+            analysis.run_daily(metrics=["revenue"]),
+            analysis.run_asof(metrics=["revenue"]),
+        )
+        for row in rows
+    }
+    con.raw_sql("DROP TABLE covariate_events")
+    experiment, resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test", store="none"
+    )
+    scopes = (
+        Scope(view="daily", grain="daily"),
+        Scope(view="asof", grain="asof"),
+    )
+    experiment = replace(
+        experiment,
+        scopes=scopes,
+        operations={scopes[0].hash(): "run_daily", scopes[1].hash(): "run_asof"},
+    )
+    values = run(experiment, resolver, analysis_options={"metrics": ["revenue"]})
+    actual = {
+        (
+            cell.row_payload["data"]["metric"],
+            cell.row_payload["data"]["ds"],
+            cell.row_payload["data"]["group_id"],
+        ): (
+            None
+            if cell.row_payload["data"]["value"] is None
+            else cell.row_payload["data"]["value"]["value"],
+            cell.row_payload["data"]["n"],
+        )
+        for cell in values.cells
+    }
+    assert actual == expected
 
 
 @pytest.mark.parametrize("missing", ["impute", "zero", "refuse"])

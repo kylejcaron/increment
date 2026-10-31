@@ -46,9 +46,7 @@ def run_scoped(
             **options,
         )
     if operation is None:
-        from increment.readouts._line2 import run_scoped_line2
-
-        return run_scoped_line2(analysis, coherence=coherence, **options)
+        return analysis._run_scoped_readouts(coherence=coherence, **options)
     from increment.readouts._line3 import run_scoped_line3
 
     return run_scoped_line3(

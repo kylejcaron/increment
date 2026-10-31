@@ -273,6 +273,13 @@ def validate_day_axis(
     checkpoint_asof = (
         req.grain == "asof" and getattr(plan.inference, "registration", None) is not None
     )
+    if req.caller == "run_asof_lift" and checkpoint_asof and req.dimension is not None:
+        from increment.sequential_state import sequential_refuse
+
+        sequential_refuse(
+            "route.unsupported",
+            "segmented as-of history requires retained per-date stopped states; use the registered breakout checkpoint",
+        )
     if compliance_only:
         return
     if (
@@ -1365,11 +1372,26 @@ def _scope_day_axis_rows(
     )
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
+        from increment.estimation.readout_types import ReadoutCapture
+        from increment.readouts._evidence import artifact_provenance
+
+        provenance = artifact_provenance(source)
 
         result._metadata = result.metadata.model_copy(
             update={
                 "coherence": coherence,
                 "effective_modes": _FrozenMapping(effective_modes),
+                "artifact_manifest_sha256": provenance.manifest_sha256,
+                "artifact_relation_digests": provenance.relation_digests,
+                "captures": ()
+                if execution_context is None or not execution_context.shared_capture
+                else (
+                    ReadoutCapture(
+                        snapshot_id=execution_context.run_id,
+                        coherence=coherence,
+                        effective_modes=effective_modes,
+                    ),
+                ),
             }
         )
     return result
@@ -1513,7 +1535,7 @@ class DayAxisReadouts:
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
             from increment.readouts._evidence import _builtin_source
 
-            with context.borrow() as provider:
+            with context.borrow(source=self._src, metrics=req.metrics) as provider:
                 return DayAxisReadouts(
                     src=_builtin_source(provider),
                     plan=self._plan,
@@ -1628,7 +1650,9 @@ class DayAxisReadouts:
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
             from increment.readouts._evidence import _builtin_source
 
-            with context.borrow() as provider:
+            with context.borrow(
+                source=self._src, metrics=req.metrics, configs=opts.configs
+            ) as provider:
                 return DayAxisReadouts(
                     src=_builtin_source(provider),
                     plan=self._plan,
@@ -1646,14 +1670,6 @@ class DayAxisReadouts:
                     options=opts,
                 )
         if req.grain == "asof" and getattr(self._plan.inference, "registration", None) is not None:
-            if req.dimension is not None:
-                from increment.sequential_state import sequential_refuse
-
-                sequential_refuse(
-                    "route.unsupported",
-                    "segmented as-of history requires retained per-date stopped states; use the registered breakout checkpoint",
-                )
-
             from increment.breakout.estimates import daily_sequential_projection
 
             asof_policy = self._plan.view_policies.for_view(

@@ -375,6 +375,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._union_horizon_metric_cache: dict[tuple[Metric, ...], ir.Scalar] = {}
         self._fixed_event_horizon: dt.date | None = None
         self._has_fixed_event_horizon_override = False
+        self._captured_metric_horizons: dict[Metric, dt.date | None] = {}
         self._panel_cache: dict[
             tuple[str, Metric] | tuple[str, Metric, tuple[Metric, ...]],
             tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar],
@@ -800,6 +801,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         dependencies = evidence_scope_dependencies(scope)
         tables = self._session._source_tables
         fact_names = set(dependencies["uptake"])
+        # Horizon metrics remain in scope for family identity, not capture access.
         for metric in dependencies["outcomes"]:
             numerator = getattr(metric, "numerator", None)
             denominator = getattr(metric, "denominator", None)
@@ -895,6 +897,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric] | None = None,
         extra_sources: Sequence[str] = (),
+        horizon_metrics: Sequence[Metric] = (),
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
@@ -906,6 +909,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return self
         capture_scope = EvidenceScope(
             metrics=tuple(self._horizon_metrics if metrics is None else metrics),
+            horizon_metrics=tuple(horizon_metrics),
             configs=tuple(self._context.configs if configs is None else configs),
             uptake_facts=tuple(uptake_facts),
             assignment_requests=tuple(assignment_requests),
@@ -944,7 +948,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Freshness sees every unit in each requested metric's fact stream,
         # not just the enrolled units retained for outcome reduction.
         freshness_source_names: set[str] = set()
-        horizon_metrics = dependencies["outcomes"]
+        # The family horizon is inventory, not permission to read every declared
+        # metric's source. Only requested outcome metrics contribute source data.
+        horizon_metrics = tuple(dependencies["outcomes"])
         for metric in horizon_metrics:
             if isinstance(metric, RatioMetric):
                 freshness_source_names.add(add_fact(metric.numerator.fact))
@@ -1176,6 +1182,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric] | None = None,
         extra_sources: Sequence[str] = (),
+        horizon_metrics: Sequence[Metric] = (),
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
@@ -1185,6 +1192,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         pinned = self._pinned_source(
             metrics=metrics,
+            horizon_metrics=horizon_metrics,
             extra_sources=extra_sources,
             uptake_facts=uptake_facts,
             site_volume_metrics=site_volume_metrics,
@@ -1232,6 +1240,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         configs: Sequence[ResolvedMetricConfig] | None = None,
         reuse_retained_snapshot_integrity: bool = False,
         assignment_requests: Sequence[Any] = (),
+        horizon_metrics: Sequence[Metric] = (),
     ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
@@ -1276,20 +1285,33 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if include_breakouts
             else ()
         )
+        horizon_members = tuple(dict.fromkeys((*horizon_metrics, *metrics)))
         use_shared_horizon = (
-            bool(metrics)
+            bool(horizon_members)
             and self._experiment.observation_horizon is None
             and self._session.source_snapshot_evidence is None
             and self._session._source_tables is None
         )
         snapshot_horizon_relation = None
         if use_shared_horizon:
-            horizon = self._union_event_horizon(metrics)
+            horizon_rows = [
+                ibis.literal(1)
+                .name("_one")
+                .as_table()
+                .select(
+                    metric=ibis.literal(index).cast("int64"),
+                    edge=self._union_event_horizon((metric,)).cast("date"),
+                )
+                for index, metric in enumerate(horizon_members)
+            ]
             snapshot_horizon_relation = (
-                ibis.literal(1).name("_one").as_table().select(edge=horizon.cast("date"))
+                ibis.union(*horizon_rows, distinct=False)
+                if len(horizon_rows) > 1
+                else horizon_rows[0]
             )
         with self._pinned_source_execution(
             metrics=metrics,
+            horizon_metrics=horizon_metrics,
             uptake_facts=uptake_facts,
             extra_sources=extra_sources,
             configs=configs,
@@ -1298,14 +1320,23 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         ) as pinned:
             previous_horizon = pinned._fixed_event_horizon
             previous_override = pinned._has_fixed_event_horizon_override
+            previous_metric_horizons = pinned._captured_metric_horizons
             if use_shared_horizon:
-                horizon_row = pinned._session.fetch_arrow(
+                rows = pinned._session.fetch_arrow(
                     pinned._session.source_sql(_SNAPSHOT_HORIZON_RELATION_KEY)
-                ).to_pylist()[0]
-                horizon_edge = horizon_row["edge"]
-                if isinstance(horizon_edge, dt.datetime):
-                    horizon_edge = horizon_edge.date()
-                pinned._fixed_event_horizon = horizon_edge
+                ).to_pylist()
+                metric_horizons: dict[Metric, dt.date | None] = {}
+                for row in rows:
+                    edge = row["edge"]
+                    if isinstance(edge, dt.datetime):
+                        edge = edge.date()
+                    metric = horizon_members[int(row["metric"])]
+                    metric_horizons[metric] = edge
+                pinned._captured_metric_horizons = metric_horizons
+                pinned._fixed_event_horizon = max(
+                    (edge for edge in metric_horizons.values() if edge is not None),
+                    default=None,
+                )
                 pinned._has_fixed_event_horizon_override = True
                 pinned._union_horizon_cache = None
                 pinned._union_horizon_metric_cache = {}
@@ -1316,9 +1347,62 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 if use_shared_horizon:
                     pinned._fixed_event_horizon = previous_horizon
                     pinned._has_fixed_event_horizon_override = previous_override
+                    pinned._captured_metric_horizons = previous_metric_horizons
                     pinned._union_horizon_cache = None
                     pinned._union_horizon_metric_cache = {}
                     pinned._panel_cache = {}
+
+    def readout_view(
+        self,
+        template: DefinitionsMomentSource,
+        *,
+        metrics: Sequence[Metric],
+        configs: Sequence[ResolvedMetricConfig] | None = None,
+    ) -> DefinitionsMomentSource:
+        """Lend declarations and selected metrics over this pinned session."""
+        import copy
+
+        view = copy.copy(self)
+        view._metrics = template._metrics
+        view._context = template._context
+        if configs is not None:
+            configs_by_name = {config.metric.name: config for config in configs}
+            view._context = replace(
+                template._context,
+                configs=tuple(
+                    configs_by_name.get(config.metric.name, config)
+                    for config in template._context.configs
+                ),
+            )
+        family_metrics = tuple(dict.fromkeys((*template._horizon_metrics, *metrics)))
+        captured_horizons = self._captured_metric_horizons
+        has_family_horizon = bool(family_metrics) and all(
+            metric in captured_horizons for metric in family_metrics
+        )
+        if has_family_horizon:
+            view._fixed_event_horizon = max(
+                (
+                    cast(dt.date, captured_horizons[metric])
+                    for metric in family_metrics
+                    if captured_horizons[metric] is not None
+                ),
+                default=None,
+            )
+            view._has_fixed_event_horizon_override = True
+        else:
+            view._fixed_event_horizon = self._fixed_event_horizon
+            view._has_fixed_event_horizon_override = self._has_fixed_event_horizon_override
+        selected_horizon = tuple(dict.fromkeys(metrics))
+        view._horizon_metrics = (
+            tuple(dict.fromkeys((*template._horizon_metrics, *selected_horizon)))
+            if self._session._source_tables is None and not self._has_fixed_event_horizon_override
+            else selected_horizon
+        )
+        view._union_horizon_cache = None
+        view._union_horizon_metric_cache = {}
+        view._panel_cache = {}
+        view._cuped_relation_cache = {}
+        return view
 
     def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
         """A sibling source over the declared metrics plus *metrics*, in this session.
@@ -3359,11 +3443,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             fetch_arrow=self._session.fetch_arrow,
             defs=self._defs,
             preflight_breakout=self._preflight_breakout,
-            legacy_facade=_legacy_facade,
             preflight_day_request=self._preflight_day_request,
             note_reduction=self._note_reduction,
             horizon_metrics=effective_horizon,
             population=population,
+            legacy_facade=_legacy_facade,
             compliance_provider=self.compliance_summary,
             compliance_dates_provider=self.compliance_dates,
             validated_assignments=self._validated_assignments,
@@ -3771,13 +3855,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         produce a column nothing reads.
 
         ``uptake_panel``/``uptake_window_days`` mirror
-        ``_summary_sql_for_metrics``/``_moments_for_metrics``'s own uptake resolution and are built
-        whenever ``self._design`` is an ``Encouragement`` design,
-        regardless of caller. ``uptake_panel`` is dense, like
-        ``den_panel``; both are ``None`` for every non-``Encouragement``
-        design, which ``asof_group_summary`` reads as "no uptake data,
-        leave sum_d/cyd/cy2d null". ``run_asof`` ignores both return
-        values; ``run_asof_lift`` passes them straight through.
+        ``_summary_sql_for_metrics``/``_moments_for_metrics``'s own uptake resolution.
+        They are built only when the requested readout needs uptake; non-Encouragement
+        designs and ITT-only requests leave them ``None``.
         """
         (
             panel,
@@ -3827,9 +3907,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_window_days: int | None = None
         uptake_certified_edge: dt.date | None = None
         _design = self._context.design
-        if isinstance(_design, Encouragement):
+        if isinstance(_design, Encouragement) and include_uptake_horizon:
             uptake_certified_edge = self._uptake_certified_edge(_design.uptake.fact)
-        if isinstance(_design, Encouragement):
             uptake_fs, _uptake_fact = _find_fact_source(self._defs, _design.uptake.fact)
             uptake_fact_tbl = self._get_fact_table(uptake_fs)
             # unit_day_panel needs metric_events's (unit_id, ts, metric, value) shape;
@@ -4744,10 +4823,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                             canonical_dimension_value(relation["__qr_breakout_value"])
                             == request.breakout_value
                         )
-                table_name = pinned._session.temp_name(
-                    "cuped_qr_relation", str(len(pinned._cuped_relation_cache))
-                )
-                relation = pinned._session.materialize_table(table_name, relation, required=True)
+                if pinned._session._source_tables is None:
+                    table_name = pinned._session.temp_name(
+                        "cuped_qr_relation", str(len(pinned._cuped_relation_cache))
+                    )
+                    relation = pinned._session.materialize_table(
+                        table_name, relation, required=True
+                    )
                 pinned._cuped_relation_cache[cache_key] = relation
                 yield relation, execute, pinned._session.qr_scratch
 

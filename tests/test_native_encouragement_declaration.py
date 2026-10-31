@@ -306,14 +306,26 @@ def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
         {"name": "device", "column": "device_type", "dtype": "string", "as_of": "static"}
     ]
     defs["experiments"][0]["breakouts"] = [{"property": "device", "source": "events"}]
+    defs["experiments"][0]["design"]["uptake"]["window_days"] = 7
+    cutoff = datetime(2025, 2, 1, tzinfo=UTC)
     analysis = Analysis.from_definitions(
-        "native_encouragement_exp", _write_defs_yaml(defs, tmp_path), con, store="none"
+        "native_encouragement_exp",
+        _write_defs_yaml(defs, tmp_path),
+        con,
+        store="none",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            cutoff, {"events": cutoff, "uptake_events": cutoff}
+        ),
     )
     try:
         assert len(analysis.run_daily()) == 14
         assert len(analysis.run_asof()) == 62
         assert analysis.run_breakout(metrics=["revenue"])
         assert len(analysis.run_asof_lift(estimands=("itt",))) == 31
+        completed = analysis.run_asof_lift(estimands=("itt",), completed_windows_only=True)
+        assert {row.ds for row in completed} == {
+            datetime(2025, 1, day).date() for day in range(8, 32)
+        }
     finally:
         analysis.close()
 

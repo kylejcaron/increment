@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
-from typing import Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from pydantic import Field, field_serializer, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -60,6 +61,29 @@ from increment.estimation.inference import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.sequential_state import SequentialCheckpoint
+
+if TYPE_CHECKING:
+    from increment.kernel.contracts import Scope
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedReadout:
+    collection: Any
+    scope: Scope | None
+    options: Mapping[str, object]
+    analysis_spec_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadoutAssembly:
+    rows: tuple[Any, ...]
+    metadata: Any
+    source: Any
+    sequential_snapshot: Any = None
+
+    def __iter__(self):
+        return iter(self.rows)
+
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -480,6 +504,32 @@ class ReadoutMetadata(_ReadoutModel):
             raise PydanticCustomError("effective_modes_type", "effective_modes must be a mapping")
         return _FrozenMapping(cast(Mapping[str, Literal["captured", "live", "provider"]], value))
 
+    def with_execution_context(
+        self,
+        *,
+        snapshot_id: str,
+        coherence: Literal["captured", "live"] | None,
+        effective_modes: Mapping[str, Literal["captured", "live", "provider"]],
+        shared_capture: bool,
+    ) -> ReadoutMetadata:
+        return self.model_copy(
+            update={
+                "coherence": coherence,
+                "effective_modes": _FrozenMapping(effective_modes),
+                "captures": (
+                    (
+                        ReadoutCapture(
+                            snapshot_id=snapshot_id,
+                            coherence=coherence,
+                            effective_modes=effective_modes,
+                        ),
+                    )
+                    if shared_capture
+                    else self.captures
+                ),
+            }
+        )
+
     def __repr__(self) -> str:
         return (
             "ReadoutMetadata(\n"
@@ -554,7 +604,9 @@ class ReadoutMetadata(_ReadoutModel):
             for source_id, source in self.scope.by_source.items()
             for cell in source.cells
         }
-        if seen != expected:
+        if seen != expected and not (
+            self.partial and "filter" in self.partial_reason and seen.issubset(expected)
+        ):
             refuse_readout(
                 "readout.serialization.identity_mismatch",
                 source_snapshot_id=self.scope.snapshot_id,
@@ -1142,62 +1194,13 @@ def _daily_collection_scope(collection):
     )
 
 
-def concat_collection(left, right):
-    if type(left) is not type(right):
-        refuse_readout(
-            "readout.collection.concat_type_mismatch",
-            left=type(left).__name__,
-            right=type(right).__name__,
-        )
-    collection_scope = {}
-    if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
-        left_scope = _daily_collection_scope(left)
-        right_scope = _daily_collection_scope(right)
-        if left_scope != right_scope:
-            refuse_readout(
-                "readout.collection.concat_metadata_mismatch",
-                snapshot_ids=tuple(
-                    sorted(
-                        metadata.scope.snapshot_id
-                        for metadata in (left.metadata, right.metadata)
-                        if metadata is not None
-                    )
-                ),
-                fields=("envelope_view", "completion_policy"),
-            )
-        collection_scope = {
-            "envelope_view": left_scope[0],
-            "completion_policy": left_scope[1],
-        }
-    if left.metadata is None and right.metadata is None:
-        if left.source != right.source or left.sequential_snapshot != right.sequential_snapshot:
-            refuse_readout(
-                "readout.collection.concat_metadata_mismatch",
-                snapshot_ids=(),
-                fields=("source", "sequential_snapshot"),
-            )
-        return type(left)(
-            [*left, *right],
-            source=left.source,
-            sequential_snapshot=left.sequential_snapshot,
-            default_backend=(
-                left._default_backend if left._default_backend == right._default_backend else None
-            ),
-            **collection_scope,
-        )
-    if left.metadata is None or right.metadata is None:
-        refuse_readout(
-            "readout.collection.concat_metadata_mismatch",
-            snapshot_ids=tuple(
-                sorted(
-                    metadata.scope.snapshot_id
-                    for metadata in (left.metadata, right.metadata)
-                    if metadata is not None
-                )
-            ),
-            fields=("metadata",),
-        )
-    if left.sequential_snapshot != right.sequential_snapshot:
+def merge_collection_metadata(left, right, *, scoped_assembly: bool = False):
+    """Combine existing cell, family and source records without converting row types."""
+    left_snapshot = left.sequential_snapshot
+    right_snapshot = right.sequential_snapshot
+    if left_snapshot != right_snapshot and (
+        not scoped_assembly or (left_snapshot is not None and right_snapshot is not None)
+    ):
         refuse_readout(
             "readout.collection.concat_metadata_mismatch",
             snapshot_ids=tuple(
@@ -1206,7 +1209,7 @@ def concat_collection(left, right):
             fields=("sequential_snapshot",),
         )
     if left.metadata.scope.snapshot_id != right.metadata.scope.snapshot_id and (
-        left.sequential_snapshot is not None or right.sequential_snapshot is not None
+        (left_snapshot is not None or right_snapshot is not None) and not scoped_assembly
     ):
         refuse_readout(
             "readout.collection.concat_metadata_mismatch",
@@ -1304,13 +1307,72 @@ def concat_collection(left, right):
         ),
         coherence=coherence,
         effective_modes=dict(sorted(effective_modes.items())),
-        captures=captures if len(captures) > 1 else (),
+        captures=captures if a.captures or b.captures or len(captures) > 1 else (),
     )
     metadata = partial_metadata(
         metadata,
         rows.values(),
         "cross_snapshot_concat" if cross else "slice",
     )
+    return metadata, result_source, rows
+
+
+def concat_collection(left, right):
+    if type(left) is not type(right):
+        refuse_readout(
+            "readout.collection.concat_type_mismatch",
+            left=type(left).__name__,
+            right=type(right).__name__,
+        )
+    collection_scope = {}
+    if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
+        left_scope = _daily_collection_scope(left)
+        right_scope = _daily_collection_scope(right)
+        if left_scope != right_scope:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=tuple(
+                    sorted(
+                        metadata.scope.snapshot_id
+                        for metadata in (left.metadata, right.metadata)
+                        if metadata is not None
+                    )
+                ),
+                fields=("envelope_view", "completion_policy"),
+            )
+        collection_scope = {
+            "envelope_view": left_scope[0],
+            "completion_policy": left_scope[1],
+        }
+    if left.metadata is None and right.metadata is None:
+        if left.source != right.source or left.sequential_snapshot != right.sequential_snapshot:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=(),
+                fields=("source", "sequential_snapshot"),
+            )
+        return type(left)(
+            [*left, *right],
+            source=left.source,
+            sequential_snapshot=left.sequential_snapshot,
+            default_backend=(
+                left._default_backend if left._default_backend == right._default_backend else None
+            ),
+            **collection_scope,
+        )
+    if left.metadata is None or right.metadata is None:
+        refuse_readout(
+            "readout.collection.concat_metadata_mismatch",
+            snapshot_ids=tuple(
+                sorted(
+                    metadata.scope.snapshot_id
+                    for metadata in (left.metadata, right.metadata)
+                    if metadata is not None
+                )
+            ),
+            fields=("metadata",),
+        )
+    metadata, result_source, rows = merge_collection_metadata(left, right)
     if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
         collection_scope = {
             "envelope_view": left_scope[0],

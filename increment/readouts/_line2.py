@@ -1,47 +1,66 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Literal
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
 from increment._evidence_types import BreakoutIdentity, EvidenceScope
 from increment._literals import Correction
 from increment._source_types import declared_evidence, is_custom_source
 from increment.declarations import Method
-from increment.kernel.context import (
-    EvidenceExecutionContext,
-    ExecutionMode,
-)
+from increment.kernel.context import ExecutionMode
 from increment.semantics.models import Metric
 
 if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
 
 
-def _provider_for(analysis):
-    from increment.readouts._provider import native_scope_provider
+def _compliance_only(analysis, estimands, dimension=None):
+    from increment.semantics.design import Encouragement
 
-    source = analysis._src
-    return source if is_custom_source(source) else native_scope_provider(source)
+    return (
+        isinstance(analysis._design, Encouragement)
+        and estimands is not None
+        and set(estimands) == {"compliance"}
+        and dimension is None
+    )
 
 
-@contextmanager
+def _validate_source_populations(source: Any, populations: Sequence[str], operation: str) -> None:
+    from increment.readouts._evidence import validate_populations, validates_populations
+
+    if validates_populations(source):
+        validate_populations(source, populations, operation=operation)
+
+
 def owned_execution_context(
     analysis,
     scope: EvidenceScope,
     *,
     coherence: ExecutionMode = "captured",
 ):
-    context = EvidenceExecutionContext(
-        _provider_for(analysis),
-        scope,
-        run_id=uuid4().hex,
-        coherence=coherence,
+    from uuid import uuid4
+
+    from increment.kernel.context import EvidenceExecutionContext
+    from increment.readouts._execution_context import (
+        owned_execution_context as _owned_execution_context,
     )
-    with context.evidence_scope(), analysis._scoped_execution_context(context):
-        yield context
+
+    source = analysis._src
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
+
+    provider = RunAcquisitionOwner.provider_for(source)
+
+    return _owned_execution_context(
+        lambda: EvidenceExecutionContext(
+            provider,
+            scope,
+            run_id=uuid4().hex,
+            coherence=coherence,
+            shared_capture=True,
+        ),
+        execution_context_scope=analysis._scoped_execution_context,
+    )
 
 
 def _reject_percentile_breakout(metrics):
@@ -64,9 +83,291 @@ def _reject_percentile_breakout(metrics):
 def _selected_breakouts(analysis, dimension: str | None = None):
     experiment = getattr(analysis, "_experiment", None)
     definitions = tuple(getattr(experiment, "breakouts", ()))
-    if dimension is not None:
-        definitions = tuple(item for item in definitions if item.property == dimension)
-    return tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+    if definitions:
+        if dimension is not None:
+            definitions = tuple(item for item in definitions if item.property == dimension)
+        return tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+    return tuple(
+        BreakoutIdentity(name, None)
+        for name in declared_evidence(analysis._src).breakouts
+        if dimension is None or name == dimension
+    )
+
+
+def _contrast_operation_scope(analysis, operation: str, options: dict[str, Any]) -> EvidenceScope:
+    from increment._analysis_config import select_metrics
+    from increment._day_axis import _TRIGGER_UNSUPPORTED
+    from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
+    from increment.errors import refuse
+    from increment.readouts._whole_window import validate_contrast_request
+
+    source = analysis._src
+    analysis._exploratory_metrics(options.get("exploratory_metrics"), caller=operation)
+    if options.get("population") == "triggered":
+        refuse(
+            _TRIGGER_UNSUPPORTED,
+            method=operation,
+            experiment="<unknown>",
+            trigger=None,
+            route="switchback",
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
+        )
+    validate_contrast_request(
+        decision_method=options.get("decision_method", UNSET),
+        sensitivity_methods=options.get("sensitivity_methods", UNSET),
+        prior=options.get("prior", UNSET),
+        estimands=options.get("estimands"),
+        value_scale=options.get("value_scale"),
+    )
+    selected = tuple(
+        select_metrics(source.context.metrics, options.get("metrics"), caller=operation)
+    )
+    request = ContrastReadoutRequest(
+        metrics=selected,
+        procedures={metric.name: source.context.procedures[metric.name] for metric in selected},
+    )
+    ContrastHandler().preflight(source, request)
+    return EvidenceScope(
+        metrics=selected,
+        population="assigned",
+        populations=("assigned",),
+        grain="total",
+        snapshot=True,
+        execution=True,
+    )
+
+
+def _whole_window_operation_scope(analysis, selected, added, options) -> EvidenceScope:
+    from increment.estimation.sequential import SEQUENTIAL_POLICIES
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
+    from increment.readouts._whole_window import (
+        WholeWindowExploratoryRequest,
+        WholeWindowFamilyRequest,
+        WholeWindowRequest,
+    )
+
+    def request(metrics):
+        return WholeWindowRequest(
+            metrics=tuple(metrics),
+            estimands=tuple(options["estimands"]) if options.get("estimands") is not None else None,
+            population=options.get("population"),
+            value_scale=options.get("value_scale"),
+            coherence=options.get("coherence", "captured"),
+            decision_method=options.get("decision_method", UNSET),
+            sensitivity_methods=options.get("sensitivity_methods", UNSET),
+            prior=options.get("prior", UNSET),
+        )
+
+    exploratory = None
+    if added:
+        extra = analysis._exploratory_analysis(added, caller="run")
+        exploratory = WholeWindowExploratoryRequest(
+            request=request(added),
+            reader=extra._whole_window(),
+        )
+    family = WholeWindowFamilyRequest(
+        declared=request(selected),
+        exploratory=exploratory,
+        capture_requested=options.get("capture") is not None,
+    )
+    prepared = analysis._whole_window().prepare_family(family)
+    additional_scopes = ()
+    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES) and (
+        options.get("capture") is not None or any(item.scope.metrics for item in prepared)
+    ):
+        from increment.readouts._line3 import sequential_scope
+
+        additional_scopes = (sequential_scope(analysis, include_breakouts=False),)
+    return RunAcquisitionOwner.combined_scope(
+        analysis._src,
+        prepared,
+        additional_scopes=additional_scopes,
+    )
+
+
+def _day_axis_scope_dependencies(candidate, request):
+    """Retain completion evidence separately from requested uptake moments."""
+    if request.grain != "asof":
+        return None, ()
+    estimands = request.estimands if request.caller == "run_asof_lift" else ()
+    uptake_facts = ()
+    if request.completed_windows_only:
+        uptake = getattr(candidate._design, "uptake", None)
+        if uptake is not None:
+            uptake_facts = (uptake.fact,)
+    return estimands, uptake_facts
+
+
+def operation_scope(analysis, operation: str, options: dict[str, Any]) -> EvidenceScope:
+    """Validate a selected operation and declare only the evidence it may read."""
+    from increment._analysis_config import overlay_configs, select_metrics
+    from increment._evidence_scopes import capture_requirements
+    from increment._evidence_types import DayAxisRequest
+    from increment.readouts._design_scope import _config_snapshot
+
+    source = analysis._src
+    capture = options.get("capture")
+    if capture is not None:
+        from pydantic import TypeAdapter
+
+        from increment._evidence_refusals import require_evidence
+        from increment._evidence_types import SequentialCaptureRequest
+        from increment.sequential_source import validate_capture_request
+
+        request = TypeAdapter(SequentialCaptureRequest).validate_python(dict(capture))
+        require_evidence(source, request=request)
+        validate_capture_request(
+            request,
+            dynamic=declared_evidence(source).sequential_capture == "asof",
+        )
+    from increment.decision import ContrastContext
+
+    if isinstance(source.context, ContrastContext):
+        return _contrast_operation_scope(analysis, operation, options)
+    added = analysis._exploratory_metrics(options.get("exploratory_metrics"), caller=operation)
+    selected = (
+        analysis._select_day_axis_metrics(options.get("metrics"), caller=operation)
+        if operation in {"run_daily", "run_daily_lift", "run_asof", "run_asof_lift"}
+        else select_metrics(tuple(analysis._metrics), options.get("metrics"), caller=operation)
+    )
+    if operation == "run":
+        return _whole_window_operation_scope(analysis, selected, added, options)
+    candidates = [(analysis, selected)]
+    if added:
+        candidates.append((analysis._exploratory_analysis(added, caller=operation), added))
+    requests = []
+    population = options.get("population") or "assigned"
+    experiment = getattr(analysis, "_experiment", None)
+    populations = (
+        ("assigned", "triggered")
+        if options.get("population") is None and getattr(experiment, "trigger", None) is not None
+        else (population,)
+    )
+    for candidate, metrics in candidates:
+        overrides = {
+            key: options.get(key, UNSET)
+            for key in ("decision_method", "sensitivity_methods", "prior")
+        }
+        configs, scope_estimands, scope_uptake_facts = (), None, ()
+        if operation == "run_breakout" and metrics:
+            configs = overlay_configs(
+                metrics,
+                candidate._src.context.configs,
+                methods=None,
+                prior=None,
+                decision_method=overrides["decision_method"],
+                sensitivity_methods=overrides["sensitivity_methods"],
+                prior_override=overrides["prior"],
+            )
+        if operation == "run_breakout":
+            from increment._analysis_config import normalize_display_correction
+            from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
+
+            policy = candidate._plan.view_policies.for_view(
+                "breakout", mechanism=candidate._design.mechanism, segmented=True
+            )
+            reader = BreakoutReadouts(
+                src=candidate._src, experiment=getattr(candidate, "_experiment", None)
+            )
+            reader.validate_populations(populations)
+            normalized_request = reader.validate_request(
+                BreakoutRequest(
+                    metrics=tuple(metrics),
+                    population=population,
+                    correction=normalize_display_correction(policy.correction),
+                    q=policy.q if policy.q is not None else candidate._plan.q,
+                    **overrides,
+                )
+            )
+            metrics = normalized_request.metrics
+            configs = reader._configs(normalized_request)
+            grain = "total"
+            breakouts = _selected_breakouts(candidate)
+        else:
+            grain = "daily" if operation in {"run_daily", "run_daily_lift"} else "asof"
+            req = DayAxisRequest(
+                caller=cast(
+                    Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"], operation
+                ),
+                grain=grain,
+                metrics=tuple(metrics),
+                dimension=options.get("dimension"),
+                estimands=tuple(options["estimands"])
+                if options.get("estimands") is not None
+                else None,
+                population=population,
+                experiment=getattr(candidate, "_experiment", None),
+                completed_windows_only=options.get("completed_windows_only", False),
+            )
+            scope_estimands, scope_uptake_facts = _day_axis_scope_dependencies(candidate, req)
+            reader = candidate._day_axis()
+            _validate_source_populations(candidate._src, populations, operation)
+            reader.validate_request(req, lift=operation.endswith("_lift"))
+            if operation.endswith("_lift"):
+                run_standalone_day_axis_lift(
+                    candidate,
+                    req,
+                    validate_only=True,
+                    **overrides,
+                    coherence=options.get("coherence", "captured"),
+                )
+                configs = (
+                    ()
+                    if _compliance_only(candidate, req.estimands, req.dimension)
+                    else reader.resolve_lift_options(req.metrics, **overrides).configs
+                )
+            breakouts = _selected_breakouts(candidate, req.dimension) if req.dimension else ()
+        scope_breakouts = (
+            breakouts
+            if metrics
+            or options.get("capture") is not None
+            or (operation != "run_breakout" and options.get("dimension") is not None)
+            else ()
+        )
+        for config in configs:
+            _config_snapshot(config, candidate._design)
+        requests.append(
+            EvidenceScope(
+                metrics=(
+                    ()
+                    if operation != "run_breakout"
+                    and _compliance_only(
+                        candidate, options.get("estimands"), options.get("dimension")
+                    )
+                    else tuple(metrics)
+                ),
+                horizon_metrics=()
+                if operation != "run_breakout"
+                and _compliance_only(candidate, options.get("estimands"), options.get("dimension"))
+                else tuple(candidate._src.context.metrics),
+                configs=tuple(configs),
+                estimands=scope_estimands,
+                uptake_facts=scope_uptake_facts,
+                population=population,
+                populations=populations,
+                grain=(
+                    "total"
+                    if operation in {"run_asof", "run_asof_lift"}
+                    and getattr(candidate._plan.inference, "registration", None) is not None
+                    else grain
+                ),
+                breakouts=scope_breakouts,
+                snapshot=True,
+                execution=True,
+                include_breakouts=bool(scope_breakouts),
+            )
+        )
+    from increment.estimation.sequential import SEQUENTIAL_POLICIES
+
+    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES) and (
+        options.get("capture") is not None or any(request.metrics for request in requests)
+    ):
+        from increment.readouts._line3 import sequential_scope
+
+        requests.append(
+            sequential_scope(analysis, include_breakouts=any(item.breakouts for item in requests))
+        )
+    return capture_requirements(source, requests)
 
 
 def run_scoped_line2(
@@ -312,19 +613,24 @@ def run_standalone_day_axis_lift(
     """Resolve lift options before opening the owned evidence context."""
 
     triggered_capture = _triggered_day_axis_capture_supported(analysis, req)
-    if is_custom_source(analysis._src) or (
+    unsupported_capture = is_custom_source(analysis._src) or (
         not triggered_capture
         and (
             req.population == "triggered"
             or req.grain not in declared_evidence(analysis._src).grains
         )
-    ):
+    )
+    if validate_only and unsupported_capture:
+        return None
+    if unsupported_capture:
         return analysis._day_axis().lift(
             req,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
+    compliance_only = _compliance_only(analysis, req.estimands, req.dimension)
+    metrics = () if compliance_only else req.metrics
     if req.caller == "run_daily_lift":
         from increment.readouts._common import _sequential_inference
         from increment.readouts._daily import _validate_daily_inference
@@ -338,8 +644,8 @@ def run_standalone_day_axis_lift(
 
     base = analysis._src.context.configs
     base_names = {config.metric.name for config in base}
-    declared = tuple(metric for metric in req.metrics if metric.name in base_names)
-    undeclared = tuple(metric for metric in req.metrics if metric.name not in base_names)
+    declared = tuple(metric for metric in metrics if metric.name in base_names)
+    undeclared = tuple(metric for metric in metrics if metric.name not in base_names)
     by_name = {
         config.metric.name: config
         for config in overlay_configs(
@@ -367,7 +673,7 @@ def run_standalone_day_axis_lift(
             )
         }
     )
-    configs = tuple(by_name[metric.name] for metric in req.metrics)
+    configs = tuple(by_name[metric.name] for metric in metrics)
     from increment._analysis_config import effective_methods
     from increment._evidence_refusals import check_method_covariates
 
@@ -427,7 +733,7 @@ def run_standalone_day_axis_lift(
 
         request = ReadoutRequest.from_source(
             analysis._src,
-            metrics=list(req.metrics),
+            metrics=list(metrics),
             configs=configs,
             view="asof",
             grain="asof",
@@ -465,16 +771,20 @@ def run_standalone_day_axis_lift(
     scope_metrics = () if compliance_only else req.metrics
     from increment._evidence_scopes import capture_requirements
 
+    _, scope_uptake_facts = _day_axis_scope_dependencies(analysis, req)
+
     scope = capture_requirements(
         analysis._src,
         (
             EvidenceScope(
                 metrics=scope_metrics,
+                horizon_metrics=() if compliance_only else None,
                 configs=configs,
                 population=req.population,
                 grain=req.grain,
                 dimension=req.dimension,
                 estimands=req.estimands,
+                uptake_facts=scope_uptake_facts,
                 breakouts=(
                     _selected_breakouts(analysis, req.dimension)
                     if req.dimension is not None

@@ -15,6 +15,7 @@ import copy
 import datetime as dt
 import json
 import pickle
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any, cast
 
@@ -24,12 +25,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis
+from increment import Analysis, run
 from increment.artifacts import SourceSnapshotEvidence
 from increment.breakout.estimates import LiftEstimates
+from increment.builders import from_definitions, from_moments
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.readout_types import ReadoutResults
 from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
+from increment.kernel.contracts import Scope
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
@@ -243,9 +246,301 @@ def _by_population(rows):
     return {(row.analysis_population, row.metric): row for row in rows}
 
 
-def test_trigger_declared_capture_reports_both_populations(tmp_path):
-    analysis, _ = _analysis(tmp_path, _events())
+def _assert_selected_registered_family_capture(tmp_path):
+    connection = ibis.duckdb.connect()
+    analysis = None
     try:
+        path = tmp_path / "family-definitions.yml"
+        path.write_text(_definitions(plan=_FAMILY_PLAN, secondaries=("aux_a", "aux_b")))
+        connection.create_table("events", obj=_events(secondaries=("aux_a", "aux_b")))
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
+        analysis = cast(Any, resolver)._analysis
+        assert len(analysis.run(metrics=[])) == 0
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="run", grain="total", population="triggered"),
+        )
+        result = run(
+            replace(experiment, scopes=scopes),
+            resolver,
+            analysis_options={
+                "metrics": ["aux_a"],
+                "capture": {"finalized": True, "as_of": _LATER},
+            },
+        )
+        assert {cell.identity.key.metric for cell in result.cells} == {"aux_a"}
+        assert {cell.identity.key.analysis_population for cell in result.cells} == {
+            "assigned",
+            "triggered",
+        }
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        connection.raw_sql("DROP TABLE events")
+        reversed_result = run(
+            replace(experiment, scopes=(scopes[1], scopes[0])),
+            resolver,
+            analysis_options={"metrics": ["aux_a"]},
+        )
+        assert {cell.identity.key.analysis_population for cell in reversed_result.cells} == {
+            "assigned",
+            "triggered",
+        }
+    finally:
+        if analysis is not None:
+            analysis.close()
+        connection.disconnect()
+
+
+def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
+    from increment.evidence import BreakoutIdentity
+
+    connection = ibis.duckdb.connect()
+    path = tmp_path / "defs.yml"
+    path.write_text(_definitions(plan=_PRIMARY_PLAN, breakouts=True))
+    connection.create_table("events", obj=_events(n_per_arm=10))
+    experiment, resolver = from_definitions(
+        path,
+        connection,
+        experiment_name="exp",
+        source_snapshot_evidence=_CERTIFIED,
+        store="none",
+    )
+    run_scope = Scope(view="run", grain="total")
+    run_experiment = replace(
+        experiment,
+        scopes=(run_scope,),
+        operations={run_scope.hash(): "run"},
+    )
+    try:
+        initial = run(
+            run_experiment,
+            resolver,
+            analysis_options={"capture": {"finalized": True, "as_of": _AS_OF}},
+        )
+        initial_state = initial.cells[0].components["sequential"][1]
+        assert initial_state is not None
+        initial_prefix = initial_state.fields["sequential_result"]["checkpoint"]["prefix_id"]
+        scopes = (
+            run_scope,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=(BreakoutIdentity("region", None),),
+            ),
+        )
+        experiment = replace(
+            experiment,
+            scopes=scopes,
+            operations={
+                scopes[0].hash(): "run",
+                scopes[1].hash(): "run_asof_lift",
+            },
+        )
+        with pytest.raises(CodedError) as refused:
+            run(
+                experiment,
+                resolver,
+                analysis_options={"capture": {"finalized": True, "as_of": _LATER}},
+            )
+        assert refused.value.code == "sequential.route.unsupported"
+        after = run(run_experiment, resolver)
+        after_state = after.cells[0].components["sequential"][1]
+        assert after_state is not None
+        assert after_state.fields["sequential_result"]["checkpoint"]["prefix_id"] == initial_prefix
+    finally:
+        connection.disconnect()
+
+
+def _assert_empty_sequential_compliance(tmp_path):
+    compliance_path = tmp_path / "compliance"
+    compliance_path.mkdir()
+    connection = ibis.duckdb.connect()
+    analysis, _ = _analysis(
+        compliance_path,
+        _events(uptake=True),
+        plan=_COMPLIANCE_PLAN,
+        connection=connection,
+        encouragement=True,
+    )
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        with pytest.raises(CodedError) as refused:
+            analysis.run(metrics=[], estimands=("late",))
+        assert refused.value.code == "sequential.route.unsupported"
+        default_rows = analysis.run(metrics=[])
+        assert {row.estimand for row in default_rows} == {"compliance"}
+        rows = analysis.run(metrics=[], estimands=("compliance",))
+        assert {row.estimand for row in rows} == {"compliance"}
+        # Separate run calls may have distinct snapshot IDs; compare all readout data and state.
+        assert [row.model_dump(exclude={"source_snapshot_id"}) for row in default_rows] == [
+            row.model_dump(exclude={"source_snapshot_id"}) for row in rows
+        ]
+        assert default_rows.sequential_snapshot == rows.sequential_snapshot
+    finally:
+        analysis.close()
+        connection.disconnect()
+
+
+def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = from_definitions(
+        path,
+        connection,
+        experiment_name="exp",
+        source_snapshot_evidence=_CERTIFIED,
+        store="none",
+    )
+    analysis = cast(Any, resolver)._analysis
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        scoped = replace(
+            experiment,
+            scopes=(Scope(view="run", grain="total", population="triggered"),),
+        )
+        result = run(scoped, resolver)
+        assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
+        metadata = result.run.metadata
+        assert metadata is not None and metadata.partial
+        assert {(record.source_snapshot_id, record.cell) for record in metadata.cells} == {
+            (cell.identity.source_snapshot_id, cell.identity.key) for cell in result.cells
+        }
+        store = ParquetResultsStore(tmp_path / "triggered-run")
+        store.put(result.run)
+        restored_run = store.open_run(
+            result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id
+        ).run
+        assert restored_run.cells == result.run.cells
+    finally:
+        analysis.close()
+
+
+def _assert_combined_compliance_family_requests(tmp_path):
+    connection = ibis.duckdb.connect()
+    try:
+        data_dir = tmp_path / "combined-compliance"
+        data_dir.mkdir()
+        path = data_dir / "definitions.yml"
+        path.write_text(
+            _definitions(plan=_COMPLIANCE_PLAN, encouragement=True),
+            encoding="utf-8",
+        )
+        connection.create_table("events", obj=_events(uptake=True))
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="run", grain="total", population="triggered"),
+        )
+        combined = replace(experiment, scopes=scopes)
+        cast(Any, resolver).capture_sequential(finalized=True, as_of=_LATER)
+        mixed = run(
+            combined,
+            resolver,
+            analysis_options={"metrics": ["revenue"], "estimands": ["itt", "compliance"]},
+        )
+        assert {
+            (cell.identity.key.analysis_population, cell.identity.key.metric)
+            for cell in mixed.cells
+        } >= {("assigned", "revenue"), ("triggered", "revenue")}
+        captured = run(
+            combined,
+            resolver,
+            analysis_options={
+                "estimands": ["compliance"],
+                "capture": {"finalized": True, "as_of": _LATER},
+            },
+        )
+        assert {
+            (cell.identity.key.analysis_population, cell.identity.key.estimand)
+            for cell in captured.cells
+        } == {("assigned", "compliance"), ("triggered", "compliance")}
+    finally:
+        connection.disconnect()
+
+
+@pytest.mark.integration
+def test_registered_combined_compliance_replays_after_event_source_removal(tmp_path):
+    path = tmp_path / "combined-compliance-replay.yml"
+    path.write_text(_definitions(plan=_COMPLIANCE_PLAN, encouragement=True), encoding="utf-8")
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", obj=_events(uptake=True))
+    try:
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
+        cast(Any, resolver).capture_sequential(finalized=True, as_of=_LATER)
+        connection.drop_table("events")
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="run", grain="total", population="triggered"),
+        )
+        combined = replace(experiment, scopes=scopes)
+
+        result = run(combined, resolver, analysis_options={"estimands": ["compliance"]})
+
+        assert {
+            (cell.identity.key.analysis_population, cell.identity.key.estimand)
+            for cell in result.cells
+        } == {("assigned", "compliance"), ("triggered", "compliance")}
+    finally:
+        connection.disconnect()
+
+
+@pytest.mark.integration
+def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path):
+    path = tmp_path / "triggered-daily-family.yml"
+    path.write_text(
+        _definitions(plan="      primary: revenue\n      alternative: two-sided\n"),
+        encoding="utf-8",
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", obj=_events())
+    try:
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            store="none",
+        )
+        connection.drop_table("events")
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="daily", grain="daily", population="triggered"),
+        )
+        operations = {scopes[0].hash(): "run", scopes[1].hash(): "run_daily_lift"}
+        combined = replace(experiment, scopes=scopes, operations=operations)
+
+        with pytest.raises(CodedError) as raised:
+            run(combined, resolver, analysis_options={"metrics": ["revenue"]})
+
+        assert raised.value.code == "source.native.trigger_evidence_required"
+    finally:
+        connection.disconnect()
+
+
+def test_trigger_declared_capture_reports_both_populations(tmp_path):
+    connection = ibis.duckdb.connect()
+    analysis, path = _analysis(tmp_path, _events(), connection=connection)
+    moments_analysis = None
+    try:
+        _assert_empty_sequential_compliance(tmp_path)
+        _assert_selected_registered_family_capture(tmp_path)
+        _assert_combined_compliance_family_requests(tmp_path)
         snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
         assert snapshot.triggered.population == "triggered"
@@ -278,8 +573,36 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         history = analysis.run_asof_lift(population="triggered")
         assert [(row.analysis_population, row.ds) for row in history] == [("triggered", _LATER)]
         assert history[0].sequential_result == triggered.require_sequential_result()
+
+        _assert_triggered_only_store_roundtrip(tmp_path, path, connection)
+        moments_path = tmp_path / "triggered-sequential.parquet"
+        analysis.export(moments_path)
+        moments_experiment, moments_resolver = from_moments(
+            pq.read_table(moments_path).to_pylist(),
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        moments_analysis = cast(Any, moments_resolver)._analysis
+        moments_scoped = replace(
+            moments_experiment,
+            scopes=(
+                Scope(view="run", grain="total", population="triggered"),
+                Scope(
+                    view="asof",
+                    grain="asof",
+                    population="triggered",
+                    completion_policy=True,
+                ),
+            ),
+        )
+        combined = run(moments_scoped, moments_resolver)
+        assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
+        assert {cell.identity.key.analysis_population for cell in combined.cells} == {"triggered"}
     finally:
+        if moments_analysis is not None:
+            moments_analysis.close()
         analysis.close()
+        connection.disconnect()
 
 
 def _triggered_source_first_metadata(metadata_payload: dict[str, Any]) -> dict[str, Any]:
