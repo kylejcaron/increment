@@ -1,4 +1,4 @@
-# Traced on commit: 2dfc7a04ced4ffea21644e506ca36d444f5fd63d
+# Traced on commit: 25619911d6c9e666a9a0dff6c8ca39b31fd34d98
 increment
 increment._analysis_config
 increment._analysis_execution
@@ -38,7 +38,6 @@ increment._source_types
 increment._study
 increment._trigger_integrity
 increment._unit_cycle
-increment.readouts._whole_window
 increment._window
 increment._winsor_errors
 increment.analysis
@@ -155,6 +154,7 @@ increment.readouts._requests
 increment.readouts._run
 increment.readouts._source_digest
 increment.readouts._srm
+increment.readouts._whole_window
 increment.semantics
 increment.semantics.artifact
 increment.semantics.assignment
