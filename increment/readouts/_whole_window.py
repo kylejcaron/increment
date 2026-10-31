@@ -163,6 +163,23 @@ class WholeWindowRequest:
     prior: Prior | None | _Unset
 
 
+@dataclass(frozen=True, slots=True)
+class WholeWindowExploratoryRequest:
+    """A preflighted exploratory reader and its in-scope reader factory."""
+
+    request: WholeWindowRequest
+    reader: WholeWindowReadouts
+    make_reader: Callable[[], WholeWindowReadouts]
+
+
+@dataclass(frozen=True, slots=True)
+class WholeWindowFamilyRequest:
+    """One declared run family and its optional exploratory sibling."""
+
+    declared: WholeWindowRequest
+    exploratory: WholeWindowExploratoryRequest | None = None
+
+
 def validate_whole_window(
     req: WholeWindowRequest,
     *,
@@ -233,6 +250,7 @@ class WholeWindowReadouts:
         readout_source: Callable[..., _BuiltinMomentSource],
         validate_trigger: Callable[[object], None],
         arm_moments: Callable[..., list[LiftEstimate]],
+        execution_context_scope: Callable[[EvidenceExecutionContext], Any],
     ) -> None:
         self._src = src
         self._plan = plan
@@ -241,6 +259,7 @@ class WholeWindowReadouts:
         self._readout_source = readout_source
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
+        self._execution_context_scope = execution_context_scope
 
     def validate(self, req: WholeWindowRequest) -> RouteName:
         """Validate requests and portable configuration snapshots before capture."""
@@ -266,7 +285,145 @@ class WholeWindowReadouts:
 
         for config in configs:
             _config_snapshot(config, self._design)
+        if (
+            route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+            and getattr(self._plan.inference, "registration", None) is None
+            and self._experiment is not None
+            and self._experiment.trigger is not None
+            and req.population in (None, "triggered")
+        ):
+            if not is_custom_source(self._src) and not validates_populations(self._src):
+                _refuse(
+                    _TRIGGER_UNSUPPORTED,
+                    method="run",
+                    experiment=self._experiment.name,
+                    trigger=self._experiment.trigger,
+                    route=route,
+                    supported_sources=("from_definitions", "from_unit_day_artifact"),
+                )
+            populations = (
+                ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
+            )
+            validate_populations(self._src, populations, operation="run")
         return route
+
+    def run_family(
+        self,
+        family: WholeWindowFamilyRequest,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> LiftEstimates:
+        """Prepare, capture, execute, and assemble a declared/exploratory family."""
+        from increment._evidence_scopes import capture_requirements
+        from increment.breakout.estimates import LiftEstimates, _stamp_exploratory_rows
+
+        members = [(self, family.declared)]
+        if family.exploratory is not None:
+            members.append((family.exploratory.reader, family.exploratory.request))
+
+        scopes = []
+        for reader, request in members:
+            reader.validate(request)
+            population = request.population or "assigned"
+            selected, configs = _prepare_run_request(
+                reader._src,
+                decision_method=request.decision_method,
+                sensitivity_methods=request.sensitivity_methods,
+                prior=request.prior,
+                metrics=[metric.name for metric in request.metrics],
+                estimands=request.estimands,
+                value_scale=request.value_scale,
+                population=(
+                    "assigned"
+                    if population == "triggered"
+                    and getattr(reader._plan.inference, "registration", None) is not None
+                    else population
+                ),
+            )
+            compliance_only = _design_compliance_only(reader._src.context, request.estimands)
+            has_trigger = reader._experiment is not None and reader._experiment.trigger is not None
+            populations = (
+                ("assigned", "triggered")
+                if request.population is None and has_trigger
+                else (population,)
+            )
+            scopes.append(
+                EvidenceScope(
+                    metrics=() if compliance_only else tuple(selected),
+                    horizon_metrics=() if compliance_only else tuple(reader._src.context.metrics),
+                    configs=tuple(configs),
+                    population=population,
+                    populations=populations,
+                    grain="total",
+                    snapshot=True,
+                    execution=True,
+                    include_breakouts=False,
+                )
+            )
+        scope = capture_requirements(self._src, scopes)
+
+        def execute(context: EvidenceExecutionContext | None) -> LiftEstimates:
+            rows = (
+                self.run(family.declared, execution_context=context)
+                if family.declared.metrics
+                or _design_compliance_only(self._src.context, family.declared.estimands)
+                else LiftEstimates()
+            )
+            if not isinstance(rows, LiftEstimates):
+                rows = LiftEstimates(rows)
+            if family.exploratory is not None:
+                request = family.exploratory.request
+                reader = family.exploratory.make_reader()
+                extra = reader.run(request, execution_context=context)
+                extra = LiftEstimates(
+                    [row for row in extra if row.estimand != "compliance"],
+                    metadata=extra.metadata,
+                    source=extra.source,
+                    sequential_snapshot=extra.sequential_snapshot,
+                    default_backend=extra._default_backend,
+                )
+                extra = _stamp_exploratory_rows(extra)
+                rows = extra if rows.metadata is None else rows.concat(extra)
+            if context is not None and rows.metadata is not None:
+                metadata = rows.metadata
+                rows._metadata = type(metadata).model_validate(
+                    {
+                        **metadata.__dict__,
+                        "coherence": (
+                            None
+                            if "provider" in context.effective_modes.values()
+                            else context.coherence
+                        ),
+                        "effective_modes": dict(context.effective_modes),
+                    }
+                )
+            return rows
+
+        if execution_context is not None:
+            return execute(execution_context)
+
+        from uuid import uuid4
+
+        from increment.decision import ContrastContext
+        from increment.kernel.context import EvidenceExecutionContext
+        from increment.readouts._provider import native_scope_provider
+
+        if isinstance(self._src.context, ContrastContext):
+            from increment._evidence_scopes import switchback_scope_provider
+
+            provider = switchback_scope_provider(self._src)
+        else:
+            provider = (
+                self._src if is_custom_source(self._src) else native_scope_provider(self._src)
+            )
+        context = EvidenceExecutionContext(
+            provider,
+            scope,
+            run_id=uuid4().hex,
+            coherence=family.declared.coherence,
+            shared_capture=True,
+        )
+        with context.evidence_scope(), self._execution_context_scope(context):
+            return execute(context)
 
     def run(
         self,
@@ -294,25 +451,6 @@ class WholeWindowReadouts:
                 )
             )
             return _select_population(result, req.population)
-        if (
-            route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
-            and self._experiment is not None
-            and self._experiment.trigger is not None
-            and req.population in (None, "triggered")
-        ):
-            if not is_custom_source(self._src) and not validates_populations(self._src):
-                _refuse(
-                    _TRIGGER_UNSUPPORTED,
-                    method="run",
-                    experiment=self._experiment.name,
-                    trigger=self._experiment.trigger,
-                    route=route,
-                    supported_sources=("from_definitions", "from_unit_day_artifact"),
-                )
-            populations = (
-                ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
-            )
-            validate_populations(self._src, populations, operation="run")
         design_summary_only = _design_compliance_only(self._src.context, req.estimands)
         if not req.metrics and not design_summary_only:
             from increment.breakout.estimates import LiftEstimates
@@ -443,6 +581,7 @@ class WholeWindowReadouts:
 
 
 __all__ = [
+    "WholeWindowFamilyRequest",
     "WholeWindowReadouts",
     "WholeWindowRequest",
     "reject_role_overrides_under_contrast",

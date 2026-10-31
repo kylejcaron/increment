@@ -1176,7 +1176,8 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
             for source in metadata.scope.by_source.values()
         } == {("rps",), ("revenue",)}
         assert {len(source.cells) for source in metadata.scope.by_source.values()} == {1}
-        assert len(metadata.captures) == 2
+        # Two source scopes belong to one shared live execution context.
+        assert len(metadata.captures) == 1
         import json
 
         from increment.tables import estimates_to_readout, readout_table
