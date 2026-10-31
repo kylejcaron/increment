@@ -311,6 +311,19 @@ class ResultCell:
                 code="results.cell.schema_unsupported",
                 context={"row_kind": self.row_kind},
             )
+        if (
+            self.source_snapshot_id is not None
+            and self.identity.source_snapshot_id is not None
+            and self.source_snapshot_id != self.identity.source_snapshot_id
+        ):
+            raise CodedError(
+                "Result-cell source snapshot does not match its identity",
+                code="results.cell.schema_unsupported",
+                context={
+                    "source_snapshot_id": self.source_snapshot_id,
+                    "identity_source_snapshot_id": self.identity.source_snapshot_id,
+                },
+            )
         object.__setattr__(self, "row_payload", payload)
         support: dict[str, frozenset[Operation]] = {}
         for name in ("sampling", "posterior", "sequential"):
@@ -1019,7 +1032,7 @@ class ResultCell:
             summary_data["intervals"] = tuple(
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
-        return cls(
+        cell = cls(
             identity=identity,
             label=payload["label"],
             family=None
@@ -1033,6 +1046,20 @@ class ResultCell:
             row_kind=row_kind,
             row_payload=row_payload,
         )
+        typed_report_rows = {
+            "breakout",
+            "daily_metric",
+            "asof_metric",
+            "daily_lift",
+            "asof_lift",
+            "switchback_variance",
+            "switchback_unit_t_approximation",
+            "switchback_block_t",
+            "switchback_unit_variance_envelope",
+        }
+        if row is not None or (row_payload is not None and row_kind in typed_report_rows):
+            return replace(cell, summary=_report_summary(cell._projection_row(), identity))
+        return cell
 
     @staticmethod
     def to_arrow(cells: Sequence[ResultCell]) -> pa.Table:
