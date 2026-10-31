@@ -801,9 +801,9 @@ class Analysis:
         policy: Literal["error", "warn", "exclude"],
         design: Any | None = None,
     ) -> ArtifactContext:
-        from increment.query.artifact_publish import artifact_context
+        from increment.query.artifact_ports import artifact_query_ports
 
-        return artifact_context(
+        return artifact_query_ports().publisher.artifact_context(
             definitions,
             experiment,
             policy,
@@ -817,11 +817,14 @@ class Analysis:
         context: ArtifactContext,
         extensions: Sequence[Any],
     ) -> tuple[Any, ...]:
+        from increment._canonical import canonical_json_bytes
         from increment.query.artifact_contract import (
             ArtifactContractError,
             unit_day_artifact_extension_catalog,
         )
-        from increment.query.artifact_digest import canonical_json
+
+        def canonical_json(value: object) -> str:
+            return canonical_json_bytes(value).decode()
 
         entries = unit_day_artifact_extension_catalog(context)
         selected: list[Any] = []

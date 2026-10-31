@@ -80,7 +80,7 @@ from increment.query._native_refusals import (
 )
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import ArtifactStore
-from increment.query.artifact_publish import ArtifactPublisher, _effective_snapshot_edge
+from increment.query.artifact_ports import artifact_query_ports
 from increment.query.builders import (
     _apply_filter,
     _attach_uptake_flag,
@@ -181,6 +181,14 @@ if TYPE_CHECKING:
     from increment.semantics.design import Observational, Randomized
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import Grain, _BuiltinMomentSource
+
+
+def ArtifactPublisher(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().publisher.ArtifactPublisher(*args, **kwargs)
+
+
+def _effective_snapshot_edge(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().publisher._effective_snapshot_edge(*args, **kwargs)
 
 
 _SNAPSHOT_HORIZON_RELATION_KEY = "__increment_readout_snapshot_horizon__"
@@ -1406,7 +1414,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return union_event_horizon(event_tables, self._experiment)
 
     @property
-    def _publisher(self) -> ArtifactPublisher:
+    def _publisher(self) -> Any:
         # Built per call: bound accessors and audit counters must stay live.
         return ArtifactPublisher(
             experiment=self._experiment,
@@ -1979,7 +1987,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         an inclusive timestamp cutoff alone certifies nothing. A trigger declared
         through SQL has no feed to certify and refuses.
         """
-        from increment.query.sequential_capture import certify_capture_feed
+        certify_capture_feed = artifact_query_ports().sequential_capture.certify_capture_feed
         from increment.sequential_state import sequential_refuse
 
         evidence = self._require_source_snapshot_evidence(operation="capture_sequential")
@@ -4399,11 +4407,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def capture_sequential(self, *, finalized: bool, as_of: dt.date, previous=None):
         """Capture only units finalized through the explicit common horizon."""
-        from increment.query.artifact_publish import artifact_context
-        from increment.query.sequential_capture import (
-            capture_relations,
-            record_batches,
-            validate_relational_capture,
+        artifact_context = artifact_query_ports().publisher.artifact_context
+        capture_relations = artifact_query_ports().sequential_capture.capture_relations
+        record_batches = artifact_query_ports().sequential_capture.record_batches
+        validate_relational_capture = (
+            artifact_query_ports().sequential_capture.validate_relational_capture
         )
         from increment.sequential_state import sequential_refuse
 
