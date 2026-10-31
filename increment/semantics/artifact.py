@@ -1,7 +1,6 @@
-"""The unit-day artifact contract: manifest, extension catalog, digests.
+"""Unit-day artifact schemas, extension catalog, and digests.
 
-Moved out of `increment.semantics.models` (S4); `models.py` re-exports
-every public name here for one release (D6), deleted next release.
+Documented artifact workflows are exposed by `increment.artifacts`.
 """
 
 from __future__ import annotations

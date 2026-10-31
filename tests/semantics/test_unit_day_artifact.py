@@ -1,6 +1,4 @@
 import json
-import subprocess
-import sys
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
@@ -114,49 +112,6 @@ def _manifest():
     digest_input = UnitDayArtifactManifest.model_construct(**values)
     values["manifest_sha256"] = _artifact_manifest_digest(digest_input)
     return UnitDayArtifactManifest(**values)
-
-
-def test_artifact_context_lives_in_artifact_module():
-    import increment.semantics.artifact as artifact
-    from increment.semantics.models import ArtifactContext
-
-    assert ArtifactContext is artifact.ArtifactContext
-    assert ArtifactContext.__module__ == "increment.semantics.artifact"
-
-
-@pytest.mark.slow
-def test_models_legacy_explicit_import_loads_artifact_only_on_demand():
-    code = """
-import sys
-
-import increment.semantics.models
-
-assert "increment.semantics.artifact" not in sys.modules
-from increment.semantics.models import ArtifactContext
-from increment.semantics.artifact import ArtifactContext as MovedArtifactContext
-assert ArtifactContext is MovedArtifactContext
-"""
-    subprocess.run([sys.executable, "-c", code], check=True)
-
-
-def test_models_legacy_exports_support_explicit_and_wildcard_imports_lazily():
-    import increment.semantics.artifact as artifact
-    import increment.semantics.models as models
-
-    public_models_names = {name for name in vars(models) if not name.startswith("_")}
-    assert "ArtifactContext" not in vars(models)
-    assert public_models_names <= set(models.__all__)
-
-    namespace: dict[str, Any] = {}
-    exec("from increment.semantics.models import *", namespace)
-
-    assert set(models.__all__) <= namespace.keys()
-    assert namespace["Definitions"] is models.Definitions
-    lazy_names = [name for name in models.__all__ if name not in vars(models)]
-    assert lazy_names
-    for name in lazy_names:
-        assert namespace[name] is getattr(artifact, name)
-    assert "ArtifactContext" not in vars(models)
 
 
 def test_valid_manifest_is_frozen_and_round_trips_deterministically():
