@@ -4024,9 +4024,11 @@ def test_windowed_censoring_fallback_is_scoped_to_that_metrics_own_fact_stream()
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     assert sum(r["n"] for r in rare_rows) == 0
 
-    # 'm''s own fact stream reaches day 20, well past its 10-day maturity
-    # bound, so it is untouched by 'rare''s censoring even in the same batched pass (FramePanelSource.moments' per-grain memoization).
-    m_rows = _moments(src, m_metric, grain="total")
+    # The shared batch replays rare's diagnostic; m still includes its ten
+    # mature units.
+    with pytest.warns(IncrementWarning) as replayed:
+        m_rows = _moments(src, m_metric, grain="total")
+    assert "frame.censoring.dropped_units" in warning_codes(replayed)
     assert sum(r["n"] for r in m_rows) == 10
 
 
