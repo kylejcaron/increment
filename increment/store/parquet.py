@@ -13,8 +13,8 @@ import pyarrow.parquet as pq
 
 from increment._canonical import canonical_json_bytes
 from increment.kernel.contracts import CellIdentity, CompiledPlanBinding
+from increment.kernel.program_refusals import refuse_store
 from increment.result_envelope import AnalysisEnvelope
-from increment.store._refusals import refuse_store
 from increment.store.types import (
     HistorySelector,
     Run,

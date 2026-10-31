@@ -2,33 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Literal, NoReturn, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
-from increment.errors import CodedError, InvalidRequestError, RefusalSpec, refusals, refuse
+from increment.errors import CodedError
 from increment.kernel.contracts import CompiledPlanBinding, Registration, contract_hash
 from increment.kernel.ports import RunHandlePort, RunRecord
+from increment.kernel.program_refusals import refuse_store
 from increment.result_envelope import combine_family_evidence, family_evidence
-
-
-def _render(message: str, **_: object) -> str:
-    return message
-
-
-_REFUSALS = refusals(
-    InvalidRequestError,
-    {
-        code: RefusalSpec(code, InvalidRequestError, render=_render)
-        for code in (
-            "store.decision.reference_invalid",
-            "store.run.roster_mismatch",
-            "store.run.provenance_mismatch",
-        )
-    },
-)
-
-
-def refuse_store(code: str, message: str, **context: object) -> NoReturn:
-    refuse(_REFUSALS[code], message=message, **context)
 
 
 @dataclass(frozen=True, slots=True)

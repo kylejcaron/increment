@@ -121,7 +121,14 @@ def _validate_analysis_binding(
 def _events(run: RunRecord, decisions: Decisions, binding: CompiledPlanBinding) -> tuple[Any, ...]:
     operations = program_store_operations()
     cells_by_hash = {cell.identity.hash(): cell for cell in run.cells}
-    scope = run.metadata.scope
+    metadata = run.metadata
+    if metadata is None:
+        raise CodedError(
+            "Registered decision events require complete run metadata",
+            code="store.run.metadata_mismatch",
+            context={"run_id": run.run_id},
+        )
+    scope = metadata.scope
     output: list[Any] = []
     for verdict in decisions.families:
         if verdict.procedure not in {"bh", "e_bh", "bonferroni"}:

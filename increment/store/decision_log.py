@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, NotRequired, Protocol, TypedDict, cast
 
 from increment.kernel.contracts import CellIdentity, CompiledPlanBinding, Registration
-from increment.store._refusals import refuse_store
+from increment.kernel.program_refusals import refuse_store
 from increment.store.types import RunHandle, run_digest
 
 

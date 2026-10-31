@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import cache
+from importlib.metadata import distribution
 from typing import Any, Protocol
+
+from increment.estimation.readout_types import ReadoutMetadata
+from increment.kernel.contracts import CellIdentity, CompiledPlanBinding
+from increment.result_envelope import AnalysisEnvelope, ResultCell
 
 
 class CateOperations(Protocol):
@@ -24,17 +29,20 @@ class ProgramStoreOperations(Protocol):
     PersistenceIdentity: type[Any]
     Run: type[Any]
 
-    def run_digest(self, run: Any) -> str: ...
+    def run_digest(self, run: RunRecord) -> str: ...
 
 
 class RunRecord(Protocol):
     """Run data consumed by core orchestration without store ownership."""
 
     @property
-    def cells(self) -> tuple[Any, ...]: ...
+    def expected_roster(self) -> tuple[CellIdentity, ...]: ...
 
     @property
-    def metadata(self) -> Any: ...
+    def cells(self) -> tuple[ResultCell, ...]: ...
+
+    @property
+    def metadata(self) -> ReadoutMetadata | None: ...
 
     @property
     def run_id(self) -> str: ...
@@ -49,7 +57,7 @@ class RunRecord(Protocol):
     def decision_plan_unavailable_reason(self) -> str | None: ...
 
     @property
-    def decision_plan(self) -> Any: ...
+    def decision_plan(self) -> CompiledPlanBinding | None: ...
 
     @property
     def execution_identity_hash(self) -> str: ...
@@ -64,7 +72,7 @@ class RunHandlePort(Protocol):
     @property
     def run(self) -> RunRecord: ...
 
-    def envelope(self) -> Any: ...
+    def envelope(self) -> AnalysisEnvelope: ...
 
 
 class ResultsStorePort(Protocol):
@@ -86,20 +94,24 @@ class DecisionLogPort(Protocol):
 @cache
 def cate_operations() -> CateOperations:
     """Load the installed CATE implementation only when a route is used."""
-    from importlib.metadata import entry_points
-
-    providers = entry_points(group="increment.cate_operations")
+    providers = tuple(
+        provider
+        for provider in distribution("increment").entry_points
+        if provider.group == "increment.cate_operations" and provider.name == "core"
+    )
     if len(providers) != 1:
-        raise RuntimeError("exactly one increment.cate_operations provider is required")
-    return next(iter(providers)).load()()
+        raise RuntimeError("exactly one built-in increment.cate_operations provider is required")
+    return providers[0].load()()
 
 
 @cache
 def program_store_operations() -> ProgramStoreOperations:
     """Load program-store values only when core handles a run."""
-    from importlib.metadata import entry_points
-
-    providers = entry_points(group="increment.program_store")
+    providers = tuple(
+        provider
+        for provider in distribution("increment").entry_points
+        if provider.group == "increment.program_store" and provider.name == "core"
+    )
     if len(providers) != 1:
-        raise RuntimeError("exactly one increment.program_store provider is required")
-    return next(iter(providers)).load()()
+        raise RuntimeError("exactly one built-in increment.program_store provider is required")
+    return providers[0].load()()
