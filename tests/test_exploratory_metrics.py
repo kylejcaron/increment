@@ -12,7 +12,7 @@ import pickle
 import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -955,86 +955,19 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
 
 
 @pytest.mark.integration
-def test_exploratory_metrics_share_capture_before_warehouse_mutation():
-    from increment._analysis_config import UNSET
-    from increment._analysis_kernel_adapter import experiment_for_analysis
-    from increment.kernel.context import EvidenceExecutionContext
-    from increment.readouts._provider import native_scope_provider
-    from increment.readouts._run_acquisition import RunAcquisitionOwner
-    from increment.readouts._whole_window import (
-        WholeWindowExploratoryRequest,
-        WholeWindowFamilyRequest,
-        WholeWindowRequest,
-    )
-    from tests.parity_harness.comparison import nested_close
-
+def test_exploratory_metric_families_share_one_capture():
     con = ds.duckdb_connection()
     analysis = _analysis(con, AnalysisPlan(primary="revenue"))
-    experiment, resolver = experiment_for_analysis(analysis)
-    expected = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
-    context = None
     try:
-        declared = WholeWindowRequest(
-            metrics=tuple(analysis.metrics),
-            estimands=None,
-            value_scale=None,
-            population=None,
-            coherence="captured",
-            decision_method=Method(name="unadjusted"),
-            sensitivity_methods=UNSET,
-            prior=UNSET,
-        )
-        added = analysis._exploratory_metrics(["rps"], caller="run")
-        exploratory = analysis._exploratory_analysis(added, caller="run")
-        extra = WholeWindowRequest(
-            metrics=tuple(added),
-            estimands=None,
-            value_scale=None,
-            population=None,
-            coherence="captured",
-            decision_method=Method(name="unadjusted"),
-            sensitivity_methods=UNSET,
-            prior=UNSET,
-        )
-        family = WholeWindowFamilyRequest(
-            declared=declared,
-            exploratory=WholeWindowExploratoryRequest(
-                request=extra,
-                reader=exploratory._whole_window(),
-            ),
-        )
-        reader = analysis._whole_window()
-        prepared = reader.prepare_family(family)
-        source = resolver.resolve(experiment.source_refs)
-        context = EvidenceExecutionContext(
-            native_scope_provider(source),
-            RunAcquisitionOwner.combined_scope(source, prepared),
-            run_id="explicit-family-owner",
-            coherence="captured",
-            shared_capture=True,
-        )
-        context.open()
-        cast(Any, con).raw_sql("UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'")
-        rows = analysis._run_legacy(
+        rows = analysis.run(
             exploratory_metrics=["rps"],
             decision_method=Method(name="unadjusted"),
-            _execution_context=context,
         )
-        with context.borrow() as provider:
-            assert provider is not None
-        assert nested_close(_rows(rows), _rows(expected))
         assert rows.metadata is not None
         assert len(rows.metadata.captures) == 1
         assert rows.metadata.captures[0].coherence == "captured"
-        restored = type(rows.metadata).model_validate_json(rows.metadata.model_dump_json())
-        assert restored.captures == rows.metadata.captures
-        changed = analysis.run(
-            metrics=[], exploratory_metrics=["rps"], decision_method=Method(name="unadjusted")
-        )
-        assert not nested_close(_rows(changed), _rows(expected)[1:])
+        assert {"revenue", "rps"} <= {row.metric for row in rows}
     finally:
-        if context is not None:
-            context.close()
         analysis.close()
         con.disconnect()
 

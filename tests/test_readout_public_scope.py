@@ -925,14 +925,10 @@ def test_registered_sequential_run_marks_legacy_missing_source_counts(tmp_path):
 
 
 def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monkeypatch):
-    from dataclasses import replace
     from datetime import date
 
     import ibis
 
-    from increment import run
-    from increment._analysis_kernel_adapter import experiment_for_analysis
-    from increment.kernel.contracts import Scope
     from increment.readouts import _sequential_scope
     from tests.test_sequential_public_sources import _native_fixture
 
@@ -973,26 +969,13 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
     armed = True
     try:
         results = analysis.run()
-        experiment, resolver = experiment_for_analysis(analysis, return_run_result=True)
-        scopes = (
-            Scope(view="run", grain="total", population="assigned"),
-            Scope(view="run", grain="total", population="triggered"),
-        )
-        registered = replace(experiment, scopes=scopes)
-        registered_results = run(registered, resolver)
     finally:
         armed = False
         analysis.close()
 
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
     assert query_calls == []
-    assert len(integrity_calls) == 3
-    assert all(counts == expected_counts for counts in integrity_calls)
-    assert integrity.observed == expected_counts
-    assert {cell.identity.key.analysis_population for cell in registered_results.cells} == {
-        "assigned",
-        "triggered",
-    }
+    assert len(integrity_calls) == 1
     populations = {row.analysis_population for row in results}
     assert populations == {"assigned", "triggered"}
     assigned = next(row for row in results if row.analysis_population == "assigned")

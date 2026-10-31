@@ -1882,28 +1882,13 @@ def test_from_unit_panel_asof_encouragement_dimension_has_same_estimands(
     assert {row.dimension_value for row in results} == {"US", "CA"}
     assert {row.estimand for row in results} == {"itt", "compliance", "late"}
 
-    from dataclasses import replace
-
-    from increment import run
-    from increment._analysis_kernel_adapter import experiment_for_analysis
-    from increment._evidence_types import BreakoutIdentity
-    from increment.kernel.contracts import Scope
-
-    experiment, resolver = experiment_for_analysis(windowed_encouragement_panel_analysis)
-    scoped = replace(
-        experiment,
-        scopes=(
-            Scope(
-                view="asof",
-                grain="asof",
-                segment=(BreakoutIdentity("country", None),),
-            ),
-        ),
+    compliance = windowed_encouragement_panel_analysis.run_asof_lift(
+        estimands=("compliance",), dimension="country"
     )
-    projected = run(scoped, resolver, analysis_options={"estimands": ["compliance"]})
     expected = [row for row in results if row.estimand == "compliance"]
-    assert projected
-    assert len(projected) == len(expected)
+    assert {row.dimension_value for row in compliance} == {"US", "CA"}
+    assert {row.estimand for row in compliance} == {"compliance"}
+    assert len(compliance) == len(expected)
 
 
 def test_from_unit_panel_encouragement_raw_itt_requires_finalized_checkpoint():

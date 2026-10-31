@@ -297,16 +297,36 @@ def _assert_selected_registered_family_capture(tmp_path):
 
 
 def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
-    from increment._analysis_kernel_adapter import experiment_for_analysis
     from increment.evidence import BreakoutIdentity
 
     connection = ibis.duckdb.connect()
-    analysis, _ = _analysis(tmp_path, _events(n_per_arm=10), connection=connection, breakouts=True)
+    path = tmp_path / "defs.yml"
+    path.write_text(_definitions(plan=_PRIMARY_PLAN, breakouts=True))
+    connection.create_table("events", obj=_events(n_per_arm=10))
+    experiment, resolver = from_definitions(
+        path,
+        connection,
+        experiment_name="exp",
+        source_snapshot_evidence=_CERTIFIED,
+        store="none",
+    )
+    run_scope = Scope(view="run", grain="total")
+    run_experiment = replace(
+        experiment,
+        scopes=(run_scope,),
+        operations={run_scope.hash(): "run"},
+    )
     try:
-        initial = analysis.capture_sequential(finalized=True, as_of=_AS_OF)
-        experiment, resolver = experiment_for_analysis(analysis)
+        initial = run(
+            run_experiment,
+            resolver,
+            analysis_options={"capture": {"finalized": True, "as_of": _AS_OF}},
+        )
+        initial_state = initial.cells[0].components["sequential"][1]
+        assert initial_state is not None
+        initial_prefix = initial_state.fields["sequential_result"]["checkpoint"]["prefix_id"]
         scopes = (
-            Scope(view="run", grain="total"),
+            run_scope,
             Scope(
                 view="asof",
                 grain="asof",
@@ -328,9 +348,11 @@ def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
                 analysis_options={"capture": {"finalized": True, "as_of": _LATER}},
             )
         assert refused.value.code == "sequential.route.unsupported"
-        assert analysis.sequential_snapshot().prefix_id == initial.prefix_id
+        after = run(run_experiment, resolver)
+        after_state = after.cells[0].components["sequential"][1]
+        assert after_state is not None
+        assert after_state.fields["sequential_result"]["checkpoint"]["prefix_id"] == initial_prefix
     finally:
-        analysis.close()
         connection.disconnect()
 
 

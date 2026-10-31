@@ -1848,11 +1848,21 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         daily = native.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
         from dataclasses import replace
 
-        from increment._analysis_kernel_adapter import experiment_for_analysis
-        from increment._run import run as execute
+        from increment import run
+        from increment.builders import from_moments
         from increment.kernel.contracts import Scope
 
-        experiment, resolver = experiment_for_analysis(native, return_run_result=True)
+        path = tmp_path / "uptake-retention-catalog.parquet"
+        native.export(path)
+        replay_rows = pq.read_table(path).to_pylist()
+        experiment, resolver = from_moments(
+            replay_rows,
+            metrics=[
+                MetricSpec(name="outcome", type="conversion", window_days=2),
+                MetricSpec(name="stay", type="retention", threshold_days=1),
+            ],
+            design=_native_source(native).context.design,
+        )
         experiment = replace(
             experiment,
             scopes=(
@@ -1860,16 +1870,13 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
                 Scope(view="asof", grain="asof", completion_policy=True),
             ),
         )
-        combined = execute(
+        combined = run(
             experiment,
-            resolver=resolver,
+            resolver,
             analysis_options={"estimands": ("compliance",)},
         )
         assert {cell.identity.key.metric for cell in combined.cells} == {"uptake"}
         assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
-
-        path = tmp_path / "uptake-retention-catalog.parquet"
-        native.export(path)
         replay = Analysis.from_moments(
             pq.read_table(path).to_pylist(),
             metrics=[

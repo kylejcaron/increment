@@ -259,7 +259,7 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     import pyarrow.parquet as pq
 
     from increment import run
-    from increment._analysis_kernel_adapter import experiment_for_analysis
+    from increment.builders import from_definitions
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
     from increment.kernel.contracts import Scope
@@ -345,7 +345,9 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
         for row in rows
     }
     con.raw_sql("DROP TABLE covariate_events")
-    experiment, resolver = experiment_for_analysis(analysis, return_run_result=True)
+    experiment, resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test", store="none"
+    )
     scopes = (
         Scope(view="daily", grain="daily"),
         Scope(view="asof", grain="asof"),
