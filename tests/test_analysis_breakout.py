@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import (
     CapabilityError,
@@ -195,7 +196,8 @@ def test_custom_unit_counts_refuse_before_an_undeclared_provider_read(con):
     from dataclasses import replace
     from typing import Any, cast
 
-    from increment import Analysis, CountsRequest
+    from increment import Analysis
+    from increment.evidence import CountsRequest
     from tests.analysis_factory import held_source
 
     analysis = _analysis_with_country_breakout(con)
@@ -252,7 +254,7 @@ def test_custom_breakout_uses_one_outer_snapshot_scope(con):
     from contextlib import contextmanager
     from typing import Any, cast
 
-    from increment import (
+    from increment.evidence import (
         BreakoutMethodMomentsRequest,
         ComplianceRequest,
         ComplianceSeriesRequest,
@@ -263,8 +265,8 @@ def test_custom_breakout_uses_one_outer_snapshot_scope(con):
         MomentsRequest,
         SequentialCaptureRequest,
         UnitRowsRequest,
+        evidence_provider,
     )
-    from increment.evidence import evidence_provider
     from tests.analysis_factory import held_source
 
     analysis = _analysis_with_country_breakout(con)
@@ -963,7 +965,7 @@ def test_run_breakout_registered_raw_frame_results_roundtrip(policy_correction, 
 
     import pyarrow as pa
 
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
     from increment.frame import MetricSpec, synthesise_metric
     from increment.readouts import breakout as readout_breakout
     from increment.semantics.design import Randomized
@@ -1108,7 +1110,7 @@ def test_run_breakout_removed_kwargs_raise_typeerror(con):
     """alpha=/inference= are no longer Analysis.run_breakout() call-time
     overrides - readouts.breakout() reads both off the source's own
     declared plan now, matching run()'s cutover."""
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
 
     analysis = _analysis_with_country_breakout(con)
     with pytest.raises(TypeError):
@@ -1148,8 +1150,7 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
     from contextlib import contextmanager
     from typing import Any, cast
 
-    from increment import EvidenceScope, EvidenceScopeResult
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, EvidenceScopeResult, evidence_provider
     from tests.analysis_factory import held_source
 
     source = cast(Any, held_source(analysis))
@@ -1643,8 +1644,12 @@ def _selected_breakout_sources(tmp_path):
 
 @pytest.mark.integration
 def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp_path):
-    from increment import BreakoutIdentity
-    from increment.evidence import BreakoutSlicesRequest, evidence_provider, request_evidence
+    from increment.evidence import (
+        BreakoutIdentity,
+        BreakoutSlicesRequest,
+        evidence_provider,
+        request_evidence,
+    )
     from increment.semantics.models import Breakout
     from tests.analysis_factory import held_source
 
@@ -1686,7 +1691,7 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
 
 @pytest.mark.integration
 def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
-    from increment import BreakoutIdentity, EvidenceScope, evidence_provider
+    from increment.evidence import BreakoutIdentity, EvidenceScope, evidence_provider
     from tests.analysis_factory import held_source
 
     analysis, con = _selected_breakout_sources(tmp_path)
@@ -1718,7 +1723,8 @@ def _triggered_region_breakout(tmp_path):
 
     import ibis
 
-    from increment import Analysis, SourceSnapshotEvidence
+    from increment import Analysis
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
     events = _with_preassignment_region(_events(n_per_arm=10, trigger_rate=1.0))
@@ -1768,8 +1774,9 @@ def _comparable(rows):
 def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp_path):
     import warnings
 
-    from increment import Analysis, EvidenceScope, EvidenceScopeResult, IncrementWarning
-    from increment.evidence import evidence_provider
+    from increment import Analysis
+    from increment.estimators import IncrementWarning
+    from increment.evidence import EvidenceScope, EvidenceScopeResult, evidence_provider
     from tests.analysis_factory import held_source
 
     native, con = _triggered_region_breakout(tmp_path)
@@ -1857,7 +1864,8 @@ def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp
 def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path):
     import warnings
 
-    from increment import Analysis, IncrementWarning
+    from increment import Analysis
+    from increment.estimators import IncrementWarning
     from increment.evidence import evidence_provider
     from tests.analysis_factory import held_source
 
@@ -1920,9 +1928,15 @@ def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path)
 def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
     from contextlib import contextmanager
 
-    from increment import BreakoutIdentity, EvidenceScope, EvidenceScopeResult
     from increment.errors import CodedError
-    from increment.evidence import BreakoutSlicesRequest, evidence_provider, request_evidence
+    from increment.evidence import (
+        BreakoutIdentity,
+        BreakoutSlicesRequest,
+        EvidenceScope,
+        EvidenceScopeResult,
+        evidence_provider,
+        request_evidence,
+    )
     from tests.analysis_factory import held_source
 
     native, con = _triggered_region_breakout(tmp_path)
@@ -2002,10 +2016,11 @@ def test_custom_breakout_scope_rechecks_scoped_unit_row_capability(tmp_path):
     from contextlib import contextmanager
     from dataclasses import replace
 
-    from increment import BreakoutIdentity, EvidenceScopeResult
     from increment.errors import CodedError
     from increment.evidence import (
+        BreakoutIdentity,
         BreakoutSlicesRequest,
+        EvidenceScopeResult,
         UnitRowsRequest,
         evidence_provider,
         request_evidence,

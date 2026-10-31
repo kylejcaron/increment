@@ -1677,9 +1677,9 @@ class TestRegisteredDecisionEvidence:
     @pytest.mark.slow
     @pytest.mark.parametrize("power", [False, True])
     def test_typed_likelihood_evidence_agrees_with_registered_decision(self, power):
-        from increment import AlwaysValid
         from increment.decision import EValueEvidence
         from increment.estimation.sequential_runtime import estimate_sequential
+        from increment.estimators import AlwaysValid
         from tests.sequential_cases import (
             capture,
             records,
@@ -1698,7 +1698,7 @@ class TestRegisteredDecisionEvidence:
         assert evidence.checkpoint == row.require_sequential_result().checkpoint
 
     def test_registered_snapshot_preserves_explicit_empty_methods(self):
-        from increment import AlwaysValid
+        from increment.estimators import AlwaysValid
         from tests.sequential_cases import (
             capture,
             records,

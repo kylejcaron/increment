@@ -61,6 +61,7 @@ from increment.readouts._provider import _BuiltInEvidenceProvider
 
 if TYPE_CHECKING:
     from increment._frame_ledger import FrameLedger
+    from increment.kernel.context import EvidenceExecutionContext as EvidenceExecutionContext
     from increment.semantics.assignment import AssignmentSpec
 
 
@@ -217,6 +218,7 @@ __all__ = [
     "request_evidence",
     "require_evidence",
     "warehouse_cuped_fit_evidence",
+    "EvidenceExecutionContext",
 ]
 
 
@@ -225,4 +227,8 @@ def __getattr__(name: str) -> Any:
         from increment._frame_ledger import FrameLedger
 
         return FrameLedger
+    if name == "EvidenceExecutionContext":
+        from increment.kernel.context import EvidenceExecutionContext
+
+        return EvidenceExecutionContext
     raise AttributeError(name)

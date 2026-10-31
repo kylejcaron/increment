@@ -16,10 +16,10 @@ from typing import Any, TypedDict
 
 import pytest
 
-from increment import AlwaysValid, estimate_sequential
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 from increment.breakout.projection import to_frame
 from increment.estimation.results import Estimate, LiftEstimate
+from increment.estimators import AlwaysValid, estimate_sequential
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.tables import (
     contrast_results_to_readout,

@@ -393,7 +393,8 @@ def test_percentile_winsor_refuses_before_raw_unit_frame_read(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from increment import Analysis, CapabilityError, MetricSpec
+    from increment import Analysis, MetricSpec
+    from increment.estimators import CapabilityError
 
     metric = MetricSpec(name="revenue", winsorization={"upper_percentile": 0.5})
     if source_kind == "moments":
@@ -833,7 +834,8 @@ def test_evidence_refusals_round_trip_pickle_and_deepcopy() -> None:
     import copy
     import pickle
 
-    from increment import Analysis, CapabilityError
+    from increment import Analysis
+    from increment.estimators import CapabilityError
     from tests.source_conformance import unit_summary_table
 
     analysis = Analysis.from_unit_summary(
@@ -865,7 +867,8 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
 
     import pyarrow.parquet as pq
 
-    from increment import Analysis, CapabilityError
+    from increment import Analysis
+    from increment.estimators import CapabilityError
     from tests.analysis_factory import held_source
     from tests.source_conformance import unit_summary_table
 

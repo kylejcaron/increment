@@ -739,7 +739,7 @@ def test_from_moments_run_refuses_call_time_epistemic_policy_kwargs():
     byte-identical to omitting it entirely - a non-inferiority
     guardrail silently degrading to a test against 0, with no error).
     Each must now raise TypeError instead of no-oping."""
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
 
     rows = _legacy_fixed10_rows()
     a = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
@@ -887,7 +887,8 @@ def test_moments_cube_normalizes_arm_identity_before_duplicate_check():
 def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
     import pandas as pd
 
-    from increment import Analysis, moments_from_summaries
+    from increment import Analysis
+    from increment.estimators import moments_from_summaries
 
     units = [
         {"unit": f"{group}-{index}", "arm": group, "value": value, "converted": converted}
@@ -958,8 +959,8 @@ def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
 
 
 def test_moments_from_summaries_refuses_n_one_mean_summary():
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(
@@ -976,7 +977,8 @@ def test_moments_from_summaries_refuses_n_one_mean_summary():
 def test_moments_from_summaries_preserves_optional_assignment_counts():
     import json
 
-    from increment import Analysis, moments_from_summaries
+    from increment import Analysis
+    from increment.estimators import moments_from_summaries
     from increment.sources import ASSIGNMENT_COUNTS_FIELD
 
     rows = moments_from_summaries(
@@ -1013,8 +1015,8 @@ def test_moments_from_summaries_preserves_optional_assignment_counts():
     ],
 )
 def test_moments_from_summaries_rejects_invalid_assignment_counts(assignment_counts):
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(
@@ -1030,8 +1032,9 @@ def test_moments_from_summaries_rejects_invalid_assignment_counts(assignment_cou
 
 
 def test_moments_from_summaries_without_assignment_counts_refuses_count_operations():
-    from increment import Analysis, moments_from_summaries
+    from increment import Analysis
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
     from increment.semantics.design import Randomized
 
     rows = moments_from_summaries(
@@ -1082,8 +1085,8 @@ def test_moments_from_summaries_without_assignment_counts_refuses_count_operatio
     ],
 )
 def test_moments_from_summaries_rejects_unexpected_row_fields(row, metric_type):
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(
@@ -1095,8 +1098,8 @@ def test_moments_from_summaries_rejects_unexpected_row_fields(row, metric_type):
 
 
 def test_moments_from_summaries_refuses_metrics_without_control_or_rows():
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     for rows in (
         [{"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5}],
@@ -1112,8 +1115,8 @@ def test_moments_from_summaries_refuses_metrics_without_control_or_rows():
 
 
 def test_moments_from_summaries_conversion_family_matches_canonicalizer():
-    from increment import moments_from_summaries
     from increment._bernoulli_moments import canonical_bernoulli_family
+    from increment.estimators import moments_from_summaries
 
     summarized = moments_from_summaries(
         [
@@ -1129,8 +1132,8 @@ def test_moments_from_summaries_conversion_family_matches_canonicalizer():
 
 
 def test_moments_from_summaries_refuses_nonfinite_derived_mean_moments():
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(
@@ -1146,8 +1149,8 @@ def test_moments_from_summaries_refuses_nonfinite_derived_mean_moments():
 
 def test_moments_from_summaries_rejects_invalid_study_id_before_plan_compile(monkeypatch):
     import increment.summaries as summaries
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     def unexpected_compile(*_args, **_kwargs):
         raise AssertionError("invalid study ID must be rejected before plan compilation")
@@ -1167,8 +1170,8 @@ def test_moments_from_summaries_rejects_invalid_study_id_before_plan_compile(mon
 
 
 def test_moments_from_summaries_rejects_unknown_metric_type():
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries([], metrics={"value": "maen"}, control="control")
@@ -1176,7 +1179,8 @@ def test_moments_from_summaries_rejects_unknown_metric_type():
 
 
 def test_moments_from_summaries_runs_two_arm_example():
-    from increment import Analysis, moments_from_summaries
+    from increment import Analysis
+    from increment.estimators import moments_from_summaries
 
     rows = moments_from_summaries(
         [
@@ -1242,8 +1246,8 @@ def test_moments_from_summaries_runs_two_arm_example():
     ],
 )
 def test_moments_from_summaries_refuses_invalid_summary_values(summary_rows, metric_types):
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(summary_rows, metrics=metric_types, control="control")
@@ -1252,8 +1256,8 @@ def test_moments_from_summaries_refuses_invalid_summary_values(summary_rows, met
 
 @pytest.mark.parametrize("metric_type", ["ratio", "covariate", "cluster", "sequential"])
 def test_moments_from_summaries_refuses_unsupported_requests(metric_type):
-    from increment import moments_from_summaries
     from increment.errors import CodedError
+    from increment.estimators import moments_from_summaries
 
     with pytest.raises(CodedError) as raised:
         moments_from_summaries(

@@ -645,7 +645,7 @@ def run_case(
                 sequential_state[name] = SequentialCapture(
                     prefix_id=snapshot.prefix_id, fingerprint=sequential_fingerprint(snapshot)
                 )
-                from increment import snapshot_from_json
+                from increment.estimators import snapshot_from_json
                 from increment.sequential_state import declare_sequential_freeze_cells
 
                 empty = declare_sequential_freeze_cells(snapshot, ())

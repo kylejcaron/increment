@@ -29,7 +29,7 @@ def test_declared_and_persisted_schemas_resolve_without_mutable_aliases(tmp_path
 
 
 def test_property_dtypes_and_name_only_capabilities_resolve_offline():
-    from increment import EvidenceCapabilities
+    from increment.evidence import EvidenceCapabilities
     from increment.semantics.models import Property
 
     declarations = {

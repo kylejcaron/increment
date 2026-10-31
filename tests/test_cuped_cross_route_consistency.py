@@ -315,8 +315,8 @@ def _refusing_breakout_records():
 def test_encouragement_breakout_preserves_refused_scalar_decision_cells(with_prior):
     import json
 
-    from increment import Normal
     from increment.estimation.readout_types import ReadoutResults
+    from increment.estimators import Normal
     from increment.tables import estimates_to_readout, readout_table
     from tests.test_cuped_route_evidence import _frame
 
@@ -407,7 +407,7 @@ def test_encouragement_breakout_preserves_refused_scalar_decision_cells(with_pri
 
 @pytest.mark.parametrize("role", ["decision", "sensitivity"])
 def test_breakout_scalar_refusal_preserves_requested_posterior_unavailability(role):
-    from increment import Normal
+    from increment.estimators import Normal
     from tests.test_cuped_route_evidence import _frame
 
     scalar, naive = _scalar("adjusted", "history_a", missing="refuse"), Method.unadjusted()

@@ -6,7 +6,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from increment import Analysis, EvidenceCapabilities, Method
+from increment import Analysis, Method
 from increment.errors import CapabilityError, CodedError
 from increment.evidence import (
     BreakoutIdentity,
@@ -17,6 +17,7 @@ from increment.evidence import (
     CountEvidence,
     CountsRequest,
     DayAxisRequest,
+    EvidenceCapabilities,
     EvidenceProvider,
     EvidenceScope,
     EvidenceScopeResult,
@@ -1057,7 +1058,7 @@ def test_unit_rows_supports_custom_source_without_outcome_stage_parameter() -> N
 def test_breakout_method_moments_preserve_rows_and_refused_cells() -> None:
     import pyarrow as pa
 
-    from increment import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.evidence import BreakoutIdentity, BreakoutMethodMomentsRequest
     from increment.frame import from_unit_summary
     from increment.semantics.models import CupedCovariate
 
@@ -1103,7 +1104,7 @@ def test_breakout_method_moments_preserve_rows_and_refused_cells() -> None:
 
 @pytest.mark.integration
 def test_breakout_method_moments_refuse_another_source_before_reading(tmp_path) -> None:
-    from increment import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.evidence import BreakoutIdentity, BreakoutMethodMomentsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
@@ -1186,7 +1187,7 @@ def test_breakout_method_moments_refuse_another_source_before_reading(tmp_path) 
 def test_scoped_breakout_moments_reject_another_source_before_reading(
     tmp_path, monkeypatch
 ) -> None:
-    from increment import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.evidence import BreakoutIdentity, BreakoutMethodMomentsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
@@ -1224,7 +1225,7 @@ def test_scoped_breakout_moments_reject_another_source_before_reading(
 
 @pytest.mark.integration
 def test_scoped_breakout_unit_rows_reject_another_source(tmp_path) -> None:
-    from increment import BreakoutIdentity, BreakoutUnitRowsRequest
+    from increment.evidence import BreakoutIdentity, BreakoutUnitRowsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
@@ -1282,7 +1283,7 @@ def test_legacy_source_without_evidence_refuses_before_reading() -> None:
 def test_refusals_precede_population_or_source_reads(
     tmp_path, kind, expected_code, monkeypatch
 ) -> None:
-    from increment import (
+    from increment.evidence import (
         BreakoutIdentity,
         BreakoutMethodMomentsRequest,
         BreakoutSlicesRequest,
@@ -1665,7 +1666,7 @@ def test_triggered_multicovariate_fallback_reads_triggered_unit_rows() -> None:
 
 @pytest.mark.integration
 def test_builtin_breakout_unit_rows_respect_triggered_population(tmp_path) -> None:
-    from increment import BreakoutIdentity, BreakoutUnitRowsRequest
+    from increment.evidence import BreakoutIdentity, BreakoutUnitRowsRequest
 
     source, identity = definitions_source(tmp_path, trigger=True, partial_trigger=True)
     metric = source.context.metrics[0]

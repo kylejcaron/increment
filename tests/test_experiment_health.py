@@ -300,7 +300,7 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.analysis_factory import _native_source
     from tests.test_analysis_trigger import _events, _write_defs
 
@@ -394,7 +394,7 @@ def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) 
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
     from tests.test_analysis_trigger import _events, _write_defs
 
@@ -512,7 +512,7 @@ def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> 
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
     from tests.test_analysis_trigger import _events, _write_defs
 
@@ -549,7 +549,7 @@ def test_triggered_health_without_declared_allocation_is_unavailable_for_native_
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
     from tests.test_analysis_trigger import _events, _write_defs
 
@@ -667,7 +667,7 @@ def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.test_analysis_trigger import _defs_yaml, _events
 
     con = ibis.duckdb.connect()
@@ -720,7 +720,7 @@ def test_sql_assignment_completeness_does_not_inherit_same_named_feed_watermark(
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.test_analysis_trigger import _defs_yaml, _events
 
     con = ibis.duckdb.connect()

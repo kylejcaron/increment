@@ -98,8 +98,7 @@ def test_live_mode_includes_sql_exposure_streams(tmp_path):
 
 @pytest.mark.integration
 def test_mutable_sql_panel_is_not_reported_as_captured():
-    from increment import EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
     from tests.source_conformance import sql_totals_source
 
@@ -131,8 +130,12 @@ def test_mutable_sql_panel_is_not_reported_as_captured():
 
 @pytest.mark.integration
 def test_native_scope_provider_yields_typed_pinned_provider():
-    from increment import EvidenceScope
-    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+    from increment.evidence import (
+        EvidenceScope,
+        MomentsRequest,
+        evidence_provider,
+        request_evidence,
+    )
     from increment.kernel.context import EvidenceExecutionContext
     from tests.source_conformance import sql_totals_source
 
@@ -158,8 +161,7 @@ def test_native_scope_provider_yields_typed_pinned_provider():
 
 @pytest.mark.integration
 def test_in_memory_moments_are_captured_without_snapshot_operation():
-    from increment import EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
     from tests.source_conformance import moments_source
 
@@ -458,7 +460,7 @@ def test_compliance_only_triggered_run_validates_within_one_capture(tmp_path):
     path.write_text(yaml.safe_dump(definitions, sort_keys=False))
     con = ibis.duckdb.connect()
     con.create_table("raw_events", obj=rows)
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
 
     evidence_time = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
     analysis = Analysis.from_definitions(
@@ -522,9 +524,8 @@ def test_whole_window_assigned_and_triggered_reads_share_capture(tmp_path, monke
 
 @pytest.mark.integration
 def test_borrowed_context_rejects_a_different_source_before_read(tmp_path):
-    from increment import EvidenceScope
     from increment.errors import CodedError
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
     (tmp_path / "first").mkdir()
@@ -555,9 +556,8 @@ def test_borrowed_context_rejects_a_different_source_before_read(tmp_path):
 
 @pytest.mark.integration
 def test_borrowed_context_refuses_an_undeclared_metric_configuration(tmp_path):
-    from increment import EvidenceScope
     from increment.errors import CodedError
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
@@ -636,7 +636,7 @@ def test_artifact_run_remains_captured_when_live_is_requested(tmp_path):
         manifest = cast(Any, held_source(analysis))._manifest
         identity = f"artifact:{manifest.artifact_id}:{manifest.generation_id}"
         assert rows.metadata.effective_modes == {identity: "captured"}
-        from increment import EvidenceScope, evidence_provider
+        from increment.evidence import EvidenceScope, evidence_provider
         from increment.kernel.context import EvidenceExecutionContext
 
         source = cast(Any, held_source(analysis))
@@ -1145,8 +1145,7 @@ def test_standalone_frame_panel_readouts_own_mode_metadata():
 @pytest.mark.integration
 def test_compliance_only_read_uses_borrowed_context():
 
-    from increment import EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
     from tests.test_compliance_summary import witness
 
@@ -1278,8 +1277,7 @@ def test_custom_provider_forwarding_artifact_has_no_capture_guarantee(tmp_path):
 
 @pytest.mark.integration
 def test_triggered_native_wrapper_preserves_physical_stream_inventory(tmp_path):
-    from increment import EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
     from tests.analysis_factory import held_source
 
@@ -1307,8 +1305,7 @@ def test_triggered_native_wrapper_preserves_physical_stream_inventory(tmp_path):
 
 @pytest.mark.integration
 def test_custom_provider_preserves_snapshot_after_update(tmp_path):
-    from increment import EvidenceScope
-    from increment.evidence import EvidenceProvider, evidence_provider
+    from increment.evidence import EvidenceProvider, EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
@@ -1409,8 +1406,7 @@ def test_analysis_run_exposes_live_coherence_when_temp_tables_are_denied(tmp_pat
 @pytest.mark.integration
 @pytest.mark.parametrize("coherence", ("captured", "live"))
 def test_native_scope_result_binds_breakout_to_captured_source(tmp_path, coherence):
-    from increment import BreakoutIdentity, EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment.evidence import BreakoutIdentity, EvidenceScope, evidence_provider
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
     source = cast(Any, held_source(analysis))
@@ -1446,8 +1442,8 @@ def test_frame_panel_context_snapshots_mutable_pandas_panel():
     import narwhals as nw
     import pandas as pd
 
-    from increment import Analysis, EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment import Analysis
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.frame import FramePanelSource
     from increment.kernel.context import EvidenceExecutionContext
     from tests.analysis_factory import held_source
@@ -1514,8 +1510,8 @@ def test_frame_panel_context_snapshots_mutable_polars_panel():
     import narwhals as nw
     import polars as pl
 
-    from increment import Analysis, EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment import Analysis
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.frame import FramePanelSource
     from increment.kernel.context import EvidenceExecutionContext
     from tests.analysis_factory import held_source
@@ -1580,9 +1576,8 @@ def test_frame_panel_context_snapshots_mutable_polars_panel():
 
 @pytest.mark.integration
 def test_undeclared_breakout_source_refuses_before_the_read(tmp_path, monkeypatch):
-    from increment import EvidenceScope
     from increment.errors import CodedError
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
@@ -1759,8 +1754,8 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell_without_extra_event(tmp
 def test_dimensioned_asof_daily_lift_retains_registered_empty_roster_member():
     from datetime import date
 
-    from increment import AlwaysValid, SequentialCell, SequentialRegistration
     from increment.breakout.estimates import run_daily_lift
+    from increment.estimators import AlwaysValid, SequentialCell, SequentialRegistration
     from increment.semantics.models import ConversionMetric
     from tests.sequential_cases import capture, registration
 
@@ -2124,9 +2119,8 @@ def test_standalone_daily_lift_rejects_sequential_plan_before_snapshot(tmp_path,
 
 @pytest.mark.integration
 def test_undeclared_breakout_dimension_refuses_before_the_read(tmp_path, monkeypatch):
-    from increment import EvidenceExecutionContext, EvidenceScope
     from increment.errors import CodedError
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceExecutionContext, EvidenceScope, evidence_provider
 
     analysis, _ = definitions_source(tmp_path, return_analysis=True)
     source = cast(Any, held_source(analysis))
@@ -2306,9 +2300,8 @@ def test_sequential_rewritten_prefix_refuses_through_run_owner():
 
 @pytest.mark.integration
 def test_borrowed_context_rejects_an_undeclared_population_before_read(tmp_path):
-    from increment import EvidenceExecutionContext, EvidenceScope
     from increment.errors import CodedError
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceExecutionContext, EvidenceScope, evidence_provider
     from increment.readouts import run
 
     analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
@@ -2349,11 +2342,12 @@ def test_line_four_daily_readout_preserves_triggered_population(tmp_path):
 
 @pytest.mark.integration
 def test_typed_trigger_population_requests_are_rejected_before_reads():
-    from increment import EvidenceExecutionContext, EvidenceScope
     from increment.errors import CodedError
     from increment.evidence import (
         ComplianceSeriesRequest,
         CountsRequest,
+        EvidenceExecutionContext,
+        EvidenceScope,
         evidence_provider,
     )
     from tests.test_compliance_summary import witness
@@ -2385,8 +2379,7 @@ def test_typed_trigger_population_requests_are_rejected_before_reads():
 
 @pytest.mark.integration
 def test_metric_free_custom_compliance_retains_provider_mode():
-    from increment import EvidenceExecutionContext, EvidenceScope
-    from increment.evidence import evidence_provider
+    from increment.evidence import EvidenceExecutionContext, EvidenceScope, evidence_provider
     from increment.readouts import run as readout_run
     from tests.test_readouts_encouragement import METRIC, FakeMomentSource, _design, _rows
 

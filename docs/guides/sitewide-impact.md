@@ -34,13 +34,10 @@ import ibis
 import polars as pl
 import warnings
 
-from increment import (
-    Analysis,
-    SourceSnapshotEvidence,
-    unit_day_artifact_extension_catalog,
-)
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence, unit_day_artifact_extension_catalog
 from increment.query.session import WarehouseArtifactStore
-from increment import IncrementWarning
+from increment.estimators import IncrementWarning
 
 Path("triggered-definitions").mkdir(exist_ok=True)
 Path("triggered-definitions/fact_sources.yaml").write_text("""\
@@ -574,7 +571,8 @@ import warnings
 import ibis
 import polars as pl
 
-from increment import Analysis, IncrementWarning
+from increment import Analysis
+from increment.estimators import IncrementWarning
 
 random.seed(4)
 start = dt.datetime(2025, 3, 1, 9, 0)

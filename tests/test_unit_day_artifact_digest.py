@@ -166,7 +166,7 @@ def test_nonfinite_values_refuse(value: float) -> None:
 
 
 def test_public_canonical_json_bytes_preserves_digest_refusal() -> None:
-    from increment import canonical_json_bytes as public_canonical_json_bytes
+    from increment.digest import canonical_json_bytes as public_canonical_json_bytes
 
     with pytest.raises(ArtifactDigestError) as raised:
         public_canonical_json_bytes(object())

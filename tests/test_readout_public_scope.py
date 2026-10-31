@@ -877,7 +877,7 @@ def test_registered_sequential_capture_retains_unassigned_audit_counts():
 def test_registered_sequential_run_marks_legacy_missing_source_counts(tmp_path):
     import pyarrow.parquet as pq
 
-    from increment import capture_sequential_snapshot
+    from increment.estimators import capture_sequential_snapshot
     from increment.sources import ASSIGNMENT_COUNTS_FIELD
     from tests.binary_sequential_cases import unit_rows
 

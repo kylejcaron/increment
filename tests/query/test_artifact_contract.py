@@ -802,15 +802,23 @@ def test_error_context_survives_pickle_and_deepcopy() -> None:
         assert dict(clone.context) == {"name": "n1"}
 
 
-def test_trigger_measure_stats_types_are_exported_from_package_root():
+def test_trigger_measure_stats_types_are_exported_from_artifacts_namespace():
     import increment
-    from increment import TriggerMeasureStatsExtension, TriggerMeasureStatsRequest
+    import increment.artifacts as artifacts
+    from increment.artifacts import TriggerMeasureStatsExtension, TriggerMeasureStatsRequest
     from increment.semantics.artifact import TriggerMeasureStatsExtension as ArtifactExtension
     from increment.semantics.artifact import TriggerMeasureStatsRequest as ArtifactRequest
 
     assert TriggerMeasureStatsRequest is ArtifactRequest
     assert TriggerMeasureStatsExtension is ArtifactExtension
-    assert {"TriggerMeasureStatsRequest", "TriggerMeasureStatsExtension"} <= set(increment.__all__)
+    assert {
+        "TriggerMeasureStatsRequest",
+        "TriggerMeasureStatsExtension",
+    } <= set(artifacts.__all__)
+    assert not {
+        "TriggerMeasureStatsRequest",
+        "TriggerMeasureStatsExtension",
+    } & set(increment.__all__)
 
 
 def test_trigger_measure_request_is_closed_to_one_metric():

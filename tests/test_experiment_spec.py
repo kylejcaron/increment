@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from typing import cast
 
 import pytest
 
 from increment import Experiment, SourceReference
+from increment.evidence import EvidenceProvider
 from increment.kernel.contracts import Registration, Scope
 
 
@@ -74,8 +76,9 @@ def test_experiment_scopes_and_nested_definitions_are_immutable():
 
     assert experiment.design["mechanism"] == "randomized"
     assert experiment.hash() == original_hash
+    attribute = "experiment_id"
     with pytest.raises((AttributeError, TypeError)):
-        experiment.experiment_id = "changed"
+        setattr(experiment, attribute, "changed")
 
 
 def test_compile_emits_run_inventory_and_one_request_per_scope():
@@ -122,7 +125,8 @@ def test_runnable_marks_missing_capabilities_unknown_per_estimator():
 def test_bound_resolver_refuses_missing_digest_provenance():
     from types import SimpleNamespace
 
-    from increment import BoundResolver, EvidenceCapabilities
+    from increment import BoundResolver
+    from increment.evidence import EvidenceCapabilities
 
     capabilities = EvidenceCapabilities(
         kind="unit_summary",
@@ -141,7 +145,7 @@ def test_bound_resolver_refuses_missing_digest_provenance():
         available_covariates=None,
     )
     provider = SimpleNamespace(evidence=capabilities, context=SimpleNamespace())
-    resolver = BoundResolver(provider)
+    resolver = BoundResolver(cast(EvidenceProvider, provider))
     source = SourceReference(
         name="events",
         uri="frame://events",
@@ -157,7 +161,8 @@ def test_bound_resolver_refuses_missing_digest_provenance():
 def test_bound_resolver_refuses_runtime_capability_mismatch():
     from types import SimpleNamespace
 
-    from increment import BoundResolver, EvidenceCapabilities
+    from increment import BoundResolver
+    from increment.evidence import EvidenceCapabilities
 
     capabilities = EvidenceCapabilities(
         kind="unit_summary",
@@ -177,7 +182,7 @@ def test_bound_resolver_refuses_runtime_capability_mismatch():
     )
     changed = dataclasses.replace(capabilities, unit_rows=False)
     provider = SimpleNamespace(evidence=changed, context=SimpleNamespace(source_digest=None))
-    resolver = BoundResolver(provider)
+    resolver = BoundResolver(cast(EvidenceProvider, provider))
     source = SourceReference(
         name="events",
         uri="frame://events",
@@ -191,7 +196,7 @@ def test_bound_resolver_refuses_runtime_capability_mismatch():
 
 @pytest.mark.parametrize("question", ["prior", "estimands", "operation"])
 def test_specification_identity_distinguishes_request_declarations(question):
-    from increment import Normal
+    from increment.estimators import Normal
 
     scope = Scope(view="daily", grain="daily")
     experiment = Experiment(

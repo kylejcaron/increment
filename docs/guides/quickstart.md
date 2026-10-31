@@ -267,14 +267,14 @@ A null or NaN needs a meaning before it can be included in an average:
     Dropping values uses only complete cases. This is unbiased only when
     missingness is unrelated to the values.
 
-You can also prepare the dataframe with `increment.impute.zeros` or
+You can also prepare the dataframe with `increment.estimators.impute.zeros` or
 `drop_null`. Each returns `(frame, affected_count)` so you can record how many
 values or rows changed. `zeros` assumes a missing value means no events, and
 `drop_null` removes whole rows, which is valid only when missingness is unrelated
 to the values.
 
 !!! warning "Do not fill missing outcomes with their mean"
-    `increment.impute.pooled_mean` is for appropriate pre-period covariates,
+    `increment.estimators.impute.pooled_mean` is for appropriate pre-period covariates,
     such as a CUPED baseline, not outcomes. Filling missing outcomes with their
     mean shrinks variance and can bias estimates.
 
@@ -283,7 +283,7 @@ Declare the role of each column you pass to `pooled_mean`:
 ```python
 import pyarrow as pa
 
-from increment import impute
+from increment.estimators import impute
 
 units = pa.table({"baseline": [4.0, None, 8.0]})
 units, n_filled = impute.pooled_mean(units, "baseline", roles={"baseline": "covariate"})

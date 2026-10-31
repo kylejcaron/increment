@@ -350,7 +350,7 @@ def _(
     pd,
     simulate_encouragement,
 ):
-    from increment import (
+    from increment.estimators import (
         JointReveal,
         PredictivePrior,
         SequentialCell,

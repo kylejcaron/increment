@@ -4,6 +4,8 @@ core = [
   "increment.semantics*",
   "increment.estimation*",
   "increment.estimators*",
+  "increment.artifacts",
+  "increment.digest",
   "increment.declarations*",
   "increment.kernel*",
   "increment.decision*",

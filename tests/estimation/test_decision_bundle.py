@@ -185,7 +185,8 @@ def test_sequential_evalue_one_sided_uses_composite_null(alternative, c, t):
 
 @pytest.mark.slow
 def test_one_sided_always_valid_secondary_does_not_discover_wrong_direction_effect():
-    from increment import Analysis, AnalysisPlan, SequentialCell
+    from increment import Analysis, AnalysisPlan
+    from increment.estimators import SequentialCell
     from increment.frame import MetricSpec
     from tests.test_sequential_public_sources import _frame, _plan
 

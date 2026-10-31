@@ -190,8 +190,8 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
 
 @pytest.mark.parametrize("clear_declared_prior", [False, True])
 def test_clustered_preflight_applies_saved_prior_override(clear_declared_prior):
-    from increment import Normal
     from increment.errors import IncrementWarning
+    from increment.estimators import Normal
     from tests.warning_codes import warning_codes
 
     prior = Normal(mu=0, sigma=1)
@@ -275,7 +275,7 @@ def test_experiment_json_rejects_execution_only_request_options(options):
 
 
 def test_preflight_uses_experiment_metric_selection_for_configurations():
-    from increment import Normal
+    from increment.estimators import Normal
 
     frame = _frame().assign(other=lambda data: data["value"] + 2)
     experiment, resolver = from_frame(
@@ -1062,7 +1062,8 @@ def test_runtime_callable_run_result_refuses_portable_storage(tmp_path):
 def test_frozen_request_options_restore_typed_methods_metrics_and_priors():
     from pydantic import TypeAdapter
 
-    from increment import Metric, Normal
+    from increment import Metric
+    from increment.estimators import Normal
 
     experiment, resolver = _experiment()
     metric = TypeAdapter(Metric).validate_python(dict(experiment.metrics["value"]))
@@ -1311,7 +1312,7 @@ def _plain_builder(kind, *, conversion=False):
         )
     frame = _frame()
     if conversion:
-        from increment import Normal
+        from increment.estimators import Normal
 
         frame["value"] = [index % 2 for index in range(len(frame))]
         metrics = [
@@ -1458,7 +1459,7 @@ def test_builder_preflight_matches_execution_before_reads(
     breakout_dimension,
     descriptive_daily_conversion,
 ):
-    from increment import Normal
+    from increment.estimators import Normal
     from increment.evidence import BreakoutIdentity
 
     conversion = (
@@ -1528,7 +1529,7 @@ def test_switchback_preflight_reports_execution_metric_selection_refusal(metrics
 
 
 def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
-    from increment import Normal
+    from increment.estimators import Normal
 
     frame = pd.DataFrame(
         [

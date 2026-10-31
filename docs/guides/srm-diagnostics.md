@@ -11,7 +11,7 @@ replace a metric's decision interval.
 ## `sample_ratio_mismatch`: fixed vs always-valid
 
 ```python
-from increment import allocation_posterior_bands, sample_ratio_mismatch
+from increment.estimators import allocation_posterior_bands, sample_ratio_mismatch
 
 expected = {"control": 0.5, "treatment": 0.5}
 observed = {"control": 5120, "treatment": 4880}

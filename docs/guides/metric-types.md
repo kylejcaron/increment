@@ -614,7 +614,7 @@ leaves the policy empty. Fractions zero and one select nobody and everybody.
 <!-- skip: next "requires a clustered source with a spend covariate" -->
 
 ```python
-from increment import ClusterBootstrap, targeting_rule
+from increment.estimators import ClusterBootstrap, targeting_rule
 from increment.results import TargetingRule
 
 rule = targeting_rule(

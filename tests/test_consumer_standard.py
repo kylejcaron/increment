@@ -48,12 +48,8 @@ def test_each_root_export_has_a_user_task_justification() -> None:
         f"missing={missing}, stale={stale}"
     )
     task_terms = {
-        "sample_ratio_mismatch": {"allocation", "mismatch"},
-        "allocation_posterior_bands": {"posterior", "allocation"},
-        "absorb_factor": {"factor", "adjust"},
         "Observational": {"non-randomized", "comparison"},
         "Encouragement": {"random encouragement", "uptake"},
-        "to_frame": {"frame"},
     }
     for name, terms in task_terms.items():
         justification = entries[name].lower()

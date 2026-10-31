@@ -12,8 +12,8 @@ from uuid import uuid4
 import ibis
 import pytest
 
-from increment import SourceSnapshotEvidence
 from increment.analysis import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, IncrementWarning
 from increment.query.artifact_contract import (
     ArtifactContractError,

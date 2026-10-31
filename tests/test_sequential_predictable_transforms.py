@@ -7,7 +7,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from increment import Analysis, Method, PredeclaredAdjustment, fit_predeclared_adjustment
+from increment import Analysis, Method
 from increment.errors import CodedError
 from increment.estimation.arm_contract import (
     AnalysisAxes,
@@ -21,6 +21,7 @@ from increment.estimation.arm_contract import (
     arm_runtime_support,
 )
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean
+from increment.estimators import PredeclaredAdjustment, fit_predeclared_adjustment
 from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.assignment import ParallelAssignment
 from increment.semantics.design import Randomized

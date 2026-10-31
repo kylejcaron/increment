@@ -503,14 +503,8 @@ per unit. The exact Bernoulli method does not accept this adjustment.
 
 <!-- skip: next "requires a prepared pre-period frame" -->
 ```python
-from increment import (
-    AnalysisPlan,
-    CupedCovariate,
-    InferenceSpec,
-    Method,
-    MetricSpec,
-    fit_predeclared_adjustment,
-)
+from increment import AnalysisPlan, CupedCovariate, InferenceSpec, Method, MetricSpec
+from increment.estimators import fit_predeclared_adjustment
 
 adjustment = fit_predeclared_adjustment(
     pre_period,

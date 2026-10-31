@@ -1171,7 +1171,7 @@ class TestRunBreakoutBHCorrection:
     def test_bh_always_valid_uses_real_retained_evidence_and_selected_inversion(self):
         from fractions import Fraction
 
-        from increment import SequentialCell, SequentialRegistration
+        from increment.estimators import SequentialCell, SequentialRegistration
         from increment.frame import MetricSpec
         from increment.semantics.models import ConversionMetric
         from tests.sequential_cases import capture, registration
@@ -2139,7 +2139,7 @@ class TestBreakoutEstimate:
 class TestBreakoutEstimateReferenceValidation:
     @staticmethod
     def _sequential_kwargs(**overrides: Any) -> dict[str, Any]:
-        from increment import estimate_sequential
+        from increment.estimators import estimate_sequential
         from tests.sequential_cases import registered_bernoulli
 
         snapshot, policy = registered_bernoulli(n=4, segments=((("country", "US"),),))
@@ -3925,7 +3925,7 @@ class TestToFrameFreeFunction:
 
 @pytest.mark.parametrize("rejects", [True, False])
 def test_small_bernoulli_segment_uses_its_sequential_decision(rejects):
-    from increment import SequentialCell
+    from increment.estimators import SequentialCell
     from increment.tables import estimates_to_readout
     from tests.sequential_cases import capture, records, registration
 

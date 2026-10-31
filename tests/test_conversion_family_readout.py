@@ -157,7 +157,7 @@ class TestASelectedMemberIsReissuedByItsCounts:
 
 
 def test_fcr_reissues_only_selected_arms_without_invalidating_nominal_siblings():
-    from increment import moments_from_summaries
+    from increment.estimators import moments_from_summaries
 
     n = 2_000_000_000
     summaries = [

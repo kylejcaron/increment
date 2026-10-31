@@ -509,7 +509,7 @@ class TestSeFullValidation:
 
 
 def _registered_runtime():
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
     from tests.sequential_cases import registration
 
     return {"anytime": AlwaysValid(registration=registration("gaussian"))}

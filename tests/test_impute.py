@@ -1,4 +1,4 @@
-"""Tests for ``increment.impute`` - the helper tier of the null/NaN policy.
+"""Tests for ``increment.estimators.impute`` - the helper tier of the null/NaN policy.
 
 Every frame-entry refusal names these helpers as its source-side fix, so
 they must treat null and NaN as one "missing" concept, work identically on
@@ -14,8 +14,8 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
-from increment import impute
 from increment.errors import IncrementWarning
+from increment.estimators import impute
 from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
 from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, assert_code, completed, refused
 
@@ -152,9 +152,7 @@ class TestPooledMeanDistinguishesEmptyFromNonFinite:
 
     @staticmethod
     def _call(values):
-        from increment.impute import pooled_mean
-
-        return pooled_mean(pa.table({"x": values}), "x", roles={"x": "covariate"})
+        return impute.pooled_mean(pa.table({"x": values}), "x", roles={"x": "covariate"})
 
     def test_an_all_null_column_reports_no_observed_values(self):
         from increment.errors import InvalidRequestError

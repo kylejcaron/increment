@@ -6,10 +6,10 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import absorb_factor
 from increment.errors import IncrementRuntimeWarning
 from increment.estimation.absorption import absorb_one_way
 from increment.estimation.armstats import centered_row_from_raw_sums
+from increment.estimators import absorb_factor
 from tests.warning_codes import warning_codes
 
 

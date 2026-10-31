@@ -487,7 +487,7 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
     import ibis
     import narwhals as nw
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.estimation.engine import estimate_cuped_linear
     from tests.analysis_factory import _native_source
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
@@ -585,7 +585,7 @@ def _triggered_linear_artifact(tmp_path):
 
     import ibis
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore

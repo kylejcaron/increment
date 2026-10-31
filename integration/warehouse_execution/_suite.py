@@ -765,7 +765,7 @@ def _sequential_definitions(dialect: str, source: str, *, registered: bool):
     to the same definitions, so the artifact reader must adopt a caller-declared
     plan rather than re-derive one.
     """
-    from increment import SequentialRegistration, sequential_definition_id
+    from increment.estimators import SequentialRegistration, sequential_definition_id
     from increment.semantics.loader import load
     from increment.semantics.models import AnalysisPlan, InferenceSpec
     from increment.sequential_source import native_observation_mapping

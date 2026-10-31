@@ -11,7 +11,7 @@ and 0.2 when it is 1; the reference plays `B` with probability 0.5 at every
 history.
 
 ```python
-from increment import TabularPolicy, estimate_policy_contrast
+from increment.estimators import TabularPolicy, estimate_policy_contrast
 from increment.simulate import simulate_logged_run
 
 run = simulate_logged_run("fixed_random", n_units=200, horizon=3, seed=7)
@@ -86,7 +86,7 @@ Supply exactly one of two alternatives. Existing calls can use a
 
 <!-- skip: next "requires a caller-prepared decision frame" -->
 ```python
-from increment import LoggedTrace, PolicyRegistry
+from increment.estimators import LoggedTrace, PolicyRegistry
 
 registry = PolicyRegistry([logger_v1])
 trace = LoggedTrace.from_frame(frame, registry=registry, context_columns=("x",))

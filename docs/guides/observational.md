@@ -62,11 +62,11 @@ df = pl.DataFrame(
 from increment import (
     AdjustmentSet,
     Analysis,
-    IdentificationError,
     IdentificationGate,
     Method,
     Observational,
 )
+from increment.estimators import IdentificationError
 
 results = Analysis.from_unit_summary(
     df,  # one row per unit; must also carry the adjustment covariate columns
@@ -287,7 +287,7 @@ before either gate runs:
 - `missing="refuse"` (default): `run()` raises `IdentificationError`,
   naming each incomplete covariate and its missing count, together with
   the data-keeping alternatives below. Do not repair a confounder with
-  `increment.impute.pooled_mean`: filling it without a missingness
+  `increment.estimators.impute.pooled_mean`: filling it without a missingness
   indicator can hide residual confounding. That helper is for randomized
   pre-period covariates such as a CUPED baseline.
 - `missing="impute-indicator"`: impute incomplete numeric covariates with
@@ -940,6 +940,7 @@ other types are refused, and a row carrying no metric type gives `metric_type_un
 import numpy as np
 import polars as pl
 import increment as inc
+from increment.estimators import confounding_sensitivity
 
 conversion_rng = np.random.default_rng(20261013)
 conversion_n = 4_000
@@ -968,7 +969,7 @@ try:
         decision_method=inc.Method(name="iptw"), sensitivity_methods=[inc.Method(name="aipw")]
     )
     for conversion_row in conversion_rows:
-        sensitivity = inc.confounding_sensitivity(conversion_row, threshold_risk_ratio=1.05)
+        sensitivity = confounding_sensitivity(conversion_row, threshold_risk_ratio=1.05)
         print(sensitivity.model_dump())
 finally:
     conversion_analysis.close()

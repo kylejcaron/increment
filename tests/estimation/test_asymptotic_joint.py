@@ -6,15 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import (
-    Analysis,
-    AsymptoticMean,
-    CupedCovariate,
-    Method,
-    SequentialCell,
-    declare_sequential_freeze,
-    estimate_sequential,
-)
+from increment import Analysis, CupedCovariate, Method
 from increment.errors import CodedError
 from increment.estimation._certified import log_interval
 from increment.estimation._sequential_likelihood import GaussianState
@@ -37,6 +29,12 @@ from increment.estimation.asymptotic_mean import (
 )
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.estimation.sequential_runtime import evaluate_checkpoint, selected_snapshot_results
+from increment.estimators import (
+    AsymptoticMean,
+    SequentialCell,
+    declare_sequential_freeze,
+    estimate_sequential,
+)
 from increment.frame import MetricSpec
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec
@@ -158,7 +156,7 @@ def test_ratio_metric_is_monitored_sequentially_and_an_unresolved_denominator_wi
 
 
 def test_ratio_law_registration_requires_the_denominator_declaration():
-    from increment import ScalarMeanModel
+    from increment.estimators import ScalarMeanModel
 
     payload = mean_model("m", law="ratio_mean").model_dump()
     with pytest.raises(CodedError) as raised:

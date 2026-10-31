@@ -898,7 +898,7 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
     import ibis
     import pyarrow as pa
 
-    from increment import SourceSnapshotEvidence
+    from increment.artifacts import SourceSnapshotEvidence
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
     defs_path = tmp_path / "triggered_covariates.yaml"

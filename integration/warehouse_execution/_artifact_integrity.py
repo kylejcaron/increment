@@ -10,7 +10,8 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.query.artifact_contract import (
     ArtifactContractError,
     unit_day_artifact_extension_catalog,

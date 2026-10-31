@@ -431,7 +431,7 @@ class TestFrameMethodsAndPrior:
 
 class TestInferenceConversion:
     def test_compiled_wire_preserves_actual_raw_decision(self):
-        from increment import estimate_sequential
+        from increment.estimators import estimate_sequential
         from increment.semantics.models import ConversionMetric
         from tests.sequential_cases import (
             capture,
@@ -585,7 +585,7 @@ def test_wire_round_trips_absolute_and_sequential_inference_with_normal_prior():
     assert procedure.prior is not None
     assert procedure.prior.mu == pytest.approx(0.1)  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
     assert procedure.prior_is_global is True
-    from increment import estimate_sequential
+    from increment.estimators import estimate_sequential
     from increment.semantics.models import ConversionMetric
     from tests.sequential_cases import capture, records, registration
 

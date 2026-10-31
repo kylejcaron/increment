@@ -336,7 +336,8 @@ def native(tmp_path_factory):
     pytest.importorskip("duckdb")
     import yaml
 
-    from increment import Analysis, MetricTrends
+    from increment import Analysis
+    from increment.estimators import MetricTrends
 
     n = 48
     d0 = dt.datetime(2026, 1, 1, 9, 0, 0)
@@ -860,7 +861,7 @@ def test_encouragement(metric_type):
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
 def test_cate(metric_type):
-    from increment import estimate_cate
+    from increment.estimators import estimate_cate
 
     cell = _cell("cate", metric_type)
     if cell.status == "na":
@@ -1087,7 +1088,7 @@ def test_sitewide_refuses_windowed_metrics(metric_name, native):
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
 def test_rollout(metric_type, native):
-    from increment import segment_rollout_recommendation
+    from increment.estimators import segment_rollout_recommendation
 
     cell = _cell("rollout", metric_type)
     if cell.status == "na":

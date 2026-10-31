@@ -599,7 +599,7 @@ def _mixed_family_plan(*, primary="rev"):
     exact Bernoulli uptake cell (MixedFamily), via the public
     ``inference=asymptotic_mean`` plus ``compliance=`` route -- never a
     public ``mixed_family`` kind."""
-    from increment import SequentialCompliancePolicy
+    from increment.estimators import SequentialCompliancePolicy
     from tests.estimation.test_encouragement import _sequential_policy
 
     reg = _sequential_policy(uptake=True).registration
@@ -677,13 +677,13 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     automatically with Bernoulli uptake compliance via MixedFamily --
     InferenceSpec(kind="asymptotic_mean") plus AnalysisPlan.compliance,
     never a public "mixed_family" kind."""
-    from increment import (
+    from increment.estimation.sequential import MixedFamily
+    from increment.estimators import (
         SequentialCell,
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
     )
-    from increment.estimation.sequential import MixedFamily
     from increment.frame import from_unit_panel, synthesise_metric
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id
     from tests.asymptotic_cases import mean_model
@@ -993,8 +993,8 @@ class _DeclaredMomentProvider:
 
 
 def test_context_requires_declared_uptake_stream_before_late_read():
-    from increment import EvidenceExecutionContext, EvidenceScope
     from increment.errors import CodedError
+    from increment.evidence import EvidenceExecutionContext, EvidenceScope
 
     source = FakeMomentSource(
         _rows(n=40),

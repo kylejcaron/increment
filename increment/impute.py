@@ -64,7 +64,7 @@ _POOLED_MEAN_ROLE_UNDECLARED = _WARNINGS["impute.pooled_mean_role_undeclared"] =
 )
 _OUTCOME_ROUTE = (
     "declare MetricSpec(missing='zero') if null means no events, MetricSpec(missing='drop') "
-    "if not observed, or repair upstream with increment.impute.zeros / drop_null"
+    "if not observed, or repair upstream with increment.estimators.impute.zeros / drop_null"
 )
 _UNDECLARED_ROUTE = (
     "pass roles={column: 'covariate'} for a pre-period covariate; an outcome column "

@@ -43,7 +43,9 @@ from increment.estimation._tails import student_t_isf, two_sided_critical_value
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.results import Estimate
 
-_IMPUTE_HINT = "nulls must be resolved before estimation -- impute them with increment.impute"
+_IMPUTE_HINT = (
+    "nulls must be resolved before estimation -- impute them with increment.estimators.impute"
+)
 _INTERACT = "d:"
 # A row fit exactly by the design has HC2 weight e_i^2 / (1 - h_i) = 0/0.
 _MAX_LEVERAGE = 1.0 - 1e-8

@@ -5,7 +5,6 @@ from typing import cast
 
 import pytest
 
-from increment import SwitchbackStudyEnvelope
 from increment.decision import (
     ArmAnalysisState,
     ContrastAnalysisState,
@@ -16,6 +15,7 @@ from increment.decision import (
     compile_contrast_procedures,
 )
 from increment.errors import CapabilityError, InvalidRequestError
+from increment.estimators import SwitchbackStudyEnvelope
 from increment.semantics.assignment import (
     IndependentBernoulliOrder,
     SwitchbackAssignment,

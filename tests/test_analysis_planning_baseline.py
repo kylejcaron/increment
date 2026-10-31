@@ -12,7 +12,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, CupedCovariate, Method, SourceSnapshotEvidence
+from increment import Analysis, CupedCovariate, Method
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
@@ -781,8 +782,8 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
 
     from scipy.stats import chi2
 
-    from increment import IncrementRuntimeWarning
     from increment.estimation.arm_contract import ArmPlanningProcedure
+    from increment.estimators import IncrementRuntimeWarning
     from increment.power import (
         PowerDesign,
         achieved_power,
@@ -923,7 +924,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
 def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path):
     import warnings
 
-    from increment import IncrementRuntimeWarning
+    from increment.estimators import IncrementRuntimeWarning
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
         ClusterIdentityRequest,

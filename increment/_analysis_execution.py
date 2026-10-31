@@ -1189,7 +1189,7 @@ class Analysis:
         pre-aggregated moments).
 
         Per-arm ``n``/mean/variance or exact conversion-success summaries
-        are not wire rows; use :func:`increment.moments_from_summaries` to
+        are not wire rows; use :func:`increment.estimators.moments_from_summaries` to
         build the supported fixed-horizon mean/conversion cube. That helper
         does not synthesize ratio, covariate, clustered, or sequential state;
         use :meth:`from_unit_summary` when those inputs are required.

@@ -802,7 +802,18 @@ layer = "core"
 depends_on = [
   "increment._evidence_refusals", "increment._evidence_types",
   "increment._source_types", "increment.readouts", "increment._frame_ledger",
+  "increment.kernel.context",
 ]
+
+[[modules]]
+path = "increment.artifacts"
+layer = "core"
+depends_on = []
+
+[[modules]]
+path = "increment.digest"
+layer = "core"
+depends_on = []
 
 [[interfaces]]
 from = ["increment.compatibility"]

@@ -169,7 +169,8 @@ Use `resolve` when a caller needs the static refusal codes, and inspect all
 three `Runnable` fields rather than treating unknown requirements as supported:
 
 ```python
-from increment import runnable, resolve
+from increment import runnable
+from increment.estimators import resolve
 
 status = runnable(restored, "revenue")["randomized.unadjusted"]
 if status.unknown:

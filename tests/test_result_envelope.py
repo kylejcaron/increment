@@ -92,8 +92,8 @@ def test_absolute_margin_refuses_when_retained_additive_bounds_are_absent():
 def test_sequential_bonferroni_recomputes_at_requested_level():
     import math
 
-    from increment import SequentialCell
     from increment.decision import AsymptoticSequentialEvidence
+    from increment.estimators import SequentialCell
     from increment.frame import MetricSpec
     from increment.result_envelope import ResultCell, combine_family_evidence, family_evidence
     from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
@@ -131,9 +131,9 @@ def test_registered_likelihood_family_evidence_survives_codecs():
     import math
     from fractions import Fraction
 
-    from increment import AlwaysValid, SequentialCell
     from increment.decision import AsymptoticSequentialEvidence, EValueEvidence
     from increment.estimation.family import e_bh_select
+    from increment.estimators import AlwaysValid, SequentialCell
     from increment.result_envelope import ResultCell, combine_family_evidence, family_evidence
     from tests.sequential_cases import capture, estimate_sequential, records, registration
 

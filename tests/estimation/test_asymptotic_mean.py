@@ -6,7 +6,6 @@ from typing import Any, cast
 
 import pytest
 
-from increment import AsymptoticMean, SequentialCell, estimate_sequential
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.asymptotic_mean import (
     MeanSetComponent,
@@ -17,6 +16,7 @@ from increment.estimation.decision_types import AsymptoticSequentialEvidence, EV
 from increment.estimation.family import select_sequential_family
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential_runtime import selected_snapshot_results
+from increment.estimators import AsymptoticMean, SequentialCell, estimate_sequential
 from increment.sequential_state import declare_sequential_freeze_cells
 from tests.asymptotic_cases import mean_capture, mean_model, mean_records, mean_registration
 
@@ -426,7 +426,7 @@ def test_centered_states_and_boundaries_agree_across_order_and_append_partitions
 
 
 def test_exact_and_asymptotic_policies_cannot_reinterpret_each_others_models():
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
     from tests.sequential_cases import registration
 
     with pytest.raises(InvalidRequestError):

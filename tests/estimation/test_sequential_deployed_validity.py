@@ -6,17 +6,6 @@ from fractions import Fraction as F
 
 import pytest
 
-from increment import (
-    AlwaysValid,
-    AsymptoticMean,
-    SequentialCell,
-    SequentialRegistration,
-    capture_sequential_snapshot,
-    snapshot_from_json,
-)
-from increment import (
-    estimate_sequential as _public_estimate_sequential,
-)
 from increment.errors import CapabilityError
 from increment.estimation.decision_types import (
     AsymptoticSequentialEvidence,
@@ -27,6 +16,17 @@ from increment.estimation.family import select_sequential_family
 from increment.estimation.sequential_runtime import (
     _evaluate_sequential_diagnostic,
     reinvert_selected,
+)
+from increment.estimators import (
+    AlwaysValid,
+    AsymptoticMean,
+    SequentialCell,
+    SequentialRegistration,
+    capture_sequential_snapshot,
+    snapshot_from_json,
+)
+from increment.estimators import (
+    estimate_sequential as _public_estimate_sequential,
 )
 from increment.sequential_state import (
     _capture_sequential_diagnostic_snapshot,

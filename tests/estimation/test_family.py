@@ -76,7 +76,7 @@ def _typed_family_cells(
 
 
 def _raw_family(*, null=0, alternative="two-sided", c=None, t=None):
-    from increment import SequentialCell, estimate_sequential
+    from increment.estimators import SequentialCell, estimate_sequential
     from tests.sequential_cases import capture, records, registration
 
     reg = registration(

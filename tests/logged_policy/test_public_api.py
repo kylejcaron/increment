@@ -1,4 +1,4 @@
-"""Root and results exports of the logged-policy family, end to end on two fixtures.
+"""Estimator and results exports of the logged-policy family, end to end on two fixtures.
 
 Fixture 1 (four fixed-random units) passes every trace and support gate and
 is refused by the independent-unit floor; the shared forty-unit fixture
@@ -17,8 +17,13 @@ from typing import Any
 import pytest
 
 import increment
-from increment import LoggedTrace, PolicyRegistry, TabularPolicy, estimate_policy_contrast
 from increment.errors import CapabilityError
+from increment.estimators import (
+    LoggedTrace,
+    PolicyRegistry,
+    TabularPolicy,
+    estimate_policy_contrast,
+)
 from increment.logged_policy import REFERENCE_POLICY_V1, TARGET_POLICY_V1
 from increment.results import PolicyValueContrast
 from tests.logged_policy.fixtures import (
@@ -153,7 +158,7 @@ def test_fixture2_is_refused_as_adaptively_logged_from_the_root_export():
     assert raised.value.context["logging_policy_versions"] == versions
 
 
-def test_root_and_results_exports_resolve_lazily_to_the_family_modules():
+def test_estimator_and_results_exports_resolve_lazily_to_the_family_modules():
     from tests.capability_consumers_auxiliary import assert_expected
 
     for ingress in (
@@ -174,15 +179,14 @@ def test_root_and_results_exports_resolve_lazily_to_the_family_modules():
             f"policy_persistence_analysis_ingress_{ingress}_not_comparable",
             kind="not_comparable",
         )
-    from increment import logged_policy
+    import increment.logged_policy as logged_policy
 
-    assert increment.estimate_policy_contrast is logged_policy.estimate_policy_contrast
-    assert increment.LoggedTrace is logged_policy.LoggedTrace
-    assert increment.PolicyRegistry is logged_policy.PolicyRegistry
-    assert increment.TabularPolicy is logged_policy.TabularPolicy
-    assert PolicyValueContrast is logged_policy.PolicyValueContrast
+    assert estimate_policy_contrast is logged_policy.estimate_policy_contrast
+    assert LoggedTrace is logged_policy.LoggedTrace
+    assert PolicyRegistry is logged_policy.PolicyRegistry
+    assert TabularPolicy is logged_policy.TabularPolicy
     for name in ("estimate_policy_contrast", "LoggedTrace", "PolicyRegistry", "TabularPolicy"):
-        assert name in increment.__all__
+        assert name not in increment.__all__
     assert "PolicyValueContrast" not in increment.__all__
 
 

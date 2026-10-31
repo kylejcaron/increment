@@ -6,8 +6,8 @@ from typing import Any, cast
 
 import pytest
 
-from increment import EvidenceScope, EvidenceScopeResult, MomentsRequest
 from increment.errors import CodedError
+from increment.evidence import EvidenceScope, EvidenceScopeResult, MomentsRequest
 from increment.kernel.context import EvidenceExecutionContext
 
 
@@ -67,7 +67,7 @@ def test_frame_totals_capture_freezes_caller_owned_dataframe():
     import narwhals as nw
     import pandas as pd
 
-    from increment import UnitRowsRequest, evidence_provider
+    from increment.evidence import UnitRowsRequest, evidence_provider
     from increment.frame import FrameTotalsSource, from_unit_summary
 
     frame = pd.DataFrame(
@@ -214,7 +214,7 @@ def test_borrower_exception_does_not_close_owner():
 @pytest.mark.integration
 @pytest.mark.parametrize("fault", ["scope", "enter", "read", "exit"])
 def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
-    from increment import EvidenceScope, EvidenceScopeResult, evidence_provider
+    from increment.evidence import EvidenceScope, EvidenceScopeResult, evidence_provider
     from increment.kernel.context import EvidenceExecutionContext
     from tests.analysis_factory import held_source, native_connection
     from tests.source_conformance import definitions_source
@@ -302,7 +302,7 @@ def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
 
 @pytest.mark.integration
 def test_captured_context_refuses_when_its_pinned_stream_disappears(tmp_path):
-    from increment import EvidenceScope, evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
     from tests.analysis_factory import held_source
     from tests.source_conformance import _clear_captured_source_tables, definitions_source
 

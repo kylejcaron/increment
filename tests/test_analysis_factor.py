@@ -453,7 +453,7 @@ class TestFactorSummaries:
         with a valid confidence interval - the end-to-end path from the
         estimation core's absorption estimator into this facade's query
         output shape."""
-        from increment import absorb_factor
+        from increment.estimators import absorb_factor
 
         # Three levels: absorption refuses two, where the residual degrees of
         # freedom (K-2) would have to be fabricated.

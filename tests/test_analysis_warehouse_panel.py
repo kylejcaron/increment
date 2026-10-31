@@ -5,16 +5,17 @@ from __future__ import annotations
 import pytest
 
 from increment import Analysis
-from increment.errors import CapabilityError
+from increment.estimators import CapabilityError
 from tests.analysis_factory import lift_rows
 from tests.test_unit_day_artifact_facade import _native
 
 
-def test_randomized_and_capability_error_exported() -> None:
+def test_randomized_and_capability_error_canonical_imports() -> None:
     import increment
+    import increment.errors as errors
 
     assert increment.Randomized(control_group="control").control_group == "control"
-    assert increment.CapabilityError is CapabilityError
+    assert CapabilityError is errors.CapabilityError
 
 
 def test_warehouse_panel_adoption_path_is_removed_without_a_compatibility_shim() -> None:

@@ -882,8 +882,8 @@ def test_definitions_source_preserves_raw_pool_and_wire(tmp_path, volatile, infe
     import narwhals as nw
     import pyarrow as pa
 
-    from increment import SourceSnapshotEvidence
     from increment.analysis import Analysis
+    from increment.artifacts import SourceSnapshotEvidence
     from increment.estimation.winsor import raw_state_from_source
     from increment.results import LiftEstimate
     from increment.winsor import WinsorRawState

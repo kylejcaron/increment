@@ -14,9 +14,9 @@ import pytest
 import yaml
 
 from examples._seed import seed_event_log
-from increment import SourceSnapshotEvidence
 from increment._moment_plan import SLOTS
 from increment.analysis import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.diagnostics import SRMResult

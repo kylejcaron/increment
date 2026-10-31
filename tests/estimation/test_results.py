@@ -920,8 +920,8 @@ class TestPValueClusterRobust:
         assert p_greater > p_less
 
     def test_public_gaussian_sequential_estimate_refuses_before_row_access(self):
-        from increment import estimate_sequential
         from increment.errors import CapabilityError
+        from increment.estimators import estimate_sequential
         from tests.sequential_cases import raw_gaussian
 
         snapshot, _, policy = raw_gaussian(n=4)
@@ -1624,7 +1624,7 @@ class TestLiftEstimateBinomialCrossInvariants:
 
 
 def _registered_sequential_row():
-    from increment import estimate_sequential
+    from increment.estimators import estimate_sequential
     from tests.sequential_cases import registered_bernoulli
 
     snapshot, policy = registered_bernoulli(n=4)

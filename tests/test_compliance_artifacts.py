@@ -9,7 +9,8 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence, readouts
+from increment import Analysis, readouts
+from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning
 from increment.estimation.encouragement import estimate_compliance
 from increment.frame import from_unit_panel

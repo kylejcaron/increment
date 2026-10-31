@@ -380,13 +380,14 @@ def test_warehouse_quantile_refuses_call_time_inference(tmp_path):
     declared AnalysisPlan - call-time inference= is refused
     unconditionally, declared plan or not, matching every other
     non-Encouragement design."""
+    from increment.estimators import AlwaysValid
     from increment.plan import compile_decision_plan
 
     an = _analysis(tmp_path, _events_table(n_per_arm=50))
     an = make_analysis_like(an, plan=compile_decision_plan(None, an.metrics, path="warehouse"))
     assert lift_rows(an.run())
     with pytest.raises(TypeError):
-        lift_rows(an.run(inference=inc.AlwaysValid(registration=registration())))  # ty: ignore[unknown-argument]
+        lift_rows(an.run(inference=AlwaysValid(registration=registration())))  # ty: ignore[unknown-argument]
 
 
 @pytest.mark.integration

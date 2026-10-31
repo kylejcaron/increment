@@ -152,7 +152,8 @@ from pathlib import Path
 import ibis
 import pyarrow as pa
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis
+from increment.artifacts import SourceSnapshotEvidence
 
 definitions = Path("encouragement.yml")
 definitions.write_text(

@@ -339,14 +339,14 @@ def _deployed_family_outcome(
     """
     from fractions import Fraction
 
-    from increment import (
+    from increment.estimation.decision_types import sequential_hypothesis_key
+    from increment.estimation.family import select_sequential_family
+    from increment.estimators import (
         AlwaysValid,
         SequentialCell,
         capture_sequential_snapshot,
         estimate_sequential,
     )
-    from increment.estimation.decision_types import sequential_hypothesis_key
-    from increment.estimation.family import select_sequential_family
     from tests.sequential_cases import registration
 
     reg = registration(

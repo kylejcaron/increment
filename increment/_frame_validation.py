@@ -81,7 +81,7 @@ _CLUSTER_CAPABILITY = RefusalSpec(
 _PANEL_MISSING_DROP = RefusalSpec(
     "frame.missing_policy.panel_drop",
     UnsupportedRequestError,
-    template="missing={missing!r} is not supported on the panel shape -- the panel is densified to a unit x day spine with zero-filled cells, so a dropped (unit, day) row silently means zero, not complete-case. Declare missing='zero' if null means \"no events\", or repair the rows upstream (increment.impute.drop_null before collapsing to one row per unit).",
+    template="missing={missing!r} is not supported on the panel shape -- the panel is densified to a unit x day spine with zero-filled cells, so a dropped (unit, day) row silently means zero, not complete-case. Declare missing='zero' if null means \"no events\", or repair the rows upstream (increment.estimators.impute.drop_null before collapsing to one row per unit).",
 )
 _SOURCE_FRAME_COLUMN_DTYPE = RefusalSpec(
     "source.frame.column_dtype",
@@ -234,7 +234,7 @@ _COVARIATE_NOT_NUMERIC = RefusalSpec(
 _METRIC_COVARIATE_MISSING = RefusalSpec(
     "frame.validation.metric_covariate_column",
     InvalidRequestError,
-    template="metric {metric!r}: covariate column {covariate!r} has {n_missing} null/NaN value(s) and its method declares missing='refuse'. Choose missing='impute' for pooled-mean imputation (unbiased under randomization), missing='zero' if null means \"no pre-period activity\", or repair upstream with increment.impute.pooled_mean.",
+    template="metric {metric!r}: covariate column {covariate!r} has {n_missing} null/NaN value(s) and its method declares missing='refuse'. Choose missing='impute' for pooled-mean imputation (unbiased under randomization), missing='zero' if null means \"no pre-period activity\", or repair upstream with increment.estimators.impute.pooled_mean.",
 )
 
 Renderer = Callable[..., str]
@@ -338,7 +338,7 @@ _REFUSALS = refusals(
         "frame.validation.covariate_not_numeric": _COVARIATE_NOT_NUMERIC,
         "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r} -- one control, declared once",
         "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind -- one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
-        "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). An undeclared null is silently averaged as 0 (n counts the row, sum skips it) and NaN sums diverge by backend. If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.impute.zeros(df, {column!r}). If \"not observed\", declare missing='drop' (complete-case; unbiased only when missingness is unrelated to the values) or run df, n = increment.impute.drop_null(df, {column!r}).",
+        "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). An undeclared null is silently averaged as 0 (n counts the row, sum skips it) and NaN sums diverge by backend. If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.estimators.impute.zeros(df, {column!r}). If \"not observed\", declare missing='drop' (complete-case; unbiased only when missingness is unrelated to the values) or run df, n = increment.estimators.impute.drop_null(df, {column!r}).",
         "frame.validation.from_unit_panel": RefusalSpec(
             "frame.validation.from_unit_panel",
             InvalidRequestError,

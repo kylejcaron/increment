@@ -109,7 +109,7 @@ def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path)
     assert native.unit_counts() == summary.unit_counts() == panel.unit_counts()
     assert native.unit_counts()["(unassigned)"] == 1
 
-    from increment import AssignmentCountsRequest
+    from increment.artifacts import AssignmentCountsRequest
     from increment.query.session import WarehouseArtifactStore
 
     store = WarehouseArtifactStore(con, schema_name="unit_count_artifacts")

@@ -5,9 +5,14 @@ from fractions import Fraction
 
 import pytest
 
-from increment import Analysis, SequentialCell, SequentialCompliancePolicy, SequentialRegistration
+from increment import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.results import LiftEstimate
+from increment.estimators import (
+    SequentialCell,
+    SequentialCompliancePolicy,
+    SequentialRegistration,
+)
 from increment.frame import MetricSpec
 from tests.sequential_cases import UnreadFrame
 from tests.test_sequential_public_sources import _analysis, _frame, _native_fixture, _plan, _row
@@ -752,7 +757,7 @@ def test_legacy_sequential_wire_rejected_before_payload_rehydration(typed):
 @pytest.mark.slow
 @pytest.mark.parametrize("cell_alpha", [Fraction(1, 40), Fraction(1, 20)])
 def test_same_arm_segmented_compliance_cells_conserve_policy_alpha(cell_alpha):
-    from increment import AlwaysValid
+    from increment.estimators import AlwaysValid
     from increment.plan import compile_decision_plan
 
     connection, _, source = _native_fixture("bernoulli", uptake_only=True)
@@ -972,7 +977,7 @@ def _summary(frame, specs, plan, design):
 
 def _explicit_bernoulli(specs, roster, *, design, q=Fraction(0.1), date=None):
     """A caller-written exact registration over these cells, independent of the builder."""
-    from increment import JointReveal, SequentialModel
+    from increment.estimators import JointReveal, SequentialModel
     from increment.frame import synthesise_metric
     from increment.sequential_source import (
         bernoulli_prior,

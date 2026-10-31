@@ -5,10 +5,11 @@ from fractions import Fraction as F
 
 import pytest
 
-from increment import Analysis, AsymptoticMean, JointReveal, SequentialCell
+from increment import Analysis
 from increment.breakout.estimates import DailyLiftEstimate, LiftEstimates
 from increment.errors import CapabilityError
 from increment.estimation.sequential_result import AsymptoticSequentialResult
+from increment.estimators import AsymptoticMean, JointReveal, SequentialCell
 from increment.frame import MetricSpec, synthesise_metric
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec, MultiplicitySpec
@@ -360,7 +361,7 @@ def test_raw_records_and_analysis_freeze_every_cell_of_a_segmented_metric_alike(
     ``Analysis.capture_sequential(freeze=)`` on the same frame produce the same
     snapshot: every observed segment of the named metric is frozen, and the
     segment with no data yet stays monitored."""
-    from increment import capture_sequential_snapshot, declare_sequential_freeze
+    from increment.estimators import capture_sequential_snapshot, declare_sequential_freeze
 
     specs = [MetricSpec(name="outcome", type="mean")]
     cells = tuple(
@@ -416,7 +417,7 @@ def test_raw_records_and_analysis_freeze_every_cell_of_a_segmented_metric_alike(
 
 @pytest.mark.parametrize("metric", ["unregistered", "outcome"])
 def test_a_freeze_with_nothing_left_to_freeze_is_refused(metric):
-    from increment import declare_sequential_freeze
+    from increment.estimators import declare_sequential_freeze
 
     reg = mean_registration(models=(mean_model("outcome", start_count=4),))
     declared = declare_sequential_freeze(
@@ -433,10 +434,10 @@ def test_a_frozen_family_member_is_reselected_at_every_look():
     once ``b``'s evidence falls, e-BH over the same frozen evidence no longer
     selects ``a``. Remembering the earlier verdict would break the
     self-consistency e-BH's false discovery rate control rests on."""
-    from increment import declare_sequential_freeze
     from increment.estimation._certified import log_interval
     from increment.estimation.sequential import AsymptoticMean
     from increment.estimation.sequential_runtime import selected_snapshot_results
+    from increment.estimators import declare_sequential_freeze
 
     q = F(1, 10)
     cells = tuple(

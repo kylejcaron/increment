@@ -416,7 +416,7 @@ def _half_null_table() -> pa.Table:
 
 def test_null_metric_value_refuses_naming_both_fixes() -> None:
     """The refusal names the declaration tier (missing='zero'/'drop') AND
-    the helper tier (increment.impute) - every failure ships its fix."""
+    the helper tier (increment.estimators.impute) - every failure ships its fix."""
     with pytest.raises(InvalidRequestError) as exc_info:
         from_unit_summary(
             _half_null_table(),

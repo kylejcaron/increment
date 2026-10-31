@@ -121,7 +121,7 @@ means for ratios; positive observed averages do not establish these assumptions.
 ```python
 from fractions import Fraction
 
-from increment import (
+from increment.estimators import (
     AlwaysValid,
     JointReveal,
     PredictivePrior,

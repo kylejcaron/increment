@@ -1090,7 +1090,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 ingress,
                 "Analysis ingresses cannot carry a LoggedTrace, which is the required contrast input",
                 "not_expressible",
-                "tests.logged_policy.test_public_api::test_root_and_results_exports_resolve_lazily_to_the_family_modules",
+                "tests.logged_policy.test_public_api::test_estimator_and_results_exports_resolve_lazily_to_the_family_modules",
                 reason="Policy contrast is a separate family-owned estimand, not an Analysis readout.",
             )
             for ingress in (

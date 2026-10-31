@@ -95,7 +95,8 @@ REMOVED_NAMES = {
 
 
 def test_non_root_names_do_not_resolve_from_increment():
-    for name in MOVED_RESULT_NAMES | ADVANCED_POWER_NAMES | REMOVED_NAMES:
+    moved_specialists = {"ArtifactStore", "MomentsRequest", "canonical_row_bytes", "estimate_cate"}
+    for name in MOVED_RESULT_NAMES | ADVANCED_POWER_NAMES | REMOVED_NAMES | moved_specialists:
         assert name not in increment.__all__
         assert not hasattr(increment, name), name
 
@@ -175,18 +176,19 @@ def test_diagnostics_exports_avoid_heavy_dependencies():
     """Resolving diagnostic and robustness exports avoids frame-library imports.
 
     Receive-only models resolve from ``increment.results`` while their
-    functions remain at the package root.
+    specialist functions come from ``increment.estimators``.
     """
     code = (
         "import increment\n"
         "import increment.results\n"
+        "import increment.estimators\n"
         "increment.results.SRMResult\n"
-        "increment.sample_ratio_mismatch\n"
+        "increment.estimators.sample_ratio_mismatch\n"
         "increment.results.AllocationBand\n"
-        "increment.allocation_posterior_bands\n"
-        "increment.absorb_factor\n"
+        "increment.estimators.allocation_posterior_bands\n"
+        "increment.estimators.absorb_factor\n"
         "increment.results.AbsorptionResult\n"
-        "increment.confounding_sensitivity\n"
+        "increment.estimators.confounding_sensitivity\n"
         "increment.results.ConfoundingSensitivity\n"
         "import sys\n"
         "heavy = {'ibis', 'pandas', 'pyarrow', 'duckdb'} & set(sys.modules)\n"
@@ -263,11 +265,11 @@ def test_semantics_models_avoids_ibis():
     assert result.returncode == 0, result.stderr
 
 
-def test_sequential_specs_exported():
-    import increment
+def test_sequential_specs_exported_from_estimator_namespace():
+    from increment.estimators import AlwaysValid
     from tests.sequential_cases import registration
 
-    assert increment.AlwaysValid(registration=registration()).label == "always_valid"
+    assert AlwaysValid(registration=registration()).label == "always_valid"
 
 
 def test_encouragement_design_exports():
@@ -286,12 +288,12 @@ def test_winsorization_is_exported_from_public_layers():
     assert "Winsorization" in increment.__all__
 
 
-def test_moments_from_summaries_is_a_root_export():
-    import increment
+def test_moments_from_summaries_is_in_estimator_namespace():
+    import increment.estimators as estimators
     import increment.summaries as summaries
 
-    assert "moments_from_summaries" in increment.__all__
-    assert increment.moments_from_summaries is summaries.moments_from_summaries
+    assert "moments_from_summaries" not in increment.__all__
+    assert estimators.moments_from_summaries is summaries.moments_from_summaries
 
 
 def test_estimation_import_leaves_decision_core_unloaded():

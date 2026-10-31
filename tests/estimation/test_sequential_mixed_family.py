@@ -12,7 +12,9 @@ from fractions import Fraction as F
 
 import pytest
 
-from increment import (
+from increment.errors import CapabilityError, InvalidRequestError
+from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
+from increment.estimators import (
     JointReveal,
     PredictivePrior,
     SequentialCell,
@@ -21,8 +23,6 @@ from increment import (
     capture_sequential_snapshot,
     estimate_sequential,
 )
-from increment.errors import CapabilityError, InvalidRequestError
-from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.frame import MetricSpec, synthesise_metric
 from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
 from increment.semantics.design import Encouragement, ExclusionRestriction, Randomized, UptakeSpec

@@ -15,7 +15,10 @@ from typing import NamedTuple
 
 import pytest
 
-from increment import (
+from increment.estimation.decision_types import EValueEvidence, sequential_hypothesis_key
+from increment.estimation.family import select_sequential_family
+from increment.estimation.sequential_runtime import reinvert_selected
+from increment.estimators import (
     AlwaysValid,
     JointReveal,
     PredictivePrior,
@@ -25,9 +28,6 @@ from increment import (
     capture_sequential_snapshot,
     estimate_sequential,
 )
-from increment.estimation.decision_types import EValueEvidence, sequential_hypothesis_key
-from increment.estimation.family import select_sequential_family
-from increment.estimation.sequential_runtime import reinvert_selected
 from increment.sequential_state import declare_sequential_freeze_cells
 from tests.estimation._sequential_proof_oracle import (
     Arm,

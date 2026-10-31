@@ -5,16 +5,15 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from increment import (
-    Analysis,
+from increment import Analysis, Randomized
+from increment.errors import CapabilityError, InvalidRequestError
+from increment.estimators import (
     IndependentBernoulliOrder,
-    Randomized,
     SharedScheduleOrder,
     SwitchbackAssignment,
     SwitchbackWindow,
     UnitCycleTApproximation,
 )
-from increment.errors import CapabilityError, InvalidRequestError
 
 
 def _run(analysis: Analysis, **kwargs: Any):

@@ -709,7 +709,7 @@ def test_solvers_consume_validated_copies(solver):
 
 
 def test_models_frozen_serializable_and_public_exports():
-    import increment
+    import increment.estimators as estimators
 
     b = baseline()
     row = achieved(4, 1.0, b, procedure())
@@ -718,8 +718,8 @@ def test_models_frozen_serializable_and_public_exports():
         with pytest.raises((TypeError, ValueError)):
             setattr(obj, field, value)
     assert SwitchbackPowerResult.model_validate_json(row.model_dump_json()) == row
-    assert increment.SwitchbackBaseline is SwitchbackBaseline
-    assert increment.switchback_achieved_power is achieved
+    assert estimators.SwitchbackBaseline is SwitchbackBaseline
+    assert estimators.switchback_achieved_power is achieved
     with pytest.raises(InvalidRequestError):
         SwitchbackPowerResult.model_validate(dict(row.model_dump(), mde_unavailable_reason=None))
 
