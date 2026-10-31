@@ -227,15 +227,17 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
             key: options.get(key, UNSET)
             for key in ("decision_method", "sensitivity_methods", "prior")
         }
-        configs = overlay_configs(
-            metrics,
-            candidate._src.context.configs,
-            methods=None,
-            prior=None,
-            decision_method=overrides["decision_method"],
-            sensitivity_methods=overrides["sensitivity_methods"],
-            prior_override=overrides["prior"],
-        )
+        configs = ()
+        if operation == "run_breakout" and metrics:
+            configs = overlay_configs(
+                metrics,
+                candidate._src.context.configs,
+                methods=None,
+                prior=None,
+                decision_method=overrides["decision_method"],
+                sensitivity_methods=overrides["sensitivity_methods"],
+                prior_override=overrides["prior"],
+            )
         if operation == "run_breakout":
             from increment._analysis_config import normalize_display_correction
             from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
@@ -289,6 +291,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                     else reader.resolve_lift_options(req.metrics, **overrides).configs
                 )
             breakouts = _selected_breakouts(candidate, req.dimension) if req.dimension else ()
+        scope_breakouts = breakouts if metrics or options.get("capture") is not None else ()
         for config in configs:
             _config_snapshot(config, candidate._design)
         requests.append(
@@ -314,10 +317,10 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                     and getattr(candidate._plan.inference, "registration", None) is not None
                     else grain
                 ),
-                breakouts=breakouts,
+                breakouts=scope_breakouts,
                 snapshot=True,
                 execution=True,
-                include_breakouts=bool(breakouts),
+                include_breakouts=bool(scope_breakouts),
             )
         )
     from increment.estimation.sequential import SEQUENTIAL_POLICIES

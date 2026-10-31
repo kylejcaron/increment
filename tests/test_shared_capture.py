@@ -234,6 +234,30 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch
             "asof",
         )
         assert len(captured) == 1
+        from increment.semantics.models import MeanMetric
+
+        unregistered = MeanMetric(
+            name="unregistered_revenue",
+            entity="user_id",
+            fact="purchase",
+            aggregation="sum",
+            window_days=1,
+        )
+        day_scopes = (
+            Scope(view="daily", grain="daily"),
+            Scope(view="asof", grain="asof"),
+        )
+        day_experiment = replace(experiment, scopes=day_scopes)
+        day_values = run(
+            day_experiment,
+            resolver,
+            analysis_options={
+                "metrics": [unregistered],
+                "decision_method": Method(name="unadjusted"),
+            },
+        )
+        assert {cell.identity.scope.view for cell in day_values.cells} == {"daily", "asof"}
+        assert {cell.identity.key.metric for cell in day_values.cells} == {"unregistered_revenue"}
     finally:
         resolver._analysis.close()
         con.disconnect()
@@ -284,7 +308,15 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
 def test_invalid_view_selection_and_late_capability_refuse_without_capture(monkeypatch, tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path)
-    scopes = (Scope(view="run", grain="total"), Scope(view="daily", grain="daily"))
+    scopes = (
+        Scope(view="run", grain="total"),
+        Scope(view="daily", grain="daily"),
+        Scope(
+            view="breakout",
+            grain="total",
+            segment=(BreakoutIdentity("store", None),),
+        ),
+    )
     experiment = replace(experiment, scopes=scopes)
 
     def forbidden(*args, **kwargs):
