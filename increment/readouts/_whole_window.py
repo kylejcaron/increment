@@ -16,7 +16,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from increment import readouts
 from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
 from increment._evidence_types import CountsRequest, EvidenceScope, SourceContext
@@ -41,6 +40,7 @@ from increment.sources import require_operation
 
 if TYPE_CHECKING:
     from increment._literals import ValueScale
+    from increment._source_types import EvidenceProvider
     from increment.breakout.estimates import LiftEstimates
     from increment.decision import CompiledDecisionPlan
     from increment.declarations import Method
@@ -251,6 +251,8 @@ class WholeWindowReadouts:
         validate_trigger: Callable[[object], None],
         arm_moments: Callable[..., list[LiftEstimate]],
         execution_context_scope: Callable[[EvidenceExecutionContext], Any],
+        provider_for: Callable[[_BuiltinMomentSource], EvidenceProvider],
+        registered_run: Callable[..., Any],
     ) -> None:
         self._src = src
         self._plan = plan
@@ -260,6 +262,8 @@ class WholeWindowReadouts:
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
         self._execution_context_scope = execution_context_scope
+        self._provider_for = provider_for
+        self._registered_run = registered_run
 
     def validate(self, req: WholeWindowRequest) -> RouteName:
         """Validate requests and portable configuration snapshots before capture."""
@@ -398,31 +402,21 @@ class WholeWindowReadouts:
                 )
             return rows
 
-        if execution_context is not None:
-            return execute(execution_context)
-
         from uuid import uuid4
 
-        from increment.decision import ContrastContext
         from increment.kernel.context import EvidenceExecutionContext
-        from increment.readouts._provider import native_scope_provider
+        from increment.readouts._execution_context import owned_execution_context
 
-        if isinstance(self._src.context, ContrastContext):
-            from increment._evidence_scopes import switchback_scope_provider
-
-            provider = switchback_scope_provider(self._src)
-        else:
-            provider = (
-                self._src if is_custom_source(self._src) else native_scope_provider(self._src)
-            )
-        context = EvidenceExecutionContext(
-            provider,
-            scope,
-            run_id=uuid4().hex,
-            coherence=family.declared.coherence,
-            shared_capture=True,
-        )
-        with context.evidence_scope(), self._execution_context_scope(context):
+        with owned_execution_context(
+            lambda: EvidenceExecutionContext(
+                self._provider_for(self._src),
+                scope,
+                run_id=uuid4().hex,
+                coherence=family.declared.coherence,
+                shared_capture=True,
+            ),
+            execution_context_scope=self._execution_context_scope,
+        ) as context:
             return execute(context)
 
     def run(
@@ -433,7 +427,7 @@ class WholeWindowReadouts:
         route = self.validate(req)
         if getattr(self._plan.inference, "registration", None) is not None:
             result = _as_lift_estimates(
-                readouts.run(
+                self._registered_run(
                     self._src,
                     metrics=[m.name for m in req.metrics],
                     estimands=req.estimands,

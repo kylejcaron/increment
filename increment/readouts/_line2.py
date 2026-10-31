@@ -1,19 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal, cast
-from uuid import uuid4
 
 from increment._analysis_config import UNSET, _Unset
 from increment._evidence_types import BreakoutIdentity, EvidenceScope
 from increment._literals import Correction
 from increment._source_types import declared_evidence, is_custom_source
 from increment.declarations import Method
-from increment.kernel.context import (
-    EvidenceExecutionContext,
-    ExecutionMode,
-)
+from increment.kernel.context import ExecutionMode
 from increment.semantics.models import Metric
 
 if TYPE_CHECKING:
@@ -31,35 +26,39 @@ def _compliance_only(analysis, estimands, dimension=None):
     )
 
 
-def _provider_for(analysis):
-    from increment.decision import ContrastContext
-    from increment.readouts._provider import native_scope_provider
-
-    if isinstance(analysis._src.context, ContrastContext):
-        from increment._evidence_scopes import switchback_scope_provider
-
-        return switchback_scope_provider(analysis._src)
-
-    source = analysis._src
-    return source if is_custom_source(source) else native_scope_provider(source)
-
-
-@contextmanager
 def owned_execution_context(
     analysis,
     scope: EvidenceScope,
     *,
     coherence: ExecutionMode = "captured",
 ):
-    context = EvidenceExecutionContext(
-        _provider_for(analysis),
-        scope,
-        run_id=uuid4().hex,
-        coherence=coherence,
-        shared_capture=True,
+    from uuid import uuid4
+
+    from increment.decision import ContrastContext
+    from increment.kernel.context import EvidenceExecutionContext
+    from increment.readouts._execution_context import (
+        owned_execution_context as _owned_execution_context,
     )
-    with context.evidence_scope(), analysis._scoped_execution_context(context):
-        yield context
+    from increment.readouts._provider import native_scope_provider
+
+    source = analysis._src
+    if isinstance(source.context, ContrastContext):
+        from increment._evidence_scopes import switchback_scope_provider
+
+        provider = switchback_scope_provider(source)
+    else:
+        provider = source if is_custom_source(source) else native_scope_provider(source)
+
+    return _owned_execution_context(
+        lambda: EvidenceExecutionContext(
+            provider,
+            scope,
+            run_id=uuid4().hex,
+            coherence=coherence,
+            shared_capture=True,
+        ),
+        execution_context_scope=analysis._scoped_execution_context,
+    )
 
 
 def _reject_percentile_breakout(metrics):

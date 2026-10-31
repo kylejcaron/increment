@@ -504,6 +504,32 @@ class ReadoutMetadata(_ReadoutModel):
             raise PydanticCustomError("effective_modes_type", "effective_modes must be a mapping")
         return _FrozenMapping(cast(Mapping[str, Literal["captured", "live", "provider"]], value))
 
+    def with_execution_context(
+        self,
+        *,
+        snapshot_id: str,
+        coherence: Literal["captured", "live"] | None,
+        effective_modes: Mapping[str, Literal["captured", "live", "provider"]],
+        shared_capture: bool,
+    ) -> ReadoutMetadata:
+        return self.model_copy(
+            update={
+                "coherence": coherence,
+                "effective_modes": _FrozenMapping(effective_modes),
+                "captures": (
+                    (
+                        ReadoutCapture(
+                            snapshot_id=snapshot_id,
+                            coherence=coherence,
+                            effective_modes=effective_modes,
+                        ),
+                    )
+                    if shared_capture
+                    else self.captures
+                ),
+            }
+        )
+
     def __repr__(self) -> str:
         return (
             "ReadoutMetadata(\n"

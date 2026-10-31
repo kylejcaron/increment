@@ -162,6 +162,14 @@ class EvidenceExecutionContext:
     def requested_coherence(self) -> ExecutionMode:
         return self._requested_coherence
 
+    def validate_requested_coherence(self, coherence: ExecutionMode) -> None:
+        if self.requested_coherence != coherence:
+            _refuse("kernel.request.invalid", field="coherence")
+
+    def validate_uptake_fact(self, fact: str) -> None:
+        if fact not in self.scope.uptake_facts:
+            _refuse("kernel.context.undeclared_stream", stream=f"fact:{fact}")
+
     def validate_observational_streams(self, source: object, design: object) -> None:
         """Check adjustment dependencies against the captured loader inventory."""
         self._require_open()
