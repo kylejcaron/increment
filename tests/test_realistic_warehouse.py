@@ -600,7 +600,9 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     assert_prior_free_sampling_family(source_result)
     assert any(row.group_id == "treatment" and row.lift is not None for row in source_result)
     path = tmp_path / "m3-late-panel.parquet"
-    source.export(path)
+    with pytest.warns(IncrementWarning) as export_warnings:
+        source.export(path)
+    assert set(warning_codes(export_warnings)) == {"frame.censoring.dropped_units"}
     replay = Analysis.from_moments(
         pq.read_table(path).to_pylist(),
         design=design,

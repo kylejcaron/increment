@@ -520,16 +520,16 @@ def _read_with_advisories(
             else _read(analysis, name, case, coherence=coherence, compare_kernel=True)
         )
     if case.readout_probe is not None or case.source_probe is not None:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"metrics .* have available CUPED covariates",
-                category=IncrementWarning,
-            )
+        with warnings.catch_warnings(record=True) as probe_warnings:
+            warnings.simplefilter("always", IncrementWarning)
             if case.readout_probe is not None:
                 case.readout_probe(results)
             if case.source_probe is not None:
                 case.source_probe(name, analysis)
+        assert set(warning_codes(probe_warnings)) <= {
+            *expected,
+            "analysis.cuped.covariate_unused",
+        }
     warnings_seen = warning_codes(caught)
     advisory_count = warnings_seen.count("analysis.cuped.covariate_unused")
     actual = tuple(code for code in warnings_seen if code != "analysis.cuped.covariate_unused")
