@@ -1803,6 +1803,8 @@ def _estimate_encouragement(  # noqa: PLR0913
         c = prepared.control.get(t.metric)
         if c is None:
             continue
+        if "compliance" not in prepared.estimands and "late" not in prepared.estimands:
+            continue
         context = _first_stage_context(
             t,
             c,

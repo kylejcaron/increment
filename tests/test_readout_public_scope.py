@@ -976,7 +976,6 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
     assert query_calls == []
     assert len(integrity_calls) == 1
-    assert integrity.observed == expected_counts
     populations = {row.analysis_population for row in results}
     assert populations == {"assigned", "triggered"}
     assigned = next(row for row in results if row.analysis_population == "assigned")

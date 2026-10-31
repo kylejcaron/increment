@@ -10,10 +10,13 @@ exports refuse raw factories even when `implementation_refs` records their
 provenance. An `ImplementationRef` does not replace or reconstruct a raw
 factory; experiments containing one remain in-memory-only.
 
-`run(experiment, resolver)` returns a `RunResult` for a supported single
-scope. If its in-memory learner configuration cannot be serialized,
-`RunResult` remains usable in memory, while storing or serializing it refuses
-with `wire.procedure.runtime_method`.
+`run(experiment, resolver)` returns one `RunResult` for all declared supported
+scopes, sharing one physical evidence capture. `views=(scope, ...)` selects
+declared scopes by their hashes; execution follows declaration order, not
+selection order. Empty, duplicate or undeclared selections refuse before reads.
+If an in-memory learner configuration cannot be serialized, `RunResult`
+remains usable in memory, while storing or serializing it refuses with
+`wire.procedure.runtime_method`.
 
 `Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected scope. Both contain the declared metrics, with any switchback scope-specific selection applied. Each request retains its scope, registration hash, and source-reference name.
 
@@ -126,15 +129,17 @@ that catalog and refuses when it is missing or stale. An offline definitions
 specification can be inspected with `runnable`, but needs a connection-bound
 resolver to execute.
 
-The bound built-in resolver executes one selected run, daily, as-of, breakout,
-or switchback scope using its declared metric selection and population.
+The bound built-in resolver executes selected run, daily, as-of, breakout,
+or switchback scopes using each scope's declared metric selection and
+population. It validates every selected operation before opening the shared
+capture. Existing source limitations still apply: combining scopes does not
+create temporal, breakout, raw-outcome or clustering evidence.
 Whole-window `run` scopes, including the switchback contrast view, are evaluated
-against the registered decision plan. Daily, as-of, breakout, compliance-only,
-and exploratory-metric cells are retained with their own roles and receive
-`not_evaluated` verdicts because they are monitoring or exploratory views, not
-whole-experiment tests. A resolver runs one scope at a time even though
-`Experiment.compile()` can describe several scopes. It refuses changed designs,
-decision plans, metric definitions, or unsupported scope coordinates with
+against the registered decision plan once per result. Daily, as-of, breakout,
+compliance-only and exploratory-metric cells retain their own scope/role and
+receive `not_evaluated` verdicts. Cells, effects and any live confidence-set rows
+stay aligned in one flat result with one run ID. Changed designs, decision
+plans, metric definitions or unsupported scope coordinates refuse with
 `kernel.run.execution_unavailable`, before reading evidence.
 Source names, URIs, recorded digests, and capabilities must identify the
 bound source.
@@ -146,6 +151,55 @@ returns a `RunResult` and does not support persistence arguments such as
 registered-analysis form of `run` when those writes are required.
 `Analysis.run()` remains the compatibility route
 that returns `LiftEstimates` or `ContrastResults`.
+
+For example, a unit-panel source that supports daily data can declare whole-window
+and daily views together:
+
+```python
+from dataclasses import replace
+import pandas as pd
+
+from increment import from_frame, run
+from increment.kernel.contracts import Scope
+
+panel = pd.DataFrame(
+    {
+        "user_id": range(40),
+        "variant": ["control"] * 20 + ["treatment"] * 20,
+        "event_day": [pd.Timestamp("2025-01-01")] * 40,
+        "revenue": [float(1 + index % 7) for index in range(40)],
+    }
+)
+exp, resolver = from_frame(
+    panel,
+    shape="panel",
+    unit="user_id",
+    group="variant",
+    date="event_day",
+    control="control",
+    metrics={"revenue": "mean"},
+)
+total = Scope(view="run", grain="total")
+daily = Scope(view="daily", grain="daily")
+exp = replace(exp, scopes=(total, daily))
+combined = run(exp, resolver)  # One capture, both scopes.
+only_daily = run(exp, resolver, views=(daily,))
+```
+
+Portable supported results can be written with the existing
+`results_store.put(combined.run)` and reopened with `open_run`; this does not
+expand the builder route's persistence arguments. Live raw-set confidence
+geometry remains available in memory and retains its existing serialization
+refusal.
+
+Definitions-backed `Analysis.run(exploratory_metrics=...)` also shares one
+physical capture across declared and exploratory families. Each family retains
+the horizon of its original standalone declaration, including unselected
+declared metrics needed to determine a running calendar-day horizon. Such
+capture-only dependencies do not become authorized readout metrics. Request-
+and evidence-bound `source_snapshot_id` values remain distinct when appropriate;
+the shared physical capture is recorded separately in `metadata.captures`.
+No source snapshot hash or wire-format version changes.
 
 Connected definitions builders record dtypes lazily from the selected input
 relations during the first execution, then refresh their offline catalog.

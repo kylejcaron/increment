@@ -108,6 +108,8 @@ from increment.readouts._evidence import (
     source_route,
 )
 from increment.readouts._whole_window import (
+    WholeWindowExploratoryRequest,
+    WholeWindowFamilyRequest,
     WholeWindowReadouts,
     WholeWindowRequest,
     _require_analysis_operation,
@@ -310,118 +312,6 @@ class _ArtifactOpenSpec:
 
 
 # Public facade
-
-
-def _stamp_exploratory_rows(rows):
-    from increment.breakout.estimates import LiftEstimates
-    from increment.estimation.multiplicity import multiplicity_status
-    from increment.estimation.readout_types import (
-        CellKey,
-        FamilyScope,
-        ReadoutMetadata,
-        ReadoutScope,
-        cell_order,
-        family_identity,
-    )
-
-    metadata = rows.metadata
-    source_rows = list(rows)
-    updated = [
-        row.model_copy(
-            update={
-                "role": "exploratory",
-                "multiplicity_status": multiplicity_status("exploratory", None),
-            }
-        )
-        for row in source_rows
-    ]
-    if metadata is None:
-        return LiftEstimates(
-            updated,
-            source=rows.source,
-            default_backend=rows._default_backend,
-        )
-
-    moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
-    families: list[FamilyScope] = []
-    for declared_family in metadata.scope.families:
-        family = FamilyScope.model_validate(declared_family)
-        assert isinstance(family, FamilyScope)
-        retained = tuple(
-            cell for cell in family.members if (family.source_snapshot_id, cell) not in moved
-        )
-        if retained:
-            retained_family = family.model_copy(update={"members": retained})
-            assert isinstance(retained_family, FamilyScope)
-            families.append(retained_family)
-
-    family_ids = {}
-    by_family = {}
-    for row in source_rows:
-        source_id = row.source_snapshot_id
-        population = row.analysis_population
-        key = (source_id, population)
-        by_family.setdefault(key, []).append(CellKey.from_row(row))
-    for (source_id, population), members in by_family.items():
-        family_id = family_identity(source_id, population, "run", None, None, "exploratory")
-        families.append(
-            FamilyScope(
-                family_id=family_id,
-                analysis_population=population,
-                source_snapshot_id=source_id,
-                view="run",
-                dimension=None,
-                source=None,
-                name="exploratory",
-                family=None,
-                members=tuple(sorted(set(members), key=cell_order)),
-                complete=True,
-            )
-        )
-        family_ids[(source_id, population)] = family_id
-    updated = [
-        row.model_copy(
-            update={"family_id": family_ids[(row.source_snapshot_id, row.analysis_population)]}
-        )
-        for row in updated
-    ]
-    scope = ReadoutScope(
-        snapshot_id=metadata.scope.snapshot_id,
-        cells=metadata.scope.cells,
-        decision_cells=metadata.scope.decision_cells,
-        populations=metadata.scope.populations,
-        families=tuple(
-            sorted(
-                families,
-                key=lambda family: (
-                    family.family_id
-                    if isinstance(family, FamilyScope)
-                    else str(family["family_id"])
-                ),
-            )
-        ),
-        by_source=metadata.scope.by_source,
-    )
-    metadata = ReadoutMetadata(
-        scope=scope,
-        cells=metadata.cells,
-        partial=metadata.partial,
-        partial_reason=metadata.partial_reason,
-        source_content_digest_unavailable_reason=metadata.source_content_digest_unavailable_reason,
-        source_content_digest=metadata.source_content_digest,
-        artifact_manifest_sha256=metadata.artifact_manifest_sha256,
-        artifact_relation_digests=metadata.artifact_relation_digests,
-        coherence=metadata.coherence,
-        effective_modes=metadata.effective_modes,
-        captures=metadata.captures,
-    )
-    return LiftEstimates(
-        updated,
-        metadata=metadata,
-        source=rows.source,
-        sequential_snapshot=rows.sequential_snapshot,
-        default_backend=rows._default_backend,
-    )
 
 
 def _cuped_recommendation_admitted(
@@ -2464,6 +2354,9 @@ class Analysis:
         )
         derived = copy.copy(self)
         derived._state = replace(state, source=src.exploratory_source(metrics=added))
+        context = _current_execution_context()
+        if context is not None:
+            context.declare_source_alias(derived._src, parent=self._src)
         return derived
 
     # Caching and materialization
@@ -2902,7 +2795,8 @@ class Analysis:
             result identities.
         """
 
-        _execution_context = _current_execution_context()
+        if _execution_context is None:
+            _execution_context = _current_execution_context()
         from increment.breakout.estimates import LiftEstimates
 
         if isinstance(self._state, ContrastAnalysisState) and population == "triggered":
@@ -2959,28 +2853,23 @@ class Analysis:
                 prior=prior,
             )
 
-        rows = (
-            self._whole_window().run(request(selected), execution_context=_execution_context)
-            if selected or not added
-            else LiftEstimates()
-        )
+        reader = self._whole_window()
+        if added:
+            exploratory = self._exploratory_analysis(added, caller="run")
+            rows = reader.run_family(
+                WholeWindowFamilyRequest(
+                    declared=request(selected),
+                    exploratory=WholeWindowExploratoryRequest(
+                        request=request(added),
+                        reader=exploratory._whole_window(),
+                    ),
+                ),
+                execution_context=_execution_context,
+            )
+        else:
+            rows = reader.run(request(selected), execution_context=_execution_context)
         if not isinstance(rows, LiftEstimates):
             rows = LiftEstimates(rows)
-        if added:
-            extra = (
-                self._exploratory_analysis(added, caller="run")
-                ._whole_window()
-                .run(request(added), execution_context=_execution_context)
-            )
-            extra = LiftEstimates(
-                [row for row in extra if row.estimand != "compliance"],
-                metadata=extra.metadata,
-                source=extra.source,
-                sequential_snapshot=extra.sequential_snapshot,
-                default_backend=extra._default_backend,
-            )
-            extra = _stamp_exploratory_rows(extra)
-            rows = extra if rows.metadata is None else rows.concat(extra)
         self._warn_run_advisories(
             selected,
             added,
@@ -2989,7 +2878,7 @@ class Analysis:
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
-        if _execution_context is not None and rows.metadata is not None:
+        if not added and _execution_context is not None and rows.metadata is not None:
             metadata = rows.metadata
             rows._metadata = type(metadata).model_validate(
                 {
@@ -3191,8 +3080,14 @@ class Analysis:
             execution_context=execution_context,
         )
 
+    def _run_scoped_readouts(self, *, coherence: Literal["captured", "live"], **options: Any):
+        from increment.readouts._line2 import run_scoped_line2
+
+        return run_scoped_line2(self, coherence=coherence, **options)
+
     def _whole_window(self) -> WholeWindowReadouts:
         self._require_arm_state("run")
+
         return WholeWindowReadouts(
             src=cast("_BuiltinMomentSource", self._src),
             plan=self._plan,
@@ -3201,6 +3096,8 @@ class Analysis:
             readout_source=self._readout_source,
             validate_trigger=self._validate_trigger_fires_in_every_arm,
             arm_moments=readouts.arm_moments,
+            execution_context_scope=self._scoped_execution_context,
+            registered_run=readouts.run,
         )
 
     def estimate_cate(

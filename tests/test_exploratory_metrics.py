@@ -12,7 +12,7 @@ import pickle
 import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -955,6 +955,63 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
 
 
 @pytest.mark.integration
+def test_exploratory_metric_families_share_one_capture():
+    from increment.evidence import EvidenceScope, evidence_provider
+    from increment.kernel.context import EvidenceExecutionContext
+    from tests.parity_harness.comparison import nested_close
+
+    con = ds.duckdb_connection()
+    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    context = None
+    try:
+
+        def run_exploratory(execution_context=None):
+            with warnings.catch_warnings(record=True) as observed:
+                warnings.simplefilter("always")
+                result = analysis.run(
+                    exploratory_metrics=["rps"], _execution_context=execution_context
+                )
+            assert any(isinstance(item.message, IncrementWarning) for item in observed)
+            return result
+
+        expected = run_exploratory()
+        source = _native_source(analysis)
+        exploratory = source.exploratory_source(
+            metrics=(next(metric for metric in analysis.available_metrics if metric.name == "rps"),)
+        )
+        metrics = tuple(exploratory.context.metrics)
+        context = EvidenceExecutionContext(
+            evidence_provider(source),
+            EvidenceScope(
+                metrics=metrics,
+                horizon_metrics=metrics,
+                configs=(*source.context.configs, *exploratory.context.configs),
+                snapshot=True,
+                execution=True,
+            ),
+            run_id="explicit-exploratory-family",
+            coherence="captured",
+            shared_capture=True,
+        )
+        context.open()
+        cast(Any, con).raw_sql("UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'")
+        rows = run_exploratory(context)
+        assert nested_close(_rows(rows), _rows(expected))
+        assert rows.metadata is not None
+        assert len(rows.metadata.captures) == 1
+        assert rows.metadata.captures[0].coherence == "captured"
+        with context.borrow() as provider:
+            assert provider is not None
+        repeated = run_exploratory(context)
+        assert nested_close(_rows(repeated), _rows(expected))
+    finally:
+        if context is not None:
+            context.close()
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
 @pytest.mark.slow
 def test_declared_horizon_matches_origin_with_exploratory_metrics():
     from datetime import timedelta
@@ -980,31 +1037,31 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
     for row in rows:
         if row["user_id"] in {"t0", "t1"}:
             row["event_at"] += timedelta(days=1)
-    rows.append(
-        {
-            "user_id": "t0",
-            "event_at": datetime(2025, 1, 25, 12),
-            "event": "latency_sample",
-            "group_id": None,
-            "experiment_id": None,
-            "store_id": None,
-            "revenue": None,
-            "sess": 0,
-            "latency": 5.0,
-        }
-    )
-    rows.append(
-        {
-            "user_id": "t0",
-            "event_at": datetime(2025, 1, 26, 12),
-            "event": "session_end",
-            "group_id": None,
-            "experiment_id": None,
-            "store_id": None,
-            "revenue": None,
-            "sess": 1,
-            "latency": None,
-        }
+    rows.extend(
+        [
+            {
+                "user_id": "t0",
+                "event_at": datetime(2025, 1, 25, 12),
+                "event": "latency_sample",
+                "group_id": None,
+                "experiment_id": None,
+                "store_id": None,
+                "revenue": None,
+                "sess": 0,
+                "latency": 5.0,
+            },
+            {
+                "user_id": "t0",
+                "event_at": datetime(2025, 1, 26, 12),
+                "event": "session_end",
+                "group_id": None,
+                "experiment_id": None,
+                "store_id": None,
+                "revenue": None,
+                "sess": 1,
+                "latency": None,
+            },
+        ]
     )
     con: Any = ds.duckdb_connection(rows)
     analysis = make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
@@ -1022,7 +1079,6 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
             for source in combined.metadata.scope.by_source.values()
             for cell in source.cells
         } == {"revenue", "rps"}
-
         con.raw_sql(
             """
             UPDATE events SET revenue = revenue * 10
@@ -1036,10 +1092,10 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
         live_after = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
         combined_revenue = [row for row in combined if row.metric == "revenue"]
         assert len(combined_revenue) == len(baseline) == 1
-        combined_lift = _rows(combined_revenue)[0]["lift"]["value"]
-        baseline_lift = _rows(baseline)[0]["lift"]["value"]
-        assert combined_lift == pytest.approx(baseline_lift)
-        assert baseline_lift == pytest.approx(0.14452380952380658)
+        assert _rows(combined_revenue)[0]["lift"]["value"] == pytest.approx(
+            _rows(baseline)[0]["lift"]["value"]
+        )
+        assert _rows(baseline)[0]["lift"]["value"] == pytest.approx(0.14452380952380658)
         assert _rows(live_after) != _rows(baseline)
         restored = type(combined.metadata).model_validate_json(combined.metadata.model_dump_json())
         assert restored.captures == combined.metadata.captures
@@ -1135,7 +1191,8 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
             for source in metadata.scope.by_source.values()
         } == {("rps",), ("revenue",)}
         assert {len(source.cells) for source in metadata.scope.by_source.values()} == {1}
-        assert len(metadata.captures) == 2
+        # Two source scopes belong to one shared live execution context.
+        assert len(metadata.captures) == 1
         import json
 
         from increment.tables import estimates_to_readout, readout_table

@@ -5,9 +5,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from increment._evidence_types import BreakoutIdentity, EvidenceScope
-from increment._source_types import declared_evidence, is_custom_source
+from increment._source_types import declared_evidence
 from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
-from increment.readouts._provider import native_scope_provider
 
 if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
@@ -37,7 +36,9 @@ def line4_context(
         breakouts = tuple(
             BreakoutIdentity(item.property, item.source) for item in experiment.breakouts
         )
-    provider = source if is_custom_source(source) else native_scope_provider(source)
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
+
+    provider = RunAcquisitionOwner.provider_for(source)
     populations = tuple(sorted(declared_evidence(source).populations))
     scope_population = population if population in populations else "assigned"
     return EvidenceExecutionContext(

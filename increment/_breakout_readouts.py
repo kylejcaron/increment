@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from increment import readouts
 from increment._analysis_config import _Unset, overlay_configs
 from increment._day_axis import _TRIGGER_UNSUPPORTED
 from increment._evidence_types import (
@@ -19,6 +18,7 @@ from increment._evidence_types import (
 from increment._literals import Correction
 from increment.errors import refuse as _refuse
 from increment.readouts._breakout import _breakout_impl
+from increment.readouts._breakout import breakout as readout_breakout
 from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     NATIVE_ROUTE,
@@ -62,7 +62,7 @@ class BreakoutReadouts:
         experiment: Experiment | None,
         execution_context=None,
         scope_source: _BuiltinMomentSource | None = None,
-        analysis: object | None = None,
+        analysis: Any | None = None,
     ) -> None:
         self._src = src
         self._scope_source = src if scope_source is None else scope_source
@@ -99,6 +99,8 @@ class BreakoutReadouts:
             configs=self._configs(req),
             breakout_definitions=definitions,
         )
+        if self._execution_context is not None and self._src is not self._scope_source:
+            self._execution_context.declare_source_alias(self._src, parent=self._scope_source)
         evidence = load_breakout_evidence(
             _builtin_source(self._src),
             request,
@@ -110,15 +112,13 @@ class BreakoutReadouts:
     def _stamp_execution_context(self, rows):
         if rows.metadata is None or self._execution_context is None:
             return rows
-        from increment._immutable import _FrozenMapping
-
         modes = self._execution_context.effective_modes
         coherence = None if "provider" in modes.values() else self._execution_context.coherence
-        rows._metadata = rows.metadata.model_copy(
-            update={
-                "coherence": coherence,
-                "effective_modes": _FrozenMapping(modes),
-            }
+        rows._metadata = rows.metadata.with_execution_context(
+            snapshot_id=self._execution_context.run_id,
+            coherence=coherence,
+            effective_modes=modes,
+            shared_capture=self._execution_context.shared_capture,
         )
         return rows
 
@@ -201,7 +201,13 @@ class BreakoutReadouts:
         )
 
     def _run_owned_context(self, req: BreakoutRequest) -> BreakoutEstimates:
-        from increment.readouts._line2 import owned_execution_context
+        from uuid import uuid4
+
+        from increment._source_types import is_custom_source
+        from increment.decision import ContrastContext
+        from increment.kernel.context import EvidenceExecutionContext
+        from increment.readouts._execution_context import owned_execution_context
+        from increment.readouts._provider import native_scope_provider
 
         if self._experiment is not None:
             identities = tuple(
@@ -224,7 +230,28 @@ class BreakoutReadouts:
             execution=True,
             include_breakouts=True,
         )
-        with owned_execution_context(self._analysis, scope) as context:
+        if isinstance(self._scope_source.context, ContrastContext):
+            from increment._evidence_scopes import switchback_scope_provider
+
+            provider = switchback_scope_provider(self._scope_source)
+        else:
+            provider = (
+                self._scope_source
+                if is_custom_source(self._scope_source)
+                else native_scope_provider(self._scope_source)
+            )
+        assert self._analysis is not None
+
+        with owned_execution_context(
+            lambda: EvidenceExecutionContext(
+                provider,
+                scope,
+                run_id=uuid4().hex,
+                coherence="captured",
+                shared_capture=True,
+            ),
+            execution_context_scope=self._analysis._scoped_execution_context,
+        ) as context:
             return BreakoutReadouts(
                 src=self._src,
                 experiment=self._experiment,
@@ -241,7 +268,7 @@ class BreakoutReadouts:
             from increment.sequential_source import registered_breakout_dimension
 
             dimension = registered_breakout_dimension(registration, population=req.population)
-            return readouts.breakout(
+            return readout_breakout(
                 self._src,
                 dimension,
                 metrics=[m.name for m in req.metrics],
@@ -251,12 +278,6 @@ class BreakoutReadouts:
                 correction=req.correction,
                 q=req.q,
                 analysis_population=req.population,
-            )
-        if self._execution_context is not None:
-            self._execution_context.validate_request(
-                self._scope_source,
-                req.metrics,
-                self._configs(req),
             )
         route = breakout_route(self._src)
         if route == UNSUPPORTED_ROUTE:
@@ -285,6 +306,12 @@ class BreakoutReadouts:
             if not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
+        if self._execution_context is not None:
+            self._execution_context.validate_request(
+                self._scope_source,
+                req.metrics,
+                self._configs(req),
+            )
         if (
             self._execution_context is None
             and route in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE)
@@ -318,7 +345,7 @@ class BreakoutReadouts:
         from increment.breakout.estimates import BreakoutEstimates
 
         results: BreakoutEstimates | None = None
-        breakout_fn = _breakout_impl if route == PANEL_ROUTE else readouts.breakout
+        breakout_fn = _breakout_impl if route == PANEL_ROUTE else readout_breakout
         for breakout_slice in self._slices(req):
             segment_results = breakout_fn(
                 breakout_slice.source,

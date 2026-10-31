@@ -1807,7 +1807,7 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
                 design=_native_source(native).context.design,
             )
             assert replay.sequential_snapshot() == snapshot
-            assert list(replay.run(estimands=("compliance",))) == list(rows)
+            _assert_cross_source_readouts_equal(replay.run(estimands=("compliance",)), rows)
             replayed_daily = replay.run_asof_lift(
                 estimands=("compliance",), completed_windows_only=True
             )
@@ -1846,9 +1846,37 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         assert checkpoint.control.n == checkpoint.treatment.n == 96
         assert checkpoint.control.successes == 24 and checkpoint.treatment.successes == 72
         daily = native.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+        from dataclasses import replace
+
+        from increment import run
+        from increment.builders import from_moments
+        from increment.kernel.contracts import Scope
 
         path = tmp_path / "uptake-retention-catalog.parquet"
         native.export(path)
+        replay_rows = pq.read_table(path).to_pylist()
+        experiment, resolver = from_moments(
+            replay_rows,
+            metrics=[
+                MetricSpec(name="outcome", type="conversion", window_days=2),
+                MetricSpec(name="stay", type="retention", threshold_days=1),
+            ],
+            design=_native_source(native).context.design,
+        )
+        experiment = replace(
+            experiment,
+            scopes=(
+                Scope(view="run", grain="total"),
+                Scope(view="asof", grain="asof", completion_policy=True),
+            ),
+        )
+        combined = run(
+            experiment,
+            resolver,
+            analysis_options={"estimands": ("compliance",)},
+        )
+        assert {cell.identity.key.metric for cell in combined.cells} == {"uptake"}
+        assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
         replay = Analysis.from_moments(
             pq.read_table(path).to_pylist(),
             metrics=[

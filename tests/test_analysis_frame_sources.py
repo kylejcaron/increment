@@ -1882,6 +1882,14 @@ def test_from_unit_panel_asof_encouragement_dimension_has_same_estimands(
     assert {row.dimension_value for row in results} == {"US", "CA"}
     assert {row.estimand for row in results} == {"itt", "compliance", "late"}
 
+    compliance = windowed_encouragement_panel_analysis.run_asof_lift(
+        estimands=("compliance",), dimension="country"
+    )
+    expected = [row for row in results if row.estimand == "compliance"]
+    assert {row.dimension_value for row in compliance} == {"US", "CA"}
+    assert {row.estimand for row in compliance} == {"compliance"}
+    assert len(compliance) == len(expected)
+
 
 def test_from_unit_panel_encouragement_raw_itt_requires_finalized_checkpoint():
     analysis = _make_windowed_encouragement_panel_analysis(sequential=True)

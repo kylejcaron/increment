@@ -29,6 +29,31 @@ def _design_compliance_only(context: SourceContext, estimands: Sequence[str] | N
     )
 
 
+def _sequential_compliance_requested(
+    context: SourceContext, estimands: Sequence[str] | None
+) -> bool:
+    """Sequential encouragement can emit compliance rows without selected metrics."""
+    return (
+        estimands is not None
+        and "compliance" in estimands
+        and isinstance(context.design, Encouragement)
+        and isinstance(context.plan.inference, SEQUENTIAL_POLICIES)
+    )
+
+
+def _default_sequential_compliance_requested(
+    context: SourceContext, metrics: Sequence[object], estimands: Sequence[str] | None
+) -> bool:
+    """An empty default registered sequential encouragement run emits compliance."""
+    return (
+        not metrics
+        and estimands is None
+        and getattr(context.plan.inference, "registration", None) is not None
+        and isinstance(context.design, Encouragement)
+        and isinstance(context.plan.inference, SEQUENTIAL_POLICIES)
+    )
+
+
 def _prepare_run_request(
     src: EvidenceSource,
     *,
@@ -56,6 +81,11 @@ def _prepare_run_request(
         sensitivity_methods=sensitivity_methods,
         prior_override=prior,
     )
+    validated_estimands = (
+        ("compliance",)
+        if _default_sequential_compliance_requested(src.context, selected, estimands)
+        else estimands
+    )
     request = ReadoutRequest.from_source(
         src,
         metrics=selected,
@@ -63,37 +93,12 @@ def _prepare_run_request(
         view="run",
         grain="total",
         by=by,
-        estimands=estimands,
+        estimands=validated_estimands,
         value_scale=value_scale,
         population=population,
     )
     validate_request(request)
     return selected, configs
-
-
-def _validate_run_request(
-    src: EvidenceSource,
-    *,
-    decision_method: Method | _Unset = UNSET,
-    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-    prior: Prior | None | _Unset = UNSET,
-    metrics: Sequence[str] | None = None,
-    by: Sequence[str] = (),
-    estimands: Sequence[str] | None = None,
-    value_scale: Mapping[str, ValueScale] | None = None,
-) -> list[Metric]:
-    """Validate a run request without asking the source for moments."""
-    selected, _configs = _prepare_run_request(
-        src,
-        decision_method=decision_method,
-        sensitivity_methods=sensitivity_methods,
-        prior=prior,
-        metrics=metrics,
-        by=by,
-        estimands=estimands,
-        value_scale=value_scale,
-    )
-    return selected
 
 
 def _validate_breakout_request(

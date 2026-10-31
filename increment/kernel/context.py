@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from types import MappingProxyType, TracebackType
 from typing import Any, Literal, cast
@@ -33,10 +33,12 @@ class EvidenceExecutionContext:
     run_id: str
     coherence: ExecutionMode | None = "captured"
     observation_horizon: date | None = None
+    shared_capture: bool = False
     _state: str = field(init=False, default="unopened")
     _stack: ExitStack = field(init=False)
     _scoped_provider: Any | None = field(init=False, default=None)
     _source_identity: int = field(init=False)
+    _source_aliases: dict[int, object] = field(init=False, default_factory=dict)
     _requested_coherence: ExecutionMode = field(init=False)
     _snapshot_manifest: Mapping[str, str] = field(
         init=False, default_factory=lambda: MappingProxyType({})
@@ -86,21 +88,12 @@ class EvidenceExecutionContext:
         )
         effective_mode: EffectiveMode = "provider" if provider_owned else effective_coherence
         scope = self.scope
-        requested = EvidenceScope(
-            metrics=scope.metrics,
-            population=scope.population,
-            populations=scope.populations,
-            grain=scope.grain,
-            breakouts=scope.breakouts,
-            configs=scope.configs,
-            uptake_facts=scope.uptake_facts,
+        requested = replace(
+            scope,
             snapshot=(
                 scope.snapshot if provider_owned else self._requested_coherence == "captured"
             ),
             execution=True,
-            include_breakouts=scope.include_breakouts,
-            checkpoint_only=self.scope.checkpoint_only,
-            assignment_requests=self.scope.assignment_requests,
         )
         try:
             self._stack.enter_context(_advisory_run_scope())
@@ -159,6 +152,14 @@ class EvidenceExecutionContext:
     def requested_coherence(self) -> ExecutionMode:
         return self._requested_coherence
 
+    def validate_requested_coherence(self, coherence: ExecutionMode) -> None:
+        if self.requested_coherence != coherence:
+            _refuse("kernel.request.invalid", field="coherence")
+
+    def validate_uptake_fact(self, fact: str) -> None:
+        if fact not in self.scope.uptake_facts:
+            _refuse("kernel.context.undeclared_stream", stream=f"fact:{fact}")
+
     def validate_observational_streams(self, source: object, design: object) -> None:
         """Check adjustment dependencies against the captured loader inventory."""
         self._require_open()
@@ -184,8 +185,13 @@ class EvidenceExecutionContext:
                     )
 
     def validate_source(self, source: object) -> None:
-        if id(_loader_owner(source)) != self._source_identity:
+        if id(_loader_owner(source)) not in {self._source_identity, *self._source_aliases}:
             _refuse("kernel.context.undeclared_stream", stream="source_ref")
+
+    def declare_source_alias(self, source: object, *, parent: object) -> None:
+        """Authorize a derived declaration without expanding its permitted requests."""
+        self.validate_source(parent)
+        self._source_aliases[id(_loader_owner(source))] = _loader_owner(source)
 
     def validate_population(self, population: str) -> None:
         declared_populations = set(self.scope.populations) or {self.scope.population}
@@ -273,7 +279,13 @@ class EvidenceExecutionContext:
         self._scoped_provider = None
 
     @contextmanager
-    def borrow(self) -> Iterator[EvidenceProvider]:
+    def borrow(
+        self,
+        *,
+        source: object | None = None,
+        metrics: Sequence[object] = (),
+        configs: Sequence[object] | None = None,
+    ) -> Iterator[EvidenceProvider]:
         provider = self._require_open()
         if self._snapshot_manifest:
             if self._stream_resolver is None:
@@ -299,6 +311,11 @@ class EvidenceExecutionContext:
                     stream=stream,
                     snapshot_id=self._snapshot_manifest.get(stream, ""),
                 )
+        if source is not None:
+            self.validate_source(source)
+            view = getattr(provider, "readout_view", None)
+            if callable(view):
+                provider = view(source, metrics=metrics, configs=configs)
         yield provider
 
     @contextmanager

@@ -684,8 +684,9 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         SequentialModel,
         SequentialRegistration,
     )
-    from increment.frame import from_unit_panel, synthesise_metric
+    from increment.frame import FramePanelSource, synthesise_metric
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id
+    from tests.analysis_factory import facade_binding, held_source
     from tests.asymptotic_cases import mean_model
     from tests.sequential_cases import registration
 
@@ -735,12 +736,11 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         for i in range(96)
         for arm in ("control", "treatment")
     ]
-    source = from_unit_panel(
+    analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
         unit="unit",
         group="arm",
         date="ds",
-        control="control",
         exposure_date="exposed",
         uptake="clicked",
         observation_end=date(2025, 1, 20),
@@ -748,6 +748,7 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         metrics=specs,
         plan=plan,
     )
+    source = cast(FramePanelSource, held_source(analysis))
     source.capture_sequential(finalized=True, as_of=date(2025, 1, 15))
     itt_only = readouts.run(source, estimands=("itt",))
     itt_and_compliance = readouts.run(source, estimands=("itt", "compliance"))
@@ -782,6 +783,28 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         row.estimand: row.require_sequential_result() for row in results
     }
     assert all(LiftEstimate.model_validate_json(row.model_dump_json()) == row for row in results)
+
+    from dataclasses import replace
+
+    from increment import run
+    from increment.kernel.contracts import Scope
+
+    experiment, resolver = facade_binding(analysis)
+    whole_window = Scope(view="run", grain="total")
+    cumulative = Scope(view="asof", grain="asof", completion_policy=True)
+    experiment = replace(
+        experiment,
+        scopes=(whole_window, cumulative),
+        operations={whole_window.hash(): "run", cumulative.hash(): "run_asof_lift"},
+    )
+    combined = run(
+        experiment,
+        resolver,
+        analysis_options={"estimands": ("compliance",)},
+    )
+    assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
+    assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
+    assert len(combined.run.metadata.captures) == 1
 
 
 def test_validate_encouragement_asof_inference_uses_the_retention_band_not_window_days():
@@ -1142,6 +1165,8 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
             sensitivity_methods=[Method(name="unadjusted")],
         )
     assert duplicate.value.code == "estimation.engine.method_names_unique"
+    assert analysis.run_daily(metrics=[], dimension="segment") == []
+    assert analysis.run_asof(metrics=[], dimension="segment") == []
 
 
 def test_breakout_emits_late_for_strong_segment_suppresses_weak():

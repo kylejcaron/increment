@@ -1041,15 +1041,13 @@ def union_event_horizon(
     """
     if not event_tables:
         _raise("query.builders.union_event_horizon")
-    maxes = [_local_date(t.ts, experiment).max() for t in event_tables]
-    out = maxes[0]
-    for m in maxes[1:]:
-        # coalesce guards NULL-poisoning `greatest` semantics: prefer the
-        # pairwise greatest, fall back to whichever side is non-NULL.
-        out = ibis.coalesce(ibis.greatest(out, m), out, m)
-    # ibis.greatest() is typed as the generic Value base (same stub gap as
-    # _days_literal), but two Scalar .max() inputs always yield a Scalar.
-    return cast("ir.Scalar", out)
+    local_dates = [table.select(ts=_local_date(table.ts, experiment)) for table in event_tables]
+    if len(local_dates) == 1:
+        return cast("ir.Scalar", local_dates[0].ts.max())
+    # Aggregating one union avoids nested scalar MAX/GREATEST subqueries, which
+    # some backends cannot compile inside the shared snapshot relation.
+    dates = ibis.union(*local_dates, distinct=False)
+    return cast("ir.Scalar", dates.ts.max())
 
 
 def compliance_event_horizon(

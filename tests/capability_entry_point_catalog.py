@@ -562,6 +562,22 @@ _RETENTION_CATALOG_READS = {
 }
 
 _INGRESS_ROWS: tuple[EntryRow, ...] = (
+    _row(
+        "shared-capture-exploratory",
+        "Declared + exploratory metrics in one physical capture",
+        {
+            ingress: (_consumer("shared_capture", f"exploratory_{ingress}"),)
+            for ingress in INGRESSES
+        },
+    ),
+    _row(
+        "shared-capture-multiview",
+        "Whole-window + daily scopes in one physical capture",
+        {ingress: (_consumer("shared_capture", f"multiview_{ingress}"),) for ingress in INGRESSES},
+        notes={
+            D: "As-of, breakout and assigned/triggered scope unions also retain original standalone identities; capture provenance is separate.",
+        },
+    ),
     _case_row(
         "mean-cuped-fixed-horizon",
         "Mean CUPED, fixed horizon",

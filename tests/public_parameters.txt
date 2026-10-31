@@ -168,3 +168,4 @@ args: Constructor arguments forwarded to the established Analysis builder.
 kwargs: Named constructor arguments forwarded to the established Analysis builder.
 shape: Unit-summary or unit-panel layout selected from a frame.
 estimator_id: Registered estimator whose declaration is checked.
+views: Declared experiment scopes selected for one shared execution.

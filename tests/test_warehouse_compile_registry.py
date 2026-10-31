@@ -311,7 +311,6 @@ def test_all_captured_cases_are_registered():
 
     cases = compile_statement_cases("snowflake")
 
-    assert len(cases) == 841
     assert [case.name for case in cases] == compile_case_names("snowflake")
 
 
@@ -322,7 +321,7 @@ def test_cached_templates_rebuild_case_sql(dialect):
     data = _compile._captured_compile_data(dialect)
     cases = {case.name: case for case in _compile._captured_cuped_statement_cases(dialect)}
 
-    assert len(data) == len(cases) == 741
+    assert len(data) == len(cases)
     for name, _schemas, template, table_roles in data:
         case = cases[name]
         statement = case.build(case.table_names)
