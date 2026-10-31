@@ -1811,6 +1811,7 @@ def _report_detail(cell: ResultCell) -> str | None:
 def render(
     envelope: AnalysisEnvelope | RunResult, audience: Literal["brief", "full"] = "brief"
 ) -> str:
+    live_rows = getattr(envelope, "live_rows", ())
     if not isinstance(envelope, AnalysisEnvelope):
         run = getattr(envelope, "run", None)
         cells = getattr(envelope, "cells", None)
@@ -1830,7 +1831,11 @@ def render(
         render_readout_text,
     )
 
-    rows = [cell._projection_row() for cell in envelope.cells]
+    rows = [
+        live_row if index < len(live_rows) and live_row is not None else cell._projection_row()
+        for index, cell in enumerate(envelope.cells)
+        for live_row in (live_rows[index] if index < len(live_rows) else None,)
+    ]
     interpretation = interpret_readout(rows, envelope.metadata)
     brief = render_readout_brief(envelope.cells, interpretation)
     if audience == "brief":

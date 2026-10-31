@@ -976,6 +976,86 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
         assert f"{effect.point!r} [{effect.lower!r}, {effect.upper!r}]" in output
 
 
+def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
+    import pickle
+
+    from increment import MetricSpec, Randomized
+    from increment.errors import WireFormatError
+    from increment.result_envelope import render
+
+    data = pd.DataFrame(
+        [
+            {"unit": f"{group}-{index}", "arm": group, "value": float(index + offset)}
+            for group, offset in (("control", 0), ("treatment", 8))
+            for index in range(24)
+        ]
+    )
+    plan = AnalysisPlan(primary="value")
+    metric = MetricSpec(
+        name="value",
+        type="mean",
+        winsorization={"upper_percentile": 0.9},
+    )
+    compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
+    registration = Registration.from_plan(compiled)
+    analysis = Analysis.from_unit_summary(
+        data,
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[metric],
+        plan=plan,
+        experiment_id="winsor-live",
+    )
+    try:
+        legacy = analysis.run()[0]
+        from increment.estimation.results import LiftEstimate
+
+        assert isinstance(legacy, LiftEstimate)
+        assert legacy.lift is not None
+        assert legacy.confidence_set is not None
+        result = run(
+            analysis,
+            registration,
+            compiled,
+            experiment_id="winsor-live",
+            analysis_spec_hash="sha256:" + "e" * 64,
+            execution_identity_hash="sha256:" + "f" * 64,
+            run_id="winsor-live-run",
+        )
+        assert result.effects[0] is not None
+        assert result.effects[0].point == pytest.approx(legacy.lift.value)
+        assert result.effects[0].lower == pytest.approx(legacy.confidence_set.relative.lower.value)
+        assert result.effects[0].upper == pytest.approx(legacy.confidence_set.relative.upper.value)
+        assert result.decisions.cells[0].status == "not_evaluated"
+        output = render(result, "full")
+        assert f"{legacy.lift.value:.6g}" in output
+        assert "confidence set" in output
+        assert result.cells[0].summary is None
+        with pytest.raises(WireFormatError):
+            pickle.dumps(result)
+        from increment.store import ParquetResultsStore
+
+        with pytest.raises(WireFormatError) as error:
+            run(
+                analysis,
+                registration,
+                compiled,
+                experiment_id="winsor-live",
+                analysis_spec_hash="sha256:" + "e" * 64,
+                execution_identity_hash="sha256:" + "f" * 64,
+                run_id="winsor-live-saved",
+                results_store=ParquetResultsStore(tmp_path / "runs"),
+            )
+        assert error.value.code == "wire.result.raw_outcomes_unavailable"
+    finally:
+        analysis.close()
+
+
 def test_public_run_rejects_registration_that_differs_from_analysis_plan():
     import pytest
 

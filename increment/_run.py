@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-from increment._interpretation import EffectEstimate
+from increment._interpretation import EffectEstimate, project_effect
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
 from increment.kernel.contracts import (
     BreakoutIdentity,
@@ -34,6 +34,11 @@ _CONTRAST_CONTEXT_NOT_PORTABLE = RefusalSpec(
     WireFormatError,
     template="switchback contrast runs carry no portable arm decision plan; {action} is unavailable",
 )
+_LIVE_RAW_SET_NOT_PORTABLE = RefusalSpec(
+    "wire.result.raw_outcomes_unavailable",
+    WireFormatError,
+    template="a live confidence-set result depends on raw outcomes; {action} is unavailable",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +47,7 @@ class RunResult:
     effects: tuple[EffectEstimate | None, ...]
     decisions: Decisions
     run: Run
+    live_rows: tuple[Any | None, ...] = ()
 
     def __reduce__(self):
         reason = self.run.decision_plan_unavailable_reason
@@ -51,7 +57,9 @@ class RunResult:
                 code=reason,
                 context={"run_id": self.run.run_id},
             )
-        return type(self), (self.cells, self.effects, self.decisions, self.run)
+        if any(row is not None for row in self.live_rows):
+            refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="serialization")
+        return type(self), (self.cells, self.effects, self.decisions, self.run, self.live_rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,8 +497,17 @@ def _run_rows(
             binding = None
             binding_unavailable_reason = error.code
     created_at = datetime.now(UTC)
+    live_rows_by_key = {
+        ResultCell.from_row(row, rows.metadata, created_at=created_at).identity.key: row
+        for row in rows
+        if getattr(row, "confidence_set", None) is not None
+    }
+    if live_rows_by_key and (results_store is not None or decision_log is not None):
+        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     cells: list[ResultCell] = []
+    live_rows: list[Any | None] = []
     for cell in rows.as_cells(created_at=created_at):
+        live_rows.append(live_rows_by_key.get(cell.identity.key))
         row_scope = _scope_for_cell(cell, declared_scope)
         identity = cell.identity.model_copy(
             update={
@@ -535,11 +552,16 @@ def _run_rows(
     if decision_log is not None:
         assert binding is not None
         events = _events(handle.run, decisions, binding)
+    envelope = handle.envelope()
     result = RunResult(
-        cells=handle.envelope().cells,
-        effects=tuple(cell.summary for cell in handle.envelope().cells),
+        cells=envelope.cells,
+        effects=tuple(
+            project_effect(row) if row is not None else cell.summary
+            for cell, row in zip(envelope.cells, live_rows, strict=True)
+        ),
         decisions=decisions,
         run=handle.run,
+        live_rows=tuple(live_rows),
     )
     if decision_log is not None:
         for event in events:
