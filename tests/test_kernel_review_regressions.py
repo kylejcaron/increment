@@ -199,6 +199,39 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
     } == {"decision.not_evaluated.monitoring_view"}
 
 
+def test_declared_all_breakouts_refuse_before_source_reads():
+    frame = _frame()
+    frame["country"] = ["US", "CA", "CA", "US"] * (len(frame) // 4)
+    frame["device"] = ["mobile", "desktop"] * (len(frame) // 2)
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("country", "device"),
+    )
+    all_breakouts = replace(
+        experiment,
+        scopes=(Scope(view="breakout", grain="total"),),
+    )
+    from tests.analysis_factory import held_source, replace_analysis_source
+    from tests.test_metric_evidence import _CountingSource
+
+    counted = _CountingSource(held_source(resolver._analysis))
+    replace_analysis_source(resolver._analysis, counted)
+
+    assert {
+        error.code
+        for error in runnable(all_breakouts, "value")["randomized.unadjusted"].static_refusals
+    } == {"kernel.run.execution_unavailable"}
+    with pytest.raises(CodedError) as raised:
+        run(all_breakouts, resolver)
+    assert raised.value.code == "kernel.run.execution_unavailable"
+    assert counted.unit_frame_reads == 0
+
+
 @pytest.mark.parametrize("clear_declared_prior", [False, True])
 def test_clustered_preflight_applies_saved_prior_override(clear_declared_prior):
     from increment.errors import IncrementWarning

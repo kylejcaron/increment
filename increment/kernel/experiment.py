@@ -22,6 +22,7 @@ from increment.kernel.contracts import (
     Scope,
     _refuse,
     contract_hash,
+    declared_breakouts,
 )
 
 
@@ -322,6 +323,7 @@ class Experiment:
             thaw(tuple(self.metrics.values()))
         )
         selections = tuple(tuple(scope.metrics) or metrics for scope in self.scopes)
+        breakouts = tuple(declared_breakouts(self.source_refs, scope) for scope in self.scopes)
         source = self.source_refs[0].name
         populations = tuple(dict.fromkeys(scope.population for scope in self.scopes))
         inventory = EvidenceScope(
@@ -331,7 +333,7 @@ class Experiment:
             population=populations[0],
             populations=populations,
             breakouts=tuple(
-                dict.fromkeys(identity for scope in self.scopes for identity in scope.segment)
+                dict.fromkeys(identity for selection in breakouts for identity in selection)
             ),
         )
         requests = tuple(
@@ -341,14 +343,16 @@ class Experiment:
                         metrics=selection,
                         population=scope.population,
                         grain=scope.grain,
-                        breakouts=scope.segment,
+                        breakouts=resolved_breakouts,
                     ),
                 ),
                 scope=scope,
                 registration_hash=self.registration.registration_hash,
                 source_ref=source,
             )
-            for scope, selection in zip(self.scopes, selections, strict=True)
+            for scope, selection, resolved_breakouts in zip(
+                self.scopes, selections, breakouts, strict=True
+            )
         )
         return inventory, requests
 

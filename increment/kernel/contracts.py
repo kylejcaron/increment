@@ -99,10 +99,12 @@ class Scope(_ContractModel):
                 and (self.grain != "total" or self.through_day is not None or self.day_domain)
             )
             or (self.view == "run" and bool(self.segment))
-            or (self.view == "breakout" and not self.segment)
             or (self.view == "daily" and self.grain != "daily")
             or (self.view == "asof" and self.grain != "asof")
-            or (self.view == "breakout" and self.segment is None)
+            or (
+                self.view in {"daily", "asof"}
+                and len({identity.property for identity in self.segment}) > 1
+            )
             or (bool(self.day_domain) and tuple(sorted(set(self.day_domain))) != self.day_domain)
             or (self.view != "switchback" and bool(self.metrics))
             or (self.values and self.view not in {"daily", "asof"})
@@ -120,6 +122,39 @@ class Scope(_ContractModel):
 
     def hash(self) -> str:
         return contract_hash("scope", self.canonical_payload())
+
+
+def declared_breakouts(source_refs: Sequence[Any], scope: Scope) -> tuple[BreakoutIdentity, ...]:
+    """Expand breakout selectors using only recorded source capabilities."""
+    declared = tuple(
+        BreakoutIdentity(property=property, source=source.name)
+        for source in source_refs
+        if source.capabilities is not None
+        for property in source.capabilities.breakouts
+    )
+    if not scope.segment:
+        return declared if scope.view == "breakout" else ()
+
+    selected: set[BreakoutIdentity] = set()
+    for selector in scope.segment:
+        matches = tuple(
+            identity
+            for identity in declared
+            if identity.property == selector.property
+            and (selector.source is None or selector.source == identity.source)
+        )
+        if not matches:
+            _refuse(
+                "kernel.request.invalid",
+                field=f"unknown breakout selection {selector.property!r}",
+            )
+        if any(identity in selected for identity in matches):
+            _refuse(
+                "kernel.request.invalid",
+                field=f"duplicate breakout selection {selector.property!r}",
+            )
+        selected.update(matches)
+    return tuple(identity for identity in declared if identity in selected)
 
 
 class ImplementationRef(_ContractModel):
