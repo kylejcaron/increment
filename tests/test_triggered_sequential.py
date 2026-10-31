@@ -342,26 +342,28 @@ def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
 
 def _assert_combined_compliance_family_requests(tmp_path):
     connection = ibis.duckdb.connect()
-    analysis = None
     try:
         data_dir = tmp_path / "combined-compliance"
         data_dir.mkdir()
-        analysis, _ = _analysis(
-            data_dir,
-            _events(uptake=True),
-            plan=_COMPLIANCE_PLAN,
-            connection=connection,
-            encouragement=True,
+        path = data_dir / "definitions.yml"
+        path.write_text(
+            _definitions(plan=_COMPLIANCE_PLAN, encouragement=True),
+            encoding="utf-8",
         )
-        from increment._analysis_kernel_adapter import experiment_for_analysis
-
-        experiment, resolver = experiment_for_analysis(analysis, return_run_result=True)
+        connection.create_table("events", obj=_events(uptake=True))
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
         scopes = (
             Scope(view="run", grain="total", population="assigned"),
             Scope(view="run", grain="total", population="triggered"),
         )
         combined = replace(experiment, scopes=scopes)
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        cast(Any, resolver).capture_sequential(finalized=True, as_of=_LATER)
         mixed = run(
             combined,
             resolver,
@@ -384,8 +386,6 @@ def _assert_combined_compliance_family_requests(tmp_path):
             for cell in captured.cells
         } == {("assigned", "compliance"), ("triggered", "compliance")}
     finally:
-        if analysis is not None:
-            analysis.close()
         connection.disconnect()
 
 

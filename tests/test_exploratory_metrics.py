@@ -955,12 +955,10 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
 
 
 @pytest.mark.integration
-def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch):
-    from contextlib import contextmanager
-
+def test_exploratory_metrics_share_capture_before_warehouse_mutation():
     from increment._analysis_config import UNSET
+    from increment._analysis_kernel_adapter import experiment_for_analysis
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.query.native_source import DefinitionsMomentSource
     from increment.readouts._provider import native_scope_provider
     from increment.readouts._run_acquisition import RunAcquisitionOwner
     from increment.readouts._whole_window import (
@@ -972,37 +970,12 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
 
     con = ds.duckdb_connection()
     analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    experiment, resolver = experiment_for_analysis(analysis)
     expected = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
-    original = DefinitionsMomentSource.readout_snapshot
-    original_view = DefinitionsMomentSource.readout_view
-    captures = []
-    views = []
-
-    @contextmanager
-    def snapshot(source, **kwargs):
-        captures.append(kwargs)
-        with original(source, **kwargs) as pinned:
-            yield pinned
-        if len(captures) == 1:
-            cast(Any, con).raw_sql(
-                "UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'"
-            )
-
-    def view(source, template, *, metrics, configs=None):
-        result = original_view(source, template, metrics=metrics, configs=configs)
-        views.append(tuple(metric.name for metric in metrics))
-        if len(views) == 1:
-            cast(Any, con).raw_sql(
-                "UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'"
-            )
-        return result
-
-    monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", snapshot)
-    monkeypatch.setattr(DefinitionsMomentSource, "readout_view", view)
     context = None
     try:
         declared = WholeWindowRequest(
-            metrics=tuple(analysis._metrics),
+            metrics=tuple(analysis.metrics),
             estimands=None,
             value_scale=None,
             population=None,
@@ -1032,7 +1005,7 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
         )
         reader = analysis._whole_window()
         prepared = reader.prepare_family(family)
-        source = analysis._src
+        source = resolver.resolve(experiment.source_refs)
         context = EvidenceExecutionContext(
             native_scope_provider(source),
             RunAcquisitionOwner.combined_scope(source, prepared),
@@ -1041,14 +1014,14 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
             shared_capture=True,
         )
         context.open()
+        cast(Any, con).raw_sql("UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'")
         rows = analysis._run_legacy(
             exploratory_metrics=["rps"],
             decision_method=Method(name="unadjusted"),
             _execution_context=context,
         )
-        assert context._state == "open"
-        assert len(captures) == 1
-        assert len(views) >= 2
+        with context.borrow() as provider:
+            assert provider is not None
         assert nested_close(_rows(rows), _rows(expected))
         assert rows.metadata is not None
         assert len(rows.metadata.captures) == 1

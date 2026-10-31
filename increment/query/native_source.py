@@ -800,7 +800,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         dependencies = evidence_scope_dependencies(scope)
         tables = self._session._source_tables
         fact_names = set(dependencies["uptake"])
-        for metric in (*dependencies["outcomes"], *dependencies["horizons"]):
+        # Horizon metrics remain in scope for family identity, not capture access.
+        for metric in dependencies["outcomes"]:
             numerator = getattr(metric, "numerator", None)
             denominator = getattr(metric, "denominator", None)
             if numerator is not None and denominator is not None:
@@ -946,9 +947,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Freshness sees every unit in each requested metric's fact stream,
         # not just the enrolled units retained for outcome reduction.
         freshness_source_names: set[str] = set()
-        horizon_metrics = tuple(
-            dict.fromkeys((*dependencies["outcomes"], *dependencies["horizons"]))
-        )
+        # The family horizon is inventory, not permission to read every declared
+        # metric's source. Only requested outcome metrics contribute source data.
+        horizon_metrics = tuple(dependencies["outcomes"])
         for metric in horizon_metrics:
             if isinstance(metric, RatioMetric):
                 freshness_source_names.add(add_fact(metric.numerator.fact))
@@ -1335,7 +1336,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         metrics: Sequence[Metric],
         configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> DefinitionsMomentSource:
-        """Lend a family's declarations and horizon over this pinned session."""
+        """Lend declarations and selected metrics over this pinned session."""
         import copy
 
         view = copy.copy(self)
@@ -1350,7 +1351,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     for config in template._context.configs
                 ),
             )
-        view._horizon_metrics = tuple(dict.fromkeys((*template._horizon_metrics, *metrics)))
+        # Keep family membership in the context; only this view's metrics
+        # determine which source tables are read.
+        view._horizon_metrics = tuple(dict.fromkeys(metrics))
         view._has_fixed_event_horizon_override = False
         view._fixed_event_horizon = None
         view._union_horizon_cache = None
@@ -4783,10 +4786,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                             canonical_dimension_value(relation["__qr_breakout_value"])
                             == request.breakout_value
                         )
-                table_name = pinned._session.temp_name(
-                    "cuped_qr_relation", str(len(pinned._cuped_relation_cache))
-                )
-                relation = pinned._session.materialize_table(table_name, relation, required=True)
+                if pinned._session._source_tables is None:
+                    table_name = pinned._session.temp_name(
+                        "cuped_qr_relation", str(len(pinned._cuped_relation_cache))
+                    )
+                    relation = pinned._session.materialize_table(
+                        table_name, relation, required=True
+                    )
                 pinned._cuped_relation_cache[cache_key] = relation
                 yield relation, execute, pinned._session.qr_scratch
 

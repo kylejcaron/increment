@@ -1807,7 +1807,7 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
                 design=_native_source(native).context.design,
             )
             assert replay.sequential_snapshot() == snapshot
-            assert list(replay.run(estimands=("compliance",))) == list(rows)
+            _assert_cross_source_readouts_equal(replay.run(estimands=("compliance",)), rows)
             replayed_daily = replay.run_asof_lift(
                 estimands=("compliance",), completed_windows_only=True
             )

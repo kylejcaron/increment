@@ -118,6 +118,10 @@ class RunAcquisitionOwner:
                 and bool(selected)
                 and has_verified_sequential_checkpoint(source)
             )
+            uptake_facts = request.family_uptake_facts
+            if not uptake_facts:
+                uptake = getattr(request.design or source.context.design, "uptake", None)
+                uptake_facts = () if uptake is None else (uptake.fact,)
             scope = EvidenceScope(
                 metrics=(
                     ()
@@ -135,6 +139,7 @@ class RunAcquisitionOwner:
                 snapshot=True,
                 execution=True,
                 include_breakouts=False,
+                uptake_facts=uptake_facts,
                 checkpoint_only=checkpoint_only,
             )
         return PreparedRunAcquisition(tuple(selected), tuple(configs), scope)

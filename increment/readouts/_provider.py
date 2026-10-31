@@ -132,8 +132,11 @@ class _BuiltInEvidenceProvider(_OwnedLoaderAdapter):
         configs: Sequence[object] | None = None,
     ) -> EvidenceProvider:
         from increment._evidence_scopes import loader_source
+        from increment._source_types import is_builtin_source
 
         template = loader_source(cast(Any, source))
+        if not is_builtin_source(template):
+            return self
         view = getattr(self.source, "readout_view", None)
         if callable(view):
             return _BuiltInEvidenceProvider(view(template, metrics=metrics, configs=configs))

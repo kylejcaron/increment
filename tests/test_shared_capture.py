@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import pickle
-from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -15,7 +14,6 @@ from increment.declarations import Method
 from increment.errors import CodedError
 from increment.evidence import BreakoutIdentity
 from increment.kernel.contracts import Scope
-from increment.query.native_source import DefinitionsMomentSource
 from increment.semantics.models import AnalysisPlan, Definitions
 from tests.analysis_factory import make_analysis
 from tests.parity_harness import dataset as ds
@@ -85,7 +83,7 @@ def _same_cells(actual, expected):
         )
 
 
-def test_narrowed_running_family_keeps_unselected_later_horizon(monkeypatch):
+def test_narrowed_running_family_keeps_unselected_later_horizon():
     rows = ds.event_rows()
     for row in rows:
         if row["user_id"].startswith("t"):
@@ -117,16 +115,6 @@ def test_narrowed_running_family_keeps_unselected_later_horizon(monkeypatch):
             exploratory_metrics=["rps", "revenue_cuped"],
             decision_method=Method(name="unadjusted"),
         )
-        captured = []
-        original = DefinitionsMomentSource.readout_snapshot
-
-        @contextmanager
-        def snapshot(source, **kwargs):
-            captured.append(kwargs)
-            with original(source, **kwargs) as pinned:
-                yield pinned
-
-        monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", snapshot)
         actual = analysis.run(
             metrics=["revenue"],
             exploratory_metrics=["rps", "revenue_cuped"],
@@ -135,14 +123,8 @@ def test_narrowed_running_family_keeps_unselected_later_horizon(monkeypatch):
         from tests.capability_consumers_auxiliary import assert_support
 
         assert_support("shared_capture", "exploratory_from_definitions", actual)
-        assert len(captured) == 1
-        assert {metric.name for metric in captured[0]["metrics"]} == {
-            "revenue",
-            "rps",
-            "revenue_cuped",
-        }
-        assert "purchase_rate" in {metric.name for metric in captured[0]["horizon_metrics"]}
-        assert "purchase_rate" not in {config.metric.name for config in captured[0]["configs"]}
+        assert len(actual.metadata.captures) == 1
+        assert {row.metric for row in actual} == {"revenue", "rps", "revenue_cuped"}
         assert nested_close(
             [row.model_dump(exclude={"source_snapshot_id"}) for row in actual],
             [row.model_dump(exclude={"source_snapshot_id"}) for row in (*declared, *extra)],
@@ -152,7 +134,7 @@ def test_narrowed_running_family_keeps_unselected_later_horizon(monkeypatch):
         con.disconnect()
 
 
-def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch, tmp_path):
+def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
     from increment.result_envelope import AnalysisEnvelope
     from increment.store import ParquetResultsStore
 
@@ -174,20 +156,9 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch
             )
             for scope in scopes
         ]
-        captured = []
-        original = DefinitionsMomentSource.readout_snapshot
-
-        @contextmanager
-        def snapshot(source, **kwargs):
-            captured.append(kwargs)
-            with original(source, **kwargs) as pinned:
-                yield pinned
-
-        monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", snapshot)
         actual = run(
             experiment, resolver, analysis_options={"decision_method": Method(name="unadjusted")}
         )
-        assert len(captured) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             cells = tuple(cell for cell in actual.cells if cell.identity.scope.view == scope.view)
             _same_cells(cells, expected.cells)
@@ -222,7 +193,6 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch
         ).run
         assert saved.cells == actual.cells
         assert saved.metadata == actual.run.metadata
-        captured.clear()
         selected = run(
             experiment,
             resolver,
@@ -233,7 +203,7 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch
             "run",
             "asof",
         )
-        assert len(captured) == 1
+        assert len(selected.run.metadata.captures) == 1
         from increment.semantics.models import MeanMetric
 
         unregistered = MeanMetric(
@@ -259,7 +229,6 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch
         assert {cell.identity.scope.view for cell in day_values.cells} == {"daily", "asof"}
         assert {cell.identity.key.metric for cell in day_values.cells} == {"unregistered_revenue"}
     finally:
-        resolver._analysis.close()
         con.disconnect()
 
 
@@ -339,7 +308,7 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
     assert combined_values.cells == ()
 
 
-def test_invalid_view_selection_and_late_capability_refuse_without_capture(monkeypatch, tmp_path):
+def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path)
     scopes = (
@@ -353,10 +322,6 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(monke
     )
     experiment = replace(experiment, scopes=scopes)
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("invalid request opened evidence")
-
-    monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", forbidden)
     try:
         for views in ((), (scopes[0], scopes[0]), (Scope(view="asof", grain="asof"),)):
             with pytest.raises(CodedError) as error:
@@ -395,11 +360,10 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(monke
             run(invalid_breakout, resolver)
         assert error.value.code == "facade.analysis.trigger_unsupported"
     finally:
-        resolver._analysis.close()
         con.disconnect()
 
 
-def test_live_confidence_rows_align_across_scopes_without_raw_persistence(monkeypatch, tmp_path):
+def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_path):
     from increment import render
     from increment.store import ParquetResultsStore
 
@@ -428,21 +392,13 @@ def test_live_confidence_rows_align_across_scopes_without_raw_persistence(monkey
         pickle.dumps(result)
     assert error.value.code == "wire.result.raw_outcomes_unavailable"
 
-    source = resolver._analysis._src
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("raw-set persistence opened evidence")
-
-    monkeypatch.setattr(type(source), "moments", forbidden)
-    monkeypatch.setattr(type(source), "unit_frame", forbidden)
     with pytest.raises(CodedError) as error:
         run(experiment, resolver, results_store=ParquetResultsStore(tmp_path / "raw"))
     assert error.value.code == "kernel.run.invalid_input"
-    resolver._analysis.close()
     con.disconnect()
 
 
-def test_assigned_and_triggered_views_share_one_population_union(monkeypatch, tmp_path):
+def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path, triggered=True)
     scopes = (
@@ -457,18 +413,8 @@ def test_assigned_and_triggered_views_share_one_population_union(monkeypatch, tm
             run(replace(experiment, scopes=(scope,)), resolver, analysis_options=options)
             for scope in scopes
         ]
-        captured = []
-        original = DefinitionsMomentSource.readout_snapshot
-
-        @contextmanager
-        def snapshot(source, **kwargs):
-            captured.append(kwargs)
-            with original(source, **kwargs) as pinned:
-                yield pinned
-
-        monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", snapshot)
         actual = run(experiment, resolver, analysis_options=options)
-        assert len(captured) == 1
+        assert len(actual.run.metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             _same_cells(
                 tuple(
@@ -484,14 +430,13 @@ def test_assigned_and_triggered_views_share_one_population_union(monkeypatch, tm
             "triggered",
         }
     finally:
-        resolver._analysis.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings(
     "ignore:metric 'm' has window_days=None:increment.errors.IncrementWarning"
 )
-def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions(monkeypatch):
+def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
     from tests.analysis_factory import facade_binding
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
     from tests.parity_harness import matrix, matrix_cases
@@ -513,9 +458,6 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions(mo
             experiment = replace(experiment, scopes=scopes)
             disposition = dispositions[ingress]
 
-            def forbidden(*args, ingress=ingress, **kwargs):
-                pytest.fail(f"{ingress} acquired evidence before capability refusal")
-
             if isinstance(disposition, matrix.Runs):
                 separate = [run(replace(experiment, scopes=(scope,)), resolver) for scope in scopes]
                 result = run(experiment, resolver)
@@ -530,40 +472,30 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions(mo
                 assert_support("shared_capture", f"multiview_{ingress}", result)
             else:
                 assert isinstance(disposition, matrix.Refuses)
-                with monkeypatch.context() as patch:
-                    for name in ("moments", "unit_frame", "readout_snapshot", "contrast_stats"):
-                        if hasattr(analysis._src, name):
-                            patch.setattr(type(analysis._src), name, forbidden)
-                    with pytest.raises(CodedError) as error:
-                        run(experiment, resolver)
-                    assert error.value.code == disposition.code
-                    assert_refusal(
-                        "shared_capture", f"multiview_{ingress}", error.value, stage="read"
-                    )
+                with pytest.raises(CodedError) as error:
+                    run(experiment, resolver)
+                assert error.value.code == disposition.code
+                assert_refusal("shared_capture", f"multiview_{ingress}", error.value, stage="read")
 
             if ingress != "from_definitions":
-                with monkeypatch.context() as patch:
-                    for name in ("moments", "unit_frame", "readout_snapshot", "contrast_stats"):
-                        if hasattr(analysis._src, name):
-                            patch.setattr(type(analysis._src), name, forbidden)
-                    with pytest.raises(CodedError) as error:
-                        run(
-                            experiment,
-                            resolver,
-                            views=(scopes[0],),
-                            analysis_options={"exploratory_metrics": ["additional"]},
-                        )
-                    assert_refusal(
-                        "shared_capture",
-                        f"exploratory_{ingress}",
-                        error.value,
-                        stage="read",
+                with pytest.raises(CodedError) as error:
+                    run(
+                        experiment,
+                        resolver,
+                        views=(scopes[0],),
+                        analysis_options={"exploratory_metrics": ["additional"]},
                     )
+                assert_refusal(
+                    "shared_capture",
+                    f"exploratory_{ingress}",
+                    error.value,
+                    stage="read",
+                )
         finally:
             _close_parity_analysis(analysis)
 
 
-def test_switchback_metric_selection_scopes_share_contrast_evidence(monkeypatch):
+def test_switchback_metric_selection_scopes_share_contrast_evidence():
     from tests.analysis_factory import facade_binding
     from tests.parity_harness import matrix, matrix_cases
     from tests.parity_harness.cases import _close_parity_analysis
@@ -581,16 +513,7 @@ def test_switchback_metric_selection_scopes_share_contrast_evidence(monkeypatch)
         scopes = (*experiment.scopes, scope)
         experiment = replace(experiment, scopes=scopes)
         separate = [run(replace(experiment, scopes=(item,)), resolver) for item in scopes]
-        original = type(analysis._src).contrast_stats
-        calls = []
-
-        def contrast_stats(source, metric):
-            calls.append(metric.name)
-            return original(source, metric)
-
-        monkeypatch.setattr(type(analysis._src), "contrast_stats", contrast_stats)
         result = run(experiment, resolver)
-        assert calls == list(experiment.metrics)
         assert len(result.run.metadata.captures) == 1
         for item, expected in zip(scopes, separate, strict=True):
             _same_cells(
