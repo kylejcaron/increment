@@ -303,6 +303,40 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
         for cell in result.cells
         if cell.identity.scope.view == "breakout"
     } == {"US", "CA"}
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    encouraged_frame = frame.assign(
+        help_click=[
+            0 if arm == "control" else int(index % 3 == 0) for index, arm in enumerate(frame["arm"])
+        ]
+    )
+    encouraged, encouraged_resolver = from_frame(
+        encouraged_frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="help_click"),
+            exclusion_restriction=ExclusionRestriction(justification="fixture"),
+        ),
+        metrics={"value": "mean"},
+        breakouts=["country"],
+    )
+    segment = (BreakoutIdentity("country", None),)
+    daily_scope = Scope(view="daily", grain="daily", segment=segment)
+    asof_scope = Scope(view="asof", grain="asof", segment=segment)
+    encouraged = replace(
+        encouraged,
+        scopes=(daily_scope, asof_scope),
+        operations={
+            daily_scope.hash(): "run_daily",
+            asof_scope.hash(): "run_asof",
+        },
+    )
+    combined_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": []})
+    assert combined_values.cells == ()
 
 
 def test_invalid_view_selection_and_late_capability_refuse_without_capture(monkeypatch, tmp_path):

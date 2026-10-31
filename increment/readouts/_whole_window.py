@@ -176,6 +176,7 @@ class WholeWindowFamilyRequest:
 
     declared: WholeWindowRequest
     exploratory: WholeWindowExploratoryRequest | None = None
+    capture_requested: bool = False
 
 
 def validate_whole_window(
@@ -316,6 +317,7 @@ class WholeWindowReadouts:
                         family_scope_metrics=tuple(request.metrics),
                         family_horizon=tuple(reader._src.context.metrics),
                         design=reader._design,
+                        capture_requested=family.capture_requested,
                     )
                 )
             )

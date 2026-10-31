@@ -161,6 +161,7 @@ def _whole_window_operation_scope(analysis, selected, added, options) -> Evidenc
     family = WholeWindowFamilyRequest(
         declared=request(selected),
         exploratory=exploratory,
+        capture_requested=options.get("capture") is not None,
     )
     prepared = analysis._whole_window().prepare_family(family)
     additional_scopes = ()

@@ -42,6 +42,7 @@ class RunAcquisitionRequest:
     family_horizon: tuple[Metric, ...] | None = None
     family_scope_metrics: tuple[Metric, ...] | None = None
     family_uptake_facts: tuple[str, ...] = ()
+    capture_requested: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,11 +103,21 @@ class RunAcquisitionOwner:
                 population=request.request_population,
             )
         else:
+            from increment.estimation.sequential import SEQUENTIAL_POLICIES
+            from increment.readouts._evidence import has_verified_sequential_checkpoint
+
             compliance_only = _design_compliance_only(source.context, request.estimands)
             sequential_compliance = _sequential_compliance_requested(
                 source.context, request.estimands
             ) and tuple(request.estimands or ()) == ("compliance",)
             omit_outcomes = compliance_only or sequential_compliance
+            checkpoint_only = (
+                isinstance(source.context.plan.inference, SEQUENTIAL_POLICIES)
+                and not omit_outcomes
+                and not request.capture_requested
+                and bool(selected)
+                and has_verified_sequential_checkpoint(source)
+            )
             scope = EvidenceScope(
                 metrics=(
                     ()
@@ -118,12 +129,13 @@ class RunAcquisitionOwner:
                 horizon_metrics=() if omit_outcomes else request.family_horizon,
                 population=request.family_population,
                 populations=request.family_populations,
-                grain="total",
+                grain=None if checkpoint_only else "total",
                 estimands=(None if request.estimands is None else tuple(request.estimands)),
                 configs=() if omit_outcomes else tuple(configs),
                 snapshot=True,
                 execution=True,
                 include_breakouts=False,
+                checkpoint_only=checkpoint_only,
             )
         return PreparedRunAcquisition(tuple(selected), tuple(configs), scope)
 
