@@ -3443,11 +3443,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             fetch_arrow=self._session.fetch_arrow,
             defs=self._defs,
             preflight_breakout=self._preflight_breakout,
-            legacy_facade=_legacy_facade,
             preflight_day_request=self._preflight_day_request,
             note_reduction=self._note_reduction,
             horizon_metrics=effective_horizon,
             population=population,
+            legacy_facade=_legacy_facade,
             compliance_provider=self.compliance_summary,
             compliance_dates_provider=self.compliance_dates,
             validated_assignments=self._validated_assignments,
@@ -3855,13 +3855,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         produce a column nothing reads.
 
         ``uptake_panel``/``uptake_window_days`` mirror
-        ``_summary_sql_for_metrics``/``_moments_for_metrics``'s own uptake resolution and are built
-        whenever ``self._design`` is an ``Encouragement`` design,
-        regardless of caller. ``uptake_panel`` is dense, like
-        ``den_panel``; both are ``None`` for every non-``Encouragement``
-        design, which ``asof_group_summary`` reads as "no uptake data,
-        leave sum_d/cyd/cy2d null". ``run_asof`` ignores both return
-        values; ``run_asof_lift`` passes them straight through.
+        ``_summary_sql_for_metrics``/``_moments_for_metrics``'s own uptake resolution.
+        They are built only when the requested readout needs uptake; non-Encouragement
+        designs and ITT-only requests leave them ``None``.
         """
         (
             panel,
@@ -3911,9 +3907,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_window_days: int | None = None
         uptake_certified_edge: dt.date | None = None
         _design = self._context.design
-        if isinstance(_design, Encouragement):
+        if isinstance(_design, Encouragement) and include_uptake_horizon:
             uptake_certified_edge = self._uptake_certified_edge(_design.uptake.fact)
-        if isinstance(_design, Encouragement):
             uptake_fs, _uptake_fact = _find_fact_source(self._defs, _design.uptake.fact)
             uptake_fact_tbl = self._get_fact_table(uptake_fs)
             # unit_day_panel needs metric_events's (unit_id, ts, metric, value) shape;

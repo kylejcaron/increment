@@ -11,6 +11,7 @@ from increment._literals import ValueScale
 from increment.declarations import Method
 from increment.estimation.inference import Prior
 from increment.readouts._requests import (
+    _default_sequential_compliance_requested,
     _design_compliance_only,
     _prepare_run_request,
     _sequential_compliance_requested,
@@ -109,12 +110,17 @@ class RunAcquisitionOwner:
             sequential_compliance = _sequential_compliance_requested(
                 source.context, request.estimands
             ) and tuple(request.estimands or ()) == ("compliance",)
-            omit_outcomes = compliance_only or sequential_compliance
+            default_sequential_compliance = _default_sequential_compliance_requested(
+                source.context, selected, request.estimands
+            )
+            omit_outcomes = (
+                compliance_only or sequential_compliance or default_sequential_compliance
+            )
+
             checkpoint_only = (
                 isinstance(source.context.plan.inference, SEQUENTIAL_POLICIES)
-                and not omit_outcomes
                 and not request.capture_requested
-                and bool(selected)
+                and (bool(selected) or omit_outcomes)
                 and has_verified_sequential_checkpoint(source)
             )
             uptake_facts = request.family_uptake_facts
@@ -152,6 +158,15 @@ class RunAcquisitionOwner:
         design = source.context.design
         design_summary_only = _design_compliance_only(source.context, estimands)
         sequential = isinstance(source.context.plan.inference, SEQUENTIAL_POLICIES)
+        sequential_compliance = _sequential_compliance_requested(
+            source.context, estimands
+        ) and tuple(estimands or ()) == ("compliance",)
+        default_sequential_compliance = _default_sequential_compliance_requested(
+            source.context, selected, estimands
+        )
+        omit_outcomes = (
+            design_summary_only or sequential_compliance or default_sequential_compliance
+        )
         needs_live_evidence = (bool(selected) or design_summary_only) and not sequential
         if design_summary_only:
             needs_snapshot = False
@@ -174,20 +189,24 @@ class RunAcquisitionOwner:
                     )
                 )
             )
-        capture_all_family = sequential and not design_summary_only
+        capture_all_family = sequential and not omit_outcomes
         uptake = getattr(source.context.design, "uptake", None)
         return EvidenceScope(
             metrics=(tuple(source.context.metrics) if capture_all_family else tuple(selected)),
-            horizon_metrics=() if design_summary_only else None,
+            horizon_metrics=() if omit_outcomes else None,
             population=population,
             configs=(tuple(source.context.configs) if capture_all_family else tuple(configs)),
             uptake_facts=() if uptake is None else (uptake.fact,),
             snapshot=needs_snapshot,
-            execution=bool(selected) or design_summary_only,
+            execution=(
+                bool(selected)
+                or design_summary_only
+                or sequential_compliance
+                or default_sequential_compliance
+            ),
             checkpoint_only=(
                 sequential
-                and not design_summary_only
-                and bool(selected)
+                and (bool(selected) or omit_outcomes)
                 and has_verified_sequential_checkpoint(source)
             ),
         )

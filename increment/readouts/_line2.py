@@ -26,6 +26,13 @@ def _compliance_only(analysis, estimands, dimension=None):
     )
 
 
+def _validate_source_populations(source: Any, populations: Sequence[str], operation: str) -> None:
+    from increment.readouts._evidence import validate_populations, validates_populations
+
+    if validates_populations(source):
+        validate_populations(source, populations, operation=operation)
+
+
 def owned_execution_context(
     analysis,
     scope: EvidenceScope,
@@ -279,6 +286,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 completed_windows_only=options.get("completed_windows_only", False),
             )
             reader = candidate._day_axis()
+            _validate_source_populations(candidate._src, populations, operation)
             reader.validate_request(req, lift=operation.endswith("_lift"))
             if operation.endswith("_lift"):
                 run_standalone_day_axis_lift(

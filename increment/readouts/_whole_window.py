@@ -428,7 +428,7 @@ class WholeWindowReadouts:
             and (req.metrics or design_summary_only)
         )
         prepared = _prepared
-        if (not req.metrics or needs_trigger_acquisition) and prepared is None and not registered:
+        if (not req.metrics or needs_trigger_acquisition) and prepared is None:
             from increment.readouts._run_acquisition import (
                 RunAcquisitionOwner,
                 RunAcquisitionRequest,
@@ -465,7 +465,9 @@ class WholeWindowReadouts:
                     metrics=tuple(metric.name for metric in req.metrics),
                     estimands=req.estimands,
                     value_scale=req.value_scale,
-                    request_population=req.population or "assigned",
+                    request_population=(
+                        "assigned" if registered else (req.population or "assigned")
+                    ),
                     design=self._design,
                 )
             prepared = RunAcquisitionOwner.prepare(acquisition_request)
@@ -475,7 +477,6 @@ class WholeWindowReadouts:
             and not design_summary_only
             and not sequential_compliance
             and not default_sequential_compliance
-            and not (registered and req.estimands)
         ):
             from increment.breakout.estimates import LiftEstimates
 

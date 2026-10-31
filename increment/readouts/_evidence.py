@@ -1183,6 +1183,7 @@ def _rows(
     req: DayAxisRequest,
     *,
     validate_daily_readout: bool = False,
+    require_uptake: bool | None = None,
 ) -> Iterator[DayAxisSlice]:
     by = req.by or ((req.dimension,) if req.dimension is not None else ())
     for view, metrics in _groups(req):
@@ -1205,10 +1206,13 @@ def _rows(
                 continue
             if validate_daily_readout:
                 _validate_daily_readout(src, req, metric)
+            kwargs = _metric_kwargs(metric, req)
+            if require_uptake is not None:
+                kwargs["require_uptake"] = require_uptake
             rows.extend(
                 cast(
                     "Iterable[dict[str, Any]]",
-                    _builtin_source(src).moments(metric, by=by, **_metric_kwargs(metric, req)),
+                    _builtin_source(src).moments(metric, by=by, **kwargs),
                 )
             )
         yield DayAxisSlice(rows, metrics, view, req.dimension, None)
@@ -1365,6 +1369,9 @@ class _NativeDayAxis:
         self.experiment = experiment
 
     def slices(self, req: DayAxisRequest) -> Iterator[DayAxisSlice]:
+        require_uptake = (
+            req.estimands is not None and any(estimand != "itt" for estimand in req.estimands)
+        ) or (req.caller == "run_asof_lift" and req.estimands is None)
         if req.dimension is not None:
             matching = [
                 breakout
@@ -1377,14 +1384,17 @@ class _NativeDayAxis:
                     source_name: str | None = None
                     for index, metric in enumerate(metrics):
                         result = cast(Any, self.src).breakout_moments(
-                            metric, breakout, **_metric_kwargs(metric, req)
+                            metric,
+                            breakout,
+                            require_uptake=require_uptake,
+                            **_metric_kwargs(metric, req),
                         )
                         rows.extend(result.rows)
                         if index == 0:
                             source_name = result.source_name
                     yield DayAxisSlice(rows, metrics, view, req.dimension, source_name)
             return
-        yield from _rows(self.src, req)
+        yield from _rows(self.src, req, require_uptake=require_uptake)
 
 
 def load_day_axis_rows(
