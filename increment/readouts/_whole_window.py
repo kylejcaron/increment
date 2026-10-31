@@ -32,6 +32,7 @@ from increment.readouts._evidence import (
     validates_populations,
 )
 from increment.readouts._requests import (
+    _default_sequential_compliance_requested,
     _design_compliance_only,
     _sequential_compliance_requested,
 )
@@ -340,8 +341,18 @@ class WholeWindowReadouts:
                     execution_context=context,
                     _prepared=prepared[0],
                 )
-                if family.declared.metrics
-                or _design_compliance_only(self._src.context, family.declared.estimands)
+                if (
+                    family.declared.metrics
+                    or _design_compliance_only(self._src.context, family.declared.estimands)
+                    or (
+                        getattr(self._plan.inference, "registration", None) is not None
+                        and _default_sequential_compliance_requested(
+                            self._src.context,
+                            family.declared.metrics,
+                            family.declared.estimands,
+                        )
+                    )
+                )
                 else LiftEstimates()
             )
             if family.exploratory is not None:
@@ -405,6 +416,9 @@ class WholeWindowReadouts:
         design_summary_only = _design_compliance_only(self._src.context, req.estimands)
         sequential_compliance = _sequential_compliance_requested(self._src.context, req.estimands)
         registered = getattr(self._plan.inference, "registration", None) is not None
+        default_sequential_compliance = registered and _default_sequential_compliance_requested(
+            self._src.context, req.metrics, req.estimands
+        )
         needs_trigger_acquisition = (
             not is_custom_source(self._src)
             and req.population in (None, "triggered")
@@ -414,7 +428,7 @@ class WholeWindowReadouts:
             and (req.metrics or design_summary_only)
         )
         prepared = _prepared
-        if (not req.metrics or needs_trigger_acquisition) and prepared is None:
+        if (not req.metrics or needs_trigger_acquisition) and prepared is None and not registered:
             from increment.readouts._run_acquisition import (
                 RunAcquisitionOwner,
                 RunAcquisitionRequest,
@@ -456,7 +470,12 @@ class WholeWindowReadouts:
                 )
             prepared = RunAcquisitionOwner.prepare(acquisition_request)
         route = self.validate(req)
-        if not req.metrics and not design_summary_only and not sequential_compliance:
+        if (
+            not req.metrics
+            and not design_summary_only
+            and not sequential_compliance
+            and not default_sequential_compliance
+        ):
             from increment.breakout.estimates import LiftEstimates
 
             return LiftEstimates()

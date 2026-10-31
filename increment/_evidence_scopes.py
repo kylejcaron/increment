@@ -59,13 +59,12 @@ def _scope_covariate_streams(
 
 def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope]) -> EvidenceScope:
     """Ask a built-in loader to derive its capture from selected readout requests."""
-    metrics_by_name = {metric.name: metric for request in requests for metric in request.metrics}
+    metrics = tuple(dict.fromkeys(metric for request in requests for metric in request.metrics))
     configs_list = []
     for request in requests:
         for config in request.configs or ():
             if config not in configs_list:
                 configs_list.append(config)
-    metrics = tuple(metrics_by_name.values())
     configs = tuple(configs_list)
     breakouts = [item for request in requests for item in request.breakouts]
     source = loader_source(src)

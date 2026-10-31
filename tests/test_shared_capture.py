@@ -713,6 +713,56 @@ def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_varian
         con.disconnect()
 
 
+def test_whole_window_and_daily_capture_same_name_metric_sources(tmp_path):
+    from increment.semantics.models import MeanMetric
+
+    con = ds.duckdb_connection()
+    cast(Any, con).raw_sql("CREATE TABLE alternate_events AS SELECT * FROM events")
+    cast(Any, con).raw_sql("UPDATE alternate_events SET revenue = revenue + 1000")
+    experiment, resolver = _builder(con, tmp_path, triggered=True, separate_metric_source=True)
+    declared = MeanMetric.model_validate(dict(experiment.metrics["revenue"]))
+    variant = declared.model_copy(update={"fact": "alternate_purchase"})
+    scopes = (
+        Scope(view="run", grain="total", population="assigned"),
+        Scope(view="daily", grain="daily", population="assigned"),
+    )
+    experiment = replace(experiment, scopes=scopes)
+    variant_options = {
+        "metrics": [variant],
+        "decision_method": Method(name="unadjusted"),
+    }
+    declared_options = {
+        "metrics": ["revenue"],
+        "decision_method": Method(name="unadjusted"),
+    }
+    try:
+        separate = (
+            run(
+                replace(experiment, scopes=(scopes[0],)),
+                resolver,
+                analysis_options=declared_options,
+            ),
+            run(
+                replace(experiment, scopes=(scopes[1],)), resolver, analysis_options=variant_options
+            ),
+        )
+        actual = run(experiment, resolver, analysis_options=variant_options)
+        assert len(actual.run.metadata.captures) == 1
+        for scope, expected in zip(scopes, separate, strict=True):
+            actual_scope = tuple(
+                cell for cell in actual.cells if cell.identity.scope.view == scope.view
+            )
+            assert tuple(cell.identity.key for cell in actual_scope) == tuple(
+                cell.identity.key for cell in expected.cells
+            )
+            assert nested_close(
+                [cell.to_payload()["row_payload"] for cell in actual_scope],
+                [cell.to_payload()["row_payload"] for cell in expected.cells],
+            )
+    finally:
+        con.disconnect()
+
+
 @pytest.mark.filterwarnings(
     "ignore:metric 'm' has window_days=None:increment.errors.IncrementWarning"
 )

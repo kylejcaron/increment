@@ -41,6 +41,19 @@ def _sequential_compliance_requested(
     )
 
 
+def _default_sequential_compliance_requested(
+    context: SourceContext, metrics: Sequence[object], estimands: Sequence[str] | None
+) -> bool:
+    """An empty default registered sequential encouragement run emits compliance."""
+    return (
+        not metrics
+        and estimands is None
+        and getattr(context.plan.inference, "registration", None) is not None
+        and isinstance(context.design, Encouragement)
+        and isinstance(context.plan.inference, SEQUENTIAL_POLICIES)
+    )
+
+
 def _prepare_run_request(
     src: EvidenceSource,
     *,
@@ -68,6 +81,11 @@ def _prepare_run_request(
         sensitivity_methods=sensitivity_methods,
         prior_override=prior,
     )
+    validated_estimands = (
+        ("compliance",)
+        if _default_sequential_compliance_requested(src.context, selected, estimands)
+        else estimands
+    )
     request = ReadoutRequest.from_source(
         src,
         metrics=selected,
@@ -75,7 +93,7 @@ def _prepare_run_request(
         view="run",
         grain="total",
         by=by,
-        estimands=estimands,
+        estimands=validated_estimands,
         value_scale=value_scale,
         population=population,
     )
