@@ -497,9 +497,73 @@ depends_on = [
   "increment._window", "increment.decision", "increment.decision_wire", "increment.errors",
   "increment.estimation", "increment.estimation.sequential", "increment.plan", "increment.semantics", "increment.sources",
   "increment._source_identity", "increment.sequential_source", "increment.sequential_state",
-  "increment.declarations",
   "increment._artifact_identity",
   "increment._assignment_ledger_contract", "increment._frame_ledger",
+  "increment.query.artifact_ports",
+]
+
+[[modules]]
+path = "increment.query.artifact_ports"
+layer = "core"
+depends_on = []
+
+[[modules]]
+path = "increment.query.artifact_digest"
+layer = "artifacts"
+depends_on = [
+  "increment._artifact_identity", "increment._canonical", "increment.errors",
+  "increment.query", "increment.query.artifact_ports",
+]
+
+[[modules]]
+path = "increment.query.artifact_extensions"
+layer = "artifacts"
+depends_on = [
+  "increment.errors", "increment.query", "increment.query.artifact_digest",
+  "increment.semantics",
+  "increment._source_types", "increment._evidence_types",
+]
+
+[[modules]]
+path = "increment.query.artifact_publish"
+layer = "artifacts"
+depends_on = [
+  "increment.errors", "increment.query", "increment.query.artifact_digest",
+  "increment.semantics",
+  "increment.sources", "increment._evidence_types", "increment.query.artifact_extensions",
+]
+
+[[modules]]
+path = "increment.query.artifact_reader"
+layer = "artifacts"
+depends_on = [
+  "increment.estimation", "increment.query", "increment.query.artifact_publish",
+  "increment.query.sequential_capture", "increment.semantics",
+  "increment._evidence_types", "increment._frame_validation", "increment._metric_specs",
+  "increment._moment_plan", "increment._source_types", "increment._window",
+  "increment.errors", "increment.sequential_source", "increment.sources",
+  "increment._evidence_refusals", "increment._analysis_config", "increment.plan",
+  "increment.winsor", "increment.sequential_state", "increment._cuped_evidence",
+  "increment.declarations", "increment._source_operations", "increment._source_identity",
+  "increment.decision_wire",
+]
+
+[[modules]]
+path = "increment.query.sequential_capture"
+layer = "artifacts"
+depends_on = [
+  "increment.query.artifact_publish", "increment.sequential_state",
+  "increment._analysis_config", "increment._window", "increment.semantics",
+  "increment.sequential_source",
+]
+
+[[modules]]
+path = "increment.artifacts._query"
+layer = "artifacts"
+depends_on = [
+  "increment.query.artifact_ports", "increment.query.artifact_digest",
+  "increment.query.artifact_extensions", "increment.query.artifact_publish",
+  "increment.query.artifact_reader", "increment.query.sequential_capture",
 ]
 
 [[modules]]
@@ -671,6 +735,7 @@ depends_on = [
   "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",
   "increment.frame", "increment.plan",
   "increment.query", "increment.readouts", "increment.semantics",
+  "increment.query.artifact_ports",
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
   "increment._health", "increment.store",
@@ -807,12 +872,12 @@ depends_on = [
 
 [[modules]]
 path = "increment.artifacts"
-layer = "core"
+layer = "artifacts"
 depends_on = []
 
 [[modules]]
 path = "increment.digest"
-layer = "core"
+layer = "artifacts"
 depends_on = []
 
 [[interfaces]]
@@ -1053,7 +1118,8 @@ depends_on = [
   "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
   "increment._source_types", "increment._window", "increment.decision",
   "increment.declarations", "increment.errors",
-  "increment.estimation", "increment.query", "increment.readouts", "increment.semantics",
+  "increment.estimation", "increment.readouts", "increment.semantics",
+  "increment.query.artifact_ports",
   "increment.sequential_source", "increment._whole_window",
 ]
 
