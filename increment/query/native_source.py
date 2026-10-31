@@ -1399,6 +1399,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if self._session._source_tables is None and not self._has_fixed_event_horizon_override
             else selected_horizon
         )
+        view._union_horizon_cache = None
         view._union_horizon_metric_cache = {}
         view._panel_cache = {}
         view._cuped_relation_cache = {}

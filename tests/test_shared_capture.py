@@ -291,12 +291,14 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             fact="ad_hoc_late",
             aggregation="avg_calendar_day",
         )
+        cast(Any, running_resolver.resolve(running_experiment.source_refs)).panel_sql()
         late_values = run(
             running_experiment,
             running_resolver,
             analysis_options={
                 "metrics": [late_metric],
                 "decision_method": Method(name="unadjusted"),
+                "coherence": "live",
             },
         )
         for view in ("daily", "asof"):
