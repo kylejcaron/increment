@@ -369,6 +369,9 @@ def _assert_empty_sequential_compliance(tmp_path):
     )
     try:
         analysis.capture_sequential(finalized=True, as_of=_LATER)
+        with pytest.raises(CodedError) as refused:
+            analysis.run(metrics=[], estimands=("late",))
+        assert refused.value.code == "sequential.route.unsupported"
         default_rows = analysis.run(metrics=[])
         assert {row.estimand for row in default_rows} == {"compliance"}
         rows = analysis.run(metrics=[], estimands=("compliance",))

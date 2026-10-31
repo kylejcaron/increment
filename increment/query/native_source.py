@@ -375,7 +375,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._union_horizon_metric_cache: dict[tuple[Metric, ...], ir.Scalar] = {}
         self._fixed_event_horizon: dt.date | None = None
         self._has_fixed_event_horizon_override = False
-        self._captured_metric_horizons: dict[str, dt.date | None] = {}
+        self._captured_metric_horizons: dict[Metric, dt.date | None] = {}
         self._panel_cache: dict[
             tuple[str, Metric] | tuple[str, Metric, tuple[Metric, ...]],
             tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar],
@@ -1299,10 +1299,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 .name("_one")
                 .as_table()
                 .select(
-                    metric=ibis.literal(metric.name),
+                    metric=ibis.literal(index).cast("int64"),
                     edge=self._union_event_horizon((metric,)).cast("date"),
                 )
-                for metric in horizon_members
+                for index, metric in enumerate(horizon_members)
             ]
             snapshot_horizon_relation = (
                 ibis.union(*horizon_rows, distinct=False)
@@ -1325,12 +1325,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 rows = pinned._session.fetch_arrow(
                     pinned._session.source_sql(_SNAPSHOT_HORIZON_RELATION_KEY)
                 ).to_pylist()
-                metric_horizons: dict[str, dt.date | None] = {}
+                metric_horizons: dict[Metric, dt.date | None] = {}
                 for row in rows:
                     edge = row["edge"]
                     if isinstance(edge, dt.datetime):
                         edge = edge.date()
-                    metric_horizons[row["metric"]] = edge
+                    metric = horizon_members[int(row["metric"])]
+                    metric_horizons[metric] = edge
                 pinned._captured_metric_horizons = metric_horizons
                 pinned._fixed_event_horizon = max(
                     (edge for edge in metric_horizons.values() if edge is not None),
@@ -1373,19 +1374,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     for config in template._context.configs
                 ),
             )
-        family_names = tuple(
-            dict.fromkeys(metric.name for metric in (*template._horizon_metrics, *metrics))
-        )
+        family_metrics = tuple(dict.fromkeys((*template._horizon_metrics, *metrics)))
         captured_horizons = self._captured_metric_horizons
-        has_family_horizon = family_names and all(
-            name in captured_horizons for name in family_names
+        has_family_horizon = bool(family_metrics) and all(
+            metric in captured_horizons for metric in family_metrics
         )
         if has_family_horizon:
             view._fixed_event_horizon = max(
                 (
-                    cast(dt.date, captured_horizons[name])
-                    for name in family_names
-                    if captured_horizons[name] is not None
+                    cast(dt.date, captured_horizons[metric])
+                    for metric in family_metrics
+                    if captured_horizons[metric] is not None
                 ),
                 default=None,
             )

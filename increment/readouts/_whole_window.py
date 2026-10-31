@@ -475,6 +475,7 @@ class WholeWindowReadouts:
             and not design_summary_only
             and not sequential_compliance
             and not default_sequential_compliance
+            and not (registered and req.estimands)
         ):
             from increment.breakout.estimates import LiftEstimates
 

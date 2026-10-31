@@ -279,12 +279,6 @@ class BreakoutReadouts:
                 q=req.q,
                 analysis_population=req.population,
             )
-        if self._execution_context is not None:
-            self._execution_context.validate_request(
-                self._scope_source,
-                req.metrics,
-                self._configs(req),
-            )
         route = breakout_route(self._src)
         if route == UNSUPPORTED_ROUTE:
             from increment._evidence_refusals import refuse_breakout
@@ -312,6 +306,12 @@ class BreakoutReadouts:
             if not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
+        if self._execution_context is not None:
+            self._execution_context.validate_request(
+                self._scope_source,
+                req.metrics,
+                self._configs(req),
+            )
         if (
             self._execution_context is None
             and route in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE)

@@ -250,7 +250,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 src=candidate._src, experiment=getattr(candidate, "_experiment", None)
             )
             reader.validate_populations(populations)
-            reader.validate_request(
+            normalized_request = reader.validate_request(
                 BreakoutRequest(
                     metrics=tuple(metrics),
                     population=population,
@@ -259,6 +259,8 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                     **overrides,
                 )
             )
+            metrics = normalized_request.metrics
+            configs = reader._configs(normalized_request)
             grain = "total"
             breakouts = _selected_breakouts(candidate)
         else:

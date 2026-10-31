@@ -11,7 +11,7 @@ import pytest
 from increment import run
 from increment.builders import from_definitions
 from increment.declarations import Method
-from increment.errors import CodedError
+from increment.errors import CodedError, IncrementWarning
 from increment.evidence import BreakoutIdentity
 from increment.kernel.contracts import Scope
 from increment.semantics.models import AnalysisPlan, Definitions
@@ -46,13 +46,23 @@ def _builder(
     winsorized=False,
     trigger_evidence=True,
     separate_metric_source=False,
+    running_revenue=False,
+    include_breakouts=False,
 ):
     from increment.artifacts import SourceSnapshotEvidence
 
     definitions = ds.definitions_dict(
         plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]),
-        breakout=not separate_metric_source,
+        breakout=not separate_metric_source or include_breakouts,
     )
+    if running_revenue:
+        next(metric for metric in definitions["metrics"] if metric["name"] == "revenue")[
+            "aggregation"
+        ] = "avg_calendar_day"
+        next(metric for metric in definitions["metrics"] if metric["name"] == "revenue")[
+            "window_days"
+        ] = None
+        definitions["experiments"][0].pop("end")
     kwargs: dict[str, Any] = {}
     if winsorized:
         definitions["metrics"][0]["winsorization"] = {"upper_percentile": 0.9}
@@ -96,6 +106,13 @@ def _builder(
                 },
             )
         )
+        if running_revenue:
+            definitions["fact_sources"][-1]["sql"] = (
+                "SELECT * REPLACE ('alternate_purchase' AS event) "
+                "FROM alternate_events WHERE event = 'purchase'"
+            )
+        if include_breakouts:
+            definitions["experiments"][0]["breakouts"][0]["source"] = "events"
     if triggered:
         definitions["fact_sources"][0]["facts"].append({"name": "trigger_signal", "column": None})
         definitions["exposures"].append({"name": "trigger", "fact": "trigger_signal"})
@@ -111,6 +128,9 @@ def _builder(
             )
     path = tmp_path / "definitions.yaml"
     path.write_text(json.dumps(definitions), encoding="utf-8")
+    if running_revenue:
+        with pytest.warns(IncrementWarning):
+            return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
     return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
 
 
@@ -719,9 +739,20 @@ def test_whole_window_and_daily_capture_same_name_metric_sources(tmp_path):
     con = ds.duckdb_connection()
     cast(Any, con).raw_sql("CREATE TABLE alternate_events AS SELECT * FROM events")
     cast(Any, con).raw_sql("UPDATE alternate_events SET revenue = revenue + 1000")
-    experiment, resolver = _builder(con, tmp_path, triggered=True, separate_metric_source=True)
+    cast(Any, con).raw_sql(
+        "INSERT INTO alternate_events SELECT * REPLACE "
+        "(TIMESTAMP '2025-02-20 00:00:00' AS event_at, revenue + 1000 AS revenue) "
+        "FROM events WHERE event = 'purchase' LIMIT 1"
+    )
+    experiment, resolver = _builder(
+        con,
+        tmp_path,
+        triggered=False,
+        separate_metric_source=True,
+        running_revenue=True,
+    )
     declared = MeanMetric.model_validate(dict(experiment.metrics["revenue"]))
-    variant = declared.model_copy(update={"fact": "alternate_purchase"})
+    variant = declared.model_copy(update={"fact": "alternate_purchase", "window_days": None})
     scopes = (
         Scope(view="run", grain="total", population="assigned"),
         Scope(view="daily", grain="daily", population="assigned"),
@@ -731,26 +762,75 @@ def test_whole_window_and_daily_capture_same_name_metric_sources(tmp_path):
         "metrics": [variant],
         "decision_method": Method(name="unadjusted"),
     }
-    declared_options = {
-        "metrics": ["revenue"],
-        "decision_method": Method(name="unadjusted"),
-    }
     try:
         separate = (
             run(
                 replace(experiment, scopes=(scopes[0],)),
                 resolver,
-                analysis_options=declared_options,
+                analysis_options=variant_options,
             ),
             run(
-                replace(experiment, scopes=(scopes[1],)), resolver, analysis_options=variant_options
+                replace(experiment, scopes=(scopes[1],)),
+                resolver,
+                analysis_options=variant_options,
             ),
+        )
+        assert (
+            max(cell.identity.key.ds for cell in separate[1].cells) == datetime(2025, 2, 20).date()
         )
         actual = run(experiment, resolver, analysis_options=variant_options)
         assert len(actual.run.metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             actual_scope = tuple(
                 cell for cell in actual.cells if cell.identity.scope.view == scope.view
+            )
+            assert tuple(cell.identity.key for cell in actual_scope) == tuple(
+                cell.identity.key for cell in expected.cells
+            )
+            assert nested_close(
+                [cell.to_payload()["row_payload"] for cell in actual_scope],
+                [cell.to_payload()["row_payload"] for cell in expected.cells],
+            )
+    finally:
+        con.disconnect()
+
+
+def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
+    from increment.semantics.models import MeanMetric
+
+    con = ds.duckdb_connection()
+    cast(Any, con).raw_sql("CREATE TABLE alternate_events AS SELECT * FROM events")
+    cast(Any, con).raw_sql("UPDATE alternate_events SET revenue = revenue + 1000")
+    experiment, resolver = _builder(
+        con,
+        tmp_path,
+        triggered=True,
+        separate_metric_source=True,
+        include_breakouts=True,
+    )
+    variant = MeanMetric.model_validate(dict(experiment.metrics["revenue"])).model_copy(
+        update={"fact": "alternate_purchase"}
+    )
+    breakout = BreakoutIdentity("store", None)
+    scopes = (
+        Scope(view="breakout", grain="total", population="assigned", segment=(breakout,)),
+        Scope(view="breakout", grain="total", population="triggered", segment=(breakout,)),
+    )
+    experiment = replace(experiment, scopes=scopes)
+    options = {"metrics": [variant]}
+    try:
+        separate = tuple(
+            run(replace(experiment, scopes=(scope,)), resolver, analysis_options=options)
+            for scope in scopes
+        )
+        actual = run(experiment, resolver, analysis_options=options)
+        assert len(actual.run.metadata.captures) == 1
+        for scope, expected in zip(scopes, separate, strict=True):
+            actual_scope = tuple(
+                cell
+                for cell in actual.cells
+                if cell.identity.scope.view == "breakout"
+                and cell.identity.key.analysis_population == scope.population
             )
             assert tuple(cell.identity.key for cell in actual_scope) == tuple(
                 cell.identity.key for cell in expected.cells
