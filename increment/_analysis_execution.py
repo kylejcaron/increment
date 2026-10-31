@@ -2795,7 +2795,8 @@ class Analysis:
             result identities.
         """
 
-        _execution_context = _current_execution_context()
+        if _execution_context is None:
+            _execution_context = _current_execution_context()
         from increment.breakout.estimates import LiftEstimates
 
         if isinstance(self._state, ContrastAnalysisState) and population == "triggered":
@@ -2861,19 +2862,12 @@ class Analysis:
                     exploratory=WholeWindowExploratoryRequest(
                         request=request(added),
                         reader=exploratory._whole_window(),
-                        make_reader=lambda: self._exploratory_analysis(
-                            added, caller="run"
-                        )._whole_window(),
                     ),
                 ),
                 execution_context=_execution_context,
             )
         else:
-            rows = (
-                reader.run(request(selected), execution_context=_execution_context)
-                if selected
-                else LiftEstimates()
-            )
+            rows = reader.run(request(selected), execution_context=_execution_context)
         if not isinstance(rows, LiftEstimates):
             rows = LiftEstimates(rows)
         self._warn_run_advisories(

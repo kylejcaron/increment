@@ -677,10 +677,9 @@ path = "increment.readouts._whole_window"
 layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._day_axis", "increment._evidence_types",
-  "increment._readout_request", "increment._evidence_scopes",
+  "increment._readout_request",
   "increment.breakout.estimates", "increment.errors", "increment.readouts", "increment.sources",
-  "increment._evidence_refusals", "increment.kernel.context",
-  "increment.readouts._execution_context",
+  "increment._evidence_refusals",
 ]
 [[modules]]
 path = "increment._breakout_readouts"

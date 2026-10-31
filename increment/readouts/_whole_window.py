@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
-from increment._evidence_types import CountsRequest, EvidenceScope, SourceContext
+from increment._evidence_types import CountsRequest, SourceContext
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
@@ -31,11 +31,7 @@ from increment.readouts._evidence import (
     validate_populations,
     validates_populations,
 )
-from increment.readouts._requests import (
-    _design_compliance_only,
-    _prepare_run_request,
-    _validate_run_request,
-)
+from increment.readouts._requests import _design_compliance_only
 from increment.sources import require_operation
 
 if TYPE_CHECKING:
@@ -47,6 +43,7 @@ if TYPE_CHECKING:
     from increment.estimation.inference import Prior
     from increment.estimation.results import LiftEstimate
     from increment.kernel.context import EvidenceExecutionContext
+    from increment.readouts._run_acquisition import PreparedRunAcquisition
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Experiment, Metric
     from increment.sources import SourceOperation, _BuiltinMomentSource
@@ -165,11 +162,10 @@ class WholeWindowRequest:
 
 @dataclass(frozen=True, slots=True)
 class WholeWindowExploratoryRequest:
-    """A preflighted exploratory reader and its in-scope reader factory."""
+    """A preflighted exploratory reader in the shared execution family."""
 
     request: WholeWindowRequest
     reader: WholeWindowReadouts
-    make_reader: Callable[[], WholeWindowReadouts]
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,16 +186,6 @@ def validate_whole_window(
     route: RouteName,
 ) -> None:
     """Validate native and empty seam requests before any moments are read."""
-    if route == ARTIFACT_ROUTE and req.metrics:
-        _validate_run_request(
-            src,
-            decision_method=req.decision_method,
-            sensitivity_methods=req.sensitivity_methods,
-            prior=req.prior,
-            metrics=[m.name for m in req.metrics],
-            estimands=req.estimands,
-            value_scale=req.value_scale,
-        )
     # A registered plan replays both captured populations wherever the source
     # context declares the trigger (a moments checkpoint included); a
     # fixed-horizon triggered read needs the native or artifact trigger evidence.
@@ -226,15 +212,6 @@ def validate_whole_window(
         return
     if route == NATIVE_ROUTE and req.value_scale:
         _raise_readout("readout.randomized.value_scale")
-    _validate_run_request(
-        src,
-        decision_method=req.decision_method,
-        sensitivity_methods=req.sensitivity_methods,
-        prior=req.prior,
-        metrics=[m.name for m in req.metrics],
-        estimands=req.estimands,
-        value_scale=req.value_scale if route != NATIVE_ROUTE else None,
-    )
 
 
 class WholeWindowReadouts:
@@ -276,19 +253,6 @@ class WholeWindowReadouts:
             experiment=self._experiment,
             route=route,
         )
-        _, configs = _prepare_run_request(
-            self._src,
-            decision_method=req.decision_method,
-            sensitivity_methods=req.sensitivity_methods,
-            prior=req.prior,
-            metrics=[metric.name for metric in req.metrics],
-            estimands=req.estimands,
-            value_scale=req.value_scale,
-        )
-        from increment.readouts._design_scope import _config_snapshot
-
-        for config in configs:
-            _config_snapshot(config, self._design)
         if (
             route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
             and getattr(self._plan.inference, "registration", None) is None
@@ -311,59 +275,69 @@ class WholeWindowReadouts:
             validate_populations(self._src, populations, operation="run")
         return route
 
-    def run_family(
-        self,
-        family: WholeWindowFamilyRequest,
-        execution_context: EvidenceExecutionContext | None = None,
-    ) -> LiftEstimates:
-        """Prepare, capture, execute, and assemble a declared/exploratory family."""
-        from increment._evidence_scopes import capture_requirements
-        from increment.breakout.estimates import LiftEstimates, _stamp_exploratory_rows
+    def prepare_family(
+        self, family: WholeWindowFamilyRequest
+    ) -> tuple[PreparedRunAcquisition, ...]:
+        from increment.readouts._run_acquisition import RunAcquisitionOwner, RunAcquisitionRequest
 
         members = [(self, family.declared)]
         if family.exploratory is not None:
             members.append((family.exploratory.reader, family.exploratory.request))
-
-        scopes = []
         for reader, request in members:
             reader.validate(request)
+
+        prepared = []
+        for reader, request in members:
             population = request.population or "assigned"
-            selected, configs = _prepare_run_request(
-                reader._src,
-                decision_method=request.decision_method,
-                sensitivity_methods=request.sensitivity_methods,
-                prior=request.prior,
-                metrics=[metric.name for metric in request.metrics],
-                estimands=request.estimands,
-                value_scale=request.value_scale,
-                population=(
-                    "assigned"
-                    if population == "triggered"
-                    and getattr(reader._plan.inference, "registration", None) is not None
-                    else population
-                ),
-            )
-            compliance_only = _design_compliance_only(reader._src.context, request.estimands)
             has_trigger = reader._experiment is not None and reader._experiment.trigger is not None
             populations = (
                 ("assigned", "triggered")
                 if request.population is None and has_trigger
                 else (population,)
             )
-            scopes.append(
-                EvidenceScope(
-                    metrics=() if compliance_only else tuple(selected),
-                    horizon_metrics=() if compliance_only else tuple(reader._src.context.metrics),
-                    configs=tuple(configs),
-                    population=population,
-                    populations=populations,
-                    grain="total",
-                    snapshot=True,
-                    execution=True,
-                    include_breakouts=False,
+            prepared.append(
+                RunAcquisitionOwner.prepare(
+                    RunAcquisitionRequest(
+                        source=reader._src,
+                        decision_method=request.decision_method,
+                        sensitivity_methods=request.sensitivity_methods,
+                        prior=request.prior,
+                        metrics=tuple(metric.name for metric in request.metrics),
+                        estimands=request.estimands,
+                        value_scale=request.value_scale,
+                        request_population=(
+                            "assigned"
+                            if population == "triggered"
+                            and getattr(reader._plan.inference, "registration", None) is not None
+                            else population
+                        ),
+                        family_population=population,
+                        family_populations=populations,
+                        family_scope_metrics=tuple(request.metrics),
+                        family_horizon=tuple(reader._src.context.metrics),
+                        design=reader._design,
+                    )
                 )
             )
-        scope = capture_requirements(self._src, scopes)
+        return tuple(prepared)
+
+    def run_family(
+        self,
+        family: WholeWindowFamilyRequest,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> LiftEstimates:
+        """Prepare, capture, execute, and assemble a declared/exploratory family."""
+        from increment.breakout.estimates import LiftEstimates, _stamp_exploratory_rows
+        from increment.readouts._run_acquisition import RunAcquisitionOwner
+
+        if execution_context is None:
+            prepared = self.prepare_family(family)
+        else:
+            members = [(self, family.declared)]
+            if family.exploratory is not None:
+                members.append((family.exploratory.reader, family.exploratory.request))
+            for reader, request in members:
+                reader.validate(request)
 
         def execute(context: EvidenceExecutionContext | None) -> LiftEstimates:
             rows = (
@@ -374,7 +348,7 @@ class WholeWindowReadouts:
             )
             if family.exploratory is not None:
                 request = family.exploratory.request
-                reader = family.exploratory.make_reader()
+                reader = family.exploratory.reader
                 if context is not None:
                     context.declare_source_alias(reader._src, parent=self._src)
                 extra = reader.run(request, execution_context=context)
@@ -402,22 +376,23 @@ class WholeWindowReadouts:
                 )
             return rows
 
-        from uuid import uuid4
+        def owned_execute() -> LiftEstimates:
+            from uuid import uuid4
 
-        from increment.kernel.context import EvidenceExecutionContext
-        from increment.readouts._execution_context import owned_execution_context
-
-        with owned_execution_context(
-            lambda: EvidenceExecutionContext(
-                self._provider_for(self._src),
-                scope,
+            return RunAcquisitionOwner.execute(
+                self._src,
+                prepared,
+                provider=self._provider_for(self._src),
                 run_id=uuid4().hex,
                 coherence=family.declared.coherence,
                 shared_capture=True,
-            ),
-            execution_context_scope=self._execution_context_scope,
-        ) as context:
-            return execute(context)
+                executor=execute,
+                execution_context_scope=self._execution_context_scope,
+            )
+
+        if execution_context is not None:
+            return execute(execution_context)
+        return owned_execute()
 
     def run(
         self,
@@ -481,47 +456,48 @@ class WholeWindowReadouts:
         ):
             from uuid import uuid4
 
-            from increment.kernel.context import EvidenceExecutionContext
-            from increment.readouts._design_scope import _config_snapshot
             from increment.readouts._provider import native_scope_provider
+            from increment.readouts._run_acquisition import (
+                RunAcquisitionOwner,
+                RunAcquisitionRequest,
+            )
 
             design = self._design
-            selected, configs = _prepare_run_request(
-                self._src,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                metrics=[metric.name for metric in req.metrics],
-                estimands=req.estimands,
-                value_scale=req.value_scale,
-                population="triggered" if req.population == "triggered" else "assigned",
-            )
-            for config in configs:
-                _config_snapshot(config, design)
+            scope_population = "triggered" if req.population == "triggered" else "assigned"
             populations = (
                 ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
             )
             uptake = getattr(design, "uptake", None)
+            prepared = RunAcquisitionOwner.prepare(
+                RunAcquisitionRequest(
+                    source=self._src,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    metrics=tuple(metric.name for metric in req.metrics),
+                    estimands=req.estimands,
+                    value_scale=req.value_scale,
+                    request_population=scope_population,
+                    family_population=scope_population,
+                    family_populations=populations,
+                    family_horizon=tuple(self._src.context.metrics),
+                    family_scope_metrics=tuple(req.metrics),
+                    family_uptake_facts=() if uptake is None else (uptake.fact,),
+                    design=design,
+                )
+            )
             provider = (
                 self._src if is_custom_source(self._src) else native_scope_provider(self._src)
             )
-            context = EvidenceExecutionContext(
-                provider,
-                EvidenceScope(
-                    metrics=tuple(selected),
-                    population="triggered" if req.population == "triggered" else "assigned",
-                    populations=populations,
-                    configs=tuple(configs),
-                    uptake_facts=() if uptake is None else (uptake.fact,),
-                    snapshot=True,
-                    execution=True,
-                    include_breakouts=False,
-                ),
+            with RunAcquisitionOwner.capture(
+                self._src,
+                (prepared,),
+                provider=provider,
                 run_id=uuid4().hex,
                 coherence=req.coherence,
-            )
-            with context.evidence_scope() as scoped:
-                self._validate_trigger(_builtin_source(scoped))
+            ) as context:
+                with context.borrow() as scoped:
+                    self._validate_trigger(_builtin_source(scoped))
                 return self._run_seam_family(req, context)
         return self._run_seam_family(req)
 

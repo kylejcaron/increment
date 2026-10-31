@@ -135,14 +135,47 @@ def _contrast_operation_scope(analysis, operation: str, options: dict[str, Any])
     )
 
 
+def _whole_window_operation_scope(analysis, selected, added, options) -> EvidenceScope:
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
+    from increment.readouts._whole_window import (
+        WholeWindowExploratoryRequest,
+        WholeWindowFamilyRequest,
+        WholeWindowRequest,
+    )
+
+    def request(metrics):
+        return WholeWindowRequest(
+            metrics=tuple(metrics),
+            estimands=tuple(options["estimands"]) if options.get("estimands") is not None else None,
+            population=options.get("population"),
+            value_scale=options.get("value_scale"),
+            coherence=options.get("coherence", "captured"),
+            decision_method=options.get("decision_method", UNSET),
+            sensitivity_methods=options.get("sensitivity_methods", UNSET),
+            prior=options.get("prior", UNSET),
+        )
+
+    exploratory = None
+    if added:
+        extra = analysis._exploratory_analysis(added, caller="run")
+        exploratory = WholeWindowExploratoryRequest(
+            request=request(added),
+            reader=extra._whole_window(),
+        )
+    family = WholeWindowFamilyRequest(
+        declared=request(selected),
+        exploratory=exploratory,
+    )
+    prepared = analysis._whole_window().prepare_family(family)
+    return RunAcquisitionOwner.combined_scope(analysis._src, prepared)
+
+
 def operation_scope(analysis, operation: str, options: dict[str, Any]) -> EvidenceScope:
     """Validate a selected operation and declare only the evidence it may read."""
     from increment._analysis_config import overlay_configs, select_metrics
     from increment._evidence_scopes import capture_requirements
     from increment._evidence_types import DayAxisRequest
     from increment.readouts._design_scope import _config_snapshot
-    from increment.readouts._requests import _prepare_run_request
-    from increment.readouts._whole_window import WholeWindowRequest, validate_whole_window
 
     source = analysis._src
     capture = options.get("capture")
@@ -169,6 +202,8 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
         if operation in {"run_daily", "run_daily_lift", "run_asof", "run_asof_lift"}
         else select_metrics(tuple(analysis._metrics), options.get("metrics"), caller=operation)
     )
+    if operation == "run":
+        return _whole_window_operation_scope(analysis, selected, added, options)
     candidates = [(analysis, selected)]
     if added:
         candidates.append((analysis._exploratory_analysis(added, caller=operation), added))
@@ -194,44 +229,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
             sensitivity_methods=overrides["sensitivity_methods"],
             prior_override=overrides["prior"],
         )
-        if operation == "run":
-            req = WholeWindowRequest(
-                metrics=tuple(metrics),
-                estimands=tuple(options["estimands"])
-                if options.get("estimands") is not None
-                else None,
-                population=options.get("population"),
-                value_scale=options.get("value_scale"),
-                coherence=options.get("coherence", "captured"),
-                **overrides,
-            )
-            from increment.readouts._evidence import day_axis_route
-
-            validate_whole_window(
-                req,
-                src=candidate._src,
-                plan=candidate._plan,
-                design=candidate._design,
-                experiment=getattr(candidate, "_experiment", None),
-                route=day_axis_route(candidate._src),
-            )
-            metrics, configs = _prepare_run_request(
-                candidate._src,
-                metrics=[metric.name for metric in metrics],
-                estimands=req.estimands,
-                value_scale=req.value_scale,
-                population=(
-                    "assigned"
-                    if population == "triggered"
-                    and getattr(candidate._plan.inference, "registration", None) is not None
-                    else population
-                ),
-                by=(),
-                **overrides,
-            )
-            grain = "total"
-            breakouts = ()
-        elif operation == "run_breakout":
+        if operation == "run_breakout":
             from increment._analysis_config import normalize_display_correction
             from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
 

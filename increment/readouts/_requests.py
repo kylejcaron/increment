@@ -71,31 +71,6 @@ def _prepare_run_request(
     return selected, configs
 
 
-def _validate_run_request(
-    src: EvidenceSource,
-    *,
-    decision_method: Method | _Unset = UNSET,
-    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-    prior: Prior | None | _Unset = UNSET,
-    metrics: Sequence[str] | None = None,
-    by: Sequence[str] = (),
-    estimands: Sequence[str] | None = None,
-    value_scale: Mapping[str, ValueScale] | None = None,
-) -> list[Metric]:
-    """Validate a run request without asking the source for moments."""
-    selected, _configs = _prepare_run_request(
-        src,
-        decision_method=decision_method,
-        sensitivity_methods=sensitivity_methods,
-        prior=prior,
-        metrics=metrics,
-        by=by,
-        estimands=estimands,
-        value_scale=value_scale,
-    )
-    return selected
-
-
 def _validate_breakout_request(
     src: EvidenceSource,
     *,

@@ -958,14 +958,25 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
 def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch):
     from contextlib import contextmanager
 
+    from increment._analysis_config import UNSET
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.query.native_source import DefinitionsMomentSource
+    from increment.readouts._provider import native_scope_provider
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
+    from increment.readouts._whole_window import (
+        WholeWindowExploratoryRequest,
+        WholeWindowFamilyRequest,
+        WholeWindowRequest,
+    )
     from tests.parity_harness.comparison import nested_close
 
     con = ds.duckdb_connection()
     analysis = _analysis(con, AnalysisPlan(primary="revenue"))
     expected = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
     original = DefinitionsMomentSource.readout_snapshot
+    original_view = DefinitionsMomentSource.readout_view
     captures = []
+    views = []
 
     @contextmanager
     def snapshot(source, **kwargs):
@@ -977,10 +988,67 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
                 "UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'"
             )
 
+    def view(source, template, *, metrics):
+        result = original_view(source, template, metrics=metrics)
+        views.append(tuple(metric.name for metric in metrics))
+        if len(views) == 1:
+            cast(Any, con).raw_sql(
+                "UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'"
+            )
+        return result
+
     monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", snapshot)
+    monkeypatch.setattr(DefinitionsMomentSource, "readout_view", view)
+    context = None
     try:
-        rows = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
+        declared = WholeWindowRequest(
+            metrics=tuple(analysis._metrics),
+            estimands=None,
+            value_scale=None,
+            population=None,
+            coherence="captured",
+            decision_method=Method(name="unadjusted"),
+            sensitivity_methods=UNSET,
+            prior=UNSET,
+        )
+        added = analysis._exploratory_metrics(["rps"], caller="run")
+        exploratory = analysis._exploratory_analysis(added, caller="run")
+        extra = WholeWindowRequest(
+            metrics=tuple(added),
+            estimands=None,
+            value_scale=None,
+            population=None,
+            coherence="captured",
+            decision_method=Method(name="unadjusted"),
+            sensitivity_methods=UNSET,
+            prior=UNSET,
+        )
+        family = WholeWindowFamilyRequest(
+            declared=declared,
+            exploratory=WholeWindowExploratoryRequest(
+                request=extra,
+                reader=exploratory._whole_window(),
+            ),
+        )
+        reader = analysis._whole_window()
+        prepared = reader.prepare_family(family)
+        source = analysis._src
+        context = EvidenceExecutionContext(
+            native_scope_provider(source),
+            RunAcquisitionOwner.combined_scope(source, prepared),
+            run_id="explicit-family-owner",
+            coherence="captured",
+            shared_capture=True,
+        )
+        context.open()
+        rows = analysis._run_legacy(
+            exploratory_metrics=["rps"],
+            decision_method=Method(name="unadjusted"),
+            _execution_context=context,
+        )
+        assert context._state == "open"
         assert len(captures) == 1
+        assert len(views) >= 2
         assert nested_close(_rows(rows), _rows(expected))
         assert rows.metadata is not None
         assert len(rows.metadata.captures) == 1
@@ -992,6 +1060,8 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
         )
         assert not nested_close(_rows(changed), _rows(expected)[1:])
     finally:
+        if context is not None:
+            context.close()
         analysis.close()
         con.disconnect()
 
