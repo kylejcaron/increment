@@ -314,7 +314,6 @@ class WholeWindowReadouts:
                         else population,
                         family_population=population,
                         family_populations=populations,
-                        family_scope_metrics=tuple(request.metrics),
                         family_horizon=tuple(reader._src.context.metrics),
                         design=reader._design,
                         capture_requested=family.capture_requested,
@@ -499,7 +498,6 @@ class WholeWindowReadouts:
                     family_population=scope_population,
                     family_populations=populations,
                     family_horizon=tuple(self._src.context.metrics),
-                    family_scope_metrics=tuple(req.metrics),
                     family_uptake_facts=() if uptake is None else (uptake.fact,),
                     design=design,
                 )

@@ -38,15 +38,64 @@ def _analysis(con, *, running=False):
     return make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
 
 
-def _builder(con, tmp_path, *, triggered=False, winsorized=False, trigger_evidence=True):
+def _builder(
+    con,
+    tmp_path,
+    *,
+    triggered=False,
+    winsorized=False,
+    trigger_evidence=True,
+    separate_metric_source=False,
+):
     from increment.artifacts import SourceSnapshotEvidence
 
     definitions = ds.definitions_dict(
-        plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]), breakout=True
+        plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]),
+        breakout=not separate_metric_source,
     )
     kwargs: dict[str, Any] = {}
     if winsorized:
         definitions["metrics"][0]["winsorization"] = {"upper_percentile": 0.9}
+    if separate_metric_source:
+        event_source = definitions["fact_sources"][0]
+        purchase_fact = next(fact for fact in event_source["facts"] if fact["name"] == "purchase")
+        event_source["facts"] = [
+            fact for fact in event_source["facts"] if fact["name"] != "purchase"
+        ]
+        definitions["fact_sources"].extend(
+            (
+                {
+                    "name": "purchase_events",
+                    "sql": "SELECT * FROM events WHERE event = 'purchase'",
+                    "timestamp_column": "event_at",
+                    "entities": ["user_id"],
+                    "facts": [purchase_fact],
+                    "properties": [
+                        {
+                            "name": "store",
+                            "column": "store_id",
+                            "dtype": "string",
+                            "as_of": "static",
+                        }
+                    ],
+                },
+                {
+                    "name": "alternate_events",
+                    "sql": "SELECT * FROM alternate_events WHERE event = 'purchase'",
+                    "timestamp_column": "event_at",
+                    "entities": ["user_id"],
+                    "facts": [{"name": "alternate_purchase", "column": "revenue"}],
+                    "properties": [
+                        {
+                            "name": "store",
+                            "column": "store_id",
+                            "dtype": "string",
+                            "as_of": "static",
+                        }
+                    ],
+                },
+            )
+        )
     if triggered:
         definitions["fact_sources"][0]["facts"].append({"name": "trigger_signal", "column": None})
         definitions["exposures"].append({"name": "trigger", "fact": "trigger_signal"})
@@ -618,6 +667,47 @@ def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
             "assigned",
             "triggered",
         }
+    finally:
+        con.disconnect()
+
+
+def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_variant(tmp_path):
+    from increment.semantics.models import MeanMetric
+
+    con = ds.duckdb_connection()
+    cast(Any, con).raw_sql("CREATE TABLE alternate_events AS SELECT * FROM events")
+    experiment, resolver = _builder(con, tmp_path, triggered=True, separate_metric_source=True)
+    declared = MeanMetric.model_validate(dict(experiment.metrics["revenue"]))
+    variant = declared.model_copy(update={"fact": "alternate_purchase"})
+    scopes = (
+        Scope(view="run", grain="total", population="assigned"),
+        Scope(view="run", grain="total", population="triggered"),
+    )
+    experiment = replace(experiment, scopes=scopes)
+    options = {
+        "metrics": [variant],
+        "decision_method": Method(name="unadjusted"),
+    }
+    separate_options = {
+        "metrics": ["revenue"],
+        "decision_method": Method(name="unadjusted"),
+    }
+    try:
+        separate = [
+            run(replace(experiment, scopes=(scope,)), resolver, analysis_options=separate_options)
+            for scope in scopes
+        ]
+        actual = run(experiment, resolver, analysis_options=options)
+        assert len(actual.run.metadata.captures) == 1
+        for scope, expected in zip(scopes, separate, strict=True):
+            actual_scope = tuple(cell for cell in actual.cells if cell.identity.scope == scope)
+            assert tuple(cell.identity.key for cell in actual_scope) == tuple(
+                cell.identity.key for cell in expected.cells
+            )
+            assert nested_close(
+                [cell.to_payload()["row_payload"] for cell in actual_scope],
+                [cell.to_payload()["row_payload"] for cell in expected.cells],
+            )
     finally:
         con.disconnect()
 

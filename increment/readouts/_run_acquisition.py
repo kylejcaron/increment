@@ -40,7 +40,6 @@ class RunAcquisitionRequest:
     family_population: Literal["assigned", "triggered"] | None = None
     family_populations: tuple[Literal["assigned", "triggered"], ...] = ()
     family_horizon: tuple[Metric, ...] | None = None
-    family_scope_metrics: tuple[Metric, ...] | None = None
     family_uptake_facts: tuple[str, ...] = ()
     capture_requested: bool = False
 
@@ -123,13 +122,7 @@ class RunAcquisitionOwner:
                 uptake = getattr(request.design or source.context.design, "uptake", None)
                 uptake_facts = () if uptake is None else (uptake.fact,)
             scope = EvidenceScope(
-                metrics=(
-                    ()
-                    if omit_outcomes
-                    else tuple(selected)
-                    if request.family_scope_metrics is None
-                    else request.family_scope_metrics
-                ),
+                metrics=() if omit_outcomes else tuple(selected),
                 horizon_metrics=() if omit_outcomes else request.family_horizon,
                 population=request.family_population,
                 populations=request.family_populations,
