@@ -285,12 +285,67 @@ def _assert_selected_registered_family_capture(tmp_path):
         connection.disconnect()
 
 
+def _assert_empty_sequential_compliance(tmp_path):
+    compliance_path = tmp_path / "compliance"
+    compliance_path.mkdir()
+    connection = ibis.duckdb.connect()
+    analysis, _ = _analysis(
+        compliance_path,
+        _events(uptake=True),
+        plan=_COMPLIANCE_PLAN,
+        connection=connection,
+        encouragement=True,
+    )
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        rows = analysis.run(metrics=[], estimands=("compliance",))
+        assert rows
+        assert {row.estimand for row in rows} == {"compliance"}
+    finally:
+        analysis.close()
+        connection.disconnect()
+
+
+def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
+    from increment.store import ParquetResultsStore
+
+    experiment, resolver = from_definitions(
+        path,
+        connection,
+        experiment_name="exp",
+        source_snapshot_evidence=_CERTIFIED,
+        store="none",
+    )
+    analysis = cast(Any, resolver)._analysis
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        scoped = replace(
+            experiment,
+            scopes=(Scope(view="run", grain="total", population="triggered"),),
+        )
+        result = run(scoped, resolver)
+        assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
+        metadata = result.run.metadata
+        assert metadata is not None and metadata.partial
+        assert {(record.source_snapshot_id, record.cell) for record in metadata.cells} == {
+            (cell.identity.source_snapshot_id, cell.identity.key) for cell in result.cells
+        }
+        store = ParquetResultsStore(tmp_path / "triggered-run")
+        store.put(result.run)
+        restored_run = store.open_run(
+            result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id
+        ).run
+        assert restored_run.cells == result.run.cells
+    finally:
+        analysis.close()
+
+
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
     analysis, path = _analysis(tmp_path, _events(), connection=connection)
-    resolver_analysis = None
     moments_analysis = None
     try:
+        _assert_empty_sequential_compliance(tmp_path)
         _assert_selected_registered_family_capture(tmp_path)
         snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
@@ -325,26 +380,7 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         assert [(row.analysis_population, row.ds) for row in history] == [("triggered", _LATER)]
         assert history[0].sequential_result == triggered.require_sequential_result()
 
-        experiment, resolver = from_definitions(
-            path,
-            connection,
-            experiment_name="exp",
-            source_snapshot_evidence=_CERTIFIED,
-            store="none",
-        )
-        resolver_analysis = cast(Any, resolver)._analysis
-        resolver_analysis.capture_sequential(finalized=True, as_of=_LATER)
-        scoped = replace(
-            experiment,
-            scopes=(Scope(view="run", grain="total", population="triggered"),),
-        )
-        result = run(scoped, resolver)
-        assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
-        metadata = result.run.metadata
-        assert metadata is not None
-        assert {(record.source_snapshot_id, record.cell) for record in metadata.cells} == {
-            (cell.identity.source_snapshot_id, cell.identity.key) for cell in result.cells
-        }
+        _assert_triggered_only_store_roundtrip(tmp_path, path, connection)
         moments_path = tmp_path / "triggered-sequential.parquet"
         analysis.export(moments_path)
         moments_experiment, moments_resolver = from_moments(
@@ -369,8 +405,6 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
         assert {cell.identity.key.analysis_population for cell in combined.cells} == {"triggered"}
     finally:
-        if resolver_analysis is not None:
-            resolver_analysis.close()
         if moments_analysis is not None:
             moments_analysis.close()
         analysis.close()

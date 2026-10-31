@@ -604,7 +604,9 @@ class ReadoutMetadata(_ReadoutModel):
             for source_id, source in self.scope.by_source.items()
             for cell in source.cells
         }
-        if seen != expected:
+        if seen != expected and not (
+            self.partial and "filter" in self.partial_reason and seen.issubset(expected)
+        ):
             refuse_readout(
                 "readout.serialization.identity_mismatch",
                 source_snapshot_id=self.scope.snapshot_id,

@@ -397,7 +397,16 @@ class WholeWindowReadouts:
     ) -> LiftEstimates:
         route = self.validate(req)
         design_summary_only = _design_compliance_only(self._src.context, req.estimands)
-        if not req.metrics and not design_summary_only:
+        from increment.estimation.sequential import SEQUENTIAL_POLICIES
+        from increment.semantics.design import Encouragement
+
+        sequential_compliance = (
+            req.estimands is not None
+            and "compliance" in req.estimands
+            and isinstance(self._src.context.design, Encouragement)
+            and isinstance(self._plan.inference, SEQUENTIAL_POLICIES)
+        )
+        if not req.metrics and not design_summary_only and not sequential_compliance:
             from increment.breakout.estimates import LiftEstimates
 
             return LiftEstimates()
