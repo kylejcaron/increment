@@ -65,9 +65,9 @@ identifies the supported contrast procedure; arm estimators refuse with
 
 Builder specifications retain the compiled plan, metric configurations,
 cluster and trigger declarations, and the bound operations' accepted arguments.
-Readout operations are request declarations, not additional scope coordinates: daily
-values and daily lift can share a scope while having different compatibility
-requirements. Preflight is conservative and sound rather than complete: it reports
+Readout operations are selected through the declared scopes: daily values and
+daily lift are separate scopes even when they share time coordinates, and have
+different compatibility requirements. Preflight is conservative and sound rather than complete: it reports
 known static refusals using the execution refusal code, but does not estimate
 data-dependent conditions or guarantee that an unrefused request will execute.
 
