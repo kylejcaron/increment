@@ -505,7 +505,7 @@ depends_on = [
 [[modules]]
 path = "increment.query.artifact_ports"
 layer = "core"
-depends_on = []
+depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.query.artifact_digest"
@@ -912,6 +912,7 @@ expose = [
 [[interfaces]]
 from = ["increment.errors"]
 expose = [
+  "_BUILTIN_PROVIDER_UNAVAILABLE",
   "_freeze",
   "_thaw",
   "_safe_error_value",

@@ -7,6 +7,8 @@ from importlib.metadata import distribution
 from threading import RLock
 from typing import Any, Protocol
 
+from increment.errors import _BUILTIN_PROVIDER_UNAVAILABLE, refuse
+
 # Persisted digest identities are wire declarations, not implementation details.
 SQL_DIGEST_FORMAT = 4
 SQL_DIGEST_FORMAT_V2 = 2
@@ -102,13 +104,24 @@ def artifact_query_ports() -> ArtifactQueryPorts:
                 if entry.group == "increment.artifact_ports" and entry.name == "builtin"
             )
             if len(providers) != 1:
-                raise RuntimeError(
-                    "expected exactly one increment 'builtin' entry point in group "
-                    "'increment.artifact_ports'"
+                refuse(
+                    _BUILTIN_PROVIDER_UNAVAILABLE,
+                    feature="unit-day artifacts",
+                    group="increment.artifact_ports",
+                    provider="builtin",
+                    reason="entry_point_count",
+                    count=len(providers),
                 )
             factory = providers[0].load()
             ports = factory()
             if not isinstance(ports, ArtifactQueryPorts):
-                raise TypeError("increment artifact port factory returned an invalid contract")
+                refuse(
+                    _BUILTIN_PROVIDER_UNAVAILABLE,
+                    feature="unit-day artifacts",
+                    group="increment.artifact_ports",
+                    provider="builtin",
+                    reason="invalid_contract",
+                    count=len(providers),
+                )
             _ports = ports
         return ports

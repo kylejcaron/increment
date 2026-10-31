@@ -16,6 +16,8 @@ distribution declares the `increment.artifacts._query` adapter through its
 `increment.artifact_ports` entry point, loaded only when an artifact operation
 is requested. Keep this composition out of root imports, and preserve saved
 source identities when changing runtime implementation classes.
+Missing bundled provider declarations refuse with
+`package.builtin_provider_unavailable`; reinstall Increment to restore them.
 
 ## Custom evidence providers
 
