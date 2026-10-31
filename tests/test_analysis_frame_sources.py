@@ -30,7 +30,7 @@ from increment.semantics.models import AnalysisPlan, CupedCovariate, MeanMetric
 from increment.sources import EvidenceSource
 from tests.analysis_factory import lift_rows
 from tests.sequential_cases import registered_spec
-from tests.warning_codes import warning_codes
+from tests.warning_codes import warning_codes, warning_context
 
 
 @pytest.fixture
@@ -2201,6 +2201,8 @@ def test_from_unit_panel_windowed_metric_without_exposure_date_raises():
 def test_from_unit_panel_forwards_observation_end_censoring():
     """observation_end forwards: units enrolled too late for their window to
     close by it are censored, and dropping >10% warns."""
+    import warnings
+
     import pandas as pd
 
     base = date(2026, 1, 1)
@@ -2223,11 +2225,26 @@ def test_from_unit_panel_forwards_observation_end_censoring():
         exposure_date="exposed_on",
         observation_end=base + timedelta(days=3),
     )
-    with pytest.warns(IncrementWarning) as rec:
-        results = lift_rows(a.run())
-    assert "frame.censoring.dropped_units" in warning_codes(rec)
-    assert len(results) == 1
-    assert math.isfinite((results[0]).require_lift().value)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        a.run(coherence="live")
+    for coherence in ("live", "live", "captured"):
+        with pytest.warns(IncrementWarning) as rec:
+            (result,) = lift_rows(a.run(coherence=coherence))
+        assert warning_codes(rec) == ["frame.censoring.dropped_units"]
+        context = warning_context(rec, "frame.censoring.dropped_units")
+        assert (context["metric_name"], context["enrolled"], context["dropped"]) == (
+            "revenue",
+            10,
+            2,
+        )
+        assert (result.n_control, result.n_treat) == (4, 4)
+        assert result.require_lift().value == pytest.approx((5.0 - 4.0) / 4.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IncrementWarning)
+        with pytest.raises(IncrementWarning) as raised:
+            a.run(coherence="live")
+    assert raised.value.code == "frame.censoring.dropped_units"
 
 
 def test_frame_functions_no_longer_exported():
