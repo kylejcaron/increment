@@ -78,15 +78,33 @@ def _randomized_snapshot_id(source, request):
 
 
 def _randomized_content_digest(evidence_by_metric):
+    from collections.abc import Mapping
     from hashlib import sha256
 
     import narwhals as nw
 
     from increment._canonical import canonical_json_bytes
 
+    excluded = {
+        "fit",
+        "fit_state",
+        "fit_answer",
+        "method_fit_answers",
+        "coefficients",
+        "influence_references",
+        "source_identity",
+        "source_identity_hash",
+        "source_snapshot_id",
+        "study_id",
+        "experiment_id",
+        "artifact_id",
+        "generation_id",
+        "family_id",
+        "created_at",
+    }
+
     def input_payload(value):
         import math
-        from collections.abc import Mapping
         from datetime import date, datetime
         from enum import Enum
         from numbers import Integral, Real
@@ -94,23 +112,6 @@ def _randomized_content_digest(evidence_by_metric):
         from pydantic import BaseModel
 
         if isinstance(value, BaseModel):
-            excluded = {
-                "fit",
-                "fit_state",
-                "fit_answer",
-                "method_fit_answers",
-                "coefficients",
-                "influence_references",
-                "source_identity",
-                "source_identity_hash",
-                "source_snapshot_id",
-                "study_id",
-                "experiment_id",
-                "artifact_id",
-                "generation_id",
-                "family_id",
-                "created_at",
-            }
             payload = value.model_dump(mode="json")
             return input_payload(
                 {key: item for key, item in payload.items() if key.lower() not in excluded}
@@ -143,9 +144,11 @@ def _randomized_content_digest(evidence_by_metric):
 
     from increment.estimation.readout_types import StreamingDigest
 
-    def rows_digest(rows):
+    def rows_digest(rows, *, moment_rows=False):
         digest = StreamingDigest()
         for row in rows:
+            if moment_rows and isinstance(row, Mapping):
+                row = {key: item for key, item in row.items() if str(key).lower() not in excluded}
             digest.update(input_payload(row))
         return {"digest": digest.hexdigest(), "count": digest.count}
 
@@ -186,9 +189,9 @@ def _randomized_content_digest(evidence_by_metric):
         metric_inputs.append(
             {
                 "metric": metric,
-                "rows": rows_digest(evidence.rows),
+                "rows": rows_digest(evidence.rows, moment_rows=True),
                 "method_rows": [
-                    {"method": name, **rows_digest(rows)}
+                    {"method": name, **rows_digest(rows, moment_rows=True)}
                     for name, rows in sorted(evidence.method_rows)
                 ],
                 "method_fit_inputs": sorted(method_fit_inputs, key=canonical_json_bytes),
