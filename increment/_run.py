@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._interpretation import EffectEstimate
-from increment.errors import CodedError
+from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
 from increment.kernel.contracts import (
     BreakoutIdentity,
+    CellKey,
     CompiledPlanBinding,
     Registration,
     Scope,
@@ -16,7 +17,7 @@ from increment.kernel.contracts import (
     method_estimator_id,
     metric_hash,
 )
-from increment.result_envelope import AnalysisEnvelope, ResultCell
+from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order
 from increment.store import DecisionEvent, DecisionLog, DecisionReference, ResultsStore, Run
 from increment.store.types import RunHandle, run_digest
 
@@ -28,12 +29,29 @@ if TYPE_CHECKING:
     from increment.kernel.resolver import Resolver
 
 
+_CONTRAST_CONTEXT_NOT_PORTABLE = RefusalSpec(
+    "wire.procedure.contrast_context",
+    WireFormatError,
+    template="switchback contrast runs carry no portable arm decision plan; {action} is unavailable",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RunResult:
     cells: tuple[ResultCell, ...]
     effects: tuple[EffectEstimate | None, ...]
     decisions: Decisions
     run: Run
+
+    def __reduce__(self):
+        reason = self.run.decision_plan_unavailable_reason
+        if reason is not None:
+            raise WireFormatError(
+                "An in-memory-only decision plan cannot be serialized",
+                code=reason,
+                context={"run_id": self.run.run_id},
+            )
+        return type(self), (self.cells, self.effects, self.decisions, self.run)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,32 +174,377 @@ def _events(
     return tuple(output)
 
 
-def _execution_identity_fields(analysis: Analysis, cell: ResultCell) -> dict[str, str]:
-    metric, methods = analysis._execution_config_for_cell(cell)
+def _execution_identity_fields(
+    analysis: Analysis,
+    cell: ResultCell,
+    identity_methods: Mapping[tuple[str, str, str], Any] | None = None,
+    identity_metrics: Mapping[str, Any] | None = None,
+) -> dict[str, str | None]:
     key = cell.identity.key
-    for index, method in enumerate(methods):
-        role = "decision" if index == 0 else "sensitivity"
-        if method.name != key.method or role != key.method_role:
-            continue
-        estimator = method_estimator_id(method)
-        if estimator is None:
+    if key.metric == "uptake" and key.estimand == "compliance":
+        metric = analysis._execution_config_for_cell(cell)[0]
+    else:
+        metric = None if identity_metrics is None else identity_metrics.get(key.metric)
+    if key.kind == "contrast":
+        if metric is None:
+            metric = next((item for item in analysis._metrics if item.name == key.metric), None)
+        if metric is None:
             raise CodedError(
-                "Cell estimator has no registered execution identity",
+                "Contrast cell has no matching metric declaration",
                 code="store.run.identity_incomplete",
-                context={"field": "estimator_id"},
+                context={"field": "metric_identity"},
             )
-        method_instance_id = f"{key.metric}:{role}:{method.name}"
         return {
             "metric_hash": metric_hash(metric),
-            "estimator_id": estimator,
-            "method_config_hash": method_config_hash(method, method_instance_id=method_instance_id),
-            "method_instance_id": method_instance_id,
+            "estimator_id": None,
+            "method_config_hash": None,
+            "method_instance_id": None,
         }
-    raise CodedError(
-        "Cell method has no matching execution configuration",
-        code="store.run.identity_incomplete",
-        context={"field": "method_identity"},
+    if key.method is None and key.method_role is None:
+        if metric is None:
+            metric = analysis._execution_config_for_cell(cell)[0]
+        return {
+            "metric_hash": metric_hash(metric),
+            "estimator_id": None,
+            "method_config_hash": None,
+            "method_instance_id": None,
+        }
+    method = (
+        None
+        if identity_methods is None
+        else identity_methods.get(
+            (key.metric, key.method or "unadjusted", key.method_role or "decision")
+        )
     )
+    methods: Sequence[Any] = ()
+    if metric is None or method is None:
+        configured_metric, methods = analysis._execution_config_for_cell(cell)
+        if metric is None:
+            metric = configured_metric
+    if method is None:
+        for index, candidate in enumerate(methods):
+            role = "decision" if index == 0 else "sensitivity"
+            if candidate.name == key.method and role == key.method_role:
+                method = candidate
+                break
+    if method is None:
+        raise CodedError(
+            "Cell method has no matching execution configuration",
+            code="store.run.identity_incomplete",
+            context={"field": "method_identity"},
+        )
+    estimator = method_estimator_id(method)
+    if estimator is None:
+        raise CodedError(
+            "Cell estimator has no registered execution identity",
+            code="store.run.identity_incomplete",
+            context={"field": "estimator_id"},
+        )
+    method_instance_id = f"{key.metric}:{key.method_role}:{method.name}"
+    try:
+        config_hash = method_config_hash(method, method_instance_id=method_instance_id)
+    except CodedError as error:
+        if error.code != "kernel.method.implementation_ref_missing":
+            raise
+        config_hash = None
+    return {
+        "metric_hash": metric_hash(metric),
+        "estimator_id": estimator,
+        "method_config_hash": config_hash,
+        "method_instance_id": method_instance_id,
+    }
+
+
+def _metadata_with_cell_scales(metadata: Any, cells: Sequence[ResultCell]) -> Any:
+    """Keep retained metadata keyed by the cell identities emitted by report adapters."""
+    if metadata is None:
+        return None
+
+    cells_by_source: dict[str | None, list[CellKey]] = {}
+    for cell in cells:
+        cells_by_source.setdefault(cell.identity.source_snapshot_id, []).append(cell.identity.key)
+
+    key_map: dict[Any, Any] = {}
+    for record in metadata.cells:
+        candidates = cells_by_source.get(record.source_snapshot_id, [])
+        if record.cell in candidates:
+            key_map[record.cell] = record.cell
+            continue
+        matching = [
+            candidate
+            for candidate in candidates
+            if candidate.model_copy(update={"value_scale": None})
+            == record.cell.model_copy(update={"value_scale": None})
+        ]
+        if len(matching) == 1:
+            key_map[record.cell] = matching[0]
+    if not any(old != new for old, new in key_map.items()):
+        return metadata
+
+    def rekey(key):
+        return key_map.get(key, key)
+
+    by_source = {
+        source_id: source.model_copy(
+            update={
+                "cells": tuple(sorted({rekey(key) for key in source.cells}, key=_cell_order)),
+                "decision_cells": tuple(
+                    sorted({rekey(key) for key in source.decision_cells}, key=_cell_order)
+                ),
+            }
+        )
+        for source_id, source in metadata.scope.by_source.items()
+    }
+    scope = metadata.scope.model_copy(
+        update={
+            "cells": tuple(sorted({rekey(key) for key in metadata.scope.cells}, key=_cell_order)),
+            "decision_cells": tuple(
+                sorted({rekey(key) for key in metadata.scope.decision_cells}, key=_cell_order)
+            ),
+            "by_source": by_source,
+            "families": tuple(
+                family.model_copy(
+                    update={
+                        "members": tuple(
+                            sorted({rekey(key) for key in family.members}, key=_cell_order)
+                        )
+                    }
+                )
+                for family in metadata.scope.families
+            ),
+        }
+    )
+    records = tuple(
+        sorted(
+            (record.model_copy(update={"cell": rekey(record.cell)}) for record in metadata.cells),
+            key=lambda record: (
+                0 if record.cell.analysis_population == "assigned" else 1,
+                record.source_snapshot_id,
+                _cell_order(record.cell),
+            ),
+        )
+    )
+    return metadata.model_copy(update={"scope": scope, "cells": records})
+
+
+def _execution_overrides(
+    analysis: Analysis,
+    rows: Any,
+    options: Mapping[str, object] | None,
+    *,
+    contrast: bool,
+) -> tuple[Mapping[tuple[str, str, str], Any] | None, Mapping[str, Any] | None, bool]:
+    if contrast:
+        return None, {metric.name: metric for metric in analysis._metrics}, False
+    if not options or not any(
+        name in options
+        for name in ("decision_method", "sensitivity_methods", "metrics", "exploratory_metrics")
+    ):
+        return None, None, False
+
+    selected_metrics = options.get("metrics", ())
+    extra_metrics = (
+        tuple(
+            metric
+            for metric in selected_metrics
+            if not isinstance(metric, str)
+            and hasattr(metric, "name")
+            and hasattr(metric, "model_dump")
+        )
+        if isinstance(selected_metrics, Sequence)
+        else ()
+    )
+    exploratory_names = options.get("exploratory_metrics")
+    if exploratory_names:
+        extra_metrics += tuple(
+            analysis._exploratory_metrics(
+                cast(Sequence[str], exploratory_names),
+                caller="run",
+            )
+        )
+    identity = analysis._persistence_identity(
+        rows,
+        cast(Any, options.get("decision_method")),
+        cast(Any, options.get("sensitivity_methods", ())),
+        extra_metrics=cast(Any, extra_metrics),
+    )
+    runtime_method_unavailable = False
+    for (metric_name, _method_name, role), method in identity.methods.items():
+        if (
+            method.folds is not None
+            or method.propensity_learner is not None
+            or method.outcome_learner is not None
+        ):
+            runtime_method_unavailable = True
+            break
+        try:
+            method_config_hash(method, method_instance_id=f"{metric_name}:{role}:{method.name}")
+        except CodedError as error:
+            if error.code != "kernel.method.implementation_ref_missing":
+                raise
+            runtime_method_unavailable = True
+            break
+    return identity.methods, identity.metrics, runtime_method_unavailable
+
+
+def _scope_for_cell(cell: ResultCell, declared_scope: Scope | None) -> Scope:
+    key = cell.identity.key
+    if declared_scope is None:
+        if key.kind == "segment":
+            return Scope(
+                view="breakout",
+                grain="total",
+                population=key.analysis_population,
+                segment=(BreakoutIdentity(property=key.dimension or "", source=key.source),),
+            )
+        return Scope(
+            view="run",
+            grain="total",
+            population=key.analysis_population,
+        )
+
+    resolved_scope = cell.identity.scope
+    scope_update: dict[str, Any] = {"population": key.analysis_population}
+    if resolved_scope is not None:
+        scope_update["time_basis"] = resolved_scope.time_basis
+    raw_day = key.ds
+    day: date | None = None
+    if isinstance(raw_day, datetime):
+        day = raw_day.date()
+    elif isinstance(raw_day, date):
+        day = raw_day
+    elif isinstance(raw_day, str):
+        try:
+            day = date.fromisoformat(raw_day)
+        except ValueError:
+            try:
+                day = datetime.fromisoformat(raw_day).date()
+            except ValueError:
+                day = None
+    if isinstance(day, date):
+        scope_update["through_day"] = day
+    if key.ds_basis is not None:
+        scope_update["time_basis"] = key.ds_basis
+    row_scope = declared_scope.model_copy(update=scope_update)
+    if declared_scope.segment and key.dimension is not None:
+        row_scope = row_scope.model_copy(
+            update={"segment": (BreakoutIdentity(property=key.dimension, source=key.source),)}
+        )
+    return row_scope
+
+
+def _run_rows(
+    analysis: Analysis,
+    rows: Any,
+    registration: Registration,
+    compiled_plan: CompiledDecisionPlan | None,
+    *,
+    experiment_id: str,
+    analysis_spec_hash: str,
+    execution_identity_hash: str,
+    run_id: str,
+    results_store: ResultsStore | None = None,
+    decision_log: DecisionLog | None = None,
+    declared_scope: Scope | None = None,
+    identity_options: Mapping[str, object] | None = None,
+) -> RunResult:
+    context = analysis._state.source.context
+    contrast_context = (
+        context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
+    )
+    identity_methods, identity_metrics, runtime_method_unavailable = _execution_overrides(
+        analysis, rows, identity_options, contrast=contrast_context is not None
+    )
+    if contrast_context is not None:
+        if results_store is not None or decision_log is not None:
+            refuse(
+                _CONTRAST_CONTEXT_NOT_PORTABLE,
+                action="saving",
+            )
+        binding = None
+        binding_unavailable_reason = "wire.procedure.contrast_context"
+    else:
+        try:
+            if runtime_method_unavailable:
+                raise WireFormatError(
+                    "A runtime method has no portable implementation reference",
+                    code="wire.procedure.runtime_method",
+                    context={},
+                )
+            if compiled_plan is None:
+                raise CodedError(
+                    "A run decision plan is unavailable",
+                    code="store.run.identity_incomplete",
+                    context={"field": "compiled_plan"},
+                )
+            binding = CompiledPlanBinding.from_plan(registration, compiled_plan)
+            binding_unavailable_reason = None
+        except WireFormatError as error:
+            if (
+                error.code != "wire.procedure.runtime_method"
+                or results_store is not None
+                or decision_log is not None
+            ):
+                raise
+            binding = None
+            binding_unavailable_reason = error.code
+    created_at = datetime.now(UTC)
+    cells: list[ResultCell] = []
+    for cell in rows.as_cells(created_at=created_at):
+        row_scope = _scope_for_cell(cell, declared_scope)
+        identity = cell.identity.model_copy(
+            update={
+                **_execution_identity_fields(analysis, cell, identity_methods, identity_metrics),
+                "experiment_id": experiment_id,
+                "analysis_spec_hash": analysis_spec_hash,
+                "scope": row_scope,
+            }
+        )
+        provenance = replace(
+            cell.provenance,
+            run_id=run_id,
+            execution_identity_hash=execution_identity_hash,
+        )
+        cells.append(replace(cell, identity=identity, provenance=provenance))
+    run_record = Run(
+        experiment_id=experiment_id,
+        run_id=run_id,
+        analysis_spec_hash=analysis_spec_hash,
+        execution_identity_hash=execution_identity_hash,
+        registration_hash=registration.registration_hash,
+        expected_roster=tuple(cell.identity for cell in cells),
+        cells=tuple(cells),
+        metadata=_metadata_with_cell_scales(rows.metadata, cells),
+        captured_at=created_at,
+        committed_at=datetime.now(UTC),
+        scope_analysis_hashes=(analysis_spec_hash,),
+        cell_scope_hashes=tuple((cell.identity.hash(), analysis_spec_hash) for cell in cells),
+        decision_plan=binding,
+        decision_plan_unavailable_reason=binding_unavailable_reason,
+        empty_selection_reason="empty_metric_selection" if not cells else None,
+    )
+    if results_store is None:
+        handle: RunHandle = _InMemoryRunHandle(run_record)
+    else:
+        results_store.put(run_record)
+        handle = results_store.open_run(experiment_id, analysis_spec_hash, run_id)
+    from increment.decide import decide
+
+    decisions = decide(handle, registration, contrast_context or compiled_plan)
+    events = ()
+    if decision_log is not None:
+        assert binding is not None
+        events = _events(handle.run, decisions, binding)
+    result = RunResult(
+        cells=handle.envelope().cells,
+        effects=tuple(cell.summary for cell in handle.envelope().cells),
+        decisions=decisions,
+        run=handle.run,
+    )
+    if decision_log is not None:
+        for event in events:
+            decision_log.append(event)
+    return result
 
 
 @overload
@@ -271,6 +634,9 @@ def run(
                 code="kernel.run.resolver_missing",
                 context={},
             )
+        result_factory_setter = getattr(selected_resolver, "set_run_result_factory", None)
+        if callable(result_factory_setter):
+            result_factory_setter(_run_rows)
         return run_experiment(
             exp, cast("Resolver", selected_resolver), options=dict(analysis_options or {})
         )
@@ -296,72 +662,20 @@ def run(
             context={},
         )
     _validate_analysis_binding(analysis, registration, compiled_plan, analysis_options)
-    binding = CompiledPlanBinding.from_plan(registration, compiled_plan)
+    if results_store is not None or decision_log is not None:
+        # Check wire portability before Analysis.run() can read the source.
+        CompiledPlanBinding.from_plan(registration, compiled_plan)
     execute = cast(Callable[..., Any], analysis.run)
     rows = execute(**dict(analysis_options or {}))
-    created_at = datetime.now(UTC)
-    cells: list[ResultCell] = []
-    for cell in rows.as_cells(created_at=created_at):
-        key = cell.identity.key
-        scope = (
-            Scope(
-                view="breakout",
-                grain="total",
-                population=key.analysis_population,
-                segment=(BreakoutIdentity(property=key.dimension or "", source=key.source),),
-            )
-            if key.kind == "segment"
-            else Scope(
-                view="run",
-                grain="total",
-                population=key.analysis_population,
-            )
-        )
-        identity = cell.identity.model_copy(
-            update={
-                **_execution_identity_fields(analysis, cell),
-                "experiment_id": experiment_id,
-                "analysis_spec_hash": analysis_spec_hash,
-                "scope": scope,
-            }
-        )
-        provenance = replace(
-            cell.provenance,
-            run_id=run_id,
-            execution_identity_hash=execution_identity_hash,
-        )
-        cells.append(replace(cell, identity=identity, provenance=provenance))
-    run_record = Run(
+    return _run_rows(
+        analysis,
+        rows,
+        registration,
+        compiled_plan,
         experiment_id=experiment_id,
-        run_id=run_id,
         analysis_spec_hash=analysis_spec_hash,
         execution_identity_hash=execution_identity_hash,
-        registration_hash=registration.registration_hash,
-        expected_roster=tuple(cell.identity for cell in cells),
-        cells=tuple(cells),
-        metadata=rows.metadata,
-        captured_at=created_at,
-        committed_at=datetime.now(UTC),
-        scope_analysis_hashes=(analysis_spec_hash,),
-        cell_scope_hashes=tuple((cell.identity.hash(), analysis_spec_hash) for cell in cells),
-        decision_plan=binding,
+        run_id=run_id,
+        results_store=results_store,
+        decision_log=decision_log,
     )
-    if results_store is None:
-        handle: RunHandle = _InMemoryRunHandle(run_record)
-    else:
-        results_store.put(run_record)
-        handle = results_store.open_run(experiment_id, analysis_spec_hash, run_id)
-    from increment.decide import decide
-
-    decisions = decide(handle, registration)
-    events = () if decision_log is None else _events(handle.run, decisions, binding)
-    result = RunResult(
-        cells=handle.envelope().cells,
-        effects=tuple(cell.summary for cell in handle.envelope().cells),
-        decisions=decisions,
-        run=handle.run,
-    )
-    if decision_log is not None:
-        for event in events:
-            decision_log.append(event)
-    return result

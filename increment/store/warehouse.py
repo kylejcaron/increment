@@ -50,6 +50,13 @@ class WarehouseResultsStore:
     def put(self, run: Run) -> None:
         from increment.result_envelope import AnalysisEnvelope
 
+        if run.empty_selection_reason is not None:
+            refuse_store(
+                "store.run.empty",
+                "An empty metric selection cannot be saved",
+                reason=run.empty_selection_reason,
+            )
+
         name = self._name(run.experiment_id, run.analysis_spec_hash, run.run_id)
         if name in self.backend.list_tables(database=self.schema):
             refuse_store(

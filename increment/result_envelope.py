@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType
-from typing import Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 import pyarrow as pa
 from pydantic import BaseModel
@@ -19,8 +19,17 @@ from increment._interpretation import EffectEstimate, project_effect
 from increment.errors import CodedError
 from increment.estimation._fcr_reinterval import Construction, classify, reinterval_selected
 from increment.estimation.readout_types import FamilyScope, ReadoutMetadata
+from increment.estimation.readout_types import cell_order as _readout_cell_order
 from increment.estimation.results import LiftEstimate
 from increment.kernel.contracts import CellIdentity
+
+
+def _cell_order(cell: Any) -> bytes:
+    return _readout_cell_order(cell)
+
+
+if TYPE_CHECKING:
+    from increment._run import RunResult
 
 _SCHEMA_VERSION = 3
 _METADATA_KEY = b"increment.readout_metadata"
@@ -1799,7 +1808,16 @@ def _report_detail(cell: ResultCell) -> str | None:
     return f"{report}; control={control}" if control is not None else str(report)
 
 
-def render(envelope: AnalysisEnvelope, audience: Literal["brief", "full"] = "brief") -> str:
+def render(
+    envelope: AnalysisEnvelope | RunResult, audience: Literal["brief", "full"] = "brief"
+) -> str:
+    if not isinstance(envelope, AnalysisEnvelope):
+        run = getattr(envelope, "run", None)
+        cells = getattr(envelope, "cells", None)
+        if run is not None and cells is not None and hasattr(run, "metadata"):
+            envelope = AnalysisEnvelope(cells, run.metadata)
+        else:
+            envelope = cast(AnalysisEnvelope, envelope)
     if audience not in {"brief", "full"}:
         raise CodedError(
             "Unsupported result rendering audience",

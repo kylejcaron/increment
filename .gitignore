@@ -52,6 +52,7 @@ htmlcov/
 /increment_moments.parquet
 /examples/realistic_demo/warehouse/
 .increment-kernel-catalog.json
+.increment-kernel-catalog.json.lock
 
 # Local project tooling
 .kata.local.toml

@@ -59,9 +59,9 @@ change without notice.
   analysis and its recorded evidence declarations; `runnable()` reports offline
   unknowns and deferred data checks. Additive module builders `from_frame`,
   `from_definitions`, `from_unit_day_artifact`, `from_switchback_frame`, and
-  `from_moments` return an experiment/resolver pair. Existing `Analysis`
-  constructors and `run(analysis, registration, compiled_plan, ...)` remain
-  available. See the [experiment specification guide](guides/experiment-specifications.md).
+  `from_moments` return an experiment/resolver pair. Top-level
+  `run(experiment, resolver)` returns `RunResult`; legacy `Analysis.run()` keeps
+  its result type. See the [experiment specification guide](guides/experiment-specifications.md).
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

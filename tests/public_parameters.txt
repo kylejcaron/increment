@@ -10,6 +10,7 @@ append: Value appended to a sequential checkpoint.
 ard: Target value used by conditional-effect analysis.
 arm: Label identifying an assignment arm.
 arm_order: Ordered assignment arms associated with a fitted adjustment.
+audience: Amount of detail to include when rendering result qualifications.
 as_of: Look or time at which to evaluate results.
 assignment: Declared assignment schedule.
 assignment_counts: Counts by arm used to check allocation.

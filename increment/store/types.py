@@ -9,6 +9,7 @@ from typing import Protocol, cast
 import pyarrow as pa
 
 from increment._canonical import canonical_json_bytes
+from increment.errors import WireFormatError
 from increment.estimation.readout_types import ReadoutMetadata
 from increment.kernel.contracts import (
     BreakoutIdentity,
@@ -45,6 +46,8 @@ class Run:
     _normalized_metadata_sha256: str | None = dataclass_field(
         default=None, repr=False, compare=False
     )
+    decision_plan_unavailable_reason: str | None = None
+    empty_selection_reason: str | None = None
 
     def __post_init__(self) -> None:  # noqa: C901
         for field in ("experiment_id", "run_id", "analysis_spec_hash", "execution_identity_hash"):
@@ -70,11 +73,14 @@ class Run:
             )
         expected = tuple(identity.hash() for identity in self.expected_roster)
         actual = tuple(cell.identity.hash() for cell in self.cells)
+        empty_selection = not expected and not actual
         if (
-            not expected
+            bool(expected) != bool(actual)
             or len(set(expected)) != len(expected)
             or len(set(actual)) != len(actual)
             or set(expected) != set(actual)
+            or (empty_selection and self.empty_selection_reason != "empty_metric_selection")
+            or (not empty_selection and self.empty_selection_reason is not None)
         ):
             refuse_store(
                 "store.run.roster_mismatch",
@@ -150,16 +156,25 @@ class Run:
                 )
             if self.manifest_version < 3:
                 object.__setattr__(self, "manifest_version", 3)
+        if self.decision_plan_unavailable_reason is not None:
+            if self.decision_plan is not None or self.decision_plan_unavailable_reason not in {
+                "wire.procedure.runtime_method",
+                "wire.procedure.contrast_context",
+            }:
+                refuse_store(
+                    "store.run.identity_mismatch",
+                    "Decision plan portability reason does not match the run",
+                )
         scopes = self.scope_analysis_hashes or (self.analysis_spec_hash,)
         if len(set(scopes)) != len(scopes) or not scopes or (self.analysis_spec_hash not in scopes):
             refuse_store("store.run.scope_manifest_invalid", "Run scope manifest is invalid")
         object.__setattr__(self, "scope_analysis_hashes", tuple(scopes))
         mapping = dict(self.cell_scope_hashes)
         if (
-            not self.cell_scope_hashes
-            or len(mapping) != len(self.cell_scope_hashes)
+            len(mapping) != len(self.cell_scope_hashes)
             or set(mapping) != set(actual)
             or not set(mapping.values()) <= set(scopes)
+            or (not mapping and self.empty_selection_reason != "empty_metric_selection")
         ):
             refuse_store(
                 "store.run.scope_mapping_invalid",
@@ -173,9 +188,9 @@ class Run:
                     "Cell analysis identity disagrees with scope manifest",
                     field="analysis_spec_hash",
                 )
-        if self.metadata is None:
+        if self.metadata is None and not empty_selection:
             refuse_store("store.run.metadata_mismatch", "Complete run metadata is required")
-        if not callable(getattr(self.metadata, "model_dump", None)):
+        if self.metadata is not None and not callable(getattr(self.metadata, "model_dump", None)):
             refuse_store(
                 "store.run.metadata_mismatch", "Run metadata must support its portable schema"
             )
@@ -187,16 +202,8 @@ class Run:
                 "store.run.metadata_mismatch",
                 "Metadata records must correspond one-to-one with stored cells",
             )
-        scope = getattr(self.metadata, "scope", None)
-        if scope is not None:
-            for family in scope.families:
-                family_keys = {(family.source_snapshot_id, key) for key in family.members}
-                if not family_keys <= set(cell_keys):
-                    refuse_store(
-                        "store.run.metadata_mismatch",
-                        "Family members must resolve to stored cells",
-                        family_id=family.family_id,
-                    )
+        # Selected views keep the complete declared family roster in metadata;
+        # decide() represents members absent from the selected cells as not_evaluated.
 
     @property
     def source_content_digest(self) -> str | None:
@@ -219,10 +226,14 @@ class Run:
 
     @property
     def artifact_manifest_sha256(self) -> str | None:
+        if not self.cells:
+            return None
         return self.cells[0].provenance.artifact_manifest_sha256
 
     @property
     def artifact_relation_digests(self) -> tuple[tuple[str, str], ...]:
+        if not self.cells:
+            return ()
         return self.cells[0].provenance.artifact_relation_digests
 
     @property
@@ -241,14 +252,23 @@ class Run:
         return self._manifest_hash(self._metadata_sha256())
 
     def _metadata_sha256(self) -> str:
+
+        if self.metadata is None:
+            refuse_store("store.run.metadata_mismatch", "Complete run metadata is required")
         return (
             "sha256:"
             + hashlib.sha256(
-                canonical_json_bytes(cast(ReadoutMetadata, self.metadata).model_dump(mode="json"))
+                canonical_json_bytes(self.metadata.model_dump(mode="json"))
             ).hexdigest()
         )
 
     def _manifest_hash(self, metadata_sha256: str) -> str:
+        if self.decision_plan_unavailable_reason is not None:
+            raise WireFormatError(
+                "An in-memory-only decision plan cannot be serialized",
+                code=self.decision_plan_unavailable_reason,
+                context={"run_id": self.run_id},
+            )
         payload: dict[str, object] = {
             "manifest_version": self.manifest_version,
             "experiment_id": self.experiment_id,

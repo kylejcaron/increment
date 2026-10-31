@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Any, Literal, Protocol, cast
 
 from increment.errors import CodedError
-from increment.kernel.contracts import CompiledPlanBinding, Registration
+from increment.kernel.contracts import CompiledPlanBinding, Registration, contract_hash
 from increment.result_envelope import combine_family_evidence, family_evidence
 from increment.store._refusals import refuse_store
-from increment.store.types import RunHandle
+from increment.store.types import Run, RunHandle
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,32 +66,193 @@ def _integrity_by_scope(metadata: object, source_id: str | None) -> tuple[str, .
     return tuple(f"integrity.{status}" for status in bad)
 
 
-def decide(handle: RunHandle, registration: Registration, plan: object | None = None) -> Decisions:  # noqa: C901, PLR0915
-    """Evaluate only the immutable evidence and manifest pinned by a RunHandle."""
-    run = handle.run
-    if run.registration_hash != registration.registration_hash:
-        refuse_store(
-            "store.decision.reference_invalid",
-            "Run registration differs from decision registration",
-            run_id=run.run_id,
+class _DecisionPlan(Protocol):
+    procedures: Mapping[str, Any]
+
+
+def _validated_plan(
+    run: Run,
+    registration: Registration,
+    plan: object | None,
+) -> _DecisionPlan:
+    if run.decision_plan is not None:
+        bound_plan = run.decision_plan.validate(registration)
+        if plan is not None and (
+            CompiledPlanBinding.from_plan(registration, plan).canonical_payload()
+            != run.decision_plan.canonical_payload()
+        ):
+            refuse_store(
+                "store.decision.reference_invalid",
+                "Supplied plan differs from the run's bound compiled plan",
+                run_id=run.run_id,
+            )
+        return cast(_DecisionPlan, bound_plan)
+
+    reason = run.decision_plan_unavailable_reason
+    if reason == "wire.procedure.contrast_context":
+        model_dump = getattr(plan, "model_dump", None)
+        matches = (
+            hasattr(plan, "study")
+            and hasattr(plan, "procedures")
+            and callable(model_dump)
+            and registration.registration_hash
+            == contract_hash("registration", model_dump(mode="json"))
         )
-    if run.decision_plan is None:
+    else:
+        matches = (
+            reason == "wire.procedure.runtime_method"
+            and plan is not None
+            and registration.matches(plan)
+        )
+    if not matches:
         refuse_store(
             "store.decision.reference_invalid",
             "Run has no bound compiled decision plan",
             run_id=run.run_id,
         )
-    bound_plan = run.decision_plan.validate(registration)
-    if plan is not None and (
-        CompiledPlanBinding.from_plan(registration, plan).canonical_payload()
-        != run.decision_plan.canonical_payload()
+    return cast(_DecisionPlan, plan)
+
+
+def _contrast_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
+    from importlib import import_module
+
+    payload = cell.row_payload
+    data = None if payload is None else payload.get("data")
+    if not isinstance(data, Mapping):
+        refuse_store(
+            "store.decision.reference_invalid",
+            "Contrast result payload is unavailable",
+            run_id=cell.provenance.run_id,
+        )
+    result_type = cast(Any, import_module("increment.estimation.contrast_results")).ContrastResult
+    result = result_type.model_validate(data)
+    procedure = procedures.get(cell.identity.key.metric)
+    if procedure is None or (
+        result.metric != procedure.metric
+        or result.role != procedure.role
+        or result.alternative != procedure.alternative
+        or result.null_abs != procedure.null_abs
+        or result.alpha != procedure.alpha
     ):
         refuse_store(
             "store.decision.reference_invalid",
-            "Supplied plan differs from the run's bound compiled plan",
-            run_id=run.run_id,
+            "Contrast result differs from its registered decision procedure",
+            run_id=cell.provenance.run_id,
         )
-    plan = bound_plan
+    contrast = import_module("increment.estimation.contrast")
+    available = contrast.contrast_evidence_available(result)
+    in_scope = result.decision_scope_complete is not False
+    status: Literal["reject", "retain", "not_evaluated"] = (
+        "not_evaluated"
+        if not available or not in_scope
+        else "reject"
+        if contrast.contrast_stat_sig(result)
+        else "retain"
+    )
+    reason_codes = (
+        (result.decision_scope_reason_code or "decision.scope.incomplete",)
+        if not in_scope
+        else ("evidence.p_value.unavailable",)
+        if not available
+        else ()
+    )
+    return Verdict(
+        cell.identity.hash(),
+        str(getattr(procedure.role, "value", procedure.role)),
+        status,
+        None,
+        reason_codes,
+        None,
+        "nonmember",
+    )
+
+
+def _report_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict:
+    row = cell._projection_row()
+
+    procedure = procedures.get(cell.identity.key.metric)
+    if (
+        row is None
+        or procedure is None
+        or row.metric != procedure.metric
+        or row.method != cell.identity.key.method
+        or row.alternative != procedure.alternative
+        or getattr(row, "null_lift", 0.0) != procedure.null_lift
+        or getattr(row, "null_abs", None) != getattr(procedure, "null_abs", None)
+    ):
+        refuse_store(
+            "store.decision.reference_invalid",
+            "Report estimate differs from its registered decision procedure",
+            run_id=cell.provenance.run_id,
+        )
+    stat_sig = row.stat_sig()
+    available = stat_sig is not None
+    in_scope = getattr(row, "decision_scope_complete", None) is not False
+    status: Literal["reject", "retain", "not_evaluated"] = (
+        "not_evaluated" if not available or not in_scope else "reject" if stat_sig else "retain"
+    )
+    reason_codes = (
+        (getattr(row, "decision_scope_reason_code", None) or "decision.scope.incomplete",)
+        if not in_scope
+        else (getattr(row, "sampling_reason_code", None) or "evidence.p_value.unavailable",)
+        if not available
+        else ()
+    )
+    return Verdict(
+        cell.identity.hash(),
+        str(getattr(procedure.role, "value", procedure.role)),
+        status,
+        getattr(row, "discovery", None),
+        reason_codes,
+        cell.family.family_id if cell.family is not None else None,
+        "member" if cell.family is not None else "nonmember",
+    )
+
+
+def _special_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict | None:
+    if cell.row_kind in {"breakout", "daily_lift", "asof_lift"}:
+        return _report_verdict(cell, procedures)
+    if cell.identity.key.kind == "contrast":
+        return _contrast_verdict(cell, procedures)
+    return None
+
+
+def _scope_verdict(cell: Any, procedures: Mapping[str, Any]) -> Verdict | None:
+    key = cell.identity.key
+    scope = cell.identity.scope
+    if scope is not None and scope.view in {"daily", "asof", "breakout"}:
+        reason = "decision.not_evaluated.monitoring_view"
+    elif key.estimand == "compliance":
+        reason = "decision.not_evaluated.monitoring_view"
+    elif key.method_role != "decision":
+        reason = "decision.not_evaluated.exploratory_view"
+    elif key.metric not in procedures:
+        reason = "decision.not_evaluated.exploratory_view"
+    else:
+        return None
+
+    payload = cell.row_payload
+    data = None if payload is None else payload.get("data")
+    role = key.method_role
+    if isinstance(data, Mapping) and "role" in data:
+        role = data["role"]
+    elif cell.row_kind == "lift_estimate":
+        retained = cell.components["sampling"][1]
+        if retained is not None and "role" in retained.fields:
+            role = retained.fields["role"]
+    role = getattr(role, "value", role)
+    return Verdict(
+        cell.identity.hash(),
+        None if role is None else str(role),
+        "not_evaluated",
+        None,
+        (reason,),
+        None if cell.family is None else cell.family.family_id,
+        "nonmember" if cell.family is None else "member",
+    )
+
+
+def _validated_envelope(run: Run, handle: RunHandle) -> Any:
     envelope = handle.envelope()
     if tuple(cell.identity.hash() for cell in envelope.cells) != tuple(
         cell.identity.hash() for cell in run.cells
@@ -112,15 +274,143 @@ def decide(handle: RunHandle, registration: Registration, plan: object | None = 
             "Run handle contains evidence outside its pinned manifest",
             run_id=run.run_id,
         )
+    return envelope
+
+
+def _missing_decision_roles(
+    metadata: Any, cells: tuple[Any, ...], procedures: Mapping[str, Any]
+) -> set[str]:
+    whole_window_run = any(
+        cell.identity.key.estimand != "compliance"
+        and (cell.identity.scope is None or cell.identity.scope.view in {"run", "switchback"})
+        for cell in cells
+    )
+    if not whole_window_run or metadata is None or metadata.scope is None:
+        return set()
+
+    source_ids = set(metadata.scope.by_source) or {
+        cell.identity.source_snapshot_id for cell in cells
+    }
+    decision_roles = {
+        metric: str(getattr(procedure.role, "value", procedure.role))
+        for metric, procedure in procedures.items()
+        if str(getattr(procedure.role, "value", procedure.role)) in {"primary", "guardrail"}
+    }
+    cells_by_source_population: dict[tuple[str | None, str], set[str]] = {}
+    for cell in cells:
+        key = cell.identity.key
+        if key.method_role != "decision" or key.estimand == "compliance":
+            continue
+        cells_by_source_population.setdefault(
+            (cell.identity.source_snapshot_id, key.analysis_population), set()
+        ).add(key.metric)
+
+    present = {(cell.identity.source_snapshot_id, cell.identity.key) for cell in cells}
+    missing_roles: set[str] = set()
+    decision_populations: set[tuple[str | None, str]] = set()
+    for source_id in source_ids:
+        source_scope = metadata.scope.by_source.get(source_id)
+        source_keys = (
+            source_scope.decision_cells
+            if source_scope is not None
+            else tuple(
+                cell.identity.key for cell in cells if cell.identity.source_snapshot_id == source_id
+            )
+        )
+        relevant_keys = tuple(
+            key
+            for key in source_keys
+            if key.method_role == "decision"
+            and key.estimand != "compliance"
+            and key.metric in decision_roles
+        )
+        if not relevant_keys:
+            relevant_keys = tuple(
+                cell.identity.key
+                for cell in cells
+                if cell.identity.source_snapshot_id == source_id
+                and cell.identity.key.method_role == "decision"
+                and cell.identity.key.estimand != "compliance"
+                and cell.identity.key.metric in decision_roles
+            )
+        decision_populations.update((source_id, key.analysis_population) for key in relevant_keys)
+        if source_scope is not None:
+            for key in source_scope.decision_cells:
+                if (
+                    key.method_role != "decision"
+                    or key.estimand == "compliance"
+                    or (source_id, key) in present
+                ):
+                    continue
+                role = decision_roles.get(key.metric)
+                if role is not None:
+                    missing_roles.add(role)
+
+    for source_id, population in decision_populations:
+        actual_metrics = cells_by_source_population.get((source_id, population), set())
+        for metric, role in decision_roles.items():
+            if metric not in actual_metrics:
+                missing_roles.add(role)
+    return missing_roles
+
+
+def _decision_integrity_reasons(
+    metadata: Any,
+    cells: tuple[Any, ...],
+    verdicts: Mapping[tuple[str | None, str], Verdict],
+) -> tuple[str, ...]:
+    decision_sources = set()
+    for cell in cells:
+        key = cell.identity.key
+        scope = cell.identity.scope
+        if (
+            key.method_role != "decision"
+            or key.estimand == "compliance"
+            or (scope is not None and scope.view not in {"run", "switchback"})
+        ):
+            continue
+        verdict = verdicts.get((cell.identity.source_snapshot_id, cell.identity.hash()))
+        if verdict is not None and verdict.role in {"primary", "guardrail"}:
+            decision_sources.add(cell.identity.source_snapshot_id)
+    return tuple(
+        sorted(
+            {
+                reason
+                for source_id in decision_sources
+                for reason in _integrity_by_scope(metadata, source_id)
+            }
+        )
+    )
+
+
+def decide(handle: RunHandle, registration: Registration, plan: object | None = None) -> Decisions:  # noqa: PLR0915
+    """Evaluate only the immutable evidence and manifest pinned by a RunHandle."""
+    run = handle.run
+    if run.registration_hash != registration.registration_hash:
+        refuse_store(
+            "store.decision.reference_invalid",
+            "Run registration differs from decision registration",
+            run_id=run.run_id,
+        )
+    plan = _validated_plan(run, registration, plan)
+    envelope = _validated_envelope(run, handle)
 
     verdicts: dict[tuple[str | None, str], Verdict] = {}
     for cell in envelope.cells:
+        verdict = _scope_verdict(cell, plan.procedures)
+        if verdict is not None:
+            verdicts[(cell.identity.source_snapshot_id, cell.identity.hash())] = verdict
+            continue
+        key = cell.identity.key
+        procedure = plan.procedures[key.metric]
+        special = _special_verdict(cell, plan.procedures)
+        if special is not None:
+            verdicts[(cell.identity.source_snapshot_id, cell.identity.hash())] = special
+            continue
+
         status, retained = cell.components["sampling"]
         row = cell.retained_row() if retained is not None else None
-        procedure = plan.procedures.get(cell.identity.key.metric)
-        declared_role = (
-            None if procedure is None else getattr(procedure.role, "value", procedure.role)
-        )
+        declared_role = getattr(procedure.role, "value", procedure.role)
         role = (
             declared_role
             if row is None or row.role is None
@@ -313,30 +603,8 @@ def decide(handle: RunHandle, registration: Registration, plan: object | None = 
         for verdict in verdicts.values()
         if verdict.role == "guardrail" and verdict.identity_hash in decision_hashes
     ]
-    missing_roles: set[str] = set()
-    if metadata is not None and metadata.scope is not None:
-        present = {(cell.identity.source_snapshot_id, cell.identity.key) for cell in envelope.cells}
-        for source_id, source_scope in metadata.scope.by_source.items():
-            for key in source_scope.decision_cells:
-                if key.method_role != "decision" or (source_id, key) in present:
-                    continue
-                procedure = plan.procedures.get(key.metric)
-                role = (
-                    None
-                    if procedure is None
-                    else str(getattr(procedure.role, "value", procedure.role))
-                )
-                if role in {"primary", "guardrail"}:
-                    missing_roles.add(role)
-    integrity_reasons = tuple(
-        sorted(
-            {
-                reason
-                for cell in envelope.cells
-                for reason in _integrity_by_scope(metadata, cell.identity.source_snapshot_id)
-            }
-        )
-    )
+    missing_roles = _missing_decision_roles(metadata, envelope.cells, plan.procedures)
+    integrity_reasons = _decision_integrity_reasons(metadata, envelope.cells, verdicts)
     reasons = list(integrity_reasons)
     if (
         "primary" not in roles

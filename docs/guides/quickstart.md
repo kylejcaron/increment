@@ -1,35 +1,37 @@
 # A/B testing in Python: quickstart
 
 Analyze a randomized experiment from a dataframe. Start with one row per
-user, store, or other analysis unit. No YAML, warehouse connection, or
-DuckDB installation is needed.
+user, store, or other analysis unit. The dataframe examples need no YAML,
+warehouse connection, or DuckDB installation.
 
 ```bash
 pip install increment polars
 ```
 
 The examples use Polars. Any eager dataframe supported by
-[Narwhals](https://narwhals-dev.github.io/narwhals/) works, including
-pandas and PyArrow.
+[Narwhals](https://narwhals-dev.github.io/narwhals/) works, including pandas
+and PyArrow.
 
-## One row per randomization unit
+## Build and run an experiment
 
 Your dataframe needs one row per unit, a group column, and one column per
 metric. If multiple units share a randomization cluster, pass `cluster=`.
-For unit-by-day data, use [`Analysis.from_unit_panel`](#one-row-per-unit-per-day).
+For unit-by-day data, use the panel shape described below.
 
-The example below samples each unit's assignment independently with
-probability 0.5, then declares that same assignment law. Revenue is the
-primary metric; complaints are a guardrail. The first dataframe deliberately
-has no usable treatment-arm complaint observations, simulating a source-data
-gap rather than treating missing outcomes as zero.
+This example samples assignment independently with probability 0.5, then
+declares the same assignment law. Revenue is the primary metric; complaints
+are a guardrail. Treatment-arm complaint values are missing to show how the
+result reports a guardrail that cannot be checked.
 
 ```python
 from random import Random
+import warnings
 
 import polars as pl
 
-from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
+from increment import AnalysisPlan, MetricSpec, Randomized, from_frame, render, run, runnable
+from increment.errors import IncrementWarning
+
 
 rng = Random(7)
 n = 500
@@ -47,189 +49,171 @@ df = pl.DataFrame(
         ],
     }
 )
-```
 
-## Declare the design and metrics
-
-Always declare the control explicitly. `allocation` names the actual
-assignment probabilities; `allocation_scheme="independent"` is correct here
-because the generator used independent Bernoulli assignments. Do not declare
-this law for blocked or otherwise constrained assignment.
-
-For a floating-point column, a bare name infers a mean; a boolean column
-infers a conversion. Use `MetricSpec` to set options such as missing-value
-handling, or to explicitly choose the meaning of an integer column.
-
-```python
-import warnings
-
-from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
-
-design = Randomized(
-    control_group="control",
-    allocation={"control": 0.5, "treatment": 0.5},
-    allocation_scheme="independent",
-)
-plan = AnalysisPlan(primary="revenue", guardrails=["complaints"])
-metrics = [
-    "revenue",
-    MetricSpec(
-        name="complaints", type="conversion", missing="drop", preferred_direction="decrease"
-    ),
-]
-with warnings.catch_warnings(record=True) as analysis_warnings:
-    warnings.simplefilter("always")
-    analysis = Analysis.from_unit_summary(
+with warnings.catch_warnings(record=True) as data_warnings:
+    warnings.simplefilter("always", IncrementWarning)
+    exp, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
-        design=design,
-        metrics=metrics,
-        plan=plan,
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[
+            "revenue",
+            MetricSpec(
+                name="complaints",
+                type="conversion",
+                missing="drop",
+                preferred_direction="decrease",
+            ),
+        ],
+        plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
     )
-    results = analysis.run()
-for captured_warning in analysis_warnings:
-    print(f"Warning: {captured_warning.message}")
-print(results)
+    runnable(exp, "revenue")  # Static check only; it does not read the dataframe.
+    result = run(exp, resolver)
+for warning in data_warnings:
+    print(warning.message)
+print(render(result, "brief"))
 ```
 
-<!-- output -->
-```text
-Warning: metric 'complaints': missing='drop' excludes rows with 537 null/NaN value(s) from this metric's moments (complete-case). This is unbiased only when missingness is unrelated to the values; if null means "no events", missing='zero' keeps every unit.
-assigned — treatment vs control
-revenue: control → treatment; n control=463; n treatment=537; mean control=9.94656; mean treatment=11.0983; effect=11.5788%; interval=[6.21892, 17.2092]%; estimand=itt; stat_sig=True
-revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
-revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
-revenue additive effect: 1.15169, set [0.638286, 1.6651].
-revenue test alternative: two-sided; null (relative lift): 0.
-revenue result identity: method unadjusted; method role decision; estimand itt.
-complaints: control → treatment; estimand=itt; stat_sig=unavailable
-complaints test alternative: less; null (relative lift): 0.
-complaints result identity: method unadjusted; method role decision; estimand itt.
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Decision scope completeness: incomplete.
-Required cells: 2; available: 1.
-Unavailable complaints: Metric complaints has no usable observations for arm treatment (arms with observations: control); check the metric's missing-value policy and the values available in that arm, then correct the data or policy and rerun
-Multiplicity (primary): declared_plan; family primary.
-Multiplicity (guardrail): declared_plan; family guardrail.
-```
+The missing-data warning is surfaced above the rendered report, not discarded:
+it explains that the selected missing-value policy changes the metric's
+population. The report separately keeps the guardrail unavailable and states
+what the remaining evidence does and does not establish.
 
-This is a complete-case warning: dropping rows is unbiased only when
-missingness is unrelated to outcomes; use `missing="zero"` only when null
-means no events.
+`exp` describes the experiment and can be saved with `exp.to_json()` or
+identified with `exp.hash()`. It does not hold a live dataframe. `resolver`
+binds the dataframe when `run` reads evidence; if its contents no longer match
+the declared source, the run is refused. `runnable` checks known
+incompatibilities across every declared view without reading data. It is
+sound, not complete: no refusal does not guarantee the run will succeed,
+because some checks need data. `run` currently accepts one declared view at a
+time; separate calls can read changed data.
 
-The relative lift is about 11.6%; the additive effect is about 1.15 revenue
-units. The interval describes uncertainty about the effect, not the range
-containing 95% of users. `not_rejected` means this check found no mismatch;
-it does not prove valid randomization. The guardrail has no usable treatment
-observations, so the required decision scope is incomplete; absence is not
-evidence of no increase. Both declared metrics retain their roles: revenue is
-primary, and complaints is a guardrail. Only a metric outside the declared
-plan is labelled `exploratory_unadjusted`.
+The rendered result keeps unavailable guardrails, checks that were not
+completed, and limits on what the data can establish visible. A missing
+guardrail is not evidence of safety or no effect. `not_rejected` means no
+mismatch was detected; it does not prove the assignment was valid.
 
 ## Recover the unavailable guardrail
 
-Repair the source so the treatment-arm observations are present, then rerun.
-Here the full generated values stand in for the corrected source; in practice,
-resolve why observations were missing and choose a missing-value policy that
-matches the metric's meaning.
+Repair the source so treatment-arm observations are present, then rebuild and
+run the experiment. Here the generated values stand in for the corrected
+source; in practice, resolve why observations were missing and choose a
+missing-value policy that matches the metric's meaning.
 
 ```python
 recovered_df = df.with_columns(pl.Series("complaints", complaints))
-recovered = Analysis.from_unit_summary(
+recovered_exp, recovered_resolver = from_frame(
     recovered_df,
+    shape="summary",
     unit="user_id",
     group="variant",
-    design=design,
-    metrics=metrics,
-    plan=plan,
-).run()
-print(recovered)
-```
-
-```text
-assigned — treatment vs control
-revenue: control → treatment; n control=463; n treatment=537; mean control=9.94656; mean treatment=11.0983; effect=11.5788%; interval=[6.21892, 17.2092]%; estimand=itt; stat_sig=True
-revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
-revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
-revenue additive effect: 1.15169, set [0.638286, 1.6651].
-revenue test alternative: two-sided; null (relative lift): 0.
-revenue result identity: method unadjusted; method role decision; estimand itt.
-complaints: control → treatment; effect=-13.7803%; interval=[-100, 66.6805]%; estimand=itt; stat_sig=False
-complaints (guardrail, relative lift): -0.137803, set [-1, 0.666805] at 0.9 confidence.
-complaints interpretation: does not reject; inconclusive, not evidence of no effect.
-complaints additive effect: -0.00535734, set [-0.0249109, 0.0141962].
-complaints binomial set upper_bound: [-1, 0.666805] at 0.9 confidence.
-complaints test alternative: less; null (relative lift): 0.
-complaints result identity: method unadjusted; method role decision; estimand itt.
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Multiplicity (primary): declared_plan; family primary.
-Multiplicity (guardrail): declared_plan; family guardrail.
-```
-
-The repaired collection is complete. The guardrail point estimate is a 13.8%
-decrease, but its 90% interval includes zero, so it does not reject the
-one-sided null; that is inconclusive, not proof of safety or no effect.
-
-`repr(results)` and `print(results)` are the ordinary collection summary.
-`results.to_frame()` keeps every numeric result column and qualification
-column. Selecting a few columns for display is fine; dropping the
-qualification columns from what you store or share is a deliberate loss of
-evidence:
-
-```python
-frame = recovered.to_frame(backend="polars")
-print(frame.shape)
-print(
-    frame.select(
-        "metric", "role", "lift", "lb", "ub", "integrity_status", "decision_scope_complete"
-    )
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+    metrics=[
+        "revenue",
+        MetricSpec(
+            name="complaints",
+            type="conversion",
+            missing="drop",
+            preferred_direction="decrease",
+        ),
+    ],
+    plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
 )
+recovered = run(recovered_exp, recovered_resolver)
+print(render(recovered, "brief"))
 ```
 
-```text
-(2, 126)
-shape: (2, 7)
-┌────────────┬───────────┬───────────┬──────────┬──────────┬──────────────────┬────────────────────┐
-│ metric     ┆ role      ┆ lift      ┆ lb       ┆ ub       ┆ integrity_status ┆ decision_scope_com │
-│ ---        ┆ ---       ┆ ---       ┆ ---      ┆ ---      ┆ ---              ┆ plete              │
-│ str        ┆ str       ┆ f64       ┆ f64      ┆ f64      ┆ str              ┆ ---                │
-│            ┆           ┆           ┆          ┆          ┆                  ┆ bool               │
-╞════════════╪═══════════╪═══════════╪══════════╪══════════╪══════════════════╪════════════════════╡
-│ revenue    ┆ primary   ┆ 0.115788  ┆ 0.062189 ┆ 0.172092 ┆ not_rejected     ┆ true               │
-│ complaints ┆ guardrail ┆ -0.137803 ┆ -1.0     ┆ 0.666805 ┆ not_rejected     ┆ true               │
-└────────────┴───────────┴───────────┴──────────┴──────────┴──────────────────┴────────────────────┘
-```
+The repaired result has a complaint estimate, but its uncertainty still
+matters: an interval including zero is inconclusive, not proof of safety or
+no effect. Keep the rendered qualifications when sharing the result.
 
-For an optional rendered table install `increment[tables]`, then keep the
-consumer import distinct from authoring imports:
+## Read experiment definitions
+
+This complete example creates a small event table and definition file in a
+temporary directory. Replace them with your warehouse connection and
+version-controlled definitions when applying the same workflow:
+
+Install the optional `demo` extra for the DuckDB backend used in this definitions example:
+
+```bash
+pip install "increment[demo]" polars
+```
 
 ```python
-from increment.tables import readout_table
+import datetime as dt
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-readout_table(recovered)
+import ibis
+import polars as pl
+
+from increment import from_definitions, render, run
+
+demo_rows = []
+for i, revenue in enumerate([1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0]):
+    for event in ["page_view", "purchase"]:
+        demo_rows.append(
+            {
+                "user_id": f"u{i}",
+                "group_id": "control" if i < 4 else "treatment",
+                "experiment_id": "demo",
+                "ts": dt.datetime(2025, 1, 1, 12),
+                "event": event,
+                "revenue": revenue if event == "purchase" else None,
+            }
+        )
+demo_con = ibis.duckdb.connect()
+demo_con.create_table("demo_events", pl.DataFrame(demo_rows).to_arrow())
+
+with TemporaryDirectory() as definitions_directory:
+    Path(definitions_directory, "demo.yaml").write_text(
+        """\
+dialect: duckdb
+fact_sources:
+  - name: demo_events
+    sql: SELECT * FROM demo_events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: page_view, column: null}
+      - {name: purchase, column: revenue}
+exposures:
+  - {name: enrolled, fact: page_view}
+metrics:
+  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 1}
+experiments:
+  - name: demo
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01
+    end: 2025-01-01
+    observation_end: 2025-01-02
+    control_group: control
+    plan: {primary: revenue}
+""",
+        encoding="utf-8",
+    )
+    exp, resolver = from_definitions("demo", definitions_directory, demo_con)
+    result = run(exp, resolver)
+    print(render(result, "brief"))
 ```
 
-If you only receive serialized result rows, the result/table import does not
-configure an analysis. Rows alone do not carry the collection's scope, so the
-table reports scope and integrity as unknown; receive the whole collection
-when those qualifications matter.
-
-```python
-from increment.results import LiftEstimate
-from increment.tables import estimates_to_readout, readout_table
-
-
-def received_result_table(result: LiftEstimate):
-    return readout_table(estimates_to_readout([result]))
-
-
-received_result_table(recovered[0])
-```
+The warehouse connection is bound at run time by the resolver. See
+[The data model](data-model.md) for definitions, query inspection, and
+portable unit-day inputs.
 
 See [Reading results](reading-results.md) for scale, uncertainty, availability,
 integrity, completeness, population and multiplicity qualifications.
-
 ## Group identities
 
 Nonmissing group values are rendered as strings consistently across
@@ -316,12 +300,14 @@ its method-owned declaration, for example
 
 ## One row per unit per day
 
-Use `Analysis.from_unit_panel` for one row per unit per day.
-`run()` sums each unit's values across days and estimates lift for the
-whole panel. `run_daily()` returns daily group summaries:
+Use `from_frame(..., shape="panel")` for one row per unit per day. The
+result combines each unit's values across days before estimating the
+experiment-wide effect:
 
 ```python
 import datetime as dt
+
+from increment import AnalysisPlan, MetricSpec, Randomized, from_frame, render, run
 
 panel = pl.DataFrame(
     {
@@ -338,17 +324,21 @@ panel = pl.DataFrame(
         "revenue": [3.0, 0.0, 5.0, 2.5, 6.0, 4.0],
     }
 )
-
-panel_analysis = Analysis.from_unit_panel(
+exp, resolver = from_frame(
     panel,
+    shape="panel",
     unit="user_id",
     group="variant",
     date="day",
-    control="control",
-    metrics={"revenue": "mean"},
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+    metrics=[MetricSpec(name="revenue", type="mean")],
+    plan=AnalysisPlan(primary="revenue"),
 )
-panel_analysis.run()  # whole-panel lift, per-unit totals
-panel_analysis.run_daily()  # per-day group summaries
+print(render(run(exp, resolver), "brief"))
 ```
 
 !!! warning "Daily indicators become counts"

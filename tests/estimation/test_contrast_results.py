@@ -55,6 +55,17 @@ def test_print_preserves_additive_contrast_meaning():
     assert f"carryover_order={result.carryover_order}" in rendered
 
 
+def test_contrast_results_as_cells_preserves_additive_effect():
+    result = _result()
+
+    (cell,) = ContrastResults([result]).as_cells()
+
+    assert cell.identity.key.metric == result.metric
+    assert cell.summary is not None
+    assert cell.summary.value_scale == "absolute"
+    assert cell.summary.point == pytest.approx(result.estimate.value)
+
+
 def test_result_models_are_typed_and_immutable():
     result = _result()
     results = ContrastResults([result])

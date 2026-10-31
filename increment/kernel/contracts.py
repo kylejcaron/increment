@@ -331,6 +331,9 @@ class CompiledPlanBinding:
     def to_payload(self) -> dict[str, object]:
         return self.canonical_payload()
 
+    def __reduce__(self) -> tuple[Any, tuple[dict[str, object]]]:
+        return type(self).from_payload, (self.canonical_payload(),)
+
 
 def _thaw_descriptor_value(value: object) -> object:
     if isinstance(value, Mapping):

@@ -80,6 +80,12 @@ class ParquetResultsStore:
         return self.path / f"{run_record_key(experiment_id, analysis_spec_hash, run_id)}.parquet"
 
     def put(self, run: Run) -> None:
+        if run.empty_selection_reason is not None:
+            refuse_store(
+                "store.run.empty",
+                "An empty metric selection cannot be saved",
+                reason=run.empty_selection_reason,
+            )
         table = AnalysisEnvelope(run.cells, run.metadata).to_arrow(include_capture_metadata=True)
         metadata = dict(table.schema.metadata or {})
         metadata[b"increment.run_manifest.v2"] = json.dumps(
