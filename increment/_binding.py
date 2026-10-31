@@ -304,20 +304,9 @@ class ResolverBinding:
         self.close()
 
 
-def _resolve_verified(
-    experiment: Experiment, resolver: Any, *, ctx: object | None = None
-) -> object:
-    validate = getattr(resolver, "validate_experiment", None)
-    if callable(validate):
-        validate(experiment)
-    provider = resolver.resolve(experiment.source_refs, ctx)
-    failures = resolver.verify(experiment.source_refs, provider)
-    if failures:
-        raise failures[0]
-    return provider
-
-
 def binding_for(experiment: Experiment, resolver: Resolver) -> SourceBinding:
+    from increment.kernel.resolver import _resolve_verified
+
     _resolve_verified(experiment, resolver)
     if not isinstance(resolver, ResolverBinding):
         from increment.kernel.contracts import _refuse

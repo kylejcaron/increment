@@ -724,7 +724,7 @@ path = "increment._binding"
 layer = "core"
 depends_on = [
   "increment._canonical", "increment.errors", "increment.decision",
-  "increment.kernel.contracts",
+  "increment.kernel", "increment.kernel.contracts",
 ]
 
 [[modules]]
@@ -1130,7 +1130,7 @@ depends_on = [
   "increment.declarations",
   "increment.estimators.registry",
   "increment.errors",
-  "increment.kernel.contracts", "increment._binding",
+  "increment.kernel.contracts",
 ]
 
 [[modules]]
