@@ -144,17 +144,27 @@ The other source builders expose only the options their data support:
 from increment import from_unit_day_artifact, from_moments, from_switchback_frame
 
 artifact_experiment, artifact_resolver = from_unit_day_artifact(
-    artifact_store, artifact_ref, expected_context=artifact_context,
+    artifact_store,
+    artifact_ref,
+    expected_context=artifact_context,
     verification="lazy_digest",
 )
 moments_experiment, moments_resolver = from_moments(
-    moment_rows, metrics={"revenue": "mean"}, control="control",
+    moment_rows,
+    metrics={"revenue": "mean"},
+    control="control",
     experiment_id="checkout_redesign",
 )
 switchback_experiment, switchback_resolver = from_switchback_frame(
-    switchback_rows, unit="user_id", cycle="cycle", period="period",
-    step="step", group="variant", metrics={"revenue": "mean"},
-    identification=randomized_design, assignment=switchback_assignment,
+    switchback_rows,
+    unit="user_id",
+    cycle="cycle",
+    period="period",
+    step="step",
+    group="variant",
+    metrics={"revenue": "mean"},
+    identification=randomized_design,
+    assignment=switchback_assignment,
     contrast_references=contrast_references,
 )
 ```

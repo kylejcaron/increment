@@ -160,9 +160,7 @@ import ibis
 from increment import from_definitions, render, run
 
 con = ibis.snowflake.connect(...)
-experiment, resolver = from_definitions(
-    "definitions/", con, experiment_name="checkout_redesign"
-)
+experiment, resolver = from_definitions("definitions/", con, experiment_name="checkout_redesign")
 with resolver:
     results = run(experiment, resolver)
 print(render(results, "brief"))
