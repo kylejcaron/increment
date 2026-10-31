@@ -15,3 +15,19 @@ __all__ = [
     "RunHandle",
     "WarehouseResultsStore",
 ]
+
+
+def core_operations():
+    """Return the values and digest operation required by core run handling."""
+    from types import SimpleNamespace
+
+    from increment.store.producer import PersistenceIdentity
+    from increment.store.types import run_digest
+
+    return SimpleNamespace(
+        DecisionEvent=DecisionEvent,
+        DecisionReference=DecisionReference,
+        PersistenceIdentity=PersistenceIdentity,
+        Run=Run,
+        run_digest=run_digest,
+    )

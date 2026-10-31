@@ -17,9 +17,14 @@ from increment.kernel.contracts import (
     method_estimator_id,
     metric_hash,
 )
+from increment.kernel.ports import (
+    DecisionLogPort,
+    ResultsStorePort,
+    RunHandlePort,
+    RunRecord,
+    program_store_operations,
+)
 from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order
-from increment.store import DecisionEvent, DecisionLog, DecisionReference, ResultsStore, Run
-from increment.store.types import RunHandle, run_digest
 
 if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
@@ -46,7 +51,7 @@ class RunResult:
     cells: tuple[ResultCell, ...]
     effects: tuple[EffectEstimate | None, ...]
     decisions: Decisions
-    run: Run
+    run: Any
     live_rows: tuple[Any | None, ...] = ()
 
     def __reduce__(self):
@@ -64,7 +69,7 @@ class RunResult:
 
 @dataclass(frozen=True, slots=True)
 class _InMemoryRunHandle:
-    run: Run
+    run: RunRecord
 
     def get(self, identity):
         for cell in self.run.cells:
@@ -113,12 +118,11 @@ def _validate_analysis_binding(
         )
 
 
-def _events(
-    run: Run, decisions: Decisions, binding: CompiledPlanBinding
-) -> tuple[DecisionEvent, ...]:
+def _events(run: RunRecord, decisions: Decisions, binding: CompiledPlanBinding) -> tuple[Any, ...]:
+    operations = program_store_operations()
     cells_by_hash = {cell.identity.hash(): cell for cell in run.cells}
-    scope = cast(Any, run.metadata).scope
-    output: list[DecisionEvent] = []
+    scope = run.metadata.scope
+    output: list[Any] = []
     for verdict in decisions.families:
         if verdict.procedure not in {"bh", "e_bh", "bonferroni"}:
             continue
@@ -130,7 +134,7 @@ def _events(
             and str(family.analysis_population) == verdict.analysis_population
         )
         references = tuple(
-            DecisionReference(cells_by_hash[member.identity_hash].identity, run.run_id)
+            operations.DecisionReference(cells_by_hash[member.identity_hash].identity, run.run_id)
             for member in verdict.members
             if member.identity_hash in cells_by_hash
         )
@@ -163,7 +167,7 @@ def _events(
             {"bh": "bh", "e_bh": "ebh", "bonferroni": "bonferroni"}[verdict.procedure],
         )
         output.append(
-            DecisionEvent(
+            operations.DecisionEvent(
                 experiment_id=run.experiment_id,
                 family_id=verdict.family_id,
                 registration_hash=run.registration_hash or binding.registration_hash,
@@ -172,7 +176,7 @@ def _events(
                 threshold=threshold,
                 alpha_spent=alpha_spent,
                 references=references,
-                evidence_digest=run_digest(run),
+                evidence_digest=operations.run_digest(run),
                 integrity_status=integrity,
                 outcome=verdict.status,
                 reason_codes=verdict.reason_codes,
@@ -498,12 +502,13 @@ def _run_rows(
     analysis_spec_hash: str,
     execution_identity_hash: str,
     run_id: str,
-    results_store: ResultsStore | None = None,
-    decision_log: DecisionLog | None = None,
+    results_store: ResultsStorePort | None = None,
+    decision_log: DecisionLogPort | None = None,
     declared_scope: Scope | None = None,
     identity_options: Mapping[str, object] | None = None,
 ) -> RunResult:
     context = analysis._state.source.context
+    operations = program_store_operations()
     contrast_context = (
         context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
     )
@@ -570,7 +575,7 @@ def _run_rows(
             execution_identity_hash=execution_identity_hash,
         )
         cells.append(replace(cell, identity=identity, provenance=provenance))
-    run_record = Run(
+    run_record = operations.Run(
         experiment_id=experiment_id,
         run_id=run_id,
         analysis_spec_hash=analysis_spec_hash,
@@ -588,7 +593,7 @@ def _run_rows(
         empty_selection_reason="empty_metric_selection" if not cells else None,
     )
     if results_store is None:
-        handle: RunHandle = _InMemoryRunHandle(run_record)
+        handle: RunHandlePort = _InMemoryRunHandle(run_record)
     else:
         results_store.put(run_record)
         handle = results_store.open_run(experiment_id, analysis_spec_hash, run_id)
@@ -628,8 +633,8 @@ def run(
     analysis_spec_hash: str | None = None,
     execution_identity_hash: str | None = None,
     run_id: str | None = None,
-    results_store: ResultsStore | None = None,
-    decision_log: DecisionLog | None = None,
+    results_store: ResultsStorePort | None = None,
+    decision_log: DecisionLogPort | None = None,
     analysis_options: Mapping[str, object] | None = None,
 ) -> Any: ...
 
@@ -646,8 +651,8 @@ def run(
     analysis_spec_hash: str | None = None,
     execution_identity_hash: str | None = None,
     run_id: str | None = None,
-    results_store: ResultsStore | None = None,
-    decision_log: DecisionLog | None = None,
+    results_store: ResultsStorePort | None = None,
+    decision_log: DecisionLogPort | None = None,
     analysis_options: Mapping[str, object] | None = None,
 ) -> RunResult: ...
 
@@ -663,8 +668,8 @@ def run(
     analysis_spec_hash: str | None = None,
     execution_identity_hash: str | None = None,
     run_id: str | None = None,
-    results_store: ResultsStore | None = None,
-    decision_log: DecisionLog | None = None,
+    results_store: ResultsStorePort | None = None,
+    decision_log: DecisionLogPort | None = None,
     analysis_options: Mapping[str, object] | None = None,
 ) -> Any:
     """Run an experiment through its resolver, or a legacy Analysis through its registration."""

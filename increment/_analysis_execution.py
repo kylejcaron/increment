@@ -2690,7 +2690,9 @@ class Analysis:
         runtime_request: Mapping[str, object] | None = None,
     ):
         from increment.kernel.contracts import Registration, contract_hash
-        from increment.store.producer import PersistenceIdentity
+        from increment.kernel.ports import program_store_operations
+
+        persistence_identity = program_store_operations().PersistenceIdentity
 
         design = cast(Any, self._design)
         if isinstance(self._state, ContrastAnalysisState):
@@ -2777,7 +2779,7 @@ class Analysis:
                 selected = Method.cuped() if estimator == "cuped" else Method(name=estimator)
             methods[(key.metric, estimator, role)] = selected
             source_refs[(key.analysis_population, key.metric)] = source_declaration_hash
-        return PersistenceIdentity(
+        return persistence_identity(
             design=design,
             metrics=metrics,
             registration_hash=registration_hash,
@@ -3213,12 +3215,14 @@ class Analysis:
         cluster_weight: Literal["member_count", "equal"] = "member_count",
     ) -> CateResult:
         """Fit CATE using this analysis's unit source and declared intervention."""
-        from increment.cate import estimate_cate
+        from increment.kernel.ports import cate_operations
+
+        operations = cate_operations()
 
         if control is None:
             assert self._design is not None
             control = self._design.control_group
-        return estimate_cate(
+        return operations.estimate_cate(
             self._cate_source("estimate_cate"),
             metric,
             control=control,
@@ -3247,9 +3251,11 @@ class Analysis:
         Member counts and independent cluster counts are reported separately;
         unavailable uncertainty retains its reason and numeric nulls.
         """
-        from increment.cate import validate_cate
+        from increment.kernel.ports import cate_operations
 
-        return validate_cate(
+        operations = cate_operations()
+
+        return operations.validate_cate(
             self._cate_source("validate_cate"),
             metric,
             control=control,
@@ -3277,9 +3283,11 @@ class Analysis:
         include_evaluation_population: bool = False,
     ) -> TargetingRule:
         """Evaluate a precommitted deployment fraction on an honest holdout."""
-        from increment.cate import targeting_rule
+        from increment.kernel.ports import cate_operations
 
-        return targeting_rule(
+        operations = cate_operations()
+
+        return operations.targeting_rule(
             self._cate_source("targeting_rule"),
             metric,
             control=control,
@@ -3311,9 +3319,11 @@ class Analysis:
         include_evaluation_population: bool = False,
     ) -> TargetingSelection:
         """Select a deployment budget on inner folds, then report the untouched holdout."""
-        from increment.cate import select_targeting_rule
+        from increment.kernel.ports import cate_operations
 
-        return select_targeting_rule(
+        operations = cate_operations()
+
+        return operations.select_targeting_rule(
             self._cate_source("select_targeting_rule"),
             metric,
             control=control,

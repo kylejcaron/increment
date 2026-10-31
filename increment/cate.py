@@ -791,3 +791,15 @@ __all__ = [
     "targeting_rule",
     "validate_cate",
 ]
+
+
+def core_operations():
+    """Return the CATE routes used by core orchestration."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        estimate_cate=estimate_cate,
+        validate_cate=validate_cate,
+        targeting_rule=targeting_rule,
+        select_targeting_rule=select_targeting_rule,
+    )

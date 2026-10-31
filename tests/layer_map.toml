@@ -30,7 +30,6 @@ core = [
   "increment.winsor*",
   "increment.errors",
   "increment.compatibility",
-  "increment.store*",
   "increment.sequential*",
   "increment.metric*",
   "increment.absorption",
@@ -50,7 +49,6 @@ core = [
   "increment._sitewide",
   "increment._planning*",
   "increment._sequential*",
-  "increment.cate",
 ]
 
 designs = ["test_extensions.designs"]
@@ -62,12 +60,14 @@ observational = [
   "increment.estimation.observational*",
   "increment.estimation.targeting*",
   "increment.targeting*",
+  "increment.cate",
 ]
 
 
 
 program = [
   "increment.program*",
+  "increment.store*",
 ]
 
 artifacts = []
