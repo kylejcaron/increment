@@ -388,6 +388,30 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
     )
     empty_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": []})
     assert empty_values.cells == ()
+    dimensioned_scopes = (
+        Scope(
+            view="daily",
+            grain="daily",
+            segment=(BreakoutIdentity("country", None),),
+        ),
+        Scope(
+            view="asof",
+            grain="asof",
+            segment=(BreakoutIdentity("country", None),),
+        ),
+    )
+    dimensioned_experiment = replace(
+        encouraged,
+        scopes=dimensioned_scopes,
+        operations={
+            dimensioned_scopes[0].hash(): "run_daily",
+            dimensioned_scopes[1].hash(): "run_asof",
+        },
+    )
+    empty_dimensioned = run(
+        dimensioned_experiment, encouraged_resolver, analysis_options={"metrics": []}
+    )
+    assert empty_dimensioned.cells == ()
     combined_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": ["value"]})
     assert {cell.identity.scope.view for cell in combined_values.cells} == {
         "run",
