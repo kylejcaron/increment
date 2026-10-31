@@ -684,8 +684,9 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         SequentialModel,
         SequentialRegistration,
     )
-    from increment.frame import from_unit_panel, synthesise_metric
+    from increment.frame import FramePanelSource, synthesise_metric
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id
+    from tests.analysis_factory import facade_binding, held_source
     from tests.asymptotic_cases import mean_model
     from tests.sequential_cases import registration
 
@@ -735,12 +736,11 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         for i in range(96)
         for arm in ("control", "treatment")
     ]
-    source = from_unit_panel(
+    analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
         unit="unit",
         group="arm",
         date="ds",
-        control="control",
         exposure_date="exposed",
         uptake="clicked",
         observation_end=date(2025, 1, 20),
@@ -748,6 +748,7 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         metrics=specs,
         plan=plan,
     )
+    source = cast(FramePanelSource, held_source(analysis))
     source.capture_sequential(finalized=True, as_of=date(2025, 1, 15))
     itt_only = readouts.run(source, estimands=("itt",))
     itt_and_compliance = readouts.run(source, estimands=("itt", "compliance"))
@@ -786,12 +787,9 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     from dataclasses import replace
 
     from increment import run
-    from increment._analysis_kernel_adapter import experiment_for_analysis
     from increment.kernel.contracts import Scope
 
-    experiment, resolver = experiment_for_analysis(
-        Analysis._from_source(source, design), return_run_result=True
-    )
+    experiment, resolver = facade_binding(analysis)
     whole_window = Scope(view="run", grain="total")
     cumulative = Scope(view="asof", grain="asof", completion_policy=True)
     experiment = replace(
