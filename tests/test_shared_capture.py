@@ -273,52 +273,70 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
         )
         assert {cell.identity.scope.view for cell in day_values.cells} == {"daily", "asof"}
         assert {cell.identity.key.metric for cell in day_values.cells} == {"unregistered_revenue"}
-        running_definitions = ds.definitions_dict(
-            plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]), breakout=True
-        )
-        running_definitions["experiments"][0].pop("end")
-        running_definitions["fact_sources"][0]["facts"].append(
-            {"name": "ad_hoc_late", "column": "revenue"}
-        )
-        running_path = tmp_path / "running-ad-hoc.yaml"
-        running_path.write_text(json.dumps(running_definitions), encoding="utf-8")
-        running_experiment, running_resolver = from_definitions(
-            running_path, con, experiment_name="exp", store="none"
-        )
-        running_experiment = replace(running_experiment, scopes=day_scopes)
-        late_metric = MeanMetric(
-            name="late_ad_hoc",
-            entity="user_id",
-            fact="ad_hoc_late",
-            aggregation="avg_calendar_day",
-        )
-        cast(Any, running_resolver.resolve(running_experiment.source_refs)).panel_sql()
-        late_values = run(
-            running_experiment,
-            running_resolver,
-            analysis_options={
-                "metrics": [late_metric],
-                "decision_method": Method(name="unadjusted"),
-                "coherence": "live",
-            },
-        )
-        for view in ("daily", "asof"):
-            dates = [
-                cell.identity.key.ds
-                for cell in late_values.cells
-                if cell.identity.scope.view == view
-            ]
-            assert max(dates) == datetime(2025, 2, 20).date()
     finally:
         con.disconnect()
 
 
-def test_unit_panel_declared_breakout_runs_with_combined_total_view():
+def test_selected_late_ad_hoc_metric_keeps_family_horizon_in_both_modes(tmp_path):
+    from increment.semantics.models import MeanMetric
+
+    rows = ds.event_rows()
+    rows.append(
+        {
+            **next(row for row in rows if row["event"] == "purchase"),
+            "event": "ad_hoc_late",
+            "event_at": datetime(2025, 2, 20),
+            "revenue": 100.0,
+            "sess": None,
+        }
+    )
+    definitions = ds.definitions_dict(
+        plan=AnalysisPlan(primary="revenue", secondaries=["purchase_rate"]), breakout=True
+    )
+    definitions["experiments"][0].pop("end")
+    definitions["fact_sources"][0]["facts"].append({"name": "ad_hoc_late", "column": "revenue"})
+    definitions_path = tmp_path / "running-ad-hoc.yaml"
+    definitions_path.write_text(json.dumps(definitions), encoding="utf-8")
+    day_scopes = (Scope(view="daily", grain="daily"), Scope(view="asof", grain="asof"))
+    late_metric = MeanMetric(
+        name="late_ad_hoc",
+        entity="user_id",
+        fact="ad_hoc_late",
+        aggregation="avg_calendar_day",
+    )
+
+    for coherence in ("captured", "live"):
+        con = ds.duckdb_connection(rows)
+        try:
+            experiment, resolver = from_definitions(
+                definitions_path, con, experiment_name="exp", store="none"
+            )
+            experiment = replace(experiment, scopes=day_scopes)
+            cast(Any, resolver.resolve(experiment.source_refs)).panel_sql()
+            values = run(
+                experiment,
+                resolver,
+                analysis_options={
+                    "metrics": [late_metric],
+                    "decision_method": Method(name="unadjusted"),
+                    "coherence": coherence,
+                },
+            )
+            for view in ("daily", "asof"):
+                dates = [
+                    cell.identity.key.ds
+                    for cell in values.cells
+                    if cell.identity.scope.view == view
+                ]
+                assert max(dates) == datetime(2025, 2, 20).date()
+        finally:
+            con.disconnect()
+
+
+def _shared_panel_frame() -> Any:
     import pandas as pd
 
-    from increment.builders import from_frame
-
-    frame = pd.DataFrame(
+    return pd.DataFrame(
         {
             "unit": [f"u{index}" for index in range(40)],
             "arm": ["control", "treatment"] * 20,
@@ -327,6 +345,12 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
             "value": [float(index % 7) for index in range(40)],
         }
     )
+
+
+def test_unit_panel_declared_breakout_runs_with_combined_total_view():
+    from increment.builders import from_frame
+
+    frame = _shared_panel_frame()
     experiment, resolver = from_frame(
         frame,
         shape="panel",
@@ -353,6 +377,10 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
         for cell in result.cells
         if cell.identity.scope.view == "breakout"
     } == {"US", "CA"}
+
+
+def _encouragement_panel_analysis(frame: Any) -> tuple[Any, Any]:
+    from increment.builders import from_frame
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     encouraged_frame = frame.assign(
@@ -360,7 +388,7 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
             0 if arm == "control" else int(index % 3 == 0) for index, arm in enumerate(frame["arm"])
         ]
     )
-    encouraged, encouraged_resolver = from_frame(
+    return from_frame(
         encouraged_frame,
         shape="panel",
         unit="unit",
@@ -374,11 +402,15 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
         metrics={"value": "mean"},
         breakouts=["country"],
     )
+
+
+def test_dimensioned_empty_encouragement_values_keep_permissions():
+    experiment, resolver = _encouragement_panel_analysis(_shared_panel_frame())
     run_scope = Scope(view="run", grain="total")
     daily_scope = Scope(view="daily", grain="daily")
     asof_scope = Scope(view="asof", grain="asof")
-    encouraged = replace(
-        encouraged,
+    experiment = replace(
+        experiment,
         scopes=(run_scope, daily_scope, asof_scope),
         operations={
             run_scope.hash(): "run",
@@ -386,8 +418,9 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
             asof_scope.hash(): "run_asof",
         },
     )
-    empty_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": []})
+    empty_values = run(experiment, resolver, analysis_options={"metrics": []})
     assert empty_values.cells == ()
+
     dimensioned_scopes = (
         Scope(
             view="daily",
@@ -401,18 +434,32 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
         ),
     )
     dimensioned_experiment = replace(
-        encouraged,
+        experiment,
         scopes=dimensioned_scopes,
         operations={
             dimensioned_scopes[0].hash(): "run_daily",
             dimensioned_scopes[1].hash(): "run_asof",
         },
     )
-    empty_dimensioned = run(
-        dimensioned_experiment, encouraged_resolver, analysis_options={"metrics": []}
-    )
+    empty_dimensioned = run(dimensioned_experiment, resolver, analysis_options={"metrics": []})
     assert empty_dimensioned.cells == ()
-    combined_values = run(encouraged, encouraged_resolver, analysis_options={"metrics": ["value"]})
+
+
+def test_combined_encouragement_views_preserve_compliance_rows():
+    experiment, resolver = _encouragement_panel_analysis(_shared_panel_frame())
+    run_scope = Scope(view="run", grain="total")
+    daily_scope = Scope(view="daily", grain="daily")
+    asof_scope = Scope(view="asof", grain="asof")
+    experiment = replace(
+        experiment,
+        scopes=(run_scope, daily_scope, asof_scope),
+        operations={
+            run_scope.hash(): "run",
+            daily_scope.hash(): "run_daily",
+            asof_scope.hash(): "run_asof",
+        },
+    )
+    combined_values = run(experiment, resolver, analysis_options={"metrics": ["value"]})
     assert {cell.identity.scope.view for cell in combined_values.cells} == {
         "run",
         "daily",

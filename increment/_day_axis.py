@@ -273,6 +273,13 @@ def validate_day_axis(
     checkpoint_asof = (
         req.grain == "asof" and getattr(plan.inference, "registration", None) is not None
     )
+    if req.caller == "run_asof_lift" and checkpoint_asof and req.dimension is not None:
+        from increment.sequential_state import sequential_refuse
+
+        sequential_refuse(
+            "route.unsupported",
+            "segmented as-of history requires retained per-date stopped states; use the registered breakout checkpoint",
+        )
     if compliance_only:
         return
     if (
@@ -1663,14 +1670,6 @@ class DayAxisReadouts:
                     options=opts,
                 )
         if req.grain == "asof" and getattr(self._plan.inference, "registration", None) is not None:
-            if req.dimension is not None:
-                from increment.sequential_state import sequential_refuse
-
-                sequential_refuse(
-                    "route.unsupported",
-                    "segmented as-of history requires retained per-date stopped states; use the registered breakout checkpoint",
-                )
-
             from increment.breakout.estimates import daily_sequential_projection
 
             asof_policy = self._plan.view_policies.for_view(

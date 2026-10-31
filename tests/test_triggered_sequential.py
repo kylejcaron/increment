@@ -296,6 +296,44 @@ def _assert_selected_registered_family_capture(tmp_path):
         connection.disconnect()
 
 
+def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
+    from increment._analysis_kernel_adapter import experiment_for_analysis
+    from increment.evidence import BreakoutIdentity
+
+    connection = ibis.duckdb.connect()
+    analysis, _ = _analysis(tmp_path, _events(n_per_arm=10), connection=connection, breakouts=True)
+    try:
+        initial = analysis.capture_sequential(finalized=True, as_of=_AS_OF)
+        experiment, resolver = experiment_for_analysis(analysis)
+        scopes = (
+            Scope(view="run", grain="total"),
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=(BreakoutIdentity("region", None),),
+            ),
+        )
+        experiment = replace(
+            experiment,
+            scopes=scopes,
+            operations={
+                scopes[0].hash(): "run",
+                scopes[1].hash(): "run_asof_lift",
+            },
+        )
+        with pytest.raises(CodedError) as refused:
+            run(
+                experiment,
+                resolver,
+                analysis_options={"capture": {"finalized": True, "as_of": _LATER}},
+            )
+        assert refused.value.code == "sequential.route.unsupported"
+        assert analysis.sequential_snapshot().prefix_id == initial.prefix_id
+    finally:
+        analysis.close()
+        connection.disconnect()
+
+
 def _assert_empty_sequential_compliance(tmp_path):
     compliance_path = tmp_path / "compliance"
     compliance_path.mkdir()
