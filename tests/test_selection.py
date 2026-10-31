@@ -713,3 +713,34 @@ def test_redirected_function_local_import_is_seen_on_next_selection(
     reasons = decision["reasons"]
     assert isinstance(reasons, list)
     assert "dynamic_import" in reasons
+
+
+def test_type_checking_imports_do_not_select_changed_module(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/__init__.py": (
+                "_LAZY_IMPORTS = {'Thing': ('increment.changed', 'Thing')}\n"
+            ),
+            "increment/changed.py": "class Thing: pass\n",
+            "tests/test_type_only.py": (
+                "from typing import TYPE_CHECKING\n"
+                "if TYPE_CHECKING:\n"
+                "    from increment import Thing\n"
+            ),
+            "tests/test_runtime.py": "from increment import Thing\n",
+        },
+    )
+    base = _commit(tmp_path)
+    mapping = _map(tmp_path, {}, base=base)
+
+    graph = SelectionGraph.from_tree(
+        tmp_path,
+        {"increment.changed"},
+        tier="fast",
+        selection_map=mapping,
+        changed_paths={"increment/changed.py"},
+    )
+
+    assert not graph.keeps("tests/test_type_only.py")
+    assert "lazy_export:Thing" in graph.keeps("tests/test_runtime.py")

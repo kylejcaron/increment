@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
+from scripts.affected import _type_checking_import_ids
 from scripts.selection_map import SelectionMap, is_stale, tests_changed_since
 
 
@@ -21,16 +22,19 @@ def _module_name(path: Path, root: Path) -> str:
     return ".".join(parts)
 
 
-_FACTS_FILE = Path(".pytest_cache") / "selection-facts.json"
+_FACTS_FILE = Path(".pytest_cache") / "selection-facts-v2.json"
 
 
 def _extract_facts(source: str) -> dict[str, Any]:
     """What selection needs from one file, independent of every other file."""
     tree = ast.parse(source)
+    type_checking_imports = _type_checking_import_ids(tree)
     imports: list[list[Any]] = []
     dynamic: list[str] = []
     walks_package = False
     for node in ast.walk(tree):
+        if id(node) in type_checking_imports:
+            continue
         if isinstance(node, ast.Import):
             imports.append(["import", None, 0, [alias.name for alias in node.names]])
         elif isinstance(node, ast.ImportFrom):

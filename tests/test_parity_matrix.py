@@ -475,16 +475,5 @@ def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
     for method in disposition.legs:
         merged = _matched(cell, method, disposition)
         _switchback(cell, method, disposition)
-        case = matrix_cases.build_case(cell, method, disposition.outcomes(method))
-        for name in merged.sequential_state:
-            analysis = case.build[name]()
-            try:
-                as_of = getattr(analysis, "_sequential_as_of", None)
-                snapshot = analysis.capture_sequential(
-                    finalized=True, **({"as_of": as_of} if as_of is not None else {})
-                )
-                assert {state.law for state in snapshot.states} == {"scalar_mean"}, name
-            finally:
-                analysis.close()
-                for connection in getattr(analysis, "_parity_connections", ()):
-                    connection.disconnect()
+        for name, capture in merged.sequential_state.items():
+            assert {state[3] for state in capture.fingerprint[0]} == {"scalar_mean"}, name
