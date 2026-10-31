@@ -2884,7 +2884,7 @@ class Analysis:
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
-        if _execution_context is not None and rows.metadata is not None:
+        if not added and _execution_context is not None and rows.metadata is not None:
             metadata = rows.metadata
             rows._metadata = type(metadata).model_validate(
                 {
