@@ -242,7 +242,7 @@ class EvidenceScope:
     """The source views and readout lifetime required by one evidence consumer."""
 
     metrics: tuple[Metric, ...] = ()
-    horizon_metrics: tuple[Metric, ...] = ()
+    horizon_metrics: tuple[Metric, ...] | None = None
     population: Literal["assigned", "triggered"] = "assigned"
     populations: tuple[Literal["assigned", "triggered"], ...] = ()
     grain: Literal["total", "daily", "asof"] | None = None
@@ -497,7 +497,7 @@ def evidence_scope_stream_inventory(scope: EvidenceScope) -> Mapping[str, str]:
         identify(item)
         for category, _, identify in EVIDENCE_REQUEST_DEPENDENCIES
         if identify is not None
-        for item in dependencies[category]
+        for item in dependencies[category] or ()
     }
     return MappingProxyType(dict.fromkeys(sorted(names), "captured"))
 

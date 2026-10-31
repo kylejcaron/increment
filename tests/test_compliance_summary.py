@@ -44,7 +44,9 @@ def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_pat
     from increment.kernel.contracts import Scope
     from tests.analysis_factory import definitions_inputs
 
-    analysis, con = _warehouse_compliance_analysis("mean", separate_outcome_source=True)
+    analysis, con = _warehouse_compliance_analysis(
+        "retention", unusable_outcome=True, separate_outcome_source=True
+    )
     definitions, _, _, _, _ = definitions_inputs(analysis)
     path = tmp_path / "definitions.json"
     path.write_text(json.dumps(definitions.model_dump(mode="json")), encoding="utf-8")

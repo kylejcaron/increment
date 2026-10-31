@@ -20,6 +20,17 @@ if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
 
 
+def _compliance_only(analysis, estimands, dimension=None):
+    from increment.semantics.design import Encouragement
+
+    return (
+        isinstance(analysis._design, Encouragement)
+        and estimands is not None
+        and set(estimands) == {"compliance"}
+        and dimension is None
+    )
+
+
 def _provider_for(analysis):
     from increment.decision import ContrastContext
     from increment.readouts._provider import native_scope_provider
@@ -205,12 +216,17 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 experiment=getattr(candidate, "_experiment", None),
                 route=day_axis_route(candidate._src),
             )
-            _, configs = _prepare_run_request(
+            metrics, configs = _prepare_run_request(
                 candidate._src,
                 metrics=[metric.name for metric in metrics],
                 estimands=req.estimands,
                 value_scale=req.value_scale,
-                population=population,
+                population=(
+                    "assigned"
+                    if population == "triggered"
+                    and getattr(candidate._plan.inference, "registration", None) is not None
+                    else population
+                ),
                 by=(),
                 **overrides,
             )
@@ -262,18 +278,27 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                     **overrides,
                     coherence=options.get("coherence", "captured"),
                 )
-                configs = reader.resolve_lift_options(req.metrics, **overrides).configs
+                configs = (
+                    ()
+                    if _compliance_only(candidate, req.estimands, req.dimension)
+                    else reader.resolve_lift_options(req.metrics, **overrides).configs
+                )
             breakouts = _selected_breakouts(candidate, req.dimension) if req.dimension else ()
         for config in configs:
             _config_snapshot(config, candidate._design)
         requests.append(
             EvidenceScope(
-                metrics=tuple(metrics),
+                metrics=(
+                    ()
+                    if operation != "run_breakout"
+                    and _compliance_only(
+                        candidate, options.get("estimands"), options.get("dimension")
+                    )
+                    else tuple(metrics)
+                ),
                 horizon_metrics=()
-                if options.get("estimands") is not None
-                and set(options["estimands"]) == {"compliance"}
-                else ()
-                if is_custom_source(source)
+                if operation != "run_breakout"
+                and _compliance_only(candidate, options.get("estimands"), options.get("dimension"))
                 else tuple(candidate._src.context.metrics),
                 configs=tuple(configs),
                 population=population,
@@ -544,26 +569,23 @@ def run_standalone_day_axis_lift(
     """Resolve lift options before opening the owned evidence context."""
 
     triggered_capture = _triggered_day_axis_capture_supported(analysis, req)
-    if is_custom_source(analysis._src) or (
+    unsupported_capture = is_custom_source(analysis._src) or (
         not triggered_capture
         and (
             req.population == "triggered"
             or req.grain not in declared_evidence(analysis._src).grains
         )
-    ):
+    )
+    if validate_only and unsupported_capture:
+        return None
+    if unsupported_capture:
         return analysis._day_axis().lift(
             req,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
-    from increment.semantics.design import Encouragement
-
-    compliance_only = (
-        isinstance(analysis._design, Encouragement)
-        and tuple(req.estimands or ()) == ("compliance",)
-        and req.dimension is None
-    )
+    compliance_only = _compliance_only(analysis, req.estimands, req.dimension)
     metrics = () if compliance_only else req.metrics
     if req.caller == "run_daily_lift":
         from increment.readouts._common import _sequential_inference

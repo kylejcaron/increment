@@ -187,11 +187,12 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
                 "configs": scope.configs,
                 "uptake_facts": scope.uptake_facts,
             }
-            if (
-                scope.horizon_metrics
-                and "exploratory_source" in declared_evidence(source).operations
-            ):
-                snapshot_options["horizon_metrics"] = scope.horizon_metrics
+            if "exploratory_source" in declared_evidence(source).operations:
+                snapshot_options["horizon_metrics"] = (
+                    tuple(source.context.metrics)
+                    if scope.horizon_metrics is None
+                    else scope.horizon_metrics
+                )
             if (
                 scope.checkpoint_only
                 and scope.execution
