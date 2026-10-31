@@ -735,6 +735,7 @@ depends_on = [
   "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",
   "increment.frame", "increment.plan",
   "increment.query", "increment.readouts", "increment.semantics",
+  "increment.query.artifact_ports",
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
   "increment._health", "increment.kernel.ports",
