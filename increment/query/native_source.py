@@ -1375,7 +1375,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         family_names = tuple(dict.fromkeys(metric.name for metric in template._horizon_metrics))
         captured_horizons = self._captured_metric_horizons
-        if family_names and all(name in captured_horizons for name in family_names):
+        has_family_horizon = family_names and all(
+            name in captured_horizons for name in family_names
+        )
+        if has_family_horizon:
             view._fixed_event_horizon = max(
                 (
                     cast(dt.date, captured_horizons[name])
@@ -1388,7 +1391,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         else:
             view._fixed_event_horizon = self._fixed_event_horizon
             view._has_fixed_event_horizon_override = self._has_fixed_event_horizon_override
-        view._horizon_metrics = tuple(dict.fromkeys(metrics))
+        selected_horizon = tuple(dict.fromkeys(metrics))
+        view._horizon_metrics = (
+            tuple(dict.fromkeys((*template._horizon_metrics, *selected_horizon)))
+            if self._session._source_tables is None and not self._has_fixed_event_horizon_override
+            else selected_horizon
+        )
         view._union_horizon_metric_cache = {}
         view._panel_cache = {}
         view._cuped_relation_cache = {}

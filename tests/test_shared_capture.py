@@ -125,6 +125,25 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
             if row["event"] == "exposure"
         }
         assert observed_day_counts == expected_day_counts
+        live_analysis = _analysis(con, running=True)
+        try:
+            live_narrowed = live_analysis.run(
+                metrics=["revenue"],
+                coherence="live",
+                decision_method=Method(name="unadjusted"),
+            )
+            live_all = live_analysis.run(
+                coherence="live",
+                decision_method=Method(name="unadjusted"),
+            )
+            live_narrowed_revenue = next(row for row in live_narrowed if row.metric == "revenue")
+            live_all_revenue = next(row for row in live_all if row.metric == "revenue")
+            assert nested_close(
+                live_narrowed_revenue.lift.model_dump(),
+                live_all_revenue.lift.model_dump(),
+            )
+        finally:
+            live_analysis.close()
         extra = analysis.run(
             metrics=[],
             exploratory_metrics=["rps", "revenue_cuped"],
