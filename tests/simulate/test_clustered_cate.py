@@ -2400,7 +2400,7 @@ def test_affine_bootstrap_occurrences_recenter_ipw_with_each_draw():
 
 @pytest.mark.slow
 def test_affine_campaign_rejects_additive_public_point_mutation(monkeypatch):
-    import increment.cate as public
+    from increment.kernel.ports import cate_operations
 
     data = _affine_witness()
     cell = ClusteredCell(
@@ -2411,7 +2411,8 @@ def test_affine_campaign_rejects_additive_public_point_mutation(monkeypatch):
         "calibration",
     )
     registration = ClusteredRegistration((cell,), 2, 99, 57, 12)
-    original = public.targeting_rule
+    operations = cate_operations()
+    original = operations.targeting_rule
 
     def mutated(*args, **kwargs):
         try:
@@ -2427,7 +2428,7 @@ def test_affine_campaign_rejects_additive_public_point_mutation(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(public, "targeting_rule", mutated)
+    monkeypatch.setattr(operations, "targeting_rule", mutated)
     monkeypatch.setattr(
         "increment.simulate.cluster_dgp.honest_clustered_population",
         lambda *args, **kwargs: data,

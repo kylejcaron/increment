@@ -7,6 +7,8 @@ This guide follows two completed changes: refining exact conversion-interval end
 For randomized lift, `increment/declarations.py` owns the lightweight `Method`, variance-reduction ids, and static estimator declarations; `increment/estimation/engine.py` owns `estimate_lift` dispatch. Observational estimator identities and lazy implementation lookup also live in `increment/declarations.py` and `increment/estimators/registry.py`; `increment/estimation/adjust.py` owns observational `estimate_ate` orchestration. Built-in implementations are declared by module path rather than eagerly imported. Keep these boundaries separate: don't add observational adjustments to randomized lift or warehouse queries to the estimator. Sources and reductions obtain evidence; estimators consume `ArmStats` or the per-unit data their construction requires.
 
 Analysis CATE routes and registered run persistence use narrow contracts in `increment.kernel.ports` and resolve installed operation providers lazily from distribution entry-point metadata. Keep estimator and store implementations in their specialist namespaces; do not import them from core orchestration or add another runtime registry.
+Missing bundled provider declarations refuse with
+`package.builtin_provider_unavailable`; reinstall Increment to restore them.
 
 `Method.name` is a selector for observational estimator refs and a result label; randomized lift uses `variance_reduction` to choose its estimator id. Observational plugins can use `ADJUSTMENTS.register(name, fn)` as the compatibility registration API, or register an `EstimatorRef` and its implementation directly. Do not infer a method from display text or add aliases.
 

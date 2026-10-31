@@ -7,6 +7,7 @@ from functools import cache
 from importlib.metadata import distribution
 from typing import Any, Protocol
 
+from increment.errors import _BUILTIN_PROVIDER_UNAVAILABLE, refuse
 from increment.estimation.readout_types import ReadoutMetadata
 from increment.kernel.contracts import CellIdentity, CompiledPlanBinding
 from increment.result_envelope import AnalysisEnvelope, ResultCell
@@ -100,7 +101,14 @@ def cate_operations() -> CateOperations:
         if provider.group == "increment.cate_operations" and provider.name == "core"
     )
     if len(providers) != 1:
-        raise RuntimeError("exactly one built-in increment.cate_operations provider is required")
+        refuse(
+            _BUILTIN_PROVIDER_UNAVAILABLE,
+            feature="conditional treatment effects",
+            group="increment.cate_operations",
+            provider="core",
+            reason="entry_point_count",
+            count=len(providers),
+        )
     return providers[0].load()()
 
 
@@ -113,5 +121,12 @@ def program_store_operations() -> ProgramStoreOperations:
         if provider.group == "increment.program_store" and provider.name == "core"
     )
     if len(providers) != 1:
-        raise RuntimeError("exactly one built-in increment.program_store provider is required")
+        refuse(
+            _BUILTIN_PROVIDER_UNAVAILABLE,
+            feature="saved runs",
+            group="increment.program_store",
+            provider="core",
+            reason="entry_point_count",
+            count=len(providers),
+        )
     return providers[0].load()()
