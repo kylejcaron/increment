@@ -30,10 +30,13 @@ whose confidence sets retain raw outcomes preserve identity and the unavailable
 reason without serializing the raw data. Neither format retains live analysis
 or fit objects.
 
-Save `ReadoutResults` JSON to preserve and reopen the full result collection.
-Use `ResultCell` or `AnalysisEnvelope` for portable per-cell summaries,
-available operations, and Arrow interchange. The long-term choice of saved
-result format is tracked in kata issue `cade`.
+Choose the saved representation by lifecycle. `ReadoutResults` JSON preserves
+the typed result collection and collection metadata. `ResultCell` and
+`AnalysisEnvelope` provide portable per-cell projections, supported operations,
+rendering, and Arrow interchange. `ResultsStore` persists a `Run` with its cells,
+execution identity, decision-plan binding, and manifest metadata in Arrow-backed
+storage. The collection, interchange envelope, and persisted execution record
+are complementary representations, not competing choices for one format.
 
 The version-2 envelope adds a tagged report-only row payload for result classes
 that are not `LiftEstimate` rows. These payloads are not deserialized as
@@ -52,6 +55,15 @@ continue to decode as `lift_estimate`.
 | `ContrastResult` / `ContrastResults` | Typed payload preserves contrast identity, estimate, descriptive or t-reference variance, null SE/dof reasons, realized order counts, status, refusal context, advisories and collection metadata. Its identity and summary use absolute scale. | Descriptive `switchback_unit_variance_envelope` does not support sampling operations; t-based methods remain construction-specific and are not granted lift operations. |
 
 Report-only cells can be reopened and passed through the same table and renderer entry points as their live rows; the renderer rehydrates typed report details rather than interpreting report payloads as `LiftEstimate`. Collection concatenation refuses incompatible daily/as-of view or completion-policy scopes with a coded error.
+
+For opaque CATE, targeting, and sensitivity report kinds, core does not import
+the implementation model to rebuild the summary. The serialized `EffectEstimate`
+is the authoritative portable summary projection used for summary rendering;
+the retained report payload remains available for full typed report display, but
+its internal values are not re-derived or cross-validated against that
+projection. Standard, daily/as-of, and switchback rows have typed core adapters,
+so their restored
+summaries are projected from the retained typed row.
 
 Posterior mixture ordering and zero-weight components are serialized in model
 order; tuple-valued state is represented as canonical JSON arrays. Unordered

@@ -2372,6 +2372,190 @@ def test_brief_joint_set_uses_displayed_level_and_preserves_available_point():
     assert "90.0% confidence" not in brief
 
 
+def test_cell_rejects_conflicting_source_snapshot_identity():
+    import copy
+
+    import pandas as pd
+
+    from increment import Analysis, MetricSpec
+    from increment.errors import CodedError
+    from increment.result_envelope import ResultCell
+    from increment.semantics.design import Randomized
+
+    rows = Analysis.from_unit_summary(
+        pd.DataFrame(
+            [
+                {"unit": f"{group}-{index}", "arm": group, "value": float(index)}
+                for group in ("control", "treatment")
+                for index in range(8)
+            ]
+        ),
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+    ).run()
+    cell = rows.as_cells()[0]
+    identity = cell.identity.model_copy(update={"source_snapshot_id": "identity-source"})
+    with pytest.raises(CodedError) as raised:
+        ResultCell.from_report_payload(
+            row_kind="sensitivity",
+            identity=identity,
+            label=cell.label,
+            row=rows[0],
+            source_snapshot_id="payload-source",
+        )
+    assert raised.value.code == "results.cell.schema_unsupported"
+
+    payload = copy.deepcopy(cell.to_payload())
+    payload["identity"]["source_snapshot_id"] = "identity-source"
+    payload["source_snapshot_id"] = "payload-source"
+    with pytest.raises(CodedError) as raised:
+        ResultCell.from_payload(payload)
+    assert raised.value.code == "results.cell.schema_unsupported"
+
+
+def test_payload_summary_is_rederived_from_retained_lift_row():
+    import copy
+
+    import pandas as pd
+
+    from increment import Analysis, MetricSpec
+    from increment.result_envelope import ResultCell
+    from increment.semantics.design import Randomized
+
+    rows = Analysis.from_unit_summary(
+        pd.DataFrame(
+            [
+                {
+                    "unit": f"{group}-{index}",
+                    "arm": group,
+                    "value": float(index + (group == "treatment")),
+                }
+                for group in ("control", "treatment")
+                for index in range(8)
+            ]
+        ),
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+    ).run()
+    cell = rows.as_cells()[0]
+    assert cell.summary is not None and cell.summary.point is not None
+    payload = copy.deepcopy(cell.to_payload())
+    payload["summary"]["point"] += 10.0
+
+    restored = ResultCell.from_payload(payload)
+
+    assert restored.summary == cell.summary
+
+
+def test_prior_bound_unknown_sampling_keeps_summary_unavailable_after_roundtrips():
+    import copy
+    import json
+    import pickle
+
+    import pandas as pd
+
+    from increment import Analysis, MetricSpec
+    from increment.estimation.results import LiftEstimate
+    from increment.result_envelope import ResultCell
+    from increment.semantics.design import Randomized
+
+    rows = Analysis.from_unit_summary(
+        pd.DataFrame(
+            [
+                {
+                    "unit": f"{group}-{index}",
+                    "arm": group,
+                    "value": float(index + (group == "treatment")),
+                }
+                for group in ("control", "treatment")
+                for index in range(8)
+            ]
+        ),
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+    ).run()
+    row = rows[0]
+    assert isinstance(row, LiftEstimate)
+    row = row.model_copy(update={"prior_shrunk": True, "sampling_available": None})
+    cell = ResultCell.from_row(row)
+    assert cell.summary is None
+    restored = (
+        ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
+        ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0],
+        pickle.loads(pickle.dumps(cell)),
+        copy.deepcopy(cell),
+    )
+
+    assert all(item.summary is None for item in restored)
+
+
+def test_switchback_payload_summary_keeps_display_alpha_not_procedure_alpha():
+    import copy
+
+    from increment.decision import ContrastDecisionProcedure
+    from increment.estimation.contrast import ContrastStats, estimate_contrast
+    from increment.estimation.contrast_results import ContrastResults
+    from increment.result_envelope import ResultCell
+    from increment.semantics.unit_cycle import UnitCycleTApproximation
+
+    stats = ContrastStats(
+        metric="orders",
+        aggregation="any",
+        probability_ct=0.8,
+        randomization_law="independent_bernoulli_order",
+        independence_grain="unit_cycle",
+        carryover_order=0,
+        observation_steps=3,
+        retained_steps=3,
+        control_group="control",
+        treatment_group="treatment",
+        n_units=3,
+        n_cycles=9,
+        ct_cycles=7,
+        tc_cycles=2,
+        reference_delta=0.2,
+        mean_residual=0.1,
+        m2_delta=0.03,
+    )
+    procedure = ContrastDecisionProcedure(
+        reference=UnitCycleTApproximation(),
+        metric="orders",
+        role="secondary",
+        alternative="greater",
+        null_abs=0.0,
+        alpha=0.025,
+    )
+    (result,) = estimate_contrast(stats, procedure).results
+    (cell,) = ContrastResults([result]).as_cells()
+    assert result.estimate.alpha == 0.05
+    assert cell.summary is not None and cell.summary.alpha == result.estimate.alpha
+    payload = copy.deepcopy(cell.to_payload())
+    payload["summary"]["alpha"] = procedure.alpha
+
+    restored = ResultCell.from_payload(payload)
+
+    assert restored.summary is not None
+    assert restored.summary.alpha == result.estimate.alpha
+
+
 def test_provenance_requires_timezone_aware_creation_time():
     from datetime import datetime
 
