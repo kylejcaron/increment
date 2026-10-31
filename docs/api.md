@@ -149,15 +149,16 @@ Estimated result collections expose `as_cells()`: this includes run readouts,
 `CateResult`, `CateValidation`, `TargetingRule`, `TargetingSelection`, and
 `ConfoundingSensitivity`.
 Store identity is based on the capture (`source_snapshot_id`) and analysis
-specification, not on equality of `source_content_digest`. The versioned
-content digest records canonical estimation-input evidence as provenance and
-is not a store deduplication key. In the measured parity set, exact
-cross-constructor agreement was 11/42 scenarios (26.2%) and 74/306 pairs
-(24.2%); all 232 disagreements were evidence representation/value differences.
-No float-only differences were observed; an example representation mismatch is
-a differing `cy1` sufficient statistic. The digest is stable within an ingress;
-the store does not rely on cross-ingress agreement. Nontrivial representation
-work is tracked in kata issue `xfx3`.
+specification, not on equality of `source_content_digest`. The content digest
+records exact canonical estimation inputs as provenance; it is not a store
+deduplication key. Moment-row metadata such as `experiment_id` is excluded,
+but a user-data column with that name remains part of the evidence.
+
+Different constructors or aggregation orders can produce numerically equivalent
+moments with slightly different floating-point representations, and therefore
+different exact hashes. Compare estimates and intervals at the numerical
+tolerance appropriate to the quantity, not by content-hash equality. The digest
+does not round evidence or promise universal cross-constructor equality.
 
 The Arrow `se` column in portable cells, envelopes, and run history uses the
 estimator's native uncertainty scale: `log_se` for log-scale relative lift and
