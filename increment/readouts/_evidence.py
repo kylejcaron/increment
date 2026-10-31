@@ -1601,6 +1601,10 @@ def load_builtin_day_moments(src: EvidenceSource, request: MomentsRequest) -> Mo
 def _load_day_axis_rows(src: EvidenceSource, request: DayAxisRequest) -> DayAxisRows:
     require_request_evidence(src, request)
     route = day_axis_route(src)
+    if route == NATIVE_ROUTE and request.experiment is None:
+        experiment = _trigger_experiment(src)
+        if experiment is not None:
+            request = replace(request, experiment=experiment)
     if route == NATIVE_ROUTE and (
         request.experiment is not None
         or request.caller in ("run_daily_lift", "run_asof_lift")

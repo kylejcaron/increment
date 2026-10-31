@@ -101,7 +101,6 @@ def _load_asof_rows_by_metric(
             by=tuple(by),
             completed_windows_only=completed_windows_only,
             estimands=tuple(ESTIMANDS) if estimands is None else tuple(estimands),
-            experiment=getattr(src, "_experiment", None),
             covariate_metrics=covariate_metrics,
         ),
     )

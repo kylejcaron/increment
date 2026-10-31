@@ -771,6 +771,8 @@ def run_standalone_day_axis_lift(
     scope_metrics = () if compliance_only else req.metrics
     from increment._evidence_scopes import capture_requirements
 
+    _, scope_uptake_facts = _day_axis_scope_dependencies(analysis, req)
+
     scope = capture_requirements(
         analysis._src,
         (
@@ -782,6 +784,7 @@ def run_standalone_day_axis_lift(
                 grain=req.grain,
                 dimension=req.dimension,
                 estimands=req.estimands,
+                uptake_facts=scope_uptake_facts,
                 breakouts=(
                     _selected_breakouts(analysis, req.dimension)
                     if req.dimension is not None
