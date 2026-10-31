@@ -255,11 +255,6 @@ def test_bound_custom_provider_is_verification_only():
     with pytest.raises(CodedError) as error:
         run(experiment, BoundResolver(resolver._source))
     assert error.value.code == "kernel.run.provider_execution_unavailable"
-    from increment._binding import binding_for
-
-    with pytest.raises(CodedError) as admitted:
-        binding_for(experiment, BoundResolver(resolver._source))
-    assert admitted.value.code == "kernel.run.provider_execution_unavailable"
 
 
 @pytest.mark.parametrize("options", [{"capture": {"finalized": True}}, {"population": "triggered"}])

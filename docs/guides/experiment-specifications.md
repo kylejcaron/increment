@@ -134,11 +134,27 @@ an opened artifact snapshot. Exiting the block releases those resources; it
 does not close the warehouse connection you supplied:
 
 ```python
-experiment, resolver = from_definitions(
-    "definitions.yml", con, experiment_name="new_experiment"
-)
+from pathlib import Path
+import shutil
+
+import ibis
+import examples._seed as seed
+from increment import Method, from_definitions, run
+
+definitions = Path("definitions")
+shutil.copytree(Path(seed.__file__).parent / "definitions", definitions)
+con = ibis.duckdb.connect()
+seed.seed_event_log(con, with_pre_period=True)
+experiment, resolver = from_definitions("new_onboarding_v2", definitions, con, store="always")
 with resolver:
-    result = run(experiment, resolver)
+    result = run(
+        experiment,
+        resolver,
+        analysis_options={"decision_method": Method(name="cuped", variance_reduction="cuped")},
+    )
+assert result
+assert con.raw_sql("SELECT 1").fetchone()[0] == 1
+con.disconnect()
 ```
 
 An offline definitions resolver can inspect a saved specification, but it has
