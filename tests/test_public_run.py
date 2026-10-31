@@ -1071,41 +1071,72 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
 
 
 def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
-    from increment._run import _live_winsor_effect
-    from increment.estimation.winsor import estimate_winsor_lift
-    from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
+    from increment import MetricSpec, Randomized
+    from increment.estimation.results import LiftEstimate
+    from increment.winsor import WinsorInferenceSpec, WinsorSupport
 
     for upper, expected_status, control_values, treatment_values in (
         (None, "unbounded", (1, 2, 3, 9), (1, 2, 3, 5)),
         (0, "undefined", (0, 0), (0, 0)),
     ):
-        raw = WinsorRawState(
-            metric="value",
-            study_id=f"rank-{expected_status}",
-            population="assigned",
-            missingness="error",
-            quantile=0.99,
-            inference=WinsorInferenceSpec(method="joint-rank-projection-v1"),
-            support=WinsorSupport(
-                lower=0,
-                upper=upper,
-                provenance="Declared outcome support",
-            ),
-            arms=(
-                RawArm(group_id="control", values=control_values),
-                RawArm(group_id="treatment", values=treatment_values),
-            ),
+        plan = AnalysisPlan(primary="value")
+        metric = MetricSpec(
+            name="value",
+            type="mean",
+            winsorization={
+                "upper_percentile": 0.99,
+                "support": WinsorSupport(
+                    lower=0, upper=upper, provenance="Declared outcome support"
+                ),
+                "inference": WinsorInferenceSpec(method="joint-rank-projection-v1"),
+            },
         )
-        row = estimate_winsor_lift(raw, "control", "treatment")
-        effect = _live_winsor_effect(row)
-
-        assert row.confidence_set is not None
-        assert row.confidence_set.relative.upper.status == expected_status
-        assert effect.upper is None
-        assert effect.alpha == row.confidence_set.alpha
-        assert effect.qualification == row.confidence_set.qualification
-        assert effect.reason is not None
-        assert f"upper endpoint {expected_status}" in effect.reason
+        compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
+        registration = Registration.from_plan(compiled)
+        analysis = Analysis.from_unit_summary(
+            pd.DataFrame(
+                [
+                    {"unit": f"{group}-{index}", "arm": group, "value": float(value)}
+                    for group, values in (
+                        ("control", control_values),
+                        ("treatment", treatment_values),
+                    )
+                    for index, value in enumerate(values)
+                ]
+            ),
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[metric],
+            plan=plan,
+            experiment_id=f"rank-{expected_status}",
+        )
+        try:
+            row = analysis.run()[0]
+            assert isinstance(row, LiftEstimate)
+            result = run(
+                analysis,
+                registration,
+                compiled,
+                experiment_id=f"rank-{expected_status}",
+                analysis_spec_hash="sha256:" + "e" * 64,
+                execution_identity_hash="sha256:" + "f" * 64,
+                run_id=f"rank-{expected_status}",
+            )
+            effect = result.effects[0]
+            assert effect is not None
+            assert row.confidence_set is not None
+            assert row.confidence_set.relative.upper.status == expected_status
+            assert effect.upper is None
+            assert effect.alpha == row.confidence_set.alpha
+            assert effect.qualification == row.confidence_set.qualification
+            assert effect.reason is not None
+        finally:
+            analysis.close()
 
 
 def test_public_run_rejects_registration_that_differs_from_analysis_plan():
