@@ -539,6 +539,7 @@ def _run_rows(  # noqa: PLR0913
     scoped_rows: Sequence[ScopedReadout] | None = None,
 ) -> RunResult:
     context = analysis._state.source.context
+    operations = program_store_operations()
     contrast_context = (
         context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
     )
@@ -635,7 +636,7 @@ def _run_rows(  # noqa: PLR0913
                 ),
             )
             cells.append(replace(cell, identity=identity, provenance=provenance))
-    run_record = program_store_operations().Run(
+    run_record = operations.Run(
         experiment_id=experiment_id,
         run_id=run_id,
         analysis_spec_hash=analysis_spec_hash,
