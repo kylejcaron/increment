@@ -232,6 +232,62 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
 
 
 @pytest.mark.integration
+def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_con):
+    experiment, resolver = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    from increment._analysis_kernel_adapter import AnalysisResolver
+    from increment._binding import ResolverBinding
+
+    assert isinstance(resolver, AnalysisResolver)
+    analysis = resolver._analysis
+    analysis.materialize()
+    parent_names = tuple(item.name for item in resolver.binding.session._materialized)
+    assert parent_names
+
+    added = analysis._exploratory_metrics(["aov"], caller="run")
+    exploratory = analysis._exploratory_analysis(added, caller="run")
+    derived_resolver = ResolverBinding(exploratory._binding, experiment)
+
+    try:
+        breakout_resolver = ResolverBinding(resolver.binding.with_breakouts(()), experiment)
+        breakout_resolver.close()
+        assert set(parent_names) <= set(seeded_con.list_tables())
+
+        derived_resolver.close()
+        assert set(parent_names) <= set(seeded_con.list_tables())
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert run(experiment, resolver)
+    finally:
+        resolver.close()
+
+
+@pytest.mark.integration
+def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_con):
+    experiment, resolver = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    from increment._analysis_kernel_adapter import AnalysisResolver
+
+    assert isinstance(resolver, AnalysisResolver)
+    resolver._analysis.materialize()
+    session = resolver.binding.session
+    resolver.close()
+    assert not session._materialized
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        assert run(experiment, resolver, analysis_options={"coherence": "live"})
+
+    live_names = tuple(item.name for item in session._materialized)
+    assert live_names
+    assert set(live_names) <= set(seeded_con.list_tables())
+    resolver.close()
+    assert not set(live_names) & set(seeded_con.list_tables())
+
+
+@pytest.mark.integration
 def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
         "new_onboarding_v2", seeded_defs, seeded_con, store="always"

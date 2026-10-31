@@ -38,6 +38,7 @@ class SourceBinding:
     state: AnalysisState
     artifact_open: _ArtifactOpenSpec | None = None
     input_backend: Backend | None = None
+    owns_source: bool = True
 
     @property
     def source(self) -> Any:
@@ -160,10 +161,15 @@ class SourceBinding:
         return self.on_mixed_assignment
 
     def reopened(self, source: Any) -> SourceBinding:
-        return replace(self, state=replace(self.state, source=source))
+        return replace(self, state=replace(self.state, source=source), owns_source=True)
 
     def with_source(self, source: Any) -> SourceBinding:
-        return replace(self, state=replace(self.state, source=source), artifact_open=None)
+        return replace(
+            self,
+            state=replace(self.state, source=source),
+            artifact_open=None,
+            owns_source=False,
+        )
 
     def with_breakouts(self, breakouts: tuple[Breakout, ...]) -> SourceBinding:
         if not isinstance(self.state, DefinitionsArmAnalysisState):
@@ -177,7 +183,11 @@ class SourceBinding:
                 declared=tuple((item.source, item.property) for item in declared),
             )
         experiment = self.state.experiment.model_copy(update={"breakouts": breakouts})
-        return replace(self, state=replace(self.state, experiment=experiment))
+        return replace(
+            self,
+            state=replace(self.state, experiment=experiment),
+            owns_source=False,
+        )
 
 
 def _validate_experiment(experiment: Experiment, declared: Experiment) -> None:
@@ -230,7 +240,7 @@ class ResolverBinding:
                 return source
             source = self._reopen_artifact(self.binding)
             self.binding = self.binding.reopened(source)
-            self._closed = False
+        self._closed = False
         return source
 
     def verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
@@ -280,10 +290,11 @@ class ResolverBinding:
     def close(self) -> None:
         if self._closed:
             return
-        source = self.binding.state.source
-        close = getattr(source, "close", None)
-        if callable(close):
-            close()
+        if self.binding.owns_source:
+            source = self.binding.state.source
+            close = getattr(source, "close", None)
+            if callable(close):
+                close()
         self._closed = True
 
     def __enter__(self) -> Self:
