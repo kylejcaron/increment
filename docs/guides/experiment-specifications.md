@@ -129,6 +129,22 @@ that catalog and refuses when it is missing or stale. An offline definitions
 specification can be inspected with `runnable`, but needs a connection-bound
 resolver to execute.
 
+Use the resolver as a context manager when it owns temporary warehouse tables or
+an opened artifact snapshot. Exiting the block releases those resources; it
+does not close the warehouse connection you supplied:
+
+```python
+experiment, resolver = from_definitions(
+    "definitions.yml", con, experiment_name="new_experiment"
+)
+with resolver:
+    result = run(experiment, resolver)
+```
+
+An offline definitions resolver can inspect a saved specification, but it has
+no warehouse connection and cannot run it. Connect to the warehouse and build
+the resolver again when you are ready to run.
+
 The bound built-in resolver executes selected run, daily, as-of, breakout,
 or switchback scopes using each scope's declared metric selection and
 population. It validates every selected operation before opening the shared

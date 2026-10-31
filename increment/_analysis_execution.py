@@ -7,7 +7,7 @@ import datetime as dt
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 
@@ -39,6 +39,7 @@ from increment._analysis_config import (
     select_exploratory_metrics,
     select_metrics,
 )
+from increment._binding import _UNDECLARED_BREAKOUT, SourceBinding, _ArtifactOpenSpec
 from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
 from increment._day_axis import (
     _CLUSTERED_DAY_AXIS,
@@ -153,11 +154,6 @@ _INVALID_POPULATION = RefusalSpec(
     template="population must be 'assigned' or 'triggered'; got {population!r}",
 )
 
-_UNDECLARED_BREAKOUT = RefusalSpec(
-    "facade.analysis.undeclared_breakout",
-    InvalidRequestError,
-    template="breakout {requested!r} is not declared by this experiment; declared: {declared!r}",
-)
 _EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
     "facade.analysis.exploratory_metrics_source_limited",
     CapabilityError,
@@ -301,16 +297,6 @@ def _declared_design(experiment: Experiment) -> Randomized | Encouragement | Obs
     return experiment.resolved_design()
 
 
-@dataclass(frozen=True, slots=True)
-class _ArtifactOpenSpec:
-    """Immutable reopen pin for an artifact-backed analysis, fixed at construction."""
-
-    store: ArtifactStore
-    ref: UnitDayArtifactRef
-    expected_context: ArtifactContext
-    verification: Literal["lazy_digest"]
-
-
 # Public facade
 
 
@@ -405,7 +391,6 @@ class Analysis:
         completeness watermarks; absent certification remains unknown.
     """
 
-    _input_backend: Backend | None = None
     _readout_snapshot_active: bool = False
     _readout_srm_observations: (
         dict[tuple[Any, ...], tuple[Any, tuple[str, Mapping[str, Any], str] | None]] | None
@@ -485,18 +470,19 @@ class Analysis:
             design=design,
             plan=compiled_plan,
         )
-        self._state = self._build_state(
-            src=src,
-            defs=defs,
-            experiment=experiment,
-            con=con,
-            session=session,
-            experiment_name=experiment_name,
-            backend=backend,
-            store=store,
-            on_mixed_assignment=on_mixed_assignment,
+        self._binding = SourceBinding(
+            self._build_state(
+                src=src,
+                defs=defs,
+                experiment=experiment,
+                con=con,
+                session=session,
+                experiment_name=experiment_name,
+                backend=backend,
+                store=store,
+                on_mixed_assignment=on_mixed_assignment,
+            )
         )
-        self._artifact_open_spec = None
 
     @classmethod
     def _build_state(
@@ -542,6 +528,22 @@ class Analysis:
             exposure_lookup={e.name: e for e in defs.exposures},
         )
 
+    @property
+    def _state(self) -> AnalysisState:
+        return self._binding.state
+
+    @property
+    def _artifact_open_spec(self) -> _ArtifactOpenSpec | None:
+        return self._binding.artifact_open
+
+    @property
+    def _input_backend(self) -> Backend | None:
+        return self._binding.input_backend
+
+    @_input_backend.setter
+    def _input_backend(self, value: Backend | None) -> None:
+        self._binding = replace(self._binding, input_backend=value)
+
     def __enter__(self) -> Self:
         return self
 
@@ -575,9 +577,8 @@ class Analysis:
         return self._state
 
     def _ensure_artifact_source(self) -> _BuiltinMomentSource:
-        source = cast("_BuiltinMomentSource", self._state.source)
-        spec = self._artifact_open_spec
-
+        source = cast("_BuiltinMomentSource", self._binding.state.source)
+        spec = self._binding.artifact_open
         if spec is not None and cast("ArtifactMomentSource", source).closed:
             from increment.query.source import open_artifact
 
@@ -587,7 +588,7 @@ class Analysis:
                 expected_context=spec.expected_context,
                 verification=spec.verification,
             )
-            self._state = replace(self._state, source=source)
+            self._binding = self._binding.reopened(source)
         return source
 
     @property
@@ -600,45 +601,35 @@ class Analysis:
 
     @property
     def _defs(self) -> Definitions | None:
-        state = self._state
-        return state.definitions if isinstance(state, DefinitionsArmAnalysisState) else None
+        return self._binding.definitions
 
     @property
     def _experiment_name(self) -> str:
-        return self._state.experiment_name
+        return self._binding.experiment_name
 
     @property
     def _backend(self) -> str | None:
-        state = self._state
-        if isinstance(state, DefinitionsArmAnalysisState):
-            return state.backend or None
-        return None
+        return self._binding.backend
 
     @property
     def _con(self) -> SQLBackend | None:
-        state = self._state
-        return state.connection if isinstance(state, DefinitionsArmAnalysisState) else None
+        return self._binding.connection
 
     @property
     def _store(self) -> Literal["auto", "always", "none"]:
-        state = self._state
-        return state.store if isinstance(state, DefinitionsArmAnalysisState) else "none"
+        return self._binding.store
 
     @property
     def _on_mixed_assignment(self) -> Literal["error", "warn", "exclude"]:
-        state = self._state
-        return (
-            state.on_mixed_assignment if isinstance(state, DefinitionsArmAnalysisState) else "error"
-        )
+        return self._binding.on_mixed_assignment
 
     @property
     def _session(self) -> WarehouseSession | None:
-        state = self._state
-        return state.session if isinstance(state, DefinitionsArmAnalysisState) else None
+        return self._binding.session
 
     @property
     def _metrics(self) -> list[Metric]:
-        return list(self._context.metrics)
+        return self._binding.metrics
 
     def _execution_config_for_cell(self, cell: Any) -> tuple[Any, tuple[Method, ...]]:
         key = cell.identity.key
@@ -665,23 +656,16 @@ class Analysis:
 
     @property
     def _design(self) -> Randomized | Encouragement | Observational | None:
-        if isinstance(self._context, ContrastContext):
-            return self._context.study.identification
-        return self._context.design
+        return self._binding.design
 
     @property
     def _plan(self) -> CompiledDecisionPlan:
-        return cast("SourceContext", self._context).plan
+        return self._binding.plan
 
     @property
     def _experiment(self) -> Experiment:
-        state = self._require_arm_state("experiment")
-        if isinstance(state, DefinitionsArmAnalysisState):
-            return state.experiment
-        artifact_experiment = getattr(self._src, "artifact_experiment", None)
-        if isinstance(artifact_experiment, Experiment):
-            return artifact_experiment
-        raise AttributeError("seam analysis has no Experiment definition")
+        self._require_arm_state("experiment")
+        return self._binding.experiment
 
     @staticmethod
     def _artifact_context(
@@ -868,17 +852,19 @@ class Analysis:
         elif design is not None and context.design != design:
             _raise("facade.analysis.source_context_design_disagrees_arm")
         self = super().__new__(cls)
-        self._artifact_open_spec = artifact_open_spec
-        self._state = cls._build_state(
-            src=src,
-            defs=defs,
-            experiment=experiment,
-            con=con,
-            session=session,
-            experiment_name=experiment_name or src.context.study_id,
-            backend=backend,
-            store=store,
-            on_mixed_assignment=on_mixed_assignment,
+        self._binding = SourceBinding(
+            cls._build_state(
+                src=src,
+                defs=defs,
+                experiment=experiment,
+                con=con,
+                session=session,
+                experiment_name=experiment_name or src.context.study_id,
+                backend=backend,
+                store=store,
+                on_mixed_assignment=on_mixed_assignment,
+            ),
+            artifact_open=artifact_open_spec,
         )
         return self
 
@@ -1393,10 +1379,7 @@ class Analysis:
         self, pinned: _BuiltinMomentSource, operation: Callable[[Self], _T]
     ) -> _T:
         isolated = copy.copy(self)
-        isolated._state = replace(self._state, source=pinned)
-        # The pinned snapshot must never be reopened over: drop any reopen pin
-        # the copy would otherwise inherit.
-        isolated._artifact_open_spec = None
+        isolated._binding = self._binding.with_source(pinned)
         isolated._readout_snapshot_active = True
         isolated._readout_srm_observations = {}
         try:
@@ -1445,8 +1428,7 @@ class Analysis:
                 declared=tuple((item.source, item.property) for item in declared),
             )
         scoped = copy.copy(self)
-        experiment = state.experiment.model_copy(update={"breakouts": (breakout,)})
-        scoped._state = replace(state, experiment=experiment)
+        scoped._binding = self._binding.with_breakouts((breakout,))
         return DashboardBreakoutReads(breakout, scoped)
 
     def dashboard_group_data(
@@ -2345,7 +2327,7 @@ class Analysis:
 
     def _exploratory_analysis(self, added: Sequence[Metric], *, caller: str) -> Self:
         """This analysis reading from a sibling source that also carries *added*."""
-        state = self._require_arm_state(caller)
+        self._require_arm_state(caller)
         src = _require_analysis_operation(
             self._src,
             "exploratory_source",
@@ -2353,7 +2335,7 @@ class Analysis:
             message=f"{caller}(exploratory_metrics=...) needs a native Analysis.from_definitions instance.",
         )
         derived = copy.copy(self)
-        derived._state = replace(state, source=src.exploratory_source(metrics=added))
+        derived._binding = self._binding.with_source(src.exploratory_source(metrics=added))
         context = _current_execution_context()
         if context is not None:
             context.declare_source_alias(derived._src, parent=self._src)

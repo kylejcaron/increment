@@ -116,9 +116,17 @@ def _write_catalog(path: Path, experiment: Experiment, expected_digest: str) -> 
 
 
 class _OfflineResolver:
-    def __init__(self, definitions_path: Path, expected_digest: str) -> None:
+    def __init__(
+        self, definitions_path: Path, expected_digest: str, experiment: Experiment
+    ) -> None:
         self.definitions_path = definitions_path
         self.expected_digest = expected_digest
+        self.experiment = experiment
+
+    def validate_experiment(self, experiment: Experiment) -> None:
+        from increment._binding import _validate_experiment
+
+        _validate_experiment(experiment, self.experiment)
 
     def resolve(self, source_refs: object, ctx: object | None = None) -> object:
         del source_refs, ctx
@@ -219,9 +227,8 @@ def from_definitions(
         payload = experiments.get(name)
         if not isinstance(payload, dict):
             _refuse("kernel.definitions.catalog_missing", path=str(path))
-        return Experiment.from_json(json.dumps(payload)), _OfflineResolver(
-            path, str(catalog["definitions_digest"])
-        )
+        experiment = Experiment.from_json(json.dumps(payload))
+        return experiment, _OfflineResolver(path, str(catalog["definitions_digest"]), experiment)
 
     from increment._analysis_execution import Analysis
     from increment.semantics.loader import load

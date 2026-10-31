@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast, runtime_checkable
 
+from increment._binding import _resolve_verified as _resolve_binding_provider
 from increment._source_types import EvidenceCapabilities, EvidenceProvider
 from increment.errors import CodedError
 from increment.kernel.contracts import Scope, _refuse
@@ -36,6 +37,11 @@ class Resolver(Protocol):
     ) -> object: ...
 
     def verify(self, source_refs: Sequence[SourceReference], provider: Any) -> list[CodedError]: ...
+
+
+def _resolve_verified(exp: Experiment, resolver: Resolver, *, ctx: object | None = None) -> object:
+    """Validate and verify a binding before returning its provider."""
+    return _resolve_binding_provider(exp, resolver, ctx=ctx)
 
 
 class BoundResolver:
@@ -301,10 +307,7 @@ def run(
             scopes=selected,
             operations={key: value for key, value in exp.operations.items() if key in hashes},
         )
-    provider = resolver.resolve(exp.source_refs, ctx)
-    failures = resolver.verify(exp.source_refs, provider)
-    if failures:
-        raise failures[0]
+    provider = _resolve_verified(exp, resolver, ctx=ctx)
     execute = getattr(resolver, "run_experiment", None)
     if not callable(execute):
         _refuse("kernel.run.provider_execution_unavailable")

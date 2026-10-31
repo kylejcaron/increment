@@ -130,12 +130,23 @@ def test_bound_builder_refuses_other_source_identity(field):
     assert error.value.code == "kernel.resolver.digest_mismatch"
 
 
-def test_builder_refuses_changed_metric_configuration():
+def test_builder_refuses_changed_registration_and_design_before_evidence_reads():
     experiment, resolver = _experiment()
-    metric = dict(experiment.metrics["value"], name="other")
+    from tests.analysis_factory import held_source, replace_analysis_source
+    from tests.test_metric_evidence import _CountingSource
+
+    counted = _CountingSource(held_source(resolver._analysis))
+    replace_analysis_source(resolver._analysis, counted)
+    changed = replace(
+        experiment,
+        registration=experiment.registration.model_copy(update={"registration_hash": "changed"}),
+        design={**experiment.design, "control_group": "different"},
+    )
+    assert changed.source_refs == experiment.source_refs
     with pytest.raises(CodedError) as error:
-        run(replace(experiment, metrics={"other": metric}), resolver)
+        run(changed, resolver)
     assert error.value.code == "kernel.run.execution_unavailable"
+    assert counted.unit_frame_reads == 0
 
 
 def test_builder_executes_declared_daily_scope_and_preflights_segment():
@@ -244,6 +255,11 @@ def test_bound_custom_provider_is_verification_only():
     with pytest.raises(CodedError) as error:
         run(experiment, BoundResolver(resolver._source))
     assert error.value.code == "kernel.run.provider_execution_unavailable"
+    from increment._binding import binding_for
+
+    with pytest.raises(CodedError) as admitted:
+        binding_for(experiment, BoundResolver(resolver._source))
+    assert admitted.value.code == "kernel.run.provider_execution_unavailable"
 
 
 @pytest.mark.parametrize("options", [{"capture": {"finalized": True}}, {"population": "triggered"}])

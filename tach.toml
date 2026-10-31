@@ -720,6 +720,14 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._binding"
+layer = "core"
+depends_on = [
+  "increment._canonical", "increment.errors", "increment.decision",
+  "increment.kernel.contracts",
+]
+
+[[modules]]
 path = "increment._analysis_execution"
 layer = "core"
 depends_on = [
@@ -739,7 +747,7 @@ depends_on = [
   "increment.query.artifact_ports",
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
-  "increment._health", "increment.kernel.ports",
+  "increment._health", "increment.kernel.ports", "increment._binding",
 ]
 
 [[modules]]
@@ -1122,7 +1130,7 @@ depends_on = [
   "increment.declarations",
   "increment.estimators.registry",
   "increment.errors",
-  "increment.kernel.contracts",
+  "increment.kernel.contracts", "increment._binding",
 ]
 
 [[modules]]
@@ -1166,7 +1174,7 @@ depends_on = [
   "increment._canonical", "increment._runnability",
   "increment.errors",
   "increment.kernel",
-  "increment.kernel.contracts",
+  "increment.kernel.contracts", "increment._binding",
 ]
 
 [[modules]]
@@ -1178,7 +1186,7 @@ depends_on = [
   "increment.errors",
   "increment.kernel",
   "increment.kernel.contracts",
-  "increment.semantics",
+  "increment.semantics", "increment._binding",
 ]
 
 [[modules]]
