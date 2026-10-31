@@ -36,7 +36,6 @@ from increment.sources import require_operation
 
 if TYPE_CHECKING:
     from increment._literals import ValueScale
-    from increment._source_types import EvidenceProvider
     from increment.breakout.estimates import LiftEstimates
     from increment.decision import CompiledDecisionPlan
     from increment.declarations import Method
@@ -228,7 +227,6 @@ class WholeWindowReadouts:
         validate_trigger: Callable[[object], None],
         arm_moments: Callable[..., list[LiftEstimate]],
         execution_context_scope: Callable[[EvidenceExecutionContext], Any],
-        provider_for: Callable[[_BuiltinMomentSource], EvidenceProvider],
         registered_run: Callable[..., Any],
     ) -> None:
         self._src = src
@@ -239,7 +237,6 @@ class WholeWindowReadouts:
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
         self._execution_context_scope = execution_context_scope
-        self._provider_for = provider_for
         self._registered_run = registered_run
 
     def validate(self, req: WholeWindowRequest) -> RouteName:
@@ -290,11 +287,14 @@ class WholeWindowReadouts:
         for reader, request in members:
             population = request.population or "assigned"
             has_trigger = reader._experiment is not None and reader._experiment.trigger is not None
+            registered = getattr(reader._plan.inference, "registration", None) is not None
             populations = (
                 ("assigned", "triggered")
                 if request.population is None and has_trigger
                 else (population,)
             )
+            if population == "triggered" and registered:
+                populations = tuple(dict.fromkeys((*populations, "assigned")))
             prepared.append(
                 RunAcquisitionOwner.prepare(
                     RunAcquisitionRequest(
@@ -305,12 +305,9 @@ class WholeWindowReadouts:
                         metrics=tuple(metric.name for metric in request.metrics),
                         estimands=request.estimands,
                         value_scale=request.value_scale,
-                        request_population=(
-                            "assigned"
-                            if population == "triggered"
-                            and getattr(reader._plan.inference, "registration", None) is not None
-                            else population
-                        ),
+                        request_population="assigned"
+                        if population == "triggered" and registered
+                        else population,
                         family_population=population,
                         family_populations=populations,
                         family_scope_metrics=tuple(request.metrics),
@@ -382,7 +379,6 @@ class WholeWindowReadouts:
             return RunAcquisitionOwner.execute(
                 self._src,
                 prepared,
-                provider=self._provider_for(self._src),
                 run_id=uuid4().hex,
                 coherence=family.declared.coherence,
                 shared_capture=True,
@@ -456,7 +452,6 @@ class WholeWindowReadouts:
         ):
             from uuid import uuid4
 
-            from increment.readouts._provider import native_scope_provider
             from increment.readouts._run_acquisition import (
                 RunAcquisitionOwner,
                 RunAcquisitionRequest,
@@ -486,13 +481,9 @@ class WholeWindowReadouts:
                     design=design,
                 )
             )
-            provider = (
-                self._src if is_custom_source(self._src) else native_scope_provider(self._src)
-            )
             with RunAcquisitionOwner.capture(
                 self._src,
                 (prepared,),
-                provider=provider,
                 run_id=uuid4().hex,
                 coherence=req.coherence,
             ) as context:

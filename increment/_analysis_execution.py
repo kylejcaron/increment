@@ -3088,17 +3088,6 @@ class Analysis:
     def _whole_window(self) -> WholeWindowReadouts:
         self._require_arm_state("run")
 
-        def provider_for(source):
-            if isinstance(source.context, ContrastContext):
-                from increment._evidence_scopes import switchback_scope_provider
-
-                return switchback_scope_provider(source)
-            if is_custom_source(source):
-                return source
-            from increment.readouts._provider import native_scope_provider
-
-            return native_scope_provider(source)
-
         return WholeWindowReadouts(
             src=cast("_BuiltinMomentSource", self._src),
             plan=self._plan,
@@ -3108,7 +3097,6 @@ class Analysis:
             validate_trigger=self._validate_trigger_fires_in_every_arm,
             arm_moments=readouts.arm_moments,
             execution_context_scope=self._scoped_execution_context,
-            provider_for=provider_for,
             registered_run=readouts.run,
         )
 

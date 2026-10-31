@@ -53,6 +53,22 @@ class RunAcquisitionOwner:
     """Prepare and own the complete evidence acquisition for whole-window runs."""
 
     @staticmethod
+    def provider_for(source: EvidenceSource) -> object:
+        """Select the evidence adapter at the acquisition boundary."""
+        from increment.decision import ContrastContext
+        from increment.readouts._evidence import is_custom_source
+
+        if isinstance(source.context, ContrastContext):
+            from increment._evidence_scopes import switchback_scope_provider
+
+            return switchback_scope_provider(source)
+        if is_custom_source(source):
+            return source
+        from increment.readouts._provider import native_scope_provider
+
+        return native_scope_provider(source)
+
+    @staticmethod
     def prepare(request: RunAcquisitionRequest) -> PreparedRunAcquisition:
         """Resolve configs and build a complete single-run or family scope."""
         source = request.source
@@ -145,6 +161,7 @@ class RunAcquisitionOwner:
         uptake = getattr(source.context.design, "uptake", None)
         return EvidenceScope(
             metrics=(tuple(source.context.metrics) if capture_all_family else tuple(selected)),
+            horizon_metrics=() if design_summary_only else None,
             population=population,
             configs=(tuple(source.context.configs) if capture_all_family else tuple(configs)),
             uptake_facts=() if uptake is None else (uptake.fact,),
@@ -172,7 +189,6 @@ class RunAcquisitionOwner:
         source: EvidenceSource,
         requests: Sequence[PreparedRunAcquisition],
         *,
-        provider: object,
         run_id: str,
         coherence: Literal["captured", "live"],
         shared_capture: bool = False,
@@ -186,7 +202,7 @@ class RunAcquisitionOwner:
         @contextmanager
         def owned() -> Iterator[EvidenceExecutionContext]:
             context = EvidenceExecutionContext(
-                provider,
+                RunAcquisitionOwner.provider_for(source),
                 RunAcquisitionOwner.combined_scope(source, requests),
                 run_id=run_id,
                 coherence=coherence,
@@ -207,7 +223,6 @@ class RunAcquisitionOwner:
         source: EvidenceSource,
         requests: Sequence[PreparedRunAcquisition],
         *,
-        provider: object,
         run_id: str,
         coherence: Literal["captured", "live"],
         shared_capture: bool,
@@ -218,7 +233,6 @@ class RunAcquisitionOwner:
         with RunAcquisitionOwner.capture(
             source,
             requests,
-            provider=provider,
             run_id=run_id,
             coherence=coherence,
             shared_capture=shared_capture,

@@ -60,10 +60,11 @@ def run_scoped_line3[T](
     on_context: Callable[[EvidenceExecutionContext], None] | None = None,
 ) -> T:
     """Run sequential captures and readouts under one family-wide evidence owner."""
-    from increment.readouts._provider import native_scope_provider
 
     source = analysis._src
-    provider = source if is_custom_source(source) else native_scope_provider(source)
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
+
+    provider = RunAcquisitionOwner.provider_for(source)
     context = EvidenceExecutionContext(
         provider,
         sequential_scope(analysis, include_breakouts=include_breakouts),

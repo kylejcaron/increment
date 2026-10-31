@@ -34,20 +34,15 @@ def owned_execution_context(
 ):
     from uuid import uuid4
 
-    from increment.decision import ContrastContext
     from increment.kernel.context import EvidenceExecutionContext
     from increment.readouts._execution_context import (
         owned_execution_context as _owned_execution_context,
     )
-    from increment.readouts._provider import native_scope_provider
 
     source = analysis._src
-    if isinstance(source.context, ContrastContext):
-        from increment._evidence_scopes import switchback_scope_provider
+    from increment.readouts._run_acquisition import RunAcquisitionOwner
 
-        provider = switchback_scope_provider(source)
-    else:
-        provider = source if is_custom_source(source) else native_scope_provider(source)
+    provider = RunAcquisitionOwner.provider_for(source)
 
     return _owned_execution_context(
         lambda: EvidenceExecutionContext(
@@ -239,6 +234,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
             reader = BreakoutReadouts(
                 src=candidate._src, experiment=getattr(candidate, "_experiment", None)
             )
+            reader.validate_populations((population,))
             reader.validate_request(
                 BreakoutRequest(
                     metrics=tuple(metrics),
@@ -729,6 +725,7 @@ def run_standalone_day_axis_lift(
         (
             EvidenceScope(
                 metrics=scope_metrics,
+                horizon_metrics=() if compliance_only else None,
                 configs=configs,
                 population=req.population,
                 grain=req.grain,

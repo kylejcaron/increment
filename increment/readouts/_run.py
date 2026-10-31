@@ -7,7 +7,6 @@ from increment._analysis_config import UNSET, _Unset, effective_methods
 from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
-from increment._source_types import is_custom_source
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.declarations import Method
 from increment.estimation.results import LiftEstimate
@@ -174,8 +173,6 @@ def run(
         )
     from uuid import uuid4
 
-    from increment.readouts._provider import native_scope_provider
-
     def execute(context: EvidenceExecutionContext) -> LiftEstimates:
         context.validate_observational_streams(src, design)
         with context.borrow(source=src, metrics=selected) as scoped:
@@ -197,7 +194,6 @@ def run(
         context, result = RunAcquisitionOwner.execute(
             src,
             (prepared,),
-            provider=src if is_custom_source(src) else native_scope_provider(src),
             run_id=uuid4().hex,
             coherence=coherence,
             shared_capture=False,

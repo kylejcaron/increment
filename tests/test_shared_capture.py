@@ -311,6 +311,21 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(monke
         with pytest.raises(CodedError) as error:
             run(experiment, resolver, analysis_options={"store": object()})
         assert error.value.code == "kernel.run.invalid_input"
+        invalid_breakout = replace(
+            experiment,
+            scopes=(
+                Scope(view="run", grain="total"),
+                Scope(
+                    view="breakout",
+                    grain="total",
+                    segment=(BreakoutIdentity("store", None),),
+                    population="triggered",
+                ),
+            ),
+        )
+        with pytest.raises(CodedError) as error:
+            run(invalid_breakout, resolver)
+        assert error.value.code == "facade.analysis.trigger_unsupported"
     finally:
         resolver._analysis.close()
         con.disconnect()

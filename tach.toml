@@ -740,7 +740,6 @@ depends_on = [
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
   "increment._health", "increment.kernel.ports",
-  "increment._evidence_scopes",
 ]
 
 [[modules]]

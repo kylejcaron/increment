@@ -429,6 +429,13 @@ def test_compliance_only_ignores_unusable_outcome_in_separate_shared_sql_source(
         rows = lift_rows(analysis.run(metrics=["revenue"], estimands=("compliance",)))
         assert [(row.metric, row.estimand) for row in rows] == [("uptake", "compliance")]
         assert rows[0].require_lift().value == pytest.approx(0.5)
+        readout_rows = readouts.run(
+            _moment_source(analysis), metrics=["revenue"], estimands=("compliance",)
+        )
+        assert [(row.metric, row.estimand) for row in readout_rows] == [("uptake", "compliance")]
+        day_rows = analysis.run_daily_lift(estimands=("compliance",))
+        assert day_rows
+        assert {(row.metric, row.estimand) for row in day_rows} == {("uptake", "compliance")}
     finally:
         analysis.close()
         con.disconnect()

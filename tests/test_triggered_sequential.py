@@ -15,6 +15,7 @@ import copy
 import datetime as dt
 import json
 import pickle
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any, cast
 
@@ -24,12 +25,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis
+from increment import Analysis, run
 from increment.artifacts import SourceSnapshotEvidence
 from increment.breakout.estimates import LiftEstimates
+from increment.builders import from_definitions, from_moments
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.readout_types import ReadoutResults
 from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
+from increment.kernel.contracts import Scope
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
@@ -244,7 +247,10 @@ def _by_population(rows):
 
 
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
-    analysis, _ = _analysis(tmp_path, _events())
+    connection = ibis.duckdb.connect()
+    analysis, path = _analysis(tmp_path, _events(), connection=connection)
+    resolver_analysis = None
+    moments_analysis = None
     try:
         snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
@@ -278,8 +284,57 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         history = analysis.run_asof_lift(population="triggered")
         assert [(row.analysis_population, row.ds) for row in history] == [("triggered", _LATER)]
         assert history[0].sequential_result == triggered.require_sequential_result()
+
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
+        resolver_analysis = cast(Any, resolver)._analysis
+        resolver_analysis.capture_sequential(finalized=True, as_of=_LATER)
+        scoped = replace(
+            experiment,
+            scopes=(Scope(view="run", grain="total", population="triggered"),),
+        )
+        result = run(scoped, resolver)
+        assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
+        metadata = result.run.metadata
+        assert metadata is not None
+        assert {(record.source_snapshot_id, record.cell) for record in metadata.cells} == {
+            (cell.identity.source_snapshot_id, cell.identity.key) for cell in result.cells
+        }
+        moments_path = tmp_path / "triggered-sequential.parquet"
+        analysis.export(moments_path)
+        moments_experiment, moments_resolver = from_moments(
+            pq.read_table(moments_path).to_pylist(),
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        moments_analysis = cast(Any, moments_resolver)._analysis
+        moments_scoped = replace(
+            moments_experiment,
+            scopes=(
+                Scope(view="run", grain="total", population="triggered"),
+                Scope(
+                    view="asof",
+                    grain="asof",
+                    population="triggered",
+                    completion_policy=True,
+                ),
+            ),
+        )
+        combined = run(moments_scoped, moments_resolver)
+        assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
+        assert {cell.identity.key.analysis_population for cell in combined.cells} == {"triggered"}
     finally:
+        if resolver_analysis is not None:
+            resolver_analysis.close()
+        if moments_analysis is not None:
+            moments_analysis.close()
         analysis.close()
+        connection.disconnect()
 
 
 def _triggered_source_first_metadata(metadata_payload: dict[str, Any]) -> dict[str, Any]:

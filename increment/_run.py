@@ -280,7 +280,7 @@ def _execution_identity_fields(
 
 
 def _metadata_with_cell_scales(metadata: Any, cells: Sequence[ResultCell]) -> Any:
-    """Keep retained metadata keyed by the cell identities emitted by report adapters."""
+    """Project records to emitted cells while retaining the declared family scope."""
     if metadata is None:
         return None
 
@@ -289,20 +289,26 @@ def _metadata_with_cell_scales(metadata: Any, cells: Sequence[ResultCell]) -> An
         cells_by_source.setdefault(cell.identity.source_snapshot_id, []).append(cell.identity.key)
 
     key_map: dict[Any, Any] = {}
+    records = []
     for record in metadata.cells:
         candidates = cells_by_source.get(record.source_snapshot_id, [])
         if record.cell in candidates:
-            key_map[record.cell] = record.cell
-            continue
-        matching = [
-            candidate
-            for candidate in candidates
-            if candidate.model_copy(update={"value_scale": None})
-            == record.cell.model_copy(update={"value_scale": None})
-        ]
-        if len(matching) == 1:
-            key_map[record.cell] = matching[0]
-    if not any(old != new for old, new in key_map.items()):
+            key = record.cell
+        else:
+            matching = [
+                candidate
+                for candidate in candidates
+                if candidate.model_copy(update={"value_scale": None})
+                == record.cell.model_copy(update={"value_scale": None})
+            ]
+            if len(matching) != 1:
+                continue
+            key = matching[0]
+        key_map[record.cell] = key
+        records.append(record.model_copy(update={"cell": key}) if key != record.cell else record)
+
+    filtered = len(records) != len(metadata.cells)
+    if not filtered and not any(old != new for old, new in key_map.items()):
         return metadata
 
     def rekey(key):
@@ -340,7 +346,7 @@ def _metadata_with_cell_scales(metadata: Any, cells: Sequence[ResultCell]) -> An
     )
     records = tuple(
         sorted(
-            (record.model_copy(update={"cell": rekey(record.cell)}) for record in metadata.cells),
+            records,
             key=lambda record: (
                 0 if record.cell.analysis_population == "assigned" else 1,
                 record.source_snapshot_id,
@@ -348,7 +354,21 @@ def _metadata_with_cell_scales(metadata: Any, cells: Sequence[ResultCell]) -> An
             ),
         )
     )
-    return metadata.model_copy(update={"scope": scope, "cells": records})
+    partial_reason = metadata.partial_reason
+    if filtered:
+        partial_reason = tuple(
+            item
+            for item in ("slice", "filter", "cross_snapshot_concat")
+            if item in (*partial_reason, "filter")
+        )
+    return metadata.model_copy(
+        update={
+            "scope": scope,
+            "cells": records,
+            "partial": metadata.partial or filtered,
+            "partial_reason": partial_reason,
+        }
+    )
 
 
 def _execution_overrides(
