@@ -38,7 +38,7 @@ def _analysis(con, *, running=False):
     return make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
 
 
-def _builder(con, tmp_path, *, triggered=False, winsorized=False):
+def _builder(con, tmp_path, *, triggered=False, winsorized=False, trigger_evidence=True):
     from increment.artifacts import SourceSnapshotEvidence
 
     definitions = ds.definitions_dict(
@@ -55,10 +55,11 @@ def _builder(con, tmp_path, *, triggered=False, winsorized=False):
             "'trigger_signal' AS event) FROM events WHERE event = 'exposure'"
         )
         definitions["experiments"][0]["trigger"] = "trigger"
-        kwargs["source_snapshot_evidence"] = SourceSnapshotEvidence(
-            observation_cutoff_ts=datetime(2025, 2, 16, tzinfo=UTC),
-            complete_through_by_feed={"events": datetime(2025, 2, 16, tzinfo=UTC)},
-        )
+        if trigger_evidence:
+            kwargs["source_snapshot_evidence"] = SourceSnapshotEvidence(
+                observation_cutoff_ts=datetime(2025, 2, 16, tzinfo=UTC),
+                complete_through_by_feed={"events": datetime(2025, 2, 16, tzinfo=UTC)},
+            )
     path = tmp_path / "definitions.yaml"
     path.write_text(json.dumps(definitions), encoding="utf-8")
     return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
@@ -447,6 +448,35 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
         with pytest.raises(CodedError) as error:
             run(invalid_breakout, resolver)
         assert error.value.code == "facade.analysis.trigger_unsupported"
+        trigger_con = ds.duckdb_connection()
+        trigger_experiment, trigger_resolver = _builder(
+            trigger_con, tmp_path, triggered=True, trigger_evidence=False
+        )
+        trigger_experiment = replace(
+            trigger_experiment,
+            scopes=(
+                Scope(
+                    view="breakout",
+                    grain="total",
+                    segment=(BreakoutIdentity("store", None),),
+                    population="assigned",
+                ),
+                Scope(
+                    view="breakout",
+                    grain="total",
+                    segment=(BreakoutIdentity("store", None),),
+                    population="triggered",
+                ),
+            ),
+        )
+        trigger_con.disconnect()
+        with pytest.raises(CodedError) as error:
+            run(
+                trigger_experiment,
+                trigger_resolver,
+                analysis_options={"population": None},
+            )
+        assert error.value.code == "source.native.trigger_evidence_required"
     finally:
         con.disconnect()
 

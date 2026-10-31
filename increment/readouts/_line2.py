@@ -249,7 +249,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
             reader = BreakoutReadouts(
                 src=candidate._src, experiment=getattr(candidate, "_experiment", None)
             )
-            reader.validate_populations((population,))
+            reader.validate_populations(populations)
             reader.validate_request(
                 BreakoutRequest(
                     metrics=tuple(metrics),
