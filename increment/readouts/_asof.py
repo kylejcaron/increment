@@ -94,13 +94,14 @@ def _load_asof_rows_by_metric(
     evidence = load_day_axis_rows(
         src,
         DayAxisRequest(
-            caller="run_asof_lift",
+            caller="run_asof",
             grain="asof",
             metrics=tuple(selected),
             dimension=None,
             by=tuple(by),
             completed_windows_only=completed_windows_only,
-            estimands=None if estimands is None else tuple(estimands),
+            estimands=tuple(ESTIMANDS) if estimands is None else tuple(estimands),
+            experiment=getattr(src, "_experiment", None),
             covariate_metrics=covariate_metrics,
         ),
     )

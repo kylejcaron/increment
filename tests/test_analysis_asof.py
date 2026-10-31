@@ -10,6 +10,7 @@ import math
 import warnings
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from typing import Any, cast
 
 import narwhals as nw
 import numpy as np
@@ -31,7 +32,7 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import make_analysis, make_analysis_like
+from tests.analysis_factory import held_source, make_analysis, make_analysis_like
 from tests.capability_consumers_scalar import UNBOUNDED_RETENTION_SEQUENTIAL, refused
 from tests.test_sequential_public_sources import gaussian_plan
 
@@ -737,13 +738,12 @@ def test_direct_asof_lift_requests_uptake_only_for_uptake_estimands(con):
     from increment import readouts
 
     analysis = _analysis_with_asof_encouragement_events(con)
-    source = analysis._src
+    source = cast(Any, held_source(analysis))
 
     itt_and_late = readouts.asof_lift(source, metrics=["revenue"], estimands=("itt", "late"))
     assert {row.estimand for row in itt_and_late} == {"itt", "late"}
 
     itt_only = readouts.asof_lift(source, metrics=["revenue"], estimands=("itt",))
-    assert itt_only
     assert {row.estimand for row in itt_only} == {"itt"}
 
 
@@ -758,6 +758,7 @@ def test_asof_completed_windows_wait_for_later_encouragement_window(con):
     )
 
     assert analysis.run_asof(completed_windows_only=True) == []
+    assert analysis.run_asof_lift(estimands=("itt",), completed_windows_only=True) == []
 
 
 def _analysis_with_bounded_asof_encouragement_events(con, *, sequential: bool = False):

@@ -296,6 +296,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 if options.get("estimands") is not None
                 else None,
                 population=population,
+                experiment=getattr(candidate, "_experiment", None),
                 completed_windows_only=options.get("completed_windows_only", False),
             )
             scope_estimands, scope_uptake_facts = _day_axis_scope_dependencies(candidate, req)
