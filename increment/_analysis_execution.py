@@ -62,8 +62,6 @@ from increment._source_operations import (
     DashboardGroupDataOperation,
     DashboardSnapshotPayload,
     ExploratorySourceOperation,
-    ExportMomentsOperation,
-    MaterializeOperation,
     SummarySqlOperation,
     TriggeredHealthEvidenceOperation,
 )
@@ -587,19 +585,10 @@ class Analysis:
         A frame or moments source raises :class:`CapabilityError` because
         it has no warehouse relation to materialize.
         """
-        self._require_arm_state("materialize")
-        src = _require_analysis_operation(
-            self._src,
-            "materialize",
-            MaterializeOperation,
-            message=(
-                "materialize() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has "
-                "nothing to materialize."
-            ),
-        )
-        if self._store != "none" and self._metrics:
-            src.materialize()
+        from increment._source_workflows import _materialize_binding
+
+        _ = self._src
+        _materialize_binding(self._binding)
         return self
 
     def dashboard_snapshot(
@@ -1462,16 +1451,10 @@ class Analysis:
         sequential checkpoint holds unit-record proofs, not moments rows, so it
         still exports when a catalog quantile is not among its registered models.
         """
-        src = _require_analysis_operation(
-            self._src,
-            "export_moments",
-            ExportMomentsOperation,
-            message=(
-                "export() requires a native, frame, or artifact source with "
-                "the export_moments operation."
-            ),
-        )
-        src.export_moments(path)
+        from increment._source_workflows import _export_moments_binding
+
+        _ = self._src
+        _export_moments_binding(self._binding, path)
 
     def _readout_source(
         self,
@@ -1500,7 +1483,9 @@ class Analysis:
     @property
     def experiment(self) -> Experiment:
         """The resolved experiment definition."""
-        return self._experiment
+        from increment._source_workflows import _experiment_definition_binding
+
+        return _experiment_definition_binding(self._binding)
 
     @property
     def artifact_context(self) -> ArtifactContext:
@@ -1529,37 +1514,23 @@ class Analysis:
     @property
     def metrics(self) -> list[Metric]:
         """All metrics and guardrails for this experiment."""
-        return list(self._metrics)
+        from increment._source_workflows import _metrics_binding
+
+        return _metrics_binding(self._binding)
 
     @property
     def compiled_decision_plan(self) -> CompiledDecisionPlan:
         """The immutable decision plan this analysis will execute."""
-        plan = getattr(self, "_plan", None)
-        if plan is None:
-            _raise("store.run.legacy_analysis_required", route="Analysis.run()")
-        return plan
+        from increment._source_workflows import _compiled_decision_plan_binding
+
+        return _compiled_decision_plan_binding(self._binding)
 
     @property
     def available_metrics(self) -> list[Metric]:
-        """Saved metrics the experiment does not declare and could estimate, in definitions order.
+        """Saved metrics not declared by the experiment, in definitions order."""
+        from increment._source_workflows import _available_metrics_binding
 
-        These are the names ``exploratory_metrics=`` accepts: per-unit metrics on the
-        experiment's own unit. Report-only ``total``/``active`` metrics (no per-unit variance)
-        and metrics of another entity are not offered. Only ``Analysis.from_definitions``
-        carries saved definitions to add from; every other source refuses with
-        ``facade.analysis.exploratory_metrics_source_limited``.
-        """
-        state = self._state
-        if not isinstance(state, DefinitionsArmAnalysisState):
-            _refuse(_EXPLORATORY_SOURCE_LIMITED, method="available_metrics")
-        declared = {*state.experiment.metric_names, *(metric.name for metric in self._metrics)}
-        return [
-            metric
-            for metric in state.definitions.metrics
-            if metric.name not in declared
-            and metric.type not in ("total", "active")
-            and getattr(metric, "entity", None) == state.experiment.unit
-        ]
+        return _available_metrics_binding(self._binding)
 
     def _exploratory_metrics(self, names: Sequence[str] | None, *, caller: str) -> list[Metric]:
         """Resolve ``exploratory_metrics=`` before any query; ``[]`` when none were named."""
@@ -2487,152 +2458,16 @@ class Analysis:
     def breakout_summaries(
         self, *, metrics: Sequence[str | Metric] | None = None
     ) -> dict[str, dict[str, pa.Table]]:
-        """Per-breakout, per-metric moment tables.
+        from increment._source_workflows import _breakout_summaries_binding
 
-        For every ``Experiment.breakouts`` x metric pair, computes both
-        the arm-level ``group_summary`` and the day- or retention-cohort-level
-        ``daily_group_summary``, executes them, and returns the
-        pyarrow tables. Materializes the moment tables only - it does
-        not turn them into ``LiftEstimate``s.
-
-
-        Parameters
-        ----------
-        metrics : Sequence[str | Metric] | None
-            Restrict to declared names or field-equal metric definitions.
-            ``None`` (default) computes for every declared metric.
-
-        Returns
-        -------
-        dict[str, dict[str, pa.Table]]
-            ``{f"{metric.name}:{breakout.property}:{source_name}" :
-            {"group_summary": pa.Table, "daily_group_summary": pa.Table}}`` when
-            no trigger is declared. Triggered experiments add ``:assigned`` /
-            ``:triggered`` key suffixes and an ``analysis_population`` column.
-        """
-        from increment.breakout.estimates import reject_quantile_metrics, reject_retention_metrics
-        from increment.query.native_contract import NativeViewSource
-
-        self._require_arm_state("breakout_summaries")
-        if not isinstance(self._src, NativeViewSource):
-            from increment._evidence_refusals import refuse_breakout
-            from increment._source_types import declared_evidence
-
-            offered = tuple(sorted(declared_evidence(self._src).breakouts))
-            experiment = getattr(self._state, "experiment", None)
-            requested = (
-                tuple(breakout.property for breakout in experiment.breakouts)
-                if experiment is not None
-                else ()
-            )
-            refuse_breakout(
-                self._src,
-                requested,
-                offered,
-                route=(
-                    "breakout_summaries() needs a native Analysis.from_definitions or "
-                    "Analysis.from_unit_day_artifact instance with breakout evidence"
-                ),
-            )
-        native = _require_analysis_operation(
-            self._src,
-            "breakout_summaries",
-            NativeViewSource,
-            message=(
-                "breakout_summaries() needs a native Analysis.from_definitions or "
-                "Analysis.from_unit_day_artifact instance with breakout evidence."
-            ),
-        )
-        effective = select_metrics(
-            cast("Sequence[Metric]", self._metrics),
-            metrics,
-            caller="breakout_summaries",
-            require_declared_definitions=True,
-        )
-        breakouts = self._experiment.breakouts
-        if not breakouts or not self._metrics:
-            return {}
-        reject_quantile_metrics(
-            effective,
-            "breakout_summaries()",
-            reason="quantiles do not decompose over segment moments",
-        )
-        reject_retention_metrics(effective, "breakout_summaries", view="cohort")
-        triggered = self._experiment.trigger is not None
-        populations = ("assigned", "triggered") if triggered else ("assigned",)
-        native.validate_populations(populations, operation="breakout_summaries")
-        if triggered:
-            import pyarrow as pa
-        results: dict[str, dict[str, pa.Table]] = {}
-        for population in populations:
-            summaries = native.breakout_summaries(metrics=effective, population=population)
-            for key, tables in summaries.items():
-                if not triggered:
-                    results[key] = tables
-                    continue
-                results[f"{key}:{population}"] = {
-                    name: table.append_column(
-                        "analysis_population", pa.array([population] * table.num_rows)
-                    )
-                    for name, table in tables.items()
-                }
-        return results
+        _ = self._src
+        return _breakout_summaries_binding(self._binding, metrics)
 
     def factor_summaries(self) -> dict[str, pa.Table]:
-        """Per-(factor level x arm) moment tables for every declared factor.
+        from increment._source_workflows import _factor_summaries_binding
 
-        Same centered moment shape as :meth:`breakout_summaries`'s
-        ``group_summary``, keyed off ``Experiment.factors``, without a
-        day-level table - absorption consumes whole-window moments
-        only. Tables carry CUPED/denominator columns populated only
-        when applicable; a pre-exposure factor is resolved to its
-        latest value strictly before each unit's first exposure.
-
-        Returns
-        -------
-        dict[str, pa.Table]
-            ``{f"{metric.name}:{factor.property}:{source_name}[:population]": pa.Table}``.
-            Triggered experiments include both populations and an
-            ``analysis_population`` column; empty when no factors are declared.
-        """
-        from increment.breakout.estimates import reject_quantile_metrics
-        from increment.query.native_contract import NativeViewSource
-
-        self._require_arm_state("factor_summaries")
-        native = _require_analysis_operation(
-            self._src,
-            "factor_summaries",
-            NativeViewSource,
-            message=(
-                "factor_summaries() needs a native Analysis.from_definitions or "
-                "Analysis.from_unit_day_artifact instance with factor evidence."
-            ),
-        )
-        if not self._experiment.factors or not self._metrics:
-            return {}
-        reject_quantile_metrics(
-            self._metrics,
-            "factor_summaries()",
-            reason="quantiles do not decompose over factor moments",
-        )
-        triggered = self._experiment.trigger is not None
-        populations = ("assigned", "triggered") if triggered else ("assigned",)
-        native.validate_populations(populations, operation="factor_summaries")
-        if triggered:
-            import pyarrow as pa
-        results: dict[str, pa.Table] = {}
-        for population in populations:
-            summaries = native.factor_summaries(metrics=self._metrics, population=population)
-            for key, table in summaries.items():
-                result_key = f"{key}:{population}" if triggered else key
-                results[result_key] = (
-                    table.append_column(
-                        "analysis_population", pa.array([population] * table.num_rows)
-                    )
-                    if triggered
-                    else table
-                )
-        return results
+        _ = self._src
+        return _factor_summaries_binding(self._binding)
 
     def run_breakout(
         self,

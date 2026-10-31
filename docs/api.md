@@ -35,6 +35,11 @@ The policy covers:
   `increment.artifacts`, `increment.digest`, `increment.estimators`, and
   `increment.evidence`. Existing family namespaces such as `increment.power`
   remain available;
+- `increment.workflows` promises only `materialize`, `export_moments`,
+  `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
+  `compiled_decision_plan`, and `available_metrics`. These functions operate on
+  an `(experiment, resolver)` pair; the experiment definition inspection returns
+  the semantic source declaration, not the kernel execution request.
 - result fields and schemas, including row sets, null reasons, and interval
   reference/guarantee labels;
 - stable refusal codes and named context fields;

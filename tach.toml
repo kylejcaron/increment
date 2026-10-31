@@ -728,6 +728,27 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._source_workflows"
+layer = "core"
+depends_on = [
+  "increment._analysis_config",
+  "increment._binding",
+  "increment._evidence_refusals",
+  "increment._source_operations",
+  "increment._source_types",
+  "increment.decision",
+  "increment.errors",
+  "increment.readouts._whole_window",
+  "increment.breakout.estimates",
+  "increment.query",
+]
+
+[[modules]]
+path = "increment.workflows"
+layer = "core"
+depends_on = ["increment._source_workflows"]
+
+[[modules]]
 path = "increment._analysis_execution"
 layer = "core"
 depends_on = [
@@ -737,7 +758,7 @@ depends_on = [
   "increment._evidence_types",
   "increment.evidence",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment.readouts._whole_window",
+  "increment._source_operations", "increment._source_types", "increment._source_workflows", "increment.readouts._whole_window",
   "increment.readouts._line2",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",

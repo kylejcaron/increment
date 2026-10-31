@@ -468,6 +468,41 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
         assert got[key] == pytest.approx(baseline[key], rel=1e-12), key
 
 
+@pytest.mark.slow
+def test_workflow_export_moments_reopens_for_preferred_run(seeded_con, seeded_defs, tmp_path):
+    from increment import from_definitions, from_moments, run
+    from increment.estimation.engine import Method
+    from increment.workflows import export_moments
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    replay_resolver = None
+    try:
+        path = tmp_path / "workflow-moments.parquet"
+        export_moments(experiment, resolver, path)
+        import pyarrow.parquet as pq
+
+        replayed, replay_resolver = from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics={"purchase_rate": "conversion", "avg_session_duration": "mean"},
+            control="control",
+        )
+        assert run(
+            replayed,
+            replay_resolver,
+            analysis_options={"decision_method": Method(name="unadjusted")},
+        )
+    finally:
+        if replay_resolver is not None:
+            close = getattr(replay_resolver, "close", None)
+            if callable(close):
+                close()
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
+
+
 @pytest.mark.integration
 def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
     metric = MeanMetric(

@@ -473,3 +473,89 @@ class TestFactorSummaries:
         assert res.n_levels_used >= 3
         assert res.se > 0
         assert res.lb < res.effect < res.ub
+
+
+@pytest.mark.integration
+def test_workflow_factor_summaries_keeps_declared_factor_tables(seeded_con, seeded_defs):
+    from increment import from_definitions
+    from increment.workflows import factor_summaries
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    try:
+        summaries = factor_summaries(experiment, resolver)
+        assert "purchase_rate:country:event_log" in summaries
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
+
+
+@pytest.mark.integration
+def test_workflow_breakout_summaries_keeps_moment_tables(seeded_con, seeded_defs):
+    from increment import from_definitions
+    from increment.workflows import breakout_summaries
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    try:
+        summaries = breakout_summaries(experiment, resolver)
+        tables = summaries["purchase_rate:country:event_log"]
+        assert {"group_summary", "daily_group_summary"} <= set(tables)
+        assert tables["group_summary"].num_rows > 0
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
+
+
+@pytest.mark.integration
+def test_workflow_inspection_preserves_source_declarations(seeded_con, seeded_defs):
+    from increment import from_definitions
+    from increment.decision import CompiledDecisionPlan
+    from increment.semantics.loader import load
+    from increment.semantics.models import Experiment as SemanticExperiment
+    from increment.workflows import (
+        available_metrics,
+        compiled_decision_plan,
+        experiment_definition,
+        metrics,
+    )
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    definitions = load(seeded_defs)
+    expected_definition = definitions.experiment("new_onboarding_v2")
+    assert expected_definition is not None
+    try:
+        semantic = experiment_definition(experiment, resolver)
+        assert isinstance(semantic, SemanticExperiment)
+        assert semantic == expected_definition
+        assert {metric.name for metric in metrics(experiment, resolver)} == {
+            "purchase_rate",
+            "avg_session_duration",
+            "d7_retention",
+        }
+        assert isinstance(compiled_decision_plan(experiment, resolver), CompiledDecisionPlan)
+
+        declared = {
+            *expected_definition.metric_names,
+            "purchase_rate",
+            "avg_session_duration",
+            "d7_retention",
+        }
+        expected_available = [
+            item.name
+            for item in definitions.metrics
+            if item.name not in declared
+            and item.type not in ("total", "active")
+            and getattr(item, "entity", None) == expected_definition.unit
+        ]
+        assert [item.name for item in available_metrics(experiment, resolver)] == expected_available
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()

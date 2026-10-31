@@ -231,14 +231,49 @@ def test_metrics_sharing_a_measure_keep_their_numeric_answers(seeded_con, seeded
     assert shared_results == pytest.approx(unshared_results)
 
 
-def test_materialize_on_zero_metrics_does_not_crash(con):
+def test_materialize_on_zero_metrics_does_not_crash(seeded_con, seeded_defs):
     """An empty metric selection stays empty after explicit materialization."""
-    analysis = Analysis(
-        "pricing_tier_test", definitions_path="examples/definitions/", con=con, store="auto"
-    )
-    analysis = make_analysis_like(analysis, [], plan=AnalysisPlan())
+    from dataclasses import replace
 
-    assert lift_rows(analysis.materialize().run()) == []
+    from increment import from_definitions, run
+    from increment.workflows import materialize
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="pricing_tier_test"
+    )
+    experiment = replace(
+        experiment,
+        metrics={},
+        scopes=tuple(scope.model_copy(update={"metrics": ()}) for scope in experiment.scopes),
+    )
+    try:
+        assert materialize(experiment, resolver) is None
+        assert run(experiment, resolver).cells == ()
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
+
+
+def test_workflow_materialize_is_a_refresh_then_run(seeded_con, seeded_defs):
+    from increment import from_definitions, run
+    from increment.estimation.engine import Method
+    from increment.workflows import materialize
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    try:
+        assert materialize(experiment, resolver) is None
+        assert run(
+            experiment,
+            resolver,
+            analysis_options={"decision_method": Method(name="unadjusted")},
+        )
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
 
 
 def test_temp_name_caps_at_backend_identifier_limit(seeded_con, seeded_defs):
