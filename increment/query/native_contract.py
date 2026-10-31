@@ -144,7 +144,6 @@ class NativeCoreSource(_BuiltinMomentSource, Protocol):
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-        horizon_metrics: Sequence[Metric] | None = None,
     ) -> Any: ...
 
 

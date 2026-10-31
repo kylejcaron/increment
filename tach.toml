@@ -672,7 +672,7 @@ depends_on = [
 ]
 
 [[modules]]
-path = "increment._whole_window"
+path = "increment.readouts._whole_window"
 layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._day_axis", "increment._evidence_types", "increment._readout_request",
@@ -701,7 +701,7 @@ depends_on = [
 path = "increment._sitewide"
 layer = "core"
 depends_on = [
-  "increment._source_operations", "increment._source_types", "increment._whole_window", "increment.errors",
+  "increment._source_operations", "increment._source_types", "increment.readouts._whole_window", "increment.errors",
   "increment._evidence_refusals",
   "increment._evidence_types", "increment.evidence",
   "increment.estimation", "increment.query", "increment.semantics",
@@ -729,7 +729,7 @@ depends_on = [
   "increment._evidence_types",
   "increment.evidence",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
+  "increment._source_operations", "increment._source_types", "increment._study", "increment.readouts._whole_window",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",
   "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",
@@ -916,6 +916,10 @@ expose = [
   "_freeze",
   "_thaw",
   "_safe_error_value",
+  "_advisory_run_scope",
+  "_capture_advisories",
+  "_DeferredAdvisory",
+  "_replay_advisories",
   "CapabilityError",
   "CodedError",
   "CodedModel",
@@ -1109,6 +1113,7 @@ path = "increment.kernel.context"
 layer = "core"
 depends_on = [
   "increment._evidence_types", "increment._source_types", "increment.kernel.contracts",
+  "increment.errors",
 ]
 
 [[modules]]
@@ -1119,9 +1124,8 @@ depends_on = [
   "increment._evidence_refusals", "increment._evidence_types", "increment._readout_request",
   "increment._source_types", "increment._window", "increment.decision",
   "increment.declarations", "increment.errors",
-  "increment.estimation", "increment.readouts", "increment.semantics",
-  "increment.query.artifact_ports",
-  "increment.sequential_source", "increment._whole_window",
+  "increment.estimation", "increment.query.artifact_ports", "increment.readouts", "increment.semantics",
+  "increment.sequential_source", "increment.readouts._whole_window",
 ]
 
 [[modules]]

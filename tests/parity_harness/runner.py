@@ -81,7 +81,6 @@ from __future__ import annotations
 
 import inspect
 import warnings
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -385,7 +384,6 @@ def _read(
     *,
     coherence: Literal["captured", "live"] | None = None,
     compare_kernel: bool = False,
-    fresh: Callable[[], Any] | None = None,
 ) -> Any:
     """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
     (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and
@@ -418,7 +416,6 @@ def _read(
             analysis,
             name,
             case,
-            fresh,
             {
                 **estimand_kwargs,
                 **prior_kwargs,
@@ -449,7 +446,6 @@ def _run_with_kernel_parity(
     analysis: Any,
     name: str,
     case: ParityCase,
-    fresh: Callable[[], Any] | None,
     options: dict[str, Any],
 ) -> Any:
     """Compare the public Analysis.run path with direct kernel execution."""
@@ -482,17 +478,7 @@ def _run_with_kernel_parity(
                 warning.message, warning.category, warning.filename, warning.lineno
             )
 
-    # An in-memory live source keeps its reduction cache between runs, and a cached reduction
-    # does not repeat its advisories, so the kernel side runs on its own construction of the
-    # source. Warehouse ingresses read the backend on every live run and hold connections.
-    kernel_analysis = (
-        fresh()
-        if fresh is not None
-        and options.get("coherence") == "live"
-        and name in {"from_unit_panel", "from_unit_summary", "from_switchback_panel"}
-        else analysis
-    )
-    experiment, resolver = experiment_for_analysis(kernel_analysis, run_options=options)
+    experiment, resolver = experiment_for_analysis(analysis, run_options=options)
     from increment.kernel.experiment import Experiment
 
     restored = Experiment.from_json(experiment.to_json())
@@ -518,7 +504,6 @@ def _read_with_advisories(
     case: ParityCase,
     *,
     coherence: Literal["captured", "live"] | None = None,
-    fresh: Callable[[], Any] | None = None,
 ) -> tuple[Any, int]:
     expected = case.expected_warning_codes.get(name, ())
     with warnings.catch_warnings(record=True) as caught:
@@ -530,21 +515,21 @@ def _read_with_advisories(
         if expected:
             warnings.simplefilter("always", IncrementWarning)
         results = (
-            _read(analysis, name, case, compare_kernel=True, fresh=fresh)
+            _read(analysis, name, case, compare_kernel=True)
             if coherence is None
-            else _read(analysis, name, case, coherence=coherence, compare_kernel=True, fresh=fresh)
+            else _read(analysis, name, case, coherence=coherence, compare_kernel=True)
         )
     if case.readout_probe is not None or case.source_probe is not None:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"metrics .* have available CUPED covariates",
-                category=IncrementWarning,
-            )
+        with warnings.catch_warnings(record=True) as probe_warnings:
+            warnings.simplefilter("always", IncrementWarning)
             if case.readout_probe is not None:
                 case.readout_probe(results)
             if case.source_probe is not None:
                 case.source_probe(name, analysis)
+        assert set(warning_codes(probe_warnings)) <= {
+            *expected,
+            "analysis.cuped.covariate_unused",
+        }
     warnings_seen = warning_codes(caught)
     advisory_count = warnings_seen.count("analysis.cuped.covariate_unused")
     actual = tuple(code for code in warnings_seen if code != "analysis.cuped.covariate_unused")
@@ -660,7 +645,7 @@ def run_case(
                     f"{case.id}: replayed empty-freeze snapshot could not continue on {name}"
                 )
             results, advisory_counts[name] = _read_with_advisories(
-                analysis, name, case, coherence=coherence, fresh=None if case.sequential else build
+                analysis, name, case, coherence=coherence
             )
             metadata = getattr(results, "metadata", None)
             content_digest = getattr(metadata, "source_content_digest", None)

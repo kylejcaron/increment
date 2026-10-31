@@ -17,6 +17,7 @@ from increment._evidence_types import (
     evidence_streams_for_scope,
 )
 from increment._source_types import EvidenceProvider, _loader_owner, is_custom_source
+from increment.errors import _advisory_run_scope
 from increment.kernel.contracts import _refuse
 
 ExecutionMode = Literal["captured", "live"]
@@ -102,6 +103,7 @@ class EvidenceExecutionContext:
             assignment_requests=self.scope.assignment_requests,
         )
         try:
+            self._stack.enter_context(_advisory_run_scope())
             result = cast(EvidenceProvider, self.provider).scope(requested)
             scoped = self._stack.enter_context(result.source)
             self._stream_resolver = result.stream_resolver

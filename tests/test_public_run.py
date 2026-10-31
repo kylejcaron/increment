@@ -976,6 +976,169 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
         assert f"{effect.point!r} [{effect.lower!r}, {effect.upper!r}]" in output
 
 
+def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
+    import pickle
+
+    from increment import MetricSpec, Randomized
+    from increment.errors import WireFormatError
+    from increment.result_envelope import render
+
+    data = pd.DataFrame(
+        [
+            {"unit": f"{group}-{index}", "arm": group, "value": float(index + offset)}
+            for group, offset in (("control", 0), ("treatment", 8))
+            for index in range(24)
+        ]
+    )
+    plan = AnalysisPlan(primary="value")
+    metric = MetricSpec(
+        name="value",
+        type="mean",
+        winsorization={"upper_percentile": 0.9},
+    )
+    compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
+    registration = Registration.from_plan(compiled)
+    analysis = Analysis.from_unit_summary(
+        data,
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics=[metric],
+        plan=plan,
+        experiment_id="winsor-live",
+    )
+    try:
+        legacy = analysis.run()[0]
+        from increment.estimation.results import LiftEstimate
+
+        assert isinstance(legacy, LiftEstimate)
+        assert legacy.lift is not None
+        assert legacy.confidence_set is not None
+        result = run(
+            analysis,
+            registration,
+            compiled,
+            experiment_id="winsor-live",
+            analysis_spec_hash="sha256:" + "e" * 64,
+            execution_identity_hash="sha256:" + "f" * 64,
+            run_id="winsor-live-run",
+        )
+        assert result.effects[0] is not None
+        assert result.effects[0].point == pytest.approx(legacy.lift.value)
+        assert result.effects[0].lower == pytest.approx(legacy.confidence_set.relative.lower.value)
+        assert result.effects[0].upper == pytest.approx(legacy.confidence_set.relative.upper.value)
+        output = render(result, "full")
+        assert "confidence set" in output
+        brief = render(result)
+        assert f"{legacy.lift.value:.6g}" in brief
+        assert "status=unavailable" in brief
+        assert result.cells[0].summary is None
+        with pytest.raises(WireFormatError):
+            pickle.dumps(result)
+        from increment.store import DecisionLog
+
+        logged = run(
+            analysis,
+            registration,
+            compiled,
+            experiment_id="winsor-live",
+            analysis_spec_hash="sha256:" + "e" * 64,
+            execution_identity_hash="sha256:" + "f" * 64,
+            run_id="winsor-live-logged",
+            decision_log=DecisionLog(),
+        )
+        assert logged.decisions.cells[0].status == "not_evaluated"
+        from increment.store import ParquetResultsStore
+
+        with pytest.raises(WireFormatError) as error:
+            run(
+                analysis,
+                registration,
+                compiled,
+                experiment_id="winsor-live",
+                analysis_spec_hash="sha256:" + "e" * 64,
+                execution_identity_hash="sha256:" + "f" * 64,
+                run_id="winsor-live-saved",
+                results_store=ParquetResultsStore(tmp_path / "runs"),
+            )
+        assert error.value.code == "wire.result.raw_outcomes_unavailable"
+    finally:
+        analysis.close()
+
+
+def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
+    from increment import MetricSpec, Randomized
+    from increment.estimation.results import LiftEstimate
+    from increment.winsor import WinsorInferenceSpec, WinsorSupport
+
+    for upper, expected_status, control_values, treatment_values in (
+        (None, "unbounded", (1, 2, 3, 9), (1, 2, 3, 5)),
+        (0, "undefined", (0, 0), (0, 0)),
+    ):
+        plan = AnalysisPlan(primary="value")
+        metric = MetricSpec(
+            name="value",
+            type="mean",
+            winsorization={
+                "upper_percentile": 0.99,
+                "support": WinsorSupport(
+                    lower=0, upper=upper, provenance="Declared outcome support"
+                ),
+                "inference": WinsorInferenceSpec(method="joint-rank-projection-v1"),
+            },
+        )
+        compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
+        registration = Registration.from_plan(compiled)
+        analysis = Analysis.from_unit_summary(
+            pd.DataFrame(
+                [
+                    {"unit": f"{group}-{index}", "arm": group, "value": float(value)}
+                    for group, values in (
+                        ("control", control_values),
+                        ("treatment", treatment_values),
+                    )
+                    for index, value in enumerate(values)
+                ]
+            ),
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[metric],
+            plan=plan,
+            experiment_id=f"rank-{expected_status}",
+        )
+        try:
+            row = analysis.run()[0]
+            assert isinstance(row, LiftEstimate)
+            result = run(
+                analysis,
+                registration,
+                compiled,
+                experiment_id=f"rank-{expected_status}",
+                analysis_spec_hash="sha256:" + "e" * 64,
+                execution_identity_hash="sha256:" + "f" * 64,
+                run_id=f"rank-{expected_status}",
+            )
+            effect = result.effects[0]
+            assert effect is not None
+            assert row.confidence_set is not None
+            assert row.confidence_set.relative.upper.status == expected_status
+            assert effect.upper is None
+            assert effect.alpha == row.confidence_set.alpha
+            assert effect.qualification == row.confidence_set.qualification
+            assert effect.reason is not None
+        finally:
+            analysis.close()
+
+
 def test_public_run_rejects_registration_that_differs_from_analysis_plan():
     import pytest
 

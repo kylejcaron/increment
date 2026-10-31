@@ -303,7 +303,7 @@ def typed_request_options(options: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def contrast_request_refusals(options: Mapping[str, Any]) -> tuple[CodedError, ...]:
-    from increment._whole_window import validate_contrast_request
+    from increment.readouts._whole_window import validate_contrast_request
 
     values = typed_request_options(options)
     try:

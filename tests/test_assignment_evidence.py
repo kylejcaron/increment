@@ -68,6 +68,51 @@ def test_assignment_request_refuses_without_relation_capability() -> None:
     assert "from_unit_summary" in str(error.value.context["route"])
 
 
+def test_custom_assignment_provider_serves_declared_evidence_or_refuses() -> None:
+    from dataclasses import replace
+
+    import pandas as pd
+
+    from increment.evidence import EvidenceProvider, evidence_provider, request_evidence
+    from increment.frame import from_unit_summary
+
+    source = from_unit_summary(
+        pd.DataFrame({"unit": ["u1", "u2"], "arm": ["control", "treatment"], "value": [1.0, 2.0]}),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        experiment_id="custom",
+    )
+
+    class Provider(EvidenceProvider):
+        context = source.context
+        evidence = replace(source.evidence, assignment_relation="reduced")
+
+        def assignment(self, request: AssignmentRequest) -> AssignmentEvidence:
+            return AssignmentEvidence(
+                experiment=request.experiment,
+                population=request.population,
+                versions=(1,),
+                periods=(None,),
+                arm_counts=((1, None, "control", 4), (1, None, "treatment", 4)),
+                independence_grain="unit",
+            )
+
+    provider = Provider()
+    request = AssignmentRequest(experiment="custom")
+    assert request_evidence(evidence_provider(provider), request) == provider.assignment(request)
+    assert isinstance(request_evidence(evidence_provider(provider), request), AssignmentEvidence)
+
+    class MissingAssignmentProvider(EvidenceProvider):
+        context = source.context
+        evidence = replace(source.evidence, assignment_relation="reduced")
+
+    with pytest.raises(CapabilityError) as refused:
+        request_evidence(evidence_provider(MissingAssignmentProvider()), request)
+    assert refused.value.code == "evidence.assignment.unavailable"
+
+
 @pytest.mark.parametrize(
     ("fixture", "experiment"),
     [

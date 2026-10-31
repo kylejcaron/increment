@@ -34,6 +34,32 @@ request)` so shared capability checks run before a read. The
 shows the provider interface. The removed `increment.sources.MomentSource`
 custom-source protocol has no compatibility adapter.
 
+When `evidence.assignment_relation` is `"ledger"` or `"reduced"`, implement
+`assignment(request: AssignmentRequest) -> AssignmentEvidence` to serve
+`AssignmentRequest`s. It returns reduced assignment metadata (arm counts,
+randomization grain, and any declared probabilities), not ledger rows or event
+timestamps. For example:
+
+```python
+from increment.evidence import AssignmentEvidence, AssignmentRequest
+
+
+class Provider:
+    def assignment(self, request: AssignmentRequest) -> AssignmentEvidence:
+        return AssignmentEvidence(
+            experiment=request.experiment,
+            population=request.population,
+            versions=(1,),
+            periods=(None,),
+            arm_counts=((1, None, "control", 4), (1, None, "treatment", 4)),
+            independence_grain="unit",
+        )
+```
+
+Providers without assignment evidence do not need this optional method. A
+provider that declares assignment evidence but omits it refuses the request
+with `evidence.assignment.unavailable`.
+
 The optional `sequential_snapshot(SequentialSnapshotRequest(previous=...))`
 returns the provider's exact current checkpoint linked to the supplied
 checkpoint. Without this method, acquiring a current checkpoint refuses with
