@@ -1331,12 +1331,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     def readout_view(
         self, template: DefinitionsMomentSource, *, metrics: Sequence[Metric]
     ) -> DefinitionsMomentSource:
-        """Lend a family's original horizon and declarations over this pinned session."""
+        """Lend a family's declarations and horizon over this pinned session."""
         import copy
 
         view = copy.copy(self)
         view._metrics = template._metrics
-        view._context = template._context
+        effective_configs = {config.metric.name: config for config in self._context.configs}
+        view._context = replace(
+            template._context,
+            configs=tuple(
+                effective_configs.get(config.metric.name, config)
+                for config in template._context.configs
+            ),
+        )
         view._horizon_metrics = tuple(dict.fromkeys((*template._horizon_metrics, *metrics)))
         view._has_fixed_event_horizon_override = False
         view._fixed_event_horizon = None

@@ -99,6 +99,8 @@ class BreakoutReadouts:
             configs=self._configs(req),
             breakout_definitions=definitions,
         )
+        if self._execution_context is not None and self._src is not self._scope_source:
+            self._execution_context.declare_source_alias(self._src, parent=self._scope_source)
         evidence = load_breakout_evidence(
             _builtin_source(self._src),
             request,
