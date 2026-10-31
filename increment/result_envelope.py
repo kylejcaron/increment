@@ -145,6 +145,29 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
     )
 
 
+def _restore_typed_report_row(row_kind: str, row_payload: Mapping[str, Any]) -> Any:
+    from importlib import import_module
+
+    module_name = (
+        "increment.breakout.estimates"
+        if row_kind in {"breakout", "daily_metric", "asof_metric", "daily_lift", "asof_lift"}
+        else "increment.estimation.contrast_results"
+    )
+    module = import_module(module_name)
+    model_name = {
+        "breakout": "BreakoutEstimate",
+        "daily_metric": "DailyMetricValue",
+        "asof_metric": "DailyMetricValue",
+        "daily_lift": "DailyLiftEstimate",
+        "asof_lift": "DailyLiftEstimate",
+        "switchback_variance": "ContrastResult",
+        "switchback_unit_t_approximation": "ContrastResult",
+        "switchback_block_t": "ContrastResult",
+        "switchback_unit_variance_envelope": "ContrastResult",
+    }[row_kind]
+    return getattr(module, model_name).model_validate_json(_json(_plain(row_payload["data"])))
+
+
 @dataclass(frozen=True, slots=True)
 class _ProjectionEstimate:
     value: float
@@ -773,29 +796,7 @@ class ResultCell:
             "switchback_block_t",
             "switchback_unit_variance_envelope",
         }:
-            from importlib import import_module
-
-            module_name = (
-                "increment.breakout.estimates"
-                if self.row_kind
-                in {"breakout", "daily_metric", "asof_metric", "daily_lift", "asof_lift"}
-                else "increment.estimation.contrast_results"
-            )
-            module = import_module(module_name)
-            model_name = {
-                "breakout": "BreakoutEstimate",
-                "daily_metric": "DailyMetricValue",
-                "asof_metric": "DailyMetricValue",
-                "daily_lift": "DailyLiftEstimate",
-                "asof_lift": "DailyLiftEstimate",
-                "switchback_variance": "ContrastResult",
-                "switchback_unit_t_approximation": "ContrastResult",
-                "switchback_block_t": "ContrastResult",
-                "switchback_unit_variance_envelope": "ContrastResult",
-            }[self.row_kind]
-            return getattr(module, model_name).model_validate_json(
-                _json(_plain(self.row_payload["data"]))
-            )
+            return _restore_typed_report_row(self.row_kind, self.row_payload)
         if self.row_payload is not None and self.row_kind in {
             "cate",
             "cate_validation",
@@ -1032,20 +1033,6 @@ class ResultCell:
             summary_data["intervals"] = tuple(
                 tuple(interval) for interval in summary_data.get("intervals", ())
             )
-        cell = cls(
-            identity=identity,
-            label=payload["label"],
-            family=None
-            if payload.get("family") is None
-            else FamilyScope.model_validate(payload["family"]),
-            source_snapshot_id=payload.get("source_snapshot_id"),
-            components=components,
-            provenance=provenance,
-            summary=None if summary_data is None else EffectEstimate(**summary_data),
-            projection_fields=payload.get("projection_fields") or {},
-            row_kind=row_kind,
-            row_payload=row_payload,
-        )
         typed_report_rows = {
             "breakout",
             "daily_metric",
@@ -1057,9 +1044,27 @@ class ResultCell:
             "switchback_block_t",
             "switchback_unit_variance_envelope",
         }
-        if row is not None or (row_payload is not None and row_kind in typed_report_rows):
-            return replace(cell, summary=_report_summary(cell._projection_row(), identity))
-        return cell
+        if row is not None:
+            summary = _report_summary(row, identity)
+        elif row_payload is not None and row_kind in typed_report_rows:
+            typed_row = _restore_typed_report_row(row_kind, row_payload)
+            summary = _report_summary(typed_row, identity)
+        else:
+            summary = None if summary_data is None else EffectEstimate(**summary_data)
+        return cls(
+            identity=identity,
+            label=payload["label"],
+            family=None
+            if payload.get("family") is None
+            else FamilyScope.model_validate(payload["family"]),
+            source_snapshot_id=payload.get("source_snapshot_id"),
+            components=components,
+            provenance=provenance,
+            summary=summary,
+            projection_fields=payload.get("projection_fields") or {},
+            row_kind=row_kind,
+            row_payload=row_payload,
+        )
 
     @staticmethod
     def to_arrow(cells: Sequence[ResultCell]) -> pa.Table:

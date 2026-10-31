@@ -202,10 +202,13 @@ For multiplicity correction, pass retained lift rows to
 `select_exploratory_family()`; it derives the family cutoff and returns corrected
 estimates.
 
-Save `ReadoutResults` JSON to preserve and reopen a complete result collection.
-Use `ResultCell` or `AnalysisEnvelope` for portable per-cell summaries,
-available operations, rendering, and Arrow interchange. The long-term choice
-of saved result format is tracked in kata issue `cade`.
+Choose the format by what must survive. `ReadoutResults.model_dump_json()` keeps
+the typed readout collection and its collection metadata. `AnalysisEnvelope` and
+`ResultCell` provide portable per-cell summaries, supported operations,
+rendering, and Arrow interchange. A persisted execution belongs in
+`ResultsStore`: its `Run` keeps the cells alongside execution identity, plan,
+and manifest metadata in Arrow-backed storage. These formats serve different
+lifecycles; none substitutes for live analysis or fit state.
 
 See the [retained-state inventory](development/retained-state.md) for
 construction details and operation limits.
