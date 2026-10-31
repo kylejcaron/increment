@@ -772,6 +772,12 @@ Definitions-backed analysis has two persistence boundaries:
 | `analysis.materialize()` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
 | `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
+Internally, query core owns the shared artifact contracts and relation schemas;
+the bundled artifact extension supplies publication, reader, digest, and capture
+implementations through the typed `increment.artifact_ports` entry point. The
+composition is lazy and does not change public artifact references, wire
+identities, or replay behavior.
+
 A refresh keeps `artifact_id` but creates a new `generation_id`, and must use
 the same compiled context as the pinned prior generation. Completeness is only
 ever proven by certifications you supply: observed timestamps, `data_as_of`,

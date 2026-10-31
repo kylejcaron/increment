@@ -19,6 +19,7 @@ import json
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
+from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
@@ -39,22 +40,7 @@ from increment.query.artifact_contract import (
     open_trusted_manifest_snapshot,
     unit_day_artifact_extension_catalog,
 )
-from increment.query.artifact_extensions import (
-    read_extension,
-    verify_extension_relation,
-)
-from increment.query.artifact_reader import (
-    LAZY_DIGEST_VERIFICATION,
-    _restore_raw_dimension_values,
-    _TriggeredReductionInputs,
-    restrict_to_units,
-)
-from increment.query.artifact_reader import (
-    ArtifactMomentSource as _ArtifactMomentSource,
-)
-from increment.query.artifact_reader import (
-    _rows as _artifact_rows,
-)
+from increment.query.artifact_ports import artifact_query_ports
 from increment.query.builders import (
     _local_date,
     declared_binary_metrics,
@@ -105,8 +91,36 @@ if TYPE_CHECKING:
     from increment._evidence_types import ComplianceSummary
     from increment._source_types import EvidenceCapabilities
     from increment.decision import CompiledDecisionPlan
+    from increment.query.artifact_reader import ArtifactMomentSource as _ArtifactBase
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Breakout, Metric
+
+else:
+    _ArtifactBase = object
+
+
+def read_extension(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().extensions.read_extension(*args, **kwargs)
+
+
+def verify_extension_relation(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().extensions.verify_extension_relation(*args, **kwargs)
+
+
+def _restore_raw_dimension_values(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().reader._restore_raw_dimension_values(*args, **kwargs)
+
+
+def _new_triggered_reduction_inputs(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().reader._TriggeredReductionInputs(*args, **kwargs)
+
+
+def restrict_to_units(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().reader.restrict_to_units(*args, **kwargs)
+
+
+def _artifact_rows(*args: Any, **kwargs: Any) -> Any:
+    return artifact_query_ports().reader._rows(*args, **kwargs)
 
 
 def _scalar_covariate(spec: MetricSpec):
@@ -697,8 +711,13 @@ def _artifact_request(extension: Any) -> dict[str, Any]:
     raise ArtifactContractError("artifact.extension.invalid", f"unknown extension kind {kind!r}")
 
 
-class _ArtifactFacadeSource(_ArtifactMomentSource):
-    """Artifact adapter that exposes the public operation family to Analysis."""
+class _ArtifactFacadeSource(_ArtifactBase):
+    """Artifact adapter loaded lazily through the registered reader port."""
+
+    def __new__(cls, *args: Any, **kwargs: Any):
+        if cls is _ArtifactFacadeSource:
+            return object.__new__(_artifact_facade_type())
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -929,7 +948,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         verification: Literal["lazy_digest"] = "lazy_digest",
     ) -> _ArtifactFacadeSource:
         if verification != "lazy_digest":
-            refuse(LAZY_DIGEST_VERIFICATION)
+            refuse(artifact_query_ports().reader.LAZY_DIGEST_VERIFICATION)
         snapshot_context = open_trusted_manifest_snapshot(
             store, ref, expected_context=expected_context
         )
@@ -1110,7 +1129,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         observed_edge, certified_edge = self.triggered_observation_edges(metric)
         return relation, observed_edge, certified_edge
 
-    def _triggered_reduction_inputs(self, metric: Metric) -> _TriggeredReductionInputs:
+    def _triggered_reduction_inputs(self, metric: Metric) -> Any:
         relation, observed_edge, certified_edge = self._trigger_measure_table(metric)
         anchors = self._verify_trigger_population(operation="triggered_source")
         assignments = self._ensure("exposures")
@@ -1134,7 +1153,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             __uptake_first_exposure_ts=assignments.first_exposure_ts,
         )
         spine_edge = ibis.literal(observed_edge, type="date")
-        return _TriggeredReductionInputs(
+        return _new_triggered_reduction_inputs(
             exposures=triggered_exposures.mutate(
                 first_exposure_date=_local_date(
                     triggered_exposures.first_exposure_ts, self._artifact_experiment
@@ -2612,6 +2631,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             population_counts=population_counts,
             assigned_counts=assigned_counts,
         )
+
+
+@cache
+def _artifact_facade_type() -> type:
+    reader_type = artifact_query_ports().reader.ArtifactMomentSource
+    return type("_ArtifactFacadeSource", (_ArtifactFacadeSource, reader_type), {})
 
 
 def open_artifact(

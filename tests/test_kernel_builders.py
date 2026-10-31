@@ -449,3 +449,23 @@ def test_frozen_capture_builder_specification_round_trip(
         record_property("specification_hash", experiment.hash())
     finally:
         _close_parity_analysis(analysis)
+
+
+@pytest.mark.integration
+def test_saved_artifact_experiment_replays_with_fresh_resolver():
+    from increment.builders import from_unit_day_artifact
+    from tests.test_unit_day_artifact_facade import _published
+
+    con, _native, context, store, ref = _published()
+    try:
+        experiment, _initial_resolver = from_unit_day_artifact(store, ref, expected_context=context)
+        assert experiment.analysis_context["source_name"] == "_ArtifactFacadeSource"
+        saved_experiment = Experiment.from_json(experiment.to_json())
+
+        _fresh_experiment, fresh_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+
+        assert run(saved_experiment, fresh_resolver).cells
+    finally:
+        con.disconnect()

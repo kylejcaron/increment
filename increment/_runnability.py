@@ -224,11 +224,12 @@ def context_payload(source: Any) -> dict[str, Any]:
 def _validate_artifact_metrics(declaration: Mapping[str, Any]) -> None:
     import json
 
-    from increment.query.artifact_reader import (
-        _declared_metric_definitions,
-        _metric_spec_from_binding,
-    )
+    from increment.query.artifact_ports import artifact_query_ports
     from increment.semantics.artifact import MetricMeasure
+
+    artifact_reader = artifact_query_ports().reader
+    _declared_metric_definitions = artifact_reader._declared_metric_definitions
+    _metric_spec_from_binding = artifact_reader._metric_spec_from_binding
 
     identity = declaration["source_declaration"]
     definitions = _declared_metric_definitions(json.dumps(identity["context"]))

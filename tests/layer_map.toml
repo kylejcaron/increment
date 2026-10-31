@@ -4,8 +4,6 @@ core = [
   "increment.semantics*",
   "increment.estimation*",
   "increment.estimators*",
-  "increment.artifacts",
-  "increment.digest",
   "increment.declarations*",
   "increment.kernel*",
   "increment.decision*",
@@ -70,4 +68,13 @@ program = [
   "increment.store*",
 ]
 
-artifacts = []
+artifacts = [
+  "increment.artifacts",
+  "increment.digest",
+  "increment.artifacts._query",
+  "increment.query.artifact_digest",
+  "increment.query.artifact_extensions",
+  "increment.query.artifact_publish",
+  "increment.query.artifact_reader",
+  "increment.query.sequential_capture",
+]

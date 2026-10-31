@@ -44,6 +44,9 @@ from increment.errors import (
     refusals,
 )
 from increment.query._artifact_float import _Float64Token, register_float64_token
+from increment.query.artifact_ports import BUCKETED_DIGEST_FORMAT, SQL_DIGEST_FORMAT
+from increment.query.artifact_ports import SQL_DIGEST_BACKENDS as _SQL_DIGEST_BACKENDS
+from increment.query.artifact_ports import SQL_DIGEST_FORMAT_V2 as _SQL_DIGEST_FORMAT_V2
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
@@ -56,12 +59,6 @@ DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT
 # is retained only for verifying existing DuckDB relations; format 4 replaces
 # its decimal float payload with an exact binary64 significand/exponent token.
 _DOMAIN_ROOT_V2 = b"increment.unit-day-artifact\x00v2\x00"
-
-#: `digest_relation_sql_v2`'s current SQL text-token encoding.
-SQL_DIGEST_FORMAT = 4
-_SQL_DIGEST_FORMAT_V2 = 2
-#: `digest_relation_bucketed`'s row encoding: binary `canonical_row_bytes`.
-BUCKETED_DIGEST_FORMAT = 3
 
 
 class DigestType(IntEnum):
@@ -998,8 +995,6 @@ def digest_relation_bucketed(
         role, sh, ch, row_count, schema_raw, None, digest_format=BUCKETED_DIGEST_FORMAT
     )
 
-
-_SQL_DIGEST_BACKENDS = frozenset({"duckdb", "postgres", "snowflake", "bigquery"})
 
 _SQL_DIGEST_SHA256: dict[str, Callable[[ir.StringValue], ir.StringValue]] = {}
 # Same hash as 32 raw bytes, and its lowercase-hex rendering. Row hashes are
