@@ -592,6 +592,7 @@ def _switchback_analysis(
     probability_ct=0.5,
     value_shift=0.0,
     aggregation: str = "mean",
+    workflow: bool = False,
 ):
     import pandas as pd
 
@@ -624,22 +625,41 @@ def _switchback_analysis(
                             ),
                         }
                     )
+    frame = pd.DataFrame(rows)
+    identification = Randomized(
+        control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+    )
+    contrast_references = {"value": reference or UnitCycleTApproximation()}
+    assignment = SwitchbackAssignment(
+        sequence=IndependentBernoulliOrder(probability_ct=probability_ct),
+        window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+    )
+    if workflow:
+        from increment import from_switchback_frame
+
+        return from_switchback_frame(
+            frame,
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"value": aggregation},
+            identification=identification,
+            contrast_references=contrast_references,
+            assignment=assignment,
+        )
     return Analysis.from_switchback_panel(
-        pd.DataFrame(rows),
+        frame,
         unit="unit",
         cycle="cycle",
         period="period",
         step="step",
         group="group",
         metrics={"value": aggregation},
-        identification=Randomized(
-            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-        ),
-        contrast_references={"value": reference or UnitCycleTApproximation()},
-        assignment=SwitchbackAssignment(
-            sequence=IndependentBernoulliOrder(probability_ct=probability_ct),
-            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-        ),
+        identification=identification,
+        contrast_references=contrast_references,
+        assignment=assignment,
     )
 
 
@@ -845,15 +865,82 @@ def test_readout_wire_requires_snapshot_for_checkpoint_bearing_results():
 
 
 @pytest.mark.parametrize(
-    "method", ["run_daily", "run_asof", "breakout_summaries", "factor_summaries"]
+    "method",
+    [
+        "run_daily",
+        "run_asof",
+        "breakout_summaries",
+        "factor_summaries",
+        "legacy_materialize",
+        "legacy_experiment",
+        "workflow_materialize",
+        "workflow_breakout_summaries",
+        "workflow_factor_summaries",
+        "workflow_experiment_definition",
+        "workflow_compiled_decision_plan",
+    ],
 )
-def test_switchback_day_axis_and_breakout_routes_refuse(method: str) -> None:
-    from increment.errors import CapabilityError
+def test_switchback_source_operation_routes_refuse_with_coded_context(method: str) -> None:
+    from increment.errors import CapabilityError, InvalidRequestError
 
-    analysis = _switchback_analysis()
-    with pytest.raises(CapabilityError) as refusal:
-        getattr(analysis, method)()
+    if method.startswith("workflow_"):
+        from increment.workflows import (
+            breakout_summaries,
+            compiled_decision_plan,
+            experiment_definition,
+            factor_summaries,
+            materialize,
+        )
+
+        experiment, resolver = _switchback_analysis(workflow=True)
+        try:
+            operation = {
+                "workflow_materialize": lambda: materialize(experiment, resolver),
+                "workflow_breakout_summaries": lambda: breakout_summaries(experiment, resolver),
+                "workflow_factor_summaries": lambda: factor_summaries(experiment, resolver),
+                "workflow_experiment_definition": lambda: experiment_definition(
+                    experiment, resolver
+                ),
+                "workflow_compiled_decision_plan": lambda: compiled_decision_plan(
+                    experiment, resolver
+                ),
+            }[method]
+            if method == "workflow_compiled_decision_plan":
+                with pytest.raises(InvalidRequestError) as refusal:
+                    operation()
+                assert refusal.value.code == "store.run.legacy_analysis_required"
+                assert refusal.value.context["route"] == "Analysis.run()"
+                return
+            with pytest.raises(CapabilityError) as refusal:
+                operation()
+        finally:
+            close = getattr(resolver, "close", None)
+            if callable(close):
+                close()
+        expected_method = (
+            "experiment"
+            if method == "workflow_experiment_definition"
+            else method.removeprefix("workflow_")
+        )
+    else:
+        analysis = _switchback_analysis()
+        if method == "legacy_experiment":
+
+            def operation():
+                return analysis.experiment
+
+            expected_method = "experiment"
+        else:
+            operation = (
+                analysis.materialize
+                if method == "legacy_materialize"
+                else getattr(analysis, method)
+            )
+            expected_method = "materialize" if method == "legacy_materialize" else method
+        with pytest.raises(CapabilityError) as refusal:
+            operation()
     assert refusal.value.code == "facade.analysis.contrast_unavailable"
+    assert refusal.value.context["method"] == expected_method
 
 
 def test_switchback_dashboard_breakout_reads_refuses_with_contrast_code() -> None:
