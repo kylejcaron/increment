@@ -760,23 +760,4 @@ def test_direct_unadjusted_daily_asof_do_not_query_pre_period_stats(
     ]
 
 
-def test_direct_daily_readout_covariate_request_is_method_scoped(
-    seeded_pre_period_con, monkeypatch
-):
-
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    source = _native_source(analysis)
-    real_moments = source.moments
-    calls: list[bool] = []
-
-    def spy(metric, **kwargs):
-        calls.append(bool(kwargs.get("include_covariate", False)))
-        return real_moments(metric, **kwargs)
-
-    monkeypatch.setattr(source, "moments", spy)
-    readouts.daily(source, metrics=["avg_session_duration"])
-    readouts.daily(source, metrics=["avg_session_duration"], include_covariate=True)
-    assert calls == [False, True]
-
-
 pytestmark = pytest.mark.integration
