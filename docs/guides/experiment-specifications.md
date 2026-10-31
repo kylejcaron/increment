@@ -152,17 +152,37 @@ registered-analysis form of `run` when those writes are required.
 `Analysis.run()` remains the compatibility route
 that returns `LiftEstimates` or `ContrastResults`.
 
-For example, a definitions-bound source that supports a daily axis can declare
-whole-window and daily views together:
+For example, a unit-panel source that supports daily data can declare whole-window
+and daily views together:
 
 ```python
 from dataclasses import replace
+import pandas as pd
+
+from increment import from_frame, run
 from increment.kernel.contracts import Scope
 
+panel = pd.DataFrame(
+    {
+        "user_id": range(40),
+        "variant": ["control"] * 20 + ["treatment"] * 20,
+        "event_day": [pd.Timestamp("2025-01-01")] * 40,
+        "revenue": [float(1 + index % 7) for index in range(40)],
+    }
+)
+exp, resolver = from_frame(
+    panel,
+    shape="panel",
+    unit="user_id",
+    group="variant",
+    date="event_day",
+    control="control",
+    metrics={"revenue": "mean"},
+)
 total = Scope(view="run", grain="total")
 daily = Scope(view="daily", grain="daily")
 exp = replace(exp, scopes=(total, daily))
-combined = run(exp, resolver)                # One capture, both scopes.
+combined = run(exp, resolver)  # One capture, both scopes.
 only_daily = run(exp, resolver, views=(daily,))
 ```
 
