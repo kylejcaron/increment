@@ -296,6 +296,8 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(monke
             with pytest.raises(CodedError) as error:
                 run(experiment, resolver, views=views)
             assert error.value.code == "kernel.run.execution_unavailable"
+        empty = run(experiment, resolver, analysis_options={"metrics": []})
+        assert empty.cells == ()
         invalid = replace(
             experiment, scopes=(*scopes, Scope(view="asof", grain="asof", through_day="2025-01-11"))
         )

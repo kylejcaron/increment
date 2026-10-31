@@ -1846,6 +1846,27 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         assert checkpoint.control.n == checkpoint.treatment.n == 96
         assert checkpoint.control.successes == 24 and checkpoint.treatment.successes == 72
         daily = native.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+        from dataclasses import replace
+
+        from increment._analysis_kernel_adapter import experiment_for_analysis
+        from increment._run import run as execute
+        from increment.kernel.contracts import Scope
+
+        experiment, resolver = experiment_for_analysis(native, return_run_result=True)
+        experiment = replace(
+            experiment,
+            scopes=(
+                Scope(view="run", grain="total"),
+                Scope(view="asof", grain="asof", completion_policy=True),
+            ),
+        )
+        combined = execute(
+            experiment,
+            resolver=resolver,
+            analysis_options={"estimands": ("compliance",)},
+        )
+        assert {cell.identity.key.metric for cell in combined.cells} == {"uptake"}
+        assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
 
         path = tmp_path / "uptake-retention-catalog.parquet"
         native.export(path)

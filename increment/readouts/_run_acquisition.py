@@ -10,7 +10,11 @@ from increment._evidence_types import EvidenceScope
 from increment._literals import ValueScale
 from increment.declarations import Method
 from increment.estimation.inference import Prior
-from increment.readouts._requests import _design_compliance_only, _prepare_run_request
+from increment.readouts._requests import (
+    _design_compliance_only,
+    _prepare_run_request,
+    _sequential_compliance_requested,
+)
 from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
@@ -99,21 +103,24 @@ class RunAcquisitionOwner:
             )
         else:
             compliance_only = _design_compliance_only(source.context, request.estimands)
+            sequential_compliance = _sequential_compliance_requested(
+                source.context, request.estimands
+            )
+            omit_outcomes = compliance_only or sequential_compliance
             scope = EvidenceScope(
                 metrics=(
                     ()
-                    if compliance_only
+                    if omit_outcomes
                     else tuple(selected)
                     if request.family_scope_metrics is None
                     else request.family_scope_metrics
                 ),
-                horizon_metrics=(() if compliance_only else request.family_horizon),
+                horizon_metrics=() if omit_outcomes else request.family_horizon,
                 population=request.family_population,
                 populations=request.family_populations,
                 grain="total",
                 estimands=(None if request.estimands is None else tuple(request.estimands)),
-                configs=tuple(configs),
-                uptake_facts=request.family_uptake_facts,
+                configs=() if omit_outcomes else tuple(configs),
                 snapshot=True,
                 execution=True,
                 include_breakouts=False,

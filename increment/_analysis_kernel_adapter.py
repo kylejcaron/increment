@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -300,16 +301,31 @@ class AnalysisResolver:
             coherences = {kwargs.get("coherence", "captured") for _, _, kwargs in planned}
             if len(coherences) != 1:
                 self._unavailable(experiment, "coherence")
+            coherence = coherences.pop()
             scope_request = capture_requirements(self._source, requests)
-            with owned_execution_context(self._analysis, scope_request, coherence=coherences.pop()):
-                capture = next(
-                    (
-                        kwargs["capture"]
-                        for _, _, kwargs in planned
-                        if kwargs.get("capture") is not None
-                    ),
-                    None,
-                )
+            capture = next(
+                (
+                    kwargs["capture"]
+                    for _, _, kwargs in planned
+                    if kwargs.get("capture") is not None
+                ),
+                None,
+            )
+            needs_evidence = bool(
+                capture is not None
+                or scope_request.metrics
+                or scope_request.configs
+                or scope_request.uptake_facts
+                or scope_request.assignment_requests
+                or scope_request.breakouts
+                or scope_request.include_breakouts
+            )
+            acquisition = (
+                owned_execution_context(self._analysis, scope_request, coherence=coherence)
+                if needs_evidence
+                else nullcontext()
+            )
+            with acquisition:
                 if capture is not None:
                     self._analysis.capture_sequential(**capture)
                 scoped_rows = []

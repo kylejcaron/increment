@@ -171,6 +171,13 @@ def operation_options(
     values = {**typed_request_options(experiment.request_options), **(overrides or {})}
     if values.get("metrics") is None:
         values["metrics"] = list(scope.metrics) or list(experiment.metrics)
+    estimands = values.get("estimands")
+    if (
+        experiment.design.get("mechanism") == "encouragement"
+        and estimands is not None
+        and tuple(estimands) == ("compliance",)
+    ):
+        values["metrics"] = []
     if "population" not in values:
         values["population"] = scope.population
     if scope.view in {"daily", "asof"}:
