@@ -226,6 +226,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
             metrics={},
             registration=Registration(registration_hash="registration"),
             source_refs=experiment.source_refs,
+            analysis_context=experiment.analysis_context,
             scopes=(
                 Scope(
                     view="breakout",
@@ -238,6 +239,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
             ),
         ).compile()
     assert raised.value.code == "kernel.request.invalid"
+    assert raised.value.context["field"] == "duplicate breakout selection 'country'"
 
     with pytest.raises(CodedError) as raised:
         experiment.with_views(
