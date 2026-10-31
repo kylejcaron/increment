@@ -75,10 +75,22 @@ def test_core_layer_does_not_import_extensions() -> None:
     _assert_layer_dependencies_are_valid(config, layers)
 
 
-def test_query_artifact_and_ledger_paths_stay_in_core_exception_boundary() -> None:
+def test_artifact_implementation_paths_are_owned_by_artifacts_layer() -> None:
     config, layer_map = _config()
     layers = _module_layers(config, layer_map)
     assert layers["increment.query"] == "core"
+    artifact_paths = (
+        "increment.artifacts",
+        "increment.digest",
+        "increment.query.artifact_digest",
+        "increment.query.artifact_extensions",
+        "increment.query.artifact_publish",
+        "increment.query.artifact_reader",
+        "increment.query.sequential_capture",
+        "increment.artifacts._query",
+    )
+    assert set(artifact_paths) <= layers.keys()
+    assert all(layers[path] == "artifacts" for path in artifact_paths)
     core_patterns = layer_map["core"]
     extension_patterns = [
         pattern
@@ -86,20 +98,14 @@ def test_query_artifact_and_ledger_paths_stay_in_core_exception_boundary() -> No
         if layer in EXTENSION_LAYERS
         for pattern in patterns
     ]
-    query_paths = (
-        "increment.query.artifact_contract",
-        "increment.query.artifact_digest",
-        "increment.query.artifact_extensions",
-        "increment.query.artifact_publish",
-        "increment.query.artifact_reader",
-        "increment.query.schemas",
-        "increment.query.sequential_capture",
-        "increment.query.ledger",
-    )
     assert all(
         any(fnmatch.fnmatchcase(path, pattern) for pattern in core_patterns)
         and not any(fnmatch.fnmatchcase(path, pattern) for pattern in extension_patterns)
-        for path in query_paths
+        for path in (
+            "increment.query.artifact_contract",
+            "increment.query.schemas",
+            "increment.query.ledger",
+        )
     )
 
 

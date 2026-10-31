@@ -2636,7 +2636,7 @@ class _ArtifactFacadeSource(_ArtifactBase):
 @cache
 def _artifact_facade_type() -> type:
     reader_type = artifact_query_ports().reader.ArtifactMomentSource
-    return type("_ArtifactFacadeSourceImpl", (_ArtifactFacadeSource, reader_type), {})
+    return type("_ArtifactFacadeSource", (_ArtifactFacadeSource, reader_type), {})
 
 
 def open_artifact(
