@@ -61,6 +61,11 @@ change without notice.
   `increment.evidence` respectively. Source-loading estimation facades remain
   available without deprecation warnings; data-only estimation kernels do not
   load sources.
+- Release note (breaking API cutover): artifact declarations are no longer
+  re-exported by `increment.semantics.models`. Use `increment.artifacts` for
+  documented artifact workflows. Other artifact schema types are defined in
+  `increment.semantics.artifact` and are not a promised public API. Artifact
+  formats and class identities are unchanged.
 - Release note (bug fix): portable cell summaries follow the row's requested
   effect scale and retain an available relative lift when an additive sidecar
   cannot be projected. A different-scale fallback is labeled explicitly.
