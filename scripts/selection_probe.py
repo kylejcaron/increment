@@ -34,6 +34,9 @@ DEFAULT_MODULES = (
     "increment/query/_cuped_qr.py",
     "increment/_lift_options.py",
     "increment/semantics/models.py",
+    "increment/switchback.py",
+    "increment/readouts/_asof.py",
+    "increment/_unit_cycle.py",
 )
 
 
