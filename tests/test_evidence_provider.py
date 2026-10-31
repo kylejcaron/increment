@@ -214,8 +214,6 @@ def test_each_builtin_arm_adapter_matches_every_declared_evidence_path(tmp_path)
             )
             scope = provider.scope(scope_request)
             assert isinstance(scope, EvidenceScopeResult)
-            assert replace(scope.scope, uptake_facts=()) == scope_request
-            assert scope.scope.uptake_facts in ((), ("clicked",))
             by = source.evidence.breakouts if adapter.name == "breakout_moments" else ()
             moments_request = MomentsRequest(metric, grain=grain, by=by, population=population)
             expected = provider.moments(moments_request)

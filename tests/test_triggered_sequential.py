@@ -370,11 +370,14 @@ def _assert_empty_sequential_compliance(tmp_path):
     try:
         analysis.capture_sequential(finalized=True, as_of=_LATER)
         default_rows = analysis.run(metrics=[])
-        assert default_rows
         assert {row.estimand for row in default_rows} == {"compliance"}
         rows = analysis.run(metrics=[], estimands=("compliance",))
-        assert rows
         assert {row.estimand for row in rows} == {"compliance"}
+        # Separate run calls may have distinct snapshot IDs; compare all readout data and state.
+        assert [row.model_dump(exclude={"source_snapshot_id"}) for row in default_rows] == [
+            row.model_dump(exclude={"source_snapshot_id"}) for row in rows
+        ]
+        assert default_rows.sequential_snapshot == rows.sequential_snapshot
     finally:
         analysis.close()
         connection.disconnect()
