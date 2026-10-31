@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from types import MappingProxyType, TracebackType
 from typing import Any, Literal, cast
@@ -88,22 +88,12 @@ class EvidenceExecutionContext:
         )
         effective_mode: EffectiveMode = "provider" if provider_owned else effective_coherence
         scope = self.scope
-        requested = EvidenceScope(
-            metrics=scope.metrics,
-            horizon_metrics=scope.horizon_metrics,
-            population=scope.population,
-            populations=scope.populations,
-            grain=scope.grain,
-            breakouts=scope.breakouts,
-            configs=scope.configs,
-            uptake_facts=scope.uptake_facts,
+        requested = replace(
+            scope,
             snapshot=(
                 scope.snapshot if provider_owned else self._requested_coherence == "captured"
             ),
             execution=True,
-            include_breakouts=scope.include_breakouts,
-            checkpoint_only=self.scope.checkpoint_only,
-            assignment_requests=self.scope.assignment_requests,
         )
         try:
             self._stack.enter_context(_advisory_run_scope())

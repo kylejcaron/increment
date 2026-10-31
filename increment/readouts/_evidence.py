@@ -877,11 +877,8 @@ class _BreakoutScopedProvider:
                 (f"{self.identity.source}:{self.identity.property}",),
                 route="use the breakout identity bound to this slice",
             )
-        scope = EvidenceScope(
-            metrics=request.metrics,
-            horizon_metrics=request.horizon_metrics,
-            population=request.population,
-            grain=request.grain,
+        scope = replace(
+            request,
             breakouts=tuple(
                 dict.fromkeys(
                     (
@@ -895,10 +892,6 @@ class _BreakoutScopedProvider:
                 )
             ),
             configs=request.configs if request.configs is not None else self.configs,
-            uptake_facts=request.uptake_facts,
-            snapshot=request.snapshot,
-            execution=request.execution,
-            include_breakouts=request.include_breakouts,
         )
         scoped = self.provider.scope(scope)
 

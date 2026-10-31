@@ -279,6 +279,17 @@ def _assert_selected_registered_family_capture(tmp_path):
             "assigned",
             "triggered",
         }
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        connection.raw_sql("DROP TABLE events")
+        reversed_result = run(
+            replace(experiment, scopes=(scopes[1], scopes[0])),
+            resolver,
+            analysis_options={"metrics": ["aux_a"]},
+        )
+        assert {cell.identity.key.analysis_population for cell in reversed_result.cells} == {
+            "assigned",
+            "triggered",
+        }
     finally:
         if analysis is not None:
             analysis.close()

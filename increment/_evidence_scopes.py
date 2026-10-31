@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from types import MappingProxyType
 from typing import Any, cast
 
@@ -222,22 +223,7 @@ def load_evidence_scope(
     require_request_evidence(src, request)
     scope = request
     if not is_custom_source(src) and request.snapshot and request.population == "triggered":
-        scope = EvidenceScope(
-            metrics=request.metrics,
-            horizon_metrics=request.horizon_metrics,
-            population="assigned",
-            populations=request.populations,
-            grain=request.grain,
-            dimension=request.dimension,
-            estimands=request.estimands,
-            breakouts=request.breakouts,
-            configs=request.configs,
-            uptake_facts=request.uptake_facts,
-            snapshot=request.snapshot,
-            execution=request.execution,
-            include_breakouts=request.include_breakouts,
-            assignment_requests=request.assignment_requests,
-        )
+        scope = replace(request, population="assigned")
 
     evidence = declared_evidence(src)
     capture_status = (
