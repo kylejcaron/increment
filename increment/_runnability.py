@@ -81,23 +81,32 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     from increment.kernel.contracts import declared_breakouts
 
     operation = scope_operation(experiment, scope)
-    try:
-        breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
-    except CodedError as refusal:
-        return (refusal,)
     if (
         operation not in _SCOPE_OPERATIONS[scope.view]
         or scope.through_day is not None
         or scope.day_domain
         or scope.time_basis != "calendar"
         or (scope.completion_policy and scope.view != "asof")
-        or (scope.view == "breakout" and len(breakouts) > 1)
+        or (scope.view == "switchback" and bool(scope.segment))
         or (
             scope.view in {"daily", "asof"}
-            and (
-                len(breakouts) > 1 or any(identity.source is not None for identity in scope.segment)
-            )
+            and any(identity.source is not None for identity in scope.segment)
         )
+    ):
+        return (
+            CodedError(
+                "The bound analysis cannot execute these experiment declarations",
+                code="kernel.run.execution_unavailable",
+                context={"experiment_id": experiment.experiment_id, "field": "scope"},
+            ),
+        )
+    try:
+        breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+    except CodedError as refusal:
+        return (refusal,)
+    if (
+        (scope.view == "breakout" and len(breakouts) > 1)
+        or (scope.view in {"daily", "asof"} and len(breakouts) > 1)
         or (
             scope.view == "breakout"
             and bool(breakouts)
@@ -111,7 +120,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                 for source in experiment.source_refs
             )
         )
-        or (scope.view == "switchback" and bool(scope.segment))
     ):
         return (
             CodedError(
