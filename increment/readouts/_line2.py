@@ -185,6 +185,19 @@ def _whole_window_operation_scope(analysis, selected, added, options) -> Evidenc
     )
 
 
+def _day_axis_scope_dependencies(candidate, request):
+    """Retain completion evidence separately from requested uptake moments."""
+    if request.grain != "asof":
+        return None, ()
+    estimands = request.estimands if request.caller == "run_asof_lift" else ()
+    uptake_facts = ()
+    if request.completed_windows_only:
+        uptake = getattr(candidate._design, "uptake", None)
+        if uptake is not None:
+            uptake_facts = (uptake.fact,)
+    return estimands, uptake_facts
+
+
 def operation_scope(analysis, operation: str, options: dict[str, Any]) -> EvidenceScope:
     """Validate a selected operation and declare only the evidence it may read."""
     from increment._analysis_config import overlay_configs, select_metrics
@@ -235,7 +248,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
             key: options.get(key, UNSET)
             for key in ("decision_method", "sensitivity_methods", "prior")
         }
-        configs = ()
+        configs, scope_estimands, scope_uptake_facts = (), None, ()
         if operation == "run_breakout" and metrics:
             configs = overlay_configs(
                 metrics,
@@ -285,6 +298,7 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 population=population,
                 completed_windows_only=options.get("completed_windows_only", False),
             )
+            scope_estimands, scope_uptake_facts = _day_axis_scope_dependencies(candidate, req)
             reader = candidate._day_axis()
             _validate_source_populations(candidate._src, populations, operation)
             reader.validate_request(req, lift=operation.endswith("_lift"))
@@ -326,6 +340,8 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 and _compliance_only(candidate, options.get("estimands"), options.get("dimension"))
                 else tuple(candidate._src.context.metrics),
                 configs=tuple(configs),
+                estimands=scope_estimands,
+                uptake_facts=scope_uptake_facts,
                 population=population,
                 populations=populations,
                 grain=(

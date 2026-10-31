@@ -731,6 +731,35 @@ def test_run_asof_lift_reports_late_trend_for_native_encouragement_design(con):
         assert late_absolute[ds].require_lift().lb == pytest.approx(expected.require_lift().lb)
 
 
+@pytest.mark.integration
+def test_direct_asof_lift_requests_uptake_only_for_uptake_estimands(con):
+    """Direct asof_lift keeps ITT-only requests independent of uptake moments."""
+    from increment import readouts
+
+    analysis = _analysis_with_asof_encouragement_events(con)
+    source = analysis._src
+
+    itt_and_late = readouts.asof_lift(source, metrics=["revenue"], estimands=("itt", "late"))
+    assert {row.estimand for row in itt_and_late} == {"itt", "late"}
+
+    itt_only = readouts.asof_lift(source, metrics=["revenue"], estimands=("itt",))
+    assert itt_only
+    assert {row.estimand for row in itt_only} == {"itt"}
+
+
+@pytest.mark.integration
+def test_asof_completed_windows_wait_for_later_encouragement_window(con):
+    """An encouragement as-of row waits for both declared windows to mature."""
+    analysis = _analysis_with_asof_encouragement_events(con)
+    analysis = make_analysis_like(
+        analysis,
+        [analysis.metrics[0].model_copy(update={"window_days": 1})],
+        design=_asof_encouragement_design(uptake_window_days=3),
+    )
+
+    assert analysis.run_asof(completed_windows_only=True) == []
+
+
 def _analysis_with_bounded_asof_encouragement_events(con, *, sequential: bool = False):
     analysis = _analysis_with_asof_encouragement_events(
         con,

@@ -1372,6 +1372,10 @@ class _NativeDayAxis:
         require_uptake = (
             req.estimands is not None and any(estimand != "itt" for estimand in req.estimands)
         ) or (req.caller == "run_asof_lift" and req.estimands is None)
+        if req.completed_windows_only and req.grain == "asof":
+            from increment.semantics.design import Encouragement
+
+            require_uptake = require_uptake or isinstance(self.src.context.design, Encouragement)
         if req.dimension is not None:
             matching = [
                 breakout

@@ -83,6 +83,7 @@ def _load_asof_rows_by_metric(
     by: Sequence[str],
     completed_windows_only: bool,
     control_group: str,
+    estimands: Sequence[str] | None,
 ) -> dict[str, dict[Any, MetricEvidence]]:
     """Load and bucket each metric's as-of moments by date."""
     covariate_metrics = frozenset(
@@ -93,12 +94,13 @@ def _load_asof_rows_by_metric(
     evidence = load_day_axis_rows(
         src,
         DayAxisRequest(
-            caller="run_asof",
+            caller="run_asof_lift",
             grain="asof",
             metrics=tuple(selected),
             dimension=None,
             by=tuple(by),
             completed_windows_only=completed_windows_only,
+            estimands=None if estimands is None else tuple(estimands),
             covariate_metrics=covariate_metrics,
         ),
     )
@@ -412,6 +414,7 @@ def asof_lift(
         by=by,
         completed_windows_only=completed_windows_only,
         control_group=str(design.control_group),
+        estimands=estimands,
     )
     day_order = _day_axis_label_order(
         [*compliance_by_date, *(date for dated in by_metric_date.values() for date in dated)]
