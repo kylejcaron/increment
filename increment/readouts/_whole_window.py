@@ -31,7 +31,10 @@ from increment.readouts._evidence import (
     validate_populations,
     validates_populations,
 )
-from increment.readouts._requests import _design_compliance_only
+from increment.readouts._requests import (
+    _design_compliance_only,
+    _sequential_compliance_requested,
+)
 from increment.sources import require_operation
 
 if TYPE_CHECKING:
@@ -397,15 +400,7 @@ class WholeWindowReadouts:
     ) -> LiftEstimates:
         route = self.validate(req)
         design_summary_only = _design_compliance_only(self._src.context, req.estimands)
-        from increment.estimation.sequential import SEQUENTIAL_POLICIES
-        from increment.semantics.design import Encouragement
-
-        sequential_compliance = (
-            req.estimands is not None
-            and "compliance" in req.estimands
-            and isinstance(self._src.context.design, Encouragement)
-            and isinstance(self._plan.inference, SEQUENTIAL_POLICIES)
-        )
+        sequential_compliance = _sequential_compliance_requested(self._src.context, req.estimands)
         if not req.metrics and not design_summary_only and not sequential_compliance:
             from increment.breakout.estimates import LiftEstimates
 

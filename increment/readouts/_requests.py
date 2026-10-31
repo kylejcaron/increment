@@ -29,6 +29,18 @@ def _design_compliance_only(context: SourceContext, estimands: Sequence[str] | N
     )
 
 
+def _sequential_compliance_requested(
+    context: SourceContext, estimands: Sequence[str] | None
+) -> bool:
+    """Sequential encouragement can emit compliance rows without selected metrics."""
+    return (
+        estimands is not None
+        and "compliance" in estimands
+        and isinstance(context.design, Encouragement)
+        and isinstance(context.plan.inference, SEQUENTIAL_POLICIES)
+    )
+
+
 def _prepare_run_request(
     src: EvidenceSource,
     *,
