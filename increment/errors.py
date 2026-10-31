@@ -7,8 +7,10 @@ import os
 import string
 import sys
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass
 from functools import update_wrapper
 from types import MappingProxyType, NoneType, UnionType
@@ -425,6 +427,55 @@ class WarningSpec:
 PACKAGE_FRAMES: tuple[str, ...] = (os.path.join(os.path.dirname(os.path.abspath(__file__)), ""),)
 
 
+_DeferredAdvisory = tuple[WarningSpec, Mapping[str, Any]]
+_advisory_capture: ContextVar[list[_DeferredAdvisory] | None] = ContextVar(
+    "increment_advisory_capture", default=None
+)
+_advisory_replays: ContextVar[set[object] | None] = ContextVar(
+    "increment_advisory_replays", default=None
+)
+
+
+@contextmanager
+def _capture_advisories() -> Iterator[list[_DeferredAdvisory]]:
+    """Retain immutable warning inputs, including warnings ignored by Python."""
+    parent = _advisory_capture.get()
+    captured: list[_DeferredAdvisory] = []
+    token = _advisory_capture.set(captured)
+    try:
+        yield captured
+    finally:
+        _advisory_capture.reset(token)
+        if parent is not None:
+            parent.extend(captured)
+
+
+@contextmanager
+def _advisory_run_scope() -> Iterator[None]:
+    """Replay each cached reduction's advisories at most once per execution."""
+    token = _advisory_replays.set(set())
+    try:
+        yield
+    finally:
+        _advisory_replays.reset(token)
+
+
+def _replay_advisories(
+    identity: object,
+    advisories: Sequence[_DeferredAdvisory],
+    *,
+    already_emitted: bool = False,
+) -> None:
+    seen = _advisory_replays.get()
+    if seen is not None:
+        if identity in seen:
+            return
+        seen.add(identity)
+    if not already_emitted:
+        for spec, context in advisories:
+            warn(spec, context=context, skip_file_prefixes=PACKAGE_FRAMES)
+
+
 def warn(
     spec: WarningSpec,
     /,
@@ -467,6 +518,9 @@ def warn(
                 f"WarningSpec {spec.code!r} dedupe fields must be hashable after normalization"
             ) from exc
     instance = spec.warning_type(message, code=spec.code, context=ctx, dedupe_key=dedupe_key)
+    captured = _advisory_capture.get()
+    if captured is not None:
+        captured.append((spec, instance.context))
     if skip_file_prefixes:
         warnings.warn(instance, skip_file_prefixes=(*skip_file_prefixes, __file__))
     else:
