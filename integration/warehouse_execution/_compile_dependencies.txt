@@ -1,4 +1,4 @@
-# Traced on commit: 2dfc7a04ced4ffea21644e506ca36d444f5fd63d
+# Traced on commit: 5b86b151630e0347bf02941a1456ece81a5a8c9d
 increment
 increment._analysis_config
 increment._analysis_execution
@@ -42,6 +42,8 @@ increment.readouts._whole_window
 increment._window
 increment._winsor_errors
 increment.analysis
+increment.artifacts
+increment.artifacts._query
 increment.breakout
 increment.breakout.estimates
 increment.builders
@@ -124,7 +126,10 @@ increment.query._native_triggered
 increment.query._nonfinite
 increment.query.artifact_contract
 increment.query.artifact_digest
+increment.query.artifact_extensions
+increment.query.artifact_ports
 increment.query.artifact_publish
+increment.query.artifact_reader
 increment.query.builders
 increment.query.cuped
 increment.query.dims
@@ -133,6 +138,7 @@ increment.query.integrity
 increment.query.native_contract
 increment.query.native_source
 increment.query.schemas
+increment.query.sequential_capture
 increment.query.session
 increment.readouts
 increment.readouts._asof
