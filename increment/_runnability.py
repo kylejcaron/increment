@@ -82,7 +82,7 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
 
     operation = scope_operation(experiment, scope)
     try:
-        breakouts = declared_breakouts(experiment.source_refs, scope)
+        breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
     except CodedError as refusal:
         return (refusal,)
     if (
@@ -120,6 +120,22 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                 context={"experiment_id": experiment.experiment_id, "field": "scope"},
             ),
         )
+    if scope.view == "breakout":
+        properties = tuple(identity.property for identity in scope.segment)
+        if any(
+            source.capabilities is not None
+            and len(source.capabilities.breakouts) > 1
+            and len(properties) == 1
+            and properties[0] in source.capabilities.breakouts
+            for source in experiment.source_refs
+        ):
+            return (
+                CodedError(
+                    "The bound analysis cannot execute these experiment declarations",
+                    code="kernel.run.execution_unavailable",
+                    context={"experiment_id": experiment.experiment_id, "field": "segment"},
+                ),
+            )
     if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
         try:
             refuse(

@@ -323,7 +323,10 @@ class Experiment:
             thaw(tuple(self.metrics.values()))
         )
         selections = tuple(tuple(scope.metrics) or metrics for scope in self.scopes)
-        breakouts = tuple(declared_breakouts(self.source_refs, scope) for scope in self.scopes)
+        breakouts = tuple(
+            declared_breakouts(self.source_refs, scope, self.analysis_context)
+            for scope in self.scopes
+        )
         source = self.source_refs[0].name
         populations = tuple(dict.fromkeys(scope.population for scope in self.scopes))
         inventory = EvidenceScope(

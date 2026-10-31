@@ -124,37 +124,69 @@ class Scope(_ContractModel):
         return contract_hash("scope", self.canonical_payload())
 
 
-def declared_breakouts(source_refs: Sequence[Any], scope: Scope) -> tuple[BreakoutIdentity, ...]:
-    """Expand breakout selectors using only recorded source capabilities."""
-    declared = tuple(
-        BreakoutIdentity(property=property, source=source.name)
-        for source in source_refs
-        if source.capabilities is not None
-        for property in source.capabilities.breakouts
+def declared_breakouts(
+    source_refs: Sequence[Any],
+    scope: Scope,
+    analysis_context: Mapping[str, Any] | None = None,
+) -> tuple[BreakoutIdentity, ...]:
+    """Expand selectors from recorded definition identities or source capabilities."""
+    declarations: tuple[BreakoutIdentity, ...] | None = None
+    definitions_recorded = False
+    recorded_experiment = None if analysis_context is None else analysis_context.get("experiment")
+    if isinstance(recorded_experiment, Mapping):
+        raw = recorded_experiment.get("breakouts")
+        if isinstance(raw, (tuple, list)):
+            definitions_recorded = True
+            parsed = []
+            for item in raw:
+                if isinstance(item, Mapping):
+                    property_name = item.get("property")
+                    source_name = item.get("source")
+                else:
+                    property_name = getattr(item, "property", None)
+                    source_name = getattr(item, "source", None)
+                if isinstance(property_name, str) and (
+                    source_name is None or isinstance(source_name, str)
+                ):
+                    parsed.append(BreakoutIdentity(property_name, source_name))
+            declarations = tuple(dict.fromkeys(parsed))
+    if declarations is None:
+        declarations = tuple(
+            dict.fromkeys(
+                BreakoutIdentity(property=property, source=source.name)
+                for source in source_refs
+                if source.capabilities is not None
+                for property in source.capabilities.breakouts
+            )
+        )
+    complete = definitions_recorded or all(
+        source.capabilities is not None for source in source_refs
     )
     if not scope.segment:
-        return declared if scope.view == "breakout" else ()
+        return declarations if scope.view == "breakout" else ()
 
     selected: set[BreakoutIdentity] = set()
     for selector in scope.segment:
         matches = tuple(
             identity
-            for identity in declared
+            for identity in declarations
             if identity.property == selector.property
             and (selector.source is None or selector.source == identity.source)
         )
         if not matches:
-            _refuse(
-                "kernel.request.invalid",
-                field=f"unknown breakout selection {selector.property!r}",
-            )
+            if complete:
+                _refuse(
+                    "kernel.request.invalid",
+                    field=f"unknown breakout selection {selector.property!r}",
+                )
+            continue
         if any(identity in selected for identity in matches):
             _refuse(
                 "kernel.request.invalid",
                 field=f"duplicate breakout selection {selector.property!r}",
             )
         selected.update(matches)
-    return tuple(identity for identity in declared if identity in selected)
+    return tuple(identity for identity in declarations if identity in selected)
 
 
 class ImplementationRef(_ContractModel):

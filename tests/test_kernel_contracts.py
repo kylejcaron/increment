@@ -159,7 +159,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
     qualified = Scope(
         view="breakout",
         grain="total",
-        segment=({"property": "country", "source": "source-b"},),
+        segment=({"property": "country", "source": "src_b"},),
     )
     same_property = Scope(
         view="breakout",
@@ -179,17 +179,26 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
         design={},
         metrics={},
         registration=Registration(registration_hash="registration"),
-        source_refs=(source("source-a", ("country", "device")), source("source-b", ("country",))),
+        source_refs=(source("source", ("country", "device")),),
         scopes=(all_breakouts, qualified, same_property, distinct_properties),
+        analysis_context={
+            "experiment": {
+                "breakouts": (
+                    {"property": "country", "source": "src_a"},
+                    {"property": "country", "source": "src_b"},
+                    {"property": "device", "source": "src_a"},
+                )
+            }
+        },
     )
     authored_hash = experiment.hash()
 
     inventory, requests = experiment.compile()
 
     expected = (
-        ("source-a", "country"),
-        ("source-a", "device"),
-        ("source-b", "country"),
+        ("src_a", "country"),
+        ("src_b", "country"),
+        ("src_a", "device"),
     )
 
     def request_breakouts(index: int) -> tuple[tuple[str, str], ...]:
@@ -201,8 +210,8 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
 
     assert tuple((item.source, item.property) for item in inventory.breakouts) == expected
     assert request_breakouts(0) == expected
-    assert request_breakouts(1) == (("source-b", "country"),)
-    assert request_breakouts(2) == (("source-a", "country"), ("source-b", "country"))
+    assert request_breakouts(1) == (("src_b", "country"),)
+    assert request_breakouts(2) == (("src_a", "country"), ("src_b", "country"))
     assert request_breakouts(3) == expected
     assert experiment.hash() == authored_hash
     assert all(
@@ -223,7 +232,7 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
                     grain="total",
                     segment=(
                         {"property": "country", "source": None},
-                        {"property": "country", "source": "source-a"},
+                        {"property": "country", "source": "src_a"},
                     ),
                 ),
             ),
