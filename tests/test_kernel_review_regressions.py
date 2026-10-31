@@ -919,11 +919,16 @@ def test_switchback_identity_and_estimator_compatibility():
             identification=_identification(),
             assignment=_assignment(),
             plan=AnalysisPlan(primary="mean", alpha=alpha),
-        )[0]
+        )
 
-    experiment = build(0.05)
+    experiment, resolver = build(0.05)
+    restored = Experiment.from_json(experiment.to_json())
+    assert restored.hash() == experiment.hash()
+    (cell,) = run(restored, resolver).cells
+    assert cell.summary is not None
+    assert cell.summary.point == pytest.approx(-30)
     assert experiment.design
-    assert experiment.registration != build(0.1).registration
+    assert experiment.registration != build(0.1)[0].registration
     statuses = runnable(experiment, "mean")
     assert not statuses["switchback.contrast"].static_refusals
     for estimator in ("randomized.cuped", "observational.aipw"):
@@ -958,7 +963,7 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
     definitions["fact_sources"].append(unused)
     source_path.write_text(yaml.safe_dump(definitions))
     forms = (
-        lambda: from_definitions("new_onboarding_v2", path, con=seeded_con),
+        lambda: from_definitions(path, con=seeded_con, experiment_name="new_onboarding_v2"),
         lambda: from_definitions(
             experiment_name="new_onboarding_v2", definitions_path=path, con=seeded_con
         ),
@@ -1345,19 +1350,26 @@ def _plain_builder(kind, *, conversion=False):
     frame["other"] = frame["value"] + 2
     frame["country"] = ["US", "CA", "CA", "US"] * 10
     frame["region"] = ["west", "east"] * 20
-    options = {}
     if kind == "panel":
         frame = pd.concat([frame.assign(day="2025-01-01"), frame.assign(day="2025-01-02")])
-        options["date"] = "day"
+        return from_frame(
+            frame,
+            shape="panel",
+            date="day",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=metrics,
+            breakouts=["country", "region"],
+        )
     return from_frame(
         frame,
-        shape="panel" if kind == "panel" else "summary",
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics=metrics,
         breakouts=["country", "region"],
-        **options,
     )
 
 

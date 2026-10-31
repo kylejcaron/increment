@@ -20,9 +20,11 @@ def _facade_builder[**P](
     @wraps(cast(MethodType, implementation).__func__)
     def construct(cls: type[Analysis], *args: P.args, **kwargs: P.kwargs) -> Analysis:
         options = dict(kwargs)
+        name = builder_name
         if builder_name == "from_definitions":
             options["_record_schema"] = False
-        experiment, resolver = getattr(builders, builder_name)(*args, **options)
+            name = "_from_definitions"
+        experiment, resolver = getattr(builders, name)(*args, **options)
         analysis = cls.__new__(cls)
         analysis.__dict__.update(resolver._analysis.__dict__)
         analysis.__dict__["_kernel_binding"] = (experiment, resolver)

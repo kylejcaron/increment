@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
+
+if TYPE_CHECKING:
+    from ibis.backends.sql import SQLBackend
+
+    from increment._metric_specs import MetricsArg
+    from increment.artifacts import SourceSnapshotEvidence
+    from increment.frame import IntoDataFrame
+    from increment.query.artifact_contract import ArtifactStore
+    from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
+    from increment.semantics.design import Encouragement, Observational, Randomized
+    from increment.semantics.models import AnalysisPlan
+    from increment.semantics.unit_cycle import UnitCycleReference
+    from increment.switchback import SwitchbackAssignment
+
 
 from increment._analysis_kernel_adapter import (
     AnalysisResolver as _AnalysisResolver,
@@ -149,8 +165,51 @@ class _OfflineResolver:
         return []
 
 
+@overload
 def from_frame(
-    frame: Any,
+    frame: IntoDataFrame,
+    *,
+    shape: Literal["summary"],
+    unit: str,
+    group: str,
+    control: object | None = None,
+    metrics: MetricsArg,
+    experiment_id: str = "frame",
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+    uptake: str | None = None,
+    on_unassigned: Literal["error", "exclude"] = "error",
+    cluster: str | None = None,
+    intervention_grain: Literal["unit", "cluster"] = "unit",
+    exposure_date: str | None = None,
+    breakouts: Sequence[str] = (),
+) -> tuple[Experiment, _AnalysisResolver]: ...
+
+
+@overload
+def from_frame(
+    frame: IntoDataFrame,
+    *,
+    shape: Literal["panel"],
+    unit: str,
+    group: str,
+    date: str,
+    control: object | None = None,
+    metrics: MetricsArg,
+    experiment_id: str = "frame",
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+    uptake: str | None = None,
+    exposure_date: str | None = None,
+    observation_end: dt.date | dt.datetime | str | int | float | None = None,
+    breakouts: Sequence[str] = (),
+    on_unassigned: Literal["error", "exclude"] = "error",
+    cluster: str | None = None,
+) -> tuple[Experiment, _AnalysisResolver]: ...
+
+
+def from_frame(
+    frame: IntoDataFrame,
     *,
     shape: Literal["summary", "panel"],
     **kwargs: Any,
@@ -167,40 +226,67 @@ def from_frame(
     return _experiment_for_analysis(analysis, return_run_result=True)
 
 
+def _accept_definitions_arguments[**P, R](builder: Callable[P, R]) -> Callable[P, R]:
+    @wraps(builder)
+    def parsed(*args: Any, **kwargs: Any) -> R:
+        legacy = (
+            len(args) == 3
+            or (len(args) == 2 and isinstance(args[1], (str, os.PathLike)))
+            or (len(args) == 1 and kwargs.get("definitions_path") is not None)
+        )
+        names = (
+            ("experiment_name", "definitions_path", "con")
+            if legacy
+            else ("definitions_path", "con")
+        )
+        if len(args) > len(names):
+            _refuse("kernel.request.invalid", field="too many positional definitions arguments")
+        for name, value in zip(names, args, strict=False):
+            if kwargs.get(name) is not None:
+                _refuse("kernel.request.invalid", field=f"{name} was supplied twice")
+            kwargs[name] = value
+        if kwargs.get("definitions_path") is None:
+            _refuse("kernel.request.invalid", field="definitions_path is required")
+        return cast(Callable[..., R], builder)(**kwargs)
+
+    return parsed
+
+
+@_accept_definitions_arguments
 def from_definitions(
-    *args: Any,
+    definitions_path: str | os.PathLike[str],
+    con: SQLBackend | None = None,
+    *,
     experiment_name: str | None = None,
-    definitions_path: str | os.PathLike[str] | None = None,
-    con: Any | None = None,
-    **kwargs: Any,
+    backend: str | None = None,
+    store: Literal["auto", "always", "none"] = "auto",
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
 ) -> tuple[Experiment, _AnalysisResolver | _OfflineResolver]:
     """Build from definitions, using a bound versioned catalog when offline."""
-    record_schema = kwargs.pop("_record_schema", True)
-    values = {
-        "experiment_name": experiment_name,
-        "definitions_path": definitions_path,
-        "con": con,
-    }
-    legacy = (
-        len(args) == 3
-        or (len(args) == 2 and isinstance(args[1], (str, os.PathLike)))
-        or (len(args) == 1 and definitions_path is not None)
+    return _from_definitions(
+        definitions_path,
+        con,
+        experiment_name=experiment_name,
+        backend=backend,
+        store=store,
+        on_mixed_assignment=on_mixed_assignment,
+        source_snapshot_evidence=source_snapshot_evidence,
     )
-    names = (
-        ("experiment_name", "definitions_path", "con") if legacy else ("definitions_path", "con")
-    )
-    if len(args) > len(names):
-        _refuse("kernel.request.invalid", field="too many positional definitions arguments")
-    for name, value in zip(names, args, strict=False):
-        if values[name] is not None:
-            _refuse("kernel.request.invalid", field=f"{name} was supplied twice")
-        values[name] = value
-    experiment_name = values["experiment_name"]
-    definitions_path = values["definitions_path"]
-    con = values["con"]
-    if definitions_path is None:
-        _refuse("kernel.request.invalid", field="definitions_path is required")
 
+
+@_accept_definitions_arguments
+def _from_definitions(
+    definitions_path: str | os.PathLike[str],
+    con: SQLBackend | None = None,
+    *,
+    experiment_name: str | None = None,
+    backend: str | None = None,
+    store: Literal["auto", "always", "none"] = "auto",
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+    _record_schema: bool = True,
+) -> tuple[Experiment, _AnalysisResolver | _OfflineResolver]:
     path = Path(definitions_path)
     if con is None:
         catalog_path = _catalog_path(path)
@@ -233,17 +319,25 @@ def from_definitions(
     from increment._analysis_execution import Analysis
     from increment.semantics.loader import load
 
-    definitions_digest = _definitions_digest(path) if record_schema else ""
+    definitions_digest = _definitions_digest(path) if _record_schema else ""
     if experiment_name is None:
         definitions = load(path)
         if len(definitions.experiments) != 1:
             _refuse("kernel.request.invalid", field="experiment_name is required")
         experiment_name = definitions.experiments[0].name
-    analysis = Analysis._from_definitions(experiment_name, path, con, **kwargs)
-    experiment, resolver = _experiment_for_analysis(
-        analysis, record_schema=record_schema, return_run_result=True
+    analysis = Analysis._from_definitions(
+        experiment_name,
+        path,
+        con,
+        backend=backend,
+        store=store,
+        on_mixed_assignment=on_mixed_assignment,
+        source_snapshot_evidence=source_snapshot_evidence,
     )
-    if record_schema:
+    experiment, resolver = _experiment_for_analysis(
+        analysis, record_schema=_record_schema, return_run_result=True
+    )
+    if _record_schema:
         _write_catalog(path, experiment, definitions_digest)
         resolver.catalog_writer = lambda captured: _write_catalog(
             path, captured, definitions_digest
@@ -251,26 +345,81 @@ def from_definitions(
     return experiment, resolver
 
 
-def from_unit_day_artifact(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
+def from_unit_day_artifact(
+    store: ArtifactStore,
+    ref: UnitDayArtifactRef,
+    *,
+    expected_context: ArtifactContext,
+    verification: Literal["lazy_digest"] = "lazy_digest",
+) -> tuple[Experiment, _AnalysisResolver]:
     from increment._analysis_execution import Analysis
 
     return _experiment_for_analysis(
-        Analysis._from_unit_day_artifact(*args, **kwargs), return_run_result=True
+        Analysis._from_unit_day_artifact(
+            store, ref, expected_context=expected_context, verification=verification
+        ),
+        return_run_result=True,
     )
 
 
-def from_switchback_frame(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
+def from_switchback_frame(
+    frame: IntoDataFrame,
+    *,
+    unit: str,
+    cycle: str,
+    period: str,
+    step: str,
+    group: str,
+    metrics: MetricsArg,
+    identification: Randomized,
+    assignment: SwitchbackAssignment,
+    experiment_id: str = "frame",
+    plan: AnalysisPlan | None = None,
+    contrast_references: Mapping[str, UnitCycleReference] | None = None,
+) -> tuple[Experiment, _AnalysisResolver]:
     from increment._analysis_execution import Analysis
 
     return _experiment_for_analysis(
-        Analysis._from_switchback_panel(*args, **kwargs), return_run_result=True
+        Analysis._from_switchback_panel(
+            frame,
+            unit=unit,
+            cycle=cycle,
+            period=period,
+            step=step,
+            group=group,
+            metrics=metrics,
+            identification=identification,
+            assignment=assignment,
+            experiment_id=experiment_id,
+            plan=plan,
+            contrast_references=contrast_references,
+        ),
+        return_run_result=True,
     )
 
 
-def from_moments(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
+def from_moments(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    metrics: MetricsArg,
+    control: object | None = None,
+    experiment_id: str | None = None,
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+) -> tuple[Experiment, _AnalysisResolver]:
     from increment._analysis_execution import Analysis
 
-    return _experiment_for_analysis(Analysis._from_moments(*args, **kwargs), return_run_result=True)
+    return _experiment_for_analysis(
+        Analysis._from_moments(
+            rows,
+            metrics=metrics,
+            control=control,
+            experiment_id=experiment_id,
+            design=design,
+            plan=plan,
+        ),
+        return_run_result=True,
+    )
 
 
 def from_unit_summary(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:

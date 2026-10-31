@@ -29,17 +29,18 @@ from tests.test_evidence_identity_parity import _capture
 from tests.warning_codes import warning_codes
 
 
-def test_moments_builder_preserves_percentile_winsorization_for_runnability(tmp_path):
+@pytest.mark.parametrize("winsorization", [None, Winsorization(upper_percentile=0.9)])
+def test_moments_builder_preserves_estimates_and_raw_outcome_refusals(tmp_path, winsorization):
     import pyarrow.parquet as pq
 
     metric = MetricSpec(
         name="value",
         type="mean",
-        winsorization=Winsorization(upper_percentile=0.9),
+        winsorization=winsorization,
     )
     design = Randomized(control_group="control")
     summary = Analysis.from_unit_summary(
-        _frame(),
+        _frame().assign(value=[1.0, 3.0, 2.0, 4.0] * 10),
         unit="unit",
         group="arm",
         metrics=[metric],
@@ -59,10 +60,19 @@ def test_moments_builder_preserves_percentile_winsorization_for_runnability(tmp_
     counted = _CountingSource(held_source(resolver._analysis))
     replace_analysis_source(resolver._analysis, counted)
 
-    assert tuple(
-        refusal.code
-        for refusal in runnable(experiment, "value")["randomized.unadjusted"].static_refusals
-    ) == ("evidence.raw_outcomes_unavailable",)
+    restored = Experiment.from_json(experiment.to_json())
+    assert restored.hash() == experiment.hash()
+    refusals = runnable(restored, "value")["randomized.unadjusted"].static_refusals
+    if winsorization is not None:
+        assert tuple(refusal.code for refusal in refusals) == ("evidence.raw_outcomes_unavailable",)
+        with pytest.raises(CodedError) as raised:
+            run(restored, resolver)
+        assert raised.value.code == "evidence.raw_outcomes_unavailable"
+    else:
+        assert refusals == ()
+        (cell,) = run(restored, resolver).cells
+        assert cell.summary is not None
+        assert cell.summary.point == pytest.approx(4 / 3)
     assert counted.unit_frame_reads == 0
 
 
@@ -90,20 +100,36 @@ def test_package_import_does_not_require_fcntl():
     )
 
 
-def test_from_frame_builder_returns_experiment_and_builtin_resolver():
-    experiment, resolver = from_frame(
-        _frame(),
-        shape="summary",
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"value": "mean"},
-    )
-
-    assert isinstance(experiment, Experiment)
-    assert callable(getattr(resolver, "run_experiment", None))
-    assert run(experiment, resolver)
-    assert Experiment.from_json(experiment.to_json()).hash() == experiment.hash()
+@pytest.mark.parametrize("shape", ["summary", "panel"])
+def test_from_frame_builder_estimates_survive_specification_round_trip(shape):
+    frame = _frame().assign(value=[1.0, 3.0, 2.0, 4.0] * 10, day="2025-01-01")
+    if shape == "summary":
+        experiment, resolver = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+            intervention_grain="unit",
+        )
+    else:
+        experiment, resolver = from_frame(
+            frame,
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"value": "mean"},
+            observation_end="2025-01-02",
+        )
+    restored = Experiment.from_json(experiment.to_json())
+    assert restored.hash() == experiment.hash()
+    (cell,) = run(restored, resolver).cells
+    assert cell.identity.key.metric == "value"
+    assert cell.summary is not None
+    assert cell.summary.point == pytest.approx(4 / 3)
 
 
 def test_frame_run_matches_analysis_run():
@@ -194,10 +220,10 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
     seeded_con.raw_sql("INSERT INTO binding_close_sentinel VALUES (37)")
 
     first_experiment, first = from_definitions(
-        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     second_experiment, second = from_definitions(
-        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     first_bound = cast(Any, first)
     second_bound = cast(Any, second)
@@ -231,7 +257,7 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
 @pytest.mark.integration
 def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
-        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     bound_resolver = cast(Any, resolver)
     analysis = bound_resolver._analysis
@@ -266,7 +292,7 @@ def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_c
 @pytest.mark.integration
 def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
-        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     bound_resolver = cast(Any, resolver)
     bound_resolver._analysis.materialize()
@@ -288,7 +314,7 @@ def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_
 @pytest.mark.integration
 def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
-        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     bound_resolver = cast(Any, resolver)
     try:
@@ -425,7 +451,7 @@ def test_concurrent_definitions_builders_retain_both_catalog_entries(
         patch.setattr(json, "loads", decode_together)
         with ThreadPoolExecutor(max_workers=2) as pool:
             writers = [
-                pool.submit(from_definitions, name, definitions, connection)
+                pool.submit(from_definitions, definitions, connection, experiment_name=name)
                 for name, connection in (
                     ("new_onboarding_v2", seeded_con),
                     ("pricing_tier_test", con),
@@ -448,9 +474,11 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
 
     catalog_path = definitions / ".increment-kernel-catalog.json"
     if not catalog_path.exists():
-        from_definitions("new_onboarding_v2", definitions, seeded_con)
+        from_definitions(definitions, seeded_con, experiment_name="new_onboarding_v2")
     cached, _ = from_definitions(definitions, experiment_name="new_onboarding_v2")
-    online, online_resolver = from_definitions("new_onboarding_v2", definitions, seeded_con)
+    online, online_resolver = from_definitions(
+        definitions, seeded_con, experiment_name="new_onboarding_v2"
+    )
     assert online.source_refs[0].schema == {}
     with warnings.catch_warnings(record=True) as captured_warnings:
         warnings.simplefilter("always", IncrementWarning)
@@ -567,9 +595,9 @@ def test_frozen_capture_builder_specification_round_trip(
             path = tmp_path / "definitions.yaml"
             path.write_text(yaml.safe_dump(definitions.model_dump(mode="json")), encoding="utf-8")
             experiment, resolver = from_definitions(
-                analysis.experiment.name,
                 path,
                 connection,
+                experiment_name=analysis.experiment.name,
                 store="none",
                 on_mixed_assignment=mixed,
             )
@@ -585,7 +613,7 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
     from increment.builders import from_unit_day_artifact
     from tests.test_unit_day_artifact_facade import _published
 
-    con, _native, context, store, ref = _published()
+    con, native, context, store, ref = _published()
     try:
         experiment, _initial_resolver = from_unit_day_artifact(store, ref, expected_context=context)
         assert experiment.analysis_context["source_name"] == "_ArtifactFacadeSource"
@@ -595,7 +623,22 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
             store, ref, expected_context=context
         )
 
-        assert run(saved_experiment, fresh_resolver).cells
+        assert saved_experiment.hash() == experiment.hash()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.warns(IncrementWarning):
+                expected = native.run().as_cells()
+        actual = run(saved_experiment, fresh_resolver).cells
+        assert len(actual) == len(expected)
+        for cell, reference in zip(actual, expected, strict=True):
+            assert cell.identity.key == reference.identity.key
+            assert cell.summary is not None
+            assert reference.summary is not None
+            assert cell.summary.point == pytest.approx(reference.summary.point)
+            assert cell.summary.lower == pytest.approx(reference.summary.lower)
+            assert cell.summary.upper == pytest.approx(reference.summary.upper)
+        _initial_resolver.close()
+        fresh_resolver.close()
     finally:
         con.disconnect()
 
@@ -630,3 +673,21 @@ def test_artifact_resolver_reopens_owned_snapshot_after_close():
         if resolver is not None:
             resolver.close()
         con.disconnect()
+
+
+@pytest.mark.integration
+def test_definitions_positional_arguments_remain_executable(seeded_defs, seeded_con):
+    builder = cast(Any, from_definitions)
+    for build in (
+        lambda: builder("new_onboarding_v2", seeded_defs, seeded_con),
+        lambda: builder("new_onboarding_v2", seeded_defs, con=seeded_con),
+        lambda: builder("new_onboarding_v2", definitions_path=seeded_defs, con=seeded_con),
+    ):
+        experiment, resolver = build()
+        with resolver, warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run(experiment, resolver, analysis_options={"metrics": ["purchase_rate"]})
+        assert result.cells
+        assert all(
+            cell.summary is not None and cell.summary.point is not None for cell in result.cells
+        )

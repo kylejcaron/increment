@@ -125,6 +125,12 @@ time; separate calls can read changed data. The experiment can be saved with
 `exp.to_json()` and identified with `exp.hash()`. Rendering retains warnings
 about missing guardrails, checks that were not completed, and what the data can
 establish.
+
+`shape="summary"` accepts summary-specific options such as
+`intervention_grain="cluster"`. With one row per unit per day, use
+`shape="panel"`, supply `date="event_day"`, and optionally set
+`observation_end="2025-01-31"`. Editors and type checkers check the options
+for the selected shape; a summary has no `date` or `observation_end`.
 For an available guardrail and recovery, see the
 [quickstart guide](https://getincrement.io/docs/guides/quickstart/#recover-the-unavailable-guardrail).
 
@@ -145,19 +151,21 @@ monitor sequentially ([mean or ratio](https://getincrement.io/docs/guides/sequen
 ## Connect your warehouse
 
 Define sources, exposures, metrics, and experiments in YAML. Connect the
-definitions to an Ibis backend to inspect generated SQL and run the analysis:
+definitions to an Ibis backend and build the experiment:
 
 <!-- skip: next "requires a configured warehouse and project definitions" -->
 
 ```python
 import ibis
-from increment import Analysis
+from increment import from_definitions, render, run
 
 con = ibis.snowflake.connect(...)
-analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
-
-print(analysis.summary_sql()["revenue"])
-results = analysis.run()
+experiment, resolver = from_definitions(
+    "definitions/", con, experiment_name="checkout_redesign"
+)
+with resolver:
+    results = run(experiment, resolver)
+print(render(results, "brief"))
 ```
 
 Install the Ibis backend for your warehouse separately, such as

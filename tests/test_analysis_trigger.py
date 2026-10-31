@@ -177,9 +177,9 @@ def test_kernel_run_preserves_triggered_population_identity(tmp_path):
     con.create_table("events", obj=events)
     evidence_cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
     experiment, resolver = from_definitions(
-        "exp",
         _write_defs(tmp_path),
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             evidence_cutoff, {"events": evidence_cutoff}
         ),

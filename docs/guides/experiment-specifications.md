@@ -121,13 +121,47 @@ resolver.capture_sequential(finalized=True, as_of=as_of)
 result = run(experiment, resolver)
 ```
 
-`from_frame` requires `shape="summary"` or `shape="panel"`. The narrower
-builders are `from_definitions`, `from_unit_day_artifact`,
-`from_switchback_frame`, and `from_moments`. Binding definitions with a
-connection records a versioned catalog file; a no-connection call reads
-that catalog and refuses when it is missing or stale. An offline definitions
-specification can be inspected with `runnable`, but needs a connection-bound
-resolver to execute.
+`from_frame` requires `shape="summary"` or `shape="panel"`. Each shape has
+its own typed options. A summary accepts `intervention_grain="unit"` or
+`"cluster"`; a panel requires `date` and accepts `observation_end`. Both accept
+`unit`, `group`, `metrics`, `control` or `design`, `plan`, `uptake`,
+`exposure_date`, `breakouts`, `cluster`, and `on_unassigned`.
+`control` and `design` are alternative ways to declare the comparison.
+
+The definitions call is path-first:
+`from_definitions(definitions_path, con=None, *, experiment_name=None,
+backend=None, store="auto", on_mixed_assignment="error",
+source_snapshot_evidence=None)`. Omit `experiment_name` only when the definitions
+or offline catalog contain exactly one experiment. Binding with a connection
+records a versioned catalog file; a no-connection call reads that catalog and
+refuses when it is missing or stale. An offline specification can be inspected
+with `runnable`, but needs a connection-bound source to execute.
+
+The other source builders expose only the options their data support:
+
+<!-- skip: next "requires a published artifact, exported moments, and a switchback frame" -->
+```python
+from increment import from_unit_day_artifact, from_moments, from_switchback_frame
+
+artifact_experiment, artifact_resolver = from_unit_day_artifact(
+    artifact_store, artifact_ref, expected_context=artifact_context,
+    verification="lazy_digest",
+)
+moments_experiment, moments_resolver = from_moments(
+    moment_rows, metrics={"revenue": "mean"}, control="control",
+    experiment_id="checkout_redesign",
+)
+switchback_experiment, switchback_resolver = from_switchback_frame(
+    switchback_rows, unit="user_id", cycle="cycle", period="period",
+    step="step", group="variant", metrics={"revenue": "mean"},
+    identification=randomized_design, assignment=switchback_assignment,
+    contrast_references=contrast_references,
+)
+```
+
+Every builder returns an experiment declaration and a resolver for reading its
+source. Saving and loading the declaration preserves
+its hash; it does not serialize the data or a warehouse connection.
 
 Use the resolver as a context manager when it owns temporary warehouse tables or
 an opened artifact snapshot. Exiting the block releases those resources; it
