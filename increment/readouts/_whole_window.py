@@ -368,11 +368,11 @@ class WholeWindowReadouts:
                 or _design_compliance_only(self._src.context, family.declared.estimands)
                 else LiftEstimates()
             )
-            if not isinstance(rows, LiftEstimates):
-                rows = LiftEstimates(rows)
             if family.exploratory is not None:
                 request = family.exploratory.request
                 reader = family.exploratory.make_reader()
+                if context is not None:
+                    context.declare_source_alias(reader._src, parent=self._src)
                 extra = reader.run(request, execution_context=context)
                 extra = LiftEstimates(
                     [row for row in extra if row.estimand != "compliance"],
