@@ -1200,6 +1200,12 @@ Warnings with a declared deduplication scope also carry an immutable
 `.dedupe_key`. Randomized lift-cell readouts suppress repeated emissions with
 the same key while replaying captured estimator warnings within one operation;
 warnings without a key are not suppressed by that replay path.
+
+Data-quality warnings from dataframe sources respect the current Python warning
+filter on every run, even when intermediate calculations are cached. Each cached
+calculation emits its warnings at most once per run, whether the run reads live
+data or takes a snapshot.
+
 Filter and assert on `.code` rather than message text:
 
 ```python
