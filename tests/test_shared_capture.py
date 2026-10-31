@@ -239,6 +239,48 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(monkeypatch
         con.disconnect()
 
 
+def test_unit_panel_declared_breakout_runs_with_combined_total_view():
+    import pandas as pd
+
+    from increment.builders import from_frame
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{index}" for index in range(40)],
+            "arm": ["control", "treatment"] * 20,
+            "day": [datetime(2025, 1, 1).date()] * 40,
+            "country": ["US" if (index // 2) % 2 == 0 else "CA" for index in range(40)],
+            "value": [float(index % 7) for index in range(40)],
+        }
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=["country"],
+    )
+    scopes = (
+        Scope(view="run", grain="total"),
+        Scope(
+            view="breakout",
+            grain="total",
+            segment=(BreakoutIdentity("country", None),),
+        ),
+    )
+    experiment = replace(experiment, scopes=scopes)
+    result = run(experiment, resolver)
+    assert {cell.identity.scope.view for cell in result.cells} == {"run", "breakout"}
+    assert {
+        cell.identity.key.dimension_value
+        for cell in result.cells
+        if cell.identity.scope.view == "breakout"
+    } == {"US", "CA"}
+
+
 def test_invalid_view_selection_and_late_capability_refuse_without_capture(monkeypatch, tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path)

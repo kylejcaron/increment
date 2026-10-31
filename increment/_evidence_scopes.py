@@ -73,12 +73,18 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
             dict.fromkeys(
                 metric
                 for request in requests
-                for metric in (request.horizon_metrics or tuple(source.context.metrics))
+                for metric in (
+                    request.horizon_metrics
+                    if request.horizon_metrics is not None
+                    else tuple(source.context.metrics)
+                )
             )
         )
         if not is_custom_source(src)
         else tuple(
-            dict.fromkeys(metric for request in requests for metric in request.horizon_metrics)
+            dict.fromkeys(
+                metric for request in requests for metric in request.horizon_metrics or ()
+            )
         )
     )
     experiment = getattr(source, "_experiment", None) or getattr(

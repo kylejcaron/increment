@@ -739,28 +739,33 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
     experiment, resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
-    requested = Experiment.from_json(
-        replace(
-            experiment,
-            scopes=(Scope(view="asof", grain="asof", completion_policy=True),),
-        ).to_json()
+    scopes = (
+        Scope(view="run", grain="total"),
+        Scope(view="asof", grain="asof", completion_policy=True),
     )
-
+    requested = Experiment.from_json(replace(experiment, scopes=scopes).to_json())
     capabilities = requested.source_refs[0].capabilities
     assert capabilities is not None and capabilities.grains == frozenset({"total"})
     from tests.parity_harness.comparison import nested_close
 
     actual = run(requested, resolver)
-    actual_payloads = [cell.to_payload()["row_payload"]["data"] for cell in actual.cells]
+    asof_cells = [cell for cell in actual.cells if cell.identity.scope.view == "asof"]
+    assert asof_cells
+    actual_payloads = [cell.to_payload()["row_payload"]["data"] for cell in asof_cells]
     expected_payloads = [cell.to_payload()["row_payload"]["data"] for cell in expected.as_cells()]
     assert nested_close(actual_payloads, expected_payloads)
+    assert any(cell.identity.scope.view == "run" for cell in actual.cells)
     assert runnable(requested, "outcome")["randomized.unadjusted"].static_refusals == ()
     actual_captured = run(requested, resolver, analysis_options={"capture": {"finalized": True}})
     assert nested_close(
-        [cell.to_payload()["row_payload"]["data"] for cell in actual_captured.cells],
-        [cell.to_payload()["row_payload"]["data"] for cell in expected.as_cells()],
+        [
+            cell.to_payload()["row_payload"]["data"]
+            for cell in actual_captured.cells
+            if cell.identity.scope.view == "asof"
+        ],
+        expected_payloads,
     )
-    values = replace(requested, operations={requested.scopes[0].hash(): "run_asof"})
+    values = replace(requested, operations={requested.scopes[1].hash(): "run_asof"})
     assert "evidence.grain_unavailable" in {
         refusal.code
         for refusal in runnable(values, "outcome")["randomized.unadjusted"].static_refusals

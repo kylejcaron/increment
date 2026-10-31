@@ -493,6 +493,24 @@ def _selected_percentile_winsorization(analysis: Any, options: Mapping[str, obje
     )
 
 
+def _merge_scoped_readouts(parts: Sequence[ScopedReadout]) -> Any:
+    rows = parts[0].collection
+    sequential_snapshot = rows.sequential_snapshot
+    for part in parts[1:]:
+        if part.collection.metadata is None:
+            continue
+        if rows.metadata is None:
+            rows = part.collection
+            sequential_snapshot = sequential_snapshot or rows.sequential_snapshot
+            continue
+        metadata, source, merged = merge_collection_metadata(
+            rows, part.collection, scoped_assembly=True
+        )
+        sequential_snapshot = sequential_snapshot or part.collection.sequential_snapshot
+        rows = ReadoutAssembly(tuple(merged.values()), metadata, source, sequential_snapshot)
+    return rows
+
+
 def _run_rows(  # noqa: PLR0913
     analysis: Analysis,
     rows: Any,
@@ -525,15 +543,7 @@ def _run_rows(  # noqa: PLR0913
         for part in parts
     ]
     runtime_method_unavailable = any(item[2] for item in overrides)
-    rows = parts[0].collection
-    for part in parts[1:]:
-        if part.collection.metadata is None:
-            continue
-        if rows.metadata is None:
-            rows = part.collection
-            continue
-        metadata, source, merged = merge_collection_metadata(rows, part.collection)
-        rows = ReadoutAssembly(tuple(merged.values()), metadata, source, rows.sequential_snapshot)
+    rows = _merge_scoped_readouts(parts)
     if contrast_context is not None:
         if results_store is not None or decision_log is not None:
             refuse(

@@ -34,6 +34,35 @@ from tests.analysis_factory import _moment_source
 from tests.warning_codes import warning_codes
 
 
+@pytest.mark.integration
+def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_path):
+    import json
+    from dataclasses import replace
+
+    from increment import run
+    from increment.builders import from_definitions
+    from increment.kernel.contracts import Scope
+    from tests.analysis_factory import definitions_inputs
+
+    analysis, con = _warehouse_compliance_analysis("mean", separate_outcome_source=True)
+    definitions, _, _, _, _ = definitions_inputs(analysis)
+    path = tmp_path / "definitions.json"
+    path.write_text(json.dumps(definitions.model_dump(mode="json")), encoding="utf-8")
+    experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")
+    try:
+        scopes = (Scope(view="run", grain="total"), Scope(view="asof", grain="asof"))
+        result = run(
+            replace(experiment, scopes=scopes),
+            resolver,
+            analysis_options={"estimands": ["compliance"]},
+        )
+        assert {cell.identity.scope.view for cell in result.cells} == {"run", "asof"}
+        assert {cell.identity.key.estimand for cell in result.cells} == {"compliance"}
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def _compliance(source, design, **kwargs):
     return cast(
         ComplianceSummary,

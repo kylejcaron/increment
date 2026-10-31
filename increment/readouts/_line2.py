@@ -71,9 +71,15 @@ def _reject_percentile_breakout(metrics):
 def _selected_breakouts(analysis, dimension: str | None = None):
     experiment = getattr(analysis, "_experiment", None)
     definitions = tuple(getattr(experiment, "breakouts", ()))
-    if dimension is not None:
-        definitions = tuple(item for item in definitions if item.property == dimension)
-    return tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+    if definitions:
+        if dimension is not None:
+            definitions = tuple(item for item in definitions if item.property == dimension)
+        return tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+    return tuple(
+        BreakoutIdentity(name, None)
+        for name in declared_evidence(analysis._src).breakouts
+        if dimension is None or name == dimension
+    )
 
 
 def _contrast_operation_scope(analysis, operation: str, options: dict[str, Any]) -> EvidenceScope:
@@ -181,7 +187,9 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
         if operation == "run":
             req = WholeWindowRequest(
                 metrics=tuple(metrics),
-                estimands=options.get("estimands"),
+                estimands=tuple(options["estimands"])
+                if options.get("estimands") is not None
+                else None,
                 population=options.get("population"),
                 value_scale=options.get("value_scale"),
                 coherence=options.get("coherence", "captured"),
@@ -238,7 +246,9 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
                 grain=grain,
                 metrics=tuple(metrics),
                 dimension=options.get("dimension"),
-                estimands=options.get("estimands"),
+                estimands=tuple(options["estimands"])
+                if options.get("estimands") is not None
+                else None,
                 population=population,
                 completed_windows_only=options.get("completed_windows_only", False),
             )
@@ -260,12 +270,20 @@ def operation_scope(analysis, operation: str, options: dict[str, Any]) -> Eviden
             EvidenceScope(
                 metrics=tuple(metrics),
                 horizon_metrics=()
+                if options.get("estimands") is not None
+                and set(options["estimands"]) == {"compliance"}
+                else ()
                 if is_custom_source(source)
                 else tuple(candidate._src.context.metrics),
                 configs=tuple(configs),
                 population=population,
                 populations=populations,
-                grain=grain,
+                grain=(
+                    "total"
+                    if operation in {"run_asof", "run_asof_lift"}
+                    and getattr(candidate._plan.inference, "registration", None) is not None
+                    else grain
+                ),
                 breakouts=breakouts,
                 snapshot=True,
                 execution=True,
@@ -539,6 +557,14 @@ def run_standalone_day_axis_lift(
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
+    from increment.semantics.design import Encouragement
+
+    compliance_only = (
+        isinstance(analysis._design, Encouragement)
+        and tuple(req.estimands or ()) == ("compliance",)
+        and req.dimension is None
+    )
+    metrics = () if compliance_only else req.metrics
     if req.caller == "run_daily_lift":
         from increment.readouts._common import _sequential_inference
         from increment.readouts._daily import _validate_daily_inference
@@ -552,8 +578,8 @@ def run_standalone_day_axis_lift(
 
     base = analysis._src.context.configs
     base_names = {config.metric.name for config in base}
-    declared = tuple(metric for metric in req.metrics if metric.name in base_names)
-    undeclared = tuple(metric for metric in req.metrics if metric.name not in base_names)
+    declared = tuple(metric for metric in metrics if metric.name in base_names)
+    undeclared = tuple(metric for metric in metrics if metric.name not in base_names)
     by_name = {
         config.metric.name: config
         for config in overlay_configs(
@@ -581,7 +607,7 @@ def run_standalone_day_axis_lift(
             )
         }
     )
-    configs = tuple(by_name[metric.name] for metric in req.metrics)
+    configs = tuple(by_name[metric.name] for metric in metrics)
     from increment._analysis_config import effective_methods
     from increment._evidence_refusals import check_method_covariates
 
@@ -641,7 +667,7 @@ def run_standalone_day_axis_lift(
 
         request = ReadoutRequest.from_source(
             analysis._src,
-            metrics=list(req.metrics),
+            metrics=list(metrics),
             configs=configs,
             view="asof",
             grain="asof",

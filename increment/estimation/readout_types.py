@@ -1166,9 +1166,13 @@ def _daily_collection_scope(collection):
     )
 
 
-def merge_collection_metadata(left, right):
+def merge_collection_metadata(left, right, *, scoped_assembly: bool = False):
     """Combine existing cell, family and source records without converting row types."""
-    if left.sequential_snapshot != right.sequential_snapshot:
+    left_snapshot = left.sequential_snapshot
+    right_snapshot = right.sequential_snapshot
+    if left_snapshot != right_snapshot and (
+        not scoped_assembly or (left_snapshot is not None and right_snapshot is not None)
+    ):
         refuse_readout(
             "readout.collection.concat_metadata_mismatch",
             snapshot_ids=tuple(
@@ -1177,7 +1181,7 @@ def merge_collection_metadata(left, right):
             fields=("sequential_snapshot",),
         )
     if left.metadata.scope.snapshot_id != right.metadata.scope.snapshot_id and (
-        left.sequential_snapshot is not None or right.sequential_snapshot is not None
+        (left_snapshot is not None or right_snapshot is not None) and not scoped_assembly
     ):
         refuse_readout(
             "readout.collection.concat_metadata_mismatch",
