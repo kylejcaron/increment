@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
+from increment.estimation.readout_types import (
+    ReadoutAssembly,
+    ScopedReadout,
+    merge_collection_metadata,
+)
 from increment.kernel.contracts import (
     BreakoutIdentity,
     CellKey,
@@ -488,7 +493,7 @@ def _selected_percentile_winsorization(analysis: Any, options: Mapping[str, obje
     )
 
 
-def _run_rows(
+def _run_rows(  # noqa: PLR0913
     analysis: Analysis,
     rows: Any,
     registration: Registration,
@@ -502,14 +507,33 @@ def _run_rows(
     decision_log: DecisionLog | None = None,
     declared_scope: Scope | None = None,
     identity_options: Mapping[str, object] | None = None,
+    scoped_rows: Sequence[ScopedReadout] | None = None,
 ) -> RunResult:
     context = analysis._state.source.context
     contrast_context = (
         context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
     )
-    identity_methods, identity_metrics, runtime_method_unavailable = _execution_overrides(
-        analysis, rows, identity_options, contrast=contrast_context is not None
+    parts = (
+        tuple(scoped_rows)
+        if scoped_rows is not None
+        else (ScopedReadout(rows, declared_scope, identity_options or {}),)
     )
+    overrides = [
+        _execution_overrides(
+            analysis, part.collection, part.options, contrast=contrast_context is not None
+        )
+        for part in parts
+    ]
+    runtime_method_unavailable = any(item[2] for item in overrides)
+    rows = parts[0].collection
+    for part in parts[1:]:
+        if part.collection.metadata is None:
+            continue
+        if rows.metadata is None:
+            rows = part.collection
+            continue
+        metadata, source, merged = merge_collection_metadata(rows, part.collection)
+        rows = ReadoutAssembly(tuple(merged.values()), metadata, source, rows.sequential_snapshot)
     if contrast_context is not None:
         if results_store is not None or decision_log is not None:
             refuse(
@@ -544,32 +568,52 @@ def _run_rows(
             binding = None
             binding_unavailable_reason = error.code
     created_at = datetime.now(UTC)
-    live_rows_by_key = {
-        ResultCell.from_row(row, rows.metadata, created_at=created_at).identity.key: row
-        for row in rows
-        if getattr(row, "confidence_set", None) is not None
-    }
-    if live_rows_by_key and results_store is not None:
-        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     cells: list[ResultCell] = []
     live_rows: list[Any | None] = []
-    for cell in rows.as_cells(created_at=created_at):
-        live_rows.append(live_rows_by_key.get(cell.identity.key))
-        row_scope = _scope_for_cell(cell, declared_scope)
-        identity = cell.identity.model_copy(
-            update={
-                **_execution_identity_fields(analysis, cell, identity_methods, identity_metrics),
-                "experiment_id": experiment_id,
-                "analysis_spec_hash": analysis_spec_hash,
-                "scope": row_scope,
-            }
-        )
-        provenance = replace(
-            cell.provenance,
-            run_id=run_id,
-            execution_identity_hash=execution_identity_hash,
-        )
-        cells.append(replace(cell, identity=identity, provenance=provenance))
+    for part, (identity_methods, identity_metrics, _) in zip(parts, overrides, strict=True):
+        collection = part.collection
+        live_rows_by_key = {
+            ResultCell.from_row(row, collection.metadata, created_at=created_at).identity.key: row
+            for row in collection
+            if getattr(row, "confidence_set", None) is not None
+        }
+        if live_rows_by_key and results_store is not None:
+            refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
+        for cell in collection.as_cells(created_at=created_at):
+            live_rows.append(live_rows_by_key.get(cell.identity.key))
+            row_scope = _scope_for_cell(cell, part.scope)
+            identity = cell.identity.model_copy(
+                update={
+                    **_execution_identity_fields(
+                        analysis, cell, identity_methods, identity_metrics
+                    ),
+                    "experiment_id": experiment_id,
+                    "analysis_spec_hash": part.analysis_spec_hash or analysis_spec_hash,
+                    "scope": row_scope,
+                }
+            )
+            provenance = replace(
+                cell.provenance,
+                run_id=run_id,
+                execution_identity_hash=execution_identity_hash,
+                artifact_manifest_sha256=(
+                    cell.provenance.artifact_manifest_sha256
+                    or (
+                        None
+                        if collection.metadata is None
+                        else collection.metadata.artifact_manifest_sha256
+                    )
+                ),
+                artifact_relation_digests=(
+                    cell.provenance.artifact_relation_digests
+                    or (
+                        ()
+                        if collection.metadata is None
+                        else collection.metadata.artifact_relation_digests
+                    )
+                ),
+            )
+            cells.append(replace(cell, identity=identity, provenance=provenance))
     run_record = Run(
         experiment_id=experiment_id,
         run_id=run_id,
@@ -581,8 +625,17 @@ def _run_rows(
         metadata=_metadata_with_cell_scales(rows.metadata, cells),
         captured_at=created_at,
         committed_at=datetime.now(UTC),
-        scope_analysis_hashes=(analysis_spec_hash,),
-        cell_scope_hashes=tuple((cell.identity.hash(), analysis_spec_hash) for cell in cells),
+        scope_analysis_hashes=tuple(
+            dict.fromkeys(
+                (
+                    analysis_spec_hash,
+                    *(cast(str, cell.identity.analysis_spec_hash) for cell in cells),
+                )
+            )
+        ),
+        cell_scope_hashes=tuple(
+            (cell.identity.hash(), cast(str, cell.identity.analysis_spec_hash)) for cell in cells
+        ),
         decision_plan=binding,
         decision_plan_unavailable_reason=binding_unavailable_reason,
         empty_selection_reason="empty_metric_selection" if not cells else None,
@@ -631,6 +684,7 @@ def run(
     results_store: ResultsStore | None = None,
     decision_log: DecisionLog | None = None,
     analysis_options: Mapping[str, object] | None = None,
+    views: Sequence[Scope] | None = None,
 ) -> Any: ...
 
 
@@ -652,7 +706,7 @@ def run(
 ) -> RunResult: ...
 
 
-def run(
+def run(  # noqa: PLR0913
     exp: Analysis | object | None = None,
     registration: Registration | object | None = None,
     compiled_plan: CompiledDecisionPlan | None = None,
@@ -666,8 +720,14 @@ def run(
     results_store: ResultsStore | None = None,
     decision_log: DecisionLog | None = None,
     analysis_options: Mapping[str, object] | None = None,
+    views: Sequence[Scope] | None = None,
 ) -> Any:
-    """Run an experiment through its resolver, or a legacy Analysis through its registration."""
+    """Run an experiment through its resolver, or a legacy Analysis through its registration.
+
+    ``views`` selects declared Experiment scopes by hash, in declaration order.
+    ``None`` executes all declared scopes in one capture. Legacy Analysis uses
+    its registered scope and does not accept view selection.
+    """
     if exp is not None and analysis is not None:
         raise CodedError(
             "Pass either exp or analysis, not both",
@@ -707,7 +767,16 @@ def run(
         if callable(result_factory_setter):
             result_factory_setter(_run_rows)
         return run_experiment(
-            exp, cast("Resolver", selected_resolver), options=dict(analysis_options or {})
+            exp,
+            cast("Resolver", selected_resolver),
+            options=dict(analysis_options or {}),
+            views=views,
+        )
+    if views is not None:
+        raise CodedError(
+            "View selection requires an Experiment",
+            code="kernel.run.invalid_input",
+            context={"field": "views"},
         )
     analysis = cast(Any, exp)
     if (

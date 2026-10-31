@@ -792,7 +792,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         dependencies = evidence_scope_dependencies(scope)
         tables = self._session._source_tables
         fact_names = set(dependencies["uptake"])
-        for metric in dependencies["outcomes"]:
+        for metric in (*dependencies["outcomes"], *dependencies["horizons"]):
             numerator = getattr(metric, "numerator", None)
             denominator = getattr(metric, "denominator", None)
             if numerator is not None and denominator is not None:
@@ -887,6 +887,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric] | None = None,
         extra_sources: Sequence[str] = (),
+        horizon_metrics: Sequence[Metric] = (),
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
@@ -898,6 +899,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return self
         capture_scope = EvidenceScope(
             metrics=tuple(self._horizon_metrics if metrics is None else metrics),
+            horizon_metrics=tuple(horizon_metrics),
             configs=tuple(self._context.configs if configs is None else configs),
             uptake_facts=tuple(uptake_facts),
             assignment_requests=tuple(assignment_requests),
@@ -936,7 +938,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # Freshness sees every unit in each requested metric's fact stream,
         # not just the enrolled units retained for outcome reduction.
         freshness_source_names: set[str] = set()
-        horizon_metrics = dependencies["outcomes"]
+        horizon_metrics = tuple(
+            dict.fromkeys((*dependencies["outcomes"], *dependencies["horizons"]))
+        )
         for metric in horizon_metrics:
             if isinstance(metric, RatioMetric):
                 freshness_source_names.add(add_fact(metric.numerator.fact))
@@ -1169,6 +1173,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric] | None = None,
         extra_sources: Sequence[str] = (),
+        horizon_metrics: Sequence[Metric] = (),
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
@@ -1178,6 +1183,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         pinned = self._pinned_source(
             metrics=metrics,
+            horizon_metrics=horizon_metrics,
             extra_sources=extra_sources,
             uptake_facts=uptake_facts,
             site_volume_metrics=site_volume_metrics,
@@ -1225,6 +1231,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         configs: Sequence[ResolvedMetricConfig] | None = None,
         reuse_retained_snapshot_integrity: bool = False,
         assignment_requests: Sequence[Any] = (),
+        horizon_metrics: Sequence[Metric] = (),
     ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
@@ -1277,12 +1284,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         snapshot_horizon_relation = None
         if use_shared_horizon:
-            horizon = self._union_event_horizon(metrics)
+            horizon = self._union_event_horizon((*horizon_metrics, *metrics))
             snapshot_horizon_relation = (
                 ibis.literal(1).name("_one").as_table().select(edge=horizon.cast("date"))
             )
         with self._pinned_source_execution(
             metrics=metrics,
+            horizon_metrics=horizon_metrics,
             uptake_facts=uptake_facts,
             extra_sources=extra_sources,
             configs=configs,
@@ -1312,6 +1320,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     pinned._union_horizon_cache = None
                     pinned._union_horizon_metric_cache = {}
                     pinned._panel_cache = {}
+
+    def readout_view(
+        self, template: DefinitionsMomentSource, *, metrics: Sequence[Metric]
+    ) -> DefinitionsMomentSource:
+        """Lend a family's original horizon and declarations over this pinned session."""
+        import copy
+
+        view = copy.copy(self)
+        view._metrics = template._metrics
+        view._context = template._context
+        view._horizon_metrics = tuple(dict.fromkeys((*template._horizon_metrics, *metrics)))
+        view._has_fixed_event_horizon_override = False
+        view._fixed_event_horizon = None
+        view._union_horizon_cache = None
+        view._union_horizon_metric_cache = {}
+        view._panel_cache = {}
+        view._cuped_relation_cache = {}
+        return view
 
     def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
         """A sibling source over the declared metrics plus *metrics*, in this session.

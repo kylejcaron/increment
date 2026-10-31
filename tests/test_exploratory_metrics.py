@@ -956,30 +956,42 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
 
 
 @pytest.mark.integration
-def test_exploratory_metrics_retain_independent_capture_metadata(monkeypatch):
+def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch):
+    from contextlib import contextmanager
+
+    from increment.query.native_source import DefinitionsMomentSource
+    from tests.parity_harness.comparison import nested_close
+
     con = ds.duckdb_connection()
     analysis = _analysis(con, AnalysisPlan(primary="revenue"))
-    original = analysis._exploratory_analysis
+    expected = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
+    original = DefinitionsMomentSource.readout_snapshot
+    captures = []
 
-    def mutate_before_exploratory_read(metrics, *, caller):
-        cast(Any, con).raw_sql(
-            "UPDATE events SET revenue = revenue * 10 WHERE group_id = 'treatment'"
-        )
-        return original(metrics, caller=caller)
+    @contextmanager
+    def snapshot(source, **kwargs):
+        captures.append(kwargs)
+        with original(source, **kwargs) as pinned:
+            yield pinned
+        if len(captures) == 1:
+            cast(Any, con).raw_sql(
+                "UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'"
+            )
 
-    monkeypatch.setattr(analysis, "_exploratory_analysis", mutate_before_exploratory_read)
+    monkeypatch.setattr(DefinitionsMomentSource, "readout_snapshot", snapshot)
     try:
         rows = analysis.run(exploratory_metrics=["rps"], decision_method=Method(name="unadjusted"))
+        assert len(captures) == 1
+        assert nested_close(_rows(rows), _rows(expected))
         assert rows.metadata is not None
-        assert len(rows.metadata.captures) == 2
-        assert len({capture.snapshot_id for capture in rows.metadata.captures}) == 2
-        assert {capture.coherence for capture in rows.metadata.captures} == {"captured"}
+        assert len(rows.metadata.captures) == 1
+        assert rows.metadata.captures[0].coherence == "captured"
         restored = type(rows.metadata).model_validate_json(rows.metadata.model_dump_json())
         assert restored.captures == rows.metadata.captures
-        from increment.tables import readout_table
-
-        html = readout_table(rows).gt().as_raw_html()
-        assert "Coherence: captured independently per result family." in html
+        changed = analysis.run(
+            metrics=[], exploratory_metrics=["rps"], decision_method=Method(name="unadjusted")
+        )
+        assert not nested_close(_rows(changed), _rows(expected)[1:])
     finally:
         analysis.close()
         con.disconnect()

@@ -592,6 +592,8 @@ def decide(handle: RunHandle, registration: Registration, plan: object | None = 
         cell.identity.hash()
         for cell in envelope.cells
         if cell.identity.key.method_role == "decision"
+        and cell.identity.key.estimand != "compliance"
+        and (cell.identity.scope is None or cell.identity.scope.view in {"run", "switchback"})
     }
     primary = [
         verdict

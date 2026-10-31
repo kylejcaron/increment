@@ -91,8 +91,13 @@ binds the dataframe when `run` reads evidence; if its contents no longer match
 the declared source, the run is refused. `runnable` checks known
 incompatibilities across every declared view without reading data. It is
 sound, not complete: no refusal does not guarantee the run will succeed,
-because some checks need data. `run` currently accepts one declared view at a
-time; separate calls can read changed data.
+because some checks need data. `run(exp, resolver)` executes all declared
+supported views in one shared capture; `views=(scope, ...)` selects declared
+scopes in declaration order. Every selected view is preflighted before capture.
+The result keeps one run ID and each cell's original scope; monitoring views do
+not become whole-experiment decisions. Separate calls can still read changed
+data. See [experiment specifications](experiment-specifications.md) for the
+selection contract and existing source/persistence limitations.
 
 The rendered result keeps unavailable guardrails, checks that were not
 completed, and limits on what the data can establish visible. A missing

@@ -39,7 +39,13 @@ def test_captured_context_opens_once_and_borrow_does_not_close_owner():
     provider = _Provider()
     context = EvidenceExecutionContext(
         cast(Any, provider),
-        cast(Any, EvidenceScope(metrics=cast(Any, ("revenue",)))),
+        cast(
+            Any,
+            EvidenceScope(
+                metrics=cast(Any, ("revenue",)),
+                horizon_metrics=cast(Any, ("later",)),
+            ),
+        ),
         run_id="run-1",
         coherence="captured",
     )
@@ -54,6 +60,11 @@ def test_captured_context_opens_once_and_borrow_does_not_close_owner():
     assert len(provider.requests) == 1
     assert provider.requests[0].snapshot is True
     assert provider.requests[0].execution is True
+    assert provider.requests[0].horizon_metrics == ("later",)
+    with pytest.raises(CodedError) as refused:
+        context.validate_request(provider, ("later",), ())
+    assert refused.value.code == "kernel.context.undeclared_stream"
+    assert refused.value.context["stream"] == "metric"
     manifest = context.snapshot_manifest
     assert manifest and manifest == context.snapshot_manifest
     assert provider.exited == 0

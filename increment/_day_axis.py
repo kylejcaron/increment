@@ -1365,11 +1365,26 @@ def _scope_day_axis_rows(
     )
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
+        from increment.estimation.readout_types import ReadoutCapture
+        from increment.readouts._evidence import artifact_provenance
+
+        provenance = artifact_provenance(source)
 
         result._metadata = result.metadata.model_copy(
             update={
                 "coherence": coherence,
                 "effective_modes": _FrozenMapping(effective_modes),
+                "artifact_manifest_sha256": provenance.manifest_sha256,
+                "artifact_relation_digests": provenance.relation_digests,
+                "captures": ()
+                if execution_context is None or not execution_context.shared_capture
+                else (
+                    ReadoutCapture(
+                        snapshot_id=execution_context.run_id,
+                        coherence=coherence,
+                        effective_modes=effective_modes,
+                    ),
+                ),
             }
         )
     return result
@@ -1513,7 +1528,7 @@ class DayAxisReadouts:
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
             from increment.readouts._evidence import _builtin_source
 
-            with context.borrow() as provider:
+            with context.borrow(source=self._src, metrics=req.metrics) as provider:
                 return DayAxisReadouts(
                     src=_builtin_source(provider),
                     plan=self._plan,
@@ -1628,7 +1643,7 @@ class DayAxisReadouts:
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
             from increment.readouts._evidence import _builtin_source
 
-            with context.borrow() as provider:
+            with context.borrow(source=self._src, metrics=req.metrics) as provider:
                 return DayAxisReadouts(
                     src=_builtin_source(provider),
                     plan=self._plan,

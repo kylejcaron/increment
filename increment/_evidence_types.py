@@ -242,6 +242,7 @@ class EvidenceScope:
     """The source views and readout lifetime required by one evidence consumer."""
 
     metrics: tuple[Metric, ...] = ()
+    horizon_metrics: tuple[Metric, ...] = ()
     population: Literal["assigned", "triggered"] = "assigned"
     populations: tuple[Literal["assigned", "triggered"], ...] = ()
     grain: Literal["total", "daily", "asof"] | None = None
@@ -259,6 +260,7 @@ class EvidenceScope:
 
 EVIDENCE_REQUEST_DEPENDENCIES: tuple[tuple[str, str, Callable[[Any], str] | None], ...] = (
     ("outcomes", "metrics", lambda metric: str(getattr(metric, "name", metric))),
+    ("horizons", "horizon_metrics", lambda metric: str(getattr(metric, "name", metric))),
     ("adjustments", "configs", None),
     ("breakouts", "breakouts", lambda item: f"breakout:{item.property}:{item.source}"),
     ("uptake", "uptake_facts", lambda fact: f"fact:{fact}"),

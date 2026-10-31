@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
-from typing import Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from pydantic import Field, field_serializer, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -60,6 +61,29 @@ from increment.estimation.inference import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.sequential_state import SequentialCheckpoint
+
+if TYPE_CHECKING:
+    from increment.kernel.contracts import Scope
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedReadout:
+    collection: Any
+    scope: Scope | None
+    options: Mapping[str, object]
+    analysis_spec_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadoutAssembly:
+    rows: tuple[Any, ...]
+    metadata: Any
+    source: Any
+    sequential_snapshot: Any = None
+
+    def __iter__(self):
+        return iter(self.rows)
+
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -1142,61 +1166,8 @@ def _daily_collection_scope(collection):
     )
 
 
-def concat_collection(left, right):
-    if type(left) is not type(right):
-        refuse_readout(
-            "readout.collection.concat_type_mismatch",
-            left=type(left).__name__,
-            right=type(right).__name__,
-        )
-    collection_scope = {}
-    if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
-        left_scope = _daily_collection_scope(left)
-        right_scope = _daily_collection_scope(right)
-        if left_scope != right_scope:
-            refuse_readout(
-                "readout.collection.concat_metadata_mismatch",
-                snapshot_ids=tuple(
-                    sorted(
-                        metadata.scope.snapshot_id
-                        for metadata in (left.metadata, right.metadata)
-                        if metadata is not None
-                    )
-                ),
-                fields=("envelope_view", "completion_policy"),
-            )
-        collection_scope = {
-            "envelope_view": left_scope[0],
-            "completion_policy": left_scope[1],
-        }
-    if left.metadata is None and right.metadata is None:
-        if left.source != right.source or left.sequential_snapshot != right.sequential_snapshot:
-            refuse_readout(
-                "readout.collection.concat_metadata_mismatch",
-                snapshot_ids=(),
-                fields=("source", "sequential_snapshot"),
-            )
-        return type(left)(
-            [*left, *right],
-            source=left.source,
-            sequential_snapshot=left.sequential_snapshot,
-            default_backend=(
-                left._default_backend if left._default_backend == right._default_backend else None
-            ),
-            **collection_scope,
-        )
-    if left.metadata is None or right.metadata is None:
-        refuse_readout(
-            "readout.collection.concat_metadata_mismatch",
-            snapshot_ids=tuple(
-                sorted(
-                    metadata.scope.snapshot_id
-                    for metadata in (left.metadata, right.metadata)
-                    if metadata is not None
-                )
-            ),
-            fields=("metadata",),
-        )
+def merge_collection_metadata(left, right):
+    """Combine existing cell, family and source records without converting row types."""
     if left.sequential_snapshot != right.sequential_snapshot:
         refuse_readout(
             "readout.collection.concat_metadata_mismatch",
@@ -1304,13 +1275,72 @@ def concat_collection(left, right):
         ),
         coherence=coherence,
         effective_modes=dict(sorted(effective_modes.items())),
-        captures=captures if len(captures) > 1 else (),
+        captures=captures if a.captures or b.captures or len(captures) > 1 else (),
     )
     metadata = partial_metadata(
         metadata,
         rows.values(),
         "cross_snapshot_concat" if cross else "slice",
     )
+    return metadata, result_source, rows
+
+
+def concat_collection(left, right):
+    if type(left) is not type(right):
+        refuse_readout(
+            "readout.collection.concat_type_mismatch",
+            left=type(left).__name__,
+            right=type(right).__name__,
+        )
+    collection_scope = {}
+    if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
+        left_scope = _daily_collection_scope(left)
+        right_scope = _daily_collection_scope(right)
+        if left_scope != right_scope:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=tuple(
+                    sorted(
+                        metadata.scope.snapshot_id
+                        for metadata in (left.metadata, right.metadata)
+                        if metadata is not None
+                    )
+                ),
+                fields=("envelope_view", "completion_policy"),
+            )
+        collection_scope = {
+            "envelope_view": left_scope[0],
+            "completion_policy": left_scope[1],
+        }
+    if left.metadata is None and right.metadata is None:
+        if left.source != right.source or left.sequential_snapshot != right.sequential_snapshot:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=(),
+                fields=("source", "sequential_snapshot"),
+            )
+        return type(left)(
+            [*left, *right],
+            source=left.source,
+            sequential_snapshot=left.sequential_snapshot,
+            default_backend=(
+                left._default_backend if left._default_backend == right._default_backend else None
+            ),
+            **collection_scope,
+        )
+    if left.metadata is None or right.metadata is None:
+        refuse_readout(
+            "readout.collection.concat_metadata_mismatch",
+            snapshot_ids=tuple(
+                sorted(
+                    metadata.scope.snapshot_id
+                    for metadata in (left.metadata, right.metadata)
+                    if metadata is not None
+                )
+            ),
+            fields=("metadata",),
+        )
+    metadata, result_source, rows = merge_collection_metadata(left, right)
     if type(left).__name__ in {"DailyMetricValues", "DailyLiftEstimates"}:
         collection_scope = {
             "envelope_view": left_scope[0],

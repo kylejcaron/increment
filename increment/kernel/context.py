@@ -33,10 +33,12 @@ class EvidenceExecutionContext:
     run_id: str
     coherence: ExecutionMode | None = "captured"
     observation_horizon: date | None = None
+    shared_capture: bool = False
     _state: str = field(init=False, default="unopened")
     _stack: ExitStack = field(init=False)
     _scoped_provider: Any | None = field(init=False, default=None)
     _source_identity: int = field(init=False)
+    _source_aliases: dict[int, object] = field(init=False, default_factory=dict)
     _requested_coherence: ExecutionMode = field(init=False)
     _snapshot_manifest: Mapping[str, str] = field(
         init=False, default_factory=lambda: MappingProxyType({})
@@ -88,6 +90,7 @@ class EvidenceExecutionContext:
         scope = self.scope
         requested = EvidenceScope(
             metrics=scope.metrics,
+            horizon_metrics=scope.horizon_metrics,
             population=scope.population,
             populations=scope.populations,
             grain=scope.grain,
@@ -184,8 +187,13 @@ class EvidenceExecutionContext:
                     )
 
     def validate_source(self, source: object) -> None:
-        if id(_loader_owner(source)) != self._source_identity:
+        if id(_loader_owner(source)) not in {self._source_identity, *self._source_aliases}:
             _refuse("kernel.context.undeclared_stream", stream="source_ref")
+
+    def declare_source_alias(self, source: object, *, parent: object) -> None:
+        """Authorize a derived declaration without expanding its permitted requests."""
+        self.validate_source(parent)
+        self._source_aliases[id(_loader_owner(source))] = _loader_owner(source)
 
     def validate_population(self, population: str) -> None:
         declared_populations = set(self.scope.populations) or {self.scope.population}
@@ -273,7 +281,9 @@ class EvidenceExecutionContext:
         self._scoped_provider = None
 
     @contextmanager
-    def borrow(self) -> Iterator[EvidenceProvider]:
+    def borrow(
+        self, *, source: object | None = None, metrics: Sequence[object] = ()
+    ) -> Iterator[EvidenceProvider]:
         provider = self._require_open()
         if self._snapshot_manifest:
             if self._stream_resolver is None:
@@ -299,6 +309,11 @@ class EvidenceExecutionContext:
                     stream=stream,
                     snapshot_id=self._snapshot_manifest.get(stream, ""),
                 )
+        if source is not None:
+            self.validate_source(source)
+            view = getattr(provider, "readout_view", None)
+            if callable(view):
+                provider = view(source, metrics=metrics)
         yield provider
 
     @contextmanager

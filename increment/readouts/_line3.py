@@ -12,22 +12,13 @@ if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
 
 
-def run_scoped_line3[T](
-    analysis: Analysis,
-    operation: Callable[[], T],
-    *,
-    coherence: ExecutionMode = "captured",
-    include_breakouts: bool = False,
-    on_context: Callable[[EvidenceExecutionContext], None] | None = None,
-) -> T:
-    """Run sequential captures and readouts under one family-wide evidence owner."""
+def sequential_scope(analysis: Analysis, *, include_breakouts: bool = False) -> EvidenceScope:
+    """Declare the complete registered family and its covariate dependencies."""
     from dataclasses import replace
 
     from increment._analysis_config import union_covariates
-    from increment.readouts._provider import native_scope_provider
 
     source = analysis._src
-    provider = source if is_custom_source(source) else native_scope_provider(source)
     design = source.context.design
     uptake = getattr(design, "uptake", None)
     declared_configs = list(source.context.configs)
@@ -47,17 +38,33 @@ def run_scoped_line3[T](
         if is_custom_source(source)
         else ()
     )
+    return EvidenceScope(
+        metrics=tuple(source.context.metrics),
+        configs=tuple(declared_configs),
+        populations=populations,
+        uptake_facts=() if uptake is None else (uptake.fact,),
+        snapshot=True,
+        execution=True,
+        include_breakouts=include_breakouts,
+    )
+
+
+def run_scoped_line3[T](
+    analysis: Analysis,
+    operation: Callable[[], T],
+    *,
+    coherence: ExecutionMode = "captured",
+    include_breakouts: bool = False,
+    on_context: Callable[[EvidenceExecutionContext], None] | None = None,
+) -> T:
+    """Run sequential captures and readouts under one family-wide evidence owner."""
+    from increment.readouts._provider import native_scope_provider
+
+    source = analysis._src
+    provider = source if is_custom_source(source) else native_scope_provider(source)
     context = EvidenceExecutionContext(
         provider,
-        EvidenceScope(
-            metrics=tuple(source.context.metrics),
-            configs=tuple(declared_configs),
-            populations=populations,
-            uptake_facts=() if uptake is None else (uptake.fact,),
-            snapshot=True,
-            execution=True,
-            include_breakouts=include_breakouts,
-        ),
+        sequential_scope(analysis, include_breakouts=include_breakouts),
         run_id=uuid4().hex,
         coherence=coherence,
     )

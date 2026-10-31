@@ -2462,6 +2462,9 @@ class Analysis:
         )
         derived = copy.copy(self)
         derived._state = replace(state, source=src.exploratory_source(metrics=added))
+        context = _current_execution_context()
+        if context is not None:
+            context.declare_source_alias(derived._src, parent=self._src)
         return derived
 
     # Caching and materialization
@@ -2957,28 +2960,51 @@ class Analysis:
                 prior=prior,
             )
 
-        rows = (
-            self._whole_window().run(request(selected), execution_context=_execution_context)
-            if selected or not added
-            else LiftEstimates()
-        )
-        if not isinstance(rows, LiftEstimates):
-            rows = LiftEstimates(rows)
-        if added:
-            extra = (
-                self._exploratory_analysis(added, caller="run")
-                ._whole_window()
-                .run(request(added), execution_context=_execution_context)
+        from contextlib import nullcontext
+
+        manager = nullcontext(_execution_context)
+        if added and _execution_context is None:
+            from increment.readouts._line2 import operation_scope, owned_execution_context
+
+            scope = operation_scope(
+                self,
+                "run",
+                {
+                    "metrics": metrics,
+                    "exploratory_metrics": exploratory_metrics,
+                    "estimands": estimands,
+                    "value_scale": value_scale,
+                    "population": population,
+                    "decision_method": decision_method,
+                    "sensitivity_methods": sensitivity_methods,
+                    "prior": prior,
+                    "coherence": coherence,
+                },
             )
-            extra = LiftEstimates(
-                [row for row in extra if row.estimand != "compliance"],
-                metadata=extra.metadata,
-                source=extra.source,
-                sequential_snapshot=extra.sequential_snapshot,
-                default_backend=extra._default_backend,
+            manager = owned_execution_context(self, scope, coherence=coherence)
+        with manager as _execution_context:
+            rows = (
+                self._whole_window().run(request(selected), execution_context=_execution_context)
+                if selected or not added
+                else LiftEstimates()
             )
-            extra = _stamp_exploratory_rows(extra)
-            rows = extra if rows.metadata is None else rows.concat(extra)
+            if not isinstance(rows, LiftEstimates):
+                rows = LiftEstimates(rows)
+            if added:
+                extra = (
+                    self._exploratory_analysis(added, caller="run")
+                    ._whole_window()
+                    .run(request(added), execution_context=_execution_context)
+                )
+                extra = LiftEstimates(
+                    [row for row in extra if row.estimand != "compliance"],
+                    metadata=extra.metadata,
+                    source=extra.source,
+                    sequential_snapshot=extra.sequential_snapshot,
+                    default_backend=extra._default_backend,
+                )
+                extra = _stamp_exploratory_rows(extra)
+                rows = extra if rows.metadata is None else rows.concat(extra)
         self._warn_run_advisories(
             selected,
             added,

@@ -68,6 +68,19 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
     configs = tuple(configs_list)
     breakouts = [item for request in requests for item in request.breakouts]
     source = loader_source(src)
+    horizon_metrics = (
+        tuple(
+            dict.fromkeys(
+                metric
+                for request in requests
+                for metric in (request.horizon_metrics or tuple(source.context.metrics))
+            )
+        )
+        if not is_custom_source(src)
+        else tuple(
+            dict.fromkeys(metric for request in requests for metric in request.horizon_metrics)
+        )
+    )
     experiment = getattr(source, "_experiment", None) or getattr(
         source, "artifact_experiment", None
     )
@@ -109,6 +122,7 @@ def capture_requirements(src: EvidenceSource, requests: Sequence[EvidenceScope])
                 uptake_facts.append(uptake.fact)
     return EvidenceScope(
         metrics=metrics,
+        horizon_metrics=horizon_metrics,
         population=requests[0].population if requests else "assigned",
         populations=tuple(
             sorted({population for request in requests for population in request.populations})
@@ -168,6 +182,11 @@ def scope_source(src: EvidenceSource, scope: EvidenceScope) -> Iterator[Evidence
                 "uptake_facts": scope.uptake_facts,
             }
             if (
+                scope.horizon_metrics
+                and "exploratory_source" in declared_evidence(source).operations
+            ):
+                snapshot_options["horizon_metrics"] = scope.horizon_metrics
+            if (
                 scope.checkpoint_only
                 and scope.execution
                 and scope.grain is None
@@ -198,6 +217,7 @@ def load_evidence_scope(
     if not is_custom_source(src) and request.snapshot and request.population == "triggered":
         scope = EvidenceScope(
             metrics=request.metrics,
+            horizon_metrics=request.horizon_metrics,
             population="assigned",
             populations=request.populations,
             grain=request.grain,

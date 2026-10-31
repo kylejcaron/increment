@@ -154,7 +154,7 @@ class ContrastHandler:
                 execution_context=execution_context,
             )
             results.append(compute_contrast(stats[metric.name], procedure).results[0])
-        return scope_contrast_results(
+        rows = scope_contrast_results(
             results,
             metrics=request.metrics,
             stats=stats,
@@ -167,6 +167,21 @@ class ContrastHandler:
             ),
             effective_modes=execution_context.effective_modes,
         )
+        if execution_context.shared_capture and rows.metadata is not None:
+            from increment.estimation.readout_types import ReadoutCapture
+
+            rows._metadata = rows.metadata.model_copy(
+                update={
+                    "captures": (
+                        ReadoutCapture(
+                            snapshot_id=execution_context.run_id,
+                            coherence=execution_context.coherence,
+                            effective_modes=execution_context.effective_modes,
+                        ),
+                    ),
+                }
+            )
+        return rows
 
 
 @dataclass(frozen=True, slots=True)

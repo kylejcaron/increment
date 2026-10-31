@@ -266,33 +266,86 @@ class AnalysisResolver:
             or any(
                 declared.metrics.get(name) != metric for name, metric in experiment.metrics.items()
             )
-            or len(experiment.scopes) != 1
         )
         if invalid:
             self._unavailable(experiment, "declarations")
-        scope = experiment.scopes[0]
-        operation = scope_operation(experiment, scope)
-        refusals = scope_refusals(experiment, scope)
-        if refusals:
-            raise refusals[0]
-        if scope.view == "breakout" and tuple(
-            identity.property for identity in scope.segment
-        ) != tuple(getattr(self._source, "breakouts", ())):
-            self._unavailable(experiment, "segment")
-        kwargs = operation_options(experiment, scope, {**self._run_options, **(options or {})})
-        if self._return_run_result and kwargs.get("store") is not None:
-            raise CodedError(
-                "Experiment execution does not support the Analysis.run store option",
-                code="kernel.run.invalid_input",
-                context={"field": "store"},
+        planned = []
+        for scope in experiment.scopes:
+            operation = scope_operation(experiment, scope)
+            refusals = scope_refusals(experiment, scope)
+            if refusals:
+                raise refusals[0]
+            if scope.view == "breakout" and tuple(
+                identity.property for identity in scope.segment
+            ) != tuple(getattr(self._source, "breakouts", ())):
+                self._unavailable(experiment, "segment")
+            kwargs = operation_options(experiment, scope, {**self._run_options, **(options or {})})
+            if self._return_run_result and kwargs.get("store") is not None:
+                raise CodedError(
+                    "Experiment execution does not support the Analysis.run store option",
+                    code="kernel.run.invalid_input",
+                    context={"field": "store"},
+                )
+            planned.append((scope, operation, kwargs))
+        scoped_rows = None
+        if len(planned) > 1:
+            from increment._evidence_scopes import capture_requirements
+            from increment.estimation.readout_types import ScopedReadout
+            from increment.readouts._line2 import operation_scope, owned_execution_context
+
+            requests = [
+                operation_scope(self._analysis, operation, kwargs)
+                for _, operation, kwargs in planned
+            ]
+            coherences = {kwargs.get("coherence", "captured") for _, _, kwargs in planned}
+            if len(coherences) != 1:
+                self._unavailable(experiment, "coherence")
+            scope_request = capture_requirements(self._source, requests)
+            with owned_execution_context(self._analysis, scope_request, coherence=coherences.pop()):
+                capture = next(
+                    (
+                        kwargs["capture"]
+                        for _, _, kwargs in planned
+                        if kwargs.get("capture") is not None
+                    ),
+                    None,
+                )
+                if capture is not None:
+                    self._analysis.capture_sequential(**capture)
+                scoped_rows = []
+                for scope, operation, kwargs in planned:
+                    kwargs.pop("capture", None)
+                    execute = (
+                        self._analysis._run_legacy
+                        if operation == "run"
+                        else getattr(self._analysis, operation)
+                    )
+                    single = replace(
+                        experiment,
+                        scopes=(scope,),
+                        operations={scope.hash(): operation},
+                    )
+                    scope_hash, _ = _run_identity_hashes(single, kwargs)
+                    scoped_rows.append(
+                        ScopedReadout(
+                            execute(**kwargs),
+                            scope,
+                            dict(kwargs),
+                            scope_hash,
+                        )
+                    )
+            result = scoped_rows[0].collection
+        else:
+            scope, operation, kwargs = planned[0]
+            capture = kwargs.pop("capture", None)
+            if capture is not None:
+                self._analysis.capture_sequential(**capture)
+            execute = (
+                self._analysis._run_legacy
+                if operation == "run"
+                else getattr(self._analysis, operation)
             )
-        capture = kwargs.pop("capture", None)
-        if capture is not None:
-            self._analysis.capture_sequential(**capture)
-        execute = (
-            self._analysis._run_legacy if operation == "run" else getattr(self._analysis, operation)
-        )
-        result = execute(**kwargs)
+            result = execute(**kwargs)
         if self.catalog_writer is not None:
             schema = _schema_for_source(self._source)
             captured = replace(
@@ -313,7 +366,18 @@ class AnalysisResolver:
             compiled_plan = (
                 None if not hasattr(context, "plan") else self._analysis.compiled_decision_plan
             )
-            analysis_spec_hash, execution_identity_hash = _run_identity_hashes(experiment, kwargs)
+            identity_options = (
+                kwargs
+                if scoped_rows is None
+                else {
+                    "views": tuple(
+                        {"scope": item.scope, "options": item.options} for item in scoped_rows
+                    )
+                }
+            )
+            analysis_spec_hash, execution_identity_hash = _run_identity_hashes(
+                experiment, identity_options
+            )
             return factory(
                 self._analysis,
                 result,
@@ -325,6 +389,7 @@ class AnalysisResolver:
                 run_id=f"run-{uuid4().hex}",
                 declared_scope=scope,
                 identity_options=kwargs,
+                scoped_rows=scoped_rows,
             )
         return result
 

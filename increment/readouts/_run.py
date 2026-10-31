@@ -240,7 +240,7 @@ def run(
                     "kernel.context.undeclared_stream",
                     stream=f"fact:{uptake_fact}",
                 )
-        manager = context.borrow()
+        manager = context.borrow(source=src, metrics=selected)
     with manager as scoped:
         context.validate_observational_streams(src, design)
         rows = _run_prepared(
@@ -258,6 +258,7 @@ def run(
     result = _as_collection(rows)
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
+        from increment.estimation.readout_types import ReadoutCapture
 
         result._metadata = result.metadata.model_copy(
             update={
@@ -265,6 +266,15 @@ def run(
                     None if "provider" in context.effective_modes.values() else context.coherence
                 ),
                 "effective_modes": _FrozenMapping(context.effective_modes),
+                "captures": (
+                    ReadoutCapture(
+                        snapshot_id=context.run_id,
+                        coherence=context.coherence,
+                        effective_modes=context.effective_modes,
+                    ),
+                )
+                if context.shared_capture
+                else result.metadata.captures,
             }
         )
     return result

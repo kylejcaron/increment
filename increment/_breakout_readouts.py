@@ -111,6 +111,7 @@ class BreakoutReadouts:
         if rows.metadata is None or self._execution_context is None:
             return rows
         from increment._immutable import _FrozenMapping
+        from increment.estimation.readout_types import ReadoutCapture
 
         modes = self._execution_context.effective_modes
         coherence = None if "provider" in modes.values() else self._execution_context.coherence
@@ -118,6 +119,15 @@ class BreakoutReadouts:
             update={
                 "coherence": coherence,
                 "effective_modes": _FrozenMapping(modes),
+                "captures": (
+                    ReadoutCapture(
+                        snapshot_id=self._execution_context.run_id,
+                        coherence=coherence,
+                        effective_modes=modes,
+                    ),
+                )
+                if self._execution_context.shared_capture
+                else rows.metadata.captures,
             }
         )
         return rows

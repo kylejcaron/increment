@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast, runtime_checkable
 
 from increment._source_types import EvidenceCapabilities, EvidenceProvider
 from increment.errors import CodedError
-from increment.kernel.contracts import _refuse
+from increment.kernel.contracts import Scope, _refuse
 from increment.kernel.experiment import Experiment, SourceReference
 
 
@@ -283,8 +283,24 @@ def run(
     *,
     ctx: object | None = None,
     options: dict[str, object] | None = None,
+    views: Sequence[Scope] | None = None,
 ) -> Any:
     """Resolve and verify the experiment's source before handing off execution."""
+    if views is not None:
+        hashes = tuple(scope.hash() for scope in views)
+        declared = {scope.hash() for scope in exp.scopes}
+        if not hashes or len(set(hashes)) != len(hashes) or not set(hashes) <= declared:
+            raise CodedError(
+                "The bound analysis cannot execute these experiment declarations",
+                code="kernel.run.execution_unavailable",
+                context={"experiment_id": exp.experiment_id, "field": "views"},
+            )
+        selected = tuple(scope for scope in exp.scopes if scope.hash() in hashes)
+        exp = replace(
+            exp,
+            scopes=selected,
+            operations={key: value for key, value in exp.operations.items() if key in hashes},
+        )
     provider = resolver.resolve(exp.source_refs, ctx)
     failures = resolver.verify(exp.source_refs, provider)
     if failures:
