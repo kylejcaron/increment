@@ -1584,7 +1584,7 @@ def test_frozen_capture_rejects_operation_mismatch() -> None:
     baseline_point = capture["scenarios"][scenario_id][ingress]["cells"][key]["operations"][
         "relevel"
     ]["0.01"]["result_cell"]["summary"]["point"]
-    operation["result_cell"]["summary"]["point"] += 1.0
+    operation["result_cell"]["retained_row"]["lift"]["log_mean"] += 1.0
     with pytest.raises(AssertionError):
         _assert_outcome_matches(expected, _actual_from_capture(expected))
     assert (

@@ -542,15 +542,14 @@ def test_run_rejects_cell_spec_or_experiment_outside_manifest(field, value, code
         analysis.close()
 
 
-def test_run_rejects_cell_snapshot_that_differs_from_identity():
+def test_result_cell_rejects_snapshot_that_differs_from_identity():
     analysis = _analysis()
     try:
         rows = analysis.run()
-        cells, scope = _cells(rows)
-        bad_cell = replace(cells[0], source_snapshot_id="other-snapshot")
+        cells, _scope = _cells(rows)
         with pytest.raises(CodedError) as error:
-            _run(rows, (bad_cell, *cells[1:]), scope)
-        assert error.value.code == "store.run.identity_mismatch"
+            replace(cells[0], source_snapshot_id="other-snapshot")
+        assert error.value.code == "results.cell.schema_unsupported"
     finally:
         analysis.close()
 
