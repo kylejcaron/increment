@@ -38,7 +38,7 @@ increment._source_types
 increment._study
 increment._trigger_integrity
 increment._unit_cycle
-increment._whole_window
+increment.readouts._whole_window
 increment._window
 increment._winsor_errors
 increment.analysis

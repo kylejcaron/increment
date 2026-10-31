@@ -3446,7 +3446,7 @@
       "tests/test_switchback_smoke.py",
       "tests/test_unit_cycle_numerics.py"
     ],
-    "increment._whole_window": [
+    "increment.readouts._whole_window": [
       "tests/breakout/test_to_frame.py",
       "tests/calibration/test_cluster_late_welch_df.py",
       "tests/calibration/test_cuped_linear.py",

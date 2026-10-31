@@ -242,11 +242,8 @@ class WholeWindowReadouts:
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
 
-    def run(
-        self,
-        req: WholeWindowRequest,
-        execution_context: EvidenceExecutionContext | None = None,
-    ) -> LiftEstimates:
+    def validate(self, req: WholeWindowRequest) -> RouteName:
+        """Validate requests and portable configuration snapshots before capture."""
         route = day_axis_route(self._src)
         validate_whole_window(
             req,
@@ -256,6 +253,27 @@ class WholeWindowReadouts:
             experiment=self._experiment,
             route=route,
         )
+        _, configs = _prepare_run_request(
+            self._src,
+            decision_method=req.decision_method,
+            sensitivity_methods=req.sensitivity_methods,
+            prior=req.prior,
+            metrics=[metric.name for metric in req.metrics],
+            estimands=req.estimands,
+            value_scale=req.value_scale,
+        )
+        from increment.readouts._design_scope import _config_snapshot
+
+        for config in configs:
+            _config_snapshot(config, self._design)
+        return route
+
+    def run(
+        self,
+        req: WholeWindowRequest,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> LiftEstimates:
+        route = self.validate(req)
         if getattr(self._plan.inference, "registration", None) is not None:
             result = _as_lift_estimates(
                 readouts.run(
@@ -348,6 +366,9 @@ class WholeWindowReadouts:
             )
             for config in configs:
                 _config_snapshot(config, design)
+            populations = (
+                ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
+            )
             uptake = getattr(design, "uptake", None)
             provider = (
                 self._src if is_custom_source(self._src) else native_scope_provider(self._src)

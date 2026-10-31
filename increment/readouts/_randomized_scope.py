@@ -396,7 +396,7 @@ def _randomized_cell_failures(
     return cell_failures, complete, scope_reason_context
 
 
-def _scoped_randomized_results(  # noqa: PLR0915
+def _scoped_randomized_results(  # noqa: PLR0913, PLR0915
     src,
     selected,
     configs,
@@ -409,6 +409,9 @@ def _scoped_randomized_results(  # noqa: PLR0915
     artifact_provenance,
     population,
     base_roster=None,
+    *,
+    identity_source=None,
+    identity_plan=None,
 ):
     """Attach the complete randomized arm roster and captured cell outcomes."""
     from increment.estimation.readout_types import (
@@ -438,6 +441,8 @@ def _scoped_randomized_results(  # noqa: PLR0915
     artifact_manifest_sha256 = artifact_provenance.manifest_sha256
     artifact_relation_digests = artifact_provenance.relation_digests
 
+    request_plan = plan if identity_plan is None else identity_plan
+    request_source = src if identity_source is None else identity_source
     request = {
         "view": "run",
         "population": population,
@@ -449,16 +454,16 @@ def _scoped_randomized_results(  # noqa: PLR0915
             for config in sorted(configs, key=lambda c: c.metric.name)
         ],
         "design": design.model_dump(mode="json"),
-        "alpha": plan.alpha,
-        "q": plan.q,
-        "declared": plan.declared,
+        "alpha": request_plan.alpha,
+        "q": request_plan.q,
+        "declared": request_plan.declared,
         "procedures": {
             name: _request_snapshot(value.model_dump(mode="json"), field=f"procedures.{name}")
-            for name, value in plan.procedures.items()
+            for name, value in request_plan.procedures.items()
         },
-        "source_identity": source_identity(src),
+        "source_identity": source_identity(request_source),
     }
-    trigger_name = src.context.trigger_name
+    trigger_name = request_source.context.trigger_name
     if trigger_name is not None:
         request["trigger_declared"] = True
         request["trigger_name"] = trigger_name
