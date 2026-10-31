@@ -404,8 +404,10 @@ class _DaySource:
         by: Sequence[str] = (),
         completed_windows_only: bool = False,
         include_covariate: bool = False,
-        require_uptake: bool = False,
+        require_uptake: bool | None = None,
     ) -> list[dict[str, Any]]:
+        if require_uptake is None:
+            require_uptake = grain == "asof"
         _refuse_unsupported_day_metric(metric, operation="moments", grain=grain)
         if grain not in self.capabilities:
             from increment._evidence_refusals import require_evidence
@@ -499,13 +501,15 @@ class _DaySource:
         grain: Grain = "daily",
         completed_windows_only: bool = False,
         include_covariate: bool = False,
-        require_uptake: bool = False,
+        require_uptake: bool | None = None,
     ) -> DimensionedDayEvidence:
         """One declared breakout's dimensioned daily/as-of evidence.
 
         The result carries only the resolved source name and materialized rows;
         it never exposes the definitions-layer ``FactSource`` recipe.
         """
+        if require_uptake is None:
+            require_uptake = grain == "asof"
         _refuse_unsupported_day_metric(metric, operation="breakout_moments", grain=grain)
         if grain not in self.capabilities:
             from increment._evidence_refusals import require_evidence

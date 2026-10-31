@@ -1376,6 +1376,8 @@ class _NativeDayAxis:
             from increment.semantics.design import Encouragement
 
             require_uptake = require_uptake or isinstance(self.src.context.design, Encouragement)
+        native_day_source = declared_evidence(self.src).kind != "artifact"
+        uptake_requirement = require_uptake if native_day_source else None
         if req.dimension is not None:
             matching = [
                 breakout
@@ -1387,18 +1389,20 @@ class _NativeDayAxis:
                     rows: list[dict[str, Any]] = []
                     source_name: str | None = None
                     for index, metric in enumerate(metrics):
+                        kwargs = _metric_kwargs(metric, req)
+                        if uptake_requirement is not None:
+                            kwargs["require_uptake"] = uptake_requirement
                         result = cast(Any, self.src).breakout_moments(
                             metric,
                             breakout,
-                            require_uptake=require_uptake,
-                            **_metric_kwargs(metric, req),
+                            **kwargs,
                         )
                         rows.extend(result.rows)
                         if index == 0:
                             source_name = result.source_name
                     yield DayAxisSlice(rows, metrics, view, req.dimension, source_name)
             return
-        yield from _rows(self.src, req, require_uptake=require_uptake)
+        yield from _rows(self.src, req, require_uptake=uptake_requirement)
 
 
 def load_day_axis_rows(
