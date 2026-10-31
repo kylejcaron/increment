@@ -175,7 +175,7 @@ def run(
 
     def execute(context: EvidenceExecutionContext) -> LiftEstimates:
         context.validate_observational_streams(src, design)
-        with context.borrow(source=src, metrics=selected) as scoped:
+        with context.borrow(source=src, metrics=selected, configs=configs) as scoped:
             rows = _run_prepared(
                 _builtin_source(scoped),
                 selected,

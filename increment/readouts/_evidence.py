@@ -930,7 +930,9 @@ def _load_borrowed_breakout_slices(
     fallback_source: EvidenceSource | None,
 ) -> BreakoutSlices:
     execution_context.validate_breakouts(request.breakouts)
-    with execution_context.borrow(source=fallback_source, metrics=request.metrics) as provider:
+    with execution_context.borrow(
+        source=fallback_source, metrics=request.metrics, configs=request.configs
+    ) as provider:
         scoped_source = _builtin_source(provider)
         available_metrics = {metric.name for metric in scoped_source.context.metrics}
         exploratory_metrics = tuple(

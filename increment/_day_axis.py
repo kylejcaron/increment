@@ -1643,7 +1643,9 @@ class DayAxisReadouts:
                 context.validate_breakouts((BreakoutIdentity(req.dimension, source_name),))
             from increment.readouts._evidence import _builtin_source
 
-            with context.borrow(source=self._src, metrics=req.metrics) as provider:
+            with context.borrow(
+                source=self._src, metrics=req.metrics, configs=opts.configs
+            ) as provider:
                 return DayAxisReadouts(
                     src=_builtin_source(provider),
                     plan=self._plan,

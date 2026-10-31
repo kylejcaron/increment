@@ -124,13 +124,19 @@ class _BuiltInEvidenceProvider(_OwnedLoaderAdapter):
 
         return loader_snapshot(self.source, previous=request.previous)
 
-    def readout_view(self, source: object, *, metrics: Sequence[object]) -> EvidenceProvider:
+    def readout_view(
+        self,
+        source: object,
+        *,
+        metrics: Sequence[object],
+        configs: Sequence[object] | None = None,
+    ) -> EvidenceProvider:
         from increment._evidence_scopes import loader_source
 
         template = loader_source(cast(Any, source))
         view = getattr(self.source, "readout_view", None)
         if callable(view):
-            return _BuiltInEvidenceProvider(view(template, metrics=metrics))
+            return _BuiltInEvidenceProvider(view(template, metrics=metrics, configs=configs))
         return self
 
     def scope(self, request: EvidenceScope) -> EvidenceScopeResult:

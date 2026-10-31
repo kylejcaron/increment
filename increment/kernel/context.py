@@ -290,7 +290,11 @@ class EvidenceExecutionContext:
 
     @contextmanager
     def borrow(
-        self, *, source: object | None = None, metrics: Sequence[object] = ()
+        self,
+        *,
+        source: object | None = None,
+        metrics: Sequence[object] = (),
+        configs: Sequence[object] | None = None,
     ) -> Iterator[EvidenceProvider]:
         provider = self._require_open()
         if self._snapshot_manifest:
@@ -321,7 +325,7 @@ class EvidenceExecutionContext:
             self.validate_source(source)
             view = getattr(provider, "readout_view", None)
             if callable(view):
-                provider = view(source, metrics=metrics)
+                provider = view(source, metrics=metrics, configs=configs)
         yield provider
 
     @contextmanager

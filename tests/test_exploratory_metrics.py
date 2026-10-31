@@ -988,8 +988,8 @@ def test_exploratory_metrics_share_capture_before_warehouse_mutation(monkeypatch
                 "UPDATE events SET revenue = revenue * 10 WHERE user_id LIKE 't%'"
             )
 
-    def view(source, template, *, metrics):
-        result = original_view(source, template, metrics=metrics)
+    def view(source, template, *, metrics, configs=None):
+        result = original_view(source, template, metrics=metrics, configs=configs)
         views.append(tuple(metric.name for metric in metrics))
         if len(views) == 1:
             cast(Any, con).raw_sql(
