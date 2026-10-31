@@ -396,6 +396,11 @@ class WholeWindowReadouts:
         execution_context: EvidenceExecutionContext | None = None,
     ) -> LiftEstimates:
         route = self.validate(req)
+        design_summary_only = _design_compliance_only(self._src.context, req.estimands)
+        if not req.metrics and not design_summary_only:
+            from increment.breakout.estimates import LiftEstimates
+
+            return LiftEstimates()
         if getattr(self._plan.inference, "registration", None) is not None:
             result = _as_lift_estimates(
                 self._registered_run(
@@ -416,11 +421,6 @@ class WholeWindowReadouts:
                 )
             )
             return _select_population(result, req.population)
-        design_summary_only = _design_compliance_only(self._src.context, req.estimands)
-        if not req.metrics and not design_summary_only:
-            from increment.breakout.estimates import LiftEstimates
-
-            return LiftEstimates()
         if execution_context is not None:
             has_trigger = self._experiment is not None and self._experiment.trigger is not None
             required_populations = (

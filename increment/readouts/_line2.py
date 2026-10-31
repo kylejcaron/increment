@@ -131,6 +131,7 @@ def _contrast_operation_scope(analysis, operation: str, options: dict[str, Any])
 
 
 def _whole_window_operation_scope(analysis, selected, added, options) -> EvidenceScope:
+    from increment.estimation.sequential import SEQUENTIAL_POLICIES
     from increment.readouts._run_acquisition import RunAcquisitionOwner
     from increment.readouts._whole_window import (
         WholeWindowExploratoryRequest,
@@ -162,7 +163,16 @@ def _whole_window_operation_scope(analysis, selected, added, options) -> Evidenc
         exploratory=exploratory,
     )
     prepared = analysis._whole_window().prepare_family(family)
-    return RunAcquisitionOwner.combined_scope(analysis._src, prepared)
+    additional_scopes = ()
+    if isinstance(analysis._plan.inference, SEQUENTIAL_POLICIES):
+        from increment.readouts._line3 import sequential_scope
+
+        additional_scopes = (sequential_scope(analysis, include_breakouts=False),)
+    return RunAcquisitionOwner.combined_scope(
+        analysis._src,
+        prepared,
+        additional_scopes=additional_scopes,
+    )
 
 
 def operation_scope(analysis, operation: str, options: dict[str, Any]) -> EvidenceScope:

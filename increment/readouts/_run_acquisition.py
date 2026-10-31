@@ -177,12 +177,18 @@ class RunAcquisitionOwner:
 
     @staticmethod
     def combined_scope(
-        source: EvidenceSource, requests: Sequence[PreparedRunAcquisition]
+        source: EvidenceSource,
+        requests: Sequence[PreparedRunAcquisition],
+        *,
+        additional_scopes: Sequence[EvidenceScope] = (),
     ) -> EvidenceScope:
         """Combine prepared typed requests through the shared evidence inventory."""
         from increment._evidence_scopes import capture_requirements
 
-        return capture_requirements(source, tuple(item.scope for item in requests))
+        return capture_requirements(
+            source,
+            (*tuple(item.scope for item in requests), *additional_scopes),
+        )
 
     @staticmethod
     def capture(

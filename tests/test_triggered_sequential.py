@@ -246,12 +246,52 @@ def _by_population(rows):
     return {(row.analysis_population, row.metric): row for row in rows}
 
 
+def _assert_selected_registered_family_capture(tmp_path):
+    connection = ibis.duckdb.connect()
+    analysis = None
+    try:
+        path = tmp_path / "family-definitions.yml"
+        path.write_text(_definitions(plan=_FAMILY_PLAN, secondaries=("aux_a", "aux_b")))
+        connection.create_table("events", obj=_events(secondaries=("aux_a", "aux_b")))
+        experiment, resolver = from_definitions(
+            path,
+            connection,
+            experiment_name="exp",
+            source_snapshot_evidence=_CERTIFIED,
+            store="none",
+        )
+        analysis = cast(Any, resolver)._analysis
+        assert len(analysis.run(metrics=[])) == 0
+        scopes = (
+            Scope(view="run", grain="total", population="assigned"),
+            Scope(view="run", grain="total", population="triggered"),
+        )
+        result = run(
+            replace(experiment, scopes=scopes),
+            resolver,
+            analysis_options={
+                "metrics": ["aux_a"],
+                "capture": {"finalized": True, "as_of": _LATER},
+            },
+        )
+        assert {cell.identity.key.metric for cell in result.cells} == {"aux_a"}
+        assert {cell.identity.key.analysis_population for cell in result.cells} == {
+            "assigned",
+            "triggered",
+        }
+    finally:
+        if analysis is not None:
+            analysis.close()
+        connection.disconnect()
+
+
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
     analysis, path = _analysis(tmp_path, _events(), connection=connection)
     resolver_analysis = None
     moments_analysis = None
     try:
+        _assert_selected_registered_family_capture(tmp_path)
         snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
         assert snapshot.triggered.population == "triggered"
