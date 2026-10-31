@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-from increment._interpretation import EffectEstimate, project_effect
+from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
 from increment.kernel.contracts import (
     BreakoutIdentity,
@@ -433,12 +433,59 @@ def _scope_for_cell(cell: ResultCell, declared_scope: Scope | None) -> Scope:
         scope_update["through_day"] = day
     if key.ds_basis is not None:
         scope_update["time_basis"] = key.ds_basis
+
     row_scope = declared_scope.model_copy(update=scope_update)
     if declared_scope.segment and key.dimension is not None:
         row_scope = row_scope.model_copy(
             update={"segment": (BreakoutIdentity(property=key.dimension, source=key.source),)}
         )
     return row_scope
+
+
+def _live_winsor_effect(row: Any) -> EffectEstimate:
+    confidence_set = row.confidence_set
+    value_scale = getattr(row, "value_scale", "relative")
+    interval = confidence_set.additive if value_scale == "absolute" else confidence_set.relative
+    point = confidence_set.additive_point if value_scale == "absolute" else confidence_set.point
+    reasons = tuple(
+        f"{side} endpoint {endpoint.status}: {endpoint.reason}"
+        for side, endpoint in (("lower", interval.lower), ("upper", interval.upper))
+        if endpoint.status != "finite" and endpoint.reason is not None
+    )
+    reason = (
+        getattr(row, "relative_unavailable_reason", None)
+        if point is None and value_scale != "absolute"
+        else None
+    )
+    if reason is None and reasons:
+        reason = "; ".join(reasons)
+    return EffectEstimate(
+        point,
+        interval.lower.value if interval.lower.status == "finite" else None,
+        interval.upper.value if interval.upper.status == "finite" else None,
+        confidence_set.alpha,
+        value_scale,
+        reason,
+        qualification=confidence_set.qualification,
+    )
+
+
+def _selected_percentile_winsorization(analysis: Any, options: Mapping[str, object]) -> bool:
+    metrics = tuple(getattr(analysis, "_metrics", ()))
+    selected = options.get("metrics")
+    if selected is None:
+        candidates = metrics
+    else:
+        selected_metrics = cast(Sequence[object], selected)
+        names = {
+            value if isinstance(value, str) else getattr(value, "name", None)
+            for value in selected_metrics
+        }
+        candidates = tuple(metric for metric in metrics if metric.name in names)
+    return any(
+        getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+        for metric in candidates
+    )
 
 
 def _run_rows(
@@ -502,7 +549,7 @@ def _run_rows(
         for row in rows
         if getattr(row, "confidence_set", None) is not None
     }
-    if live_rows_by_key and (results_store is not None or decision_log is not None):
+    if live_rows_by_key and results_store is not None:
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     cells: list[ResultCell] = []
     live_rows: list[Any | None] = []
@@ -556,7 +603,7 @@ def _run_rows(
     result = RunResult(
         cells=envelope.cells,
         effects=tuple(
-            project_effect(row) if row is not None else cell.summary
+            _live_winsor_effect(row) if row is not None else cell.summary
             for cell, row in zip(envelope.cells, live_rows, strict=True)
         ),
         decisions=decisions,
@@ -684,6 +731,10 @@ def run(
             context={},
         )
     _validate_analysis_binding(analysis, registration, compiled_plan, analysis_options)
+    if results_store is not None and _selected_percentile_winsorization(
+        analysis, analysis_options or {}
+    ):
+        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     if results_store is not None or decision_log is not None:
         # Check wire portability before Analysis.run() can read the source.
         CompiledPlanBinding.from_plan(registration, compiled_plan)

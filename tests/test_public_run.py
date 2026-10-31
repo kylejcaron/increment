@@ -1031,13 +1031,27 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
         assert result.effects[0].point == pytest.approx(legacy.lift.value)
         assert result.effects[0].lower == pytest.approx(legacy.confidence_set.relative.lower.value)
         assert result.effects[0].upper == pytest.approx(legacy.confidence_set.relative.upper.value)
-        assert result.decisions.cells[0].status == "not_evaluated"
         output = render(result, "full")
-        assert f"{legacy.lift.value:.6g}" in output
         assert "confidence set" in output
+        brief = render(result)
+        assert f"{legacy.lift.value:.6g}" in brief
+        assert "status=unavailable" in brief
         assert result.cells[0].summary is None
         with pytest.raises(WireFormatError):
             pickle.dumps(result)
+        from increment.store import DecisionLog
+
+        logged = run(
+            analysis,
+            registration,
+            compiled,
+            experiment_id="winsor-live",
+            analysis_spec_hash="sha256:" + "e" * 64,
+            execution_identity_hash="sha256:" + "f" * 64,
+            run_id="winsor-live-logged",
+            decision_log=DecisionLog(),
+        )
+        assert logged.decisions.cells[0].status == "not_evaluated"
         from increment.store import ParquetResultsStore
 
         with pytest.raises(WireFormatError) as error:
@@ -1054,6 +1068,36 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
         assert error.value.code == "wire.result.raw_outcomes_unavailable"
     finally:
         analysis.close()
+
+
+def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
+    from increment._run import _live_winsor_effect
+    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
+
+    raw = WinsorRawState(
+        metric="value",
+        study_id="unbounded",
+        population="assigned",
+        missingness="error",
+        quantile=0.99,
+        inference=WinsorInferenceSpec(method="joint-rank-projection-v1"),
+        support=WinsorSupport(lower=0, upper=0, provenance="Constant zero outcomes"),
+        arms=(
+            RawArm(group_id="control", values=(0, 0)),
+            RawArm(group_id="treatment", values=(0, 0)),
+        ),
+    )
+    row = estimate_winsor_lift(raw, "control", "treatment")
+
+    effect = _live_winsor_effect(row)
+
+    assert row.confidence_set is not None
+    assert row.confidence_set.relative.upper.status == "undefined"
+    assert effect.upper is None
+    assert effect.alpha == row.confidence_set.alpha
+    assert effect.qualification == row.confidence_set.qualification
+    assert effect.reason is not None and "upper endpoint undefined" in effect.reason
 
 
 def test_public_run_rejects_registration_that_differs_from_analysis_plan():
