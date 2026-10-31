@@ -43,7 +43,7 @@ tests/power/test_sequential_power.py 2
 tests/power/test_switchback_planning_calibration.py 1
 tests/power/test_unit_cycle_power.py 4
 tests/query/test_session.py 6
-tests/simulate/test_clustered_cate.py 2
+tests/simulate/test_clustered_cate.py 1
 tests/simulate/test_dgp.py 2
 tests/simulate/test_end_to_end.py 3
 tests/simulate/test_switchback.py 3

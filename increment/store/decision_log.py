@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Literal, NotRequired, Protocol, TypedDict, cast
 
 from increment.kernel.contracts import CellIdentity, CompiledPlanBinding, Registration
-from increment.store._refusals import refuse_store
-from increment.store.types import RunHandle
+from increment.kernel.program_refusals import refuse_store
+from increment.store.types import RunHandle, run_digest
 
 
 class _DecisionReferencePayload(TypedDict):
@@ -117,8 +117,7 @@ class DecisionLog:
                 "store.decision.reference_invalid",
                 "Compiled plan differs from registration during replay",
             )
-        from increment.store.evaluator import decide
-        from increment.store.types import run_digest
+        from increment.decide.evaluator import decide
 
         results: list[object] = []
         for event in self.events:

@@ -34,12 +34,13 @@ depends_on = []
 
 [[modules]]
 path = "increment.store"
-layer = "core"
+layer = "program"
 depends_on = [
   "increment._canonical",
   "increment.errors",
   "increment.estimation",
   "increment.kernel.contracts",
+  "increment.kernel.program_refusals", "increment.decide.evaluator",
   "increment.result_envelope", "increment.declarations",
 ]
 [[modules]]
@@ -723,7 +724,6 @@ path = "increment._analysis_execution"
 layer = "core"
 depends_on = [
   "increment._literals", "increment._cuped_evidence",
-  "increment.cate",
   "increment._frame_validation",
   "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
   "increment._evidence_types",
@@ -738,7 +738,7 @@ depends_on = [
   "increment.query.artifact_ports",
   "increment.sources", "increment.switchback",
   "increment.sequential_source",
-  "increment._health", "increment.store",
+  "increment._health", "increment.kernel.ports",
 ]
 
 [[modules]]
@@ -808,7 +808,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.cate"
-layer = "core"
+layer = "observational"
 depends_on = ["increment._evidence_refusals", "increment._evidence_types", "increment._identity", "increment._source_types", "increment.errors", "increment.estimation", "increment.readouts", "increment.sources"]
 
 [[modules]]
@@ -846,7 +846,7 @@ layer = "core"
 depends_on = [
   "increment.winsor",
   "increment.decision", "increment.power",
-  "increment.builders", "increment._run", "increment.cate", "increment.estimation", "increment.frame",
+  "increment.builders", "increment._run", "increment.kernel.ports", "increment.estimation", "increment.frame",
   "increment.logged_policy", "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.errors",
 ]
@@ -1109,6 +1109,16 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment.kernel.ports"
+layer = "core"
+depends_on = ["increment.errors", "increment.estimation", "increment.kernel.contracts", "increment.result_envelope"]
+
+[[modules]]
+path = "increment.kernel.program_refusals"
+layer = "core"
+depends_on = ["increment.errors"]
+
+[[modules]]
 path = "increment.kernel.context"
 layer = "core"
 depends_on = [
@@ -1172,8 +1182,13 @@ depends_on = [
   "increment.plan",
   "increment.semantics",
   "increment.decide.family",
-  "increment.store",
+  "increment.decide.evaluator",
 ]
+
+[[modules]]
+path = "increment.decide.evaluator"
+layer = "core"
+depends_on = ["increment.errors", "increment.kernel.contracts", "increment.kernel.ports", "increment.kernel.program_refusals", "increment.result_envelope"]
 
 [[modules]]
 path = "increment.decide.family"
@@ -1193,7 +1208,7 @@ depends_on = [
   "increment.kernel.contracts",
   "increment.kernel",
   "increment.result_envelope",
-  "increment.store",
+  "increment.kernel.ports",
   "increment.decide",
 ]
 

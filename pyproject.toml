@@ -60,6 +60,12 @@ Homepage = "https://getincrement.io/"
 Documentation = "https://getincrement.io/docs/"
 Repository = "https://github.com/kylejcaron/increment"
 
+[project.entry-points."increment.cate_operations"]
+core = "increment.cate:core_operations"
+
+[project.entry-points."increment.program_store"]
+core = "increment.store:core_operations"
+
 [project.optional-dependencies]
 demo   = [
     "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",

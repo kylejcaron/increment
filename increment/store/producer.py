@@ -51,12 +51,12 @@ def persist_results(
 ) -> None:
     metadata = results.metadata
     if metadata is None or metadata.partial:
-        from increment.store._refusals import refuse_store
+        from increment.kernel.program_refusals import refuse_store
 
         refuse_store("store.run.metadata_mismatch", "Only complete run results can be persisted")
     cells = tuple(results.as_cells())
     if not cells:
-        from increment.store._refusals import refuse_store
+        from increment.kernel.program_refusals import refuse_store
 
         refuse_store(
             "store.run.empty",

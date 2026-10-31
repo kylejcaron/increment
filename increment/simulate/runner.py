@@ -919,9 +919,11 @@ def _run_cate_for_replication(
     if scenario.covariate_sd <= 0:
         return {}
 
-    from increment.cate import estimate_cate
     from increment.estimation.cate import Covariate
     from increment.frame import from_unit_summary
+    from increment.kernel.ports import cate_operations
+
+    estimate_cate = cate_operations().estimate_cate
 
     pdf = raw_log.to_pandas()
     if not (pdf["event"] == "covariate").any():
