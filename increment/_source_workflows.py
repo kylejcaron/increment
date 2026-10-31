@@ -34,8 +34,7 @@ _PLAN_MISSING = RefusalSpec(
 )
 
 
-def _arm_binding(experiment: KernelExperiment, resolver: Resolver, method: str) -> SourceBinding:
-    binding = binding_for(experiment, resolver)
+def _require_arm_binding(binding: SourceBinding, method: str) -> SourceBinding:
     if binding.state.family != "arm_moments":
         from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 
@@ -43,7 +42,12 @@ def _arm_binding(experiment: KernelExperiment, resolver: Resolver, method: str) 
     return binding
 
 
+def _arm_binding(experiment: KernelExperiment, resolver: Resolver, method: str) -> SourceBinding:
+    return _require_arm_binding(binding_for(experiment, resolver), method)
+
+
 def _materialize_binding(binding: SourceBinding) -> None:
+    binding = _require_arm_binding(binding, "materialize")
     source = _require_analysis_operation(
         binding.source,
         "materialize",
@@ -78,7 +82,7 @@ def export_moments(experiment: KernelExperiment, resolver: Resolver, path: str |
 
 
 def _experiment_definition_binding(binding: SourceBinding) -> Experiment:
-    return binding.experiment
+    return _require_arm_binding(binding, "experiment").experiment
 
 
 def experiment_definition(experiment: KernelExperiment, resolver: Resolver) -> Experiment:
@@ -96,7 +100,10 @@ def metrics(experiment: KernelExperiment, resolver: Resolver) -> list[Metric]:
 
 
 def _compiled_decision_plan_binding(binding: SourceBinding) -> CompiledDecisionPlan:
-    plan = binding.plan
+    try:
+        plan = binding.plan
+    except AttributeError:
+        plan = None
     if plan is None:
         refuse(_PLAN_MISSING, route="Analysis.run()")
     return plan
@@ -135,14 +142,13 @@ def breakout_summaries(
     metrics: Sequence[str | Metric] | None = None,
 ) -> dict[str, dict[str, pa.Table]]:
     """Return per-breakout moment tables for the selected declared metrics."""
-    return _breakout_summaries_binding(
-        _arm_binding(experiment, resolver, "breakout_summaries"), metrics
-    )
+    return _breakout_summaries_binding(binding_for(experiment, resolver), metrics)
 
 
 def _breakout_summaries_binding(
     binding: SourceBinding, metrics: Sequence[str | Metric] | None
 ) -> dict[str, dict[str, pa.Table]]:
+    binding = _require_arm_binding(binding, "breakout_summaries")
     from increment._analysis_config import select_metrics
     from increment.breakout.estimates import reject_quantile_metrics, reject_retention_metrics
     from increment.query.native_contract import NativeViewSource
@@ -215,10 +221,11 @@ def _breakout_summaries_binding(
 
 def factor_summaries(experiment: KernelExperiment, resolver: Resolver) -> dict[str, pa.Table]:
     """Return per-factor-level and arm moment tables for declared factors."""
-    return _factor_summaries_binding(_arm_binding(experiment, resolver, "factor_summaries"))
+    return _factor_summaries_binding(binding_for(experiment, resolver))
 
 
 def _factor_summaries_binding(binding: SourceBinding) -> dict[str, pa.Table]:
+    binding = _require_arm_binding(binding, "factor_summaries")
     from increment.breakout.estimates import reject_quantile_metrics
     from increment.query.native_contract import NativeViewSource
 

@@ -59,6 +59,83 @@ def test_public_switchback_surface_smoke():
     assert analysis.assignment_diagnostic().n_units == 2
 
 
+def _source_operation_panel():
+    return pd.DataFrame(
+        _shared_panel_rows(
+            ("u1", "u2"),
+            {0: ("control", "treatment"), 1: ("treatment", "control")},
+            lambda _unit, _cycle, _period, group: float(group == "treatment"),
+        )
+    )
+
+
+def test_switchback_legacy_source_operations_preserve_contrast_refusal():
+    from increment.errors import CapabilityError
+
+    analysis = Analysis.from_switchback_panel(
+        _source_operation_panel(),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"value": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        contrast_references={"value": UnitCycleTApproximation()},
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(),
+            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+        ),
+    )
+    for operation in (
+        analysis.materialize,
+        analysis.breakout_summaries,
+        analysis.factor_summaries,
+        lambda: analysis.experiment,
+    ):
+        with pytest.raises(CapabilityError) as raised:
+            operation()
+        assert raised.value.code == "facade.analysis.contrast_unavailable"
+
+
+def test_switchback_workflow_inspection_preserves_coded_refusals():
+    from increment import from_switchback_frame
+    from increment.errors import CapabilityError
+    from increment.workflows import compiled_decision_plan, experiment_definition
+
+    experiment, resolver = from_switchback_frame(
+        _source_operation_panel(),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"value": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        contrast_references={"value": UnitCycleTApproximation()},
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(),
+            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+        ),
+    )
+    try:
+        with pytest.raises(InvalidRequestError) as raised:
+            compiled_decision_plan(experiment, resolver)
+        assert raised.value.code == "store.run.legacy_analysis_required"
+        assert raised.value.context["route"] == "Analysis.run()"
+        with pytest.raises(CapabilityError) as raised:
+            experiment_definition(experiment, resolver)
+        assert raised.value.code == "facade.analysis.contrast_unavailable"
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
+
+
 def test_zero_variance_contrast_is_not_stat_sig():
     """Four units with deterministic, zero-variance per-unit deltas produce
     a zero standard error; the readout must not claim significance for a

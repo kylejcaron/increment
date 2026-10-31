@@ -30,9 +30,13 @@ from tests.warning_codes import warning_codes
 
 
 def _analysis_with_country_breakout(
-    con, *, unbounded_retention: bool = False, source_snapshot_evidence=None
+    con,
+    *,
+    unbounded_retention: bool = False,
+    source_snapshot_evidence=None,
+    return_definitions=False,
 ):
-    """Two countries with opposite revenue lifts and an optional open retention band."""
+    """Build the country-breakout fixture for legacy and source-operation tests."""
     if "breakout_run_events" not in con.list_tables():
         # Exposure: 2 control + 2 treatment units per country.
         exposure_groups = {
@@ -144,6 +148,8 @@ def _analysis_with_country_breakout(
         }
     )
 
+    if return_definitions:
+        return defs
     analysis = make_analysis(con, defs, source_snapshot_evidence=source_snapshot_evidence)
     return analysis
 
@@ -1550,10 +1556,39 @@ def test_retention_breakout_summary_uses_mature_exposure_cohorts():
     "ingress",
     ["from_definitions", pytest.param("from_unit_day_artifact", marks=pytest.mark.slow)],
 )
-def test_unbounded_retention_breakout_refuses_before_warehouse_access(ingress):
+def test_unbounded_retention_breakout_refuses_before_warehouse_access(ingress, tmp_path):
     import ibis
+    import yaml
 
     con = ibis.duckdb.connect()
+    if ingress == "from_definitions":
+        from increment import from_definitions
+        from increment.workflows import breakout_summaries
+
+        definitions = _analysis_with_country_breakout(
+            con, unbounded_retention=True, return_definitions=True
+        )
+        definitions_path = tmp_path / "breakout-definitions.yaml"
+        definitions_path.write_text(
+            yaml.safe_dump(definitions.model_dump(mode="json", exclude_unset=True)),
+            encoding="utf-8",
+        )
+        with pytest.warns(IncrementWarning, match="revenue"):
+            experiment, resolver = from_definitions(
+                definitions_path, con, experiment_name="breakout_run_exp"
+            )
+        con.disconnect()
+        try:
+            with pytest.raises(InvalidRequestError) as caught:
+                breakout_summaries(experiment, resolver, metrics=["revenue", "unbounded"])
+            assert caught.value.code == "breakout.retention.unbounded"
+            assert caught.value.context["names"] == ("unbounded",)
+        finally:
+            close = getattr(resolver, "close", None)
+            if callable(close):
+                close()
+        return
+
     analysis = _analysis_with_country_breakout(con, unbounded_retention=True)
     if ingress == "from_unit_day_artifact":
         from tests.parity_harness.cases import _publish_and_adopt
