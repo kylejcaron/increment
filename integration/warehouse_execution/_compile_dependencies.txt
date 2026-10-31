@@ -1,4 +1,4 @@
-# Traced on commit: e21ededd6e499e61895823e430bb6dcc37c6d9c2
+# Traced on commit: 0c340bf9e9ae717590f772a1000a03a04da61b26
 increment
 increment._analysis_config
 increment._analysis_execution
@@ -158,6 +158,7 @@ increment.readouts._randomized
 increment.readouts._randomized_scope
 increment.readouts._requests
 increment.readouts._run
+increment.readouts._run_acquisition
 increment.readouts._source_digest
 increment.readouts._srm
 increment.readouts._whole_window
