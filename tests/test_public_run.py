@@ -1075,29 +1075,37 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
     from increment.estimation.winsor import estimate_winsor_lift
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
 
-    raw = WinsorRawState(
-        metric="value",
-        study_id="unbounded",
-        population="assigned",
-        missingness="error",
-        quantile=0.99,
-        inference=WinsorInferenceSpec(method="joint-rank-projection-v1"),
-        support=WinsorSupport(lower=0, upper=0, provenance="Constant zero outcomes"),
-        arms=(
-            RawArm(group_id="control", values=(0, 0)),
-            RawArm(group_id="treatment", values=(0, 0)),
-        ),
-    )
-    row = estimate_winsor_lift(raw, "control", "treatment")
+    for upper, expected_status, control_values, treatment_values in (
+        (None, "unbounded", (1, 2, 3, 9), (1, 2, 3, 5)),
+        (0, "undefined", (0, 0), (0, 0)),
+    ):
+        raw = WinsorRawState(
+            metric="value",
+            study_id=f"rank-{expected_status}",
+            population="assigned",
+            missingness="error",
+            quantile=0.99,
+            inference=WinsorInferenceSpec(method="joint-rank-projection-v1"),
+            support=WinsorSupport(
+                lower=0,
+                upper=upper,
+                provenance="Declared outcome support",
+            ),
+            arms=(
+                RawArm(group_id="control", values=control_values),
+                RawArm(group_id="treatment", values=treatment_values),
+            ),
+        )
+        row = estimate_winsor_lift(raw, "control", "treatment")
+        effect = _live_winsor_effect(row)
 
-    effect = _live_winsor_effect(row)
-
-    assert row.confidence_set is not None
-    assert row.confidence_set.relative.upper.status == "undefined"
-    assert effect.upper is None
-    assert effect.alpha == row.confidence_set.alpha
-    assert effect.qualification == row.confidence_set.qualification
-    assert effect.reason is not None and "upper endpoint undefined" in effect.reason
+        assert row.confidence_set is not None
+        assert row.confidence_set.relative.upper.status == expected_status
+        assert effect.upper is None
+        assert effect.alpha == row.confidence_set.alpha
+        assert effect.qualification == row.confidence_set.qualification
+        assert effect.reason is not None
+        assert f"upper endpoint {expected_status}" in effect.reason
 
 
 def test_public_run_rejects_registration_that_differs_from_analysis_plan():
