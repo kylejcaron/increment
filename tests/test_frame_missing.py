@@ -697,7 +697,10 @@ def test_inferred_null_panel_preserves_fact_freshness(backend) -> None:
             missing_rows = _moments(source, _metric(source, "missing"))
         populations.append(sum(row["n"] for row in missing_rows))
         assert "frame.censoring.dropped_units" in warning_codes(warnings)
-        assert sum(row["n"] for row in _moments(source, _metric(source, "observed"))) == 0
+        with pytest.warns(IncrementWarning) as observed_warnings:
+            observed_rows = _moments(source, _metric(source, "observed"))
+        assert warning_codes(observed_warnings) == ["frame.censoring.dropped_units"]
+        assert sum(row["n"] for row in observed_rows) == 0
     assert populations == [4, 4, 4]
 
 
