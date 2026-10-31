@@ -34,6 +34,11 @@ _CONTRAST_CONTEXT_NOT_PORTABLE = RefusalSpec(
     WireFormatError,
     template="switchback contrast runs carry no portable arm decision plan; {action} is unavailable",
 )
+_LIVE_RAW_SET_NOT_PORTABLE = RefusalSpec(
+    "wire.result.raw_outcomes_unavailable",
+    WireFormatError,
+    template="a live confidence-set result depends on raw outcomes; {action} is unavailable",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +47,7 @@ class RunResult:
     effects: tuple[EffectEstimate | None, ...]
     decisions: Decisions
     run: Run
+    live_rows: tuple[Any | None, ...] = ()
 
     def __reduce__(self):
         reason = self.run.decision_plan_unavailable_reason
@@ -51,7 +57,9 @@ class RunResult:
                 code=reason,
                 context={"run_id": self.run.run_id},
             )
-        return type(self), (self.cells, self.effects, self.decisions, self.run)
+        if any(row is not None for row in self.live_rows):
+            refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="serialization")
+        return type(self), (self.cells, self.effects, self.decisions, self.run, self.live_rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,12 +433,59 @@ def _scope_for_cell(cell: ResultCell, declared_scope: Scope | None) -> Scope:
         scope_update["through_day"] = day
     if key.ds_basis is not None:
         scope_update["time_basis"] = key.ds_basis
+
     row_scope = declared_scope.model_copy(update=scope_update)
     if declared_scope.segment and key.dimension is not None:
         row_scope = row_scope.model_copy(
             update={"segment": (BreakoutIdentity(property=key.dimension, source=key.source),)}
         )
     return row_scope
+
+
+def _live_winsor_effect(row: Any) -> EffectEstimate:
+    confidence_set = row.confidence_set
+    value_scale = getattr(row, "value_scale", "relative")
+    interval = confidence_set.additive if value_scale == "absolute" else confidence_set.relative
+    point = confidence_set.additive_point if value_scale == "absolute" else confidence_set.point
+    reasons = tuple(
+        f"{side} endpoint {endpoint.status}: {endpoint.reason}"
+        for side, endpoint in (("lower", interval.lower), ("upper", interval.upper))
+        if endpoint.status != "finite" and endpoint.reason is not None
+    )
+    reason = (
+        getattr(row, "relative_unavailable_reason", None)
+        if point is None and value_scale != "absolute"
+        else None
+    )
+    if reason is None and reasons:
+        reason = "; ".join(reasons)
+    return EffectEstimate(
+        point,
+        interval.lower.value if interval.lower.status == "finite" else None,
+        interval.upper.value if interval.upper.status == "finite" else None,
+        confidence_set.alpha,
+        value_scale,
+        reason,
+        qualification=confidence_set.qualification,
+    )
+
+
+def _selected_percentile_winsorization(analysis: Any, options: Mapping[str, object]) -> bool:
+    metrics = tuple(getattr(analysis, "_metrics", ()))
+    selected = options.get("metrics")
+    if selected is None:
+        candidates = metrics
+    else:
+        selected_metrics = cast(Sequence[object], selected)
+        names = {
+            value if isinstance(value, str) else getattr(value, "name", None)
+            for value in selected_metrics
+        }
+        candidates = tuple(metric for metric in metrics if metric.name in names)
+    return any(
+        getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+        for metric in candidates
+    )
 
 
 def _run_rows(
@@ -489,8 +544,17 @@ def _run_rows(
             binding = None
             binding_unavailable_reason = error.code
     created_at = datetime.now(UTC)
+    live_rows_by_key = {
+        ResultCell.from_row(row, rows.metadata, created_at=created_at).identity.key: row
+        for row in rows
+        if getattr(row, "confidence_set", None) is not None
+    }
+    if live_rows_by_key and results_store is not None:
+        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     cells: list[ResultCell] = []
+    live_rows: list[Any | None] = []
     for cell in rows.as_cells(created_at=created_at):
+        live_rows.append(live_rows_by_key.get(cell.identity.key))
         row_scope = _scope_for_cell(cell, declared_scope)
         identity = cell.identity.model_copy(
             update={
@@ -535,11 +599,16 @@ def _run_rows(
     if decision_log is not None:
         assert binding is not None
         events = _events(handle.run, decisions, binding)
+    envelope = handle.envelope()
     result = RunResult(
-        cells=handle.envelope().cells,
-        effects=tuple(cell.summary for cell in handle.envelope().cells),
+        cells=envelope.cells,
+        effects=tuple(
+            _live_winsor_effect(row) if row is not None else cell.summary
+            for cell, row in zip(envelope.cells, live_rows, strict=True)
+        ),
         decisions=decisions,
         run=handle.run,
+        live_rows=tuple(live_rows),
     )
     if decision_log is not None:
         for event in events:
@@ -662,6 +731,10 @@ def run(
             context={},
         )
     _validate_analysis_binding(analysis, registration, compiled_plan, analysis_options)
+    if results_store is not None and _selected_percentile_winsorization(
+        analysis, analysis_options or {}
+    ):
+        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     if results_store is not None or decision_log is not None:
         # Check wire portability before Analysis.run() can read the source.
         CompiledPlanBinding.from_plan(registration, compiled_plan)
