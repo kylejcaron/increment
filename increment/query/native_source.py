@@ -1111,7 +1111,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 source,
                 require_event=source.name in event_source_names,
             )
-        # Internal narrowing keeps this enclosing readout's captured horizon.
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
             pinned._context = replace(pinned._context, configs=tuple(configs))

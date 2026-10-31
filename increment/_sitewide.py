@@ -8,11 +8,6 @@ from typing import TYPE_CHECKING, Literal, cast
 from increment._evidence_types import CountsRequest
 from increment._source_operations import SitewideEvidenceOperation
 from increment._source_types import declared_evidence
-from increment._whole_window import (
-    _UNKNOWN_METRIC,
-    _is_artifact_source,
-    _require_analysis_operation,
-)
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.estimation.sitewide import (
@@ -25,6 +20,11 @@ from increment.estimation.sitewide import (
 )
 from increment.evidence import evidence_provider
 from increment.query.builders import check_cluster_size_balance, validate_site_volume_metric
+from increment.readouts._whole_window import (
+    _UNKNOWN_METRIC,
+    _is_artifact_source,
+    _require_analysis_operation,
+)
 from increment.semantics.models import Metric, RatioMetric
 
 if TYPE_CHECKING:

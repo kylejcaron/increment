@@ -166,7 +166,10 @@ def test_portable_prior_reset_restores_declared_family(
             assert restored.posterior_estimate is not None
             assert restored.posterior_estimate < expected.value
         if bound_prior and named_family:
-            _assert_explicit_nonmember_plan_stays_excluded(rows, prior)
+            explicit_snapshot = _assert_explicit_nonmember_plan_stays_excluded(rows, prior)
+            restored_member = lift_rows(replay.run(prior=None))[0]
+            assert restored_member.discovery is True
+            assert restored_member.source_snapshot_id != explicit_snapshot
     finally:
         source.close()
         oracle.close()
@@ -207,7 +210,7 @@ def _assert_legacy_prior_roundtrip(
         reloaded.close()
 
 
-def _assert_explicit_nonmember_plan_stays_excluded(rows: Any, prior: Any) -> None:
+def _assert_explicit_nonmember_plan_stays_excluded(rows: Any, prior: Any) -> str:
     from increment import Analysis, MetricSpec
     from tests.analysis_factory import lift_rows
 
@@ -226,6 +229,8 @@ def _assert_explicit_nonmember_plan_stays_excluded(rows: Any, prior: Any) -> Non
         assert row.discovery is None
         assert row.family_axes is None
         assert row.family_size is None
+        assert row.source_snapshot_id is not None
+        return row.source_snapshot_id
     finally:
         explicit.close()
 
