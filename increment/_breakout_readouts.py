@@ -181,12 +181,13 @@ class BreakoutReadouts:
 
     def _require_registered_selection(self, population: Literal["assigned", "triggered"]) -> None:
         registration = getattr(self._src.context.plan.inference, "registration", None)
-        if registration is None or self._breakouts is None:
+        identities = () if registration is None else self._identities(self._src)
+        if not identities:
             return
         from increment.sequential_source import registered_breakout_dimension
 
         dimension = registered_breakout_dimension(registration, population=population)
-        if {identity.property for identity in self._breakouts} != {dimension}:
+        if {identity.property for identity in identities} != {dimension}:
             from increment.sequential_state import sequential_refuse
 
             sequential_refuse(

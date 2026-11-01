@@ -264,6 +264,61 @@ def test_multibreakout_frame_runs_every_declared_selection_and_refuses_unknown_b
     assert raised.value.code == "evidence.breakout_unavailable"
 
 
+def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_supply():
+    import datetime as dt
+
+    from increment import AnalysisPlan, InferenceSpec, Randomized
+    from increment.evidence import BreakoutIdentity
+
+    exposed, closed = dt.date(2025, 1, 1), dt.date(2025, 1, 10)
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"u{index}",
+                "arm": "control" if index % 2 else "treatment",
+                "day": day,
+                "exposed_on": exposed,
+                "value": value,
+                "country": ("US", "CA")[(index // 2) % 2],
+                "device": ("mobile", "desktop")[(index // 4) % 2],
+            }
+            for index in range(80)
+            for day, value in ((exposed, 0.0), (dt.date(2025, 1, 2), float(index % 7 + index % 2)))
+        ]
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed_on",
+        observation_end=closed,
+        metrics=[MetricSpec(name="value", type="mean", window_days=2)],
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        plan=AnalysisPlan(
+            primary="value",
+            inference=InferenceSpec(kind="asymptotic_mean", segments={"country": ("US", "CA")}),
+        ),
+        breakouts=("country", "device"),
+    )
+    capture = SequentialCaptureRequest(finalized=True, as_of=closed)
+
+    def selected(*identities):
+        return replace(
+            experiment, scopes=(Scope(view="breakout", grain="total", segment=identities),)
+        )
+
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as unread:
+        run(selected(), resolver)
+    assert reads == []
+    with pytest.raises(CodedError) as captured:
+        run(selected(), resolver, capture=capture)
+    assert unread.value.code == captured.value.code == "sequential.route.unsupported"
+    country = run(selected(BreakoutIdentity("country", None)), resolver, capture=capture).cells
+    assert {cell.identity.key.dimension for cell in country} == {"country"}
+
+
 @pytest.mark.parametrize("clear_declared_prior", [False, True])
 def test_clustered_preflight_applies_saved_prior_override(clear_declared_prior):
     from increment.errors import IncrementWarning

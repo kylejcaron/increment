@@ -138,6 +138,10 @@ change without notice.
 - Release note (bug fix): `DecisionLog.replay` accepts the logged decisions of a
   Bonferroni breakout family instead of refusing them with
   `store.decision.reference_invalid`. Existing decision logs replay unchanged.
+- Release note (bug fix): a breakout read under a registered sequential plan
+  refuses with `sequential.route.unsupported` when the declared or selected
+  breakouts include a property other than the registered segment, instead of
+  returning only the registered segment's rows.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
