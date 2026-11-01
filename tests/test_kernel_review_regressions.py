@@ -1307,6 +1307,26 @@ def test_arm_experiment_refuses_switchback_scope_before_reads():
     } == {error.value.code}
 
 
+def test_unavailable_breakout_selection_refuses_alike_before_reads():
+    from increment.evidence import BreakoutIdentity
+
+    experiment, resolver = _experiment()
+    selection = Scope(
+        view="breakout",
+        grain="total",
+        segment=(BreakoutIdentity(property="country", source=None),),
+    )
+    requested = replace(experiment, scopes=(selection,))
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+        run(requested, resolver)
+    assert reads == []
+    assert error.value.code == "evidence.breakout_unavailable"
+    assert [
+        (refusal.code, refusal.context)
+        for refusal in runnable(requested, "value")["randomized.unadjusted"].static_refusals
+    ] == [(error.value.code, error.value.context)]
+
+
 def test_unadjusted_preflight_preserves_declared_conversion_inference():
     frame = _frame().assign(value=[0, 0, 1, 1] * 10, store=lambda data: data["unit"])
     experiment, resolver = from_frame(

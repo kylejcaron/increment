@@ -1167,7 +1167,7 @@ depends_on = [
 path = "increment._analysis_kernel_adapter"
 layer = "core"
 depends_on = [
-  "increment._evidence_scopes",
+  "increment._evidence_refusals", "increment._evidence_scopes",
   "increment.estimation", "increment.readouts._line2",
   "increment._source_types",
   "increment.decision",
