@@ -769,7 +769,7 @@ Definitions-backed analysis has two persistence boundaries:
 
 | Call | What it does |
 |---|---|
-| `analysis.materialize()` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
+| `increment.workflows.materialize(experiment, resolver)` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
 | `increment.artifacts.publish_unit_day_artifact(experiment, resolver, store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. Obtain the trusted publication context with `increment.artifacts.artifact_context(experiment, resolver)`. A later process adopts it with `from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
 Internally, query core owns the shared artifact contracts and relation schemas;
@@ -1324,13 +1324,17 @@ events = pl.DataFrame(rows)
 ```python
 import ibis
 
-from increment import Analysis
+from increment import Analysis, from_definitions
+from increment.query import panel_sql, summary_sql
 
 con = ibis.duckdb.connect()  # in-memory; swap for Snowflake/BigQuery/Postgres
 con.create_database("analytics")
 con.create_table("event_log", events.to_arrow(), database="analytics")
 
 analysis = Analysis.from_definitions("new_onboarding_v2", "definitions/", con)
+experiment, resolver = from_definitions("definitions/", con, experiment_name="new_onboarding_v2")
+panel_queries = panel_sql(experiment, resolver)
+summary_queries = summary_sql(experiment, resolver)
 results = analysis.run()
 for r in results:
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
@@ -1344,11 +1348,13 @@ revenue_per_user / T: lift=+10.64%
 
 The connection is bound once at construction; every readout (`run()`,
 `run_daily()`, `run_breakout()`, and the rest) reads it from the instance. To
-see the SQL a readout would execute without running it, `analysis.panel_sql()`
-and `analysis.summary_sql()` return the per-metric queries as strings. SQL
-previews and `build_panel_for_metric()` return live warehouse expressions, not
-operation-owned TEMP table references, so they remain executable after another
-readout refreshes materialization.
+see the SQL a readout would execute without running it, call
+`increment.query.panel_sql(experiment, resolver)` and
+`increment.query.summary_sql(experiment, resolver)`; they return per-metric
+queries as strings. SQL previews and `build_panel_for_metric(experiment,
+resolver, ...)` return live warehouse expressions, not operation-owned TEMP
+table references, so they remain executable after another readout refreshes
+materialization.
 
 !!! note "Why the feed must load past the window"
     Each metric is bounded by its fact's `data_as_of`: the latest date the
@@ -1892,9 +1898,13 @@ for name, rows in [
 
 import pyarrow.parquet as pq
 
-from increment import Analysis
+from increment import Analysis, from_definitions
+from increment.workflows import export_moments
 
 analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
+experiment, resolver = from_definitions(
+    "definitions/", con, experiment_name="checkout_redesign"
+)
 
 for r in analysis.run():
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
@@ -1914,7 +1924,7 @@ assert plan_segments == ["free"]
 # segment instead of failing, so the absence of that bucket is the check.
 assert "__null__" not in country_segments
 
-analysis.export("moments.parquet")
+export_moments(experiment, resolver, "moments.parquet")
 scanned = sum(
     int(con.table(t, database="analytics").count().execute()) for t in ("fact_orders", "events")
 )

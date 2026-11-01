@@ -238,7 +238,7 @@ construction details and operation limits.
     or register a defensible new protocol.
 
 ??? info "Statistical and wire-format details"
-    **Moments cubes.** `Analysis.export` stamps each row with `moments_format`;
+    **Moments cubes.** `increment.workflows.export_moments(experiment, resolver, path)` stamps each row with `moments_format`;
     `Analysis.from_moments` reads it. Formats vary by writer:
 
     | Format | Written by | Read by `from_moments` |
@@ -454,9 +454,9 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 including excluded units as `"(unassigned)"`. The source must retain total-grain
 counts; day-axis views refuse.
 
-`Analysis.artifact_context` returns the trusted context for a
-definitions-backed analysis. Pass it as `expected_context` when opening an
-artifact published from that analysis.
+`increment.artifacts.artifact_context(experiment, resolver)` returns the trusted
+context for a definitions-backed experiment. Pass it as `expected_context` when
+opening an artifact published from that experiment.
 
 `Analysis.allocation_history(population=...)` returns a PyArrow table with
 `experiment_id`, `analysis_population`, `ds`, `group_id`, `n_daily`, and

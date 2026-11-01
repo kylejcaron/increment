@@ -1151,9 +1151,11 @@ The QR factorization and unit-dependent inference reductions remain
 warehouse-side; only the bounded triangular solve and fit finalization run on
 the client.
 
-From definitions or an adopted unit-day artifact, `analysis.export(path)`
-writes the cube. Reload its rows with `Analysis.from_moments`, passing each
-metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
+From definitions or an adopted unit-day artifact, use
+`increment.workflows.export_moments(experiment, resolver, path)` to write the
+cube. Build the pair with `from_definitions(...)` or
+`from_unit_day_artifact(...)`. Reload its rows with `Analysis.from_moments`,
+passing each metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
 design: the embedded plan supplies the decision and sensitivity methods,
 including scalar companions, so estimates, intervals and roles replay. The
 cube has no breakout dimension, so `run_breakout` refuses with
