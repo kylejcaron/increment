@@ -29,9 +29,12 @@ def _moment_source(analysis: Analysis) -> Any:
     return analysis._src
 
 
-def held_source(analysis: Analysis) -> object:
-    """The source an analysis currently holds, without reopening a closed artifact."""
-    return analysis._state.source
+def held_source(owner: Any) -> object:
+    """The source a resolver (or analysis) currently holds, without reopening a closed artifact."""
+    binding = getattr(owner, "binding", None)
+    if binding is not None:
+        return binding.state.source
+    return owner._state.source
 
 
 def _native_source(analysis: Analysis) -> DefinitionsMomentSource:
@@ -97,25 +100,23 @@ def contrast_rows(results: LiftEstimates | ContrastResults) -> ContrastResults:
     return results
 
 
-def make_analysis(
-    con: Any = None,
-    defs: Definitions | None = None,
+def _factory_source(
+    con: Any,
+    defs: Definitions | None,
     *,
-    experiment: Experiment | str | None = None,
-    store: Literal["auto", "always", "none"] = "none",
-    backend: str | None = None,
-    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-    metrics: list[Metric] | None = None,
-    plan: Any = None,
-    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    **overrides: Any,
-) -> Analysis:
-    """Build a test analysis through the same source/context constructor."""
+    experiment: Experiment | str | None,
+    store: Literal["auto", "always", "none"],
+    backend: str | None,
+    on_mixed_assignment: Literal["error", "warn", "exclude"],
+    metrics: list[Metric] | None,
+    plan: Any,
+    source_snapshot_evidence: SourceSnapshotEvidence | None,
+    design: Any,
+) -> tuple[Any, Any, dict[str, Any]]:
     from increment.plan import compile_decision_plan
     from increment.semantics.design import Randomized
     from increment.sources import MomentsSource
 
-    design = overrides.pop("_design", None)
     if defs is None or con is None:
         metric_catalog = list(metrics or [])
         design = design or Randomized(control_group="control")
@@ -126,17 +127,17 @@ def make_analysis(
             design=design,
             plan=plan if hasattr(plan, "alpha") else None,
         )
-        return Analysis._from_source(
+        return (
             src,
             design,
-            defs=defs,
-            con=con,
-            experiment=None,
-            session=None,
-            experiment_name="factory",
-            backend=backend,
-            store=store,
-            on_mixed_assignment=on_mixed_assignment,
+            {
+                "defs": defs,
+                "con": con,
+                "experiment_name": "factory",
+                "backend": backend,
+                "store": store,
+                "on_mixed_assignment": on_mixed_assignment,
+            },
         )
 
     if experiment is None:
@@ -188,18 +189,49 @@ def make_analysis(
         plan=compiled_plan,
         design=design,
     )
-    return Analysis._from_source(
+    return (
         src,
         design,
-        defs=defs,
-        experiment=exp,
-        con=con,
-        session=session,
-        experiment_name=exp.name,
-        backend=backend,
-        store=store,
-        on_mixed_assignment=on_mixed_assignment,
+        {
+            "defs": defs,
+            "experiment": exp,
+            "con": con,
+            "session": session,
+            "experiment_name": exp.name,
+            "backend": backend,
+            "store": store,
+            "on_mixed_assignment": on_mixed_assignment,
+        },
     )
+
+
+def make_analysis(
+    con: Any = None,
+    defs: Definitions | None = None,
+    *,
+    experiment: Experiment | str | None = None,
+    store: Literal["auto", "always", "none"] = "none",
+    backend: str | None = None,
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    metrics: list[Metric] | None = None,
+    plan: Any = None,
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+    **overrides: Any,
+) -> Analysis:
+    """Build a test analysis through the same source/context constructor."""
+    src, design, options = _factory_source(
+        con,
+        defs,
+        experiment=experiment,
+        store=store,
+        backend=backend,
+        on_mixed_assignment=on_mixed_assignment,
+        metrics=metrics,
+        plan=plan,
+        source_snapshot_evidence=source_snapshot_evidence,
+        design=overrides.pop("_design", None),
+    )
+    return Analysis._from_source(src, design, **options)
 
 
 def make_analysis_like(
@@ -240,6 +272,77 @@ def make_analysis_like(
         metrics=list(analysis.metrics) if metrics is None else metrics,
         source_snapshot_evidence=getattr(analysis._session, "source_snapshot_evidence", None),
         _design=analysis._design if design is None else design,
+    )
+
+
+def bind_pair(src: Any, design: Any = None, **options: Any) -> tuple[Any, Any]:
+    """Bind a custom or built-in source and return its ``(experiment, resolver)`` pair."""
+    from increment import builders
+
+    return builders.resolver_for(builders.bind_source(src, design, **options))
+
+
+def make_binding(
+    con: Any = None,
+    defs: Definitions | None = None,
+    *,
+    experiment: Experiment | str | None = None,
+    store: Literal["auto", "always", "none"] = "none",
+    backend: str | None = None,
+    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+    metrics: list[Metric] | None = None,
+    plan: Any = None,
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+    design: Any = None,
+) -> tuple[Any, Any]:
+    """Build an ``(experiment, resolver)`` pair over in-memory definitions or empty moments."""
+    src, bound_design, options = _factory_source(
+        con,
+        defs,
+        experiment=experiment,
+        store=store,
+        backend=backend,
+        on_mixed_assignment=on_mixed_assignment,
+        metrics=metrics,
+        plan=plan,
+        source_snapshot_evidence=source_snapshot_evidence,
+        design=design,
+    )
+    return bind_pair(src, bound_design, **options)
+
+
+def make_binding_like(
+    resolver: Any,
+    metrics: list[Metric] | None = None,
+    *,
+    design: Any = None,
+    plan: Any = None,
+    experiment: Any = None,
+) -> tuple[Any, Any]:
+    """Rebuild a native ``(experiment, resolver)`` pair from another resolver's inputs."""
+    binding = resolver.binding
+    current_experiment = binding.experiment
+    next_experiment = current_experiment if experiment is None else experiment
+    if design is None and experiment is not None:
+        declared = current_experiment.resolved_design()
+        design = next_experiment.resolved_design() if binding.design == declared else binding.design
+    return make_binding(
+        binding.connection,
+        binding.definitions,
+        experiment=next_experiment,
+        store=binding.store,
+        backend=binding.backend,
+        plan=(
+            plan
+            if plan is not None
+            else None
+            if metrics is not None or experiment is not None
+            else binding.plan
+        ),
+        on_mixed_assignment=binding.on_mixed_assignment,
+        metrics=list(binding.metrics) if metrics is None else metrics,
+        source_snapshot_evidence=getattr(binding.session, "source_snapshot_evidence", None),
+        design=binding.design if design is None else design,
     )
 
 
