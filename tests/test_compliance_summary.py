@@ -11,7 +11,7 @@ import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts, run, runnable
+from increment import Scope, from_frame, from_moments, readouts, run, runnable
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning, IncrementWarning
 from increment.estimation.encouragement import (
@@ -30,7 +30,8 @@ from increment.evidence import (
 from increment.frame import MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 from increment.sources import ComplianceArm, ComplianceSummary, MomentsSource
-from tests.analysis_factory import _moment_source
+from increment.workflows import experiment_definition, export_moments
+from tests.analysis_factory import bound_source, make_binding, view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -41,13 +42,11 @@ def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_pat
 
     from increment import run
     from increment.builders import from_definitions
-    from increment.kernel.contracts import Scope
-    from tests.analysis_factory import definitions_inputs
 
-    analysis, con = _warehouse_compliance_analysis(
+    (_, warehouse), con = _warehouse_compliance_analysis(
         "retention", unusable_outcome=True, separate_outcome_source=True
     )
-    definitions, _, _, _, _ = definitions_inputs(analysis)
+    definitions = warehouse.binding.definitions
     path = tmp_path / "definitions.json"
     path.write_text(json.dumps(definitions.model_dump(mode="json")), encoding="utf-8")
     experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")
@@ -64,7 +63,7 @@ def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_pat
         }
         assert {cell.identity.key.estimand for cell in result.cells} == {"compliance"}
     finally:
-        analysis.close()
+        warehouse.close()
         con.disconnect()
 
 
@@ -237,7 +236,6 @@ def _warehouse_compliance_analysis(
 ):
     from increment import AnalysisPlan
     from increment.semantics.models import Definitions
-    from tests.analysis_factory import make_analysis
     from tests.parity_harness.cases import (
         _encouragement_defs_dict,
         _encouragement_rows_for_parity,
@@ -298,7 +296,7 @@ def _warehouse_compliance_analysis(
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
     evidence = SourceSnapshotEvidence(cutoff, {"events": cutoff}) if triggered else None
     return (
-        make_analysis(
+        make_binding(
             con,
             Definitions.model_validate(definitions),
             experiment="exp",
@@ -323,15 +321,28 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
     if outcome == "retention":
         from tests.capability_consumers_auxiliary import assert_refusal, assert_support
     clustered = outcome == "ratio"
-    analysis, con = _warehouse_compliance_analysis(outcome, clustered=clustered)
-    oracle, oracle_con = _warehouse_compliance_analysis("mean", clustered=clustered)
+    (analysis_experiment, analysis_resolver), con = _warehouse_compliance_analysis(
+        outcome, clustered=clustered
+    )
+    (oracle_experiment, oracle_resolver), oracle_con = _warehouse_compliance_analysis(
+        "mean", clustered=clustered
+    )
     try:
-        observed = lift_rows(analysis.run(estimands=("compliance",)))
-        expected = lift_rows(oracle.run(estimands=("compliance",)))[0].require_lift()
+        observed = lift_rows(
+            view_readout(analysis_experiment, analysis_resolver, estimands=("compliance",))
+        )
+        expected = lift_rows(
+            view_readout(oracle_experiment, oracle_resolver, estimands=("compliance",))
+        )[0].require_lift()
         assert [(row.metric, row.estimand) for row in observed] == [("uptake", "compliance")]
         actual = observed[0].require_lift()
         if outcome == "retention":
-            daily = analysis.run_daily_lift(estimands=("compliance",))
+            daily = view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="daily", grain="daily"),
+                estimands=("compliance",),
+            )
             assert daily
             assert {(row.metric, row.estimand) for row in daily} == {("uptake", "compliance")}
             assert_support(
@@ -344,7 +355,7 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
             (expected.value, expected.lb, expected.ub)
         )
         with pytest.raises(CodedError) as error:
-            analysis.run(estimands=("itt",))
+            view_readout(analysis_experiment, analysis_resolver, estimands=("itt",))
         assert error.value.code == outcome_refusal
         if outcome == "retention":
             assert_refusal(
@@ -354,8 +365,8 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
                 stage="read",
             )
     finally:
-        analysis.close()
-        oracle.close()
+        analysis_resolver.close()
+        oracle_resolver.close()
         con.disconnect()
         oracle_con.disconnect()
 
@@ -364,20 +375,19 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
 def test_compliance_only_preflight_ignores_retention_configuration(tmp_path):
     import pyarrow.parquet as pq
 
-    from increment import from_moments
-
-    analysis, con = _warehouse_compliance_analysis("retention")
+    (warehouse_experiment, warehouse), con = _warehouse_compliance_analysis("retention")
     path = tmp_path / "retention-moments.parquet"
     try:
-        analysis.export(path)
+        export_moments(warehouse_experiment, warehouse, path)
+        declared = cast(Any, experiment_definition(warehouse_experiment, warehouse).design)
         experiment, resolver = from_moments(
             pq.read_table(path).to_pylist(),
             metrics=[MetricSpec(name="revenue", type="retention", threshold_days=1)],
             design=Encouragement(
                 control_group="control",
-                uptake=analysis.experiment.design.uptake,
-                one_sided=analysis.experiment.design.one_sided,
-                exclusion_restriction=analysis.experiment.design.exclusion_restriction,
+                uptake=declared.uptake,
+                one_sided=declared.one_sided,
+                exclusion_restriction=declared.exclusion_restriction,
             ),
         )
         requested = replace(experiment, request_options={"estimands": ("compliance",)})
@@ -387,7 +397,7 @@ def test_compliance_only_preflight_ignores_retention_configuration(tmp_path):
         assert result.cells
         assert {cell.identity.key.estimand for cell in result.cells} == {"compliance"}
     finally:
-        analysis.close()
+        warehouse.close()
         con.disconnect()
 
 
@@ -397,14 +407,24 @@ def test_compliance_only_preflight_ignores_retention_configuration(tmp_path):
 def test_public_compliance_does_not_reduce_unusable_outcomes(triggered, outcome, metrics):
     from tests.analysis_factory import lift_rows
 
-    analysis, con = _warehouse_compliance_analysis(
+    populations = ("assigned", "triggered") if triggered else ("assigned",)
+    scopes = tuple(Scope(view="run", grain="total", population=item) for item in populations)
+
+    def population_rows(experiment: Any, resolver: Any, **options: Any) -> list[Any]:
+        result = run(experiment.with_views(*scopes), resolver, **options)
+        return [row for scope in scopes for row in lift_rows(result.readout(scope))]
+
+    (analysis_experiment, analysis_resolver), con = _warehouse_compliance_analysis(
         outcome, unusable_outcome=True, triggered=triggered
     )
-    oracle, oracle_con = _warehouse_compliance_analysis("mean", triggered=triggered)
+    (oracle_experiment, oracle_resolver), oracle_con = _warehouse_compliance_analysis(
+        "mean", triggered=triggered
+    )
     try:
-        observed = lift_rows(analysis.run(metrics=metrics, estimands=("compliance",)))
-        expected = lift_rows(oracle.run(estimands=("compliance",)))
-        populations = ("assigned", "triggered") if triggered else ("assigned",)
+        observed = population_rows(
+            analysis_experiment, analysis_resolver, metrics=metrics, estimands=("compliance",)
+        )
+        expected = population_rows(oracle_experiment, oracle_resolver, estimands=("compliance",))
         assert [(row.metric, row.estimand, row.analysis_population) for row in observed] == [
             ("uptake", "compliance", population) for population in populations
         ]
@@ -415,8 +435,8 @@ def test_public_compliance_does_not_reduce_unusable_outcomes(triggered, outcome,
             )
             assert actual.value == pytest.approx(0.5)
     finally:
-        analysis.close()
-        oracle.close()
+        analysis_resolver.close()
+        oracle_resolver.close()
         con.disconnect()
         oracle_con.disconnect()
 
@@ -425,35 +445,39 @@ def test_public_compliance_does_not_reduce_unusable_outcomes(triggered, outcome,
 def test_compliance_only_ignores_unusable_outcome_in_separate_shared_sql_source():
     from tests.analysis_factory import lift_rows
 
-    analysis, con = _warehouse_compliance_analysis(
+    (experiment, resolver), con = _warehouse_compliance_analysis(
         "mean", unusable_outcome=True, separate_outcome_source=True
     )
     try:
-        rows = lift_rows(analysis.run(metrics=["revenue"], estimands=("compliance",)))
+        rows = lift_rows(
+            view_readout(experiment, resolver, metrics=["revenue"], estimands=("compliance",))
+        )
         assert [(row.metric, row.estimand) for row in rows] == [("uptake", "compliance")]
         assert rows[0].require_lift().value == pytest.approx(0.5)
         readout_rows = readouts.run(
-            _moment_source(analysis), metrics=["revenue"], estimands=("compliance",)
+            bound_source(resolver), metrics=["revenue"], estimands=("compliance",)
         )
         assert [(row.metric, row.estimand) for row in readout_rows] == [("uptake", "compliance")]
-        day_rows = analysis.run_daily_lift(estimands=("compliance",))
+        day_rows = view_readout(
+            experiment, resolver, Scope(view="daily", grain="daily"), estimands=("compliance",)
+        )
         assert day_rows
         assert {(row.metric, row.estimand) for row in day_rows} == {("uptake", "compliance")}
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.slow
 def test_compliance_only_refuses_declared_segmentation():
-    analysis, con = _warehouse_compliance_analysis("mean", breakout=True)
+    (_, resolver), con = _warehouse_compliance_analysis("mean", breakout=True)
     try:
         with pytest.raises(CodedError) as error:
-            readouts.run(_moment_source(analysis), estimands=("compliance",), by=("cohort",))
+            readouts.run(bound_source(resolver), estimands=("compliance",), by=("cohort",))
         assert error.value.code == "readout.run.segment_unsupported"
         assert error.value.context["metric"] == "uptake"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -548,7 +572,7 @@ def test_portable_compliance_is_independent_of_missing_outcomes(tmp_path, cluste
     complete = compliance_missingness_source(missing_treatment=False, clustered=clustered)
     path = tmp_path / "moments.parquet"
     source.export_moments(path)
-    public = Analysis.from_moments(
+    experiment, resolver = from_moments(
         pq.read_table(path).to_pylist(),
         metrics=[MetricSpec(name="drop", missing="drop")],
         design=design(),
@@ -556,7 +580,9 @@ def test_portable_compliance_is_independent_of_missing_outcomes(tmp_path, cluste
     try:
         with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
             expected = readouts.run(complete, metrics=["drop"], estimands=["compliance"])[0]
-            actual = lift_rows(public.run(metrics=["drop"], estimands=["compliance"]))[0]
+            actual = lift_rows(
+                view_readout(experiment, resolver, metrics=["drop"], estimands=["compliance"])
+            )[0]
         observed, oracle = actual.require_lift(), expected.require_lift()
         assert (observed.value, observed.lb, observed.ub) == pytest.approx(
             (oracle.value, oracle.lb, oracle.ub)
@@ -565,7 +591,7 @@ def test_portable_compliance_is_independent_of_missing_outcomes(tmp_path, cluste
         assert actual.reference_kind == expected.reference_kind
         assert actual.reference_df == expected.reference_df
     finally:
-        public.close()
+        resolver.close()
 
 
 def test_summary_freezes_nested_callers_and_canonicalizes_arms():
@@ -818,8 +844,9 @@ def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
         metrics={"y": "mean"},
         exposure_date="exposed" if explicit_anchor else None,
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         native,
+        shape="panel",
         unit="unit",
         group="arm",
         date="ds",
@@ -827,11 +854,12 @@ def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
         metrics={"y": "mean"},
         exposure_date="exposed" if explicit_anchor else None,
     )
+    estimands = ["compliance", "itt"]
     results = (
-        analysis.run_asof_lift
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof"), estimands=estimands)
         if path == "analysis"
-        else lambda **kw: readouts.asof_lift(source, **kw)
-    )(estimands=["compliance", "itt"])
+        else readouts.asof_lift(source, estimands=estimands)
+    )
     compliance = {
         row.ds: row.require_lift().value for row in results if row.estimand == "compliance"
     }
@@ -978,19 +1006,25 @@ def test_completed_compliance_excludes_open_staggered_cohorts(axis, path, outcom
         design=design(3),
         metrics=[MetricSpec(name="y", type="mean", window_days=outcome_window)],
     )
-    results = (
-        Analysis.from_unit_panel(
+    if path == "analysis":
+        experiment, resolver = from_frame(
             table,
+            shape="panel",
             unit="unit",
             group="arm",
             date="ds",
             design=design(3),
             exposure_date="exposed",
             metrics=[MetricSpec(name="y", type="mean", window_days=outcome_window)],
-        ).run_asof_lift
-        if path == "analysis"
-        else lambda **kw: readouts.asof_lift(source, **kw)
-    )(estimands=["compliance"], completed_windows_only=True)
+        )
+        results = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+            estimands=["compliance"],
+        )
+    else:
+        results = readouts.asof_lift(source, estimands=["compliance"], completed_windows_only=True)
     compliance = {row.ds: row for row in results if row.estimand == "compliance"}
     assert set(compliance) == {label(day) for day in range(3, 7)}
     for day, expected in ((3, 0.5), (4, 0.5), (5, 0.75), (6, 0.75)):

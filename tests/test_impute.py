@@ -14,9 +14,11 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
+from increment import from_frame, from_moments, workflows
 from increment.errors import IncrementWarning
 from increment.estimators import impute
 from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
+from tests.analysis_factory import bound_source
 from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, assert_code, completed, refused
 
 
@@ -250,9 +252,7 @@ def test_pooled_mean_has_no_per_unit_frame_on_a_moments_cube(tmp_path) -> None:
     """A portable cube holds arm moments, so there is no per-unit column to repair."""
     import pyarrow.parquet as pq
 
-    from increment import Analysis
     from increment.errors import CapabilityError
-    from tests.analysis_factory import _native_source
 
     frame = pa.table(
         {
@@ -261,18 +261,19 @@ def test_pooled_mean_has_no_per_unit_frame_on_a_moments_cube(tmp_path) -> None:
             "revenue": [1.0, 2.0, 3.0, 5.0, 2.0, 4.0, 3.0, 6.0],
         }
     )
-    direct = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="group_id",
         control="control",
         metrics=[{"name": "revenue", "type": "mean"}],
     )
-    direct.export(tmp_path / "moments.parquet")
-    adopted = completed(
+    workflows.export_moments(experiment, resolver, tmp_path / "moments.parquet")
+    adopted_experiment, adopted_resolver = completed(
         IMPUTE_POOLED_MEAN,
         "from_moments-no-per-unit-rows",
-        lambda: Analysis.from_moments(
+        lambda: from_moments(
             pq.read_table(tmp_path / "moments.parquet").to_pylist(),
             metrics=[{"name": "revenue", "type": "mean"}],
             control="control",
@@ -280,7 +281,8 @@ def test_pooled_mean_has_no_per_unit_frame_on_a_moments_cube(tmp_path) -> None:
     )
     with pytest.raises(CapabilityError) as raised:
         request_evidence(
-            evidence_provider(_native_source(adopted)), UnitRowsRequest(adopted.metrics[0])
+            evidence_provider(bound_source(adopted_resolver)),
+            UnitRowsRequest(workflows.metrics(adopted_experiment, adopted_resolver)[0]),
         )
     assert raised.value.code == "evidence.unit_rows_unavailable"
 
