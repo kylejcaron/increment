@@ -30,6 +30,9 @@ import pytest
 pytestmark = [pytest.mark.slow, pytest.mark.examples]
 
 _WAREHOUSE_GROUP = pytest.mark.xdist_group("realistic_demo_warehouse")
+# Notebooks that build from examples/definitions rewrite its offline catalog, which
+# other tests must see unchanged; one worker runs them and restores the catalog.
+_DEFINITIONS_CATALOG_GROUP = pytest.mark.xdist_group("examples_definitions_catalog")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -43,6 +46,11 @@ _MARIMO_NOTEBOOKS = tuple(
 # analysis_from_a_warehouse.py writes this relative to cwd=REPO_ROOT.
 _MOMENTS_PARQUET = REPO_ROOT / "increment_moments.parquet"
 _REALISTIC_DEMO_WAREHOUSE = EXAMPLES_DIR / "realistic_demo" / "warehouse"
+_DEFINITIONS_NOTEBOOKS = ("breakout.py", "cuped.py")
+_DEFINITIONS_CATALOGS = tuple(
+    EXAMPLES_DIR / "definitions" / f".increment-kernel-catalog.json{suffix}"
+    for suffix in ("", ".lock")
+)
 
 _NOTEBOOK_PYTHONWARNINGS = ",".join(
     (
@@ -65,9 +73,31 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _catalog_states() -> dict[Path, tuple[bytes, int, int] | None]:
+    states: dict[Path, tuple[bytes, int, int] | None] = {}
+    for path in _DEFINITIONS_CATALOGS:
+        if path.exists():
+            stat = path.stat()
+            states[path] = (path.read_bytes(), stat.st_atime_ns, stat.st_mtime_ns)
+        else:
+            states[path] = None
+    return states
+
+
+def _restore_catalogs(states: dict[Path, tuple[bytes, int, int] | None]) -> None:
+    for path, state in states.items():
+        if state is None:
+            path.unlink(missing_ok=True)
+        else:
+            content, atime_ns, mtime_ns = state
+            path.write_bytes(content)
+            os.utime(path, ns=(atime_ns, mtime_ns))
+
+
 def _export_html(notebook: str, tmp_path: Path) -> str:
     out = tmp_path / "notebook.html"
     warehouse_backup = None
+    catalogs = _catalog_states() if notebook in _DEFINITIONS_NOTEBOOKS else None
     creates_warehouse = notebook in ("data_model.py", "analysis_from_a_warehouse.py")
     if creates_warehouse and _REALISTIC_DEMO_WAREHOUSE.exists():
         warehouse_backup = tmp_path / "realistic-demo-warehouse"
@@ -77,6 +107,8 @@ def _export_html(notebook: str, tmp_path: Path) -> str:
             sys.executable, "-m", "marimo", "export", "html", f"examples/{notebook}", "-o", str(out)
         )
     finally:
+        if catalogs is not None:
+            _restore_catalogs(catalogs)
         if notebook == "analysis_from_a_warehouse.py":
             _MOMENTS_PARQUET.unlink(missing_ok=True)
         if creates_warehouse:
@@ -173,6 +205,7 @@ def _rendered_table_title_index(html: str, title: str) -> int:
 # --- breakout.py: needs tables (coeftable) plus altair (dev group) --------
 
 
+@_DEFINITIONS_CATALOG_GROUP
 @pytest.mark.integration
 def test_breakout_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
@@ -274,6 +307,7 @@ def test_power_export_renders_expected_figures(tmp_path):
 # --- cuped.py: seeded synthetic warehouse (fixed seed=2025), needs tables
 
 
+@_DEFINITIONS_CATALOG_GROUP
 @pytest.mark.integration
 def test_cuped_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
@@ -383,7 +417,7 @@ def test_analysis_from_a_dataframe_export_renders_expected_figures(tmp_path):
         assert _rendered_table_title_index(html, title) >= 0
     assert "Avg. Order Value" in html
     assert re.search(
-        r"run_daily\(\)\\u003C/code\\u003E produced "
+        r"daily_values\\u003C/code\\u003E produced "
         r"\\u003Cstrong\\u003E\d+\\u003C/strong\\u003E per-day metric values",
         html,
     )
