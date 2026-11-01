@@ -103,8 +103,10 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
 def test_triggered_day_axis_source_snapshot_ids_match_frozen_capture(
     scenario: str, operation: str, expected: str
 ) -> None:
-    """Triggered IDs are frozen operations.json.gz pre-kernel from_definitions oracles."""
+    """Triggered IDs are frozen operations.json.gz pre-kernel from_definitions oracles, migrated
+    by a recorded expected difference where the case has one."""
     from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
+    from tests.parity_harness.expected_differences import with_expected_difference
     from tests.parity_harness.views import View, read
 
     case = next(case for case in PARITY_CASES if case.id == scenario)
@@ -114,6 +116,8 @@ def test_triggered_day_axis_source_snapshot_ids_match_frozen_capture(
         if scenario == "triggered_encouragement_compliance_asof":
             kwargs["estimands"] = ("compliance",)
         result = read(bound, cast(View, operation.removeprefix("run_")), **kwargs)
-        assert _snapshot_id(result) == expected
+        assert _snapshot_id(result) == with_expected_difference(
+            scenario, "from_definitions", expected
+        )
     finally:
         _close_parity_binding(bound)

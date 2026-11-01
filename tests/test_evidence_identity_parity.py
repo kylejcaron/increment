@@ -18,6 +18,7 @@ from increment.result_envelope import ResultCell
 from tests.analysis_factory import held_source
 from tests.parity_harness import registrations_line5 as _line5
 from tests.parity_harness.comparison import TOLERANCE
+from tests.parity_harness.expected_differences import with_expected_difference
 from tests.parity_harness.registrations_line2 import (
     LINE2_ASOF_PAIRS,
     LINE2_PAIRS,
@@ -1241,7 +1242,9 @@ def test_frozen_capture_outcome(
             f"registered adapter skipped for {scenario_id}/{ingress}: {error}",
             pytrace=False,
         )
-    modes = _assert_outcome_matches(expected, actual)
+    modes = _assert_outcome_matches(
+        with_expected_difference(scenario_id, ingress, expected), actual
+    )
     if key in set().union(*REGISTERED.values()) and expected["kind"] == "cells":
         assert modes["coherence"] == "captured"
         effective_modes = modes["effective_modes"]

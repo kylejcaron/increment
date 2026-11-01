@@ -181,6 +181,10 @@ change without notice.
   takes the capture inside the run's own shared evidence capture, as a
   several-view run does, so a registered sequential breakout read reports the
   run's `coherence` and `effective_modes` in its metadata.
+- Release note: compliance-only as-of and daily views run through `run`
+  request no outcome metrics, so their `source_snapshot_id` differs from the
+  removed `Analysis.run_asof_lift(estimands=("compliance",))`; the estimates
+  are unchanged.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
