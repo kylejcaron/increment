@@ -613,6 +613,9 @@ def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scop
     by_source = records_breakout_sources(experiment)
     declared = binding.declared_breakouts
     if not {identity.property for identity in identities} <= {item.property for item in declared}:
+        if scope.view != "breakout":
+            # A day-axis view refuses an unavailable grain before an unavailable dimension.
+            return binding
         require_evidence(binding.source, by=tuple(identity.property for identity in identities))
     selected = tuple(
         dict.fromkeys(
