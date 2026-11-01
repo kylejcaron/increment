@@ -6,7 +6,6 @@ tests/test_readout_execution_context.py::test_analysis_run_exposes_live_coherenc
 tests/test_readout_execution_context.py::test_custom_provider_preserves_snapshot_after_update::_con
 tests/test_readout_execution_context.py::test_mutable_sql_panel_is_not_reported_as_captured::_con
 tests/test_readout_execution_context.py::test_whole_window_assigned_and_triggered_reads_share_capture.count_snapshot::_con
-tests/test_sequential_public_sources.py::test_sequential_readout_refuses_execution_context_before_evidence_read::_state
 # H3: patches targeting increment internals
 tests/breakout/test_daily.py 1
 tests/breakout/test_estimates.py 1

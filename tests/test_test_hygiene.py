@@ -8,8 +8,8 @@ unambiguously are findings too, so the static check fails closed.
 
 H2 finds any access to one of seven private implementation attributes. This is
 deliberately a plain AST name check rather than type inference: the same names
-also occur on several non-Analysis implementation classes, and reaching into
-those objects is still private coupling. Only ``tests/analysis_factory.py``
+occur on several implementation classes, and reaching into those objects is
+still private coupling. Only ``tests/analysis_factory.py``
 and ``tests/source_conformance.py`` are sanctioned shims.
 """
 
@@ -993,16 +993,16 @@ def test_patch_collector_counts_string_and_object_targets(tmp_path: Path) -> Non
         "from unittest.mock import patch\n"
         "from unittest.mock import patch as p\n"
         "import unittest.mock as um\n"
-        "from increment import analysis as a\n"
+        "from increment import readouts as a\n"
         "from increment.estimation.adjust import ADJUSTMENTS\n"
         "from increment.estimation import _student_t\n"
         "def test_patches(monkeypatch):\n"
-        "    monkeypatch.setattr('increment.analysis.load', f)\n"
+        "    monkeypatch.setattr('increment.readouts.load', f)\n"
         "    monkeypatch.setattr(a, 'load', f)\n"
         "    mock.patch('increment.query.x')\n"
         "    monkeypatch.setitem(ADJUSTMENTS._entries, 'x', f)\n"
         "    monkeypatch.setattr(_student_t.special, 'ndtri', f)\n"
-        "    patch('increment.analysis.load')\n"
+        "    patch('increment.readouts.load')\n"
         "    p('increment.query.x')\n"
         "    p.object(a, 'load', f)\n"
         "    um.patch.object(a, 'load', f)\n"
@@ -1019,7 +1019,7 @@ def test_private_import_collector(tmp_path: Path) -> None:
         "from increment.estimation._adjust import fit\n"
         "from increment.power import _binomial\n"
         "import increment._identity\n"
-        "from increment import Analysis\n"
+        "from increment import run\n"
     )
 
     assert collect_private_import_counts(package) == Counter({"tests/test_widget.py": 3})

@@ -14,7 +14,7 @@ from typing import Any, cast
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
+from increment import Analysis, from_frame
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.frame import (
     FramePanelSource,
@@ -25,7 +25,7 @@ from increment.frame import (
 )
 from increment.semantics.models import Metric
 from tests._frame_evidence_requests import _compliance, _moments
-from tests.analysis_factory import lift_rows
+from tests.analysis_factory import lift_rows, view_readout
 
 
 def _sum_y(row: Any) -> float:
@@ -148,8 +148,7 @@ def test_from_unit_summary_encouragement_end_to_end() -> None:
     itt, compliance, and late rows - the full path from a raw dataframe to
     an Encouragement readout, entirely through frame.py's own public surface
     (from_unit_summary + the already-wired estimate_encouragement/ArmStats
-    seam), independent of whether the higher-level Analysis/readouts facade
-    has been wired to the encouragement mechanism yet.
+    seam), independent of the higher-level run and readout path.
     """
     from increment.estimation.encouragement import estimate_encouragement
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
@@ -598,22 +597,25 @@ def test_metric_free_fixed_horizon_compliance_matches_populated_oracle() -> None
     design = _encouragement_design()
 
     populated = lift_rows(
-        Analysis.from_unit_summary(
-            table,
-            unit="user_id",
-            group="variant",
-            metrics={"revenue": "mean"},
-            design=design,
-        ).run(estimands=("compliance",))
+        view_readout(
+            *from_frame(
+                table,
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                metrics={"revenue": "mean"},
+                design=design,
+            ),
+            estimands=("compliance",),
+        )
     )
     empty = lift_rows(
-        Analysis.from_unit_summary(
-            table,
-            unit="user_id",
-            group="variant",
-            metrics=[],
-            design=design,
-        ).run(estimands=("compliance",))
+        view_readout(
+            *from_frame(
+                table, shape="summary", unit="user_id", group="variant", metrics=[], design=design
+            ),
+            estimands=("compliance",),
+        )
     )
     populated = [result for result in populated if result.value_scale == "absolute"]
     empty = [result for result in empty if result.value_scale == "absolute"]
@@ -647,24 +649,32 @@ def test_metric_free_fixed_horizon_compliance_matches_populated_oracle() -> None
         }
     )
     panel_populated = lift_rows(
-        Analysis.from_unit_panel(
-            panel,
-            unit="user_id",
-            group="variant",
-            date="day",
-            metrics={"revenue": "mean"},
-            design=design,
-        ).run(estimands=("compliance",))
+        view_readout(
+            *from_frame(
+                panel,
+                shape="panel",
+                unit="user_id",
+                group="variant",
+                date="day",
+                metrics={"revenue": "mean"},
+                design=design,
+            ),
+            estimands=("compliance",),
+        )
     )
     panel_empty = lift_rows(
-        Analysis.from_unit_panel(
-            panel,
-            unit="user_id",
-            group="variant",
-            date="day",
-            metrics=[],
-            design=design,
-        ).run(estimands=("compliance",))
+        view_readout(
+            *from_frame(
+                panel,
+                shape="panel",
+                unit="user_id",
+                group="variant",
+                date="day",
+                metrics=[],
+                design=design,
+            ),
+            estimands=("compliance",),
+        )
     )
     panel_populated = [result for result in panel_populated if result.value_scale == "absolute"]
     panel_empty = [result for result in panel_empty if result.value_scale == "absolute"]

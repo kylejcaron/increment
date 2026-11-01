@@ -10,7 +10,7 @@ import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from increment.analysis import Analysis
+from increment import workflows
 from increment.errors import CodedError, IncrementWarning
 from increment.evidence import (
     BreakoutMethodMomentsRequest,
@@ -28,10 +28,11 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from tests.analysis_factory import held_source
+from tests.analysis_factory import bind_pair, held_source, view_readout
 from tests.parity_harness import matrix, matrix_cases
-from tests.parity_harness.cases import _triggered_day_axis_cases
+from tests.parity_harness.cases import Bound, _close_parity_binding, _triggered_day_axis_cases
 from tests.parity_harness.comparison import nested_close
+from tests.parity_harness.views import read
 from tests.warning_codes import warning_codes
 
 IDENTITY_FIELDS = {"source_snapshot_id", "family_id"}
@@ -95,12 +96,20 @@ class ForwardingProvider:
         self.adapter.source.close()
 
 
-def _analysis_from_provider(provider: ForwardingProvider) -> Analysis:
-    return Analysis._from_source(provider)
+def _provider_pair(provider: ForwardingProvider) -> Bound:
+    return bind_pair(provider)
 
 
-def _unnamed_breakout_sources(builtin: Analysis, mode: str) -> bool:
-    experiment = builtin.experiment
+def _forwarding(builtin: Bound, mode: str) -> ForwardingProvider:
+    return ForwardingProvider(
+        held_source(builtin[1]),
+        scope_mode=mode,
+        experiment=workflows.experiment_definition(*builtin),
+    )
+
+
+def _unnamed_breakout_sources(builtin: Bound, mode: str) -> bool:
+    experiment = workflows.experiment_definition(*builtin)
     return mode == "self" and all(item.source is None for item in experiment.breakouts)
 
 
@@ -129,25 +138,16 @@ def _payload(value: Any) -> Any:
     return value
 
 
-def _leg_analysis(analysis: Analysis, cell: matrix.Cell, method: str) -> Any:
-    fields = matrix_cases._case_fields(cell, method)
-    view = fields["view"]
+def _leg_read(bound: Bound, cell: matrix.Cell, method: str) -> Any:
+    view = matrix_cases._case_fields(cell, method)["view"]
     if cell.view == "breakout":
-        return cast(Any, analysis).run_breakout()
-    if view is None:
-        return analysis.run()
-    if view == "daily":
-        return analysis.run_daily()
-    if view == "daily_lift":
-        return analysis.run_daily_lift()
-    if view == "asof":
-        return analysis.run_asof()
-    return analysis.run_asof_lift()
+        return list(read(bound, "breakout"))
+    return list(read(bound, "run" if view is None else view))
 
 
-def _outcome(analysis: Analysis, cell: matrix.Cell, method: str) -> tuple[str, Any]:
+def _outcome(bound: Bound, cell: matrix.Cell, method: str) -> tuple[str, Any]:
     try:
-        return "result", _payload(_leg_analysis(analysis, cell, method))
+        return "result", _payload(_leg_read(bound, cell, method))
     except TypeError as exc:
         pytest.fail(f"{cell.id}/{method}: harness TypeError: {exc}", pytrace=True)
     except CodedError as exc:
@@ -170,9 +170,7 @@ def _check(cell: matrix.Cell, ingress: str, mode: str) -> list[str]:
         else []
     )
     assert warning_codes(construction_warnings) == expected_warnings
-    source = held_source(builtin)
-    provider = ForwardingProvider(source, scope_mode=mode, experiment=builtin.experiment)
-    custom = _analysis_from_provider(provider)
+    custom = _provider_pair(_forwarding(builtin, mode))
     try:
         for method in matrix.methods(cell):
             expected = _outcome(builtin, cell, method)
@@ -206,8 +204,8 @@ def _check(cell: matrix.Cell, ingress: str, mode: str) -> list[str]:
             elif expected != actual:
                 divergences.append(f"{method}: refusal built-in={expected!r}, provider={actual!r}")
     finally:
-        custom.close()
-        builtin.close()
+        custom[1].close()
+        _close_parity_binding(builtin)
     assert not divergences, (
         f"{cell.id}/{mode}/{ingress}: forwarding provider divergences: {divergences}"
     )
@@ -266,9 +264,7 @@ def test_forwarding_provider_breakout_produces_rows() -> None:
         warnings.simplefilter("always", IncrementWarning)
         builtin = matrix_cases._Ingress(cell).definitions()
     assert warning_codes(construction_warnings) == ["definition.metric.variable_window_days_none"]
-    custom = _analysis_from_provider(
-        ForwardingProvider(held_source(builtin), scope_mode="self", experiment=builtin.experiment)
-    )
+    custom = _provider_pair(_forwarding(builtin, "self"))
     try:
         method = matrix.methods(cell)[0]
         expected = _outcome(builtin, cell, method)
@@ -280,8 +276,8 @@ def test_forwarding_provider_breakout_produces_rows() -> None:
             f"forwarding breakout produced no rows: {actual!r}"
         )
     finally:
-        custom.close()
-        builtin.close()
+        custom[1].close()
+        _close_parity_binding(builtin)
 
 
 @pytest.mark.integration
@@ -293,23 +289,22 @@ def test_forwarding_provider_sequential_checkpoint_rows_match(con) -> None:
     from tests.test_analysis_asof import _analysis_with_asof_events
 
     native = registered_native(_analysis_with_asof_events(con, sequential=True))
-    provider_analysis = None
+    provider_pair = None
     try:
-        source = held_source(native)
-        checkpoint = native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        source = held_source(native[1])
+        checkpoint = workflows.capture_sequential(*native, finalized=True, as_of=date(2025, 7, 1))
         adopt_source_snapshot(source, checkpoint)
-        provider = ForwardingProvider(source, scope_mode="self", experiment=native.experiment)
-        provider_analysis = _analysis_from_provider(provider)
-        expected = _payload(native.run())
-        actual = _payload(provider_analysis.run())
+        provider_pair = _provider_pair(_forwarding(native, "self"))
+        expected = _payload(view_readout(*native))
+        actual = _payload(view_readout(*provider_pair))
         assert expected, "built-in sequential checkpoint produced no rows"
         assert nested_close(expected, actual), (
             f"sequential checkpoint parity: built-in={expected!r}, provider={actual!r}"
         )
     finally:
-        if provider_analysis is not None:
-            provider_analysis.close()
-        native.close()
+        if provider_pair is not None:
+            provider_pair[1].close()
+        native[1].close()
 
 
 @pytest.mark.integration
@@ -324,10 +319,7 @@ def test_forwarding_provider_triggered_population_boundary(case) -> None:
     for ingress in ("from_definitions", "from_unit_day_artifact"):
         for mode in ("self", "adapter"):
             builtin = case.build[ingress]()
-            provider = ForwardingProvider(
-                held_source(builtin), scope_mode=mode, experiment=builtin.experiment
-            )
-            custom = _analysis_from_provider(provider)
+            custom = _provider_pair(_forwarding(builtin, mode))
             try:
 
                 def capture(analysis, ingress=ingress):
@@ -351,6 +343,6 @@ def test_forwarding_provider_triggered_population_boundary(case) -> None:
                         f"{case.id}/{mode}/{ingress}: built-in={expected!r}, provider={actual!r}"
                     )
             finally:
-                custom.close()
-                builtin.close()
+                custom[1].close()
+                _close_parity_binding(builtin)
     assert not divergences, f"forwarding provider divergences: {divergences}"

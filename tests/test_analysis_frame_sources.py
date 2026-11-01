@@ -1,20 +1,17 @@
-"""Test Analysis facade — integration with examples/definitions.
-
-TDD Step 1: this test should fail before analysis.py exists, then pass
-after the facade is implemented.
-"""
+"""Frame-loaded experiments: views, workflows and refusals over in-memory unit frames."""
 
 from __future__ import annotations
 
 import math
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_frame, from_moments, workflows
 from increment import readouts as readout_functions
+from increment.artifacts import artifact_context
 from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
 from increment.errors import (
     CapabilityError,
@@ -23,21 +20,24 @@ from increment.errors import (
     UnsupportedRequestError,
 )
 from increment.estimation.engine import Method
+from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec
 from increment.plan import compile_decision_plan
+from increment.query import panel_sql, summary_sql
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.models import AnalysisPlan, CupedCovariate, MeanMetric
 from increment.sources import EvidenceSource
-from tests.analysis_factory import lift_rows
+from increment.workflows import export_moments, materialize, srm, unit_counts
+from tests.analysis_factory import lift_rows, view_readout
 from tests.sequential_cases import registered_spec
 from tests.warning_codes import warning_codes, warning_context
 
 
 @pytest.fixture
 def unit_summary_analysis():
-    """A runnable `from_unit_summary` (seam-family) Analysis - same shape
-    as ``test_analysis_from_unit_summary_runs``' inline DataFrame, factored
-    out for tests that need to `run()` it more than once."""
+    """A runnable summary-frame experiment - same shape as
+    ``test_analysis_from_unit_summary_runs``' inline DataFrame, factored
+    out for tests that need to run it more than once."""
     import pandas as pd
 
     df = pd.DataFrame(
@@ -47,8 +47,13 @@ def unit_summary_analysis():
             "revenue": [25.0, 35.0, 22.5, 13.0],
         }
     )
-    return Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    return from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
 
 
@@ -56,7 +61,7 @@ def test_declared_duplicate_methods_refuse_during_configuration_resolution():
     import pandas as pd
 
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             pd.DataFrame(
                 {
                     "user_id": ["u1", "u2", "u3", "u4"],
@@ -65,6 +70,7 @@ def test_declared_duplicate_methods_refuse_during_configuration_resolution():
                     "pre_revenue": [24.0, 34.0, 21.0, 12.0],
                 }
             ),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -87,7 +93,7 @@ def test_declared_duplicate_methods_refuse_during_configuration_resolution():
 def test_declared_method_names_are_scoped_per_metric():
     import pandas as pd
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "user_id": ["u1", "u2", "u3", "u4"],
@@ -96,6 +102,7 @@ def test_declared_method_names_are_scoped_per_metric():
                 "orders": [2.0, 3.0, 1.0, 2.0],
             }
         ),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -105,7 +112,7 @@ def test_declared_method_names_are_scoped_per_metric():
         ],
     )
 
-    results = lift_rows(analysis.run())
+    results = lift_rows(view_readout(experiment, resolver))
     assert {row.metric for row in results} == {"revenue", "orders"}
     assert {row.method for row in results} == {"unadjusted"}
 
@@ -146,8 +153,9 @@ def _panel_with_breakout_rows() -> list[dict[str, object]]:
 def test_analysis_from_unit_panel_forwards_breakouts():
     import pandas as pd
 
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(_panel_with_breakout_rows()),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -155,7 +163,11 @@ def test_analysis_from_unit_panel_forwards_breakouts():
         metrics={"revenue": "mean"},
         breakouts=["country"],
     )
-    results = analysis.run_daily(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+    )
     assert results
     assert {row.dimension for row in results} == {"country"}
 
@@ -182,15 +194,17 @@ def _summary_breakout_frame():
 
 
 def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_path):
-    baseline = Analysis.from_unit_summary(
+    baseline_experiment, baseline_resolver = from_frame(
         _summary_breakout_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"value": "mean"},
     )
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         _summary_breakout_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -198,36 +212,48 @@ def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_p
         breakouts=("segment",),
     )
 
-    assert analysis.unit_counts() == baseline.unit_counts() == {"control": 4, "treatment": 4}
-    assert analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == (
-        baseline.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    assert (
+        unit_counts(*analysis)
+        == unit_counts(baseline_experiment, baseline_resolver)
+        == {"control": 4, "treatment": 4}
     )
-    assert {row.dimension_value for row in analysis.run_breakout()} == {"A", "B"}
-    for method in (analysis.run_daily, analysis.run_asof):
+    assert srm(*analysis, expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == srm(
+        baseline_experiment,
+        baseline_resolver,
+        expected={"control": 0.5, "treatment": 0.5},
+        inference="fixed",
+    )
+    assert {
+        row.dimension_value
+        for row in view_readout(*analysis, Scope(view="breakout", grain="total"))
+    } == {"A", "B"}
+    for scope in (
+        Scope(view="daily", grain="daily", values=True),
+        Scope(view="asof", grain="asof", values=True),
+    ):
         with pytest.raises(CapabilityError) as raised:
-            method()
+            view_readout(*analysis, scope=scope)
         assert raised.value.code == "evidence.grain_unavailable"
 
-    original_counts = analysis.unit_counts()
-    original_srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
-    original_breakout = analysis.run_breakout()
+    original_counts = unit_counts(*analysis)
+    original_srm = srm(*analysis, expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    original_breakout = view_readout(*analysis, Scope(view="breakout", grain="total"))
     export_path = tmp_path / "summary-moments.parquet"
-    analysis.export(export_path)
+    export_moments(*analysis, path=export_path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(export_path).to_pylist()
     assert {row["experiment_id"] for row in rows} == {"frame"}
-    reopened = Analysis.from_moments(
-        rows,
-        control="control",
-        metrics=[MetricSpec(name="value", type="mean")],
+    reopened_experiment, reopened_resolver = from_moments(
+        rows, control="control", metrics=[MetricSpec(name="value", type="mean")]
     )
-    assert reopened.unit_counts() == original_counts
-    assert analysis.unit_counts() == original_counts
+    assert unit_counts(reopened_experiment, reopened_resolver) == original_counts
+    assert unit_counts(*analysis) == original_counts
     assert (
-        analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == original_srm
+        srm(*analysis, expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+        == original_srm
     )
-    assert analysis.run_breakout() == original_breakout
+    assert view_readout(*analysis, Scope(view="breakout", grain="total")) == original_breakout
 
 
 def test_unit_summary_breakout_uses_exposure_excluded_population():
@@ -240,8 +266,9 @@ def test_unit_summary_breakout_uses_exposure_excluded_population():
     }
     frame["exposure"] = [date(2026, 1, 1)] * len(frame)
     frame.loc[0, "exposure"] = None
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -250,16 +277,20 @@ def test_unit_summary_breakout_uses_exposure_excluded_population():
         on_unassigned="exclude",
         breakouts=("segment",),
     )
-    results = analysis.run_breakout()
-    expected = Analysis.from_unit_summary(
-        frame.dropna(subset=["exposure"]),
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics={"value": "mean"},
-        exposure_date="exposure",
-        breakouts=("segment",),
-    ).run_breakout()
+    results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    expected = view_readout(
+        *from_frame(
+            frame.dropna(subset=["exposure"]),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"value": "mean"},
+            exposure_date="exposure",
+            breakouts=("segment",),
+        ),
+        Scope(view="breakout", grain="total"),
+    )
 
     by_segment = {row.dimension_value: row for row in results}
     expected_by_segment = {row.dimension_value: row for row in expected}
@@ -286,8 +317,9 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
     frame.loc[0, "value"] = None
     frame.loc[1, "covariate"] = None
     with pytest.warns(IncrementWarning) as recorded:
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -305,7 +337,10 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
             ],
             breakouts=("segment",),
         )
-        results = analysis.run_breakout(
+        results = view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total"),
             decision_method=Method(name="unadjusted"),
             sensitivity_methods=(),
         )
@@ -335,8 +370,9 @@ def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable(
     frame = pd.concat([frame, empty, valid], ignore_index=True)
     frame.loc[frame["segment"].isin(("A", "C")), "value"] = None
     with pytest.warns(IncrementWarning):
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -345,7 +381,7 @@ def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable(
         )
 
     with pytest.warns(IncrementWarning):
-        rows = analysis.run_breakout()
+        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     identities = [
         (row.dimension_value, row.metric, row.group_id, row.method, row.estimand, row.value_scale)
         for row in rows
@@ -387,8 +423,9 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
         ]
     )
     with pytest.warns(IncrementWarning):
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             metrics=[MetricSpec(name="y", type="mean", missing="drop")],
@@ -403,7 +440,9 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
             breakouts=("segment",),
         )
 
-    rows = analysis.run_breakout(prior=Normal(mu=0.0, sigma=0.1))
+    rows = view_readout(
+        experiment, resolver, Scope(view="breakout", grain="total"), prior=Normal(mu=0.0, sigma=0.1)
+    )
     for value in ("A", "C"):
         segment_rows = [row for row in rows if row.dimension_value == value]
         assert segment_rows
@@ -461,8 +500,9 @@ def encouragement_summary_breakout_frame():
 def _encouragement_summary_breakout_analysis(frame, metrics):
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
-    return Analysis.from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=metrics,
@@ -490,10 +530,10 @@ def test_encouragement_summary_breakout_partitions_empty_arms(
     frame = encouragement_summary_breakout_frame
     frame.loc[(frame["segment"] == "A") & (frame["arm"] == empty_arm), "y"] = None
     with pytest.warns(IncrementWarning):
-        analysis = _encouragement_summary_breakout_analysis(
+        experiment, resolver = _encouragement_summary_breakout_analysis(
             frame, [MetricSpec(name="y", missing="drop")]
         )
-    rows = analysis.run_breakout()
+    rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     for group in ("treatment_1", "treatment_2"):
         actual = [row for row in rows if row.dimension_value == "A" and row.group_id == group]
         valid = [row for row in rows if row.dimension_value == "B" and row.group_id == group]
@@ -527,11 +567,14 @@ def test_encouragement_summary_breakout_keeps_metric_empty_in_every_segment(
     metrics = [MetricSpec(name="y", missing="drop")]
     if include_valid_metric:
         metrics.append(MetricSpec(name="z"))
-    baseline = _encouragement_summary_breakout_analysis(frame, metrics).run_breakout()
+    baseline = view_readout(
+        *_encouragement_summary_breakout_analysis(frame, metrics),
+        scope=Scope(view="breakout", grain="total"),
+    )
     frame["y"] = None
     with pytest.warns(IncrementWarning):
-        analysis = _encouragement_summary_breakout_analysis(frame, metrics)
-    rows = analysis.run_breakout()
+        experiment, resolver = _encouragement_summary_breakout_analysis(frame, metrics)
+    rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     def identity(row):
         return (
@@ -565,7 +608,7 @@ def test_encouragement_summary_breakout_empty_identities_match_requested_methods
     frame = encouragement_summary_breakout_frame
     frame.loc[frame["segment"] == "A", "y"] = None
     with pytest.warns(IncrementWarning):
-        analysis = _encouragement_summary_breakout_analysis(
+        experiment, resolver = _encouragement_summary_breakout_analysis(
             frame,
             [
                 MetricSpec(
@@ -578,7 +621,9 @@ def test_encouragement_summary_breakout_empty_identities_match_requested_methods
             ],
         )
     sensitivity = [Method.cuped(covariates=CupedCovariate(name="x", kind="continuous"))]
-    rows = analysis.run_breakout(sensitivity_methods=sensitivity)
+    rows = view_readout(
+        experiment, resolver, Scope(view="breakout", grain="total"), sensitivity_methods=sensitivity
+    )
     for group in ("treatment_1", "treatment_2"):
         missing = [row for row in rows if row.dimension_value == "A" and row.group_id == group]
         valid = [row for row in rows if row.dimension_value == "B" and row.group_id == group]
@@ -601,8 +646,9 @@ def test_unit_summary_breakout_keeps_metric_missing_in_every_segment():
     frame = _summary_breakout_frame()
     frame["missing_metric"] = None
     with pytest.warns(IncrementWarning):
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -615,7 +661,7 @@ def test_unit_summary_breakout_keeps_metric_missing_in_every_segment():
             breakouts=("segment",),
         )
     with pytest.warns(IncrementWarning):
-        rows = analysis.run_breakout()
+        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     missing_rows = [row for row in rows if row.metric == "missing"]
     assert {(row.dimension_value, row.group_id) for row in missing_rows} == {
         (segment, "treatment") for segment in ("A", "B")
@@ -705,8 +751,9 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
             }
     frame.loc[0, "value"] = None
     with pytest.warns(IncrementWarning):
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -717,7 +764,7 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
             breakouts=("segment",),
         )
 
-    results = analysis.run_breakout()
+    results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     treatment_by_metric = {
         metric_name: next(
             row
@@ -733,8 +780,9 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
 
 
 def test_unit_summary_breakout_is_available_through_readout_api():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _summary_breakout_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -742,19 +790,20 @@ def test_unit_summary_breakout_is_available_through_readout_api():
         breakouts=("segment",),
     )
 
-    direct = analysis.run_breakout()
+    direct = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     assert {(row.metric, row.dimension_value) for row in direct} == {
         ("value", "A"),
         ("value", "B"),
     }
-    assert direct == analysis.run_breakout()
+    assert direct == view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
 
 def test_unit_summary_breakouts_allow_metric_named_ds():
     frame = _summary_breakout_frame().rename(columns={"value": "ds"})
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -762,15 +811,16 @@ def test_unit_summary_breakouts_allow_metric_named_ds():
         breakouts=("segment",),
     )
 
-    assert analysis.run_breakout()
+    assert view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
 
 def test_unit_summary_breakouts_refuse_cluster_with_summary_capability_code():
     frame = _summary_breakout_frame()
     frame["cluster"] = [f"cluster-{i // 2}" for i in range(len(frame))]
     with pytest.raises(CapabilityError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -818,15 +868,16 @@ def test_from_unit_panel_run_daily_returns_daily_metric_values():
             "revenue": [10.0, 20.0, 5.0, 7.0],
         }
     )
-    a = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
     )
-    results = a.run_daily()
+    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
     assert isinstance(results, DailyMetricValues)
     assert len(results) > 0
     day1_treatment = next(
@@ -855,8 +906,9 @@ def test_day_axis_snapshot_identity_tracks_binary_input_counts():
     changed_rows[-1]["converted"] = 1
 
     def analyze(frame):
-        return Analysis.from_unit_panel(
+        return from_frame(
             pd.DataFrame(frame),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="day",
@@ -865,16 +917,30 @@ def test_day_axis_snapshot_identity_tracks_binary_input_counts():
             experiment_id="same-study",
         )
 
-    baseline, changed = analyze(rows), analyze(changed_rows)
+    (baseline_experiment, baseline_resolver), (changed_experiment, changed_resolver) = (
+        analyze(rows),
+        analyze(changed_rows),
+    )
     try:
-        baseline_rows, changed_results = baseline.run_daily(), changed.run_daily()
+        baseline_rows, changed_results = (
+            view_readout(
+                baseline_experiment,
+                baseline_resolver,
+                Scope(view="daily", grain="daily", values=True),
+            ),
+            view_readout(
+                changed_experiment,
+                changed_resolver,
+                Scope(view="daily", grain="daily", values=True),
+            ),
+        )
         assert {row.n for row in baseline_rows} == {row.n for row in changed_results}
         assert {row.source_snapshot_id for row in baseline_rows}.isdisjoint(
             {row.source_snapshot_id for row in changed_results}
         )
     finally:
-        baseline.close()
-        changed.close()
+        baseline_resolver.close()
+        changed_resolver.close()
 
 
 @pytest.mark.integration
@@ -890,8 +956,9 @@ def test_numeric_input_changes_source_content_digest():
     )
     second = first.assign(value=[1.0, 2.0, 2.5, 3.5])
     analyses = [
-        Analysis.from_unit_summary(
+        from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -901,7 +968,7 @@ def test_numeric_input_changes_source_content_digest():
         for frame in (first, second)
     ]
     try:
-        rows = [analysis.run() for analysis in analyses]
+        rows = [lift_rows(view_readout(*analysis)) for analysis in analyses]
         from increment.estimation.results import LiftEstimate
 
         assert isinstance(rows[0][0], LiftEstimate)
@@ -915,14 +982,14 @@ def test_numeric_input_changes_source_content_digest():
         assert digests[0].isdisjoint(digests[1])
     finally:
         for analysis in analyses:
-            analysis.close()
+            analysis[1].close()
 
 
 @pytest.mark.integration
 def test_cuped_covariate_only_change_changes_source_content_digest():
     import pandas as pd
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.semantics.models import CupedCovariate
 
     first = pd.DataFrame(
@@ -935,8 +1002,9 @@ def test_cuped_covariate_only_change_changes_source_content_digest():
     )
     second = first.assign(pre=[9.0, 2.0, 7.0, 1.0, 8.0, 3.0])
     analyses = [
-        Analysis.from_unit_summary(
+        from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -948,7 +1016,8 @@ def test_cuped_covariate_only_change_changes_source_content_digest():
     try:
         method = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"))
         results = [
-            analysis.run(
+            view_readout(
+                *analysis,
                 decision_method=Method(name="unadjusted"),
                 sensitivity_methods=(method,),
             )
@@ -974,14 +1043,14 @@ def test_cuped_covariate_only_change_changes_source_content_digest():
             assert cell.provenance.source_content_digest == expected_digest
     finally:
         for analysis in analyses:
-            analysis.close()
+            analysis[1].close()
 
 
 @pytest.mark.integration
 def test_multicovariate_cuped_hashes_user_column_named_missingness():
     import pandas as pd
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.semantics.models import CupedCovariate
 
     frames = []
@@ -1004,8 +1073,9 @@ def test_multicovariate_cuped_hashes_user_column_named_missingness():
             )
         )
     analyses = [
-        Analysis.from_unit_summary(
+        from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -1021,7 +1091,8 @@ def test_multicovariate_cuped_hashes_user_column_named_missingness():
             CupedCovariate(name="second_covariate", kind="continuous"),
         )
         for analysis in analyses:
-            rows = analysis.run(
+            rows = view_readout(
+                *analysis,
                 decision_method=Method(name="unadjusted"),
                 sensitivity_methods=(Method.cuped_multicovariate(covariates=methods),),
             )
@@ -1031,7 +1102,7 @@ def test_multicovariate_cuped_hashes_user_column_named_missingness():
         assert result_digests[0] != result_digests[1]
     finally:
         for analysis in analyses:
-            analysis.close()
+            analysis[1].close()
 
 
 @pytest.fixture
@@ -1072,8 +1143,9 @@ def panel_breakout_analysis():
                 "orders": base / 2.0 + 1.0,
             }
         )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1111,8 +1183,9 @@ def test_from_unit_panel_daily_lift_refuses_sequential_before_moments():
         }
         for i in range(2)
     ]
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1122,13 +1195,17 @@ def test_from_unit_panel_daily_lift_refuses_sequential_before_moments():
     )
 
     with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.run_daily_lift()
+        view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
     assert raised.value.code == "readout.inference.disjoint_slices"
 
 
-def test_from_unit_panel_daily_lift_refuses_cuped_without_covariate(panel_breakout_analysis):
+def test_from_unit_panel_daily_lift_refuses_cuped_without_covariate(
+    panel_breakout_analysis: tuple[Any, Any],
+):
     with pytest.raises(InvalidRequestError) as raised:
-        panel_breakout_analysis.run_daily_lift(
+        view_readout(
+            *panel_breakout_analysis,
+            Scope(view="daily", grain="daily"),
             decision_method=Method.cuped(
                 covariates=CupedCovariate(name="revenue", kind="continuous")
             ),
@@ -1147,8 +1224,9 @@ def test_from_unit_panel_quantile_cuped_refusal_is_preserved():
         {"user_id": "t2", "variant": "treatment", "day": "2026-01-01", "revenue": 4.0},
     ]
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_panel(
+        from_frame(
             pd.DataFrame(rows),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="day",
@@ -1205,8 +1283,9 @@ def test_from_unit_summary_clustered_cuped_refusal_is_preserved():
         },
     ]
     with pytest.raises(CapabilityError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             pd.DataFrame(rows),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -1239,8 +1318,9 @@ def _panel_breakout_analysis_with_prior(correction: Literal["none", "bonferroni"
         decision_method=Method(name="declared"),
         prior=prior,
     )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(_panel_with_breakout_rows_for_config()),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1289,13 +1369,18 @@ def _panel_with_breakout_rows_for_config() -> list[dict[str, object]]:
 
 @pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
 def test_panel_breakout_uses_callwide_methods_not_declared_methods(correction):
-    analysis = _configured_panel_breakout_analysis(correction)
+    experiment, resolver = _configured_panel_breakout_analysis(correction)
 
-    results = analysis.run_breakout()
+    results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert results
     assert {row.method for row in results} == {"declared"}
 
-    explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
+    explicit = view_readout(
+        experiment,
+        resolver,
+        Scope(view="breakout", grain="total"),
+        decision_method=Method(name="call-wide"),
+    )
     assert explicit
     assert {row.method for row in explicit} == {"call-wide"}
 
@@ -1305,17 +1390,34 @@ def test_panel_breakout_keeps_declared_prior_separate_from_sampling(correction):
     from increment.estimation import Normal
 
     declared_prior = Normal(mu=0.0, sigma=0.01)
-    with_declared_prior = _panel_breakout_analysis_with_prior(correction, declared_prior)
-    without_declared_prior = _panel_breakout_analysis_with_prior(correction, None)
+    with_declared_prior_experiment, with_declared_prior_resolver = (
+        _panel_breakout_analysis_with_prior(correction, declared_prior)
+    )
+    without_declared_prior_experiment, without_declared_prior_resolver = (
+        _panel_breakout_analysis_with_prior(correction, None)
+    )
 
-    declared_results = with_declared_prior.run_breakout()
-    undeclared_results = without_declared_prior.run_breakout()
+    declared_results = view_readout(
+        with_declared_prior_experiment,
+        with_declared_prior_resolver,
+        Scope(view="breakout", grain="total"),
+    )
+    undeclared_results = view_readout(
+        without_declared_prior_experiment,
+        without_declared_prior_resolver,
+        Scope(view="breakout", grain="total"),
+    )
     for declared, undeclared in zip(declared_results, undeclared_results, strict=True):
         assert declared.require_lift().value == pytest.approx(undeclared.require_lift().value)
         assert declared.posterior_estimate is not None
         assert undeclared.posterior_estimate is None
 
-    override_results = without_declared_prior.run_breakout(prior=declared_prior)
+    override_results = view_readout(
+        without_declared_prior_experiment,
+        without_declared_prior_resolver,
+        Scope(view="breakout", grain="total"),
+        prior=declared_prior,
+    )
     assert [row.require_lift().value for row in override_results] == pytest.approx(
         [row.require_lift().value for row in declared_results]
     )
@@ -1324,8 +1426,8 @@ def test_panel_breakout_keeps_declared_prior_separate_from_sampling(correction):
     )
 
 
-def test_from_unit_panel_run_daily_lift_default(panel_breakout_analysis):
-    results = panel_breakout_analysis.run_daily_lift()
+def test_from_unit_panel_run_daily_lift_default(panel_breakout_analysis: tuple[Any, Any]):
+    results = view_readout(*panel_breakout_analysis, Scope(view="daily", grain="daily"))
     assert isinstance(results, DailyLiftEstimates)
     assert {(row.ds.isoformat(), row.group_id) for row in results} == {
         ("2026-01-01", "treatment"),
@@ -1334,12 +1436,13 @@ def test_from_unit_panel_run_daily_lift_default(panel_breakout_analysis):
     assert all(row.dimension is None and row.source is None for row in results)
 
 
-@pytest.mark.parametrize("method", ["run_daily", "run_asof"])
-def test_from_unit_panel_day_axis_winsorization_refusal_is_coded(method):
+@pytest.mark.parametrize("view", ["daily", "asof"])
+def test_from_unit_panel_day_axis_winsorization_refusal_is_coded(view):
     import pandas as pd
 
-    analysis = Analysis.from_unit_panel(
+    analysis = from_frame(
         pd.DataFrame(_panel_with_breakout_rows_for_config()),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1348,58 +1451,91 @@ def test_from_unit_panel_day_axis_winsorization_refusal_is_coded(method):
     )
 
     with pytest.raises(CapabilityError) as raised:
-        getattr(analysis, method)()
+        view_readout(*analysis, scope=Scope(view=view, grain=view, values=True))
     assert raised.value.code == "evidence.operation_unavailable"
     assert raised.value.context["requested"] == ("revenue",)
 
 
-def test_from_unit_panel_daily_readouts_by_dimension(panel_breakout_analysis):
-    values = panel_breakout_analysis.run_daily(dimension="country")
-    lifts = panel_breakout_analysis.run_daily_lift(dimension="country")
+def test_from_unit_panel_daily_readouts_by_dimension(panel_breakout_analysis: tuple[Any, Any]):
+    values = view_readout(
+        *panel_breakout_analysis,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+    )
+    lifts = view_readout(
+        *panel_breakout_analysis,
+        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+    )
     assert {row.dimension_value for row in values} == {"US", "CA"}
     assert {row.dimension_value for row in lifts} == {"US", "CA"}
     assert all(row.dimension == "country" and row.source is None for row in [*values, *lifts])
 
 
-def test_from_unit_panel_run_asof_lift_rejects_policy_overrides(panel_breakout_analysis):
+def test_from_unit_panel_run_asof_lift_rejects_policy_overrides(
+    panel_breakout_analysis: tuple[Any, Any],
+):
     with pytest.raises(TypeError):
-        panel_breakout_analysis.run_asof_lift(
-            dimension="country",
+        view_readout(
+            *panel_breakout_analysis,
+            Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
             inference=registered_spec(),
         )
     with pytest.raises(TypeError):
-        panel_breakout_analysis.run_asof_lift(alpha=0.02)
+        view_readout(*panel_breakout_analysis, Scope(view="asof", grain="asof"), alpha=0.02)
     with pytest.raises(TypeError):
-        panel_breakout_analysis.run_asof_lift(correction="bonferroni")
+        view_readout(
+            *panel_breakout_analysis, Scope(view="asof", grain="asof"), correction="bonferroni"
+        )
 
 
-def test_from_unit_panel_run_asof_values(panel_breakout_analysis):
-    values = panel_breakout_analysis.run_asof(dimension="country")
+def test_from_unit_panel_run_asof_values(panel_breakout_analysis: tuple[Any, Any]):
+    values = view_readout(
+        *panel_breakout_analysis,
+        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+    )
     assert isinstance(values, DailyMetricValues)
     assert {row.dimension_value for row in values} == {"US", "CA"}
     assert all(row.ds_basis == "calendar" and row.source is None for row in values)
 
 
-def test_from_unit_panel_run_asof_lift(panel_breakout_analysis):
-    lifts = panel_breakout_analysis.run_asof_lift(dimension="country")
+def test_from_unit_panel_run_asof_lift(panel_breakout_analysis: tuple[Any, Any]):
+    lifts = view_readout(
+        *panel_breakout_analysis,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+    )
     assert isinstance(lifts, DailyLiftEstimates)
     assert {row.dimension_value for row in lifts} == {"US", "CA"}
     assert all(row.ds_basis == "calendar" and row.source is None for row in lifts)
 
 
-def test_from_unit_panel_run_asof_lift_rejects_inference_override(panel_breakout_analysis):
+def test_from_unit_panel_run_asof_lift_rejects_inference_override(
+    panel_breakout_analysis: tuple[Any, Any],
+):
     with pytest.raises(TypeError):
-        panel_breakout_analysis.run_asof_lift(inference="always_valid")
+        view_readout(
+            *panel_breakout_analysis, Scope(view="asof", grain="asof"), inference="always_valid"
+        )
 
 
 def test_from_unit_panel_asof_validates_dimensions_and_filters_metrics(
-    panel_breakout_analysis,
+    panel_breakout_analysis: tuple[Any, Any],
 ):
-    for method in (panel_breakout_analysis.run_asof, panel_breakout_analysis.run_asof_lift):
+    for values in (True, False):
         with pytest.raises(InvalidRequestError) as raised:
-            method(dimension="unknown")
+            view_readout(
+                *panel_breakout_analysis,
+                scope=Scope(
+                    view="asof",
+                    grain="asof",
+                    values=values,
+                    segment=BreakoutIdentity("unknown", None),
+                ),
+            )
         assert raised.value.code == "facade.analysis.unknown_dimension"
-        filtered = method(metrics=["revenue"])
+        filtered = view_readout(
+            *panel_breakout_analysis,
+            scope=Scope(view="asof", grain="asof", values=values),
+            metrics=["revenue"],
+        )
         assert filtered != []
         assert {row.metric for row in filtered} == {"revenue"}
 
@@ -1425,8 +1561,9 @@ def bounded_retention_panel_analysis():
         )
         for day in range(3)
     ]
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1444,12 +1581,21 @@ def bounded_retention_panel_analysis():
 
 
 def test_from_unit_panel_asof_completed_windows_only_emits_mature_retention_rows(
-    bounded_retention_panel_analysis,
+    bounded_retention_panel_analysis: tuple[Any, Any],
 ):
-    monitoring = bounded_retention_panel_analysis.run_asof()
-    decision = bounded_retention_panel_analysis.run_asof(completed_windows_only=True)
-    monitoring_lift = bounded_retention_panel_analysis.run_asof_lift()
-    decision_lift = bounded_retention_panel_analysis.run_asof_lift(completed_windows_only=True)
+    monitoring = view_readout(
+        *bounded_retention_panel_analysis, Scope(view="asof", grain="asof", values=True)
+    )
+    decision = view_readout(
+        *bounded_retention_panel_analysis,
+        Scope(view="asof", grain="asof", values=True, completion_policy=True),
+    )
+    monitoring_lift = view_readout(
+        *bounded_retention_panel_analysis, Scope(view="asof", grain="asof")
+    )
+    decision_lift = view_readout(
+        *bounded_retention_panel_analysis, Scope(view="asof", grain="asof", completion_policy=True)
+    )
 
     assert min(row.ds for row in monitoring) == date(2026, 1, 1)
     assert min(row.ds for row in decision) == date(2026, 1, 3)
@@ -1457,86 +1603,121 @@ def test_from_unit_panel_asof_completed_windows_only_emits_mature_retention_rows
     assert min(row.ds for row in decision_lift) == date(2026, 1, 3)
 
 
-def test_from_unit_panel_run_breakout_returns_every_declaration(panel_breakout_analysis):
-    default = panel_breakout_analysis.run_breakout()
+def test_from_unit_panel_run_breakout_returns_every_declaration(
+    panel_breakout_analysis: tuple[Any, Any],
+):
+    default = view_readout(*panel_breakout_analysis, Scope(view="breakout", grain="total"))
     assert {row.dimension for row in default} == {"country", "plan"}
     assert all(row.source is None for row in default)
 
 
-def test_from_unit_panel_dimension_must_be_declared(panel_breakout_analysis):
+def test_from_unit_panel_dimension_must_be_declared(panel_breakout_analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as raised:
-        panel_breakout_analysis.run_daily(dimension="unknown")
+        view_readout(
+            *panel_breakout_analysis,
+            Scope(
+                view="daily", grain="daily", values=True, segment=BreakoutIdentity("unknown", None)
+            ),
+        )
     assert raised.value.code == "facade.analysis.unknown_dimension"
 
 
-def test_from_unit_panel_run_daily_filters_by_name(panel_breakout_analysis):
+def test_from_unit_panel_run_daily_filters_by_name(panel_breakout_analysis: tuple[Any, Any]):
     # sm8m repro: exclude siblings by constructor-declared name
-    values = panel_breakout_analysis.run_daily(metrics=["revenue"])
+    values = view_readout(
+        *panel_breakout_analysis,
+        Scope(view="daily", grain="daily", values=True),
+        metrics=["revenue"],
+    )
     assert {row.metric for row in values} == {"revenue"}
 
 
-def test_from_unit_panel_run_daily_lift_filters_by_name(panel_breakout_analysis):
-    lifts = panel_breakout_analysis.run_daily_lift(metrics=["revenue"])
+def test_from_unit_panel_run_daily_lift_filters_by_name(panel_breakout_analysis: tuple[Any, Any]):
+    lifts = view_readout(
+        *panel_breakout_analysis, Scope(view="daily", grain="daily"), metrics=["revenue"]
+    )
     assert lifts != []
     assert {row.metric for row in lifts} == {"revenue"}
 
 
-def test_from_unit_panel_metrics_unknown_name_raises(panel_breakout_analysis):
+def test_from_unit_panel_metrics_unknown_name_raises(panel_breakout_analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as raised:
-        panel_breakout_analysis.run_daily(metrics=["revnue"])
+        view_readout(
+            *panel_breakout_analysis,
+            Scope(view="daily", grain="daily", values=True),
+            metrics=["revnue"],
+        )
     assert raised.value.code == "facade.analysis_config.unknown_metric_declared"
 
 
-def test_from_unit_panel_metrics_duplicate_name_raises(panel_breakout_analysis):
+def test_from_unit_panel_metrics_duplicate_name_raises(panel_breakout_analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as raised:
-        panel_breakout_analysis.run_daily(metrics=["revenue", "revenue"])
+        view_readout(
+            *panel_breakout_analysis,
+            Scope(view="daily", grain="daily", values=True),
+            metrics=["revenue", "revenue"],
+        )
     assert raised.value.code == "facade.analysis_config.duplicate_metric_name"
 
 
-def test_from_unit_panel_metrics_accepts_declared_metric_object(panel_breakout_analysis):
-    metric = cast(MeanMetric, panel_breakout_analysis.metrics[0])
-    values = panel_breakout_analysis.run_daily(metrics=[metric])
+def test_from_unit_panel_metrics_accepts_declared_metric_object(
+    panel_breakout_analysis: tuple[Any, Any],
+):
+    metric = cast(MeanMetric, workflows.metrics(*panel_breakout_analysis)[0])
+    values = view_readout(
+        *panel_breakout_analysis, Scope(view="daily", grain="daily", values=True), metrics=[metric]
+    )
     assert {row.metric for row in values} == {metric.name}
 
 
-def test_from_unit_panel_run_breakout_filters_by_name(panel_breakout_analysis):
-    filtered = panel_breakout_analysis.run_breakout(metrics=["revenue"])
+def test_from_unit_panel_run_breakout_filters_by_name(panel_breakout_analysis: tuple[Any, Any]):
+    filtered = view_readout(
+        *panel_breakout_analysis, Scope(view="breakout", grain="total"), metrics=["revenue"]
+    )
     assert filtered != []
     assert {row.metric for row in filtered} == {"revenue"}
     assert {row.dimension for row in filtered} == {"country", "plan"}
 
 
-def test_from_unit_panel_filtered_margins_key_raises_before_moments(panel_breakout_analysis):
-    """margins= is refused outright on the frame/moments seam path now
-    (Analysis.run() has no execute() dispatch to forward it to) - a key
+def test_from_unit_panel_filtered_margins_key_raises_before_moments(
+    panel_breakout_analysis: tuple[Any, Any],
+):
+    """margins= is refused outright on the frame/moments seam path
+    (run() has no execute() dispatch to forward it to) - a key
     naming a declared-but-FILTERED metric never even reaches the old
     per-key unknown-metric check; the refusal is broader, not narrower,
     than "never silently dropped"."""
     with pytest.raises(TypeError):
-        lift_rows(panel_breakout_analysis.run(metrics=["revenue"], margins={"orders": 0.01}))
+        lift_rows(
+            view_readout(*panel_breakout_analysis, metrics=["revenue"], margins={"orders": 0.01})
+        )
 
 
-def test_from_unit_summary_run_filters_by_name(unit_summary_analysis):
-    results = lift_rows(unit_summary_analysis.run(metrics=["revenue"]))
+def test_from_unit_summary_run_filters_by_name(unit_summary_analysis: tuple[Any, Any]):
+    results = lift_rows(view_readout(*unit_summary_analysis, metrics=["revenue"]))
     assert {r.metric for r in results} == {"revenue"}
 
 
-def test_from_unit_panel_run_daily_lift_forwards_methods(panel_breakout_analysis):
-    rows = panel_breakout_analysis.run_daily_lift(sensitivity_methods=())
+def test_from_unit_panel_run_daily_lift_forwards_methods(panel_breakout_analysis: tuple[Any, Any]):
+    rows = view_readout(
+        *panel_breakout_analysis, Scope(view="daily", grain="daily"), sensitivity_methods=()
+    )
     assert rows and {row.method for row in rows} == {"unadjusted"}
 
 
-def test_from_unit_summary_run_breakout_remains_unsupported(unit_summary_analysis) -> None:
+def test_from_unit_summary_run_breakout_remains_unsupported(
+    unit_summary_analysis: tuple[Any, Any],
+) -> None:
     with pytest.raises(CapabilityError) as raised:
-        unit_summary_analysis.run_breakout()
+        view_readout(*unit_summary_analysis, Scope(view="breakout", grain="total"))
     assert raised.value.code == "evidence.breakout_unavailable"
 
 
 def test_artifact_context_refuses_unit_summary_source_with_operation_context(
-    unit_summary_analysis,
+    unit_summary_analysis: tuple[Any, Any],
 ):
     with pytest.raises(CapabilityError) as raised:
-        _ = unit_summary_analysis.artifact_context
+        _ = artifact_context(*unit_summary_analysis)
 
     assert raised.value.code == "evidence.operation_unavailable"
     assert raised.value.context["requested"] == "materialize"
@@ -1576,8 +1757,9 @@ def test_from_unit_panel_encouragement_breakout_retains_estimands():
         ),
         min_first_stage_z=0.001,
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1586,9 +1768,12 @@ def test_from_unit_panel_encouragement_breakout_retains_estimands():
         uptake="clicked",
         breakouts=["country"],
     )
-    assert {row.estimand for row in analysis.run_breakout()} == {"itt", "compliance", "late"}
+    assert {
+        row.estimand
+        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    } == {"itt", "compliance", "late"}
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_daily_lift()
+        view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
     assert raised.value.code == "facade.analysis.encouragement_daily_late"
 
 
@@ -1613,8 +1798,9 @@ def encouragement_panel_analysis():
             ("t2", "treatment", 8.0, 0.0),
         )
     ]
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1651,8 +1837,9 @@ def test_compliance_asof_snapshot_identity_tracks_arm_counts():
                             "clicked": clicked,
                         }
                     )
-        return Analysis.from_unit_panel(
+        return from_frame(
             pd.DataFrame(rows),
+            shape="panel",
             unit="unit",
             group="variant",
             date="day",
@@ -1668,11 +1855,25 @@ def test_compliance_asof_snapshot_identity_tracks_arm_counts():
             uptake="clicked",
         )
 
-    small = analysis(100)
-    large = analysis(120)
+    small_experiment, small_resolver = analysis(100)
+    large_experiment, large_resolver = analysis(120)
     try:
-        small_rows = list(small.run_asof_lift(estimands=("compliance",)))
-        large_rows = list(large.run_asof_lift(estimands=("compliance",)))
+        small_rows = list(
+            view_readout(
+                small_experiment,
+                small_resolver,
+                Scope(view="asof", grain="asof"),
+                estimands=("compliance",),
+            )
+        )
+        large_rows = list(
+            view_readout(
+                large_experiment,
+                large_resolver,
+                Scope(view="asof", grain="asof"),
+                estimands=("compliance",),
+            )
+        )
         assert small_rows and large_rows
         assert all(row.n_control == 100 and row.n_treat == 100 for row in small_rows)
         assert all(row.n_control == 120 and row.n_treat == 120 for row in large_rows)
@@ -1680,13 +1881,19 @@ def test_compliance_asof_snapshot_identity_tracks_arm_counts():
             {row.source_snapshot_id for row in large_rows}
         )
     finally:
-        small.close()
-        large.close()
+        small_resolver.close()
+        large_resolver.close()
 
 
-def test_from_unit_panel_run_asof_lift_encouragement_estimands(encouragement_panel_analysis):
-    itt = encouragement_panel_analysis.run_asof_lift(estimands=("itt",))
-    late = encouragement_panel_analysis.run_asof_lift(estimands=("late",))
+def test_from_unit_panel_run_asof_lift_encouragement_estimands(
+    encouragement_panel_analysis: tuple[Any, Any],
+):
+    itt = view_readout(
+        *encouragement_panel_analysis, Scope(view="asof", grain="asof"), estimands=("itt",)
+    )
+    late = view_readout(
+        *encouragement_panel_analysis, Scope(view="asof", grain="asof"), estimands=("late",)
+    )
 
     assert itt and {row.estimand for row in itt} == {"itt"}
     assert late and {row.estimand for row in late} == {"late"}
@@ -1713,8 +1920,9 @@ def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
                     "clicked": float(index < uptake_count),
                 }
             )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="unit",
         group="variant",
         date="day",
@@ -1729,9 +1937,11 @@ def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
         uptake="clicked",
     )
     try:
-        result = analysis.run_asof_lift(estimands=("compliance",))
+        result = view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof"), estimands=("compliance",)
+        )
     finally:
-        analysis.close()
+        resolver.close()
 
     by_group = {row.group_id: row for row in result}
     assert set(by_group) == {"treatment_a", "treatment_b"}
@@ -1740,23 +1950,33 @@ def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
     assert by_group["treatment_b"].failure_code == "readout.cell.missing_metric_observations"
 
 
-def test_from_unit_panel_run_asof_late_honors_requested_methods(encouragement_panel_analysis):
-    cleared = encouragement_panel_analysis.run_asof_lift(
-        sensitivity_methods=(), estimands=("late",)
+def test_from_unit_panel_run_asof_late_honors_requested_methods(
+    encouragement_panel_analysis: tuple[Any, Any],
+):
+    cleared = view_readout(
+        *encouragement_panel_analysis,
+        Scope(view="asof", grain="asof"),
+        sensitivity_methods=(),
+        estimands=("late",),
     )
     assert cleared and {row.method for row in cleared} == {"unadjusted"}
 
-    results = encouragement_panel_analysis.run_asof_lift(
-        decision_method=Method(name="panel-unadjusted"), estimands=("late",)
+    results = view_readout(
+        *encouragement_panel_analysis,
+        Scope(view="asof", grain="asof"),
+        decision_method=Method(name="panel-unadjusted"),
+        estimands=("late",),
     )
 
     assert results
     assert {row.method for row in results} == {"panel-unadjusted"}
 
 
-def test_from_unit_panel_run_asof_late_refuses_cuped(encouragement_panel_analysis):
+def test_from_unit_panel_run_asof_late_refuses_cuped(encouragement_panel_analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as raised:
-        encouragement_panel_analysis.run_asof_lift(
+        view_readout(
+            *encouragement_panel_analysis,
+            Scope(view="asof", grain="asof"),
             decision_method=Method.cuped(),
             estimands=("late",),
         )
@@ -1835,8 +2055,9 @@ def _make_windowed_encouragement_panel_analysis(
                 uptake="clicked",
             ),
         )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1855,9 +2076,9 @@ def windowed_encouragement_panel_analysis():
 
 
 def test_from_unit_panel_asof_encouragement_weak_then_strong(
-    windowed_encouragement_panel_analysis,
+    windowed_encouragement_panel_analysis: tuple[Any, Any],
 ):
-    results = windowed_encouragement_panel_analysis.run_asof_lift()
+    results = view_readout(*windowed_encouragement_panel_analysis, Scope(view="asof", grain="asof"))
     by_day = defaultdict(set)
     for row in results:
         by_day[row.ds].add(row.estimand)
@@ -1876,14 +2097,19 @@ def test_from_unit_panel_asof_encouragement_weak_then_strong(
 
 
 def test_from_unit_panel_asof_encouragement_dimension_has_same_estimands(
-    windowed_encouragement_panel_analysis,
+    windowed_encouragement_panel_analysis: tuple[Any, Any],
 ):
-    results = windowed_encouragement_panel_analysis.run_asof_lift(dimension="country")
+    results = view_readout(
+        *windowed_encouragement_panel_analysis,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+    )
     assert {row.dimension_value for row in results} == {"US", "CA"}
     assert {row.estimand for row in results} == {"itt", "compliance", "late"}
 
-    compliance = windowed_encouragement_panel_analysis.run_asof_lift(
-        estimands=("compliance",), dimension="country"
+    compliance = view_readout(
+        *windowed_encouragement_panel_analysis,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+        estimands=("compliance",),
     )
     expected = [row for row in results if row.estimand == "compliance"]
     assert {row.dimension_value for row in compliance} == {"US", "CA"}
@@ -1892,12 +2118,24 @@ def test_from_unit_panel_asof_encouragement_dimension_has_same_estimands(
 
 
 def test_from_unit_panel_encouragement_raw_itt_requires_finalized_checkpoint():
-    analysis = _make_windowed_encouragement_panel_analysis(sequential=True)
+    experiment, resolver = _make_windowed_encouragement_panel_analysis(sequential=True)
     with pytest.raises(CapabilityError) as raised:
-        analysis.run_asof_lift(estimands=("late",), completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+            estimands=("late",),
+        )
     assert raised.value.code == "sequential.route.unsupported"
-    snapshot = analysis.capture_sequential(finalized=True, as_of=date(2026, 1, 15))
-    results = analysis.run_asof_lift(estimands=("itt",), completed_windows_only=True)
+    snapshot = workflows.capture_sequential(
+        experiment, resolver, finalized=True, as_of=date(2026, 1, 15)
+    )
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", completion_policy=True),
+        estimands=("itt",),
+    )
     assert results and len(snapshot.records) == 100
     assert all(row.sequential_result is not None for row in results)
     assert all(row.n_control == row.n_treat == 50 for row in results)
@@ -1905,25 +2143,31 @@ def test_from_unit_panel_encouragement_raw_itt_requires_finalized_checkpoint():
 
 
 def test_from_unit_panel_asof_one_sided_control_uptake_still_raises():
-    analysis = _make_windowed_encouragement_panel_analysis(control_uptake=True)
+    experiment, resolver = _make_windowed_encouragement_panel_analysis(control_uptake=True)
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift()
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
     assert raised.value.code == "estimation.encouragement.one_sided_encouragement"
 
 
 @pytest.mark.integration
 def test_from_unit_panel_asof_two_sided_allows_control_uptake():
-    analysis = _make_windowed_encouragement_panel_analysis(control_uptake=True, one_sided=False)
-    results = analysis.run_asof_lift()
+    experiment, resolver = _make_windowed_encouragement_panel_analysis(
+        control_uptake=True, one_sided=False
+    )
+    results = view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
     assert results
     assert {row.estimand for row in results} >= {"itt", "compliance"}
 
 
 def test_encouragement_always_valid_rejects_call_time_inference_override(
-    encouragement_panel_analysis,
+    encouragement_panel_analysis: tuple[Any, Any],
 ):
     with pytest.raises(TypeError):
-        encouragement_panel_analysis.run_asof_lift(inference="always_valid")
+        view_readout(
+            *encouragement_panel_analysis,
+            Scope(view="asof", grain="asof"),
+            inference="always_valid",
+        )
 
 
 def test_from_unit_panel_encouragement_breakout_skips_missing_control_segment():
@@ -1959,8 +2203,9 @@ def test_from_unit_panel_encouragement_breakout_skips_missing_control_segment():
         ),
         min_first_stage_z=0.001,
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -1971,7 +2216,7 @@ def test_from_unit_panel_encouragement_breakout_skips_missing_control_segment():
     )
 
     with pytest.warns(IncrementWarning) as rec:
-        results = analysis.run_breakout()
+        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert any(
         isinstance(w.message, IncrementWarning)
         and w.message.code == "readouts.breakout.segment_no_control_arm"
@@ -2102,8 +2347,9 @@ def test_from_unit_panel_observational_daily_only():
             [("control", "US"), ("treatment", "US"), ("control", "CA"), ("treatment", "CA")]
         )
     ]
-    analysis = Analysis.from_unit_panel(
+    analysis = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -2113,14 +2359,22 @@ def test_from_unit_panel_observational_daily_only():
         ),
         breakouts=["country"],
     )
-    assert {row.dimension_value for row in analysis.run_daily(dimension="country")} == {"US", "CA"}
-    assert analysis.run_asof()
-    for method in (analysis.run_asof_lift, analysis.run_daily_lift):
+    assert {
+        row.dimension_value
+        for row in view_readout(
+            *analysis,
+            Scope(
+                view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
+            ),
+        )
+    } == {"US", "CA"}
+    assert view_readout(*analysis, Scope(view="asof", grain="asof", values=True))
+    for scope in (Scope(view="asof", grain="asof"), Scope(view="daily", grain="daily")):
         with pytest.raises(UnsupportedRequestError) as raised:
-            method()
+            view_readout(*analysis, scope=scope)
         assert raised.value.code == "facade.analysis.observational_day_axis"
     with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.run_breakout()
+        view_readout(*analysis, Scope(view="breakout", grain="total"))
     assert raised.value.code == "readout.view.observational"
 
 
@@ -2135,8 +2389,9 @@ def test_from_unit_panel_sql_and_materialize_raise():
             "revenue": [10.0, 5.0],
         }
     )
-    a = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -2144,12 +2399,12 @@ def test_from_unit_panel_sql_and_materialize_raise():
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError):
-        a.panel_sql()
+        panel_sql(experiment, resolver)
     with pytest.raises(CapabilityError):
-        a.summary_sql()
+        summary_sql(experiment, resolver)
     with pytest.raises(CapabilityError):
-        a.materialize()
-    a.close()
+        materialize(experiment, resolver)
+    resolver.close()
 
 
 def test_from_unit_panel_forwards_exposure_date_for_windowed_metric():
@@ -2167,8 +2422,9 @@ def test_from_unit_panel_forwards_exposure_date_for_windowed_metric():
         for day, v in enumerate(vals):
             rows.append((uid, variant, f"2026-01-{day + 1:02d}", "2026-01-01", v))
     df = pd.DataFrame(rows, columns=["user_id", "variant", "day", "exposed_on", "revenue"])
-    a = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -2176,7 +2432,7 @@ def test_from_unit_panel_forwards_exposure_date_for_windowed_metric():
         metrics=[MetricSpec(name="revenue", window_days=3)],
         exposure_date="exposed_on",
     )
-    results = lift_rows(a.run())
+    results = lift_rows(view_readout(experiment, resolver))
     assert len(results) == 1
     assert results[0].metric == "revenue"
     assert math.isfinite((results[0]).require_lift().value)
@@ -2195,8 +2451,9 @@ def test_from_unit_panel_windowed_metric_without_exposure_date_raises():
         }
     )
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_panel(
+        from_frame(
             df,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="day",
@@ -2223,8 +2480,9 @@ def test_from_unit_panel_forwards_observation_end_censoring():
         late = base + timedelta(days=4)
         rows.append((f"u{i}", group, late, late, 100.0))
     df = pd.DataFrame(rows, columns=["user_id", "variant", "day", "exposed_on", "revenue"])
-    a = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -2235,10 +2493,10 @@ def test_from_unit_panel_forwards_observation_end_censoring():
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        a.run(coherence="live")
+        view_readout(experiment, resolver, coherence="live")
     for coherence in ("live", "live", "captured"):
         with pytest.warns(IncrementWarning) as rec:
-            (result,) = lift_rows(a.run(coherence=coherence))
+            (result,) = lift_rows(view_readout(experiment, resolver, coherence=coherence))
         assert warning_codes(rec) == ["frame.censoring.dropped_units"]
         context = warning_context(rec, "frame.censoring.dropped_units")
         assert (context["metric_name"], context["enrolled"], context["dropped"]) == (
@@ -2251,14 +2509,14 @@ def test_from_unit_panel_forwards_observation_end_censoring():
     with warnings.catch_warnings():
         warnings.simplefilter("error", IncrementWarning)
         with pytest.raises(IncrementWarning) as raised:
-            a.run(coherence="live")
+            view_readout(experiment, resolver, coherence="live")
     assert raised.value.code == "frame.censoring.dropped_units"
 
 
 def test_frame_functions_no_longer_exported():
     import increment
 
-    # replaced by Analysis.from_unit_summary / Analysis.from_unit_panel; __getattr__ called directly to dodge ruff's B018/B009 autofix ping-pong on a bare "module.attr" expression.
+    # replaced by from_frame(shape=...); __getattr__ called directly to dodge ruff's B018/B009 autofix ping-pong on a bare "module.attr" expression.
     with pytest.raises(AttributeError):
         increment.__getattr__("from_unit_summary")
     with pytest.raises(AttributeError):
@@ -2272,7 +2530,6 @@ def test_frame_panel_day_axis_refuses_an_undeclared_metric_object():
 
     import pandas as pd
 
-    from increment.analysis import Analysis
     from increment.semantics.models import MeanMetric
 
     frame = pd.DataFrame(
@@ -2284,8 +2541,9 @@ def test_frame_panel_day_axis_refuses_an_undeclared_metric_object():
             "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         }
     )
-    analysis = Analysis.from_unit_panel(
+    analysis = from_frame(
         frame,
+        shape="panel",
         unit="uid",
         group="v",
         control="a",
@@ -2296,9 +2554,12 @@ def test_frame_panel_day_axis_refuses_an_undeclared_metric_object():
     undeclared = MeanMetric(name="zzz", entity="unit", fact="f")
     # select_metrics' unknown-metric refusal is a bare ValueError; a
     # typed code lands with the _analysis_config migration.
-    for method in (analysis.run_daily, analysis.run_asof):
+    for scope in (
+        Scope(view="daily", grain="daily", values=True),
+        Scope(view="asof", grain="asof", values=True),
+    ):
         with pytest.raises(ValueError):
-            method(metrics=[undeclared])
+            view_readout(*analysis, scope=scope, metrics=[undeclared])
 
 
 @pytest.mark.parametrize("backend", ["pandas", "pyarrow"])
@@ -2320,8 +2581,9 @@ def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
         for unit in range(8)
     ]
     frame = pd.DataFrame(rows) if backend == "pandas" else pa.Table.from_pylist(rows)
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         control="control",
@@ -2330,7 +2592,7 @@ def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
         plan=AnalysisPlan(primary="revenue"),
     )
 
-    result = analysis.run_daily_lift()
+    result = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
     assert result[0].ds == date(2025, 1, 1)
     from increment.breakout.estimates import DailyLiftEstimate
 
@@ -2351,8 +2613,9 @@ def test_panel_refuses_non_midnight_datetime_string_day_labels(backend):
     ]
     frame = pd.DataFrame(rows) if backend == "pandas" else pa.Table.from_pylist(rows)
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_panel(
+        from_frame(
             frame,
+            shape="panel",
             unit="unit",
             group="arm",
             control="control",

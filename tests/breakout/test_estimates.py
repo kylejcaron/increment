@@ -648,7 +648,7 @@ class TestRunBreakoutShape:
 
     def test_source_defaults_to_none_and_is_stamped_when_given(self):
         """`source` is `None` unless the caller passes one, then it's stamped onto every result -
-        lets `Analysis.run_breakout` disambiguate breakouts sharing a dimension but different
+        lets a breakout view disambiguate breakouts sharing a dimension but different
         sources."""
         rows = [
             _make_arm_row(50, 10.0, 4.0, country="US", group_id="control"),

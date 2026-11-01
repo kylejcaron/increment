@@ -29,7 +29,7 @@ from increment.sequential_source import (
     sequential_definition_id,
 )
 from increment.workflows import experiment_definition, export_moments, sequential_snapshot
-from tests.analysis_factory import bound_source, make_binding, view_readout
+from tests.analysis_factory import bound_source, held_source, make_binding, view_readout
 from tests.sequential_cases import registration
 
 
@@ -179,8 +179,8 @@ def test_sequential_readout_refuses_execution_context_before_evidence_read():
     from increment.readouts._provider import native_scope_provider
 
     specs = [MetricSpec(name="outcome", type="conversion")]
-    analysis = _analysis(_frame([0, 1] * 20, [1, 1] * 20), specs, _plan(specs, "bernoulli"))
-    source = analysis[1].binding.state.source
+    _, resolver = _analysis(_frame([0, 1] * 20, [1, 1] * 20), specs, _plan(specs, "bernoulli"))
+    source = cast(Any, held_source(resolver))
     context = EvidenceExecutionContext(
         native_scope_provider(source),
         EvidenceScope(metrics=tuple(source.context.metrics), configs=tuple(source.context.configs)),
@@ -192,7 +192,7 @@ def test_sequential_readout_refuses_execution_context_before_evidence_read():
             run(source, execution_context=context)
         assert refused.value.code == "kernel.context.closed"
     finally:
-        analysis[1].close()
+        resolver.close()
 
 
 def test_boolean_sequential_checkpoint_reloads_from_moments_with_bool_control(tmp_path):
@@ -1663,7 +1663,6 @@ def test_workflow_capture_in_a_shared_run_borrows_its_single_capture(tmp_path, m
         SequentialCaptureRequest,
         evidence_provider,
     )
-    from tests.analysis_factory import held_source
 
     connection, _, experiment, resolver = _native_pair(tmp_path, "bernoulli")
     (tmp_path / "other").mkdir()

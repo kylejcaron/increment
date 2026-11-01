@@ -37,24 +37,31 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.integration
-def test_query_boundary_filters_only_ibis_duckdb_arrow_deprecation():
+def test_query_boundary_filters_only_ibis_duckdb_arrow_deprecation(tmp_path):
+    import shutil
+
+    definitions = tmp_path / "definitions"
+    shutil.copytree("examples/definitions", definitions)
     script = textwrap.dedent(
         """
+        import sys
+
         import ibis
-        from increment import Analysis
-        from tests.analysis_factory import _make_event_log_table
+        from increment import from_definitions
+        from increment.workflows import health_check
+        from tests.analysis_factory import _make_event_log_table, view_readout
 
         con = ibis.duckdb.connect()
         _make_event_log_table(con)
-        analysis = Analysis.from_definitions(
-            "new_onboarding_v2", "examples/definitions", con
+        experiment, resolver = from_definitions(
+            sys.argv[1], con, experiment_name="new_onboarding_v2"
         )
-        analysis.run(metrics=["purchase_rate"])
-        analysis.health_check()
+        view_readout(experiment, resolver, metrics=["purchase_rate"])
+        health_check(experiment, resolver)
         """
     )
     analysis = subprocess.run(
-        [sys.executable, "-W", "error::DeprecationWarning", "-c", script],
+        [sys.executable, "-W", "error::DeprecationWarning", "-c", script, str(definitions)],
         capture_output=True,
         text=True,
         check=False,
