@@ -238,6 +238,18 @@ snippets. Other changed paths are reported as not covered locally because CI
 is responsible for them. Deleted test paths are not selected. A zero-selection
 result is a successful no-op, not evidence that uncovered paths were tested.
 
+What these steps cost, measured on 2026-11-01 on a 12-core laptop (Python
+3.13, no coverage): one parametrized node ID with 64 cases ran serially in
+about 36 seconds, and collecting the tree takes 35–45 seconds in every process.
+With a current selection map and eight workers, `make test-affected` after a
+one-line change selected 2,653 to 16,768 of the 17,710 fast items and took
+about 2.5 to 6 minutes. A change to a widely imported module such as
+`increment/estimation/engine.py`, `increment/semantics/models.py` or
+`increment/_unit_cycle.py` reaches more than 90% of the fast tier through the
+lazy root exports and dynamic imports, so it costs about as much as the whole
+tier, which is also what a stale map costs. Iterate with `make test
+TESTS=<node ID or file>` and run `make test-affected` once before committing.
+
 Affected checks are local feedback, not a replacement for required slow,
 parity, fixtures, public-smoke, documentation, scientific or full-suite gates.
 CI is the authoritative full-suite gate. The pre-push hook runs lint,
@@ -285,13 +297,15 @@ checks at meaningful milestones rather than after each decorator edit.
 
 #### Test economy
 
-The suite's cost is item count. In October 2026 the recorded CI durations showed
-about 20,000 collected items from about 9,000 test functions (fast tier
-18,189 items, 619 CPU-seconds, median 2 ms; slow tier 1,825 items, 1,760
-CPU-seconds, median 0.3 s; certification 82 items, 852 CPU-seconds).
-Collecting the tree takes close to a minute per xdist worker in every shard,
-so item count and shard wall time are the budgets to watch, not CPU. These
-numbers date quickly; the duration files under `.github/` are current.
+The suite's cost is item count. On 2026-11-01 two complete local runs of each
+tier (Python 3.13, four workers, shared host) recorded 22,019 collected items:
+fast tier 17,710 items, 1,315–1,870 seconds summed over setup, call and
+teardown, median 3–4 ms; slow tier 3,007 items, 4,299–5,791 seconds, median
+0.25–0.33 s. Host load alone moved the totals by about 40%. The 82
+certification items were not re-recorded. Collecting the tree takes 35–45
+seconds per process locally and close to a minute per xdist worker in every CI
+shard, so item count and shard wall time are the budgets to watch, not CPU.
+These numbers date quickly; the duration files under `.github/` are current.
 
 Tier intent:
 
@@ -506,13 +520,13 @@ Each selected fast Python-version cell has three duration-balanced
 all six PR shards or all nine main-push shards (Python 3.12–3.14). The build
 job also runs the documentation snippet and strict-docs checks when changed
 paths require them. The machine-generated `.github/fast-test-durations.json`
-weights come from a complete, passing local fast run on 2026-10-31 (Python 3.13,
-six `xdist` workers); only their proportions matter, and absent weights do not
+weights come from a complete, passing local fast run on 2026-11-01 (Python 3.13,
+four `xdist` workers); only their proportions matter, and absent weights do not
 omit tests. Refresh them from a complete passing fast run; `--clean-durations`
 drops tests that no longer exist:
 
 ```bash
-make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/fast-test-durations.json"
+make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/fast-test-durations.json"
 ```
 
 The sharded run weighs a test in an `xdist_group` under `<node ID>@<group>`,
@@ -524,14 +538,15 @@ uv run --no-sync python - <<'PY'
 import json
 from pathlib import Path
 
-path = Path(".github/fast-test-durations.json")
-durations = json.loads(path.read_text())
-for nodeid, seconds in list(durations.items()):
-    bare, _, group = nodeid.rpartition("@")
-    if bare and "]" not in group and "::" not in group:
-        durations[bare] = seconds
-rounded = {nodeid: round(seconds, 3) for nodeid, seconds in durations.items()}
-path.write_text(json.dumps(rounded, indent=4, sort_keys=True) + "\n")
+for tier in ("fast", "slow"):
+    path = Path(f".github/{tier}-test-durations.json")
+    durations = json.loads(path.read_text())
+    for nodeid, seconds in list(durations.items()):
+        bare, _, group = nodeid.rpartition("@")
+        if bare and "]" not in group and "::" not in group:
+            durations[bare] = seconds
+    rounded = {nodeid: round(seconds, 3) for nodeid, seconds in durations.items()}
+    path.write_text(json.dumps(rounded, indent=4, sort_keys=True) + "\n")
 PY
 ```
 
@@ -552,16 +567,18 @@ runtime redirect). Do not use this fast-tier map as a gating selector for
 another tier. Keep `tests/selection_required.txt` updated for dependencies
 which static imports and observed coverage cannot represent.
 
-Functional-slow CI uses four isolated shards and the certification job two,
+Functional-slow CI uses eight isolated shards and the certification job two,
 with workers inside each shard; `ci-ok` requires their aggregate success. Every
 case remains selected exactly once. Both split by the recorded weights in
 `.github/slow-test-durations.json` and `.github/certification-test-durations.json`;
-a test without a weight still runs. Proportions matter, not absolute seconds, so
+a test without a weight still runs. The slow weights come from a complete,
+passing local slow run on 2026-11-01 (Python 3.13, four `xdist` workers),
+normalized like the fast weights. Proportions matter, not absolute seconds, so
 refresh the weights from a complete local run of the tier when the tier changes
 materially:
 
 ```bash
-make test-slow WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/slow-test-durations.json"
+make test-slow WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/slow-test-durations.json"
 make test-numerical-certification WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/certification-test-durations.json"
 ```
 
