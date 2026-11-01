@@ -8,7 +8,7 @@ import pytest
 
 from increment import Experiment, SourceReference
 from increment.evidence import EvidenceProvider
-from increment.kernel.contracts import Registration, Scope
+from increment.kernel.contracts import ImplementationRef, Registration, Scope
 
 
 def test_top_level_run_resolves_and_executes_experiment():
@@ -52,11 +52,17 @@ def test_experiment_round_trips_canonical_json_and_hash():
         registration=Registration(registration_hash="registration-hash"),
         source_refs=(SourceReference(name="events", uri="warehouse://events"),),
         scopes=(Scope(view="run", grain="total"),),
+        implementation_refs={
+            ("orders:decision", "propensity_learner"): ImplementationRef(
+                import_path="models.propensity:build", version_pin="1", config_digest="p"
+            ),
+        },
     )
 
     encoded = experiment.to_json()
     restored = Experiment.from_json(encoded)
 
+    assert restored.implementation_refs == experiment.implementation_refs
     assert json.loads(encoded) == json.loads(restored.to_json())
     assert restored.hash() == experiment.hash()
 
