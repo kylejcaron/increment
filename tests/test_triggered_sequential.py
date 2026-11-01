@@ -32,7 +32,12 @@ from increment.breakout.estimates import LiftEstimates
 from increment.builders import from_definitions, from_moments, from_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.readout_types import ReadoutResults
-from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
+from increment.evidence import (
+    SequentialCaptureRequest,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.kernel.contracts import Scope
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
@@ -283,7 +288,7 @@ def _assert_selected_registered_family_capture(tmp_path):
             path, connection, source_snapshot_evidence=_CERTIFIED, store="none"
         )
         with resolver:
-            assert run(experiment, resolver, analysis_options={"metrics": []}).cells == ()
+            assert run(experiment, resolver, metrics=[]).cells == ()
             scopes = (
                 Scope(view="run", grain="total", population="assigned"),
                 Scope(view="run", grain="total", population="triggered"),
@@ -291,10 +296,8 @@ def _assert_selected_registered_family_capture(tmp_path):
             result = run(
                 replace(experiment, scopes=scopes),
                 resolver,
-                analysis_options={
-                    "metrics": ["aux_a"],
-                    "capture": {"finalized": True, "as_of": _LATER},
-                },
+                metrics=["aux_a"],
+                capture=SequentialCaptureRequest(finalized=True, as_of=_LATER),
             )
             assert {cell.identity.key.metric for cell in result.cells} == {"aux_a"}
             assert {cell.identity.key.analysis_population for cell in result.cells} == {
@@ -306,7 +309,7 @@ def _assert_selected_registered_family_capture(tmp_path):
             reversed_result = run(
                 replace(experiment, scopes=(scopes[1], scopes[0])),
                 resolver,
-                analysis_options={"metrics": ["aux_a"]},
+                metrics=["aux_a"],
             )
             assert {cell.identity.key.analysis_population for cell in reversed_result.cells} == {
                 "assigned",
@@ -340,7 +343,7 @@ def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
         initial = run(
             run_experiment,
             resolver,
-            analysis_options={"capture": {"finalized": True, "as_of": _AS_OF}},
+            capture=SequentialCaptureRequest(finalized=True, as_of=_AS_OF),
         )
         initial_state = initial.cells[0].components["sequential"][1]
         assert initial_state is not None
@@ -365,7 +368,7 @@ def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
             run(
                 experiment,
                 resolver,
-                analysis_options={"capture": {"finalized": True, "as_of": _LATER}},
+                capture=SequentialCaptureRequest(finalized=True, as_of=_LATER),
             )
         assert refused.value.code == "sequential.route.unsupported"
         after = run(run_experiment, resolver)
@@ -460,7 +463,8 @@ def _assert_combined_compliance_family_requests(tmp_path):
         mixed = run(
             combined,
             resolver,
-            analysis_options={"metrics": ["revenue"], "estimands": ["itt", "compliance"]},
+            metrics=["revenue"],
+            estimands=["itt", "compliance"],
         )
         assert {
             (cell.identity.key.analysis_population, cell.identity.key.metric)
@@ -469,10 +473,8 @@ def _assert_combined_compliance_family_requests(tmp_path):
         captured = run(
             combined,
             resolver,
-            analysis_options={
-                "estimands": ["compliance"],
-                "capture": {"finalized": True, "as_of": _LATER},
-            },
+            estimands=["compliance"],
+            capture=SequentialCaptureRequest(finalized=True, as_of=_LATER),
         )
         assert {
             (cell.identity.key.analysis_population, cell.identity.key.estimand)
@@ -504,7 +506,7 @@ def test_registered_combined_compliance_replays_after_event_source_removal(tmp_p
         )
         combined = replace(experiment, scopes=scopes)
 
-        result = run(combined, resolver, analysis_options={"estimands": ["compliance"]})
+        result = run(combined, resolver, estimands=["compliance"])
 
         assert {
             (cell.identity.key.analysis_population, cell.identity.key.estimand)
@@ -539,7 +541,7 @@ def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path)
         combined = replace(experiment, scopes=scopes, operations=operations)
 
         with pytest.raises(CodedError) as raised:
-            run(combined, resolver, analysis_options={"metrics": ["revenue"]})
+            run(combined, resolver, metrics=["revenue"])
 
         assert raised.value.code == "source.native.trigger_evidence_required"
     finally:
@@ -609,7 +611,10 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
             ),
         )
         combined = run(moments_scoped, moments_resolver)
-        assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
+        assert {getattr(cell.identity.scope, "view", None) for cell in combined.cells} == {
+            "run",
+            "asof",
+        }
         assert {cell.identity.key.analysis_population for cell in combined.cells} == {"triggered"}
     finally:
         if moments_closer is not None:

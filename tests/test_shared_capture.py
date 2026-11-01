@@ -135,6 +135,12 @@ def _builder(
     return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
 
 
+def _scope(cell) -> Scope:
+    scope = cell.identity.scope
+    assert scope is not None
+    return scope
+
+
 def _same_cells(actual, expected):
     assert len(actual) == len(expected)
     for left, right in zip(actual, expected, strict=True):
@@ -267,15 +273,13 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             run(
                 replace(experiment, scopes=(scope,)),
                 resolver,
-                analysis_options={"decision_method": Method(name="unadjusted")},
+                decision_method=Method(name="unadjusted"),
             )
             for scope in scopes
         ]
-        actual = run(
-            experiment, resolver, analysis_options={"decision_method": Method(name="unadjusted")}
-        )
+        actual = run(experiment, resolver, decision_method=Method(name="unadjusted"))
         for scope, expected in zip(scopes, separate, strict=True):
-            cells = tuple(cell for cell in actual.cells if cell.identity.scope.view == scope.view)
+            cells = tuple(cell for cell in actual.cells if _scope(cell).view == scope.view)
             _same_cells(cells, expected.cells)
         assert nested_close(
             [asdict(effect) if effect is not None else None for effect in actual.effects],
@@ -286,9 +290,7 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             ],
         )
         assert len({cell.provenance.run_id for cell in actual.cells}) == 1
-        monitoring = {
-            cell.identity.hash() for cell in actual.cells if cell.identity.scope.view != "run"
-        }
+        monitoring = {cell.identity.hash() for cell in actual.cells if _scope(cell).view != "run"}
         assert all(
             verdict.reason_codes == ("decision.not_evaluated.monitoring_view",)
             for verdict in actual.decisions.cells
@@ -312,9 +314,9 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             experiment,
             resolver,
             views=(scopes[2], scopes[0]),
-            analysis_options={"decision_method": Method(name="unadjusted")},
+            decision_method=Method(name="unadjusted"),
         )
-        assert tuple(dict.fromkeys(cell.identity.scope.view for cell in selected.cells)) == (
+        assert tuple(dict.fromkeys(_scope(cell).view for cell in selected.cells)) == (
             "run",
             "asof",
         )
@@ -336,12 +338,10 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
         day_values = run(
             day_experiment,
             resolver,
-            analysis_options={
-                "metrics": [unregistered],
-                "decision_method": Method(name="unadjusted"),
-            },
+            metrics=[unregistered],
+            decision_method=Method(name="unadjusted"),
         )
-        assert {cell.identity.scope.view for cell in day_values.cells} == {"daily", "asof"}
+        assert {_scope(cell).view for cell in day_values.cells} == {"daily", "asof"}
         assert {cell.identity.key.metric for cell in day_values.cells} == {"unregistered_revenue"}
     finally:
         con.disconnect()
@@ -386,18 +386,12 @@ def test_selected_late_ad_hoc_metric_keeps_family_horizon_in_both_modes(tmp_path
             values = run(
                 experiment,
                 resolver,
-                analysis_options={
-                    "metrics": [late_metric],
-                    "decision_method": Method(name="unadjusted"),
-                    "coherence": coherence,
-                },
+                metrics=[late_metric],
+                decision_method=Method(name="unadjusted"),
+                coherence=coherence,
             )
             for view in ("daily", "asof"):
-                dates = [
-                    cell.identity.key.ds
-                    for cell in values.cells
-                    if cell.identity.scope.view == view
-                ]
+                dates = [cell.identity.key.ds for cell in values.cells if _scope(cell).view == view]
                 assert max(dates) == datetime(2025, 2, 20).date()
         finally:
             con.disconnect()
@@ -441,11 +435,11 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
     )
     experiment = replace(experiment, scopes=scopes)
     result = run(experiment, resolver)
-    assert {cell.identity.scope.view for cell in result.cells} == {"run", "breakout"}
+    assert {_scope(cell).view for cell in result.cells} == {"run", "breakout"}
     assert {
         cell.identity.key.dimension_value
         for cell in result.cells
-        if cell.identity.scope.view == "breakout"
+        if _scope(cell).view == "breakout"
     } == {"US", "CA"}
 
 
@@ -488,7 +482,7 @@ def test_dimensioned_empty_encouragement_values_keep_permissions():
             asof_scope.hash(): "run_asof",
         },
     )
-    empty_values = run(experiment, resolver, analysis_options={"metrics": []})
+    empty_values = run(experiment, resolver, metrics=[])
     assert empty_values.cells == ()
 
     dimensioned_scopes = (
@@ -511,7 +505,7 @@ def test_dimensioned_empty_encouragement_values_keep_permissions():
             dimensioned_scopes[1].hash(): "run_asof",
         },
     )
-    empty_dimensioned = run(dimensioned_experiment, resolver, analysis_options={"metrics": []})
+    empty_dimensioned = run(dimensioned_experiment, resolver, metrics=[])
     assert empty_dimensioned.cells == ()
 
 
@@ -529,8 +523,8 @@ def test_combined_encouragement_views_preserve_compliance_rows():
             asof_scope.hash(): "run_asof",
         },
     )
-    combined_values = run(experiment, resolver, analysis_options={"metrics": ["value"]})
-    assert {cell.identity.scope.view for cell in combined_values.cells} == {
+    combined_values = run(experiment, resolver, metrics=["value"])
+    assert {_scope(cell).view for cell in combined_values.cells} == {
         "run",
         "daily",
         "asof",
@@ -557,7 +551,7 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
             with pytest.raises(CodedError) as error:
                 run(experiment, resolver, views=views)
             assert error.value.code == "kernel.run.execution_unavailable"
-        empty = run(experiment, resolver, analysis_options={"metrics": []})
+        empty = run(experiment, resolver, metrics=[])
         assert empty.cells == ()
         invalid = replace(
             experiment, scopes=(*scopes, Scope(view="asof", grain="asof", through_day="2025-01-11"))
@@ -566,14 +560,11 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
             run(invalid, resolver)
         assert error.value.code == "kernel.run.execution_unavailable"
         with pytest.raises(CodedError) as error:
-            run(experiment, resolver, analysis_options={"population": "triggered"})
-        assert error.value.code == "facade.analysis.trigger_unsupported"
+            run(experiment, resolver, population="triggered")
+        assert error.value.code == "kernel.request.population_scope_only"
         with pytest.raises(CodedError) as error:
-            run(experiment, resolver, analysis_options={"unexpected": True})
+            run(replace(experiment, request_options={"unexpected": True}), resolver)
         assert error.value.code == "kernel.run.execution_unavailable"
-        with pytest.raises(CodedError) as error:
-            run(experiment, resolver, analysis_options={"store": object()})
-        assert error.value.code == "kernel.run.invalid_input"
         invalid_breakout = replace(
             experiment,
             scopes=(
@@ -612,11 +603,7 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
         )
         trigger_con.disconnect()
         with pytest.raises(CodedError) as error:
-            run(
-                trigger_experiment,
-                trigger_resolver,
-                analysis_options={"population": None},
-            )
+            run(trigger_experiment, trigger_resolver)
         assert error.value.code == "source.native.trigger_evidence_required"
     finally:
         con.disconnect()
@@ -625,6 +612,7 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
 def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_path):
     from increment import render
     from increment.store import ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
 
     con = ds.duckdb_connection(ds.event_rows(n_per_arm=40))
     experiment, resolver = _builder(con, tmp_path, triggered=True, winsorized=True)
@@ -633,13 +621,12 @@ def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_pa
         Scope(view="run", grain="total", population="triggered"),
     )
     experiment = replace(experiment, scopes=scopes)
-    result = run(
-        experiment, resolver, analysis_options={"decision_method": Method(name="unadjusted")}
-    )
+    result = run(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert len(result.live_rows) == len(result.cells) == len(result.effects)
     assert any(row is None for row in result.live_rows)
     for cell, row, effect in zip(result.cells, result.live_rows, result.effects, strict=True):
         if cell.identity.key.metric == "revenue":
+            assert row is not None and effect is not None
             assert row.confidence_set is not None
             assert effect.point == pytest.approx(row.confidence_set.point, rel=1e-9)
             assert effect.qualification == row.confidence_set.qualification
@@ -651,9 +638,11 @@ def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_pa
         pickle.dumps(result)
     assert error.value.code == "wire.result.raw_outcomes_unavailable"
 
-    with pytest.raises(CodedError) as error:
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
         run(experiment, resolver, results_store=ParquetResultsStore(tmp_path / "raw"))
-    assert error.value.code == "kernel.run.invalid_input"
+    assert error.value.code == "wire.result.raw_outcomes_unavailable"
+    assert reads == []
+    assert not tuple((tmp_path / "raw").rglob("*.parquet"))
     con.disconnect()
 
 
@@ -666,21 +655,21 @@ def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
         Scope(view="asof", grain="asof", population="triggered"),
     )
     experiment = replace(experiment, scopes=scopes)
-    options = {"decision_method": Method(name="unadjusted")}
+    method = Method(name="unadjusted")
     try:
         separate = [
-            run(replace(experiment, scopes=(scope,)), resolver, analysis_options=options)
+            run(replace(experiment, scopes=(scope,)), resolver, decision_method=method)
             for scope in scopes
         ]
-        actual = run(experiment, resolver, analysis_options=options)
+        actual = run(experiment, resolver, decision_method=method)
         assert len(actual.run.metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             _same_cells(
                 tuple(
                     cell
                     for cell in actual.cells
-                    if cell.identity.scope.view == scope.view
-                    and cell.identity.scope.population == scope.population
+                    if _scope(cell).view == scope.view
+                    and _scope(cell).population == scope.population
                 ),
                 expected.cells,
             )
@@ -706,20 +695,18 @@ def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_varian
         Scope(view="run", grain="total", population="triggered"),
     )
     experiment = replace(experiment, scopes=scopes)
-    options = {
-        "metrics": [variant],
-        "decision_method": Method(name="unadjusted"),
-    }
-    separate_options = {
-        "metrics": ["revenue"],
-        "decision_method": Method(name="unadjusted"),
-    }
+    method = Method(name="unadjusted")
     try:
         separate = [
-            run(replace(experiment, scopes=(scope,)), resolver, analysis_options=separate_options)
+            run(
+                replace(experiment, scopes=(scope,)),
+                resolver,
+                metrics=["revenue"],
+                decision_method=method,
+            )
             for scope in scopes
         ]
-        actual = run(experiment, resolver, analysis_options=options)
+        actual = run(experiment, resolver, metrics=[variant], decision_method=method)
         assert len(actual.run.metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             actual_scope = tuple(cell for cell in actual.cells if cell.identity.scope == scope)
@@ -759,32 +746,29 @@ def test_whole_window_and_daily_capture_same_name_metric_sources(tmp_path):
         Scope(view="daily", grain="daily", population="assigned"),
     )
     experiment = replace(experiment, scopes=scopes)
-    variant_options = {
-        "metrics": [variant],
-        "decision_method": Method(name="unadjusted"),
-    }
+    method = Method(name="unadjusted")
     try:
         separate = (
             run(
                 replace(experiment, scopes=(scopes[0],)),
                 resolver,
-                analysis_options=variant_options,
+                metrics=[variant],
+                decision_method=method,
             ),
             run(
                 replace(experiment, scopes=(scopes[1],)),
                 resolver,
-                analysis_options=variant_options,
+                metrics=[variant],
+                decision_method=method,
             ),
         )
         assert (
             max(cell.identity.key.ds for cell in separate[1].cells) == datetime(2025, 2, 20).date()
         )
-        actual = run(experiment, resolver, analysis_options=variant_options)
+        actual = run(experiment, resolver, metrics=[variant], decision_method=method)
         assert len(actual.run.metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
-            actual_scope = tuple(
-                cell for cell in actual.cells if cell.identity.scope.view == scope.view
-            )
+            actual_scope = tuple(cell for cell in actual.cells if _scope(cell).view == scope.view)
             assert tuple(cell.identity.key for cell in actual_scope) == tuple(
                 cell.identity.key for cell in expected.cells
             )
@@ -818,19 +802,18 @@ def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
         Scope(view="breakout", grain="total", population="triggered", segment=(breakout,)),
     )
     experiment = replace(experiment, scopes=scopes)
-    options = {"metrics": [variant]}
     try:
         separate = tuple(
-            run(replace(experiment, scopes=(scope,)), resolver, analysis_options=options)
+            run(replace(experiment, scopes=(scope,)), resolver, metrics=[variant])
             for scope in scopes
         )
-        actual = run(experiment, resolver, analysis_options=options)
+        actual = run(experiment, resolver, metrics=[variant])
         assert len(actual.run.metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             actual_scope = tuple(
                 cell
                 for cell in actual.cells
-                if cell.identity.scope.view == "breakout"
+                if _scope(cell).view == "breakout"
                 and cell.identity.key.analysis_population == scope.population
             )
             assert tuple(cell.identity.key for cell in actual_scope) == tuple(
@@ -874,9 +857,7 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
                 result = run(experiment, resolver)
                 for scope, expected in zip(scopes, separate, strict=True):
                     _same_cells(
-                        tuple(
-                            cell for cell in result.cells if cell.identity.scope.view == scope.view
-                        ),
+                        tuple(cell for cell in result.cells if _scope(cell).view == scope.view),
                         expected.cells,
                     )
                 assert len(result.run.metadata.captures) == 1
@@ -894,7 +875,7 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
                         experiment,
                         resolver,
                         views=(scopes[0],),
-                        analysis_options={"exploratory_metrics": ["additional"]},
+                        exploratory_metrics=["additional"],
                     )
                 assert_refusal(
                     "shared_capture",

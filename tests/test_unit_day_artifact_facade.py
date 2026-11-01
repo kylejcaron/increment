@@ -1585,11 +1585,12 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
         result = run(
             experiment.with_views(*scopes),
             resolver,
-            analysis_options={"metrics": ["purchase_rate"]},
+            metrics=["purchase_rate"],
         )
         by_view: dict[tuple[str, bool], set[tuple[str | None, str | None]]] = {}
         for cell in result.cells:
             scope = cell.identity.scope
+            assert scope is not None
             by_view.setdefault((scope.view, scope.values), set()).add(
                 (cell.identity.key.source, cell.identity.key.dimension)
             )
@@ -1599,7 +1600,7 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
         qualified = run(
             experiment.with_views(Scope(view="breakout", grain="total", segment=secondary)),
             resolver,
-            analysis_options={"metrics": ["purchase_rate"]},
+            metrics=["purchase_rate"],
         )
     assert qualified.cells
     assert {

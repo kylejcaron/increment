@@ -201,14 +201,17 @@ procedures, not online FDR control across experiments.
 
 ## Two-phase stored runs
 
-The additive top-level `increment.run()` accepts an existing `Analysis`, its
-hash-only `Registration`, and the matching compiled plan. It validates the plan
-before calling `Analysis.run()`, then creates a validated in-memory `Run` from
-the resulting cells. Passing a `ResultsStore` persists and reopens that pinned
-run before final verdicts are computed; without a store, the same evaluator
-uses the validated in-memory run. `RunResult` exposes the cells, effect
-projections, and final decisions. Existing `Analysis.run()` return types are
-unchanged.
+`increment.run(experiment, resolver, results_store=..., decision_log=...)`
+checks the experiment's hash-only `Registration` and portable compiled plan
+before reading any data, then creates a validated `Run` from the resulting
+cells. Passing a `ResultsStore` persists and reopens that pinned run before
+final verdicts are computed; without a store, the same evaluator uses the
+validated in-memory run. `RunResult` exposes the cells, effect projections, and
+final decisions, and `RunResult.from_handle(handle, registration=...)` decides a
+saved run again from its pinned cells. The legacy
+`run(analysis, registration, compiled_plan, ...)` form validates the supplied
+plan before calling `Analysis.run()`. Existing `Analysis.run()` return types
+are unchanged.
 
 An optional `DecisionLog` records fixed-family events only after the run and
 decisions validate. Its replay resolves each event's pinned run and uses the

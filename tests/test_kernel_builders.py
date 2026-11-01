@@ -204,7 +204,7 @@ def test_definition_exploratory_metric_runs_with_cell_identity(seeded_defs, seed
                 result = run(
                     experiment,
                     resolver,
-                    analysis_options={"exploratory_metrics": ["aov"]},
+                    exploratory_metrics=["aov"],
                 )
     finally:
         cast(Any, resolver).close()
@@ -309,7 +309,7 @@ def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IncrementWarning)
-        assert run(experiment, resolver, analysis_options={"coherence": "live"})
+        assert run(experiment, resolver, coherence="live")
 
     live_names = tuple(item.name for item in session._materialized)
     assert live_names
@@ -332,7 +332,7 @@ def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, s
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             with pytest.warns(IncrementWarning):
-                run(experiment, resolver, analysis_options={"exploratory_metrics": ["aov"]})
+                run(experiment, resolver, exploratory_metrics=["aov"])
         assert set(parent_names) <= set(seeded_con.list_tables())
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
@@ -492,7 +492,7 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
         assert run(
             cached,
             online_resolver,
-            analysis_options={"metrics": ["purchase_rate"]},
+            metrics=["purchase_rate"],
         )
     assert warning_codes(captured_warnings) == ["analysis.cuped.covariate_unused"]
     catalog_path = definitions / ".increment-kernel-catalog.json"
@@ -693,7 +693,7 @@ def test_definitions_positional_arguments_remain_executable(seeded_defs, seeded_
         experiment, resolver = build()
         with resolver, warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            result = run(experiment, resolver, analysis_options={"metrics": ["purchase_rate"]})
+            result = run(experiment, resolver, metrics=["purchase_rate"])
         assert result.cells
         assert all(
             cell.summary is not None and cell.summary.point is not None for cell in result.cells

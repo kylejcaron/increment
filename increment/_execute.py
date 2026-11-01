@@ -470,20 +470,6 @@ def _persist(
     )
 
 
-def _capture_sequential(
-    binding: SourceBinding,
-    *,
-    finalized: bool,
-    previous=None,
-    as_of=None,
-    freeze: Sequence[str] = (),
-) -> None:
-    request = SequentialCaptureRequest(
-        finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
-    )
-    retained_sequential_capture(binding.source, request, current_execution_context())
-
-
 def _contrast_request(operation: str, options: Mapping[str, Any]) -> None:
     if options.get("population") == "triggered":
         refuse(
@@ -508,6 +494,7 @@ def _whole_window_family(
     selected: Sequence[Metric],
     added: Sequence[Metric],
     options: Mapping[str, Any],
+    capture: SequentialCaptureRequest | None,
 ) -> tuple[PreparedRunAcquisition, ...]:
     def request(metrics: Sequence[Metric]) -> WholeWindowRequest:
         return WholeWindowRequest(
@@ -530,7 +517,7 @@ def _whole_window_family(
     family = WholeWindowFamilyRequest(
         declared=request(selected),
         exploratory=exploratory,
-        capture_requested=options.get("capture") is not None,
+        capture_requested=capture is not None,
     )
     return whole_window_readouts(binding).prepare_family(family)
 
@@ -644,13 +631,15 @@ def execute_views(
     scopes: Sequence[Scope],
     *,
     options: Mapping[str, object],
+    capture: SequentialCaptureRequest | None = None,
     execution_context: EvidenceExecutionContext | None = None,
 ) -> tuple[ScopedReadout, ...]:
     """Plan every selected scope before any read, then run each under one capture.
 
     Views run in declaration order. Without a supplied context, more than one
     view shares one owned capture; a supplied context is borrowed only after
-    every selected request validates against it.
+    every selected request validates against it. A sequential capture is taken
+    inside that context before any view reads.
     """
     planned = [
         (
@@ -663,7 +652,6 @@ def execute_views(
     ]
     if len(planned) == 1:
         scope, operation, kwargs, scope_binding = planned[0]
-        capture = kwargs.pop("capture", None)
         ambient = (
             nullcontext()
             if execution_context is None
@@ -671,10 +659,10 @@ def execute_views(
         )
         with ambient:
             if capture is not None:
-                _capture_sequential(binding, **capture)
+                retained_sequential_capture(binding.source, capture, current_execution_context())
             return (ScopedReadout(_VIEWS[operation](scope_binding, **kwargs), scope, kwargs),)
     requests = [
-        operation_scope(scope_binding, operation, kwargs, planner=_PLANNER)
+        operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         for _, operation, kwargs, scope_binding in planned
     ]
     coherences = {kwargs.get("coherence", "captured") for _, _, kwargs, _ in planned}
@@ -684,10 +672,6 @@ def execute_views(
     from increment._evidence_scopes import capture_requirements
 
     scope_request = capture_requirements(binding.source, requests)
-    capture = next(
-        (kwargs["capture"] for _, _, kwargs, _ in planned if kwargs.get("capture") is not None),
-        None,
-    )
     needs_evidence = bool(
         capture is not None
         or scope_request.metrics
@@ -705,10 +689,9 @@ def execute_views(
         acquisition = nullcontext()
     with acquisition:
         if capture is not None:
-            _capture_sequential(binding, **capture)
+            retained_sequential_capture(binding.source, capture, current_execution_context())
         scoped = []
         for scope, operation, kwargs, scope_binding in planned:
-            kwargs.pop("capture", None)
             single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
             scope_hash, _ = _run_identity_hashes(single, kwargs)
             scoped.append(

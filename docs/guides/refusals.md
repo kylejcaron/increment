@@ -47,9 +47,11 @@ still be inspected in memory.
 `kernel.request.capture_not_supported` means sequential capture or checkpoint
 adoption was placed in saved request options. Call
 `increment.workflows.capture_sequential(experiment, resolver, ...)` with the
-module-builder pair, then run the experiment.
+module-builder pair, then run the experiment, or pass
+`capture=SequentialCaptureRequest(...)` to `run`.
 `kernel.request.population_scope_only` means population was placed in request
-options; set it on `Scope(population=...)` instead.
+options, or `run(population=...)` differs from a selected scope's population;
+set it on `Scope(population=...)` instead.
 `kernel.run.provider_execution_unavailable` means `BoundResolver` verified a
 custom provider but has no execution adapter. Use the resolver returned by a
 module builder to run an experiment.

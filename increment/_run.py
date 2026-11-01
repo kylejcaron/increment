@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from increment._analysis_config import UNSET, _Unset
 from increment._binding import ResolverBinding, _run_identity_hashes
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
@@ -19,6 +20,7 @@ from increment.kernel.contracts import (
     CompiledPlanBinding,
     Registration,
     Scope,
+    _refuse,
     method_config_hash,
     method_estimator_id,
     metric_hash,
@@ -35,10 +37,16 @@ from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order
 if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
     from increment._binding import SourceBinding
+    from increment._evidence_types import SequentialCaptureRequest
+    from increment._literals import ValueScale
     from increment.decide.evaluator import Decisions
     from increment.decision import CompiledDecisionPlan
+    from increment.estimation.engine import Method
+    from increment.estimation.inference import Prior
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import Experiment
     from increment.kernel.resolver import Resolver
+    from increment.semantics.models import Metric
 
 
 _CONTRAST_CONTEXT_NOT_PORTABLE = RefusalSpec(
@@ -60,6 +68,25 @@ class RunResult:
     decisions: Decisions
     run: Any
     live_rows: tuple[Any | None, ...] = ()
+
+    @classmethod
+    def from_handle(cls, handle: RunHandlePort, *, registration: Registration) -> RunResult:
+        """Restore a saved run's portable cells and decide them again under ``registration``.
+
+        The saved decision plan must belong to ``registration``. Live readouts are
+        not stored, so every restored cell reports none.
+        """
+        from increment.decide import decide
+
+        decisions = decide(handle, registration)
+        envelope = handle.envelope()
+        return cls(
+            cells=envelope.cells,
+            effects=tuple(cell.summary for cell in envelope.cells),
+            decisions=decisions,
+            run=handle.run,
+            live_rows=(None,) * len(envelope.cells),
+        )
 
     def __reduce__(self):
         reason = self.run.decision_plan_unavailable_reason
@@ -92,20 +119,11 @@ class _InMemoryRunHandle:
         return AnalysisEnvelope(self.run.cells, self.run.metadata)
 
 
-def _validate_analysis_binding(
-    analysis: Analysis,
-    registration: Registration,
-    compiled_plan: CompiledDecisionPlan,
-    analysis_options: Mapping[str, object] | None,
+def _validate_registered_options(
+    compiled_plan: CompiledDecisionPlan, options: Mapping[str, object]
 ) -> None:
-    if not registration.matches(analysis.compiled_decision_plan):
-        raise CodedError(
-            "Analysis execution plan differs from its pre-estimation registration",
-            code="store.decision.reference_invalid",
-            context={},
-        )
-    options = dict(analysis_options or {})
-    requested_metrics = options.pop("metrics", None)
+    values = dict(options)
+    requested_metrics = values.pop("metrics", None)
     if requested_metrics is not None:
         names = {
             item if isinstance(item, str) else getattr(item, "name", None)
@@ -117,12 +135,32 @@ def _validate_analysis_binding(
                 code="store.decision.reference_invalid",
                 context={},
             )
-    if options:
+    if values:
         raise CodedError(
             "Run options cannot override registered decision or population settings",
             code="store.decision.reference_invalid",
-            context={"options": tuple(sorted(options))},
+            context={"options": tuple(sorted(values))},
         )
+
+
+def _validate_analysis_binding(
+    analysis: Analysis,
+    registration: Registration,
+    compiled_plan: CompiledDecisionPlan,
+    options: Mapping[str, object],
+) -> None:
+    if not registration.matches(analysis.compiled_decision_plan):
+        raise CodedError(
+            "Analysis execution plan differs from its pre-estimation registration",
+            code="store.decision.reference_invalid",
+            context={},
+        )
+    _validate_registered_options(compiled_plan, options)
+
+
+def _contrast_context(binding: SourceBinding) -> Any | None:
+    context = binding.context
+    return context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
 
 
 def _events(run: RunRecord, decisions: Decisions, binding: CompiledPlanBinding) -> tuple[Any, ...]:
@@ -699,11 +737,8 @@ def _run_rows(  # noqa: PLR0913
     identity_options: Mapping[str, object] | None = None,
     scoped_rows: Sequence[ScopedReadout] | None = None,
 ) -> RunResult:
-    context = source_binding.context
     operations = program_store_operations()
-    contrast_context = (
-        context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
-    )
+    contrast_context = _contrast_context(source_binding)
     parts = (
         tuple(scoped_rows)
         if scoped_rows is not None
@@ -853,11 +888,15 @@ def _run_rows(  # noqa: PLR0913
 
 
 def _experiment_result(
-    binding: SourceBinding, experiment: Experiment, scoped: Sequence[ScopedReadout]
+    binding: SourceBinding,
+    experiment: Experiment,
+    scoped: Sequence[ScopedReadout],
+    *,
+    run_id: str,
+    results_store: ResultsStorePort | None,
+    decision_log: DecisionLogPort | None,
 ) -> RunResult:
     """Convert the executed scoped readouts into one identified, decided run."""
-    from uuid import uuid4
-
     single = len(scoped) == 1
     identity_options = (
         scoped[0].options
@@ -873,82 +912,158 @@ def _experiment_result(
         experiment_id=experiment.experiment_id,
         analysis_spec_hash=analysis_spec_hash,
         execution_identity_hash=execution_identity_hash,
-        run_id=f"run-{uuid4().hex}",
+        run_id=run_id,
+        results_store=results_store,
+        decision_log=decision_log,
         declared_scope=scoped[0].scope,
         identity_options=scoped[0].options,
         scoped_rows=None if single else scoped,
     )
 
 
+def _readout_overrides(**options: object) -> dict[str, object]:
+    """Keep the readout options a caller set; an explicit ``prior=None`` differs from omitted."""
+    unset_defaults = {"decision_method", "sensitivity_methods", "prior"}
+    return {
+        name: value
+        for name, value in options.items()
+        if (value is not UNSET if name in unset_defaults else value is not None)
+        and not (name == "coherence" and value == "captured")
+    }
+
+
+def _scope_population(experiment: Experiment, overrides: dict[str, object]) -> dict[str, object]:
+    """Admit a run population only where every selected scope already declares it."""
+    population = overrides.pop("population", None)
+    if population is not None and any(
+        scope.population != population for scope in experiment.scopes
+    ):
+        _refuse("kernel.request.population_scope_only")
+    return overrides
+
+
+def _preflight_persistence(
+    resolver: ResolverBinding,
+    experiment: Experiment,
+    overrides: Mapping[str, object],
+    *,
+    saving: bool,
+) -> None:
+    """Refuse a run that cannot be saved or logged under its registration, before any read."""
+    from increment._runnability import operation_options, typed_request_options
+
+    resolver.validate_experiment(experiment)
+    binding = resolver.binding
+    if _contrast_context(binding) is not None:
+        refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="saving")
+    CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
+    registered = {**typed_request_options(experiment.request_options), **overrides}
+    if not registered.get("metrics", True):
+        # An empty selection is an empty run, which the store refuses itself.
+        del registered["metrics"]
+    _validate_registered_options(binding.plan, registered)
+    if saving and any(
+        _selected_percentile_winsorization(binding, operation_options(experiment, scope, overrides))
+        for scope in experiment.scopes
+    ):
+        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
+
+
 @overload
 def run(
-    exp: Experiment,
-    registration: Resolver | None = None,
-    compiled_plan: CompiledDecisionPlan | None = None,
+    experiment: Experiment,
+    resolver: Resolver,
     *,
-    analysis: None = None,
-    resolver: Resolver | None = None,
-    experiment_id: str | None = None,
-    analysis_spec_hash: str | None = None,
-    execution_identity_hash: str | None = None,
-    run_id: str | None = None,
-    results_store: ResultsStorePort | None = None,
-    decision_log: DecisionLogPort | None = None,
-    analysis_options: Mapping[str, object] | None = None,
     views: Sequence[Scope] | None = None,
-) -> Any: ...
+    run_id: str | None = None,
+    results_store: ResultsStorePort | None = None,
+    decision_log: DecisionLogPort | None = None,
+    capture: SequentialCaptureRequest | None = None,
+    execution_context: EvidenceExecutionContext | None = None,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str | Metric] | None = None,
+    estimands: Sequence[str] | None = None,
+    value_scale: Mapping[str, ValueScale] | None = None,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] | None = None,
+    coherence: Literal["captured", "live"] = "captured",
+) -> RunResult: ...
 
 
 @overload
 def run(
-    exp: Analysis | None = None,
-    registration: Registration | None = None,
-    compiled_plan: CompiledDecisionPlan | None = None,
+    experiment: Analysis,
+    resolver: Registration,
+    compiled_plan: CompiledDecisionPlan,
     *,
-    analysis: Analysis | None = None,
-    resolver: None = None,
-    experiment_id: str | None = None,
-    analysis_spec_hash: str | None = None,
-    execution_identity_hash: str | None = None,
-    run_id: str | None = None,
+    experiment_id: str,
+    analysis_spec_hash: str,
+    execution_identity_hash: str,
+    run_id: str,
     results_store: ResultsStorePort | None = None,
     decision_log: DecisionLogPort | None = None,
-    analysis_options: Mapping[str, object] | None = None,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str | Metric] | None = None,
+    estimands: Sequence[str] | None = None,
+    value_scale: Mapping[str, ValueScale] | None = None,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] | None = None,
+    coherence: Literal["captured", "live"] = "captured",
 ) -> RunResult: ...
 
 
 def run(  # noqa: PLR0913
-    exp: Analysis | object | None = None,
-    registration: Registration | object | None = None,
+    experiment: Experiment | Analysis,
+    resolver: Resolver | Registration | None = None,
     compiled_plan: CompiledDecisionPlan | None = None,
     *,
-    analysis: object | None = None,
-    resolver: object | None = None,
-    experiment_id: str | None = None,
-    analysis_spec_hash: str | None = None,
-    execution_identity_hash: str | None = None,
+    views: Sequence[Scope] | None = None,
     run_id: str | None = None,
     results_store: ResultsStorePort | None = None,
     decision_log: DecisionLogPort | None = None,
-    analysis_options: Mapping[str, object] | None = None,
-    views: Sequence[Scope] | None = None,
+    capture: SequentialCaptureRequest | None = None,
+    execution_context: EvidenceExecutionContext | None = None,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str | Metric] | None = None,
+    estimands: Sequence[str] | None = None,
+    value_scale: Mapping[str, ValueScale] | None = None,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] | None = None,
+    coherence: Literal["captured", "live"] = "captured",
+    experiment_id: str | None = None,
+    analysis_spec_hash: str | None = None,
+    execution_identity_hash: str | None = None,
 ) -> Any:
     """Run an experiment through its resolver, or a legacy Analysis through its registration.
 
     ``views`` selects declared Experiment scopes by hash, in declaration order.
-    ``None`` executes all declared scopes in one capture. Legacy Analysis uses
-    its registered scope and does not accept view selection.
+    ``None`` executes all declared scopes in one capture. The readout options
+    match ``Analysis.run``; only options set by the caller apply. A population
+    must match every selected scope, which declares it. ``results_store`` and
+    ``decision_log`` save or log the run under the experiment's registration,
+    checked before the source is read; ``run_id`` is generated when omitted.
+    Legacy Analysis uses its registered scope and does not accept view selection.
     """
-    if exp is not None and analysis is not None:
-        raise CodedError(
-            "Pass either exp or analysis, not both",
-            code="kernel.run.invalid_input",
-            context={"field": "exp"},
-        )
-    exp = analysis if exp is None else exp
     from increment.kernel.experiment import Experiment
 
-    if isinstance(exp, Experiment):
+    overrides = _readout_overrides(
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+        metrics=metrics,
+        estimands=estimands,
+        value_scale=value_scale,
+        exploratory_metrics=exploratory_metrics,
+        population=population,
+        coherence=coherence,
+    )
+    if isinstance(experiment, Experiment):
         from increment.kernel.resolver import _select_views
         from increment.kernel.resolver import run as run_experiment
 
@@ -957,40 +1072,69 @@ def run(  # noqa: PLR0913
             "experiment_id": experiment_id,
             "analysis_spec_hash": analysis_spec_hash,
             "execution_identity_hash": execution_identity_hash,
-            "run_id": run_id,
-            "results_store": results_store,
-            "decision_log": decision_log,
         }
         supplied = tuple(name for name, value in unsupported.items() if value is not None)
         if supplied:
             raise CodedError(
-                "Experiment execution does not support these persistence options",
+                "Experiment execution derives its own registration and run identities",
                 code="kernel.run.invalid_input",
                 context={"fields": supplied},
             )
-        selected_resolver = resolver if resolver is not None else registration
-        if selected_resolver is None:
+        if resolver is None:
             raise CodedError(
                 "Running an experiment requires a source resolver",
                 code="kernel.run.resolver_missing",
                 context={},
             )
-        selected = _select_views(exp, views)
+        selected = _select_views(experiment, views)
+        overrides = _scope_population(selected, overrides)
+        persisted = {"run_id": run_id, "results_store": results_store, "decision_log": decision_log}
+        identified = tuple(name for name, value in persisted.items() if value is not None)
+        if identified and not isinstance(resolver, ResolverBinding):
+            raise CodedError(
+                "Saving or identifying a run requires a resolver returned by a module builder",
+                code="kernel.run.invalid_input",
+                context={"fields": identified},
+            )
+        if results_store is not None or decision_log is not None:
+            _preflight_persistence(
+                cast(ResolverBinding, resolver),
+                selected,
+                overrides,
+                saving=results_store is not None,
+            )
         scoped = run_experiment(
             selected,
-            cast("Resolver", selected_resolver),
-            options=dict(analysis_options or {}),
+            cast("Resolver", resolver),
+            options=overrides,
+            capture=capture,
+            execution_context=execution_context,
         )
-        if not isinstance(selected_resolver, ResolverBinding):
+        if not isinstance(resolver, ResolverBinding):
             return scoped
-        return _experiment_result(selected_resolver.binding, selected, scoped)
-    if views is not None:
-        raise CodedError(
-            "View selection requires an Experiment",
-            code="kernel.run.invalid_input",
-            context={"field": "views"},
+        from uuid import uuid4
+
+        return _experiment_result(
+            resolver.binding,
+            selected,
+            scoped,
+            run_id=f"run-{uuid4().hex}" if run_id is None else run_id,
+            results_store=results_store,
+            decision_log=decision_log,
         )
-    analysis = cast(Any, exp)
+    for field, value in (
+        ("views", views),
+        ("capture", capture),
+        ("execution_context", execution_context),
+    ):
+        if value is not None:
+            raise CodedError(
+                "This option requires an Experiment",
+                code="kernel.run.invalid_input",
+                context={"field": field},
+            )
+    analysis = cast(Any, experiment)
+    registration = resolver
     if (
         not isinstance(registration, Registration)
         or compiled_plan is None
@@ -1011,16 +1155,16 @@ def run(  # noqa: PLR0913
             code="store.decision.reference_invalid",
             context={},
         )
-    _validate_analysis_binding(analysis, registration, compiled_plan, analysis_options)
+    _validate_analysis_binding(analysis, registration, compiled_plan, overrides)
     if results_store is not None and _selected_percentile_winsorization(
-        analysis._binding, analysis_options or {}
+        analysis._binding, overrides
     ):
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     if results_store is not None or decision_log is not None:
         # Check wire portability before Analysis.run() can read the source.
         CompiledPlanBinding.from_plan(registration, compiled_plan)
     execute = cast(Callable[..., Any], analysis.run)
-    rows = execute(**dict(analysis_options or {}))
+    rows = execute(**overrides)
     return _run_rows(
         analysis._binding,
         rows,

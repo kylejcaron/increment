@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
     from increment._binding import SourceBinding
     from increment._day_axis import DayAxisReadouts
+    from increment._evidence_types import SequentialCaptureRequest
     from increment.readouts._run_acquisition import PreparedRunAcquisition
 
 
@@ -31,7 +32,13 @@ class ScopePlanner:
 
     contrast: Callable[[str, Mapping[str, Any]], None]
     whole_window: Callable[
-        [SourceBinding, Sequence[Metric], Sequence[Metric], Mapping[str, Any]],
+        [
+            SourceBinding,
+            Sequence[Metric],
+            Sequence[Metric],
+            Mapping[str, Any],
+            SequentialCaptureRequest | None,
+        ],
         Sequence[PreparedRunAcquisition],
     ]
     breakout: Callable[..., tuple[tuple[Metric, ...], tuple[ResolvedMetricConfig, ...]]]
@@ -144,14 +151,15 @@ def _whole_window_operation_scope(
     added: Sequence[Metric],
     options: Mapping[str, Any],
     planner: ScopePlanner,
+    capture: SequentialCaptureRequest | None,
 ) -> EvidenceScope:
     from increment.estimation.sequential import SEQUENTIAL_POLICIES
     from increment.readouts._run_acquisition import RunAcquisitionOwner
 
-    prepared = planner.whole_window(binding, selected, added, options)
+    prepared = planner.whole_window(binding, selected, added, options, capture)
     additional_scopes = ()
     if isinstance(binding.plan.inference, SEQUENTIAL_POLICIES) and (
-        options.get("capture") is not None or any(item.scope.metrics for item in prepared)
+        capture is not None or any(item.scope.metrics for item in prepared)
     ):
         from increment.readouts._line3 import sequential_scope
 
@@ -182,6 +190,7 @@ def operation_scope(
     options: Mapping[str, Any],
     *,
     planner: ScopePlanner,
+    capture: SequentialCaptureRequest | None = None,
 ) -> EvidenceScope:
     """Validate a selected operation and declare only the evidence it may read."""
     from increment._analysis_config import overlay_configs, select_metrics
@@ -191,18 +200,13 @@ def operation_scope(
     from increment.readouts._design_scope import _config_snapshot
 
     source = binding.source
-    capture = options.get("capture")
     if capture is not None:
-        from pydantic import TypeAdapter
-
         from increment._evidence_refusals import require_evidence
-        from increment._evidence_types import SequentialCaptureRequest
         from increment.sequential_source import validate_capture_request
 
-        request = TypeAdapter(SequentialCaptureRequest).validate_python(dict(capture))
-        require_evidence(source, request=request)
+        require_evidence(source, request=capture)
         validate_capture_request(
-            request,
+            capture,
             dynamic=declared_evidence(source).sequential_capture == "asof",
         )
     from increment.decision import ContrastContext
@@ -216,7 +220,7 @@ def operation_scope(
         else select_metrics(tuple(binding.metrics), options.get("metrics"), caller=operation)
     )
     if operation == "run":
-        return _whole_window_operation_scope(binding, selected, added, options, planner)
+        return _whole_window_operation_scope(binding, selected, added, options, planner, capture)
     candidates = [(binding, selected)]
     if added:
         candidates.append((exploratory_sibling(binding, added, caller=operation), added))
@@ -292,7 +296,7 @@ def operation_scope(
         scope_breakouts = (
             breakouts
             if metrics
-            or options.get("capture") is not None
+            or capture is not None
             or (operation != "run_breakout" and options.get("dimension") is not None)
             else ()
         )
@@ -325,7 +329,7 @@ def operation_scope(
     from increment.estimation.sequential import SEQUENTIAL_POLICIES
 
     if isinstance(binding.plan.inference, SEQUENTIAL_POLICIES) and (
-        options.get("capture") is not None or any(request.metrics for request in requests)
+        capture is not None or any(request.metrics for request in requests)
     ):
         from increment.readouts._line3 import sequential_scope
 

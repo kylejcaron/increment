@@ -18,6 +18,7 @@ from increment._runnability import operation_options, scope_refusals
 from increment.errors import CodedError
 
 if TYPE_CHECKING:
+    from increment._evidence_types import SequentialCaptureRequest
     from increment.estimation.readout_types import ScopedReadout
     from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import Experiment
@@ -56,6 +57,8 @@ class SourceResolver(ResolverBinding):
         provider: object,
         *,
         options: Mapping[str, object] | None = None,
+        capture: SequentialCaptureRequest | None = None,
+        execution_context: EvidenceExecutionContext | None = None,
     ) -> tuple[ScopedReadout, ...]:
         """Admit every selected view before any read, then execute them in one capture."""
         if provider is not self._source:
@@ -78,9 +81,8 @@ class SourceResolver(ResolverBinding):
             experiment,
             experiment.scopes,
             options=merged,
-            execution_context=cast(
-                "EvidenceExecutionContext | None", merged.get("_execution_context")
-            ),
+            capture=capture,
+            execution_context=execution_context,
         )
         if self.catalog_writer is not None:
             schema = _schema_for_source(self._source)

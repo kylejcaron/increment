@@ -847,7 +847,6 @@ class Analysis:
             "population": population,
             "coherence": coherence,
             "store": store,
-            "_execution_context": _execution_context,
         }
         experiment, resolver = resolver_for(self._open_binding(), run_options=options)
         ambient = (
@@ -856,7 +855,12 @@ class Analysis:
             else _execution_context_scope(_execution_context)
         )
         with ambient:
-            (scoped,) = run_experiment(experiment, resolver, ctx=_execution_context)
+            (scoped,) = run_experiment(
+                experiment,
+                resolver,
+                ctx=_execution_context,
+                execution_context=_execution_context,
+            )
         return cast("LiftEstimates | ContrastResults", scoped.collection)
 
     def _run_scoped_readouts(self, *, coherence: Literal["captured", "live"], **options: Any):

@@ -28,6 +28,7 @@ from increment.errors import (
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sitewide import SitewideImpact
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+from increment.kernel.contracts import Scope
 from increment.semantics import load
 from tests.warning_codes import warning_codes
 
@@ -185,8 +186,9 @@ def test_kernel_run_preserves_triggered_population_identity(tmp_path):
             evidence_cutoff, {"events": evidence_cutoff}
         ),
     )
+    triggered = Scope(view="run", grain="total", population="triggered")
     try:
-        result = run(experiment, resolver, analysis_options={"population": "triggered"})
+        result = run(experiment.with_views(triggered), resolver)
     finally:
         cast(Any, resolver).close()
 

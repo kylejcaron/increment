@@ -1363,6 +1363,7 @@ depends_on = [
   "increment._canonical",
   "increment._exploratory",
   "increment._interpretation",
+  "increment._runnability",
   "increment.decision",
   "increment.semantics",
   "increment.estimation",

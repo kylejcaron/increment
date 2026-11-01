@@ -56,9 +56,12 @@ def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_pat
         result = run(
             replace(experiment, scopes=scopes),
             resolver,
-            analysis_options={"estimands": ["compliance"]},
+            estimands=["compliance"],
         )
-        assert {cell.identity.scope.view for cell in result.cells} == {"run", "asof"}
+        assert {getattr(cell.identity.scope, "view", None) for cell in result.cells} == {
+            "run",
+            "asof",
+        }
         assert {cell.identity.key.estimand for cell in result.cells} == {"compliance"}
     finally:
         analysis.close()

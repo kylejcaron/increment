@@ -2039,7 +2039,7 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         combined = run(
             experiment,
             resolver,
-            analysis_options={"estimands": ("compliance",)},
+            estimands=("compliance",),
         )
         assert {cell.identity.key.metric for cell in combined.cells} == {"uptake"}
         assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}

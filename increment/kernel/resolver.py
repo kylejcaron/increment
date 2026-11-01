@@ -324,11 +324,24 @@ def run(
     ctx: object | None = None,
     options: dict[str, object] | None = None,
     views: Sequence[Scope] | None = None,
+    capture: object | None = None,
+    execution_context: object | None = None,
 ) -> Any:
-    """Resolve and verify the experiment's source before handing off execution."""
+    """Resolve and verify the experiment's source before handing off execution.
+
+    Readout options, a sequential capture and a borrowed execution context reach
+    the resolver only when supplied, so an adapter that accepts none still runs.
+    """
     exp = _select_views(exp, views)
     provider = _resolve_verified(exp, resolver, ctx=ctx)
     execute = getattr(resolver, "run_experiment", None)
     if not callable(execute):
         _refuse("kernel.run.provider_execution_unavailable")
-    return execute(exp, provider, options=options) if options else execute(exp, provider)
+    handoff: dict[str, object] = {}
+    if options:
+        handoff["options"] = options
+    if capture is not None:
+        handoff["capture"] = capture
+    if execution_context is not None:
+        handoff["execution_context"] = execution_context
+    return execute(exp, provider, **handoff)

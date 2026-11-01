@@ -96,11 +96,14 @@ the same checks as execution.
 a sequential checkpoint, call
 `increment.workflows.capture_sequential(experiment, resolver, ...)` with the
 pair returned by a module builder, then run the experiment. Pass an `as_of`
-horizon when required by the source.
+horizon when required by the source. `run(experiment, resolver,
+capture=SequentialCaptureRequest(...))` instead takes the capture inside the
+run's own shared evidence capture, before any view reads.
 Specifications containing `capture` refuse with
 `kernel.request.capture_not_supported`. Population is declared on `Scope` via
 `Scope(population=...)`; a request option named `population` refuses with
-`kernel.request.population_scope_only`.
+`kernel.request.population_scope_only`, as does a `run(population=...)` that
+differs from a selected scope's population.
 
 `Resolver` binds the named sources and verifies their recorded declarations.
 `BoundResolver` adapts a custom `EvidenceProvider` for verification only; it
@@ -294,12 +297,12 @@ plans, metric definitions or unsupported scope coordinates refuse with
 `kernel.run.execution_unavailable`, before reading evidence.
 Source names, URIs, recorded digests, and capabilities must identify the
 bound source.
-`analysis_options` forwards supported readout options. This builder route
-returns a `RunResult` and does not support persistence arguments such as
-`results_store`, `decision_log`, and `run_id`, or the nested legacy
-`analysis_options={"store": ...}` option; these refuse with
-`kernel.run.invalid_input` before evidence is read or written. Use the
-registered-analysis form of `run` when those writes are required.
+`run` accepts the readout options of `Analysis.run()` as keywords:
+`decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
+`value_scale`, `exploratory_metrics`, `population` and `coherence`. Only the
+options you pass apply, so `prior=None` removes the registered prior while an
+omitted `prior` keeps it. A `population` must match every selected scope;
+declare a different population with `Scope(population=...)`.
 `Analysis.run()` remains the compatibility route
 that returns `LiftEstimates` or `ContrastResults`.
 
@@ -337,11 +340,36 @@ combined = run(exp, resolver)  # One capture, both scopes.
 only_daily = run(exp, resolver, views=(daily,))
 ```
 
-Portable supported results can be written with the existing
-`results_store.put(combined.run)` and reopened with `open_run`; this does not
-expand the builder route's persistence arguments. Live raw-set confidence
-geometry remains available in memory and retains its existing serialization
-refusal.
+Pass `results_store=` to save a run and `decision_log=` to record its final
+family decisions; either may be used alone, and `run_id=` names the run (an ID
+is generated when it is omitted). Both are checked against the experiment's
+registration before any data is read, and a refused run writes nothing:
+switchback contrasts refuse with `wire.procedure.contrast_context`, methods
+without a portable implementation reference with
+`wire.procedure.runtime_method`, and readout options that change registered
+decisions or omit registered metrics with `store.decision.reference_invalid`.
+Saving a live raw-set confidence set refuses with
+`wire.result.raw_outcomes_unavailable`; it remains available in memory. A saved
+run reopens with its registration, which must match the one it was saved
+under:
+
+```python
+from tempfile import TemporaryDirectory
+
+from increment import RunResult
+from increment.store import ParquetResultsStore
+
+with TemporaryDirectory() as directory:
+    store = ParquetResultsStore(directory)
+    saved = run(exp, resolver, results_store=store)
+    handle = store.open_run(saved.run.experiment_id, saved.run.analysis_spec_hash, saved.run.run_id)
+    reopened = RunResult.from_handle(handle, registration=exp.registration)
+assert reopened.cells == saved.cells
+assert reopened.decisions == saved.decisions
+```
+
+A reopened result recomputes its decisions from the saved cells; live readouts
+are not saved, so its `live_rows` holds `None` for every cell.
 
 Definitions-backed `Analysis.run(exploratory_metrics=...)` also shares one
 physical capture across declared and exploratory families. Each family retains
