@@ -135,6 +135,9 @@ change without notice.
   nothing; an ID is generated when `run_id` is omitted.
   `RunResult.from_handle(handle, registration=...)` decides a saved run again
   and refuses a registration the run was not saved under.
+- Release note (bug fix): `DecisionLog.replay` accepts the logged decisions of a
+  Bonferroni breakout family instead of refusing them with
+  `store.decision.reference_invalid`. Existing decision logs replay unchanged.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

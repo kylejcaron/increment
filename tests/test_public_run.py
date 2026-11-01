@@ -1272,6 +1272,53 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
     assert roster_error.value.code == "store.decision.reference_invalid"
 
 
+def test_event_log_replays_bonferroni_breakout_families(tmp_path):
+    """A finite-sample Bonferroni family has no FDR level; its logged event still replays."""
+    from increment import MultiplicitySpec, from_frame
+    from increment.kernel.contracts import Scope
+    from increment.store import DecisionLog, ParquetResultsStore
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{index}" for index in range(16)],
+            "arm": ["control"] * 8 + ["treatment"] * 8,
+            "segment": ["north", "south"] * 8,
+            "value": [3.0, 4.0, 5.0, 6.0, 3.5, 4.5, 5.5, 6.5]
+            + [4.0, 5.0, 6.0, 7.0, 4.5, 5.5, 6.5, 7.5],
+        }
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+        plan=AnalysisPlan(
+            primary="value", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+        ),
+        experiment_id="exp",
+    )
+    experiment = experiment.with_views(
+        Scope(view="run", grain="total"), Scope(view="breakout", grain="total")
+    )
+    store = ParquetResultsStore(tmp_path / "runs")
+    log_path = tmp_path / "decisions.jsonl"
+    result = run(experiment, resolver, results_store=store, decision_log=DecisionLog(path=log_path))
+
+    restored_log = DecisionLog(path=log_path)
+    replayed = restored_log.replay(
+        lambda experiment_id, run_id: store.open_run(
+            experiment_id, result.run.analysis_spec_hash, run_id
+        ),
+        experiment.registration,
+    )
+
+    assert [event.rule for event in restored_log.events] == ["bonferroni"]
+    assert replayed == (result.decisions,)
+
+
 def test_public_run_binds_design_level_encouragement_compliance_identity():
     from increment import Encouragement, ExclusionRestriction, UptakeSpec
 
