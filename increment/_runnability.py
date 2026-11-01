@@ -100,6 +100,24 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                 context={"experiment_id": experiment.experiment_id, "field": "scope"},
             ),
         )
+    if experiment.analysis_context.get("family") == "contrast":
+        from increment._day_axis import _TRIGGER_UNSUPPORTED
+        from increment._evidence_refusals import CONTRAST_UNAVAILABLE
+
+        try:
+            if operation != "run":
+                refuse(CONTRAST_UNAVAILABLE, method=operation)
+            if scope.population == "triggered":
+                refuse(
+                    _TRIGGER_UNSUPPORTED,
+                    method="run",
+                    experiment="<unknown>",
+                    trigger=None,
+                    route="switchback",
+                    supported_sources=("from_definitions", "from_unit_day_artifact"),
+                )
+        except CodedError as refusal:
+            return (refusal,)
     try:
         breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
     except CodedError as refusal:
@@ -151,24 +169,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                 experiment_id=experiment.experiment_id,
                 view=scope.view,
             )
-        except CodedError as refusal:
-            return (refusal,)
-    if experiment.analysis_context.get("family") == "contrast":
-        from increment._day_axis import _TRIGGER_UNSUPPORTED
-        from increment._evidence_refusals import CONTRAST_UNAVAILABLE
-
-        try:
-            if operation != "run":
-                refuse(CONTRAST_UNAVAILABLE, method=operation)
-            if scope.population == "triggered":
-                refuse(
-                    _TRIGGER_UNSUPPORTED,
-                    method="run",
-                    experiment="<unknown>",
-                    trigger=None,
-                    route="switchback",
-                    supported_sources=("from_definitions", "from_unit_day_artifact"),
-                )
         except CodedError as refusal:
             return (refusal,)
     try:

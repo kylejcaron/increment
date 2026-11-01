@@ -260,7 +260,8 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
                 segment=({"property": "unknown", "source": None},),
             )
         ).compile()
-    assert raised.value.code == "kernel.request.invalid"
+    assert raised.value.code == "evidence.breakout_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
 
 
 def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():

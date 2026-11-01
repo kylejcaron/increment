@@ -22,7 +22,7 @@ from increment.declarations import (
     Method,
     estimator_id_for_selector,
 )
-from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
+from increment.errors import CapabilityError, CodedModel, InvalidRequestError, raiser, refusals
 from increment.semantics.models import Metric
 
 CONTRACTS_SCHEMA_VERSION: int = 1
@@ -176,9 +176,24 @@ def declared_breakouts(
         )
         if not matches:
             if complete:
-                _refuse(
-                    "kernel.request.invalid",
-                    field=f"unknown breakout selection {selector.property!r}",
+                source = next(
+                    (source for source in source_refs if source.capabilities is not None),
+                    None,
+                )
+                constructor = (
+                    source.capabilities.kind
+                    if source is not None
+                    else "recorded source declarations"
+                )
+                raise CapabilityError(
+                    "Recorded source declarations cannot supply the requested breakout",
+                    code="evidence.breakout_unavailable",
+                    context={
+                        "constructor": constructor,
+                        "requested": (selector.property,),
+                        "offered": tuple(sorted({identity.property for identity in declarations})),
+                        "route": "recorded source declarations",
+                    },
                 )
             unresolved.append(selector)
             continue
