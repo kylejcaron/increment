@@ -36,8 +36,8 @@ def _build_panel_for_metric_binding(
         "panel_sql",
         NativePanelSqlOperation,
         message=(
-            "build_panel_for_metric() needs a native "
-            "Analysis.from_definitions instance with a warehouse backend"
+            "build_panel_for_metric() needs an experiment built by from_definitions "
+            "with a warehouse connection"
         ),
     )
     return src.build_panel_for_metric(exposures, metric, population=population)
@@ -52,9 +52,8 @@ def _panel_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) ->
         "panel_sql",
         NativePanelSqlOperation,
         message=(
-            "panel_sql() needs a native Analysis.from_definitions "
-            "instance -- a frame/warehouse/moments-backed analysis has "
-            "no SQL substrate to introspect."
+            "panel_sql() needs an experiment built by from_definitions -- a frame, "
+            "warehouse or moments experiment has no SQL substrate to introspect."
         ),
     )
     return src.panel_sql(breakouts=breakouts or ())
@@ -74,9 +73,8 @@ def _summary_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) 
         "summary_sql",
         SummarySqlOperation,
         message=(
-            "summary_sql() needs a native Analysis.from_definitions "
-            "instance -- a frame/warehouse/moments-backed analysis has "
-            "no SQL substrate to introspect."
+            "summary_sql() needs an experiment built by from_definitions -- a frame, "
+            "warehouse or moments experiment has no SQL substrate to introspect."
         ),
     )
     return summary.summary_sql(breakouts=breakouts or ())

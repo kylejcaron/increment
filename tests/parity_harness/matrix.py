@@ -356,8 +356,8 @@ _CATALOG = "tests/compatibility_catalog.py::MATRIX"
 _CAPABILITIES = 'docs/reference/capabilities-by-entry-point.md "What runs where"'
 _METRIC_SPECS = "increment/_metric_specs.py"
 _DAY_AXIS = "increment/_day_axis.py"
-_RUN_ASOF_LIFT = "Analysis.run_asof_lift docstring"
-_RUN_DAILY_LIFT = "Analysis.run_daily_lift docstring"
+_RUN_ASOF_LIFT = "increment/_day_axis.py::run_asof_lift"
+_RUN_DAILY_LIFT = "increment/_day_axis.py::run_daily_lift"
 _PMP3 = "pmp3 policy-home ledger (kata comment on pmp3, S15)"
 _RUNNER = "tests/parity_harness/comparison.py::TOLERANCE (1e-9 relative)"
 
@@ -422,7 +422,7 @@ _SPECS: dict[str, Spec] = {
         "not_expressible",
         "from_switchback_panel takes no cluster= parameter: a switchback contrast has no "
         "arm-cluster shape",
-        f"Analysis.from_switchback_panel signature; {_CAPABILITIES} clustered rows",
+        f"increment/builders.py::from_switchback_frame signature; {_CAPABILITIES} clustered rows",
         "declaration",
         fact="from_switchback_panel has no cluster= keyword",
     ),
@@ -482,7 +482,8 @@ _SPECS: dict[str, Spec] = {
     "REF:evidence.breakout_unavailable": Spec(
         "source_limited",
         "the source carries no breakout catalog: run_breakout needs a native or panel source",
-        "Analysis.from_unit_summary and Analysis.from_moments docstrings; "
+        "declared evidence of the unit-summary and moments loaders "
+        "(tests/test_evidence_capabilities.py); "
         f"{_CAPABILITIES}: breakout rows",
     ),
     "REF:evidence.operation_unavailable#daily_winsorization": Spec(
@@ -524,7 +525,7 @@ _SPECS: dict[str, Spec] = {
     "REF:source.frame.retention_daily": Spec(
         "source_limited",
         "a frame panel has no independent per-day (cohort) reading of retention",
-        f"{_PMP3}: source-limited frame retention_daily; Analysis.run_daily_lift docstring",
+        f"{_PMP3}: source-limited frame retention_daily; increment/frame.py::_FRAME_RETENTION_DAILY",
     ),
     "REF:estimation.cuped.arm_no_covariate": Spec(
         "source_limited",
@@ -581,13 +582,13 @@ _SPECS: dict[str, Spec] = {
     "REF:readout.view.observational": Spec(
         "construction_limited",
         "confounded per-segment contrasts are refused, not silently emitted",
-        "Analysis.run_breakout docstring (an observational panel refuses this method by name)",
+        "increment/plan.py (an observational design refuses this view by name)",
     ),
     "REF:readout.margin.breakout": Spec(
         "construction_limited",
         "breakout rows are tested two-sided against zero; a per-segment shifted null is "
         "not built, so the guardrail read is run()",
-        "Analysis.run_breakout docstring; increment/estimation/engine.py::validate_readout_engine",
+        "increment/estimation/engine.py::validate_readout_engine",
     ),
     "REF:readout.metric.percentile_winsorization": Spec(
         "construction_limited",
@@ -614,7 +615,7 @@ _SPECS: dict[str, Spec] = {
     "REF:sequential.route.unsupported#panel_unbounded": Spec(
         "construction_limited",
         "panel metrics need bounded windows covered by the common joint-reveal window",
-        f"{_CAPABILITIES}: sequential rows; Analysis.from_unit_panel docstring",
+        f"{_CAPABILITIES}: sequential rows; increment/_frame_sequential.py",
         "declaration",
     ),
     "REF:sequential.route.unsupported#metric_type": Spec(
@@ -731,7 +732,7 @@ _SPECS: dict[str, Spec] = {
     "REF:source.frame.switchback.metric#window": Spec(
         "source_limited",
         "a switchback retained window is declared by the assignment, not by window_days",
-        "increment/switchback.py::_SWITCHBACK_METRIC; Analysis.from_switchback_panel docstring",
+        "increment/switchback.py::_SWITCHBACK_METRIC; increment/builders.py::from_switchback_frame",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#winsor": Spec(
@@ -755,7 +756,7 @@ _SPECS: dict[str, Spec] = {
     "REF:facade.analysis.contrast_unavailable": Spec(
         "source_limited",
         "switchback contrast evidence has no breakout, daily or as-of view",
-        "Analysis.from_switchback_panel docstring (one fixed-horizon contrast)",
+        f"{_CAPABILITIES}: switchback panel column (one fixed-horizon contrast)",
     ),
 }
 
@@ -884,12 +885,12 @@ _OPTION_PREREQUISITE = {
     "ni_margin": "a declared relative margin on a guardrail",
 }
 _INGRESS_AUTHORITY = {
-    "from_definitions": "Analysis.from_definitions",
-    "from_unit_day_artifact": "Analysis.from_unit_day_artifact docstring",
-    "from_unit_summary": "Analysis.from_unit_summary docstring",
-    "from_unit_panel": "Analysis.from_unit_panel docstring",
-    "from_moments": "Analysis.from_moments docstring",
-    "from_switchback_panel": "Analysis.from_switchback_panel docstring",
+    "from_definitions": "increment/builders.py::from_definitions",
+    "from_unit_day_artifact": "increment/builders.py::from_unit_day_artifact",
+    "from_unit_summary": 'increment/builders.py::from_frame(shape="summary")',
+    "from_unit_panel": 'increment/builders.py::from_frame(shape="panel")',
+    "from_moments": "increment/builders.py::from_moments",
+    "from_switchback_panel": "increment/builders.py::from_switchback_frame",
 }
 # Catalog cells that read `refused` for a request the matrix runs, with the reason the
 # catalog's probe differs. Any other refused catalog cell contradicts a supported verdict.
@@ -927,7 +928,7 @@ def supported_verdict(cell: Cell, ingress: str, method: str) -> Verdict:
     ]
     if cell.view in ("daily", "asof"):
         doc = _RUN_ASOF_LIFT if cell.view == "asof" else _RUN_DAILY_LIFT
-        authorities.append(doc if method == "lift" else f"Analysis.run_{cell.view} docstring")
+        authorities.append(doc if method == "lift" else f"increment/_day_axis.py::run_{cell.view}")
     needs = [
         "a bounded exposure window and day boundary" if cell.windowed else "",
         "an exposure date and an observation band" if cell.base == "retention" else "",

@@ -6,7 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, Method, MetricSpec
+from increment import Method, MetricSpec, Scope, from_definitions, from_frame
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.evidence import (
@@ -20,6 +20,7 @@ from increment.evidence import (
 from increment.frame import CupedCovariate, from_unit_panel, from_unit_summary
 from increment.readouts import breakout, run
 from tests._override_warnings import allow_declared_overrides
+from tests.analysis_factory import view_readout
 
 
 def _moments(source, metric, **kwargs) -> MomentRows:
@@ -254,8 +255,9 @@ def test_sequential_frame_scalar_sensitivity_has_coded_policy_refusal():
     plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
     rows = [{**row, "history": float(i % 7)} for i, row in enumerate(_records())]
     with pytest.raises(CodedError) as raised:
-        Analysis.from_unit_panel(
+        from_frame(
             pa.Table.from_pylist(rows),
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -287,8 +289,9 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
     )
 
     def estimates(selected):
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             pa.Table.from_pylist(rows),
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -300,7 +303,10 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
             ],
             breakouts=["segment"],
         )
-        return {(row.dimension_value, row.method): row for row in analysis.run_breakout()}
+        return {
+            (row.dimension_value, row.method): row
+            for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        }
 
     joint = estimates(methods)
     for method in methods:
@@ -350,8 +356,9 @@ def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, 
             MetricSpec(name="other", value_column="outcome"),
         ]
         analysis = (
-            Analysis.from_unit_panel(
+            from_frame(
                 pa.Table.from_pylist(rows),
+                shape="panel",
                 unit="unit",
                 group="arm",
                 date="day",
@@ -359,8 +366,9 @@ def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, 
                 metrics=specs,
             )
             if ingress == "panel"
-            else Analysis.from_unit_summary(
+            else from_frame(
                 pa.Table.from_pylist(rows),
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="control",
@@ -409,10 +417,10 @@ def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, 
                 path, con, request_covariate=False, full_catalog=True
             )
         else:
-            analysis = Analysis.from_definitions("cov_test", path, con)
+            analysis = from_definitions(path, con, experiment_name="cov_test")
         metric_name = "revenue"
         treatment_group = next(arm for arm in _groups.values() if arm != "control")
-    result = analysis.run()
+    result = view_readout(*analysis)
     by_method = {
         row.method: row
         for row in result
@@ -436,8 +444,8 @@ def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, 
         if method.name != "bad":
             assert by_method[method.name].lift is not None
             assert by_method[method.name].failure_code is None
-            (standalone,) = analysis.run(
-                metrics=[metric_name], decision_method=method, sensitivity_methods=()
+            (standalone,) = view_readout(
+                *analysis, metrics=[metric_name], decision_method=method, sensitivity_methods=()
             )
             assert isinstance(standalone, LiftEstimate)
             assert by_method[method.name].require_lift().value == pytest.approx(
@@ -470,8 +478,9 @@ def test_scalar_missing_cell_retains_posterior_unavailability(encouragement, rol
         if encouragement
         else Randomized(control_group="control")
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         design=design,
@@ -485,7 +494,7 @@ def test_scalar_missing_cell_retains_posterior_unavailability(encouragement, rol
             )
         ],
     )
-    result = analysis.run(prior=Normal(mu=0.0, sigma=0.1), estimands=("itt",))
+    result = view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.1), estimands=("itt",))
     failed = next(row for row in result if row.method == "bad")
     assert isinstance(failed, LiftEstimate)
     assert failed.preferred_direction == "decrease"

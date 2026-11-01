@@ -1,7 +1,7 @@
 """Pre-exposure breakout scoping (issue speg): the collider hazard, fixed.
 
 Reproduces the artefact documented in finding 78v6 through the REAL
-pipeline (Analysis.run_breakout -> segment_contrast), then shows the fix
+pipeline (a breakout-view run -> segment_contrast), then shows the fix
 (Property.as_of='pre_exposure' scoping the property lookup to before
 first exposure) removes it.
 
@@ -21,7 +21,7 @@ timestamp. The only moving part is Property.as_of.
 
 This file also carries a fast, unmarked, deterministic 8-unit end-to-end
 test that exercises the same as_of='pre_exposure' dispatch directly
-through Analysis.run_breakout, without the Monte Carlo
+through a breakout-view run, without the Monte Carlo
 artefact-reproduction machinery above.
 """
 
@@ -34,7 +34,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_definitions
+from tests.analysis_factory import view_readout
 
 
 def _units(rng: np.random.Generator, n_arm: int):
@@ -207,8 +208,10 @@ def test_post_exposure_segment_artefact_killed_by_pre_exposure_scoping(tmp_path)
 
         path = tmp_path / f"{label}.yaml"
         path.write_text(_definitions(events_tbl, convs_tbl, props_tbl, as_of))
-        analysis = Analysis.from_definitions("exp", path, con)
-        results[label] = _contrast_z(analysis.run_breakout())
+        experiment, resolver = from_definitions(path, con, experiment_name="exp")
+        results[label] = _contrast_z(
+            view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        )
         con.disconnect()
 
     pre_z, static_z = results["pre_exposure"], results["static"]
@@ -234,7 +237,7 @@ def test_run_breakout_uses_pre_exposure_value_and_nulls_units_with_no_pre_exposu
     ``as_of == "pre_exposure"`` dispatch in
     ``DefinitionsMomentSource._build_breakout_properties_table`` would be exercised by
     NOTHING the fast suite/pre-push checks/main CI job run.
-    Two claims, both through the real ``Analysis.run_breakout`` pipeline
+    Two claims, both through a real breakout-view ``run``
     (not the builder function directly - that's already covered by
     ``tests/query/test_builders.py``):
 
@@ -361,8 +364,8 @@ experiments:
         skip_missing: true
 """
     )
-    analysis = Analysis.from_definitions("pre_exp", path, con)
-    results = analysis.run_breakout()
+    experiment, resolver = from_definitions(path, con, experiment_name="pre_exp")
+    results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     con.disconnect()
 
     by_segment = {r.dimension_value for r in results}

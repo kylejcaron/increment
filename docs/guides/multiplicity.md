@@ -7,7 +7,7 @@ When you test many metrics, chance can produce a false positive. Assign roles in
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
+from increment import AnalysisPlan, MetricSpec, Randomized, from_frame, run
 
 rng = np.random.default_rng(9)
 n = 3000
@@ -29,14 +29,16 @@ design = Randomized(
     allocation_scheme="independent",
 )
 plan = AnalysisPlan(primary="sessions", secondaries=["signups"], q=0.10)
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     design=design,
     metrics=[MetricSpec(name="sessions", type="mean"), MetricSpec(name="signups", type="mean")],
     plan=plan,
-).run()
+)
+results = run(experiment, resolver).readout()
 print(results)
 ```
 
@@ -138,15 +140,17 @@ av_plan = AnalysisPlan(
     q=0.10,
     inference=InferenceSpec(kind="asymptotic_mean"),
 )
-av_results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     design=design,
     metrics=[MetricSpec(name="sessions", type="mean"), MetricSpec(name="signups", type="mean")],
     plan=av_plan,
     exposure_date="enrolled_on",
-).run()
+)
+av_results = run(experiment, resolver).readout()
 print(av_results)
 ```
 
@@ -209,10 +213,7 @@ final verdicts are computed; without a store, the same evaluator uses the
 validated in-memory run. `RunResult` exposes the cells, effect projections,
 final decisions and, through `readout(scope)`, each view's full result rows with
 their family fields; `RunResult.from_handle(handle, registration=...)` decides a
-saved run again from its pinned cells. The legacy
-`run(analysis, registration, compiled_plan, ...)` form validates the supplied
-plan before calling `Analysis.run()`. Existing `Analysis.run()` return types
-are unchanged.
+saved run again from its pinned cells.
 
 An optional `DecisionLog` records fixed-family events only after the run and
 decisions validate. Its replay resolves each event's pinned run and uses the

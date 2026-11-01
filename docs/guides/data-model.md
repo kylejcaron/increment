@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 import ibis
 import polars as pl
 
-from increment import Analysis
+from increment import from_definitions, run
 
 demo_rows = []
 for i, revenue in enumerate([1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0]):
@@ -65,7 +65,8 @@ experiments:
     control_group: control
     plan: {primary: revenue}
 """)
-    demo_results = Analysis.from_definitions("demo", definitions_directory, demo_con).run()
+    experiment, resolver = from_definitions(definitions_directory, demo_con, experiment_name="demo")
+    demo_results = run(experiment, resolver).readout()
 for row in demo_results:
     print(row.metric, row.group_id, row.lift)
 ```
@@ -73,7 +74,7 @@ for row in demo_results:
 This self-contained example uses `ibis-framework[duckdb]` and `polars` to
 create a small event table. Increment builds the unit-by-day panel and exposes
 every query it runs. If your data is already one row per unit or per unit-day,
-use `Analysis.from_unit_summary` / `from_unit_panel` instead
+use `from_frame(..., shape="summary")` or `shape="panel"` instead
 ([Quickstart](quickstart.md)).
 
 The [warehouse example](../examples/analysis_from_a_warehouse.md) walks through
@@ -114,7 +115,7 @@ Each fact also carries `data_as_of`, the latest date actually loaded. A
 window ending after that bound is censored; a warning reports material
 drops.
 
-**Dataframe.** `Analysis.from_unit_panel` accepts sparse input and treats absent eligible
+**Dataframe.** `from_frame(..., shape="panel")` accepts sparse input and treats absent eligible
 unit-days as zero. Small inputs may be densified temporarily; larger ones
 use a sparse day-at-a-time reduction. `densified_cells` counts cells that
 needed zero fill, not physical rows.
@@ -609,7 +610,7 @@ experiments:
     control_group: control
 ```
 
-With `cluster` declared (or `from_unit_summary(..., cluster="store_id")` on
+With `cluster` declared (or `from_frame(..., shape="summary", cluster="store_id")` on
 the dataframe path), uncertainty is computed from independent clusters.
 Randomized moments and observational `Method(name="unadjusted")` with disjoint
 arms use a joint relative confidence set with a working t reference at
@@ -634,15 +635,15 @@ relative interval alone that a level cannot represent keeps the row's point,
 `log_mean` and `log_se` and withholds only the bounds, with the refusal in
 `relative_error_code` and no `relative_unavailable_reason`.
 **Warehouse.** `cluster` names a column on the exposure source. Uncertainty is then
-computed from independent clusters, and `srm()` tests the distinct cluster
+computed from independent clusters, and `workflows.srm()` tests the distinct cluster
 count per arm (`SRMResult.grain == "cluster"`). Per-arm unit counts ride
 along on `SRMResult.unit_counts` as context: unequal cluster sizes make
 unit counts drift for reasons the randomizer never controlled, so that
 imbalance is reported, never tested.
 
-**Dataframe.** Pass `cluster="store_id"` to `Analysis.from_unit_summary`.
+**Dataframe.** Pass `cluster="store_id"` to `from_frame(..., shape="summary")`.
 First aggregate panel data to one row per unit, keeping its cluster label.
-Uncertainty is computed from independent clusters, and `srm()` reports the
+Uncertainty is computed from independent clusters, and `workflows.srm()` reports the
 same two grains.
 
 What a clustered experiment supports:
@@ -650,10 +651,10 @@ What a clustered experiment supports:
 | | Supported | Refuses |
 |---|---|---|
 | Metrics | `mean`, `conversion`, `retention`, and `ratio` (over the metric's own per-cluster totals) | Quantile metrics: they do not decompose over cluster moments. |
-| Views | Total grain: `run()`. | Daily, as-of, and cohort views, breakouts, and factors: none carries a cluster-robust variance. |
+| Views | Total grain: the whole-window `run` view. | Daily, as-of, and cohort views, breakouts, and factors: none carries a cluster-robust variance. |
 | Designs | Randomized; observational on unadjusted, IPTW, DML, and AIPW; encouragement ITT and the additive LATE. | Under `Encouragement`: CUPED, ratio metrics, and the complier-relative `late` row ([why](cuped.md#clustered-encouragement-designs)). |
 | Decision stats | Read the interval directly. | `chance_to_beat` and `prob_favorable` on every clustered row: sampling intervals do not provide a Normal posterior. |
-| Exports | Encouragement exports, through the versioned compliance payload. | Ordinary clustered exports from `from_definitions`, `from_unit_summary`, and `from_unit_day_artifact`: `evidence.cluster_unavailable`. Analyze the source directly. |
+| Exports | Encouragement exports, through the versioned compliance payload. | Ordinary clustered exports from `from_definitions`, `from_frame` summaries, and `from_unit_day_artifact`: `evidence.cluster_unavailable`. Analyze the source directly. |
 | Labels | One arm per cluster in randomized and encouragement designs; observational dependence clusters may span arms. | A null cluster label; a label in both arms of a randomized or encouragement design. |
 
 !!! warning "Independent information comes from clusters, not rows"
@@ -701,9 +702,9 @@ tracked in #93 and is a prerequisite for follow-on assignment and network
 readouts (#83, #91, #92, #78, #95).
 
 ??? info "Statistical details"
-    With `cluster` declared (or `from_unit_summary(..., cluster="store_id")` on
+    With `cluster` declared (or `from_frame(..., shape="summary", cluster="store_id")` on
     the dataframe path), uncertainty is computed from independent clusters.
-    The dataframe path (`from_unit_summary(..., cluster=...)`) reports the same two grains.
+    The dataframe path (`from_frame(..., shape="summary", cluster=...)`) reports the same two grains.
 
     - Randomized moments and observational `Method(name="unadjusted")` with
       disjoint arms use a joint relative confidence set with a working t
@@ -923,7 +924,7 @@ publication time, and experiment end are not completeness proofs.
     upgraded first, since older library versions ignore tombstones and are
     unsafe during incomplete cleanup. Generations dropped by an older
     in-memory-only release left no durable record; drop them again explicitly
-    if they should be retired. `Analysis.close()` only releases an adopted
+    if they should be retired. `resolver.close()` only releases an adopted
     snapshot handle and never deletes durable artifact data; any backend
     cleanup policy must be coordinated by the caller outside these handles.
 
@@ -931,7 +932,7 @@ publication time, and experiment end are not completeness proofs.
 
 Every adopted artifact exposes `moments_source`, `day_source`, and
 `export_moments` (which exports a moments cube; it does not re-publish the
-artifact). On an adopted artifact, `materialize()` and `panel_sql()` are
+artifact). On an adopted artifact, `workflows.materialize()` and `query.panel_sql()` are
 refused with `evidence.operation_unavailable`. Optional operations are enabled only by
 their published evidence:
 
@@ -1108,13 +1109,13 @@ ref distribution and store authorization are the authenticity boundary.
 
 ### Moments wire migration
 
-`Analysis.from_moments` reads centered, complete `moments_format=12`
+`from_moments` reads centered, complete `moments_format=12`
 fixed-horizon rows, including a complete embedded `decision_plan`, a source
 identity record and, on every denominator row, the ratio denominator's
 centered third moment `cden3`. Format 13 adds method-scoped CUPED evidence
 envelopes when an export needs them: scalar-family and categorical-cell
 evidence, or a fitted continuous/mixed multicovariate QR state. Fitted
-continuous/mixed envelopes replay from `Analysis.from_moments`, including
+continuous/mixed envelopes replay from `from_moments`, including
 reintervalization at a changed alpha, but do not refit the model (see
 [Portable CUPED evidence](cuped.md#portable-cuped-evidence)). The reader also
 accepts earlier fixed-horizon formats 10 and 11 and sequential checkpoint
@@ -1146,10 +1147,10 @@ unit-day artifact boundary.
     integer `successes` and retain that count. Rows have a strict schema;
     extra fields are refused with `moments.summaries.invalid`. Optional
     `assignment_counts` records source-level enrollment counts independently
-    of metric counts. When omitted, `unit_counts()`, `srm()`, and the health
+    of metric counts. When omitted, `workflows.unit_counts()`, `workflows.srm()`, and the health
     allocation check are unavailable with `source.moments.assignment_counts`.
     The helper does not infer ratio denominators, covariates, cluster
-    structure, or sequential registration; use `from_unit_summary` for those
+    structure, or sequential registration; use `from_frame(..., shape="summary")` for those
     richer summaries.
 
     Each ordinary row carries integer `n >= 1` and nullable integer
@@ -1324,18 +1325,17 @@ events = pl.DataFrame(rows)
 ```python
 import ibis
 
-from increment import Analysis, from_definitions
+from increment import from_definitions, run
 from increment.query import panel_sql, summary_sql
 
 con = ibis.duckdb.connect()  # in-memory; swap for Snowflake/BigQuery/Postgres
 con.create_database("analytics")
 con.create_table("event_log", events.to_arrow(), database="analytics")
 
-analysis = Analysis.from_definitions("new_onboarding_v2", "definitions/", con)
 experiment, resolver = from_definitions("definitions/", con, experiment_name="new_onboarding_v2")
 panel_queries = panel_sql(experiment, resolver)
 summary_queries = summary_sql(experiment, resolver)
-results = analysis.run()
+results = run(experiment, resolver).readout()
 for r in results:
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
 ```
@@ -1346,8 +1346,8 @@ purchase_rate / T: lift=+12.37%
 revenue_per_user / T: lift=+10.64%
 ```
 
-The connection is bound once at construction; every readout (`run()`,
-`run_daily()`, `run_breakout()`, and the rest) reads it from the instance. To
+The connection is bound once, by `from_definitions`; every view `run` reads and
+every workflow operation reads it from the resolver. To
 see the SQL a readout would execute without running it, call
 `increment.query.panel_sql(experiment, resolver)` and
 `increment.query.summary_sql(experiment, resolver)`; they return per-metric
@@ -1898,18 +1898,20 @@ for name, rows in [
 
 import pyarrow.parquet as pq
 
-from increment import Analysis, from_definitions
+from increment import Scope, from_definitions, run
 from increment.workflows import export_moments
 
-analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
 experiment, resolver = from_definitions(
     "definitions/", con, experiment_name="checkout_redesign"
 )
+whole_window = Scope(view="run", grain="total")
+breakouts = Scope(view="breakout", grain="total")
+result = run(experiment.with_views(whole_window, breakouts), resolver)
 
-for r in analysis.run():
+for r in result.readout(whole_window):
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
 
-segments = analysis.run_breakout()
+segments = result.readout(breakouts)
 plan_segments = sorted({b.dimension_value for b in segments if b.dimension == "plan"})
 country_segments = sorted({b.dimension_value for b in segments if b.dimension == "country"})
 print(f"plan segments:    {plan_segments}")

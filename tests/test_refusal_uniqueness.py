@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from tests.analysis_factory import _moment_source, held_source
+from increment import Scope, from_definitions, from_frame, from_moments
+from increment.query import panel_sql
+from increment.workflows import experiment_definition, export_moments, metrics
+from tests.analysis_factory import bound_source, held_source, view_readout
 from tests.refusal_registry import walk_refusal_registries
 
 
@@ -31,11 +34,10 @@ def test_every_refusal_code_resolves_to_exactly_one_spec() -> None:
 def test_arm_evidence_hazard_raises_the_same_code_from_every_entry_point() -> None:
     """The cluster+prior hazard (the same dispatch shape as other
     cluster+sequential/sequential-prior examples) must raise the SAME
-    code whether reached through Analysis.run() or the public
+    code whether reached through run(experiment, resolver) or the public
     estimate_lift()."""
     import pandas as pd
 
-    from increment.analysis import Analysis
     from increment.errors import CapabilityError
     from increment.estimation.armstats import centered_row_from_raw_sums
     from increment.estimation.engine import estimate_lift
@@ -50,8 +52,9 @@ def test_arm_evidence_hazard_raises_the_same_code_from_every_entry_point() -> No
             "revenue": [10.0 + i for i in range(40)],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         rows,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -59,7 +62,7 @@ def test_arm_evidence_hazard_raises_the_same_code_from_every_entry_point() -> No
         cluster="store_id",
     )
     with pytest.raises(CapabilityError) as via_analysis:
-        analysis.run(prior=Normal(mu=0.0, sigma=0.01))
+        view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
 
     metric = MeanMetric(name="m", entity="u", fact="f", aggregation="sum")
 
@@ -107,7 +110,7 @@ def test_sequential_cuped_hazard_raises_the_same_code_from_every_entry_point() -
     uses for the typed arm-contract dispatch itself (`test_arm_contract.py`,
     `test_sequential_predictable_transforms.py` construct typed requests
     directly rather than driving a full source/query stack).  The public
-    `Analysis.run()`, `estimate_lift()`, and `estimate_encouragement()` paths
+    `run()`, `estimate_lift()`, and `estimate_encouragement()` paths
     also reach these checks for requests that bypass their earlier plan gates.
     Calling each consumer directly isolates the shared code contract and keeps
     the three entry points aligned.
@@ -133,7 +136,7 @@ def test_sequential_cuped_hazard_raises_the_same_code_from_every_entry_point() -
     inference = AlwaysValid(registration=registration)
     cuped_method = Method(name="cuped", variance_reduction="cuped")
 
-    # Analysis.run() path: _readout_request._validate_sequential_adjustment.
+    # run() path: _readout_request._validate_sequential_adjustment.
     metric = synthesise_metric(MetricSpec(name="revenue"))
     design = Randomized(control_group="control")
     plan = compile_decision_plan(None, (metric,), path="frame", design=design)
@@ -393,12 +396,12 @@ def test_percentile_winsor_refuses_before_raw_unit_frame_read(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimators import CapabilityError
 
     metric = MetricSpec(name="revenue", winsorization={"upper_percentile": 0.5})
     if source_kind == "moments":
-        producer = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pa.table(
                 {
                     "unit": [1, 2, 3, 4, 5, 6],
@@ -406,18 +409,19 @@ def test_percentile_winsor_refuses_before_raw_unit_frame_read(
                     "revenue": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
                 }
             ),
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
             metrics=[metric],
         )
         path = tmp_path / "percentile-moments.parquet"
-        producer.export(path)
-        analysis = Analysis.from_moments(
+        export_moments(experiment, resolver, path)
+        analysis = from_moments(
             pq.read_table(path).to_pylist(), metrics=[metric], control="control"
         )
     else:
-        analysis = Analysis.from_unit_panel(
+        analysis = from_frame(
             pl.DataFrame(
                 {
                     "user_id": ["c1", "c2", "t1", "t2"],
@@ -426,15 +430,16 @@ def test_percentile_winsor_refuses_before_raw_unit_frame_read(
                     "revenue": [1.0, 2.0, 3.0, 4.0],
                 }
             ),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
             metrics=[metric],
             control="control",
         )
-    _trap_source_reads(monkeypatch, cast("Any", held_source(analysis)))
+    _trap_source_reads(monkeypatch, cast("Any", held_source(analysis[1])))
     with pytest.raises(CapabilityError) as refusal:
-        analysis.run()
+        view_readout(*analysis)
     assert refusal.value.code == "evidence.raw_outcomes_unavailable"
 
 
@@ -464,8 +469,6 @@ def _native_day_axis_analysis(tmp_path, hazard: str, *, con=None):
 
     import ibis
     import yaml
-
-    from increment import Analysis
 
     start = dt.datetime(2026, 1, 1, 9)
     rows = []
@@ -520,7 +523,7 @@ def _native_day_axis_analysis(tmp_path, hazard: str, *, con=None):
     path.write_text(yaml.safe_dump(definitions, sort_keys=False))
     con = ibis.duckdb.connect() if con is None else con
     con.create_table("raw_events", obj=rows)
-    return Analysis.from_definitions("exp", path, con)
+    return from_definitions(path, con, experiment_name="exp")
 
 
 def _frame_panel_day_axis_analysis(hazard: str):
@@ -528,7 +531,6 @@ def _frame_panel_day_axis_analysis(hazard: str):
 
     import pandas as pd
 
-    from increment import Analysis
     from increment.frame import MetricSpec
 
     start = dt.date(2026, 1, 1)
@@ -550,8 +552,9 @@ def _frame_panel_day_axis_analysis(hazard: str):
         if hazard == "unbounded_retention"
         else MetricSpec(name="m", value_column="value", winsorization={"upper_value": 100.0})
     )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -571,7 +574,7 @@ def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source
 ) -> None:
     """An unbounded retention band never completes, so the day-axis views refuse
     it whatever the substrate. The shared readout gate owns that rule: the
-    direct readout and the Analysis day-axis methods raise one code before any
+    direct readout and the daily views of ``run`` raise one code before any
     source read."""
     from increment import readouts
     from increment.errors import CodedError
@@ -582,14 +585,18 @@ def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source
 
         source = _adopted_artifact_fixture("retention_unbounded")["source"]
     else:
-        analysis = (
+        experiment, resolver = (
             _native_day_axis_analysis(tmp_path, "unbounded_retention")
             if substrate == "definitions"
             else _frame_panel_day_axis_analysis("unbounded_retention")
         )
-        source = _moment_source(analysis)
-        entry_points["Analysis.run_daily"] = analysis.run_daily
-        entry_points["Analysis.run_daily_lift"] = analysis.run_daily_lift
+        source = bound_source(resolver)
+        entry_points["run(daily values)"] = lambda: view_readout(
+            experiment, resolver, Scope(view="daily", grain="daily", values=True)
+        )
+        entry_points["run(daily lift)"] = lambda: view_readout(
+            experiment, resolver, Scope(view="daily", grain="daily")
+        )
     _trap_source_reads(monkeypatch, source)
     entry_points["readouts.daily"] = lambda: readouts.daily(source)
 
@@ -613,24 +620,31 @@ def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_ar
     import ibis
 
     from increment.errors import CodedError
-    from tests.parity_harness.cases import _publish_and_adopt
+    from increment.evidence import BreakoutIdentity
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
     from tests.test_analysis_breakout import _analysis_with_country_breakout
 
     con = ibis.duckdb.connect()
-    analysis = _publish_and_adopt(
+    adopted = _publish_and_adopt(
         con,
         _analysis_with_country_breakout(con, unbounded_retention=True),
         kinds=("breakout_dimension",),
     )
+    experiment, resolver = adopted
     try:
-        _trap_source_reads(monkeypatch, _moment_source(analysis))
-        dimension = analysis.experiment.breakouts[0].property
+        _trap_source_reads(monkeypatch, bound_source(resolver))
+        dimension = experiment_definition(experiment, resolver).breakouts[0].property
+        scope = Scope(
+            view="daily",
+            grain="daily",
+            values=method == "run_daily",
+            segment=BreakoutIdentity(dimension, None),
+        )
         with pytest.raises(CodedError) as raised:
-            getattr(analysis, method)(dimension=dimension, metrics=["unbounded"])
+            view_readout(experiment, resolver, scope, metrics=["unbounded"])
         assert raised.value.code == "breakout.retention.unbounded"
     finally:
-        analysis.close()
-        con.disconnect()
+        _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
@@ -659,10 +673,11 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
 ) -> None:
     """No unit's window over an unbounded retention band ever completes, so
     `completed_windows_only=True` is contradictory on every as-of entry point. The
-    direct readout and both Analysis as-of methods raise one code before any source
+    direct readout and both as-of views of ``run`` raise one code before any source
     read, rather than each adapter's own refusal."""
     from increment import readouts
     from increment.errors import CodedError
+    from tests.parity_harness.cases import _close_parity_binding
 
     if substrate == "unit_day_artifact":
         import ibis
@@ -670,22 +685,28 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
         from tests.parity_harness.cases import _publish_and_adopt
 
         con = ibis.duckdb.connect()
-        analysis = _publish_and_adopt(
+        bound = _publish_and_adopt(
             con, _native_day_axis_analysis(tmp_path, "unbounded_retention", con=con)
         )
     else:
-        con = None
-        analysis = (
+        bound = (
             _native_day_axis_analysis(tmp_path, "unbounded_retention")
             if substrate == "definitions"
             else _frame_panel_day_axis_analysis("unbounded_retention")
         )
+    experiment, resolver = bound
     try:
-        source = _moment_source(analysis)
+        source = bound_source(resolver)
         _trap_source_reads(monkeypatch, source)
         entry_points = {
-            "Analysis.run_asof": lambda: analysis.run_asof(completed_windows_only=True),
-            "Analysis.run_asof_lift": lambda: analysis.run_asof_lift(completed_windows_only=True),
+            "run(asof values)": lambda: view_readout(
+                experiment,
+                resolver,
+                Scope(view="asof", grain="asof", values=True, completion_policy=True),
+            ),
+            "run(asof lift)": lambda: view_readout(
+                experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+            ),
             "readouts.asof_lift": lambda: readouts.asof_lift(source, completed_windows_only=True),
         }
         codes = {}
@@ -695,18 +716,15 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
             codes[name] = raised.value.code
         assert set(codes.values()) == {"breakout.retention.completion"}, codes
     finally:
-        analysis.close()
-        if con is not None:
-            con.disconnect()
+        _close_parity_binding(bound)
 
 
-# The facade guards every day-axis method (including run_asof, which the readouts serve
-# for checkpoint replay) and the readout gate backs it for direct callers, so one hazard
-# has one code per entry method; within an entry method it must not depend on the source.
+# The day-axis views of `run` and the readout gate behind them refuse one hazard with one
+# code per entry point; within an entry point it must not depend on the source.
 _WINSORIZED_DAILY_CODES = {
     "readouts.daily": "evidence.operation_unavailable",
-    "Analysis.run_daily": "evidence.operation_unavailable",
-    "Analysis.run_daily_lift": "evidence.operation_unavailable",
+    "run(daily values)": "evidence.operation_unavailable",
+    "run(daily lift)": "evidence.operation_unavailable",
 }
 
 
@@ -720,6 +738,7 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
 ) -> None:
     from increment import readouts
     from increment.errors import CodedError
+    from tests.parity_harness.cases import _close_parity_binding
 
     if substrate == "unit_day_artifact":
         import ibis
@@ -727,22 +746,26 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
         from tests.parity_harness.cases import _publish_and_adopt
 
         con = ibis.duckdb.connect()
-        analysis = _publish_and_adopt(
+        bound = _publish_and_adopt(
             con, _native_day_axis_analysis(tmp_path, "winsorized_mean", con=con)
         )
     else:
-        con = None
-        analysis = (
+        bound = (
             _native_day_axis_analysis(tmp_path, "winsorized_mean")
             if substrate == "definitions"
             else _frame_panel_day_axis_analysis("winsorized_mean")
         )
+    experiment, resolver = bound
     try:
-        source = _moment_source(analysis)
+        source = bound_source(resolver)
         _trap_source_reads(monkeypatch, source)
         entry_points = {
-            "Analysis.run_daily": analysis.run_daily,
-            "Analysis.run_daily_lift": analysis.run_daily_lift,
+            "run(daily values)": lambda: view_readout(
+                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+            ),
+            "run(daily lift)": lambda: view_readout(
+                experiment, resolver, Scope(view="daily", grain="daily")
+            ),
             "readouts.daily": lambda: readouts.daily(source),
         }
         codes = {}
@@ -752,9 +775,7 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
             codes[name] = raised.value.code
         assert codes == _WINSORIZED_DAILY_CODES
     finally:
-        analysis.close()
-        if con is not None:
-            con.disconnect()
+        _close_parity_binding(bound)
 
 
 @pytest.mark.slow
@@ -834,12 +855,12 @@ def test_evidence_refusals_round_trip_pickle_and_deepcopy() -> None:
     import copy
     import pickle
 
-    from increment import Analysis
     from increment.estimators import CapabilityError
     from tests.source_conformance import unit_summary_table
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -847,7 +868,7 @@ def test_evidence_refusals_round_trip_pickle_and_deepcopy() -> None:
     )
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis.run_daily()
+            view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
         refusal = raised.value
         assert refusal.code == "evidence.grain_unavailable"
         assert set(refusal.context) == {"constructor", "requested", "offered", "route"}
@@ -856,7 +877,7 @@ def test_evidence_refusals_round_trip_pickle_and_deepcopy() -> None:
             assert restored.code == refusal.code
             assert restored.context == refusal.context
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -867,45 +888,46 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
 
     import pyarrow.parquet as pq
 
-    from increment import Analysis
     from increment.estimators import CapabilityError
     from tests.analysis_factory import held_source
     from tests.source_conformance import unit_summary_table
 
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
         breakouts=("segment",),
     )
-    moments: Analysis | None = None
-    artifact: Analysis | None = None
-    definitions = Analysis.from_definitions(
-        "new_onboarding_v2", seeded_defs, seeded_con, store="none"
+    moments: tuple[Any, Any] | None = None
+    artifact: tuple[Any, Any] | None = None
+    definitions_experiment, definitions_resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="none"
     )
     try:
-        summary_source = cast("Any", held_source(summary))
-        metric = summary.metrics[0]
+        summary_source = cast("Any", held_source(summary_resolver))
+        metric = metrics(summary_experiment, summary_resolver)[0]
         with pytest.raises(CapabilityError) as raised:
             summary_source.moments(metric, grain="daily")
         assert raised.value.code == "evidence.grain_unavailable"
         assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
 
         with pytest.raises(CapabilityError) as raised:
-            summary.panel_sql()
+            panel_sql(summary_experiment, summary_resolver)
         assert raised.value.code == "evidence.operation_unavailable"
         assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
 
         path = tmp_path / "evidence-moments.parquet"
-        summary.export(path)
-        moments = Analysis.from_moments(
+        export_moments(summary_experiment, summary_resolver, path)
+        moments = from_moments(
             pq.read_table(path).to_pylist(), metrics={"revenue": "mean"}, control="control"
         )
-        moments_source = cast("Any", held_source(moments))
+        moments_source = cast("Any", held_source(moments[1]))
+        moments_metric = metrics(*moments)[0]
         with pytest.raises(CapabilityError) as raised:
-            moments_source.moments(moments.metrics[0], by=("segment",))
+            moments_source.moments(moments_metric, by=("segment",))
         assert raised.value.code == "evidence.breakout_unavailable"
         assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
         with pytest.raises(CapabilityError) as raised:
@@ -913,7 +935,7 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
         assert raised.value.code == "evidence.operation_unavailable"
         assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
 
-        definition_source = cast("Any", held_source(definitions))
+        definition_source = cast("Any", held_source(definitions_resolver))
         with pytest.raises(CapabilityError) as raised:
             definition_source.sql(grain="daily")
         assert raised.value.code == "evidence.grain_unavailable"
@@ -921,18 +943,18 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
         from tests.source_conformance import unit_day_artifact_analysis
 
         artifact = unit_day_artifact_analysis(tmp_path)
-        artifact_source = cast("Any", held_source(artifact))
+        artifact_source = cast("Any", held_source(artifact[1]))
         with pytest.raises(CapabilityError) as raised:
-            artifact_source.moments(artifact.metrics[0], grain="weekly")
+            artifact_source.moments(metrics(*artifact)[0], grain="weekly")
         assert raised.value.code == "evidence.grain_unavailable"
         assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
         for request, code in (
             (
-                lambda: moments_source.unit_frame(moments.metrics[0]),
+                lambda: moments_source.unit_frame(moments_metric),
                 "evidence.unit_rows_unavailable",
             ),
             (
-                lambda: moments_source.unit_frame(moments.metrics[0], covariates=("spend",)),
+                lambda: moments_source.unit_frame(moments_metric, covariates=("spend",)),
                 "evidence.covariate_unavailable",
             ),
             (
@@ -940,7 +962,7 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
                 "evidence.cluster_unavailable",
             ),
             (
-                lambda: moments_source.unit_frame(moments.metrics[0], outcome_stage="raw"),
+                lambda: moments_source.unit_frame(moments_metric, outcome_stage="raw"),
                 "evidence.raw_outcomes_unavailable",
             ),
         ):
@@ -954,9 +976,9 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
                 "route",
             }
     finally:
-        summary.close()
-        definitions.close()
+        summary_resolver.close()
+        cast(Any, definitions_resolver).close()
         if moments is not None:
-            moments.close()
+            moments[1].close()
         if artifact is not None:
-            artifact.close()
+            artifact[1].close()

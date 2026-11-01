@@ -27,17 +27,20 @@ def _sequential_fixed_winsor_case() -> ParityCase:
     from datetime import date, timedelta
     from fractions import Fraction as F
 
-    from increment import Analysis
+    from increment import builders, workflows
     from increment.frame import MetricSpec
     from increment.plan import bind_automatic_sequential_plan
     from increment.semantics.design import Randomized
     from increment.semantics.models import AnalysisPlan, Definitions, Experiment
     from increment.sequential_source import native_observation_mapping
-    from tests.analysis_factory import make_analysis
+    from tests.analysis_factory import make_binding
     from tests.parity_harness import dataset as ds
     from tests.parity_harness.cases import (
+        Bound,
         ParityCase,
+        _capture_kwargs,
         _export_and_replay,
+        _mark_as_of,
         _publish_and_adopt,
         _track_connection,
     )
@@ -73,26 +76,23 @@ def _sequential_fixed_winsor_case() -> ParityCase:
         assert bound is not None
         return bound
 
-    def mark(analysis: Analysis, as_of: date) -> Analysis:
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
-        return analysis
-
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, definitions, experiment="exp", plan=native_plan())
-        return _track_connection(mark(native, warehouse_as_of), con)
+        native = make_binding(con, definitions, experiment="exp", plan=native_plan())
+        return _track_connection(_mark_as_of(native, warehouse_as_of), con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, definitions, experiment="exp", plan=native_plan())
-        return mark(_publish_and_adopt(con, native), warehouse_as_of)
+        native = make_binding(con, definitions, experiment="exp", plan=native_plan())
+        return _mark_as_of(_publish_and_adopt(con, native), warehouse_as_of)
 
-    def build_summary() -> Analysis:
+    def build_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.unit_summary_frame(con)
         con.disconnect()
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -109,13 +109,14 @@ def _sequential_fixed_winsor_case() -> ParityCase:
             exposure_date="exposure_date",
         )
 
-    def build_panel() -> Analysis:
+    def build_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()
-        return mark(
-            Analysis.from_unit_panel(
+        return _mark_as_of(
+            builders.from_frame(
                 panel,
+                shape="panel",
                 unit="user_id",
                 group="variant",
                 date="date",
@@ -136,7 +137,7 @@ def _sequential_fixed_winsor_case() -> ParityCase:
             panel_as_of,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         return _export_and_replay(
             build_summary(),
             [
@@ -148,11 +149,8 @@ def _sequential_fixed_winsor_case() -> ParityCase:
             ],
         )
 
-    def probe(_ingress: str, analysis: Analysis) -> None:
-        as_of = getattr(analysis, "_sequential_as_of", None)
-        snapshot = analysis.capture_sequential(
-            finalized=True, **({"as_of": as_of} if as_of is not None else {})
-        )
+    def probe(_ingress: str, bound: Bound) -> None:
+        snapshot = workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
         assert snapshot.registration.models[0].law == "scalar_mean"
         states = {state.group_id: state for state in snapshot.states}
         assert {group: state.n for group, state in states.items()} == {
@@ -197,7 +195,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
 
     import polars as pl
 
-    from increment import Analysis, CupedCovariate, Method
+    from increment import CupedCovariate, Method, builders, workflows
     from increment.frame import MetricSpec
     from increment.plan import bind_automatic_sequential_plan
     from increment.semantics.assignment import (
@@ -214,14 +212,18 @@ def _sequential_mean_cuped_case() -> ParityCase:
         MethodSpec,
     )
     from increment.sequential_source import native_observation_mapping
-    from tests.analysis_factory import make_analysis
+    from tests.analysis_factory import make_binding
     from tests.parity_harness import dataset as ds
     from tests.parity_harness.cases import (
+        Bound,
         ParityCase,
+        _capture_kwargs,
         _export_and_replay,
+        _mark_as_of,
         _publish_and_adopt,
         _track_connection,
     )
+    from tests.parity_harness.views import read
 
     cuped = MethodSpec(name="cuped", variance_reduction="cuped", covariates=None)
     cuped_frame = Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
@@ -256,19 +258,15 @@ def _sequential_mean_cuped_case() -> ParityCase:
         assert bound is not None
         return bound
 
-    def mark(analysis: Analysis) -> Analysis:
-        analysis._sequential_as_of = warehouse_as_of  # ty: ignore[unresolved-attribute]
-        return analysis
-
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, definitions, experiment="exp", plan=native_plan())
-        return _track_connection(mark(native), con)
+        native = make_binding(con, definitions, experiment="exp", plan=native_plan())
+        return _track_connection(_mark_as_of(native, warehouse_as_of), con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, definitions, experiment="exp", plan=native_plan())
-        return mark(_publish_and_adopt(con, native))
+        native = make_binding(con, definitions, experiment="exp", plan=native_plan())
+        return _mark_as_of(_publish_and_adopt(con, native), warehouse_as_of)
 
     def summary_spec(window_days: int | None = None) -> MetricSpec:
         return MetricSpec(
@@ -279,12 +277,13 @@ def _sequential_mean_cuped_case() -> ParityCase:
             window_days=window_days,
         )
 
-    def build_summary() -> Analysis:
+    def build_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.unit_summary_frame(con)
         con.disconnect()
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -294,12 +293,13 @@ def _sequential_mean_cuped_case() -> ParityCase:
             exposure_date="exposure_date",
         )
 
-    def build_panel() -> Analysis:
+    def build_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -310,7 +310,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
             exposure_date="exposure_date",
         )
 
-    def build_switchback() -> Analysis:
+    def build_switchback() -> Bound:
         schedule = pl.DataFrame(
             [
                 {
@@ -325,7 +325,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
                 for period in (0, 1)
             ]
         )
-        return Analysis.from_switchback_panel(
+        return builders.from_switchback_frame(
             schedule,
             unit="unit",
             cycle="cycle",
@@ -341,20 +341,17 @@ def _sequential_mean_cuped_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         return _export_and_replay(build_summary(), [MetricSpec(name="revenue", type="mean")])
 
-    def probe(_ingress: str, analysis: Analysis) -> None:
-        as_of = getattr(analysis, "_sequential_as_of", None)
-        snapshot = analysis.capture_sequential(
-            finalized=True, **({"as_of": as_of} if as_of is not None else {})
-        )
+    def probe(_ingress: str, bound: Bound) -> None:
+        snapshot = workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
         assert snapshot.registration.models[0].law == "adjusted_mean"
         assert {state.group_id: (state.n, len(state.mean)) for state in snapshot.states} == {
             "control": (60, 2),
             "treatment": (60, 2),
         }
-        (row,) = analysis.run()
+        (row,) = read(bound)
         assert row.method == "cuped"
         assert row.inference == "asymptotic_mean"
 

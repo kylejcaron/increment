@@ -17,6 +17,7 @@ import ibis
 import numpy as np
 import pytest
 
+from increment import Scope, from_definitions
 from increment.errors import IncrementWarning
 from increment.query.builders import (
     first_exposures,
@@ -28,6 +29,8 @@ from increment.query.builders import (
 )
 from increment.query.schemas import GROUP_SUMMARY, UNIT_TOTALS
 from increment.semantics.models import Measure, RatioMetric
+from increment.workflows import export_moments
+from tests.analysis_factory import view_readout
 from tests.warning_codes import warning_codes
 
 pytestmark = pytest.mark.integration
@@ -504,8 +507,6 @@ def test_running_experiment_denominator_events_past_numerator_horizon_count(tmp_
     import pandas as pd
     import pyarrow.parquet as pq
 
-    from increment.analysis import Analysis
-
     con = ibis.duckdb.connect()
     fe = dt.datetime(2025, 6, 2, 10, 0, 0)
     rows = [
@@ -648,22 +649,17 @@ experiments:
         }
     )
     defs_path.write_text(yaml.safe_dump(definitions))
-    a = Analysis.from_definitions("exp", defs_path, con)
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp")
     out = tmp_path / "moments.parquet"
-    a.export(out)
+    export_moments(experiment, resolver, out)
     moments = {r["group_id"]: r for r in pq.read_table(out).to_pylist()}
 
     # 5 treatment page views (incl. 4 dated past the numerator's last purchase) and 2 control page views; one unit per arm, so ref_den/ref_y carry the whole totals.
     assert _total(moments["treatment"], "ref_den", "cden1") == 5.0
     assert _total(moments["control"], "ref_den", "cden1") == 2.0
     assert _total(moments["treatment"], "ref_y", "cy1") == 10.0
-    snapshot_asof = []
-
-    def read_snapshot(isolated):
-        snapshot_asof.extend(isolated.run_asof(metrics=["rev_per_view"]))
-        return {}
-
-    a.dashboard_snapshot(read_snapshot, metrics=a.metrics)
+    asof_values = Scope(view="asof", grain="asof", values=True)
+    snapshot_asof = view_readout(experiment, resolver, asof_values, metrics=["rev_per_view"])
     final_day = [row for row in snapshot_asof if row.ds == dt.date(2025, 6, 10)]
     assert len(final_day) == 2
     assert {row.group_id for row in final_day} == {"treatment", "control"}
@@ -674,13 +670,7 @@ experiments:
         numerator=Measure(fact="purchase", aggregation="sum"),
         denominator=Measure(fact="late_view", aggregation="count"),
     )
-    late_snapshot_asof = []
-
-    def read_late_snapshot(isolated):
-        late_snapshot_asof.extend(isolated.run_asof(metrics=[late_ratio]))
-        return {}
-
-    a.dashboard_snapshot(read_late_snapshot, metrics=[*a.metrics, late_ratio])
+    late_snapshot_asof = view_readout(experiment, resolver, asof_values, metrics=[late_ratio])
     latest_late_day = [row for row in late_snapshot_asof if row.ds == dt.date(2025, 6, 15)]
     assert len(latest_late_day) == 2
     assert {row.group_id for row in latest_late_day} == {"treatment", "control"}

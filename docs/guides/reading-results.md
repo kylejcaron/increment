@@ -1,10 +1,9 @@
 # Reading results
 
-`Analysis.run()` returns one of two legacy result families. The recommended
-`run(experiment, resolver)` builder route returns a `RunResult`: inspect its
-`cells`, `effects`, and `decisions`, or pass it to `render` or `readout_table`
-to retain scope, integrity, and availability qualifications. Its other
-consumers each keep one format:
+`run(experiment, resolver)` returns a `RunResult`: inspect its `cells`,
+`effects`, and `decisions`, or pass it to `render` or `readout_table` to retain
+scope, integrity, and availability qualifications. Its other consumers each
+keep one format:
 
 | Need | Read | Format |
 |---|---|---|
@@ -92,8 +91,8 @@ on result objects and tables.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|
-| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
-| Switchback: `from_switchback_panel` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
+| Arm comparisons: `from_frame` (summary or panel), `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
+| Switchback: `from_switchback_frame` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
 
 A `LiftEstimate` can be absolute. An encouragement design's additive LATE row
 and an observational metric reported with `run(value_scale={metric: "absolute"})`
@@ -124,9 +123,10 @@ The collection display includes retained scope even when filtering leaves no
 visible rows.
 
 Scope coherence is recorded on each scoped row as `coherence` and
-`effective_modes`. `Analysis.run()` and the daily/as-of readout methods default
-to `coherence="captured"`: a captured request asks built-in streams to pin
-evidence and refuses if the warehouse cannot create the required TEMP snapshot.
+`effective_modes`. `run` reads every view with the `coherence` you pass, else
+the experiment's saved value, else `"captured"`: a
+captured request asks built-in streams to pin evidence and refuses if the
+warehouse cannot create the required TEMP snapshot.
 Choose `coherence="live"` when snapshot materialization is unavailable (for
 example, when the database role lacks TEMP privileges); live results are
 qualified as live and lose the guarantee that separate reads observe one common
@@ -144,12 +144,12 @@ representation and table header identify live or provider-owned results, and
 flattened outputs retain both the requested coherence and the effective
 per-stream modes.
 
-Pass a `ResultsStore` to `Analysis.run(store=...)` to persist the completed
-result cells without changing the returned result collection. The run records
-its `run_id` and `analysis_spec_hash` in `results.metadata`; use those values
-with `store.open_run(experiment_id, analysis_spec_hash, run_id)` to pin the
-saved cells and metadata. Persistence is opt-in; calls without `store` remain
-in-memory only.
+Pass a `ResultsStore` to `run(experiment, resolver, results_store=store)` to
+persist the completed result cells without changing the returned result. The
+saved run's identity is `result.run`; use
+`store.open_run(result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id)`
+to pin the saved cells and metadata. Persistence is opt-in; calls without
+`results_store` remain in-memory only.
 
 Interpretation separates the tested-null outcome from effect direction.
 An interval containing the tested null is inconclusive, not evidence of no
@@ -223,9 +223,9 @@ live result refuses rather than dropping the set or exposing its raw outcomes;
 `result.readout().model_dump_json()` writes the full-row JSON, including the
 confidence set and the raw outcomes it depends on, when that is required.
 
-When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
-assigned and triggered results as separate rows. Pass `population="assigned"` or
-`population="triggered"` to select one population; a selected result never pools the two.
+Each view reads one population, the `Scope(population=...)` it declares; the
+default is `"assigned"`. To read a triggered experiment's assigned and triggered
+results together, declare one view per population; a view never pools the two.
 Under a registered sequential plan each population reads its own retained chain of the
 captured checkpoint; a triggered row never borrows an assigned checkpoint, and a process
 committed without a triggered chain keeps an unavailable row with its refusal code and reason.
@@ -344,7 +344,7 @@ from random import Random
 
 import polars as pl
 
-from increment import Analysis, Randomized
+from increment import Randomized, from_frame, run
 
 rng = Random(13)
 n = 200
@@ -357,8 +357,9 @@ df = pl.DataFrame(
         "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
     }
 )
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     design=Randomized(
@@ -367,7 +368,8 @@ results = Analysis.from_unit_summary(
         allocation_scheme="independent",
     ),
     metrics={"revenue": "mean", "converted": "conversion"},
-).run()
+)
+results = run(experiment, resolver).readout()
 print(results)
 
 for r in results:
@@ -492,9 +494,9 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
     `ContrastResults.to_frame` does not, because every contrast is additive; only
     the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
-    When a triggered experiment is read without a `population` argument,
-    `Analysis.run()` keeps assigned and triggered results as separate rows;
-    select with `population="assigned"` or `population="triggered"`. A triggered row belongs
+    Each view reads the population its `Scope` declares, `"assigned"` by
+    default; declare `Scope(view="run", grain="total", population="triggered")`
+    beside the default view to read both populations as separate rows. A triggered row belongs
     to its own multiplicity family. Conditioning on triggering is causally
     valid only under the experiment's assumptions; triggering affected by
     treatment changes the estimand and can introduce selection bias.
@@ -717,13 +719,15 @@ negative = pl.DataFrame(
         "delta": [-3.0 + (i * 7) % 5 for i in range(k)] + [-1.0 + (i * 7) % 5 for i in range(k)],
     }
 )
-flat_mean = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     negative,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics={"delta": "mean"},
-).run()[0]
+)
+flat_mean = run(experiment, resolver).readout()[0]
 
 assert flat_mean.lift is None and flat_mean.relative_confidence_set is None
 assert flat_mean.relative_unavailable_reason == "nonpositive_arm_mean"
@@ -746,8 +750,9 @@ zero_control = pl.DataFrame(
         "revenue": [0.0] * k + [float(1 + (i * 7) % 5) for i in range(k)],
     }
 )
-winsorized = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     zero_control,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
@@ -762,7 +767,8 @@ winsorized = Analysis.from_unit_summary(
             },
         )
     ],
-).run()[0]
+)
+winsorized = run(experiment, resolver).readout()[0]
 
 relative = winsorized.confidence_set.relative
 assert winsorized.lift is None and winsorized.reference_kind == "confidence_set"
@@ -789,14 +795,16 @@ degenerate = pl.DataFrame(
         "revenue": [10.0] * m + [11.0] * m,
     }
 )
-flat = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     degenerate,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics={"revenue": "mean"},
     cluster="store",
-).run()[0]
+)
+flat = run(experiment, resolver).readout()[0]
 
 assert flat.lift is not None and flat.lift.lb is None and flat.lift.ub is None
 assert flat.relative_unavailable_reason == "zero_relative_variance"
@@ -825,14 +833,16 @@ purchases = pl.DataFrame(
         "purchased": [1] * 30 + [0] * 70 + [1] * 45 + [0] * 55,
     }
 )
-directional = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     purchases,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[MetricSpec(name="purchased", type="conversion")],
     plan=AnalysisPlan(primary="purchased", alternative="greater"),
-).run()[0]
+)
+directional = run(experiment, resolver).readout()[0]
 
 lift = directional.lift
 assert lift.open_side == "upper" and lift.ub is None
@@ -876,7 +886,7 @@ where `1.0` means no effect, and displays it on the **lift** scale, where
 ```python
 import polars as pl
 
-from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
+from increment import AnalysisPlan, InferenceSpec, MetricSpec, Randomized, from_frame, run
 
 k = 200
 monitored = pl.DataFrame(
@@ -888,8 +898,9 @@ monitored = pl.DataFrame(
         + [11.5 + (i * 37) % 17 for i in range(k)],
     }
 )
-sequential = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     monitored,
+    shape="summary",
     unit="unit",
     group="arm",
     design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
@@ -900,7 +911,8 @@ sequential = Analysis.from_unit_summary(
         inference=InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=400),
     ),
     exposure_date="enrolled_on",
-).run()
+)
+sequential = run(experiment, resolver).readout()
 row = sequential[0]
 assert row.inference != "fixed"
 
@@ -931,8 +943,9 @@ registered = pl.DataFrame(
         for arm, value in zip(("control", "treatment"), pair, strict=True)
     ]
 )
-exact = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     registered,
+    shape="summary",
     unit="unit",
     group="arm",
     exposure_date="exposure",
@@ -943,7 +956,8 @@ exact = Analysis.from_unit_summary(
         primary="outcome",
         inference=InferenceSpec(kind="always_valid", baseline_rate=Fraction(3, 10)),
     ),
-).run()[0]
+)
+exact = run(experiment, resolver).readout()[0]
 
 result = exact.require_sequential_result()
 assert exact.inference == "always_valid" and exact.stat_sig()
@@ -957,14 +971,14 @@ sets are built, including the e-BH secondary family.
 
 ## Switchback contrasts are additive
 
-`from_switchback_panel` returns `ContrastResults`. Each `ContrastResult`
+`from_switchback_frame` returns a `ContrastResults` readout. Each `ContrastResult`
 carries an additive `estimate` in the metric's own units, with `null_abs` as
 its null. This panel has four independent blocks over a three-unit roster:
 
 ```python
 import math
 
-from increment import Randomized
+from increment import Randomized, from_switchback_frame
 from increment.estimators import SharedScheduleOrder, SwitchbackAssignment, SwitchbackWindow
 
 orders = [("control", "treatment")] * 2 + [("treatment", "control")] * 2
@@ -984,7 +998,7 @@ panel = pl.DataFrame(
         for period, group in enumerate(order)
     ]
 )
-contrasts = Analysis.from_switchback_panel(
+experiment, resolver = from_switchback_frame(
     panel,
     unit="unit",
     cycle="cycle",
@@ -1000,7 +1014,8 @@ contrasts = Analysis.from_switchback_panel(
         sequence=SharedScheduleOrder(probability_ct=0.5),
         window=SwitchbackWindow(washout_steps=0, observation_steps=1),
     ),
-).run()
+)
+contrasts = run(experiment, resolver).readout()
 c = contrasts[0]
 
 estimate = c.estimate

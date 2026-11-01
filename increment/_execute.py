@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
+from contextvars import ContextVar
 from dataclasses import replace
 from functools import partial
-from inspect import Parameter, signature
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset, overlay_configs, select_metrics
-from increment._binding import _execution_unavailable, _run_identity_hashes
+from increment._binding import _run_identity_hashes
 from increment._breakout_readouts import plan_breakout_request, run_breakout
 from increment._day_axis import (
     _TRIGGER_UNSUPPORTED,
@@ -26,7 +26,6 @@ from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastRead
 from increment._evidence_types import SequentialCaptureRequest
 from increment._exploratory import exploratory_sibling, select_exploratory
 from increment._runnability import (
-    _SCOPE_OPERATIONS,
     operation_options,
     records_breakout_sources,
     require_breakout_sources,
@@ -199,6 +198,10 @@ def _run_contrast(
     )
 
 
+# Metrics the executing run has already advised about an unused CUPED covariate.
+_ADVISED_COVARIATES: ContextVar[set[str] | None] = ContextVar("_ADVISED_COVARIATES", default=None)
+
+
 def _warn_run_advisories(
     binding: SourceBinding,
     selected: Sequence[Metric],
@@ -310,6 +313,7 @@ def _warn_run_advisories(
                 sensitivity_methods=sensitivity_methods,
             )
         )
+    advised = _ADVISED_COVARIATES.get()
     unused: list[str] = []
     for config, config_source in config_sources:
         design = config_source.context.design
@@ -320,9 +324,12 @@ def _warn_run_advisories(
             or getattr(design, "mechanism", None) == "observational"
             or any(method.variance_reduction == "cuped" for method in config.sensitivity_methods)
             or not _cuped_recommendation_admitted(config_source, config)
+            or (advised is not None and config.metric.name in advised)
         ):
             continue
         unused.append(config.metric.name)
+    if advised is not None:
+        advised.update(unused)
     if unused:
         _warn(
             "analysis.cuped.covariate_unused",
@@ -346,7 +353,6 @@ def run_whole_window(
     exploratory_metrics: Sequence[str] | None = None,
     population: Literal["assigned", "triggered"] | None = None,
     coherence: Literal["captured", "live"] = "captured",
-    store: Any | None = None,
     _execution_context: EvidenceExecutionContext | None = None,
 ) -> LiftEstimates | ContrastResults:
     """Run the whole-window readout: one estimate per metric, method and non-control arm."""
@@ -365,13 +371,6 @@ def run_whole_window(
             supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
     added = select_exploratory(binding, exploratory_metrics, caller="run")
-    runtime_request: dict[str, object] = {}
-    if prior is not UNSET:
-        runtime_request["prior"] = prior
-    if estimands is not None:
-        runtime_request["estimands"] = tuple(estimands)
-    if value_scale is not None:
-        runtime_request["value_scale"] = value_scale
     if isinstance(state, ContrastAnalysisState):
         rows = _run_contrast(
             binding,
@@ -384,10 +383,6 @@ def run_whole_window(
             execution_context=_execution_context,
         )
         rows._default_backend = binding.input_backend
-        if store is not None:
-            _persist(
-                binding, store, rows, decision_method, sensitivity_methods, (), runtime_request
-            )
         return rows
     selected = select_metrics(cast("Sequence[Metric]", binding.metrics), metrics, caller="run")
 
@@ -443,37 +438,7 @@ def run_whole_window(
             }
         )
     rows._default_backend = binding.input_backend
-    if store is not None:
-        _persist(binding, store, rows, decision_method, sensitivity_methods, added, runtime_request)
     return rows
-
-
-def _persist(
-    binding: SourceBinding,
-    store: Any,
-    rows: Any,
-    decision_method: Method | _Unset,
-    sensitivity_methods: Sequence[Method] | _Unset,
-    added: Sequence[Metric],
-    runtime_request: Mapping[str, object],
-) -> None:
-    from uuid import uuid4
-
-    from increment._run import _persistence_identity
-
-    store.persist_results(
-        rows,
-        binding.experiment_name,
-        uuid4().hex,
-        _persistence_identity(
-            binding,
-            rows,
-            decision_method,
-            sensitivity_methods,
-            added,
-            runtime_request=runtime_request,
-        ),
-    )
 
 
 def _contrast_request(operation: str, options: Mapping[str, Any]) -> None:
@@ -545,24 +510,83 @@ _VIEWS: Mapping[str, Callable[..., Any]] = {
 }
 
 
+# Each view's declared keywords are part of every experiment's JSON and hash, so they
+# are fixed here rather than read from view signatures; saved experiments keep
+# validating. `store` stays declared, and a store request option refuses before any view.
+_OPERATION_KEYWORDS: Mapping[str, tuple[str, ...]] = {
+    "run": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "estimands",
+        "value_scale",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "store",
+        "_execution_context",
+        "capture",
+    ),
+    "run_daily_lift": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "estimands",
+        "dimension",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_daily": (
+        "metrics",
+        "dimension",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_asof_lift": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "dimension",
+        "estimands",
+        "completed_windows_only",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_asof": (
+        "metrics",
+        "dimension",
+        "completed_windows_only",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_breakout": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "exploratory_metrics",
+        "population",
+        "capture",
+    ),
+}
+
+
 def operation_parameters() -> dict[str, Any]:
-    """Record the keyword contracts of the readout views a binding executes."""
-    declarations = {}
-    for operation in dict.fromkeys(name for names in _SCOPE_OPERATIONS.values() for name in names):
-        parameters = tuple(signature(_VIEWS[operation]).parameters.values())[1:]
-        keywords = tuple(
-            parameter
-            for parameter in parameters
-            if parameter.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
-        )
-        declarations[operation] = {
-            "accepted": (*tuple(parameter.name for parameter in keywords), "capture"),
-            "required": tuple(
-                parameter.name for parameter in keywords if parameter.default is Parameter.empty
-            ),
-            "variadic": any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters),
-        }
-    return declarations
+    """Record the declared keyword contracts of the readout views a binding executes."""
+    return {
+        operation: {"accepted": accepted, "required": (), "variadic": False}
+        for operation, accepted in _OPERATION_KEYWORDS.items()
+    }
 
 
 def _borrowed(
@@ -604,6 +628,9 @@ def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scop
     by_source = records_breakout_sources(experiment)
     declared = binding.declared_breakouts
     if not {identity.property for identity in identities} <= {item.property for item in declared}:
+        if scope.view != "breakout":
+            # A day-axis view refuses an unavailable grain before an unavailable dimension.
+            return binding
         require_evidence(binding.source, by=tuple(identity.property for identity in identities))
     selected = tuple(
         dict.fromkeys(
@@ -642,10 +669,15 @@ def execute_views(
     """Plan every selected scope before any read, then run each under one capture.
 
     Views run in declaration order. Without a supplied context, more than one
-    view shares one owned capture; a supplied context is borrowed only after
-    every selected request validates against it. A sequential capture is taken
-    inside that context before any view reads.
+    view, or any view with a sequential capture, shares one owned capture; a
+    supplied context is borrowed only after every selected request validates
+    against it. A sequential capture is taken inside that context before any
+    view reads. The run's ``coherence``, saved in the experiment's request options or
+    passed at call time (which wins), applies to every view: a view that takes none
+    of its own reads under a shared capture opened with it.
     """
+    requested = {**experiment.request_options, **options}
+    coherence = cast(Literal["captured", "live"], requested.get("coherence", "captured"))
     planned = [
         (
             scope,
@@ -655,28 +687,25 @@ def execute_views(
         )
         for scope in scopes
     ]
-    if len(planned) == 1:
+    if (
+        capture is None
+        and len(planned) == 1
+        and (coherence == "captured" or "coherence" in planned[0][2])
+    ):
         scope, operation, kwargs, scope_binding = planned[0]
-        if capture is not None:
-            # Validate the view's request before the capture reads and retains source state.
-            operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         ambient = (
             nullcontext()
             if execution_context is None
             else execution_context_scope(execution_context)
         )
         with ambient:
-            if capture is not None:
-                retained_sequential_capture(binding.source, capture, current_execution_context())
             return (ScopedReadout(_VIEWS[operation](scope_binding, **kwargs), scope, kwargs),)
     requests = [
         operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         for _, operation, kwargs, scope_binding in planned
     ]
-    coherences = {kwargs.get("coherence", "captured") for _, _, kwargs, _ in planned}
-    if len(coherences) != 1:
-        _execution_unavailable(experiment, "coherence")
-    coherence = cast(Literal["captured", "live"], coherences.pop())
+    if execution_context is not None and "coherence" in requested:
+        execution_context.validate_requested_coherence(coherence)
     from increment._evidence_scopes import capture_requirements
 
     scope_request = capture_requirements(binding.source, requests)
@@ -695,16 +724,21 @@ def execute_views(
         acquisition = owned_execution_context(binding, scope_request, coherence=coherence)
     else:
         acquisition = nullcontext()
-    with acquisition:
-        if capture is not None:
-            retained_sequential_capture(binding.source, capture, current_execution_context())
-        scoped = []
-        for scope, operation, kwargs, scope_binding in planned:
-            single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
-            scope_hash, _ = _run_identity_hashes(single, kwargs)
-            scoped.append(
-                ScopedReadout(
-                    _VIEWS[operation](scope_binding, **kwargs), scope, dict(kwargs), scope_hash
+    # One run reading several views advises each metric's unused covariate once.
+    advised = _ADVISED_COVARIATES.set(set())
+    try:
+        with acquisition:
+            if capture is not None:
+                retained_sequential_capture(binding.source, capture, current_execution_context())
+            scoped = []
+            for scope, operation, kwargs, scope_binding in planned:
+                single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
+                scope_hash, _ = _run_identity_hashes(single, kwargs)
+                scoped.append(
+                    ScopedReadout(
+                        _VIEWS[operation](scope_binding, **kwargs), scope, dict(kwargs), scope_hash
+                    )
                 )
-            )
+    finally:
+        _ADVISED_COVARIATES.reset(advised)
     return tuple(scoped)

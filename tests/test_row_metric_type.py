@@ -16,7 +16,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import AnalysisPlan, MetricSpec, Scope, from_frame, from_switchback_frame
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import estimate_lift
 from increment.estimation.readout_types import ReadoutResults
@@ -31,7 +31,7 @@ from increment.semantics.design import (
     UptakeSpec,
 )
 from increment.semantics.models import InferenceSpec, MeanMetric
-from tests.analysis_factory import lift_rows, make_analysis
+from tests.analysis_factory import lift_rows, make_binding, view_readout
 from tests.parity_harness import dataset as ds
 
 DECLARED = {"revenue": "mean", "purchase_rate": "conversion", "rps": "ratio"}
@@ -71,17 +71,18 @@ def _assert_stamped(rows, declared) -> None:
 
 @pytest.mark.integration
 def test_run_rows_carry_declared_metric_type():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _summary_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=FRAME_METRICS,
     )
     try:
-        rows = lift_rows(analysis.run())
+        rows = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     _assert_stamped(rows, DECLARED)
 
 
@@ -110,21 +111,23 @@ def test_observational_and_breakout_rows_carry_metric_type():
         adjustment=AdjustmentSet(covariates=("x1", "x2")),
         gate=IdentificationGate(overlap="trim"),
     )
-    observational = Analysis.from_unit_summary(
+    observational_experiment, observational_resolver = from_frame(
         _confounded_conversion_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"converted": "conversion"},
         design=design,
     )
     try:
-        rows = lift_rows(observational.run())
+        rows = lift_rows(view_readout(observational_experiment, observational_resolver))
     finally:
-        observational.close()
+        observational_resolver.close()
     _assert_stamped(rows, {"converted": "conversion"})
 
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         ds.unit_panel_frame(_summary_frame()),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -133,9 +136,11 @@ def test_observational_and_breakout_rows_carry_metric_type():
         breakouts=("store",),
     )
     try:
-        breakout = panel.run_breakout()
+        breakout = view_readout(
+            panel_experiment, panel_resolver, Scope(view="breakout", grain="total")
+        )
     finally:
-        panel.close()
+        panel_resolver.close()
     assert {row.dimension for row in breakout} == {"store"}
     _assert_stamped(breakout, {"purchase_rate": "conversion"})
 
@@ -167,17 +172,18 @@ def test_metric_type_is_identical_across_ingresses():
 
 @pytest.mark.integration
 def test_metric_type_round_trips():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _summary_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=FRAME_METRICS,
     )
     try:
-        results = lift_rows(analysis.run())
+        results = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     row = next(row for row in results if row.metric == "rps")
     assert row.metric_type == "ratio"
     assert LiftEstimate.model_validate(row.model_dump()).metric_type == "ratio"
@@ -239,8 +245,9 @@ def test_encouragement_rows_carry_metric_type_and_compliance_stays_unknown():
             )
         )
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         table,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -254,9 +261,9 @@ def test_encouragement_rows_carry_metric_type_and_compliance_stays_unknown():
         ),
     )
     try:
-        results = lift_rows(analysis.run())
+        results = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     compliance = [row for row in results if row.estimand == "compliance"]
     assert compliance and {row.metric_type for row in compliance} == {None}
     assert {row.estimand for row in results} >= {"itt", "late"}
@@ -271,8 +278,9 @@ def test_sequential_rows_carry_metric_type():
             for arm, value in (("control", 1.0 + (i % 5) * 0.1), ("treatment", 1.4 + (i % 7) * 0.1))
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
@@ -282,17 +290,18 @@ def test_sequential_rows_carry_metric_type():
         exposure_date="exposure",
     )
     try:
-        rows = lift_rows(analysis.run())
+        rows = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     assert {row.inference for row in rows} == {"asymptotic_mean"}
     _assert_stamped(rows, {"outcome": "mean"})
 
 
 @pytest.mark.integration
 def test_daily_lift_rows_carry_metric_type():
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         ds.unit_panel_frame(_summary_frame()),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -300,9 +309,9 @@ def test_daily_lift_rows_carry_metric_type():
         metrics=FRAME_METRICS,
     )
     try:
-        rows = analysis.run_daily_lift()
+        rows = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
     finally:
-        analysis.close()
+        resolver.close()
     _assert_stamped(rows, DECLARED)
 
 
@@ -310,8 +319,9 @@ def test_daily_lift_rows_carry_metric_type():
 def test_daily_and_asof_value_rows_carry_metric_type():
     from increment.breakout.estimates import DailyMetricValue
 
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         ds.unit_panel_frame(_summary_frame()),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -319,10 +329,10 @@ def test_daily_and_asof_value_rows_carry_metric_type():
         metrics=FRAME_METRICS,
     )
     try:
-        daily = analysis.run_daily()
-        asof = analysis.run_asof()
+        daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+        asof = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
     finally:
-        analysis.close()
+        resolver.close()
     for values in (daily, asof):
         assert values and all(isinstance(row, DailyMetricValue) for row in values)
         assert all(row.source_snapshot_id is not None for row in values)
@@ -356,7 +366,7 @@ def test_switchback_contrast_rows_carry_metric_type():
                             "value": float(cycle + period + step + (group == "treatment")),
                         }
                     )
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(panel),
         unit="unit",
         cycle="cycle",
@@ -374,9 +384,9 @@ def test_switchback_contrast_rows_carry_metric_type():
         contrast_references={"value": UnitCycleTApproximation()},
     )
     try:
-        results = analysis.run()
+        results = view_readout(experiment, resolver)
     finally:
-        analysis.close()
+        resolver.close()
     assert [row.metric_type for row in results] == ["mean"]
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert [row.metric_type for row in restored] == ["mean"]
@@ -396,14 +406,20 @@ def test_exploratory_metric_rows_carry_metric_type():
         definitions = Definitions.model_validate(
             ds.definitions_dict(plan=AnalysisPlan(primary="purchase_rate"))
         )
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis_experiment, analysis_resolver = make_binding(con, definitions, experiment="exp")
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 with pytest.warns(IncrementWarning):
-                    rows = lift_rows(analysis.run(exploratory_metrics=["rps", "revenue"]))
+                    rows = lift_rows(
+                        view_readout(
+                            analysis_experiment,
+                            analysis_resolver,
+                            exploratory_metrics=["rps", "revenue"],
+                        )
+                    )
         finally:
-            analysis.close()
+            analysis_resolver.close()
     finally:
         con.disconnect()
     assert {row.role for row in rows if row.metric in ("rps", "revenue")} == {"exploratory"}
@@ -414,17 +430,18 @@ def test_exploratory_metric_rows_carry_metric_type():
 def test_frame_export_carries_metric_type_beside_source_snapshot_id():
     from increment.tables import estimates_to_readout
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _summary_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=FRAME_METRICS,
     )
     try:
-        results = lift_rows(analysis.run())
+        results = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     frame = nw.from_native(results.to_frame(backend="polars"), eager_only=True)
     assert "source_snapshot_id" in frame.columns
     assert dict(zip(frame["metric"].to_list(), frame["metric_type"].to_list(), strict=True)) == {

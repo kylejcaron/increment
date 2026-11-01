@@ -13,16 +13,20 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Any, cast
 
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, from_frame, from_moments, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, IncrementWarning, UnsupportedRequestError
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import Definitions
-from tests.parity_harness.cases import PARITY_CASES, _close_parity_analysis
+from increment.workflows import export_moments, sequential_snapshot
+from tests.analysis_factory import bound_source
+from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
 from tests.test_native_encouragement_declaration import (
     _observational_quantile_defs,
     _seed,
@@ -49,32 +53,43 @@ def test_randomized_quantile_export_refuses_on_every_ingress(
     tmp_path: Path, case_id: str, ingress: str
 ) -> None:
     """The second case also declares additive siblings: one quantile still refuses the cube."""
-    analysis = _QUANTILE_CASES[case_id].build[ingress]()
+    bound = _QUANTILE_CASES[case_id].build[ingress]()
     path = tmp_path / "quantile-moments.parquet"
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis.export(path)
+            export_moments(*bound, path)
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)
     assert raised.value.code == "source.frame.quantile_no_moments"
     assert raised.value.context["metric"] == "p90_latency"
     assert not path.exists()
 
 
-def _observational_frame(shape: str) -> Analysis:
+def _observational_frame(shape: str) -> Any:
     from increment.frame import MetricSpec
 
     table = _confounded_table(200, seed=11)
     metrics = [MetricSpec(name="revenue", type="quantile", quantile=0.5)]
     if shape == "from_unit_summary":
-        return Analysis.from_unit_summary(
-            table, unit="user_id", group="variant", metrics=metrics, design=_OBS_TRIM
+        return from_frame(
+            table,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics=metrics,
+            design=_OBS_TRIM,
         )
     import pyarrow as pa
 
     panel = table.append_column("day", pa.array(["2025-01-01"] * table.num_rows))
-    return Analysis.from_unit_panel(
-        panel, unit="user_id", group="variant", date="day", metrics=metrics, design=_OBS_TRIM
+    return from_frame(
+        panel,
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="day",
+        metrics=metrics,
+        design=_OBS_TRIM,
     )
 
 
@@ -82,13 +97,13 @@ def _observational_frame(shape: str) -> Analysis:
 def test_observational_quantile_export_refuses_on_frame_ingresses(
     tmp_path: Path, shape: str
 ) -> None:
-    analysis = _observational_frame(shape)
+    experiment, resolver = _observational_frame(shape)
     path = tmp_path / "quantile-moments.parquet"
     try:
         with pytest.raises(UnsupportedRequestError) as raised:
-            analysis.export(path)
+            export_moments(experiment, resolver, path)
     finally:
-        analysis.close()
+        resolver.close()
     assert raised.value.code == "readout.observational.quantile"
     assert raised.value.context == {"metric": "revenue"}
     assert not path.exists()
@@ -106,44 +121,49 @@ def test_observational_quantile_export_refuses_on_definitions_and_reopened_artif
     experiment = defs.experiment("native_observational_quantile_exp")
     assert experiment is not None
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions(
-        "native_observational_quantile_exp", defs_path, con, store="none"
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_observational_quantile_exp", store="none"
     )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    reopened = Analysis.from_unit_day_artifact(
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    reopened_experiment, reopened_resolver = from_unit_day_artifact(
         store, ref, expected_context=artifact_context(defs, experiment, "error")
     )
     try:
-        for name, analysis in (("definitions", native), ("artifact", reopened)):
+        for name, (bound_experiment, resolver) in (
+            ("definitions", (native_experiment, native_resolver)),
+            ("artifact", (reopened_experiment, reopened_resolver)),
+        ):
             path = tmp_path / f"{name}-quantile-moments.parquet"
             with pytest.raises(UnsupportedRequestError) as raised:
-                analysis.export(path)
+                export_moments(bound_experiment, resolver, path)
             assert raised.value.code == "readout.observational.quantile"
             assert raised.value.context == {"metric": "revenue"}
             assert not path.exists()
     finally:
-        reopened.close()
-        native.close()
+        reopened_resolver.close()
+        cast(Any, native_resolver).close()
 
 
-def _mixed_observational_frame(shape: str, *, varying_covariate: bool) -> Analysis:
+def _mixed_observational_frame(shape: str, *, varying_covariate: bool) -> Any:
     """A mean precedes the quantile in the catalog; with a varying covariate it cannot be read."""
     from increment import AdjustmentSet, CupedCovariate, Method, MetricSpec, Observational
     from tests.test_frame_panel_unit_frame import _panel_with_covariate
 
     quantile = MetricSpec(name="p50", type="quantile", quantile=0.5, value_column="revenue")
     if shape == "from_unit_summary":
-        return Analysis.from_unit_summary(
+        return from_frame(
             _confounded_table(200, seed=11),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=[MetricSpec(name="revenue", type="mean"), quantile],
             design=_OBS_TRIM,
         )
     panel, _tenure, _group = _panel_with_covariate(vary_within_unit=varying_covariate)
-    return Analysis.from_unit_panel(
+    return from_frame(
         panel,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -172,10 +192,9 @@ def test_observational_frame_refuses_a_mixed_catalog_before_reading_any_metric(
 ) -> None:
     """The refusal reads catalog metadata only: an earlier mean is never counted or aggregated,
     so an unreadable mean cannot pre-empt it with its own refusal."""
-    from tests.analysis_factory import _moment_source
 
-    analysis = _mixed_observational_frame(shape, varying_covariate=varying_covariate)
-    source = _moment_source(analysis)
+    experiment, resolver = _mixed_observational_frame(shape, varying_covariate=varying_covariate)
+    source = bound_source(resolver)
     reads: list[str] = []
     for name in ("moments", "unit_counts", "compliance_summary"):
         original = getattr(source, name)
@@ -188,9 +207,9 @@ def test_observational_frame_refuses_a_mixed_catalog_before_reading_any_metric(
     path = tmp_path / "mixed-moments.parquet"
     try:
         with pytest.raises(UnsupportedRequestError) as raised:
-            analysis.export(path)
+            export_moments(experiment, resolver, path)
     finally:
-        analysis.close()
+        resolver.close()
     assert raised.value.code == "readout.observational.quantile"
     assert raised.value.context == {"metric": "p50"}
     assert reads == []
@@ -206,7 +225,7 @@ def _mixed_catalog_specs() -> list:
     ]
 
 
-def _registered_mixed_catalog(*, registered: bool) -> Analysis:
+def _registered_mixed_catalog(*, registered: bool) -> Any:
     """A modeled conversion beside a quantile no registered model covers."""
     from increment.semantics.models import AnalysisPlan
     from tests.test_sequential_public_sources import _frame, _plan
@@ -217,8 +236,9 @@ def _registered_mixed_catalog(*, registered: bool) -> Analysis:
     declared = pytest.warns(IncrementWarning) if registered else nullcontext()
     with declared as caught:
         plan = _plan(specs, "bernoulli") if registered else AnalysisPlan(primary="outcome")
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -241,30 +261,32 @@ def test_registered_checkpoint_keeps_an_unmodeled_quantile_sibling_exportable(
     The same catalog under fixed-horizon inference refuses the moments cube."""
     import pyarrow.parquet as pq
 
-    registered = _registered_mixed_catalog(registered=True)
+    registered_experiment, registered_resolver = _registered_mixed_catalog(registered=True)
     path = tmp_path / "checkpoint.parquet"
     try:
-        registered.export(path)
-        snapshot = registered.sequential_snapshot()
+        export_moments(registered_experiment, registered_resolver, path)
+        snapshot = sequential_snapshot(registered_experiment, registered_resolver)
     finally:
-        registered.close()
+        registered_resolver.close()
     (envelope,) = pq.read_table(path).to_pylist()
     assert envelope["record_kind"] == "sequential_checkpoint"
     assert envelope["moments_format"] == 10
     assert "metric" not in envelope
-    replay = Analysis.from_moments([envelope], metrics=_mixed_catalog_specs(), control="control")
+    replay_experiment, replay_resolver = from_moments(
+        [envelope], metrics=_mixed_catalog_specs(), control="control"
+    )
     try:
-        assert replay.sequential_snapshot() == snapshot
+        assert sequential_snapshot(replay_experiment, replay_resolver) == snapshot
     finally:
-        replay.close()
+        replay_resolver.close()
 
-    fixed = _registered_mixed_catalog(registered=False)
+    fixed_experiment, fixed_resolver = _registered_mixed_catalog(registered=False)
     fixed_path = tmp_path / "fixed-moments.parquet"
     try:
         with pytest.raises(CapabilityError) as raised:
-            fixed.export(fixed_path)
+            export_moments(fixed_experiment, fixed_resolver, fixed_path)
     finally:
-        fixed.close()
+        fixed_resolver.close()
     assert raised.value.code == "source.frame.quantile_no_moments"
     assert raised.value.context["metric"] == "latency"
     assert not fixed_path.exists()

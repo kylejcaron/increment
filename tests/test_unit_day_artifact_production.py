@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -14,7 +15,8 @@ import ibis
 import pytest
 
 from examples._seed import seed_event_log
-from increment import Analysis
+from increment import from_definitions, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.query.artifact_contract import (
     ARTIFACT_DOMAIN_ROOT,
@@ -37,6 +39,8 @@ from increment.semantics.artifact import (
     UnitDayArtifactManifest,
     UnitDayArtifactRef,
 )
+from increment.workflows import metrics
+from tests.analysis_factory import view_readout
 
 pytestmark = pytest.mark.integration
 
@@ -1030,7 +1034,7 @@ def test_store_construction_adopts_index_table_created_by_a_concurrent_store(
 def test_reverse_ordered_index_table_publishes_and_adopts_like_native() -> None:
     from tests.test_unit_day_artifact_facade import _native
 
-    con, native, context, _default_store = _native()
+    con, (native_experiment, native_resolver), context, _default_store = _native()
     con.drop_table("ud_manifest_index", database="artifacts")
     con.create_table(
         "ud_manifest_index",
@@ -1039,7 +1043,7 @@ def test_reverse_ordered_index_table_publishes_and_adopts_like_native() -> None:
         overwrite=False,
     )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
 
     row = con.table("ud_manifest_index", database="artifacts").to_pyarrow().to_pylist()
     assert len(row) == 1
@@ -1051,21 +1055,27 @@ def test_reverse_ordered_index_table_publishes_and_adopts_like_native() -> None:
 
     reopened = WarehouseArtifactStore(con, schema_name="artifacts")
     assert reopened.visible_manifests == (ref,)
-    adopted = Analysis.from_unit_day_artifact(reopened, ref, expected_context=context)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        reopened, ref, expected_context=context
+    )
     from increment.estimation.engine import Method
 
     unadjusted = Method(name="unadjusted")
     try:
-        metric = native.metrics[0].name
-        native_rows = native.run(metrics=[metric], decision_method=unadjusted)
-        adopted_rows = adopted.run(metrics=[metric], decision_method=unadjusted)
+        metric = metrics(native_experiment, native_resolver)[0].name
+        native_rows = view_readout(
+            native_experiment, native_resolver, metrics=[metric], decision_method=unadjusted
+        )
+        adopted_rows = view_readout(
+            adopted_experiment, adopted_resolver, metrics=[metric], decision_method=unadjusted
+        )
         assert len(adopted_rows) == len(native_rows) > 0
         for got, want in zip(adopted_rows, native_rows, strict=True):
             for field in ("abs_diff", "abs_se", "abs_lb", "abs_ub", "abs_alpha"):
                 assert getattr(got, field) == pytest.approx(getattr(want, field), rel=1e-9)
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 def test_same_role_relations_keep_distinct_locators_and_snapshot_reads_second() -> None:
@@ -1295,14 +1305,16 @@ def test_invalid_namespace_refuses_before_any_warehouse_ddl() -> None:
 
 # Guards publication from a definitions analysis configured with store="none".
 @pytest.mark.integration
-def test_publish_unit_day_artifact_works_from_a_storeless_definitions_analysis() -> None:
+def test_publish_unit_day_artifact_works_from_a_storeless_definitions_analysis(
+    example_definitions,
+) -> None:
     con = ibis.duckdb.connect()
     seed_event_log(con)
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2", "examples/definitions", con, store="none"
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
     store = WarehouseArtifactStore(con, schema_name="artifact_publisher_marker")
-    assert analysis.publish_unit_day_artifact(store)
+    assert publish_unit_day_artifact(experiment, resolver, store)
 
 
 def test_handled_manifest_insert_failure_still_tombstones_before_erasing(monkeypatch) -> None:
@@ -1808,10 +1820,15 @@ def test_refresh_against_a_different_context_names_the_artifact() -> None:
     assert dict(refusal.value.context) == {"artifact_id": str(ref.artifact_id)}
 
 
-def test_publication_keeps_exposures_and_unit_stats_in_relations(monkeypatch) -> None:
+def test_publication_keeps_exposures_and_unit_stats_in_relations(
+    monkeypatch, example_definitions
+) -> None:
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
-    analysis = Analysis.from_definitions("new_onboarding_v2", "examples/definitions", con)
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
     store = WarehouseArtifactStore(con, schema_name="artifact")
     real_to_arrow = con.to_pyarrow
     real_to_batches = con.to_pyarrow_batches
@@ -1845,7 +1862,7 @@ def test_publication_keeps_exposures_and_unit_stats_in_relations(monkeypatch) ->
     monkeypatch.setattr(con, "to_pyarrow", reject_unit_rows)
     monkeypatch.setattr(con, "to_pyarrow_batches", reject_unit_batches)
     try:
-        analysis.publish_unit_day_artifact(store)
+        with resolver:
+            publish_unit_day_artifact(experiment, resolver, store)
     finally:
-        analysis.close()
         con.disconnect()

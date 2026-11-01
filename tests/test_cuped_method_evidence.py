@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, CupedCovariate, Method, MetricSpec
+from increment import CupedCovariate, Method, MetricSpec, from_frame
 from increment.errors import IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
+from tests.analysis_factory import view_readout
 
 
 def test_scalar_method_evidence_preserves_each_requested_family():
@@ -31,8 +33,9 @@ def test_scalar_method_evidence_preserves_each_requested_family():
     )
 
     def run(selected):
-        with Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -43,8 +46,13 @@ def test_scalar_method_evidence_preserves_each_requested_family():
                     sensitivity_methods=selected[1:],
                 )
             ],
-        ) as analysis:
-            return {row.method: row for row in analysis.run() if isinstance(row, LiftEstimate)}
+        )
+        with resolver:
+            return {
+                row.method: row
+                for row in view_readout(experiment, resolver)
+                if isinstance(row, LiftEstimate)
+            }
 
     joint = run(methods)
     for method in methods:
@@ -159,8 +167,10 @@ def test_encouragement_scalar_families_match_standalone(panel, secondary):
     )
 
     def run(selected):
-        constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
-        with constructor(
+        constructor = (
+            partial(from_frame, shape="panel") if panel else partial(from_frame, shape="summary")
+        )
+        experiment, resolver = constructor(
             frame,
             unit="unit",
             group="arm",
@@ -179,10 +189,11 @@ def test_encouragement_scalar_families_match_standalone(panel, secondary):
                 else AnalysisPlan(primary="outcome")
             ),
             **({"date": "day"} if panel else {}),
-        ) as analysis:
+        )
+        with resolver:
             return {
                 (row.method, row.estimand): row
-                for row in analysis.run(estimands=("itt", "late"))
+                for row in view_readout(experiment, resolver, estimands=("itt", "late"))
                 if isinstance(row, LiftEstimate)
             }
 
@@ -219,16 +230,20 @@ def test_selected_scalar_secondary_with_override_matches_standalone(mixed):
         )
 
     def run(joint):
-        with Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
             metrics=[MetricSpec(name="outcome", decision_method=_scalar("a"))],
             plan=AnalysisPlan(secondaries=["outcome"], q=0.1),
-        ) as analysis:
+        )
+        with resolver:
             with pytest.warns(IncrementWarning) as caught:
-                rows = analysis.run(
+                rows = view_readout(
+                    experiment,
+                    resolver,
                     decision_method=decision,
                     sensitivity_methods=tuple(companions) if joint else (),
                 )
@@ -260,12 +275,14 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel, role, miss
         frame.loc[0, "a"] = np.nan
     else:
         frame["a"] = np.nan
-    constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+    constructor = (
+        partial(from_frame, shape="panel") if panel else partial(from_frame, shape="summary")
+    )
     from increment.errors import IncrementWarning
 
     capture = pytest.warns(IncrementWarning) if missing == "refuse" else nullcontext()
     with capture as caught:
-        analysis = constructor(
+        experiment, resolver = constructor(
             frame,
             unit="unit",
             group="arm",
@@ -295,7 +312,9 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel, role, miss
             pytest.warns(IncrementWarning) if expects_override_warning else nullcontext()
         )
         with warning_context as run_warnings:
-            rows = analysis.run(
+            rows = view_readout(
+                experiment,
+                resolver,
                 decision_method=methods[0],
                 sensitivity_methods=methods[1:],
                 estimands=("itt", "late"),
@@ -326,7 +345,7 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel, role, miss
         }
         assert all(row.lift is not None for row in valid)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize("panel", [False, True])
@@ -336,8 +355,10 @@ def test_encouragement_scalar_families_share_one_weak_stage_diagnostic(panel):
     frame = _two_family_frame()
     frame["uptake"] = 0
     methods = (_scalar("a"), _scalar("b"))
-    constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
-    with constructor(
+    constructor = (
+        partial(from_frame, shape="panel") if panel else partial(from_frame, shape="summary")
+    )
+    experiment, resolver = constructor(
         frame,
         unit="unit",
         group="arm",
@@ -353,8 +374,9 @@ def test_encouragement_scalar_families_share_one_weak_stage_diagnostic(panel):
         ),
         uptake="uptake",
         **({"date": "day"} if panel else {}),
-    ) as analysis:
-        results = analysis.run(estimands=("itt", "late"))
+    )
+    with resolver:
+        results = view_readout(experiment, resolver, estimands=("itt", "late"))
     itt = [row for row in results if isinstance(row, LiftEstimate) and row.estimand == "itt"]
     late = [row for row in results if isinstance(row, LiftEstimate) and row.estimand == "late"]
     diagnostics = [
@@ -372,8 +394,9 @@ def test_encouragement_refuses_multicovariate_sensitivity():
     from increment.errors import UnsupportedRequestError
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
-    with Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _two_family_frame(),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[MetricSpec(name="outcome", decision_method=_scalar("a"))],
@@ -385,14 +408,18 @@ def test_encouragement_refuses_multicovariate_sensitivity():
                 justification="assignment affects outcomes through uptake"
             ),
         ),
-    ) as analysis:
+    )
+
+    with resolver:
         with pytest.raises(UnsupportedRequestError) as raised:
-            analysis.run(
+            view_readout(
+                experiment,
+                resolver,
                 sensitivity_methods=(
                     Method.cuped_multicovariate(
                         name="mixed",
                         covariates=CupedCovariate(name="b", kind="continuous"),
                     ),
-                )
+                ),
             )
     assert raised.value.code == "estimation.engine.cuped_linear_encouragement"

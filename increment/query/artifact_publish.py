@@ -264,11 +264,9 @@ def artifact_context(
     store: ArtifactStore | None = None,
     refresh_of: UnitDayArtifactRef | None = None,
 ) -> ArtifactContext:
-    """Unit-day artifact context: `DefinitionsMomentSource.publish_unit_day_artifact`'s
-    and `Analysis.publish_unit_day_artifact`'s shared compilation, timestamp-
-    normalization retry, and (when *store*/*refresh_of* are both given) the
-    refresh-context check. Replaces `Analysis._artifact_context` and
-    `DefinitionsMomentSource._publication_context`."""
+    """Unit-day artifact context shared by `DefinitionsMomentSource.publish_unit_day_artifact`
+    and `artifacts.publish_unit_day_artifact`: compilation, the timestamp-normalization
+    retry, and (when *store*/*refresh_of* are both given) the refresh-context check."""
     effective_metrics = (
         list(metrics)
         if metrics is not None

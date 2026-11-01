@@ -1,6 +1,6 @@
 """MetricTrends - the public entry point for calendar metric trends.
 
-The report twin of `Analysis`: same semantic layer, same fact sources, no
+The report twin of an experiment run: same semantic layer, same fact sources, no
 experiment. A readout renders an experiment's results; a report evaluates
 metrics over calendar time.
 
@@ -52,8 +52,8 @@ from increment.query.calendar import (
     validate_report_population,
 )
 
-# Shared column-normalization contract with the Analysis facade: both
-# facades must feed the query builders identically shaped tables.
+# Shared column-normalization contract with the definitions builder: both
+# must feed the query builders identically shaped tables.
 from increment.query.fact_resolution import _find_fact_source
 from increment.query.session import WarehouseSession
 from increment.semantics.loader import admit_read_only_sql, load, resolve_execution_dialect

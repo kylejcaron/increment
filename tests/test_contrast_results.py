@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_switchback_frame
 from increment.errors import CapabilityError
 from increment.estimation.engine import Method
 from increment.semantics.design import Randomized
+from tests.analysis_factory import view_readout
 from tests.test_readouts_switchback import _assignment, _frame
 
 
 def _analysis():
-    return Analysis.from_switchback_panel(
+    return from_switchback_frame(
         _frame(),
         unit="unit",
         cycle="cycle",
@@ -34,8 +35,8 @@ def _analysis():
     ],
 )
 def test_switchback_rejects_any_explicit_arm_override_before_stats(kwargs):
-    analysis = _analysis()
+    experiment, resolver = _analysis()
     with pytest.raises(CapabilityError) as exc:
-        analysis.run(**kwargs)
+        view_readout(experiment, resolver, **kwargs)
     assert exc.value.code == "readout.contrast.override"
     assert exc.value.context["argument"] in kwargs

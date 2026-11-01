@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -10,10 +11,12 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from increment import Analysis, Method, MetricSpec
+from increment import Method, MetricSpec, from_frame, from_moments
 from increment._canonical import canonical_json_bytes
 from increment.errors import CodedError, WireFormatError
 from increment.semantics.models import AnalysisPlan, CupedCovariate
+from increment.workflows import export_moments, health_check
+from tests.analysis_factory import view_readout
 
 pytestmark = pytest.mark.integration
 
@@ -69,8 +72,9 @@ def _spec(ratio, methods):
 
 def _case(*, ratio=False, family="scalar", records=None, alpha=0.05):
     spec = _spec(ratio, _methods(family))
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.Table.from_pylist(_records() if records is None else records),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -81,9 +85,9 @@ def _case(*, ratio=False, family="scalar", records=None, alpha=0.05):
     return analysis, spec
 
 
-def _export_rows(analysis, tmp_path, name="compact.parquet"):
+def _export_rows(analysis: tuple[Any, Any], tmp_path, name="compact.parquet"):
     destination = tmp_path / name
-    analysis.export(destination)
+    export_moments(*analysis, destination)
     table = pq.read_table(destination)
     return table, table.to_pylist()
 
@@ -123,8 +127,9 @@ def test_fitted_multicovariate_envelope_preserves_large_float_scatter(tmp_path):
         ),
     )
     spec = MetricSpec(name="outcome", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.Table.from_pylist(_records()),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -173,7 +178,7 @@ def test_fitted_multicovariate_envelope_preserves_large_float_scatter(tmp_path):
         )
         assert rewritten_again == rewritten
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_replay_restores_nested_snapshot_identity_mappings():
@@ -292,8 +297,9 @@ def fitted_evidence_payload(tmp_path_factory):
         ),
     )
     spec = MetricSpec(name="outcome", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.Table.from_pylist(_records()),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -310,7 +316,7 @@ def fitted_evidence_payload(tmp_path_factory):
             and json.loads(row["cuped_evidence"])["kind"] == "fitted_multicovariate"
         )
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_local_fitted_envelope_uses_aggregate_encoder_coordinates(fitted_evidence_payload):
@@ -353,8 +359,9 @@ def test_local_fitted_export_preserves_arm_only_rank_refusal(tmp_path):
         ),
     )
     metric = MetricSpec(name="outcome", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -376,11 +383,11 @@ def test_local_fitted_export_preserves_arm_only_rank_refusal(tmp_path):
                 kinds={"history_a": "continuous", "segment": "categorical"},
             )
         with pytest.raises(CodedError) as portable:
-            analysis.export(tmp_path / "rank-refusal.parquet")
+            export_moments(experiment, resolver, tmp_path / "rank-refusal.parquet")
         assert runtime.value.code == "estimation.cuped_linear.rank_deficiency"
         assert portable.value.code == runtime.value.code
     finally:
-        analysis.close()
+        resolver.close()
 
 
 _FITTED_SEQUENCE_PATHS = (
@@ -586,7 +593,7 @@ def test_arbitrary_malformed_fitted_sequence_shapes_refuse_with_coded_error(
 def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, family):
     analysis, spec = _case(ratio=ratio, family=family)
     try:
-        expected = analysis.run()
+        expected = view_readout(*analysis)
         table, rows = _export_rows(analysis, tmp_path)
         assert {row["moments_format"] for row in rows} == {13}
         assert table.schema.metadata[b"increment.moments_format"] == b"13"
@@ -600,17 +607,17 @@ def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, 
             assert row["cuped_evidence"] == canonical_json_bytes(payload).decode()
         aggregate = family != "scalar"
         exclude = _SNAPSHOT_FIELDS if aggregate else frozenset()
-        restored = Analysis.from_moments(
+        restored_experiment, restored_resolver = from_moments(
             rows, metrics=[spec], control="control", experiment_id="compact"
         )
-        again = Analysis.from_moments(
+        again_experiment, again_resolver = from_moments(
             rows, metrics=[spec], control="control", experiment_id="compact"
         )
         try:
-            actual = restored.run()
+            actual = view_readout(restored_experiment, restored_resolver)
             _same_result(_dumps(actual, exclude=exclude), _dumps(expected, exclude=exclude))
             assert actual.metadata is not None and expected.metadata is not None
-            replayed = again.run()
+            replayed = view_readout(again_experiment, again_resolver)
             assert replayed.metadata is not None
             assert replayed.metadata.scope.snapshot_id == actual.metadata.scope.snapshot_id
             if aggregate:
@@ -618,8 +625,10 @@ def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, 
             else:
                 assert actual.metadata.scope.snapshot_id == expected.metadata.scope.snapshot_id
             for alpha in (0.01, 0.2):
-                changed, _ = _case(ratio=ratio, family=family, alpha=alpha)
-                replay = Analysis.from_moments(
+                (changed_experiment, changed_resolver), _ = _case(
+                    ratio=ratio, family=family, alpha=alpha
+                )
+                replay_experiment, replay_resolver = from_moments(
                     rows,
                     metrics=[spec],
                     control="control",
@@ -628,17 +637,17 @@ def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, 
                 )
                 try:
                     _same_result(
-                        _dumps(replay.run(), exclude=exclude),
-                        _dumps(changed.run(), exclude=exclude),
+                        _dumps(view_readout(replay_experiment, replay_resolver), exclude=exclude),
+                        _dumps(view_readout(changed_experiment, changed_resolver), exclude=exclude),
                     )
                 finally:
-                    replay.close()
-                    changed.close()
+                    replay_resolver.close()
+                    changed_resolver.close()
         finally:
-            restored.close()
-            again.close()
+            restored_resolver.close()
+            again_resolver.close()
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_format13_retained_fit_digest_tracks_covariate_inputs(tmp_path):
@@ -654,8 +663,9 @@ def test_format13_retained_fit_digest_tracks_covariate_inputs(tmp_path):
     spec = _spec(False, (method,))
     digests = []
     for index, records in enumerate((original, changed)):
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             pa.Table.from_pylist(records),
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -665,19 +675,17 @@ def test_format13_retained_fit_digest_tracks_covariate_inputs(tmp_path):
         )
         replay = None
         try:
-            analysis.run()
+            view_readout(*analysis)
             _, rows = _export_rows(analysis, tmp_path, name=f"fit-{index}.parquet")
-            replay = Analysis.from_moments(
-                rows, metrics=[spec], control="control", experiment_id="compact"
-            )
-            results = replay.run()
+            replay = from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+            results = view_readout(*replay)
             assert results.metadata is not None
             assert results.metadata.source_content_digest is not None
             digests.append(results.metadata.source_content_digest)
         finally:
             if replay is not None:
-                replay.close()
-            analysis.close()
+                replay[1].close()
+            analysis[1].close()
     assert digests[0] != digests[1]
 
 
@@ -700,8 +708,9 @@ def test_three_arm_envelopes_are_row_order_invariant(tmp_path):
     exports = []
     snapshots = []
     for index, source_rows in enumerate((records, list(reversed(records)))):
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             pa.Table.from_pylist(source_rows),
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -718,17 +727,17 @@ def test_three_arm_envelopes_are_row_order_invariant(tmp_path):
                     if row.get("record_kind") == "cuped_evidence"
                 )
             )
-            restored = Analysis.from_moments(
+            experiment, resolver = from_moments(
                 rows, metrics=[spec], control="control", experiment_id="three-arm"
             )
             try:
-                result = restored.run()
+                result = view_readout(experiment, resolver)
                 assert result.metadata is not None
                 snapshots.append(result.metadata.scope.snapshot_id)
             finally:
-                restored.close()
+                resolver.close()
         finally:
-            analysis.close()
+            analysis[1].close()
     assert exports[0] == exports[1]
     assert json.loads(exports[0][0])["evidence"]["arms"] == [
         "control",
@@ -741,9 +750,10 @@ def test_three_arm_envelopes_are_row_order_invariant(tmp_path):
 def test_single_scalar_family_export_remains_format_twelve(tmp_path):
     analysis, _ = _case(family="scalar", records=None)
     single = _spec(False, _methods("scalar")[:1])
-    analysis.close()
-    analysis = Analysis.from_unit_summary(
+    analysis[1].close()
+    analysis = from_frame(
         pa.Table.from_pylist(_records()),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -756,7 +766,7 @@ def test_single_scalar_family_export_remains_format_twelve(tmp_path):
         assert "record_kind" not in table.column_names
         assert "cuped_evidence" not in table.column_names
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def _categorical_rows(tmp_path):
@@ -764,7 +774,7 @@ def _categorical_rows(tmp_path):
     try:
         return _export_rows(analysis, tmp_path)[1], spec
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def _rewrite(row, change):
@@ -847,7 +857,7 @@ def test_evidence_arm_roster_must_match_ordinary_metric_rows(tmp_path):
         lambda payload: payload["evidence"]["rows"].pop(),
     )
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+        from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
@@ -859,7 +869,7 @@ def test_categorical_envelope_arm_roster_must_match_ordinary_rows(tmp_path):
         lambda payload: payload["evidence"]["arms"].__setitem__(0, "renamed"),
     )
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+        from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
@@ -873,7 +883,7 @@ def test_categorical_cell_counts_must_match_ordinary_rows(tmp_path):
         ),
     )
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+        from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
@@ -892,7 +902,7 @@ def test_scalar_envelope_counts_must_match_ordinary_rows(tmp_path):
         ),
     )
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+        from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
@@ -918,7 +928,7 @@ def test_evidence_payload_must_match_its_declared_method(tmp_path, mismatch):
             lambda payload: payload["evidence"]["covariate_names"].__setitem__(0, "different"),
         )
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+        from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
@@ -949,7 +959,7 @@ def test_ratio_categorical_component_count_is_rejected_on_admission(tmp_path):
     try:
         rows = _export_rows(analysis, tmp_path, "ratio-components.parquet")[1]
     finally:
-        analysis.close()
+        analysis[1].close()
     index = _first_envelope(rows, "categorical_cells")
 
     def drop_denominator(payload):
@@ -963,12 +973,7 @@ def test_ratio_categorical_component_count_is_rejected_on_admission(tmp_path):
 
     rows[index] = _rewrite(rows[index], drop_denominator)
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(
-            rows,
-            metrics=[spec],
-            control="control",
-            experiment_id="compact",
-        )
+        from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
@@ -976,7 +981,7 @@ def test_ratio_categorical_component_count_is_rejected_on_admission(tmp_path):
 def test_malformed_cuped_evidence_refuses_before_estimation(tmp_path, case):
     rows, spec = _categorical_rows(tmp_path)
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(
+        from_moments(
             _MALFORMED[case](rows), metrics=[spec], control="control", experiment_id="compact"
         )
     assert isinstance(raised.value, WireFormatError) or raised.value.code.startswith(
@@ -1010,11 +1015,11 @@ def test_changed_request_without_matching_evidence_refuses(tmp_path, family, rep
     try:
         rows = _export_rows(analysis, tmp_path)[1]
     finally:
-        analysis.close()
+        analysis[1].close()
     methods = (*_methods(family)[:-1], replacement)
     changed = _spec(False, methods)
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(rows, metrics=[changed], control="control", experiment_id="compact")
+        from_moments(rows, metrics=[changed], control="control", experiment_id="compact")
     assert raised.value.code == code
 
 
@@ -1210,7 +1215,7 @@ def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
     try:
         rows = _export_rows(analysis, tmp_path, "triggered.parquet")[1]
     finally:
-        analysis.close()
+        analysis[1].close()
     for row in rows:
         if row.get("record_kind") != "cuped_evidence":
             continue
@@ -1220,7 +1225,7 @@ def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
         row["cuped_evidence"] = canonical_json_bytes(payload).decode()
     cube = MomentsSource(rows, metrics=[spec], study_id="compact")
     assert cube.population == "triggered"
-    restored = Analysis.from_moments(
+    experiment, resolver = from_moments(
         rows,
         metrics=[spec],
         design=Randomized(
@@ -1233,26 +1238,28 @@ def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
         from increment.evidence import CountEvidence, CountsRequest, evidence_provider
         from tests.analysis_factory import held_source
 
-        retained = evidence_provider(held_source(restored)).counts(
+        retained = evidence_provider(held_source(resolver)).counts(
             CountsRequest(kind="unit", population="triggered")
         )
         assert retained == CountEvidence("triggered", "unit", {"control": 140, "treatment": 140})
         assigned = next(
             check
-            for check in restored.health_check().checks
+            for check in health_check(experiment, resolver).checks
             if check.check == "assigned_allocation"
         )
         assert assigned.availability == "unavailable"
         assert assigned.code == "evidence.operation_unavailable"
         triggered = next(
-            check for check in restored.health_check().checks if check.check == "triggered_balance"
+            check
+            for check in health_check(experiment, resolver).checks
+            if check.check == "triggered_balance"
         )
         assert triggered.analysis_population == "triggered"
         assert triggered.availability == "unavailable"
         assert triggered.code == "evidence.operation_unavailable"
 
     finally:
-        restored.close()
+        resolver.close()
 
 
 def test_equivalent_requests_with_different_labels_share_one_envelope(tmp_path):
@@ -1266,8 +1273,9 @@ def test_equivalent_requests_with_different_labels_share_one_envelope(tmp_path):
         name="other", covariates=CupedCovariate(name="history_b", kind="continuous")
     )
     spec = _spec(False, (first, renamed, other))
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.Table.from_pylist(_records()),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -1275,18 +1283,18 @@ def test_equivalent_requests_with_different_labels_share_one_envelope(tmp_path):
         metrics=[spec],
     )
     try:
-        expected = analysis.run()
+        expected = view_readout(*analysis)
         rows = _export_rows(analysis, tmp_path)[1]
         assert sum(row.get("record_kind") == "cuped_evidence" for row in rows) == 2
-        restored = Analysis.from_moments(
+        experiment, resolver = from_moments(
             rows, metrics=[spec], control="control", experiment_id="compact"
         )
         try:
-            _same_result(_dumps(restored.run()), _dumps(expected))
+            _same_result(_dumps(view_readout(experiment, resolver)), _dumps(expected))
         finally:
-            restored.close()
+            resolver.close()
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 @pytest.mark.parametrize("ratio", [False, True])
@@ -1313,7 +1321,7 @@ def test_partition_evidence_merges_to_the_whole_export(tmp_path, ratio):
         try:
             exports.append(evidence(_export_rows(analysis, tmp_path, f"part-{index}.parquet")[1]))
         finally:
-            analysis.close()
+            analysis[1].close()
     whole, left, right = exports
     assert whole.keys() == left.keys() == right.keys()
     for key, item in whole.items():

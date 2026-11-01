@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -22,9 +22,6 @@ from increment.store.types import (
     run_record_key,
 )
 
-if TYPE_CHECKING:
-    from increment.store.producer import PersistenceIdentity
-
 
 class WarehouseResultsStore:
     """Publish one immutable, generation-scoped table per completed run."""
@@ -32,17 +29,6 @@ class WarehouseResultsStore:
     def __init__(self, backend, *, schema: str | None = None) -> None:
         self.backend = backend
         self.schema = schema
-
-    def persist_results(
-        self,
-        results: object,
-        experiment_id: str,
-        run_id: str,
-        identity_record: PersistenceIdentity,
-    ) -> None:
-        from increment.store.producer import persist_results
-
-        persist_results(results, self, experiment_id, run_id, identity_record)
 
     def _name(self, experiment_id: str, analysis_spec_hash: str, run_id: str) -> str:
         return f"increment_run_{run_record_key(experiment_id, analysis_spec_hash, run_id)}"

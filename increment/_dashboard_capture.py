@@ -71,8 +71,8 @@ def capture_dashboard[T](
         binding.source,
         "readout_snapshot",
         message=(
-            "dashboard_snapshot() needs a native Analysis.from_definitions instance "
-            "with a warehouse-backed source."
+            "prepare_dashboard() needs an experiment built by from_definitions "
+            "with a warehouse connection."
         ),
     )
     scoped = evidence_provider(binding.source).scope(
@@ -194,7 +194,7 @@ def dashboard_breakout_reads(binding: SourceBinding, breakout: Breakout) -> Dash
             binding.source,
             (breakout.property,),
             tuple(declared_evidence(binding.source).breakouts),
-            route="dashboard_breakout_reads() requires a definitions-backed breakout source",
+            route="prepare_dashboard() requires a definitions-backed breakout source",
         )
     declared = state.experiment.breakouts
     if breakout not in declared:
@@ -226,8 +226,8 @@ def dashboard_group_data(
         "dashboard_group_data",
         DashboardGroupDataOperation,
         message=(
-            "dashboard_group_data() needs a native Analysis.from_definitions "
-            "instance with a warehouse-backed source."
+            "prepare_dashboard() needs an experiment built by from_definitions "
+            "with a warehouse connection."
         ),
     )
     return tuple(

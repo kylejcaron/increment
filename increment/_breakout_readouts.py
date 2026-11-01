@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 _UNCORRECTED_SEQUENTIAL = RefusalSpec(
     "facade.analysis.uncorrected_segments_sequential",
     UnsupportedRequestError,
-    template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with run_breakout() instead.",
+    template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with a Scope(view='breakout', grain='total') view instead.",
 )
 
 
@@ -310,16 +310,22 @@ class BreakoutReadouts:
 
             self._require_registered_selection(req.population)
             dimension = registered_breakout_dimension(registration, population=req.population)
-            return readout_breakout(
-                self._src,
-                dimension,
-                metrics=[m.name for m in req.metrics],
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                correction=req.correction,
-                q=req.q,
-                analysis_population=req.population,
+            if self._execution_context is not None:
+                self._execution_context.validate_request(
+                    self._scope_source, req.metrics, self._configs(req)
+                )
+            return self._stamp_execution_context(
+                readout_breakout(
+                    self._src,
+                    dimension,
+                    metrics=[m.name for m in req.metrics],
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    correction=req.correction,
+                    q=req.q,
+                    analysis_population=req.population,
+                )
             )
         route = breakout_route(self._src)
         if route == UNSUPPORTED_ROUTE:
@@ -411,6 +417,31 @@ class BreakoutReadouts:
         return BreakoutEstimates([]) if results is None else results
 
 
+def _breakout_experiment(
+    binding: SourceBinding, population: Literal["assigned", "triggered"] | None
+) -> Experiment | None:
+    """The experiment whose declared breakouts a view reads, refusing a triggered read of an
+    experiment without a trigger."""
+    state = binding.state
+    experiment = (
+        state.experiment
+        if isinstance(state, DefinitionsArmAnalysisState)
+        else _arm_experiment(binding)
+        if state.family == "arm_moments"
+        else None
+    )
+    if population == "triggered" and experiment is not None and experiment.trigger is None:
+        _refuse(
+            _TRIGGER_UNSUPPORTED,
+            method="run_breakout",
+            experiment=experiment.name,
+            trigger=None,
+            route="native",
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
+        )
+    return experiment
+
+
 def plan_breakout_request(
     binding: SourceBinding,
     metrics: Sequence[Metric],
@@ -419,7 +450,14 @@ def plan_breakout_request(
     populations: Sequence[Literal["assigned", "triggered"]],
     overrides: Mapping[str, Any],
 ) -> tuple[tuple[Metric, ...], tuple[ResolvedMetricConfig, ...]]:
-    """Validate a breakout request before capture and return its metrics and configs."""
+    """Validate a breakout request before capture and return its metrics and configs.
+
+    An experiment that declares no breakouts plans no evidence: its breakout view returns no
+    rows, whether it runs alone or beside other views.
+    """
+    experiment = _breakout_experiment(binding, population)
+    if experiment is not None and not experiment.breakouts:
+        return (), ()
     plan = binding.plan
     policy = plan.view_policies.for_view(
         "breakout", mechanism=binding.design.mechanism, segmented=True
@@ -487,23 +525,7 @@ def run_breakout_rows(
     """Breakout rows for each selected population, optionally under an explicit correction."""
     from increment.breakout.estimates import BreakoutEstimates
 
-    state = binding.state
-    experiment = (
-        state.experiment
-        if isinstance(state, DefinitionsArmAnalysisState)
-        else _arm_experiment(binding)
-        if state.family == "arm_moments"
-        else None
-    )
-    if population == "triggered" and experiment is not None and experiment.trigger is None:
-        _refuse(
-            _TRIGGER_UNSUPPORTED,
-            method="run_breakout",
-            experiment=experiment.name,
-            trigger=None,
-            route="native",
-            supported_sources=("from_definitions", "from_unit_day_artifact"),
-        )
+    experiment = _breakout_experiment(binding, population)
     if experiment is not None and not experiment.breakouts:
         select_metrics(binding.source.context.metrics, metrics, caller="run_breakout")
         if exploratory_metrics:
@@ -519,7 +541,7 @@ def run_breakout_rows(
         )
     )
     if "triggered" in populations:
-        if isinstance(state, ContrastAnalysisState):
+        if isinstance(binding.state, ContrastAnalysisState):
             _refuse(
                 _TRIGGER_UNSUPPORTED,
                 method="run_breakout",

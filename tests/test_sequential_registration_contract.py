@@ -2,10 +2,12 @@
 
 from datetime import date, timedelta
 from fractions import Fraction
+from typing import Any
 
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_frame, from_moments, from_unit_day_artifact, workflows
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from increment.estimators import (
@@ -14,6 +16,14 @@ from increment.estimators import (
     SequentialRegistration,
 )
 from increment.frame import MetricSpec
+from increment.semantics.sequential import ScalarMeanModel
+from increment.workflows import (
+    capture_sequential,
+    experiment_definition,
+    export_moments,
+    sequential_snapshot,
+)
+from tests.analysis_factory import make_binding, view_readout
 from tests.sequential_cases import UnreadFrame
 from tests.test_sequential_public_sources import (
     _analysis,
@@ -47,8 +57,9 @@ def test_initial_panel_mapping_mismatch_refuses_before_frame_access(role):
     mapping = {"unit": "unit", "group": "arm", "date": "day", "exposure_date": "exposed"}
     mapping[role] = "another_column"
     with pytest.raises(CapabilityError) as exc:
-        Analysis.from_unit_panel(
+        from_frame(
             UnreadFrame(),
+            shape="panel",
             unit=mapping["unit"],
             group=mapping["group"],
             date=mapping["date"],
@@ -67,8 +78,9 @@ def test_initial_summary_mapping_mismatch_refuses_before_frame_access(role):
     mapping = {"unit": "unit", "group": "arm"}
     mapping[role] = "another_column"
     with pytest.raises(CapabilityError) as exc:
-        Analysis.from_unit_summary(
+        from_frame(
             UnreadFrame(),
+            shape="summary",
             unit=mapping["unit"],
             group=mapping["group"],
             control="control",
@@ -83,17 +95,22 @@ def test_initial_summary_mapping_mismatch_refuses_before_frame_access(role):
 @pytest.mark.integration
 @pytest.mark.parametrize("recipe", ["exposure", "outcome"])
 def test_initial_native_mapping_mismatch_refuses_before_querying_new_recipe(recipe):
-    from tests.analysis_factory import make_analysis
 
-    connection, definitions, original = _native_fixture("bernoulli")
+    connection, definitions, (original_experiment, original_resolver) = _native_fixture("bernoulli")
     try:
         field = "exposures" if recipe == "exposure" else "fact_sources"
         declarations = getattr(definitions, field)
         changed = declarations[0].model_copy(update={"sql": "SELECT * FROM must_never_be_read"})
         definitions = definitions.model_copy(update={field: (changed, *declarations[1:])})
         with pytest.raises(CapabilityError) as exc:
-            source = make_analysis(connection, definitions, experiment=original.experiment)
-            source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+            source_experiment, source_resolver = make_binding(
+                connection,
+                definitions,
+                experiment=experiment_definition(original_experiment, original_resolver),
+            )
+            capture_sequential(
+                source_experiment, source_resolver, finalized=True, as_of=date(2025, 1, 16)
+            )
         assert exc.value.code == "sequential.source.invalid"
     finally:
         connection.disconnect()
@@ -132,11 +149,11 @@ def test_public_frame_raw_checkpoint_smoke():
 def test_public_run_uses_captured_randomized_or_encouragement_state_without_live_moments(
     uptake_only,
 ):
-    connection, _, source = _native_fixture("bernoulli", uptake_only=uptake_only)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=uptake_only)
     try:
-        snapshot = source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
         estimands = ("compliance",) if uptake_only else ("itt",)
-        expected = list(source.run(estimands=estimands))
+        expected = list(view_readout(experiment, resolver, estimands=estimands))
         object_types = connection.raw_sql(
             "SELECT table_name, table_type FROM information_schema.tables "
             "WHERE table_schema = 'main'"
@@ -146,7 +163,7 @@ def test_public_run_uses_captured_randomized_or_encouragement_state_without_live
                 connection.drop_view(name)
             else:
                 connection.drop_table(name)
-        actual = list(source.run(estimands=estimands))
+        actual = list(view_readout(experiment, resolver, estimands=estimands))
         assert actual == expected
         assert len(actual) == 1 and actual[0].stat_sig()
         assert actual[0].require_sequential_result().checkpoint.prefix_id == snapshot.prefix_id
@@ -167,11 +184,12 @@ def test_public_run_uses_captured_randomized_or_encouragement_state_without_live
 def test_uptake_registration_must_match_explicit_compiled_policy(field, value):
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
-        plan = source.experiment.plan
+        plan = experiment_definition(experiment, resolver).plan
         assert plan is not None and plan.inference is not None
         reg = plan.inference.registration
+        assert reg is not None
         cell = reg.roster[0].model_copy(update={field: value})
         reg = SequentialRegistration.model_validate({**reg.model_dump(), "roster": (cell,)})
         policy = SequentialCompliancePolicy(alpha=Fraction(1, 20))
@@ -182,7 +200,9 @@ def test_uptake_registration_must_match_explicit_compiled_policy(field, value):
             }
         )
         with pytest.raises(CapabilityError) as exc:
-            compile_decision_plan(changed, source.metrics, design=_uptake_design())
+            compile_decision_plan(
+                changed, workflows.metrics(experiment, resolver), design=_uptake_design()
+            )
         assert exc.value.code == "sequential.source.invalid"
     finally:
         connection.disconnect()
@@ -192,11 +212,12 @@ def test_uptake_registration_must_match_explicit_compiled_policy(field, value):
 def test_matching_compliance_family_q_compiles():
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
-        plan = source.experiment.plan
+        plan = experiment_definition(experiment, resolver).plan
         assert plan is not None and plan.inference is not None
         registration = plan.inference.registration
+        assert registration is not None
         cell = registration.roster[0].model_copy(update={"family": True})
         registration = registration.model_copy(update={"roster": (cell,)})
         changed = plan.model_copy(
@@ -208,7 +229,9 @@ def test_matching_compliance_family_q_compiles():
                 ),
             }
         )
-        compiled = compile_decision_plan(changed, source.metrics, design=_uptake_design())
+        compiled = compile_decision_plan(
+            changed, workflows.metrics(experiment, resolver), design=_uptake_design()
+        )
         assert compiled.q == float(registration.q)
     finally:
         connection.disconnect()
@@ -219,11 +242,12 @@ def test_matching_compliance_family_q_compiles():
 def test_compliance_family_q_must_match_compiled_plan(registered_q):
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
-        plan = source.experiment.plan
+        plan = experiment_definition(experiment, resolver).plan
         assert plan is not None and plan.inference is not None
         registration = plan.inference.registration
+        assert registration is not None
         cell = registration.roster[0].model_copy(update={"family": True})
         registration = registration.model_copy(update={"q": registered_q, "roster": (cell,)})
         changed = plan.model_copy(
@@ -236,7 +260,9 @@ def test_compliance_family_q_must_match_compiled_plan(registered_q):
             }
         )
         with pytest.raises(CapabilityError) as exc:
-            compile_decision_plan(changed, source.metrics, design=_uptake_design())
+            compile_decision_plan(
+                changed, workflows.metrics(experiment, resolver), design=_uptake_design()
+            )
         assert exc.value.code == "sequential.source.invalid"
     finally:
         connection.disconnect()
@@ -246,11 +272,12 @@ def test_compliance_family_q_must_match_compiled_plan(registered_q):
 def test_multiple_uptake_models_refuse_single_compliance_policy():
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
-        plan = source.experiment.plan
+        plan = experiment_definition(experiment, resolver).plan
         assert plan is not None and plan.inference is not None
         registration = plan.inference.registration
+        assert registration is not None
         second_model = registration.models[0].model_copy(update={"metric": "uptake_2"})
         second_cell = registration.roster[0].model_copy(update={"metric": "uptake_2"})
         registration = registration.model_copy(
@@ -263,7 +290,9 @@ def test_multiple_uptake_models_refuse_single_compliance_policy():
             update={"inference": plan.inference.model_copy(update={"registration": registration})}
         )
         with pytest.raises(CapabilityError) as exc:
-            compile_decision_plan(changed, source.metrics, design=_uptake_design())
+            compile_decision_plan(
+                changed, workflows.metrics(experiment, resolver), design=_uptake_design()
+            )
         assert exc.value.code == "sequential.source.invalid"
     finally:
         connection.disconnect()
@@ -275,11 +304,14 @@ def test_uptake_column_override_must_match_initial_registration():
     from increment.semantics.models import AnalysisPlan, InferenceSpec
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id
 
-    connection, _, native = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
         design = _uptake_design()
         specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
-        registered = native.experiment.plan.inference.registration
+        declared = experiment_definition(experiment, resolver).plan
+        assert declared is not None and declared.inference is not None
+        registered = declared.inference.registration
+        assert registered is not None
         reg = SequentialRegistration.model_validate(
             {
                 **registered.model_dump(),
@@ -302,8 +334,9 @@ def test_uptake_column_override_must_match_initial_registration():
             compliance=SequentialCompliancePolicy(alpha=reg.roster[0].alpha),
         )
         with pytest.raises(CapabilityError) as exc:
-            Analysis.from_unit_panel(
+            from_frame(
                 UnreadFrame(),
+                shape="panel",
                 unit="unit",
                 group="arm",
                 date="day",
@@ -321,11 +354,11 @@ def test_uptake_column_override_must_match_initial_registration():
 
 @pytest.mark.integration
 def test_compliance_shortcut_without_uptake_refuses_before_checkpoint_or_outcomes():
-    connection, _, source = _native_fixture("bernoulli")
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli")
     try:
         connection.drop_table("events")
         with pytest.raises(CapabilityError) as exc:
-            source.run(estimands=("compliance",))
+            view_readout(experiment, resolver, estimands=("compliance",))
         assert exc.value.code == "sequential.source.invalid"
     finally:
         connection.disconnect()
@@ -335,13 +368,20 @@ def test_compliance_shortcut_without_uptake_refuses_before_checkpoint_or_outcome
 def test_encouragement_asof_requires_completion_before_legacy_checkpoint():
     from increment.errors import InvalidRequestError
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
         with pytest.raises(InvalidRequestError) as exc:
-            source.run_asof_lift(estimands=("compliance",))
+            view_readout(
+                experiment, resolver, Scope(view="asof", grain="asof"), estimands=("compliance",)
+            )
         assert exc.value.code == "readout.encouragement.asof_completion"
         with pytest.raises(CapabilityError) as missing:
-            source.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+            view_readout(
+                experiment,
+                resolver,
+                Scope(view="asof", grain="asof", completion_policy=True),
+                estimands=("compliance",),
+            )
         assert missing.value.code == "sequential.continuation.legacy"
     finally:
         connection.disconnect()
@@ -353,10 +393,12 @@ def test_compliance_policy_wire_roundtrip_and_mismatch_rejection():
     from increment.errors import WireFormatError
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
         plan = compile_decision_plan(
-            source.experiment.plan, source.metrics, design=_uptake_design()
+            experiment_definition(experiment, resolver).plan,
+            workflows.metrics(experiment, resolver),
+            design=_uptake_design(),
         )
         payload = compiled_plan_to_dict(plan)
         assert compiled_plan_from_dict(payload) == plan
@@ -396,7 +438,7 @@ def test_breakout_registered_q_mismatch_precedes_missing_checkpoint(correction):
     )
     import pyarrow as pa
 
-    source = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.table(
             {
                 "user_id": ["c", "t"],
@@ -407,6 +449,7 @@ def test_breakout_registered_q_mismatch_precedes_missing_checkpoint(correction):
                 "outcome": [0, 1],
             }
         ),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -416,7 +459,7 @@ def test_breakout_registered_q_mismatch_precedes_missing_checkpoint(correction):
         plan=plan,
     )
     with pytest.raises(CapabilityError) as exc:
-        source.run_breakout()
+        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert exc.value.code == "sequential.source.invalid"
 
 
@@ -446,7 +489,7 @@ def test_breakout_bonferroni_allocation_precedes_missing_checkpoint(arms):
             "view_multiplicity": MultiplicitySpec(correction="bonferroni"),
         }
     )
-    source = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.table(
             {
                 "user_id": ["c", "t"],
@@ -457,6 +500,7 @@ def test_breakout_bonferroni_allocation_precedes_missing_checkpoint(arms):
                 "outcome": [0, 1],
             }
         ),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -466,7 +510,7 @@ def test_breakout_bonferroni_allocation_precedes_missing_checkpoint(arms):
         plan=plan,
     )
     with pytest.raises(CapabilityError) as exc:
-        source.run_breakout()
+        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert exc.value.code == "sequential.source.invalid"
 
 
@@ -476,9 +520,9 @@ def test_corrected_compliance_breakout_retains_pre_read_scope_refusal():
     from increment.errors import UnsupportedRequestError
     from increment.plan import compile_decision_plan
 
-    connection, _, native = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
-        plan = native.experiment.plan
+        plan = experiment_definition(experiment, resolver).plan
         assert plan is not None
         plan = plan.model_copy(
             update={
@@ -488,7 +532,7 @@ def test_corrected_compliance_breakout_retains_pre_read_scope_refusal():
         with pytest.raises(UnsupportedRequestError) as exc:
             compile_decision_plan(
                 plan,
-                native.metrics,
+                workflows.metrics(experiment, resolver),
                 design=_uptake_design(),
                 estimands=("compliance",),
             )
@@ -506,11 +550,11 @@ def test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_a
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
 
-    connection, definitions, native = _native_fixture("bernoulli")
+    connection, definitions, (experiment, resolver) = _native_fixture("bernoulli")
     relation_reads = []
     try:
         store = WarehouseArtifactStore(connection, schema_name="artifacts")
-        ref = native.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         changed = definitions.fact_sources[0].model_copy(
             update={"sql": "SELECT * FROM must_never_be_read"}
         )
@@ -540,7 +584,7 @@ def test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_a
 
         monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_changed_context)
         with pytest.raises(CapabilityError) as exc:
-            Analysis.from_unit_day_artifact(store, ref, expected_context=wrong)
+            from_unit_day_artifact(store, ref, expected_context=wrong)
         assert exc.value.code == "sequential.source.invalid"
         assert relation_reads == []
     finally:
@@ -556,8 +600,9 @@ def test_automatic_registration_normalizes_weights_and_tunes_before_capture():
         primary="outcome",
         inference=InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=321),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _frame([1, 2, 3], [4, 6, 8]),
+        shape="summary",
         unit="unit",
         group="arm",
         exposure_date="exposure",
@@ -565,8 +610,9 @@ def test_automatic_registration_normalizes_weights_and_tunes_before_capture():
         design=Randomized(control_group="control", allocation={"control": 0.6, "treatment": 0.1}),
         plan=plan,
     )
-    registration = analysis.sequential_snapshot().registration
+    registration = sequential_snapshot(experiment, resolver).registration
     model = registration.models[0]
+    assert isinstance(model, ScalarMeanModel)
     assert model.treatment_probability == Fraction(0.1) / (Fraction(0.6) + Fraction(0.1))
     tuned = 321 * float(model.rho) ** 2
     assert tuned - math.log1p(tuned) == pytest.approx(
@@ -580,8 +626,9 @@ def test_automatic_family_allocation_preserves_subnormal_tails():
     frame = _frame([1, 2, 3], [4, 6, 8])
     frame["other"] = frame["outcome"] + 1
     q = float.fromhex("0x0.0000000000001p-1022")
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         exposure_date="exposure",
@@ -593,14 +640,13 @@ def test_automatic_family_allocation_preserves_subnormal_tails():
             inference=InferenceSpec(kind="asymptotic_mean"),
         ),
     )
-    registration = analysis.sequential_snapshot().registration
+    registration = sequential_snapshot(experiment, resolver).registration
     assert all(cell.alpha == Fraction(q) / 2 for cell in registration.roster)
     assert sum(cell.alpha for cell in registration.roster) == Fraction(q)
 
 
 def _final_window_day(experiment, resolver):
     """The last day of the registered reveal window for the native fixture."""
-    from increment.workflows import experiment_definition
 
     inference = experiment_definition(experiment, resolver).plan.inference
     assert inference is not None and inference.registration is not None
@@ -609,11 +655,8 @@ def _final_window_day(experiment, resolver):
 
 @pytest.mark.slow
 def test_native_and_artifact_capture_include_the_final_window_day(tmp_path):
-    from increment.artifacts import publish_unit_day_artifact
-    from increment.builders import from_unit_day_artifact
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
-    from increment.workflows import capture_sequential
 
     connection, definitions, experiment, resolver = _native_pair(tmp_path, "scalar_mean")
     try:
@@ -644,11 +687,8 @@ def test_native_and_artifact_capture_include_the_final_window_day(tmp_path):
 
 @pytest.mark.slow
 def test_native_registration_freeze_survives_artifact_publish_and_reopen(tmp_path):
-    from increment.artifacts import publish_unit_day_artifact
-    from increment.builders import from_unit_day_artifact
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
-    from increment.workflows import capture_sequential
 
     connection, definitions, experiment, resolver = _native_pair(tmp_path, "scalar_mean")
     try:
@@ -679,12 +719,10 @@ def test_automatic_native_registration_survives_artifact_reopen(tmp_path):
     import yaml
 
     from increment import Definitions, run
-    from increment.artifacts import publish_unit_day_artifact
-    from increment.builders import from_definitions, from_unit_day_artifact
+    from increment.builders import from_definitions
     from increment.declarations import thaw
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
-    from increment.workflows import capture_sequential
 
     def retained_rows(result):
         rows = [thaw(cell.components["sequential"][1].fields) for cell in result.cells]
@@ -780,10 +818,12 @@ def test_legacy_sequential_wire_rejected_before_payload_rehydration(typed):
     )
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
         plan = compile_decision_plan(
-            source.experiment.plan, source.metrics, design=_uptake_design()
+            experiment_definition(experiment, resolver).plan,
+            workflows.metrics(experiment, resolver),
+            design=_uptake_design(),
         )
         payload = compiled_plan_to_dict(plan)
         assert payload["wire_version"] == 5
@@ -807,9 +847,9 @@ def test_same_arm_segmented_compliance_cells_conserve_policy_alpha(cell_alpha):
     from increment.estimators import AlwaysValid
     from increment.plan import compile_decision_plan
 
-    connection, _, source = _native_fixture("bernoulli", uptake_only=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", uptake_only=True)
     try:
-        plan = source.experiment.plan
+        plan = experiment_definition(experiment, resolver).plan
         assert plan is not None and plan.inference is not None
         assert plan.inference.registration is not None
         registration = plan.inference.registration
@@ -827,10 +867,14 @@ def test_same_arm_segmented_compliance_cells_conserve_policy_alpha(cell_alpha):
         )
         if cell_alpha == Fraction(1, 20):
             with pytest.raises(CapabilityError) as exc:
-                compile_decision_plan(changed, source.metrics, design=_uptake_design())
+                compile_decision_plan(
+                    changed, workflows.metrics(experiment, resolver), design=_uptake_design()
+                )
             assert exc.value.code == "sequential.source.invalid"
             return
-        compiled = compile_decision_plan(changed, source.metrics, design=_uptake_design())
+        compiled = compile_decision_plan(
+            changed, workflows.metrics(experiment, resolver), design=_uptake_design()
+        )
         assert isinstance(compiled.inference, AlwaysValid)
         retained = compiled.inference.registration.roster
         assert len(retained) == 2
@@ -846,9 +890,9 @@ def test_legacy_sequential_snapshot_rejected_before_record_replay():
 
     from increment.sequential_state import snapshot_from_json
 
-    connection, _, source = _native_fixture("bernoulli")
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli")
     try:
-        snapshot = source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
         payload = json.loads(snapshot.model_dump_json())
         payload["version"] = 1
         payload["records"] = "invalid legacy records must not be decoded"
@@ -888,11 +932,14 @@ def test_fixed_wire_refuses_sequential_version_before_payload_rehydration(typed)
     from increment.plan import compile_decision_plan
     from increment.semantics.design import Randomized
 
-    source = _analysis(
+    experiment, resolver = _analysis(
         _frame([0, 1], [0, 1]), [MetricSpec(name="outcome", type="conversion")], None
     )
     plan = compile_decision_plan(
-        None, source.metrics, path="frame", design=Randomized(control_group="control")
+        None,
+        workflows.metrics(experiment, resolver),
+        path="frame",
+        design=Randomized(control_group="control"),
     )
     payload = compiled_plan_to_dict(plan)
     assert compiled_plan_from_dict(payload) == plan
@@ -913,7 +960,7 @@ def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
     import pyarrow.parquet as pq
 
     from increment import AnalysisPlan
-    from tests.analysis_factory import lift_rows, make_analysis
+    from tests.analysis_factory import lift_rows
 
     connection, definitions, _ = _native_fixture("bernoulli")
     try:
@@ -929,22 +976,22 @@ def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
                 ),
             }
         )
-        source = make_analysis(connection, definitions, experiment=experiment)
+        source_experiment, source_resolver = make_binding(
+            connection, definitions, experiment=experiment
+        )
         path = tmp_path / "fixed.parquet"
-        source.export(path)
+        export_moments(source_experiment, source_resolver, path)
         payload = pq.read_table(path).to_pylist()
         assert payload and payload[0]["moments_format"] == 12
-        supported = Analysis.from_moments(
-            payload,
-            metrics=[MetricSpec(name="outcome", type="conversion")],
-            control="control",
+        supported_experiment, supported_resolver = from_moments(
+            payload, metrics=[MetricSpec(name="outcome", type="conversion")], control="control"
         )
         assert (
-            lift_rows(supported.run())[0].require_lift()
-            == lift_rows(source.run())[0].require_lift()
+            lift_rows(view_readout(supported_experiment, supported_resolver))[0].require_lift()
+            == lift_rows(view_readout(source_experiment, source_resolver))[0].require_lift()
         )
         with pytest.raises(CapabilityError) as exc:
-            Analysis.from_moments(
+            from_moments(
                 [
                     dict(row, record_kind="sequential_checkpoint", moments_format=9)
                     for row in payload
@@ -961,21 +1008,23 @@ def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
 def test_sequential_moments_format8_refuses_before_replay(tmp_path):
     import pyarrow.parquet as pq
 
-    connection, _, source = _native_fixture("bernoulli")
+    connection, _, (source_experiment, source_resolver) = _native_fixture("bernoulli")
     try:
-        source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        capture_sequential(
+            source_experiment, source_resolver, finalized=True, as_of=date(2025, 1, 16)
+        )
         path = tmp_path / "sequential.parquet"
-        source.export(path)
+        export_moments(source_experiment, source_resolver, path)
         payload = pq.read_table(path).to_pylist()
         assert payload and payload[0]["moments_format"] == 10
-        supported = Analysis.from_moments(
-            payload,
-            metrics=[MetricSpec(name="outcome", type="conversion")],
-            control="control",
+        supported_experiment, supported_resolver = from_moments(
+            payload, metrics=[MetricSpec(name="outcome", type="conversion")], control="control"
         )
-        assert supported.sequential_snapshot() == source.sequential_snapshot()
+        assert sequential_snapshot(supported_experiment, supported_resolver) == sequential_snapshot(
+            source_experiment, source_resolver
+        )
         with pytest.raises(CapabilityError) as exc:
-            Analysis.from_moments(
+            from_moments(
                 [dict(row, moments_format=8) for row in payload],
                 metrics=[MetricSpec(name="outcome", type="conversion")],
                 control="control",
@@ -1009,9 +1058,10 @@ def _arm_rows(arms, *, n=60, offset=0, levels=None):
     return pd.DataFrame(rows)
 
 
-def _summary(frame, specs, plan, design):
-    return Analysis.from_unit_summary(
+def _summary(frame, specs, plan, design) -> tuple[Any, Any]:
+    return from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         exposure_date="exposure",
@@ -1109,12 +1159,12 @@ def test_automatic_exact_multi_arm_matches_the_manual_registration_end_to_end(tm
     )
     arms = ("control", "a", "b")
     first = _arm_rows(arms)
-    auto_source = _summary(first, specs, automatic, design)
-    manual_source = _summary(first, specs, manual, design)
-    snapshot = auto_source.sequential_snapshot()
-    assert snapshot == manual_source.sequential_snapshot()
-    rows = auto_source.run()
-    assert _rows(rows) == _rows(manual_source.run())
+    auto_source_experiment, auto_source_resolver = _summary(first, specs, automatic, design)
+    manual_source_experiment, manual_source_resolver = _summary(first, specs, manual, design)
+    snapshot = sequential_snapshot(auto_source_experiment, auto_source_resolver)
+    assert snapshot == sequential_snapshot(manual_source_experiment, manual_source_resolver)
+    rows = view_readout(auto_source_experiment, auto_source_resolver)
+    assert _rows(rows) == _rows(view_readout(manual_source_experiment, manual_source_resolver))
     assert {(r.metric, r.group_id, r.role) for r in rows} == {
         (metric, arm, role)
         for metric, role in (("outcome", "primary"), ("other", "secondary"))
@@ -1125,45 +1175,60 @@ def test_automatic_exact_multi_arm_matches_the_manual_registration_end_to_end(tm
     assert all(r.require_sequential_result().checkpoint.status == "current" for r in rows)
 
     # Idempotent replay, then an appended prefix, agree with the manual form.
-    assert auto_source.capture_sequential(finalized=True, previous=snapshot) == snapshot
+    assert (
+        capture_sequential(
+            auto_source_experiment, auto_source_resolver, finalized=True, previous=snapshot
+        )
+        == snapshot
+    )
     import pandas as pd
 
     later = pd.concat([first, _arm_rows(arms, offset=60)], ignore_index=True)
-    auto_later = _summary(later, specs, automatic, design)
-    manual_later = _summary(later, specs, manual, design)
-    appended = auto_later.capture_sequential(finalized=True, previous=snapshot)
+    auto_later_experiment, auto_later_resolver = _summary(later, specs, automatic, design)
+    manual_later_experiment, manual_later_resolver = _summary(later, specs, manual, design)
+    appended = capture_sequential(
+        auto_later_experiment, auto_later_resolver, finalized=True, previous=snapshot
+    )
     assert appended.parent_id == snapshot.prefix_id
-    assert appended == manual_later.capture_sequential(finalized=True, previous=snapshot)
-    assert _rows(auto_later.run()) == _rows(manual_later.run())
+    assert appended == capture_sequential(
+        manual_later_experiment, manual_later_resolver, finalized=True, previous=snapshot
+    )
+    assert _rows(view_readout(auto_later_experiment, auto_later_resolver)) == _rows(
+        view_readout(manual_later_experiment, manual_later_resolver)
+    )
 
     # Export/import keeps every arm's cell and state.
     path = tmp_path / "multi-arm.parquet"
-    auto_later.export(path)
-    replay = Analysis.from_moments(
+    export_moments(auto_later_experiment, auto_later_resolver, path)
+    replay_experiment, replay_resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
-    assert replay.sequential_snapshot() == appended
-    assert _rows(replay.run()) == _rows(auto_later.run())
+    assert sequential_snapshot(replay_experiment, replay_resolver) == appended
+    assert _rows(view_readout(replay_experiment, replay_resolver)) == _rows(
+        view_readout(auto_later_experiment, auto_later_resolver)
+    )
 
     # A changed roster, assignment or prefix refuses to continue.
     with pytest.raises(CapabilityError) as roster_changed:
-        _summary(later, specs, automatic.model_copy(update={"q": 0.2}), design).capture_sequential(
-            finalized=True, previous=snapshot
+        capture_sequential(
+            *_summary(later, specs, automatic.model_copy(update={"q": 0.2}), design),
+            finalized=True,
+            previous=snapshot,
         )
     assert roster_changed.value.code == "sequential.continuation.rewrite"
     grown = Randomized(
         control_group="control", allocation={"control": 0.5, "a": 0.2, "b": 0.2, "c": 0.1}
     )
     with pytest.raises(CapabilityError) as assignment_changed:
-        _summary(later, specs, automatic, grown).capture_sequential(
-            finalized=True, previous=snapshot
+        capture_sequential(
+            *_summary(later, specs, automatic, grown), finalized=True, previous=snapshot
         )
     assert assignment_changed.value.code == "sequential.continuation.rewrite"
     rewritten = later.copy()
     rewritten.loc[0, "outcome"] = 1 - rewritten.loc[0, "outcome"]
     with pytest.raises(CapabilityError) as prefix_changed:
-        _summary(rewritten, specs, automatic, design).capture_sequential(
-            finalized=True, previous=snapshot
+        capture_sequential(
+            *_summary(rewritten, specs, automatic, design), finalized=True, previous=snapshot
         )
     assert prefix_changed.value.code == "sequential.continuation.rewrite"
     with pytest.raises(CapabilityError) as unregistered_arm:
@@ -1204,15 +1269,15 @@ def test_automatic_segments_match_the_manual_breakout_and_retain_absent_levels(t
     frame = _arm_rows(("control", "treatment"), levels=("x", "y"))
     auto_source = _summary(frame, specs, automatic, design)
     manual_source = _summary(frame, specs, manual, design)
-    snapshot = auto_source.sequential_snapshot()
-    assert snapshot == manual_source.sequential_snapshot()
+    snapshot = sequential_snapshot(*auto_source)
+    assert snapshot == sequential_snapshot(*manual_source)
     assert {(state.segment, state.n > 0) for state in snapshot.states} == {
         ((("segment", "x"),), True),
         ((("segment", "y"),), True),
         ((("segment", "absent"),), False),
     }
-    rows = auto_source.run_breakout()
-    assert _rows(rows) == _rows(manual_source.run_breakout())
+    rows = view_readout(*auto_source, Scope(view="breakout", grain="total"))
+    assert _rows(rows) == _rows(view_readout(*manual_source, Scope(view="breakout", grain="total")))
     by_level = {row.dimension_value: row for row in rows}
     assert set(by_level) == set(levels)
     absent = by_level["absent"]
@@ -1224,36 +1289,40 @@ def test_automatic_segments_match_the_manual_breakout_and_retain_absent_levels(t
     # Whole-window and as-of views keep their existing segmented refusals.
     for source in (auto_source, manual_source):
         with pytest.raises(CapabilityError) as refused:
-            source.run()
+            view_readout(*source)
         assert refused.value.code == "sequential.source.invalid"
 
     # A replayed checkpoint retains the segmented state; a moments cube still
     # declares no breakout dimension.
     path = tmp_path / "segments.parquet"
-    auto_source.export(path)
-    replay = Analysis.from_moments(
+    export_moments(*auto_source, path)
+    replay_experiment, replay_resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
-    assert replay.sequential_snapshot() == snapshot
+    assert sequential_snapshot(replay_experiment, replay_resolver) == snapshot
     with pytest.raises(CapabilityError) as no_catalog:
-        replay.run_breakout()
+        view_readout(replay_experiment, replay_resolver, Scope(view="breakout", grain="total"))
     assert no_catalog.value.code == "evidence.breakout_unavailable"
 
     # An undeclared level in the data joins no cell; a redeclared family refuses.
     extra = _arm_rows(("control", "treatment"), levels=("x", "y", "z"), offset=60)
-    assert auto_source.capture_sequential(finalized=True, previous=snapshot) == snapshot
+    assert capture_sequential(*auto_source, finalized=True, previous=snapshot) == snapshot
     import pandas as pd
 
-    grown = _summary(pd.concat([frame, extra], ignore_index=True), specs, automatic, design)
-    appended = grown.capture_sequential(finalized=True, previous=snapshot)
+    grown_experiment, grown_resolver = _summary(
+        pd.concat([frame, extra], ignore_index=True), specs, automatic, design
+    )
+    appended = capture_sequential(
+        grown_experiment, grown_resolver, finalized=True, previous=snapshot
+    )
     assert appended.parent_id == snapshot.prefix_id
     assert {state.segment[0][1] for state in appended.states} == set(levels)
     redeclared = automatic.model_copy(
         update={"inference": InferenceSpec(kind="always_valid", segments={"segment": ("x", "y")})}
     )
     with pytest.raises(CapabilityError) as family_changed:
-        _summary(frame, specs, redeclared, design).capture_sequential(
-            finalized=True, previous=snapshot
+        capture_sequential(
+            *_summary(frame, specs, redeclared, design), finalized=True, previous=snapshot
         )
     assert family_changed.value.code == "sequential.continuation.rewrite"
 
@@ -1402,8 +1471,9 @@ def test_automatic_segments_on_a_unit_panel_match_the_manual_registration():
     table = pa.Table.from_pylist(rows)
 
     def panel(plan):
-        source = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             table,
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -1414,13 +1484,18 @@ def test_automatic_segments_on_a_unit_panel_match_the_manual_registration():
             plan=plan,
             observation_end=10,
         )
-        source.capture_sequential(finalized=True, as_of=2)
-        return source
+        capture_sequential(experiment, resolver, finalized=True, as_of=2)
+        return experiment, resolver
 
-    auto_source, manual_source = panel(automatic), panel(manual)
-    assert auto_source.sequential_snapshot() == manual_source.sequential_snapshot()
-    assert _rows(auto_source.run_breakout()) == _rows(manual_source.run_breakout())
-    assert {row.dimension_value for row in auto_source.run_breakout()} == set(levels)
+    breakout = Scope(view="breakout", grain="total")
+    auto_experiment, auto_resolver = panel(automatic)
+    manual_experiment, manual_resolver = panel(manual)
+    assert sequential_snapshot(auto_experiment, auto_resolver) == sequential_snapshot(
+        manual_experiment, manual_resolver
+    )
+    auto_rows = view_readout(auto_experiment, auto_resolver, breakout)
+    assert _rows(auto_rows) == _rows(view_readout(manual_experiment, manual_resolver, breakout))
+    assert {row.dimension_value for row in auto_rows} == set(levels)
 
 
 @pytest.mark.integration
@@ -1460,12 +1535,22 @@ def test_automatic_segments_under_an_explicit_bh_view_read_out_at_the_view_level
         }
     )
     frame = _arm_rows(("control", "treatment"), levels=levels)
-    auto_source = _summary(frame, specs, automatic, design)
-    manual_source = _summary(frame, specs, manual, design)
-    assert auto_source.sequential_snapshot() == manual_source.sequential_snapshot()
-    assert auto_source.sequential_snapshot().registration.q == Fraction(0.3)
-    rows = auto_source.run_breakout()
-    assert _rows(rows) == _rows(manual_source.run_breakout())
+    auto_source_experiment, auto_source_resolver = _summary(frame, specs, automatic, design)
+    manual_source_experiment, manual_source_resolver = _summary(frame, specs, manual, design)
+    assert sequential_snapshot(auto_source_experiment, auto_source_resolver) == sequential_snapshot(
+        manual_source_experiment, manual_source_resolver
+    )
+    assert sequential_snapshot(
+        auto_source_experiment, auto_source_resolver
+    ).registration.q == Fraction(0.3)
+    rows = view_readout(
+        auto_source_experiment, auto_source_resolver, Scope(view="breakout", grain="total")
+    )
+    assert _rows(rows) == _rows(
+        view_readout(
+            manual_source_experiment, manual_source_resolver, Scope(view="breakout", grain="total")
+        )
+    )
     assert {row.family_q for row in rows if row.method_role == "decision"} == {0.3}
     plan_level = automatic.model_copy(
         update={
@@ -1476,7 +1561,9 @@ def test_automatic_segments_under_an_explicit_bh_view_read_out_at_the_view_level
         }
     )
     with pytest.raises(CapabilityError) as refused:
-        _summary(frame, specs, plan_level, design).run_breakout()
+        view_readout(
+            *_summary(frame, specs, plan_level, design), Scope(view="breakout", grain="total")
+        )
     assert refused.value.code == "sequential.source.invalid"
 
 
@@ -1501,8 +1588,8 @@ def test_automatic_segments_under_encouragement_keep_the_breakout_estimand_refus
     )
     frame = _arm_rows(("control", "treatment"), levels=("x", "y"))
     frame["clicked"] = [int(arm != "control" and i % 3 != 0) for i, arm in enumerate(frame["arm"])]
-    source = _summary(frame, specs, automatic, design)
-    roster = source.sequential_snapshot().registration.roster
+    experiment, resolver = _summary(frame, specs, automatic, design)
+    roster = sequential_snapshot(experiment, resolver).registration.roster
     assert {(c.metric, c.estimand, c.segment[0][1]) for c in roster} == {
         (metric, estimand, level)
         for metric, estimand in (("outcome", "itt"), ("uptake", "compliance"))
@@ -1511,7 +1598,7 @@ def test_automatic_segments_under_encouragement_keep_the_breakout_estimand_refus
     assert all(not c.family for c in roster)
     assert {c.alpha for c in roster if c.estimand == "compliance"} == {Fraction(1, 40)}
     with pytest.raises(CapabilityError) as refused:
-        source.run_breakout()
+        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert refused.value.code == "sequential.route.unsupported"
 
 
@@ -1521,7 +1608,6 @@ def test_automatic_exact_multi_arm_on_definitions_matches_the_manual_plan():
     from increment.semantics.design import Randomized
     from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec
     from increment.sequential_source import native_observation_mapping
-    from tests.analysis_factory import make_analysis
     from tests.parity_harness import dataset as ds
 
     plan = AnalysisPlan(primary="purchase_rate", inference=InferenceSpec(kind="always_valid"))
@@ -1549,13 +1635,21 @@ def test_automatic_exact_multi_arm_on_definitions_matches_the_manual_plan():
     as_of = ds._EXPERIMENT_END - timedelta(days=1)
     connection = ds.duckdb_connection(ds.multiplicity_event_rows())
     try:
-        automatic_source = make_analysis(connection, defs, experiment="exp", plan=bound)
-        manual_source = make_analysis(connection, defs, experiment="exp", plan=manual)
-        snapshot = automatic_source.capture_sequential(finalized=True, as_of=as_of)
-        assert snapshot == manual_source.capture_sequential(finalized=True, as_of=as_of)
+        automatic_source_experiment, automatic_source_resolver = make_binding(
+            connection, defs, experiment="exp", plan=bound
+        )
+        manual_source_experiment, manual_source_resolver = make_binding(
+            connection, defs, experiment="exp", plan=manual
+        )
+        snapshot = capture_sequential(
+            automatic_source_experiment, automatic_source_resolver, finalized=True, as_of=as_of
+        )
+        assert snapshot == capture_sequential(
+            manual_source_experiment, manual_source_resolver, finalized=True, as_of=as_of
+        )
         assert len(snapshot.records) == 240
-        rows = automatic_source.run()
-        assert _rows(rows) == _rows(manual_source.run())
+        rows = view_readout(automatic_source_experiment, automatic_source_resolver)
+        assert _rows(rows) == _rows(view_readout(manual_source_experiment, manual_source_resolver))
         assert {r.group_id for r in rows if isinstance(r, LiftEstimate)} == {
             "treatment_a",
             "treatment_b",
@@ -1573,9 +1667,13 @@ def test_automatic_exact_multi_arm_on_definitions_matches_the_manual_plan():
             source_id="exp",
             source_mapping=mapping,
         )
-        relational = make_analysis(connection, defs, experiment="exp", plan=segmented)
+        relational_experiment, relational_resolver = make_binding(
+            connection, defs, experiment="exp", plan=segmented
+        )
         with pytest.raises(CapabilityError) as refused:
-            relational.capture_sequential(finalized=True, as_of=as_of)
+            capture_sequential(
+                relational_experiment, relational_resolver, finalized=True, as_of=as_of
+            )
         assert refused.value.code == "sequential.route.unsupported"
     finally:
         connection.disconnect()
@@ -1644,14 +1742,18 @@ def test_boolean_and_null_summary_segments_match_the_canonical_string_oracle(kin
             ),
         )
     canonical = _arm_rows(("control", "treatment"), levels=levels[:3])
-    oracle = _summary(canonical, specs, plan, design)
-    typed = _summary(typed_segment_frame(canonical, kind), specs, plan, design)
+    oracle_experiment, oracle_resolver = _summary(canonical, specs, plan, design)
+    typed_experiment, typed_resolver = _summary(
+        typed_segment_frame(canonical, kind), specs, plan, design
+    )
 
-    snapshot = typed.sequential_snapshot()
-    assert snapshot == oracle.sequential_snapshot()
+    snapshot = sequential_snapshot(typed_experiment, typed_resolver)
+    assert snapshot == sequential_snapshot(oracle_experiment, oracle_resolver)
     assert _occupancy(snapshot) == {(level, level != "absent") for level in levels}
-    rows = typed.run_breakout()
-    assert _rows(rows) == _rows(oracle.run_breakout())
+    rows = view_readout(typed_experiment, typed_resolver, Scope(view="breakout", grain="total"))
+    assert _rows(rows) == _rows(
+        view_readout(oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total"))
+    )
     by_level = {row.dimension_value: row for row in rows}
     assert set(by_level) == set(levels)
     for level, row in by_level.items():
@@ -1691,8 +1793,9 @@ def test_boolean_and_null_panel_segments_match_the_canonical_string_oracle(kind)
     )
 
     def capture(frame):
-        source = Analysis.from_unit_panel(
+        source = from_frame(
             frame,
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -1703,15 +1806,19 @@ def test_boolean_and_null_panel_segments_match_the_canonical_string_oracle(kind)
             plan=plan,
             observation_end=10,
         )
-        source.capture_sequential(finalized=True, as_of=2)
+        capture_sequential(*source, finalized=True, as_of=2)
         return source
 
-    oracle = capture(canonical)
-    typed = capture(typed_segment_frame(canonical, kind))
-    snapshot = typed.sequential_snapshot()
-    assert snapshot == oracle.sequential_snapshot()
+    oracle_experiment, oracle_resolver = capture(canonical)
+    typed_experiment, typed_resolver = capture(typed_segment_frame(canonical, kind))
+    snapshot = sequential_snapshot(typed_experiment, typed_resolver)
+    assert snapshot == sequential_snapshot(oracle_experiment, oracle_resolver)
     assert _occupancy(snapshot) == {(level, level != "absent") for level in levels}
-    assert _rows(typed.run_breakout()) == _rows(oracle.run_breakout())
+    assert _rows(
+        view_readout(typed_experiment, typed_resolver, Scope(view="breakout", grain="total"))
+    ) == _rows(
+        view_readout(oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total"))
+    )
 
 
 def test_segment_named_like_a_role_column_keeps_every_role_intact():
@@ -1725,7 +1832,7 @@ def test_segment_named_like_a_role_column_keeps_every_role_intact():
     frame = _arm_rows(("control", "treatment"))
     oracle_frame = frame.assign(seg=frame["arm"])
     levels = ("control", "treatment")
-    oracle = _summary(
+    oracle_experiment, oracle_resolver = _summary(
         oracle_frame,
         specs,
         AnalysisPlan(
@@ -1734,7 +1841,7 @@ def test_segment_named_like_a_role_column_keeps_every_role_intact():
         ),
         design,
     )
-    overlapped = _summary(
+    overlapped_experiment, overlapped_resolver = _summary(
         frame,
         specs,
         AnalysisPlan(
@@ -1744,9 +1851,9 @@ def test_segment_named_like_a_role_column_keeps_every_role_intact():
         design,
     )
     key = lambda s: (s.group_id, s.segment[0][1], s.n, s.mean)  # noqa: E731
-    assert sorted(map(key, overlapped.sequential_snapshot().states)) == sorted(
-        map(key, oracle.sequential_snapshot().states)
-    )
+    assert sorted(
+        map(key, sequential_snapshot(overlapped_experiment, overlapped_resolver).states)
+    ) == sorted(map(key, sequential_snapshot(oracle_experiment, oracle_resolver).states))
 
 
 def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_forward():
@@ -1781,29 +1888,33 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
         ),
     )
 
-    replay = Analysis.from_moments(rows, metrics=specs, control="control")
-    replayed = replay.sequential_snapshot()
+    replay_experiment, replay_resolver = from_moments(rows, metrics=specs, control="control")
+    replayed = sequential_snapshot(replay_experiment, replay_resolver)
     assert_replay_only("stored_bool_null_continuation", "raw_bool_null_replay", replayed)
     assert replayed.model_dump_json() == frozen
     previous = replayed
 
     spelled = _arm_rows(("control", "treatment"), levels=old)
-    captured = _summary(spelled, specs, plan, design).sequential_snapshot()
+    captured = sequential_snapshot(*_summary(spelled, specs, plan, design))
     assert captured.records == previous.records
     assert captured.states == previous.states
     assert captured.assignment_counts == {"control": 60, "treatment": 60}
     later = pd.concat([spelled, _arm_rows(("control", "treatment"), offset=60, levels=old)])
-    appended = _summary(later, specs, plan, design).capture_sequential(
-        finalized=True, previous=previous
+    appended = capture_sequential(
+        *_summary(later, specs, plan, design), finalized=True, previous=previous
     )
     assert appended.parent_id == previous.prefix_id
     assert_support("stored_bool_null_continuation", "same_spelling_continuation", appended)
 
     canonical = _arm_rows(("control", "treatment"), levels=("true", "false", "__null__"))
     for kind in _BOOL_KINDS:
-        relabelled = _summary(typed_segment_frame(canonical, kind), specs, plan, design)
+        relabelled_experiment, relabelled_resolver = _summary(
+            typed_segment_frame(canonical, kind), specs, plan, design
+        )
         with pytest.raises(CapabilityError) as refused:
-            relabelled.capture_sequential(finalized=True, previous=previous)
+            capture_sequential(
+                relabelled_experiment, relabelled_resolver, finalized=True, previous=previous
+            )
         assert refused.value.code == "sequential.continuation.rewrite"
         assert_refusal(
             "stored_bool_null_continuation",
@@ -1811,8 +1922,9 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
             refused.value,
             stage="read",
         )
-    panel_source = Analysis.from_unit_panel(
+    panel_source_experiment, panel_source_resolver = from_frame(
         canonical.assign(day=0),
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -1824,7 +1936,13 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
     )
     try:
         with pytest.raises(CapabilityError) as panel_refused:
-            panel_source.capture_sequential(finalized=True, as_of=0, previous=previous)
+            capture_sequential(
+                panel_source_experiment,
+                panel_source_resolver,
+                finalized=True,
+                as_of=0,
+                previous=previous,
+            )
         assert_refusal(
             "stored_bool_null_continuation",
             "panel_legacy_unbounded_prefix_refused",
@@ -1832,7 +1950,7 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
             stage="read",
         )
     finally:
-        panel_source.close()
+        panel_source_resolver.close()
 
 
 @pytest.mark.slow
@@ -1844,7 +1962,6 @@ def test_registered_native_and_artifact_capture_share_source_identity():
     from increment.semantics.design import Randomized
     from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec
     from increment.sequential_source import native_observation_mapping
-    from tests.analysis_factory import make_analysis
     from tests.capability_consumers_auxiliary import assert_support
     from tests.parity_harness import dataset as ds
 
@@ -1864,13 +1981,21 @@ def test_registered_native_and_artifact_capture_share_source_identity():
     as_of = ds._EXPERIMENT_END - timedelta(days=1)
     connection = ds.duckdb_connection(ds.multiplicity_event_rows())
     try:
-        native = make_analysis(connection, defs, experiment="exp", plan=bound)
+        native_experiment, native_resolver = make_binding(
+            connection, defs, experiment="exp", plan=bound
+        )
         store = WarehouseArtifactStore(connection, schema_name="artifacts")  # ty: ignore[invalid-argument-type]
         context = artifact_context(defs, experiment, "error")
-        ref = native.publish_unit_day_artifact(store)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        native_snapshot = native.capture_sequential(finalized=True, as_of=as_of)
-        artifact_snapshot = adopted.capture_sequential(finalized=True, as_of=as_of)
+        ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+        native_snapshot = capture_sequential(
+            native_experiment, native_resolver, finalized=True, as_of=as_of
+        )
+        artifact_snapshot = capture_sequential(
+            adopted_experiment, adopted_resolver, finalized=True, as_of=as_of
+        )
         assert_support(
             "experiment_window_compatibility", "window_native_supported", native_snapshot
         )
@@ -1887,7 +2012,7 @@ def test_registered_native_and_artifact_capture_share_source_identity():
             experiment.plan, metrics, design=design, source_id="exp", source_mapping=raw
         )
         with pytest.raises(CodedError) as refused:
-            make_analysis(connection, defs, experiment="exp", plan=legacy)
+            make_binding(connection, defs, experiment="exp", plan=legacy)
         assert refused.value.code == "sequential.source.invalid"
     finally:
         connection.disconnect()
@@ -1903,7 +2028,6 @@ def test_a_registration_from_before_window_days_were_bound_refuses_new_native_ca
     from increment.errors import CodedError
     from increment.semantics.models import AnalysisPlan, Definitions
     from increment.sequential_source import native_observation_mapping
-    from tests.analysis_factory import make_analysis
     from tests.capability_consumers_auxiliary import assert_refusal
     from tests.parity_harness import dataset as ds
 
@@ -1920,7 +2044,7 @@ def test_a_registration_from_before_window_days_were_bound_refuses_new_native_ca
     connection = ds.duckdb_connection(ds.multiplicity_event_rows())
     try:
         with pytest.raises(CodedError) as refused:
-            make_analysis(connection, defs, experiment="exp", plan=legacy_plan)
+            make_binding(connection, defs, experiment="exp", plan=legacy_plan)
         assert refused.value.code == "sequential.source.invalid"
         assert_refusal(
             "experiment_window_compatibility",

@@ -704,7 +704,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             waive=(
                 (
                     "from_moments",
-                    "SOURCE: Analysis.from_moments's own docstring names run_breakout among the methods it refuses -- a moments cube enters at moment grain and carries no per-unit breakout dimension.",
+                    "SOURCE: a moments cube enters at moment grain and carries no per-unit breakout dimension.",
                 ),
                 (
                     "from_switchback_panel",

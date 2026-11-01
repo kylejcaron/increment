@@ -6,10 +6,13 @@ from fractions import Fraction as F
 
 import pytest
 
+from increment import from_frame
 from increment.breakout.estimates import LiftEstimates
 from increment.frame import MetricSpec
 from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment.workflows import capture_sequential
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 from tests.binary_sequential_cases import (
     DESIGN,
     check_path_parity,
@@ -35,15 +38,15 @@ def test_conversion_metric_registers_scalar_mean_and_retains_bernoulli_moments()
     # 600 per arm: at the helper's default 200 the anytime-valid boundary for
     # this draw still includes zero (lb = -0.031), so no decision to assert.
     units = unit_rows(n=600)
-    analysis = frame_analysis(units, SPEC)
-    snapshot = analysis.capture_sequential(finalized=True)
+    experiment, resolver = frame_analysis(units, SPEC)
+    snapshot = capture_sequential(experiment, resolver, finalized=True)
     assert snapshot.registration.models[0].law == "scalar_mean"
     control = snapshot.arm("purchase", "control")
     successes = sum(u["purchase"] for u in units if u["variant"] == "control")
     rate = F(successes, control.n)
     assert control.mean[0] == rate
     assert control.scatter[0][0] == control.n * rate * (1 - rate)
-    row = analysis.run()[0]
+    row = view_readout(experiment, resolver)[0]
     assert row.inference == "asymptotic_mean"
     assert row.require_lift().lb is not None
     assert row.stat_sig()
@@ -58,7 +61,6 @@ def test_binary_secondary_family_uses_e_bh_selection_at_q():
     """
     import pandas as pd
 
-    from increment import Analysis
     from increment.estimation.decision_types import sequential_hypothesis_key
     from increment.estimation.family import e_bh_select, select_sequential_family
     from increment.estimation.sequential import AsymptoticMean
@@ -82,8 +84,9 @@ def test_binary_secondary_family_uses_e_bh_selection_at_q():
     plan = AnalysisPlan(
         primary="checkout", secondaries=["signups", "sessions"], q=0.08, inference=SPEC
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=specs,
@@ -92,7 +95,7 @@ def test_binary_secondary_family_uses_e_bh_selection_at_q():
         design=DESIGN,
         plan=plan,
     )
-    rows_out = analysis.run()
+    rows_out = view_readout(experiment, resolver)
     assert isinstance(rows_out, LiftEstimates)
     rows_by_metric = {row.metric: row for row in rows_out}
     primary = rows_by_metric["checkout"].require_asymptotic_sequential_result()
@@ -103,7 +106,7 @@ def test_binary_secondary_family_uses_e_bh_selection_at_q():
     # Recompute the family's selection and reinversion independently of
     # `run()`, from the same verified snapshot, so this pins the e-BH formula
     # rather than whatever value `run()` happened to emit.
-    snapshot = analysis.capture_sequential(finalized=True)
+    snapshot = capture_sequential(experiment, resolver, finalized=True)
     policy = AsymptoticMean(registration=snapshot.registration)
     computation = estimate_sequential(snapshot, policy)
     by_metric = {row.metric: row for row in computation.results}

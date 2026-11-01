@@ -1,11 +1,21 @@
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 
-from increment import Analysis, AnalysisPlan, RunResult, run
+from increment import (
+    AnalysisPlan,
+    RunResult,
+    Scope,
+    from_definitions,
+    from_frame,
+    run,
+)
 from increment.decision_wire import compiled_plan_from_dict
 from increment.frame import MetricSpec, synthesise_metric
 from increment.kernel.contracts import Registration
 from increment.plan import compile_decision_plan
+from tests.analysis_factory import view_readout
 
 
 def test_top_level_run_surface_is_public():
@@ -24,7 +34,7 @@ def test_top_level_run_returns_a_validated_in_memory_result():
     metric = synthesise_metric(MetricSpec(name="value", type="mean"))
     compiled = compile_decision_plan(plan, [metric], path="frame")
     registration = Registration.from_plan(compiled)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "c3", "c4", "t1", "t2", "t3", "t4"],
@@ -32,6 +42,7 @@ def test_top_level_run_returns_a_validated_in_memory_result():
                 "value": [1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -40,17 +51,9 @@ def test_top_level_run_returns_a_validated_in_memory_result():
         experiment_id="exp",
     )
     try:
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="exp",
-            analysis_spec_hash="sha256:" + "a" * 64,
-            execution_identity_hash="sha256:" + "b" * 64,
-            run_id="run-1",
-        )
+        result = run(experiment, resolver, run_id="run-1")
     finally:
-        analysis.close()
+        resolver.close()
 
     assert isinstance(result, RunResult)
     assert result.cells == result.run.cells
@@ -104,8 +107,9 @@ def _guardrail_case_frame():
 def _guardrail_case_analysis(plan, specs):
     from increment import Randomized
 
-    return Analysis.from_unit_summary(
+    return from_frame(
         _guardrail_case_frame(),
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(
@@ -121,19 +125,11 @@ def _guardrail_case_analysis(plan, specs):
 
 def _guardrail_case_result():
     plan, specs, compiled, registration = _guardrail_case_inputs()
-    analysis = _guardrail_case_analysis(plan, specs)
+    experiment, resolver = _guardrail_case_analysis(plan, specs)
     try:
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="exp",
-            analysis_spec_hash="sha256:" + "c" * 64,
-            execution_identity_hash="sha256:" + "d" * 64,
-            run_id="run-guardrail",
-        )
+        result = run(experiment, resolver, run_id="run-guardrail")
     finally:
-        analysis.close()
+        resolver.close()
     return result, registration, compiled
 
 
@@ -302,8 +298,9 @@ def test_public_run_returns_each_disjoint_family_from_its_complete_metadata_rost
             "second": [1.0, 2.0, 3.0, 4.0, 8.0, 9.0, 10.0, 11.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -312,17 +309,9 @@ def test_public_run_returns_each_disjoint_family_from_its_complete_metadata_rost
         experiment_id="family-roster",
     )
     try:
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="family-roster",
-            analysis_spec_hash="sha256:" + "a" * 64,
-            execution_identity_hash="sha256:" + "b" * 64,
-            run_id="run-family-roster",
-        )
+        result = run(experiment, resolver, run_id="run-family-roster")
     finally:
-        analysis.close()
+        resolver.close()
 
     metadata = result.run.metadata
     assert metadata is not None
@@ -481,10 +470,9 @@ def test_selected_quantile_public_run_matches_legacy_estimate_and_verdict():
     )
     plan = AnalysisPlan(primary="median", q=0.1)
     metric = MetricSpec(name="median", value_column="value", type="quantile", quantile=0.5)
-    compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
-    registration = Registration.from_plan(compiled)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -493,18 +481,10 @@ def test_selected_quantile_public_run_matches_legacy_estimate_and_verdict():
         experiment_id="selected-quantile",
     )
     try:
-        legacy = analysis.run()
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="selected-quantile",
-            analysis_spec_hash="sha256:" + "a" * 64,
-            execution_identity_hash="sha256:" + "b" * 64,
-            run_id="selected-quantile-run",
-        )
+        legacy = view_readout(experiment, resolver)
+        result = run(experiment, resolver, run_id="selected-quantile-run")
     finally:
-        analysis.close()
+        resolver.close()
 
     legacy_row = legacy[0]
     retained = result.cells[0].retained_row()
@@ -542,8 +522,9 @@ def test_observational_public_run_matches_legacy_estimate_and_decision():
     )
     plan = AnalysisPlan(primary="revenue")
     metric = MetricSpec(name="revenue", type="mean")
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[metric],
@@ -555,21 +536,11 @@ def test_observational_public_run_matches_legacy_estimate_and_decision():
         plan=plan,
         experiment_id="observational-run",
     )
-    compiled = analysis.compiled_decision_plan
-    registration = Registration.from_plan(compiled)
     try:
-        legacy = analysis.run()[0]
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="observational-run",
-            analysis_spec_hash="sha256:" + "e" * 64,
-            execution_identity_hash="sha256:" + "f" * 64,
-            run_id="observational-run",
-        )
+        legacy = view_readout(experiment, resolver)[0]
+        result = run(experiment, resolver, run_id="observational-run")
     finally:
-        analysis.close()
+        resolver.close()
 
     retained = result.cells[0].retained_row()
     assert isinstance(legacy, LiftEstimate)
@@ -604,8 +575,9 @@ def test_sequential_ebh_public_run_matches_legacy_row_verdicts():
         q=0.1,
         inference=InferenceSpec(kind="always_valid"),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(
@@ -618,21 +590,11 @@ def test_sequential_ebh_public_run_matches_legacy_row_verdicts():
         exposure_date="exposure",
         experiment_id="sequential-ebh",
     )
-    compiled = analysis.compiled_decision_plan
-    registration = Registration.from_plan(compiled)
     try:
-        legacy = analysis.run()
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="sequential-ebh",
-            analysis_spec_hash="sha256:" + "1" * 64,
-            execution_identity_hash="sha256:" + "2" * 64,
-            run_id="sequential-ebh-run",
-        )
+        legacy = view_readout(experiment, resolver)
+        result = run(experiment, resolver, run_id="sequential-ebh-run")
     finally:
-        analysis.close()
+        resolver.close()
 
     assert {family.procedure for family in result.decisions.families} == {"e_bh"}
     for row in legacy:
@@ -741,27 +703,22 @@ experiments:
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows))
     snapshot_at = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         definitions,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(snapshot_at, {"events": snapshot_at}),
     )
-    compiled = analysis.compiled_decision_plan
-    registration = Registration.from_plan(compiled)
+    assigned = Scope(view="run", grain="total")
+    triggered = Scope(view="run", grain="total", population="triggered")
     try:
-        legacy = analysis.run()
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="exp",
-            analysis_spec_hash="sha256:" + "7" * 64,
-            execution_identity_hash="sha256:" + "8" * 64,
-            run_id="triggered-run",
-        )
+        legacy = [
+            *view_readout(experiment, resolver, assigned),
+            *view_readout(experiment, resolver, triggered),
+        ]
+        result = run(experiment.with_views(assigned, triggered), resolver, run_id="triggered-run")
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
     assert {row.analysis_population for row in legacy} == {"assigned", "triggered"}
@@ -808,8 +765,9 @@ def test_breakout_declared_analysis_run_matches_legacy_whole_window_results():
         ]
     )
     plan = AnalysisPlan(primary="value")
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -818,22 +776,12 @@ def test_breakout_declared_analysis_run_matches_legacy_whole_window_results():
         plan=plan,
         experiment_id="breakout-run",
     )
-    compiled = analysis.compiled_decision_plan
-    registration = Registration.from_plan(compiled)
     try:
-        legacy = analysis.run()
-        breakout_rows = analysis.run_breakout()
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="breakout-run",
-            analysis_spec_hash="sha256:" + "3" * 64,
-            execution_identity_hash="sha256:" + "4" * 64,
-            run_id="breakout-run",
-        )
+        legacy = view_readout(experiment, resolver)
+        breakout_rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        result = run(experiment, resolver, run_id="breakout-run")
     finally:
-        analysis.close()
+        resolver.close()
 
     assert len(breakout_rows) == 2
     assert {row.dimension_value for row in breakout_rows} == {"north", "south"}
@@ -845,72 +793,6 @@ def test_breakout_declared_analysis_run_matches_legacy_whole_window_results():
     assert result.cells[0].identity.key.dimension is None
     assert result.cells[0].identity.key.dimension_value is None
     assert result.cells[0].retained_row().stat_sig() is legacy_row.stat_sig()
-
-
-def test_switchback_public_run_refuses_before_read_with_legacy_route():
-    from increment import Randomized
-    from increment.errors import CodedError
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
-
-    frame = pd.DataFrame(
-        [
-            {
-                "unit": unit,
-                "cycle": cycle,
-                "period": period,
-                "step": step,
-                "group": group,
-                "value": float(cycle + period + step + (group == "treatment")),
-            }
-            for unit, order in (("u1", ("control", "treatment")), ("u2", ("treatment", "control")))
-            for cycle in range(2)
-            for period, group in enumerate(order)
-            for step in range(2)
-        ]
-    )
-    analysis = Analysis.from_switchback_panel(
-        frame,
-        unit="unit",
-        cycle="cycle",
-        period="period",
-        step="step",
-        group="group",
-        metrics={"value": "mean"},
-        identification=Randomized(
-            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-        ),
-        assignment=SwitchbackAssignment(
-            sequence=IndependentBernoulliOrder(probability_ct=0.5),
-            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-        ),
-        plan=AnalysisPlan(primary="value"),
-        experiment_id="switchback-run",
-    )
-    metric = synthesise_metric(MetricSpec(name="value", type="mean"))
-    compiled = compile_decision_plan(AnalysisPlan(primary="value"), [metric], path="frame")
-    registration = Registration.from_plan(compiled)
-    try:
-        legacy = analysis.run()
-        with pytest.raises(CodedError) as raised:
-            run(
-                analysis,
-                registration,
-                compiled,
-                experiment_id="switchback-run",
-                analysis_spec_hash="sha256:" + "5" * 64,
-                execution_identity_hash="sha256:" + "6" * 64,
-                run_id="switchback-run",
-            )
-    finally:
-        analysis.close()
-
-    assert len(legacy) == 1
-    assert raised.value.code == "store.run.legacy_analysis_required"
-    assert raised.value.context["route"] == "Analysis.run()"
 
 
 @pytest.mark.integration
@@ -930,10 +812,9 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
     )
     plan = AnalysisPlan(primary="value")
     metric = MetricSpec(name="value", type="conversion")
-    compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
-    registration = Registration.from_plan(compiled)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(
@@ -947,24 +828,15 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
     )
     store = ParquetResultsStore(tmp_path / "runs")
     try:
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="set-only",
-            analysis_spec_hash="sha256:" + "c" * 64,
-            execution_identity_hash="sha256:" + "d" * 64,
-            run_id="set-only-run",
-            results_store=store,
-        )
+        result = run(experiment, resolver, run_id="set-only-run", results_store=store)
     finally:
-        analysis.close()
+        resolver.close()
 
     envelope = result.envelope
     restored = (
         AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload()))),
         AnalysisEnvelope.from_arrow(envelope.to_arrow()),
-        store.open_run("set-only", "sha256:" + "c" * 64, "set-only-run").envelope(),
+        store.open_run("set-only", result.run.analysis_spec_hash, "set-only-run").envelope(),
     )
     effect = result.effects[0]
     assert effect is not None and effect.point is None
@@ -979,7 +851,7 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
 def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
     import pickle
 
-    from increment import MetricSpec, Randomized, from_frame
+    from increment import MetricSpec, Randomized
     from increment.errors import WireFormatError
     from increment.estimation.readout_types import ReadoutResults
     from increment.estimation.results import LiftEstimate
@@ -1048,7 +920,7 @@ def _daily_panel_run(tmp_path, scopes):
     from dataclasses import replace
     from datetime import date
 
-    from increment import Randomized, from_frame
+    from increment import Randomized
     from increment.store import ParquetResultsStore
 
     days = (date(2025, 1, 1), date(2025, 1, 2))
@@ -1089,7 +961,6 @@ def _daily_panel_run(tmp_path, scopes):
 def test_run_result_returns_each_scope_collection_and_refuses_ambiguous_selection(tmp_path):
     from increment.breakout.estimates import DailyMetricValues, LiftEstimates
     from increment.errors import CodedError
-    from increment.kernel.contracts import Scope
 
     whole = Scope(view="run", grain="total")
     values = Scope(view="daily", grain="daily", values=True)
@@ -1129,8 +1000,6 @@ def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
     import pickle
 
     import narwhals as nw
-
-    from increment.kernel.contracts import Scope
 
     views = (
         Scope(view="run", grain="total"),
@@ -1189,9 +1058,7 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
                 "inference": WinsorInferenceSpec(method="joint-rank-projection-v1"),
             },
         )
-        compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
-        registration = Registration.from_plan(compiled)
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pd.DataFrame(
                 [
                     {"unit": f"{group}-{index}", "arm": group, "value": float(value)}
@@ -1202,6 +1069,7 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
                     for index, value in enumerate(values)
                 ]
             ),
+            shape="summary",
             unit="unit",
             group="arm",
             design=Randomized(
@@ -1214,17 +1082,9 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
             experiment_id=f"rank-{expected_status}",
         )
         try:
-            row = analysis.run()[0]
+            row = view_readout(experiment, resolver)[0]
             assert isinstance(row, LiftEstimate)
-            result = run(
-                analysis,
-                registration,
-                compiled,
-                experiment_id=f"rank-{expected_status}",
-                analysis_spec_hash="sha256:" + "e" * 64,
-                execution_identity_hash="sha256:" + "f" * 64,
-                run_id=f"rank-{expected_status}",
-            )
+            result = run(experiment, resolver, run_id=f"rank-{expected_status}")
             effect = result.effects[0]
             assert effect is not None
             assert row.confidence_set is not None
@@ -1234,11 +1094,10 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
             assert effect.qualification == row.confidence_set.qualification
             assert effect.reason is not None
         finally:
-            analysis.close()
+            resolver.close()
 
 
 def test_public_run_refuses_an_empty_run_id_before_reads():
-    from increment import from_frame
     from increment.errors import CodedError
     from tests.test_kernel_review_regressions import _frame_read_calls
 
@@ -1266,19 +1125,11 @@ def test_public_run_refuses_an_empty_run_id_before_reads():
     assert reads == []
 
 
-def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_path):
-    from dataclasses import replace
-
-    from increment import from_frame
-    from increment.errors import CodedError
-    from increment.store import DecisionLog, ParquetResultsStore
-    from tests.test_kernel_review_regressions import _frame_read_calls
-
+def _arm_experiment_registered_elsewhere():
     analysis_plan = AnalysisPlan(primary="value", alpha=0.05)
     registered_plan = AnalysisPlan(primary="value", alpha=0.01)
     metric = synthesise_metric(MetricSpec(name="value", type="mean"))
     compiled = compile_decision_plan(registered_plan, [metric], path="frame")
-    registration = Registration.from_plan(compiled)
     experiment, resolver = from_frame(
         pd.DataFrame(
             {
@@ -1294,8 +1145,46 @@ def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_pat
         metrics={"value": "mean"},
         plan=analysis_plan,
     )
+    return experiment, resolver, Registration.from_plan(compiled)
+
+
+def _switchback_experiment_registered_elsewhere():
+    from increment import from_switchback_frame
+    from tests.test_frame_switchback import _assignment, _identification, _rows
+
+    def build(alpha: float):
+        return from_switchback_frame(
+            pd.DataFrame(_rows()),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"mean": "mean"},
+            identification=_identification(),
+            assignment=_assignment(),
+            plan=AnalysisPlan(primary="mean", alpha=alpha),
+        )
+
+    registered, other = build(0.01)
+    other.close()
+    experiment, resolver = build(0.05)
+    return experiment, resolver, registered.registration
+
+
+@pytest.mark.parametrize(
+    "build", [_arm_experiment_registered_elsewhere, _switchback_experiment_registered_elsewhere]
+)
+def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_path, build):
+    from dataclasses import replace
+
+    from increment.errors import CodedError
+    from increment.store import DecisionLog, ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
+
+    experiment, resolver, registration = build()
     log_path = tmp_path / "decisions.jsonl"
-    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+    with resolver, _frame_read_calls() as reads, pytest.raises(CodedError) as error:
         run(
             replace(experiment, registration=registration),
             resolver,
@@ -1312,7 +1201,6 @@ def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_pat
 def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
     from dataclasses import replace
 
-    from increment import from_frame
     from increment.errors import CodedError
     from increment.store import DecisionLog, HistorySelector, ParquetResultsStore
     from tests.test_kernel_review_regressions import _frame_read_calls
@@ -1431,8 +1319,7 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
 
 def test_event_log_replays_bonferroni_breakout_families(tmp_path):
     """A finite-sample Bonferroni family has no FDR level; its logged event still replays."""
-    from increment import MultiplicitySpec, from_frame
-    from increment.kernel.contracts import Scope
+    from increment import MultiplicitySpec
     from increment.store import DecisionLog, ParquetResultsStore
 
     frame = pd.DataFrame(
@@ -1480,10 +1367,7 @@ def test_public_run_binds_design_level_encouragement_compliance_identity():
     from increment import Encouragement, ExclusionRestriction, UptakeSpec
 
     plan = AnalysisPlan(primary="value")
-    metric = synthesise_metric(MetricSpec(name="value", type="mean"))
-    compiled = compile_decision_plan(plan, [metric], path="frame")
-    registration = Registration.from_plan(compiled)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": [f"u{i}" for i in range(8)],
@@ -1492,6 +1376,7 @@ def test_public_run_binds_design_level_encouragement_compliance_identity():
                 "clicked": [0, 0, 0, 0, 0, 1, 1, 1],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         design=Encouragement(
@@ -1508,17 +1393,9 @@ def test_public_run_binds_design_level_encouragement_compliance_identity():
         experiment_id="encouragement",
     )
     try:
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="encouragement",
-            analysis_spec_hash="sha256:" + "c" * 64,
-            execution_identity_hash="sha256:" + "d" * 64,
-            run_id="run-encouragement",
-        )
+        result = run(experiment, resolver, run_id="run-encouragement")
     finally:
-        analysis.close()
+        resolver.close()
 
     compliance = next(cell for cell in result.cells if cell.identity.key.metric == "uptake")
     assert compliance.identity.metric_hash
@@ -1530,8 +1407,6 @@ def test_public_run_binds_design_level_encouragement_compliance_identity():
 def test_unicode_daily_metadata_order_roundtrips_after_run():
     from dataclasses import replace
 
-    from increment import from_frame
-    from increment.kernel.contracts import Scope
     from increment.result_envelope import AnalysisEnvelope
 
     rows = []

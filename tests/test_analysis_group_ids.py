@@ -15,7 +15,7 @@ import pyarrow as pa
 import pytest
 
 from increment.semantics.models import Definitions
-from tests.analysis_factory import lift_rows, make_analysis
+from tests.analysis_factory import lift_rows, make_binding, view_readout
 
 
 def _group_id_cast_rows(*, as_int: bool) -> pa.Table:
@@ -125,18 +125,22 @@ def test_execute_path_casts_int_group_id_before_arm_counting():
     0.975. Both columns' analyses must land on the same, correct level."""
     con_str = ibis.duckdb.connect()
     con_str.create_table("arm_cast_events", obj=_group_id_cast_rows(as_int=False))
-    str_analysis = make_analysis(
+    str_experiment, str_resolver = make_binding(
         con_str, _group_id_cast_defs(control_group="control"), experiment="arm_cast_exp"
     )
 
     con_int = ibis.duckdb.connect()
     con_int.create_table("arm_cast_events", obj=_group_id_cast_rows(as_int=True))
-    int_analysis = make_analysis(
+    int_experiment, int_resolver = make_binding(
         con_int, _group_id_cast_defs(control_group="0"), experiment="arm_cast_exp"
     )
 
-    str_result = {r.metric: r for r in lift_rows(str_analysis.run())}["conversion"]
-    int_result = {r.metric: r for r in lift_rows(int_analysis.run())}["conversion"]
+    str_result = {r.metric: r for r in lift_rows(view_readout(str_experiment, str_resolver))}[
+        "conversion"
+    ]
+    int_result = {r.metric: r for r in lift_rows(view_readout(int_experiment, int_resolver))}[
+        "conversion"
+    ]
 
     assert str_result.role == "primary"
     assert str_result.require_lift().level == pytest.approx(0.95)

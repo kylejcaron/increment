@@ -61,13 +61,15 @@ df = pl.DataFrame(
 ```python
 import increment as inc
 
-results = inc.Analysis.from_unit_summary(
+experiment, resolver = inc.from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics={"revenue": "mean", "converted": "conversion"},
-).run()
+)
+results = inc.run(experiment, resolver).readout()
 
 for r in results:
     if r.lift is None:  # e.g. an exact conversion row with zero control events
@@ -87,15 +89,14 @@ analysis:
 ```python
 import ibis
 
-from increment import Analysis, from_definitions
+from increment import from_definitions, run
 from increment.query import summary_sql
 
 con = ibis.snowflake.connect(...)
-analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
 experiment, resolver = from_definitions("definitions/", con, experiment_name="checkout_redesign")
 
 print(summary_sql(experiment, resolver)["revenue"])
-results = analysis.run()
+results = run(experiment, resolver)
 ```
 
 The [data model guide](guides/data-model.md) covers the YAML setup. The

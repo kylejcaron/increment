@@ -151,18 +151,21 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
         if code == "estimation.engine.ratio.cuped":
             import ibis
 
+            from tests.parity_harness.views import read
             from tests.test_analysis_asof import _analysis_with_daily_ratio_metric
 
             con = ibis.duckdb.connect()
-            analysis = None
+            bound = None
             try:
-                analysis = _analysis_with_daily_ratio_metric(con)
-                return analysis.run_asof_lift(
-                    decision_method=Method(name="cuped", variance_reduction="cuped")
+                bound = _analysis_with_daily_ratio_metric(con)
+                return read(
+                    bound,
+                    "asof_lift",
+                    decision_method=Method(name="cuped", variance_reduction="cuped"),
                 )
             finally:
-                if analysis is not None:
-                    analysis.close()
+                if bound is not None:
+                    bound[1].close()
                 con.disconnect()
         if code in {
             "estimation.engine.cuped_linear_cluster",
@@ -172,13 +175,14 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
 
             import pyarrow as pa
 
-            from increment import Analysis
+            from increment import builders
             from increment.semantics.design import Randomized
             from increment.semantics.models import (
                 AnalysisPlan,
                 CupedCovariate,
                 InferenceSpec,
             )
+            from tests.parity_harness.views import read
 
             rows = [
                 {
@@ -193,8 +197,9 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
             ]
             frame = pa.Table.from_pylist(rows)
             if code == "estimation.engine.cuped_linear_cluster":
-                analysis = Analysis.from_unit_summary(
+                analysis = builders.from_frame(
                     frame,
+                    shape="summary",
                     unit="unit",
                     group="group",
                     control="control",
@@ -202,8 +207,9 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
                     cluster="cluster",
                 )
             else:
-                analysis = Analysis.from_unit_summary(
+                analysis = builders.from_frame(
                     frame,
+                    shape="summary",
                     unit="unit",
                     group="group",
                     metrics={"revenue": "mean"},
@@ -215,14 +221,15 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
                     plan=AnalysisPlan(inference=InferenceSpec(kind="asymptotic_mean")),
                 )
             try:
-                return analysis.run(
+                return read(
+                    analysis,
                     decision_method=Method.cuped_multicovariate(
                         name="linear",
                         covariates=CupedCovariate(name="pre", kind="categorical"),
-                    )
+                    ),
                 )
             finally:
-                analysis.close()
+                analysis[1].close()
         if code == "estimation.engine.ratio.negative_variance":
             from increment.estimation.engine import ratio_abs_diff_se
 
@@ -350,7 +357,7 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
         }:
             import pyarrow as pa
 
-            from increment import Analysis, MetricSpec, UptakeSpec
+            from increment import MetricSpec, UptakeSpec, builders
             from increment.frame import CupedCovariate
             from increment.semantics.design import (
                 AdjustmentSet,
@@ -358,6 +365,7 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
                 ExclusionRestriction,
                 Observational,
             )
+            from tests.parity_harness.views import read
 
             method = Method.cuped_multicovariate(
                 name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
@@ -396,8 +404,9 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
                 }
                 for i in range(16)
             ]
-            analysis = Analysis.from_unit_summary(
+            analysis = builders.from_frame(
                 pa.Table.from_pylist(rows),
+                shape="summary",
                 unit="unit",
                 group="group",
                 control=None if design is not None else "control",
@@ -406,9 +415,9 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
                 uptake=uptake,
             )
             try:
-                return analysis.run()
+                return read(analysis)
             finally:
-                analysis.close()
+                analysis[1].close()
         if code in {
             "estimation.engine.winsorization_metadata_present",
             "estimation.engine.winsorization_metadata_differs",

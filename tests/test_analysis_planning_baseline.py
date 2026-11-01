@@ -14,7 +14,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from increment import (
-    Analysis,
     CupedCovariate,
     Method,
     from_definitions,
@@ -33,6 +32,7 @@ from increment.semantics.models import CupedCovariateBinding, Measure, MethodSpe
 from increment.workflows import export_moments, planning_baseline, srm, trigger_rates
 from increment.workflows import metrics as workflow_metrics
 from tests._override_warnings import allow_declared_overrides
+from tests.analysis_factory import bind_pair
 from tests.capability_consumers_scalar import PLANNING_BASELINE, completed, refused
 
 
@@ -102,7 +102,7 @@ class TestPlanningBaselineOnDataframeRoutes:
         """An unrelated moments() failure -- injected here by routing the
         source's own moments() at an unsupported grain -- must never be
         coerced into covariate_source_unavailable or silently swallowed."""
-        pilot = from_frame(
+        experiment, resolver = from_frame(
             _unit_summary_frame(with_covariate=True),
             shape="summary",
             unit="unit_id",
@@ -118,7 +118,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        source = pilot[1].binding.source
+        source = resolver.binding.source
         moments = source.moments
         monkeypatch.setattr(
             source,
@@ -126,7 +126,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             lambda metric, **kwargs: moments(metric, grain="daily"),
         )
         with pytest.raises(CapabilityError) as raised:
-            planning_baseline(*pilot, "revenue")
+            planning_baseline(experiment, resolver, "revenue")
         assert raised.value.code == "evidence.grain_unavailable"
 
     def test_quantile_metric_from_control_arm_values(self):
@@ -297,7 +297,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 covariates=CupedCovariate(name="revenue_pre", kind="continuous")
             ),
         }
-        direct = from_frame(
+        direct_experiment, direct_resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -305,7 +305,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             control="control",
             metrics=[metric],
         )
-        export_moments(*direct, tmp_path / "moments.parquet")
+        export_moments(direct_experiment, direct_resolver, tmp_path / "moments.parquet")
         # A raw-sum (format-1) moment file has no column for
         # Cov(covariate, denominator): the covariate is carried, its cross
         # moment with the denominator never materialises.
@@ -313,9 +313,11 @@ class TestPlanningBaselineOnDataframeRoutes:
             {key: value for key, value in row.items() if key != "cxden"}
             for row in pq.read_table(tmp_path / "moments.parquet").to_pylist()
         ]
-        adopted = from_moments(rows, metrics=[metric], control="control")
+        adopted_experiment, adopted_resolver = from_moments(
+            rows, metrics=[metric], control="control"
+        )
         with pytest.raises(InvalidRequestError) as raised:
-            planning_baseline(*adopted, "revenue")
+            planning_baseline(adopted_experiment, adopted_resolver, "revenue")
         assert raised.value.code == "estimation.cuped.ratio_arm_no_denominator_cross"
 
     @pytest.mark.parametrize(
@@ -336,7 +338,7 @@ class TestPlanningBaselineOnDataframeRoutes:
         frame = _unit_summary_frame()
         frame["revenue_den"] = [1.0 + (i % 3) for i in range(len(frame))]
         frame["revenue_pre"] = 5.0
-        pilot = from_frame(
+        experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -352,10 +354,10 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CodedError) as planned:
-            planning_baseline(*pilot, "revenue")
+            planning_baseline(experiment, resolver, "revenue")
         with pytest.warns(IncrementWarning) as runtime_warnings:
             with pytest.raises(UnsupportedRequestError) as runtime:
-                run(*pilot)
+                run(experiment, resolver)
         warning = runtime_warnings[0].message
         assert isinstance(warning, IncrementWarning)
         assert warning.code == "readouts.run.cell_refused"
@@ -452,7 +454,7 @@ class TestPlanningBaselineOnDataframeRoutes:
         rather than dividing by zero."""
         frame = _unit_summary_frame(with_cluster=True)
         frame["household_id"] = [f"h{i}" for i in range(len(frame))]
-        pilot = from_frame(
+        experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -462,7 +464,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             cluster="household_id",
         )
         with pytest.raises(CapabilityError) as raised:
-            planning_baseline(*pilot, "revenue")
+            planning_baseline(experiment, resolver, "revenue")
         assert raised.value.code == "analysis.planning_baseline.cluster_icc_not_estimable"
 
     def test_a_covariate_that_repeats_the_outcome_refuses_by_name(self):
@@ -478,7 +480,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 "y_copy": y,
             }
         )
-        pilot = from_frame(
+        experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -496,7 +498,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CapabilityError) as raised:
-            planning_baseline(*pilot, "m")
+            planning_baseline(experiment, resolver, "m")
         assert raised.value.code == "analysis.planning_baseline.cuped_no_residual_variance"
 
     @pytest.mark.parametrize("scale, offset", [(1.0, 0.0), (3.0, 0.0), (0.1, 7.0)])
@@ -515,7 +517,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 "x": scale * y + offset,
             }
         )
-        pilot = from_frame(
+        experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -533,7 +535,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CapabilityError) as raised:
-            planning_baseline(*pilot, "m")
+            planning_baseline(experiment, resolver, "m")
         assert raised.value.code == "analysis.planning_baseline.cuped_no_residual_variance"
 
     @pytest.mark.parametrize(
@@ -561,7 +563,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 "x": x,
             }
         )
-        pilot = from_frame(
+        experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -580,7 +582,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CapabilityError) as raised:
-            planning_baseline(*pilot, "m")
+            planning_baseline(experiment, resolver, "m")
         assert raised.value.code == "analysis.planning_baseline.cuped_no_residual_variance"
 
     def test_clustered_ratio_icc_is_the_icc_of_its_linearized_score(self):
@@ -796,14 +798,14 @@ def _triggered_experiment(
 
 @pytest.mark.integration
 def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_path):
-    con, _path, pilot = _triggered_experiment(tmp_path)
+    con, _path, (experiment, resolver) = _triggered_experiment(tmp_path)
     con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'control'")
     try:
         with pytest.raises(CodedError) as raised:
-            planning_baseline(*pilot, "revenue")
+            planning_baseline(experiment, resolver, "revenue")
         assert raised.value.code == "query.integrity.trigger_arm_missing"
     finally:
-        pilot[1].close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1620,11 +1622,11 @@ class TestPlanningBaselineOnWarehouseRoutes:
         assigned population at trigger_rate=1.0."""
         con, path, pilot = _triggered_experiment(tmp_path)
         try:
-            reopened = _republish(con, path, pilot, [])
+            experiment, resolver = _republish(con, path, pilot, [])
             raised = refused(
                 PLANNING_BASELINE,
                 "trigger-artifact-missing-evidence",
-                lambda: planning_baseline(*reopened, "revenue"),
+                lambda: planning_baseline(experiment, resolver, "revenue"),
             )
             assert isinstance(raised, CapabilityError)
             assert raised.context["trigger"] == "exposure"
@@ -1819,7 +1821,7 @@ def _definitions_pilot(path, con, definitions) -> tuple[Any, Any]:
     return from_definitions(path, con, experiment_name="exp")
 
 
-def _artifact_extensions(pilot):
+def _artifact_extensions(pilot: tuple[Any, Any]):
     """The parity harness's artifact extension requests for *pilot*'s context."""
     from increment.artifacts import artifact_context
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
@@ -2258,7 +2260,7 @@ class TestPlanningBaselineOnMoments:
         metric = MetricSpec(name="revenue", decision_method=method)
         frame = _unit_summary_frame(with_covariate=True)
         frame["segment"] = [("west", "north", "south")[i % 3] for i in range(len(frame))]
-        direct = from_frame(
+        direct_experiment, direct_resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -2267,7 +2269,7 @@ class TestPlanningBaselineOnMoments:
             metrics=[metric],
         )
         destination = tmp_path / "triggered-format13.parquet"
-        export_moments(*direct, destination)
+        export_moments(direct_experiment, direct_resolver, destination)
         rows = pq.read_table(destination).to_pylist()
         assert {row["moments_format"] for row in rows} == {13}
         for row in rows:
@@ -2280,11 +2282,11 @@ class TestPlanningBaselineOnMoments:
                 row["cuped_evidence"] = payload
             else:
                 row["population"] = "triggered"
-        replayed = from_moments(
+        replayed_experiment, replayed_resolver = from_moments(
             rows, metrics=[metric], control="control", experiment_id="triggered-replay"
         )
         with pytest.raises(CapabilityError) as raised:
-            planning_baseline(*replayed, "revenue")
+            planning_baseline(replayed_experiment, replayed_resolver, "revenue")
         assert raised.value.code == "evidence.operation_unavailable"
         assert raised.value.context["requested"] == {"population": "assigned"}
 
@@ -2292,7 +2294,7 @@ class TestPlanningBaselineOnMoments:
         """A from_moments source declares no trigger, so trigger_rate stays at
         its Baseline default rather than raising or misreading one."""
         frame = _unit_summary_frame()
-        direct = from_frame(
+        experiment, resolver = from_frame(
             frame,
             shape="summary",
             unit="unit_id",
@@ -2300,7 +2302,7 @@ class TestPlanningBaselineOnMoments:
             control="control",
             metrics=[{"name": "revenue", "type": "mean"}],
         )
-        export_moments(*direct, tmp_path / "moments.parquet")
+        export_moments(experiment, resolver, tmp_path / "moments.parquet")
         rows = pq.read_table(tmp_path / "moments.parquet").to_pylist()
         adopted = from_moments(
             rows, metrics=[{"name": "revenue", "type": "mean"}], control="control"
@@ -2314,7 +2316,7 @@ class TestPlanningBaselineOnMoments:
         assert raised.value.code == "evidence.operation_unavailable"
 
     def test_from_moments_refuses_a_quantile_metric_by_source(self, tmp_path):
-        direct = from_frame(
+        direct_experiment, direct_resolver = from_frame(
             _unit_summary_frame(),
             shape="summary",
             unit="unit_id",
@@ -2322,9 +2324,9 @@ class TestPlanningBaselineOnMoments:
             control="control",
             metrics=[{"name": "revenue", "type": "mean"}],
         )
-        export_moments(*direct, tmp_path / "moments.parquet")
+        export_moments(direct_experiment, direct_resolver, tmp_path / "moments.parquet")
         rows = pq.read_table(tmp_path / "moments.parquet").to_pylist()
-        adopted = from_moments(
+        adopted_experiment, adopted_resolver = from_moments(
             rows,
             metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
             control="control",
@@ -2332,7 +2334,7 @@ class TestPlanningBaselineOnMoments:
         raised = refused(
             PLANNING_BASELINE,
             "quantile-moments-refusal",
-            lambda: planning_baseline(*adopted, "revenue"),
+            lambda: planning_baseline(adopted_experiment, adopted_resolver, "revenue"),
         )
         assert isinstance(raised, CapabilityError)
         assert raised.context["metric"] == "revenue"
@@ -2340,17 +2342,17 @@ class TestPlanningBaselineOnMoments:
 
 class TestLegacyPlanningSources:
     def test_method_only_encouragement_source_keeps_compliance(self):
-        pilot = _encouragement_frame_pilot(shape="summary")
-        expected = planning_baseline(*pilot, "revenue")
-        assert planning_baseline(*pilot, "revenue") == expected
+        experiment, resolver = _encouragement_frame_pilot(shape="summary")
+        expected = planning_baseline(experiment, resolver, "revenue")
+        assert planning_baseline(experiment, resolver, "revenue") == expected
 
     @pytest.mark.integration
     def test_method_only_clustered_source_keeps_cluster_counts(self, tmp_path):
 
-        con, _path, pilot = _triggered_experiment(tmp_path, clustered=True)
+        con, _path, (experiment, resolver) = _triggered_experiment(tmp_path, clustered=True)
         try:
-            expected = planning_baseline(*pilot, "revenue")
-            assert planning_baseline(*pilot, "revenue") == expected
+            expected = planning_baseline(experiment, resolver, "revenue")
+            assert planning_baseline(experiment, resolver, "revenue") == expected
         finally:
             con.disconnect()
 
@@ -2363,11 +2365,8 @@ class TestLegacyPlanningSources:
             source = cast("EvidenceSource", pilot[1].binding.source)
             monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
             triggered = cast("Any", source).triggered_source()
-            replayed = Analysis._from_source(
-                triggered, design=triggered.context.design, experiment=None
-            )
             with pytest.raises(CapabilityError) as raised:
-                replayed.planning_baseline("revenue")
+                bind_pair(triggered, design=triggered.context.design, experiment=None)
             assert raised.value.code == "evidence.provider_unavailable"
             assert raised.value.context == {"constructor": "DefinitionsMomentSource"}
         finally:
@@ -2386,7 +2385,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
     from increment.errors import CodedError
     from increment.evidence import EvidenceScopeResult, evidence_provider, request_evidence
 
-    con, _path, native = _triggered_experiment(
+    con, _path, (native_experiment, native_resolver) = _triggered_experiment(
         tmp_path,
         clustered=clustered,
         assigned_sizes=[2, 8] if clustered else None,
@@ -2394,7 +2393,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
     )
     if missing_treatment:
         con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'treatment'")
-    adapter = evidence_provider(native[1].binding.source)
+    adapter = evidence_provider(native_resolver.binding.source)
     scope_requests = []
     count_requests = []
     moment_requests = []
@@ -2441,15 +2440,15 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
         def close(self):
             return None
 
-    forwarded = Analysis._from_source(Provider())
+    forwarded_experiment, forwarded_resolver = bind_pair(Provider())
     try:
         if missing_treatment:
             with pytest.raises(CodedError) as raised:
-                forwarded.planning_baseline("revenue")
+                planning_baseline(forwarded_experiment, forwarded_resolver, "revenue")
             assert raised.value.code == "query.integrity.trigger_arm_missing"
         else:
-            expected = planning_baseline(*native, "revenue")
-            actual = forwarded.planning_baseline("revenue")
+            expected = planning_baseline(native_experiment, native_resolver, "revenue")
+            actual = planning_baseline(forwarded_experiment, forwarded_resolver, "revenue")
             assert actual == expected
             if clustered:
                 assert cast(Any, actual).trigger_rate == pytest.approx(0.4)
@@ -2469,7 +2468,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
         if moment_requests:
             assert all(request.population == "triggered" for request in moment_requests)
     finally:
-        native[1].close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -2484,8 +2483,8 @@ def test_forwarded_planning_baseline_ignores_mixed_assigned_unit_audit_bucket(tm
         request_evidence,
     )
 
-    con, _path, native = _triggered_experiment(tmp_path)
-    adapter = evidence_provider(native[1].binding.source)
+    con, _path, (native_experiment, native_resolver) = _triggered_experiment(tmp_path)
+    adapter = evidence_provider(native_resolver.binding.source)
 
     class Provider:
         context = adapter.context
@@ -2530,9 +2529,11 @@ def test_forwarded_planning_baseline_ignores_mixed_assigned_unit_audit_bucket(tm
 
             return EvidenceScopeResult(scoped(), request)
 
-    forwarded = Analysis._from_source(Provider())
+    forwarded_experiment, forwarded_resolver = bind_pair(Provider())
     try:
-        assert forwarded.planning_baseline("revenue") == planning_baseline(*native, "revenue")
+        assert planning_baseline(
+            forwarded_experiment, forwarded_resolver, "revenue"
+        ) == planning_baseline(native_experiment, native_resolver, "revenue")
     finally:
-        native[1].close()
+        native_resolver.close()
         con.disconnect()

@@ -931,9 +931,12 @@ A new method needs all of the following:
    `unfinished` and is tracked in an issue, not in the limitations page.
 4. **Planning matches runtime.** Where the planner and the runtime derive the
    same quantity, an equivalence test at matched inputs.
-5. **Ingress parity.** For a capability reachable through `Analysis`, a row or
-   axis value in the enumerated [parity matrix](tests/parity_harness/COVERAGE.md)
-   with a stated disposition for each of the six `Analysis` entry points. A
+5. **Ingress parity.** For a capability reachable through `run(experiment,
+   resolver)`, a row or axis value in the enumerated
+   [parity matrix](tests/parity_harness/COVERAGE.md) with a stated disposition
+   for each of the six builder ingresses (`from_frame` summary and panel
+   shapes, `from_definitions`, `from_unit_day_artifact`, `from_moments`,
+   `from_switchback_frame`). A
    standalone family (for example `estimate_policy_contrast` over a
    `LoggedTrace`, or a power solver) does not belong in that matrix; it
    enumerates parity across its own public ingresses instead. Path presence

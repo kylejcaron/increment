@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+
+from increment import Scope, from_definitions, from_frame, workflows
+from increment.workflows import available_metrics
+from tests.analysis_factory import make_binding_like, view_readout
 
 
 def test_stored_margin_comparison_survives_json_and_arrow():
@@ -102,11 +107,13 @@ def test_sequential_bonferroni_recomputes_at_requested_level():
     registered_cell = SequentialCell(
         metric="outcome", group_id="treatment", family=True, alpha=0.05
     )
-    rows = _analysis(
-        _frame([1, 2, 3] * 20, [1.49, 2.49, 3.49] * 20),
-        [metric],
-        _plan([metric], cells=[registered_cell], secondary=True),
-    ).run()
+    rows = view_readout(
+        *_analysis(
+            _frame([1, 2, 3] * 20, [1.49, 2.49, 3.49] * 20),
+            [metric],
+            _plan([metric], cells=[registered_cell], secondary=True),
+        )
+    )
     cell = ResultCell.from_row(rows[0])
     retained = (
         ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))),
@@ -159,11 +166,13 @@ def test_registered_likelihood_family_evidence_survives_codecs():
     sequential_cell = SequentialCell(
         metric="outcome", group_id="treatment", family=True, alpha=0.05
     )
-    asymptotic_rows = _analysis(
-        _frame([1, 2, 3] * 30, [7, 10, 13] * 30),
-        [metric],
-        _plan([metric], cells=[sequential_cell], secondary=True),
-    ).run()
+    asymptotic_rows = view_readout(
+        *_analysis(
+            _frame([1, 2, 3] * 30, [7, 10, 13] * 30),
+            [metric],
+            _plan([metric], cells=[sequential_cell], secondary=True),
+        )
+    )
     cells = (*likelihood_cells, ResultCell.from_row(asymptotic_rows[0]))
     retained = (
         tuple(ResultCell.from_payload(json.loads(json.dumps(item.to_payload()))) for item in cells),
@@ -265,13 +274,14 @@ def test_set_only_winsor_does_not_support_margin_comparison_after_codecs():
 @pytest.mark.integration
 def test_seeded_lift_cells_round_trip_retained_row_and_legacy_interval(seeded_con, seeded_defs):
     import increment.result_envelope as result_envelope
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import Operation, ResultCell, relevel
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     for candidate in rows:
@@ -304,16 +314,19 @@ def test_seeded_lift_cells_round_trip_retained_row_and_legacy_interval(seeded_co
 def test_exploratory_run_stamping_preserves_source_content_provenance(seeded_con, seeded_defs):
     import warnings
 
-    from increment import Analysis
     from increment.errors import IncrementWarning
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
-        (metric,) = analysis.available_metrics[:1]
+        (metric,) = available_metrics(experiment, resolver)[:1]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             with pytest.warns(IncrementWarning):
-                rows = analysis.run(metrics=[], exploratory_metrics=[metric.name])
+                rows = view_readout(
+                    experiment, resolver, metrics=[], exploratory_metrics=[metric.name]
+                )
         assert rows.metadata is not None
         assert rows.metadata.source_content_digest is not None
         (cell,) = rows.as_cells()
@@ -324,7 +337,7 @@ def test_exploratory_run_stamping_preserves_source_content_provenance(seeded_con
         restored = type(cell).from_payload(payload)
         assert restored.identity.source_content_digest == cell.identity.source_content_digest
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
@@ -333,27 +346,32 @@ def test_ratio_and_cuped_rows_survive_detached_json_arrow_operations(
 ):
     import gc
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import Operation, ResultCell, relevel
     from increment.semantics.loader import load
-    from tests.analysis_factory import make_analysis_like
 
     reference = json.loads(
         (Path(__file__).parent / "fixtures" / "result_envelope_reference.json").read_text()
     )["reference"]
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
-    ratio_analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    analysis = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
+    ratio_analysis = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
     ratio = next(
         metric for metric in load(seeded_defs).metrics if metric.name == "revenue_per_session"
     )
-    ratio_analysis = make_analysis_like(ratio_analysis, [*ratio_analysis.metrics, ratio])
-    ratio_rows = ratio_analysis.run(decision_method=Method(name="unadjusted"))
+    ratio_analysis = make_binding_like(
+        ratio_analysis[1], [*workflows.metrics(*ratio_analysis), ratio]
+    )
+    ratio_rows = view_readout(*ratio_analysis, decision_method=Method(name="unadjusted"))
     assert isinstance(ratio_rows, LiftEstimates)
     ratio_row = next(row for row in ratio_rows if row.metric == "revenue_per_session")
     assert isinstance(ratio_row, LiftEstimate)
-    cuped_rows = analysis.run(decision_method=Method(name="cuped", variance_reduction="cuped"))
+    cuped_rows = view_readout(
+        *analysis, decision_method=Method(name="cuped", variance_reduction="cuped")
+    )
     assert isinstance(cuped_rows, LiftEstimates)
     cuped_row = next(row for row in cuped_rows if row.metric == "avg_session_duration")
     assert isinstance(cuped_row, LiftEstimate)
@@ -396,13 +414,14 @@ def test_ratio_and_cuped_rows_survive_detached_json_arrow_operations(
 
 @pytest.mark.integration
 def test_family_reissue_caps_threshold_at_each_rows_allocated_alpha(seeded_con, seeded_defs):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     row = next(item for item in rows if item.metric == "avg_session_duration")
@@ -463,7 +482,7 @@ def test_family_reissue_caps_threshold_at_each_rows_allocated_alpha(seeded_con, 
 def test_additive_only_primary_reintervalizes_from_its_absolute_reference():
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
+    from increment import AnalysisPlan, MetricSpec, Randomized
     from increment.estimation.results import LiftEstimate
 
     data = pd.DataFrame(
@@ -476,18 +495,21 @@ def test_additive_only_primary_reintervalizes_from_its_absolute_reference():
             for index, value in enumerate(values)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-        plan=AnalysisPlan(alpha=0.05, primary="value"),
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+            plan=AnalysisPlan(alpha=0.05, primary="value"),
+        )
+    )
     row = next(
         candidate
         for candidate in rows
@@ -509,7 +531,7 @@ def test_withheld_t_row_relevels_from_retained_statistics_after_arrow():
 
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.errors import CodedError
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import Operation, ResultCell, relevel
@@ -525,18 +547,21 @@ def test_withheld_t_row_relevels_from_retained_statistics_after_arrow():
     rows = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                data,
-                unit="unit",
-                group="arm",
-                design=Randomized(
-                    control_group="control",
-                    allocation={"control": 0.5, "treatment": 0.5},
-                    allocation_scheme="independent",
-                ),
-                metrics=[MetricSpec(name="value", type="mean")],
-                plan=AnalysisPlan(alpha=0.05, primary="value"),
-            ).run()
+            view_readout(
+                *from_frame(
+                    data,
+                    shape="summary",
+                    unit="unit",
+                    group="arm",
+                    design=Randomized(
+                        control_group="control",
+                        allocation={"control": 0.5, "treatment": 0.5},
+                        allocation_scheme="independent",
+                    ),
+                    metrics=[MetricSpec(name="value", type="mean")],
+                    plan=AnalysisPlan(alpha=0.05, primary="value"),
+                )
+            )
         ),
     )
     row = next(candidate for candidate in rows if candidate.group_id == "treatment")
@@ -583,20 +608,23 @@ def _relevel_test_data():
 def _relevel_test_t_rows(data, design):
     from typing import cast
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.estimation.results import LiftEstimate
 
     rows = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                data,
-                unit="unit",
-                group="arm",
-                design=design,
-                metrics=[MetricSpec(name="value", type="mean")],
-                plan=AnalysisPlan(alpha=0.05, primary="value"),
-            ).run()
+            view_readout(
+                *from_frame(
+                    data,
+                    shape="summary",
+                    unit="unit",
+                    group="arm",
+                    design=design,
+                    metrics=[MetricSpec(name="value", type="mean")],
+                    plan=AnalysisPlan(alpha=0.05, primary="value"),
+                )
+            )
         ),
     )
     declared = next(row for row in rows if row.group_id == "treatment")
@@ -606,23 +634,26 @@ def _relevel_test_t_rows(data, design):
 def _relevel_test_family_rows(data, design):
     from typing import cast
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimation.family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
 
     rows = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                data,
-                unit="unit",
-                group="arm",
-                design=design,
-                metrics=[
-                    MetricSpec(name="value", type="mean"),
-                    MetricSpec(name="null_value", type="mean"),
-                ],
-            ).run()
+            view_readout(
+                *from_frame(
+                    data,
+                    shape="summary",
+                    unit="unit",
+                    group="arm",
+                    design=design,
+                    metrics=[
+                        MetricSpec(name="value", type="mean"),
+                        MetricSpec(name="null_value", type="mean"),
+                    ],
+                )
+            )
         ),
     )
     family_rows = select_exploratory_family(rows, q=0.05)
@@ -634,28 +665,31 @@ def _relevel_test_family_rows(data, design):
 def _relevel_test_winsor_row(data, design):
     from typing import cast
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimation.results import LiftEstimate
 
     rows = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                data,
-                unit="unit",
-                group="arm",
-                design=design,
-                metrics=[
-                    MetricSpec(
-                        name="winsor",
-                        type="mean",
-                        winsorization={
-                            "upper_percentile": 0.75,
-                            "inference": {"method": "influence-normal-v1"},
-                        },
-                    )
-                ],
-            ).run()
+            view_readout(
+                *from_frame(
+                    data,
+                    shape="summary",
+                    unit="unit",
+                    group="arm",
+                    design=design,
+                    metrics=[
+                        MetricSpec(
+                            name="winsor",
+                            type="mean",
+                            winsorization={
+                                "upper_percentile": 0.75,
+                                "inference": {"method": "influence-normal-v1"},
+                            },
+                        )
+                    ],
+                )
+            )
         ),
     )
     row = next(candidate for candidate in rows if candidate.group_id == "treatment")
@@ -760,7 +794,7 @@ def test_directional_bh_interval_cannot_be_releveled_after_arrow():
 
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.errors import CodedError
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import Operation, ResultCell, relevel
@@ -780,18 +814,21 @@ def test_directional_bh_interval_cannot_be_releveled_after_arrow():
     rows = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                data,
-                unit="unit",
-                group="arm",
-                design=Randomized(
-                    control_group="control",
-                    allocation={"control": 0.5, "treatment": 0.5},
-                    allocation_scheme="independent",
-                ),
-                metrics=[MetricSpec(name="v", type="mean")],
-                plan=AnalysisPlan(alternative="greater", secondaries=["v"], q=0.05),
-            ).run()
+            view_readout(
+                *from_frame(
+                    data,
+                    shape="summary",
+                    unit="unit",
+                    group="arm",
+                    design=Randomized(
+                        control_group="control",
+                        allocation={"control": 0.5, "treatment": 0.5},
+                        allocation_scheme="independent",
+                    ),
+                    metrics=[MetricSpec(name="v", type="mean")],
+                    plan=AnalysisPlan(alternative="greater", secondaries=["v"], q=0.05),
+                )
+            )
         ),
     )
     row = next(candidate for candidate in rows if candidate.group_id == "treatment")
@@ -879,7 +916,7 @@ def test_relevel_is_conservative_across_pilot_cell_kinds():
 def test_unavailable_winsor_projection_retains_hypothesis_and_plan_metadata():
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.semantics.design import Randomized
@@ -897,28 +934,31 @@ def test_unavailable_winsor_projection_retains_hypothesis_and_plan_metadata():
             for index in range(1, 41)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[
-            MetricSpec(name="plain", type="mean"),
-            MetricSpec(
-                name="winsor",
-                type="mean",
-                winsorization={
-                    "upper_percentile": 0.75,
-                    "inference": {"method": "influence-normal-v1"},
-                },
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
             ),
-        ],
-        plan=AnalysisPlan(alpha=0.05, primary=("plain", "winsor")),
-    ).run()
+            metrics=[
+                MetricSpec(name="plain", type="mean"),
+                MetricSpec(
+                    name="winsor",
+                    type="mean",
+                    winsorization={
+                        "upper_percentile": 0.75,
+                        "inference": {"method": "influence-normal-v1"},
+                    },
+                ),
+            ],
+            plan=AnalysisPlan(alpha=0.05, primary=("plain", "winsor")),
+        )
+    )
     winsor = next(item for item in rows if item.metric == "winsor")
     assert isinstance(winsor, LiftEstimate)
     assert winsor.role == "primary"
@@ -942,12 +982,13 @@ def test_unavailable_winsor_projection_retains_hypothesis_and_plan_metadata():
 def test_result_envelope_arrow_round_trip_preserves_cell_and_readout_metadata(
     seeded_con, seeded_defs
 ):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope, ResultCell
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     cells = [cell for row in rows for cell in row.as_cells(metadata=rows.metadata)]
@@ -1005,13 +1046,14 @@ def test_result_envelope_arrow_round_trip_preserves_cell_and_readout_metadata(
 def test_arrow_decoder_validates_construction_tag_and_row_consistency(seeded_con, seeded_defs):
     import pyarrow as pa
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.errors import CodedError
     from increment.result_envelope import ResultCell
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     row = next(item for item in rows if item.metric == "avg_session_duration")
@@ -1050,11 +1092,14 @@ def test_asymptotic_sequential_component_retains_checkpoint_and_registration_alp
     from tests.test_asymptotic_public_sources import _analysis, _frame, _plan
 
     metric = MetricSpec(name="outcome", type="mean")
-    row = _analysis(
-        _frame([1, 2, 3, 4] * 20, [6, 7, 8, 9] * 20),
-        [metric],
-        _plan([metric]),
-    ).run(estimands=("itt",))[0]
+    row = view_readout(
+        *_analysis(
+            _frame([1, 2, 3, 4] * 20, [6, 7, 8, 9] * 20),
+            [metric],
+            _plan([metric]),
+        ),
+        estimands=("itt",),
+    )[0]
     assert isinstance(row.sequential_result, AsymptoticSequentialResult)
     cell = row.as_cells()[0]
     restored = ResultCell.from_payload(json.loads(json.dumps(cell.to_payload())))
@@ -1151,13 +1196,14 @@ def test_asymptotic_sequential_component_retains_checkpoint_and_registration_alp
 
 @pytest.mark.integration
 def test_envelope_table_projection_matches_legacy_readout(seeded_con, seeded_defs):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope
     from increment.tables import readout_table
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     cells = rows.as_cells()
@@ -1179,7 +1225,7 @@ def test_binomial_set_only_table_projection_matches_legacy(seeded_con):
 
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import AnalysisEnvelope
@@ -1196,18 +1242,21 @@ def test_binomial_set_only_table_projection_matches_legacy(seeded_con):
             for index, success in enumerate(outcomes)
         ]
     )
-    results = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="conversion")],
-        plan=AnalysisPlan(primary="value"),
-    ).run()
+    results = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="conversion")],
+            plan=AnalysisPlan(primary="value"),
+        )
+    )
     assert isinstance(results, LiftEstimates)
     row = results[0]
     assert isinstance(row, LiftEstimate)
@@ -1227,7 +1276,7 @@ def test_binomial_set_only_table_projection_matches_legacy(seeded_con):
 def test_collection_and_envelope_headlines_share_relative_lift_value():
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
@@ -1241,17 +1290,20 @@ def test_collection_and_envelope_headlines_share_relative_lift_value():
             for index in range(8)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+        )
+    )
     assert isinstance(rows, LiftEstimates)
     row = rows[0]
     assert isinstance(row, LiftEstimate)
@@ -1270,7 +1322,7 @@ def test_collection_and_envelope_headlines_share_relative_lift_value():
 def test_conversion_point_and_binomial_interval_survive_envelope_arrow_round_trip():
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import ResultCell
@@ -1283,18 +1335,21 @@ def test_conversion_point_and_binomial_interval_survive_envelope_arrow_round_tri
             for index in range(40)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="converted", type="conversion")],
-        plan=AnalysisPlan(primary="converted"),
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="converted", type="conversion")],
+            plan=AnalysisPlan(primary="converted"),
+        )
+    )
     assert isinstance(rows, LiftEstimates)
     row = rows[0]
     assert isinstance(row, LiftEstimate)
@@ -1312,7 +1367,7 @@ def test_additive_only_unavailable_table_projection_matches_legacy():
 
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import AnalysisEnvelope
@@ -1329,18 +1384,21 @@ def test_additive_only_unavailable_table_projection_matches_legacy():
             for index, value in enumerate(values)
         ]
     )
-    results = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-        plan=AnalysisPlan(primary="value"),
-    ).run()
+    results = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+            plan=AnalysisPlan(primary="value"),
+        )
+    )
     assert isinstance(results, LiftEstimates)
     row = results[0]
     assert isinstance(row, LiftEstimate)
@@ -1414,12 +1472,13 @@ def test_result_cell_schema_is_versioned_and_structured():
 
 @pytest.mark.integration
 def test_relative_log_statistics_survive_json_and_arrow_round_trips(seeded_con, seeded_defs):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import ResultCell, relevel
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
 
     assert isinstance(rows, LiftEstimates)
@@ -1458,7 +1517,7 @@ def test_posterior_qualified_table_projection_matches_legacy(seeded_con, seeded_
     import re
     import warnings
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.inference import Normal
     from increment.result_envelope import AnalysisEnvelope
@@ -1466,8 +1525,10 @@ def test_posterior_qualified_table_projection_matches_legacy(seeded_con, seeded_
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-            decision_method=Method(name="unadjusted"), prior=Normal(mu=0.0, sigma=0.1)
+        rows = view_readout(
+            *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+            decision_method=Method(name="unadjusted"),
+            prior=Normal(mu=0.0, sigma=0.1),
         )
     assert isinstance(rows, LiftEstimates)
     assert all(item.posterior_available is True for item in rows)
@@ -1512,14 +1573,15 @@ def test_posterior_qualified_table_projection_matches_legacy(seeded_con, seeded_
 def test_directional_family_selection_retains_effective_alpha_and_advisory(seeded_con, seeded_defs):
     from dataclasses import replace
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import ComponentStatus, Operation, ResultCell
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     row = next(item for item in rows if item.metric == "avg_session_duration")
@@ -1575,7 +1637,7 @@ def test_unsupported_sampling_constructions_refuse_without_losing_reason(seeded_
     import copy
     import pickle
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.errors import CodedError
     from increment.estimation.armstats import ArmStats
@@ -1584,8 +1646,9 @@ def test_unsupported_sampling_constructions_refuse_without_losing_reason(seeded_
     from increment.result_envelope import ResultCell, compare_margin, relevel
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     original = next(item for item in rows if item.metric == "avg_session_duration")
@@ -1664,7 +1727,7 @@ def test_dated_unavailable_winsor_projection_matches_arrow_readout_scope():
 
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.declarations import CellKey
     from increment.estimation.readout_types import cell_order
     from increment.estimation.results import LiftEstimate
@@ -1683,27 +1746,30 @@ def test_dated_unavailable_winsor_projection_matches_arrow_readout_scope():
             for index in range(1, 41)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[
-            MetricSpec(name="plain", type="mean"),
-            MetricSpec(
-                name="winsor",
-                type="mean",
-                winsorization={
-                    "upper_percentile": 0.5,
-                    "inference": {"method": "influence-normal-v1"},
-                },
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
             ),
-        ],
-    ).run()
+            metrics=[
+                MetricSpec(name="plain", type="mean"),
+                MetricSpec(
+                    name="winsor",
+                    type="mean",
+                    winsorization={
+                        "upper_percentile": 0.5,
+                        "inference": {"method": "influence-normal-v1"},
+                    },
+                ),
+            ],
+        )
+    )
     assert rows.metadata is not None
     dated_rows = {
         row.metric: row.model_copy(update={"ds": date(2026, 10, 26)})
@@ -1764,15 +1830,16 @@ def test_dated_unavailable_winsor_projection_matches_arrow_readout_scope():
 
 @pytest.mark.integration
 def test_envelope_consumers_render_unavailable_winsor_with_valid_sibling(seeded_con, seeded_defs):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.winsor import estimate_winsor_lift
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.tables import readout_table
     from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     sibling = next(row for row in rows if row.metric == "avg_session_duration")
@@ -1825,11 +1892,12 @@ def test_envelope_consumers_render_unavailable_winsor_with_valid_sibling(seeded_
 
 @pytest.mark.integration
 def test_posterior_reason_context_survives_metadata_free_cell_creation(seeded_con, seeded_defs):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     original = next(item for item in rows if item.metric == "avg_session_duration")
@@ -1852,12 +1920,13 @@ def test_posterior_reason_context_survives_metadata_free_cell_creation(seeded_co
 def test_date_valued_row_fields_survive_json_and_arrow_round_trips(seeded_con, seeded_defs):
     from datetime import date
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import ResultCell
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     row = next(item for item in rows if item.metric == "avg_session_duration")
@@ -1873,15 +1942,17 @@ def test_date_valued_row_fields_survive_json_and_arrow_round_trips(seeded_con, s
 def test_directional_reinterval_with_posterior_round_trips_through_arrow(seeded_con, seeded_defs):
     import warnings
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.inference import Normal
     from increment.result_envelope import ResultCell, relevel
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-            decision_method=Method(name="unadjusted"), prior=Normal(mu=0.0, sigma=0.1)
+        rows = view_readout(
+            *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+            decision_method=Method(name="unadjusted"),
+            prior=Normal(mu=0.0, sigma=0.1),
         )
     assert isinstance(rows, LiftEstimates)
     row = next(item for item in rows if item.metric == "avg_session_duration")
@@ -1899,14 +1970,16 @@ def test_arrow_ipc_bytes_are_stable_across_fresh_processes(seeded_con, seeded_de
     import subprocess
     import sys
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    rows = analysis.run(decision_method=Method(name="unadjusted"))
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    rows = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert isinstance(rows, LiftEstimates)
-    breakout_rows = analysis.run_breakout()
+    breakout_rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     envelope = AnalysisEnvelope(
         cells=(*rows.as_cells(), *breakout_rows.as_cells()),
         metadata=None,
@@ -1948,13 +2021,14 @@ def test_prechange_public_interval_reference_is_frozen():
 
 @pytest.mark.integration
 def test_family_threshold_reinterval_matches_frozen_public_reference(seeded_con, seeded_defs):
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.family import select_exploratory_family
     from increment.result_envelope import ResultCell
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     reference = json.loads(
@@ -2002,7 +2076,7 @@ def test_composite_readout_metadata_survives_arrow_and_brief_render():
 
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.result_envelope import AnalysisEnvelope, render
     from increment.semantics.design import Randomized
 
@@ -2035,9 +2109,17 @@ def test_composite_readout_metadata_survives_arrow_and_brief_render():
         plan = AnalysisPlan(primary="value", guardrails=["guard"] if guardrail else [])
         if guardrail:
             metrics.append(MetricSpec(name="guard", type="mean", preferred_direction="decrease"))
-        return Analysis.from_unit_summary(
-            data, unit="unit", group="arm", design=design, metrics=metrics, plan=plan
-        ).run()
+        return view_readout(
+            *from_frame(
+                data,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                design=design,
+                metrics=metrics,
+                plan=plan,
+            )
+        )
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -2078,12 +2160,13 @@ def test_composite_readout_metadata_survives_arrow_and_brief_render():
 def test_render_labels_disambiguate_same_metric_cells(seeded_con, seeded_defs):
     from dataclasses import replace
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope, render
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
+    rows = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
+        decision_method=Method(name="unadjusted"),
     )
     assert isinstance(rows, LiftEstimates)
     row = next(item for item in rows if item.metric == "avg_session_duration")
@@ -2103,7 +2186,7 @@ def test_render_labels_disambiguate_same_metric_cells(seeded_con, seeded_defs):
 def test_render_keeps_retained_comparison_identity_after_arrow_round_trip():
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope, render
     from increment.semantics.design import Randomized
@@ -2115,17 +2198,20 @@ def test_render_keeps_retained_comparison_identity_after_arrow_round_trip():
             for index in range(6)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="holdout",
-            allocation={"holdout": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="holdout",
+                allocation={"holdout": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+        )
+    )
     assert isinstance(rows, LiftEstimates)
     envelope = AnalysisEnvelope(tuple(rows.as_cells()), rows.metadata)
     restored = AnalysisEnvelope.from_arrow(envelope.to_arrow())
@@ -2137,7 +2223,7 @@ def test_render_keeps_retained_comparison_identity_after_arrow_round_trip():
 def test_relevel_uses_available_absolute_interval_when_relative_tails_unresolve():
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import ResultCell, relevel
@@ -2151,18 +2237,21 @@ def test_relevel_uses_available_absolute_interval_when_relative_tails_unresolve(
             for index in range(1, 7)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean", preferred_direction="increase")],
-        plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="value", margin=0.2)]),
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean", preferred_direction="increase")],
+            plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="value", margin=0.2)]),
+        )
+    )
     assert isinstance(rows, LiftEstimates)
     assert isinstance(rows[0], LiftEstimate)
     cell = ResultCell.from_row(rows[0])
@@ -2183,7 +2272,7 @@ def test_relevel_uses_available_absolute_interval_when_relative_tails_unresolve(
 def test_brief_render_has_one_headline_per_metric_and_full_keeps_it():
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope, render
     from increment.semantics.design import Randomized
@@ -2200,20 +2289,23 @@ def test_brief_render_has_one_headline_per_metric_and_full_keeps_it():
             for index in range(8)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[
-            MetricSpec(name="value", type="mean"),
-            MetricSpec(name="other", type="mean"),
-        ],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[
+                MetricSpec(name="value", type="mean"),
+                MetricSpec(name="other", type="mean"),
+            ],
+        )
+    )
     assert isinstance(rows, LiftEstimates)
     envelope = AnalysisEnvelope(tuple(rows.as_cells()), metadata=None)
     brief_lines = render(envelope, "brief").splitlines()
@@ -2261,7 +2353,7 @@ def test_brief_projection_keeps_selection_status_failure_reason_and_roundtrip_id
 
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimation.family import select_exploratory_family
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
@@ -2279,17 +2371,20 @@ def test_brief_projection_keeps_selection_status_failure_reason_and_roundtrip_id
             for index in range(100)
         ]
     )
-    rows = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name=name, type="mean") for name in ("shift", "steady")],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name=name, type="mean") for name in ("shift", "steady")],
+        )
+    )
     from increment.breakout.estimates import LiftEstimates
 
     assert isinstance(rows, LiftEstimates)
@@ -2306,28 +2401,31 @@ def test_brief_projection_keeps_selection_status_failure_reason_and_roundtrip_id
         [METRIC], _rows(), _design(), estimands=("itt", "late")
     ).results
     cells.extend(row.as_cells()[0] for row in encouragement_rows if row.estimand in {"itt", "late"})
-    unavailable_rows = Analysis.from_unit_summary(
-        pd.DataFrame(
-            [
-                {
-                    "unit": f"{group}-{index}",
-                    "arm": group,
-                    "flat": 1.0,
-                    "valid": float(index),
-                }
-                for group in ("control", "treatment")
-                for index in range(20)
-            ]
-        ),
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name=name, type="mean") for name in ("flat", "valid")],
-    ).run()
+    unavailable_rows = view_readout(
+        *from_frame(
+            pd.DataFrame(
+                [
+                    {
+                        "unit": f"{group}-{index}",
+                        "arm": group,
+                        "flat": 1.0,
+                        "valid": float(index),
+                    }
+                    for group in ("control", "treatment")
+                    for index in range(20)
+                ]
+            ),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name=name, type="mean") for name in ("flat", "valid")],
+        )
+    )
     assert isinstance(unavailable_rows, LiftEstimates)
     cells.append(
         next(row for row in unavailable_rows if row.metric == "flat").as_cells(
@@ -2377,28 +2475,31 @@ def test_cell_rejects_conflicting_source_snapshot_identity():
 
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.errors import CodedError
     from increment.result_envelope import ResultCell
     from increment.semantics.design import Randomized
 
-    rows = Analysis.from_unit_summary(
-        pd.DataFrame(
-            [
-                {"unit": f"{group}-{index}", "arm": group, "value": float(index)}
-                for group in ("control", "treatment")
-                for index in range(8)
-            ]
-        ),
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            pd.DataFrame(
+                [
+                    {"unit": f"{group}-{index}", "arm": group, "value": float(index)}
+                    for group in ("control", "treatment")
+                    for index in range(8)
+                ]
+            ),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+        )
+    )
     cell = rows.as_cells()[0]
     identity = cell.identity.model_copy(update={"source_snapshot_id": "identity-source"})
     with pytest.raises(CodedError) as raised:
@@ -2424,31 +2525,34 @@ def test_payload_summary_is_rederived_from_retained_lift_row():
 
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.result_envelope import ResultCell
     from increment.semantics.design import Randomized
 
-    rows = Analysis.from_unit_summary(
-        pd.DataFrame(
-            [
-                {
-                    "unit": f"{group}-{index}",
-                    "arm": group,
-                    "value": float(index + (group == "treatment")),
-                }
-                for group in ("control", "treatment")
-                for index in range(8)
-            ]
-        ),
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            pd.DataFrame(
+                [
+                    {
+                        "unit": f"{group}-{index}",
+                        "arm": group,
+                        "value": float(index + (group == "treatment")),
+                    }
+                    for group in ("control", "treatment")
+                    for index in range(8)
+                ]
+            ),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+        )
+    )
     cell = rows.as_cells()[0]
     assert cell.summary is not None and cell.summary.point is not None
     payload = copy.deepcopy(cell.to_payload())
@@ -2466,32 +2570,35 @@ def test_prior_bound_unknown_sampling_keeps_summary_unavailable_after_roundtrips
 
     import pandas as pd
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import ResultCell
     from increment.semantics.design import Randomized
 
-    rows = Analysis.from_unit_summary(
-        pd.DataFrame(
-            [
-                {
-                    "unit": f"{group}-{index}",
-                    "arm": group,
-                    "value": float(index + (group == "treatment")),
-                }
-                for group in ("control", "treatment")
-                for index in range(8)
-            ]
-        ),
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="value", type="mean")],
-    ).run()
+    rows = view_readout(
+        *from_frame(
+            pd.DataFrame(
+                [
+                    {
+                        "unit": f"{group}-{index}",
+                        "arm": group,
+                        "value": float(index + (group == "treatment")),
+                    }
+                    for group in ("control", "treatment")
+                    for index in range(8)
+                ]
+            ),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
+        )
+    )
     row = rows[0]
     assert isinstance(row, LiftEstimate)
     row = row.model_copy(update={"prior_shrunk": True, "sampling_available": None})

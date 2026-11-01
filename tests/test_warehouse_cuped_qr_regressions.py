@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import ibis
 import pytest
 
+from increment import Scope, from_definitions, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate
 from increment.query._cuped_qr import fit_warehouse_qr
 from increment.query.cuped import _ResolvedCupedRequest
+from tests.analysis_factory import view_readout
 from tests.test_warehouse_cuped_qr import _scratch_session
 
 pytestmark = pytest.mark.integration
@@ -554,7 +557,6 @@ def test_warehouse_qr_refuses_out_of_range_continuous_covariate(tmp_path):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_artifact_assigned_breakout_uses_single_canonical_escape(tmp_path):
-    from increment import Analysis
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -572,22 +574,38 @@ def test_artifact_assigned_breakout_uses_single_canonical_escape(tmp_path):
     connection.create_table("reserved_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "assigned_reserved.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("reserved_events", breakout=True))
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    native_experiment, native_resolver = from_definitions(
+        definitions_path, connection, experiment_name="mixed_cuped"
+    )
     definitions = load(definitions_path)
     experiment = definitions.experiment("mixed_cuped")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(connection, schema_name="assigned_roster_artifacts")
     extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    reference = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=extensions
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     try:
-        expected = {row.dimension_value for row in native.run_breakout()}
-        observed = {row.dimension_value for row in adopted.run_breakout()}
+        expected = {
+            row.dimension_value
+            for row in view_readout(
+                native_experiment, native_resolver, Scope(view="breakout", grain="total")
+            )
+        }
+        observed = {
+            row.dimension_value
+            for row in view_readout(
+                adopted_experiment, adopted_resolver, Scope(view="breakout", grain="total")
+            )
+        }
         assert observed == expected
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        cast(Any, native_resolver).close()
         connection.disconnect()
 
 
@@ -721,12 +739,14 @@ def test_categorical_cardinality_refuses_before_transferring_labels(tmp_path):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_globally_constant_covariate_parity_across_native_artifact_and_local(tmp_path):
-    from increment import Analysis
+    from increment import from_definitions, from_unit_day_artifact
+    from increment.artifacts import publish_unit_day_artifact
     from increment.estimation.results import LiftEstimate
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics.loader import load
+    from tests.analysis_factory import view_readout
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -737,24 +757,25 @@ def test_globally_constant_covariate_parity_across_native_artifact_and_local(tmp
     connection.create_table("constant_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "constant_covariate.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("constant_events"))
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    native = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
     definitions = load(definitions_path)
     experiment = definitions.experiment("mixed_cuped")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(connection, schema_name="constant_qr_artifacts")
     extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    reference = native.publish_unit_day_artifact(store, extensions=extensions)
-    artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(*native, store, extensions=extensions)
+    artifact = from_unit_day_artifact(store, reference, expected_context=context)
     local = matrix_cases.linear_cuped_frame_case(units, panel=False)
     try:
         expected = {
-            row.method: row for row in cast(list[LiftEstimate], local.run(metrics=["revenue"]))
+            row.method: row
+            for row in cast(list[LiftEstimate], view_readout(*local, metrics=["revenue"]))
         }
-        for analysis in (native, artifact):
+        for bound in (native, artifact):
             actual = {
                 row.method: row
-                for row in cast(list[LiftEstimate], analysis.run(metrics=["revenue"]))
+                for row in cast(list[LiftEstimate], view_readout(*bound, metrics=["revenue"]))
             }
             assert actual.keys() == expected.keys()
             for method, row in actual.items():
@@ -762,9 +783,9 @@ def test_globally_constant_covariate_parity_across_native_artifact_and_local(tmp
                 assert actual_lift is not None and expected_lift is not None
                 assert actual_lift.value == pytest.approx(expected_lift.value)
     finally:
-        local.close()
-        artifact.close()
-        native.close()
+        local[1].close()
+        artifact[1].close()
+        cast(Any, native[1]).close()
         connection.disconnect()
 
 
@@ -772,8 +793,9 @@ def test_globally_constant_covariate_parity_across_native_artifact_and_local(tmp
 @pytest.mark.slow
 @pytest.mark.parametrize("offset", [1.0e12, 1.0e15])
 def test_native_readout_relative_lift_matches_local_at_large_offset(offset, tmp_path):
-    from increment import Analysis
+    from increment import from_definitions
     from increment.estimation.results import LiftEstimate
+    from tests.analysis_factory import view_readout
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -784,11 +806,11 @@ def test_native_readout_relative_lift_matches_local_at_large_offset(offset, tmp_
     connection.create_table("qr_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "large_offset.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("qr_events"))
-    warehouse = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    warehouse = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
     local = matrix_cases.linear_cuped_frame_case(units, panel=False)
     try:
-        actual = cast(list[LiftEstimate], warehouse.run(metrics=["revenue"]))
-        expected = cast(list[LiftEstimate], local.run(metrics=["revenue"]))
+        actual = cast(list[LiftEstimate], view_readout(*warehouse, metrics=["revenue"]))
+        expected = cast(list[LiftEstimate], view_readout(*local, metrics=["revenue"]))
         observed = {row.method: row for row in actual}["linear"]
         reference = {row.method: row for row in expected}["linear"]
         assert observed.lift is not None and reference.lift is not None
@@ -798,8 +820,8 @@ def test_native_readout_relative_lift_matches_local_at_large_offset(offset, tmp_
             )
         assert observed.lift.value != 0.0
     finally:
-        warehouse.close()
-        local.close()
+        cast(Any, warehouse[1]).close()
+        local[1].close()
         connection.disconnect()
 
 

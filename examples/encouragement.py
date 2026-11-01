@@ -11,29 +11,35 @@ def _():
     import pandas as pd
 
     from increment import (
-        Analysis,
         AnalysisPlan,
         Encouragement,
         ExclusionRestriction,
         InferenceSpec,
         MetricSpec,
+        Scope,
         UptakeSpec,
+        from_frame,
+        run,
     )
     from increment.tables import estimates_to_readout, readout_table
+    from increment.workflows import capture_sequential
 
     return (
-        Analysis,
         AnalysisPlan,
         InferenceSpec,
         Encouragement,
         ExclusionRestriction,
         MetricSpec,
+        Scope,
         UptakeSpec,
+        capture_sequential,
         estimates_to_readout,
+        from_frame,
         mo,
         np,
         pd,
         readout_table,
+        run,
     )
 
 
@@ -170,11 +176,12 @@ def _(np, pd):
 
 @app.cell
 def _(
-    Analysis,
     Encouragement,
     ExclusionRestriction,
     UptakeSpec,
     encouragement_df,
+    from_frame,
+    run,
 ):
     encouragement_design = Encouragement(
         control_group="control",
@@ -184,13 +191,15 @@ def _(
         ),
         one_sided=False,
     )
-    encouragement_results = Analysis.from_unit_summary(
+    _experiment, _resolver = from_frame(
         encouragement_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=encouragement_design,
-    ).run()
+    )
+    encouragement_results = run(_experiment, _resolver).readout()
     return encouragement_design, encouragement_results
 
 
@@ -270,7 +279,7 @@ def _(mo):
 
 
 @app.cell
-def _(Analysis, encouragement_design, np, simulate_encouragement):
+def _(encouragement_design, from_frame, np, run, simulate_encouragement):
     weak_df = simulate_encouragement(
         np.random.default_rng(7),
         n_per_arm=40,
@@ -278,13 +287,15 @@ def _(Analysis, encouragement_design, np, simulate_encouragement):
         encouraged_uptake=0.16,
         tau=18.0,
     )
-    weak_results = Analysis.from_unit_summary(
+    _experiment, _resolver = from_frame(
         weak_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=encouragement_design,
-    ).run()
+    )
+    weak_results = run(_experiment, _resolver).readout()
     return (weak_results,)
 
 
@@ -330,8 +341,9 @@ def _(mo):
     uptake with an Always valid Bernoulli/Beta model, declared as
     `InferenceSpec(kind="always_valid", registration=...)` on the source's
     `AnalysisPlan` before the simulation runs -- `always_valid` inference is
-    read from that declaration, never passed at call time. Both series use
-    `completed_windows_only=True`, so every displayed date admits a unit
+    read from that declaration, never passed at call time. Both series read
+    the completed-window as-of view (`Scope(view="asof", grain="asof",
+    completion_policy=True)`), so every displayed date admits a unit
     only once its finalized outcome and uptake windows have closed.
     """)
     return
@@ -339,15 +351,18 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(
-    Analysis,
     AnalysisPlan,
     Encouragement,
     ExclusionRestriction,
     InferenceSpec,
     MetricSpec,
+    Scope,
     UptakeSpec,
+    capture_sequential,
+    from_frame,
     np,
     pd,
+    run,
     simulate_encouragement,
 ):
     from increment.estimators import (
@@ -426,7 +441,7 @@ def _(
     _enroll = list(pd.date_range("2026-03-01", periods=21, freq="D").date)
     _sim["user_id"] = "u" + _sim.index.astype(str)
     _sim["exposed_on"] = np.array(_enroll)[_sim.index % len(_enroll)]
-    # Keep outcome and completion rows; ``from_unit_panel`` densifies the
+    # Keep outcome and completion rows; a panel frame densifies the
     # intervening days and admits each cohort once both windows are complete.
     _exposure_rows = _sim.assign(ds=_sim["exposed_on"])
     _completion_rows = _sim.assign(
@@ -435,8 +450,9 @@ def _(
     _panel = pd.concat([_exposure_rows, _completion_rows], ignore_index=True)[
         ["user_id", "variant", "ds", "exposed_on", "revenue", "clicked"]
     ]
-    _analysis = Analysis.from_unit_panel(
+    _experiment, _resolver = from_frame(
         _panel,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -445,8 +461,9 @@ def _(
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
-    _av_analysis = Analysis.from_unit_panel(
+    _av_experiment, _av_resolver = from_frame(
         _panel,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -456,16 +473,21 @@ def _(
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
+    _completed = Scope(view="asof", grain="asof", completion_policy=True)
 
     def _late_trend(results):
         return [row for row in results if row.estimand == "late" and row.value_scale == "relative"]
 
-    fixed_late_trend = _late_trend(_analysis.run_asof_lift(completed_windows_only=True))
+    fixed_late_trend = _late_trend(
+        run(_experiment.with_views(_completed), _resolver).readout(_completed)
+    )
     uptake_trend = []
     for _day in sorted(set(_completion_rows["ds"])):
-        _av_analysis.capture_sequential(finalized=True, as_of=_day)
+        capture_sequential(_av_experiment, _av_resolver, finalized=True, as_of=_day)
         uptake_trend.extend(
-            _av_analysis.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+            run(
+                _av_experiment.with_views(_completed), _av_resolver, estimands=("compliance",)
+            ).readout(_completed)
         )
     return uptake_trend, fixed_late_trend
 

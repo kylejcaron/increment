@@ -4,7 +4,7 @@ Unlike ``test_encouragement_recovery.py``, which feeds hand-aggregated
 moments straight into ``estimate_encouragement``, these tests exercise the
 full user-facing path: raw events in DuckDB, through the query builders'
 uptake-aware ``unit_totals``/``group_summary`` reduction, through
-``Analysis.run()``'s encouragement dispatch, to the additive Wald-ratio
+``run(experiment, resolver)``'s encouragement dispatch, to the additive Wald-ratio
 LATE row - the same chain a real warehouse-backed analysis rides.
 
 DGP (one-sided encouragement): control units can never take up; each
@@ -17,16 +17,16 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from typing import Any
 
 import ibis
 import numpy as np
 import pytest
 from scipy.stats import norm
 
-from increment.analysis import Analysis
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 from increment.semantics.models import Definitions
-from tests.analysis_factory import lift_rows, make_analysis
+from tests.analysis_factory import lift_rows, make_binding, view_readout
 
 _TS_EXPOSED = datetime(2025, 3, 1, 9, 0, 0)
 _TS_CLICKED = datetime(2025, 3, 1, 10, 0, 0)
@@ -84,8 +84,8 @@ def _event_rows(
     return rows
 
 
-def _native_encouragement_analysis(con, table_name: str) -> Analysis:
-    """Build a native (DuckDB, definitions-shaped) ``Analysis`` over
+def _native_encouragement_analysis(con, table_name: str) -> Any:
+    """Bind a native (DuckDB, definitions-shaped) experiment over
     *table_name* with a declared one-sided :class:`Encouragement` design."""
     defs = Definitions.model_validate(
         {
@@ -126,10 +126,10 @@ def _native_encouragement_analysis(con, table_name: str) -> Analysis:
         }
     )
 
-    analysis = make_analysis(
+    analysis = make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -150,8 +150,8 @@ def _run_late(con, table_name: str, rows: list[dict]) -> tuple[float, float, flo
     the default near-flat prior emits precisely that interval.
     """
     con.create_table(table_name, obj=rows)
-    analysis = _native_encouragement_analysis(con, table_name)
-    results = lift_rows(analysis.run())
+    experiment, resolver = _native_encouragement_analysis(con, table_name)
+    results = lift_rows(view_readout(experiment, resolver))
     (late,) = [r for r in results if r.estimand == "late" and r.value_scale == "absolute"]
     lift = late.require_lift()
     assert lift.lb is not None and lift.ub is not None and lift.level is not None

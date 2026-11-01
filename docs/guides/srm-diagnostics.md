@@ -165,7 +165,7 @@ Check all assigned or targeted units, or a demonstrably pre-treatment,
 arm-invariant exposure. A treatment-affected triggered subset can reflect
 selection or telemetry, not assignment failure.
 
-`Analysis.run()` attaches automatic integrity results to the assigned
+`run(experiment, resolver)` attaches automatic integrity results to the assigned
 population. Triggered counts are not checked as assignment integrity and say
 nothing about trigger-selection validity. Clustered artifact readouts use
 assigned clusters, not member units. Registered sequential reads use

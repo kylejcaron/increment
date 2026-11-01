@@ -7,7 +7,6 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
@@ -24,9 +23,6 @@ from increment.store.types import (
     pinned_run,
     run_record_key,
 )
-
-if TYPE_CHECKING:
-    from increment.store.producer import PersistenceIdentity
 
 
 def _read_manifest(path: Path) -> dict[str, object]:
@@ -64,17 +60,6 @@ class ParquetResultsStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
-
-    def persist_results(
-        self,
-        results: object,
-        experiment_id: str,
-        run_id: str,
-        identity_record: PersistenceIdentity,
-    ) -> None:
-        from increment.store.producer import persist_results
-
-        persist_results(results, self, experiment_id, run_id, identity_record)
 
     def _path(self, experiment_id: str, analysis_spec_hash: str, run_id: str) -> Path:
         return self.path / f"{run_record_key(experiment_id, analysis_spec_hash, run_id)}.parquet"

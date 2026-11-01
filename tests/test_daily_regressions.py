@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from increment.analysis import Analysis
+from increment import Scope, from_definitions
 from increment.semantics.models import AnalysisPlan, ExperimentMetric, MethodSpec
-from tests.analysis_factory import make_analysis_like
+from increment.workflows import experiment_definition, metrics
+from tests.analysis_factory import make_binding_like, view_readout
 
 
 @pytest.mark.parametrize("cuped_first", [True, False])
@@ -12,7 +13,9 @@ from tests.analysis_factory import make_analysis_like
 def test_native_daily_mixed_order_requests_cuped_only_for_declared_metric(
     seeded_pre_period_con, seeded_defs, cuped_first
 ):
-    analysis = Analysis("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
     cuped_metric = ExperimentMetric(
         metric="purchase_rate",
         decision_method=MethodSpec(name="cuped", variance_reduction="cuped"),
@@ -22,20 +25,25 @@ def test_native_daily_mixed_order_requests_cuped_only_for_declared_metric(
         if cuped_first
         else ["avg_session_duration", cuped_metric]
     )
-    catalog = {m.name: m for m in analysis.metrics}
+    catalog = {m.name: m for m in metrics(analysis_experiment, analysis_resolver)}
     order = (
         ["purchase_rate", "avg_session_duration"]
         if cuped_first
         else ["avg_session_duration", "purchase_rate"]
     )
-    configured = make_analysis_like(
-        analysis,
+    configured_experiment, configured_resolver = make_binding_like(
+        analysis_resolver,
         [catalog[name] for name in order],
-        experiment=analysis.experiment.model_copy(
+        experiment=experiment_definition(analysis_experiment, analysis_resolver).model_copy(
             update={"plan": AnalysisPlan(secondaries=secondaries)}
         ),
     )
-    results = configured.run_daily_lift(metrics=["avg_session_duration", "purchase_rate"])
+    results = view_readout(
+        configured_experiment,
+        configured_resolver,
+        Scope(view="daily", grain="daily"),
+        metrics=["avg_session_duration", "purchase_rate"],
+    )
 
     # Declaration order does not move the CUPED binding off the declared
     # metric, and the covariate-bearing moments let that metric estimate.
@@ -50,10 +58,12 @@ def test_native_daily_mixed_order_requests_cuped_only_for_declared_metric(
 def test_native_daily_inherited_methods_and_roles_reach_estimator(
     seeded_pre_period_con, seeded_defs
 ):
-    analysis = Analysis("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
-    configured = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(
+    analysis_experiment, analysis_resolver = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
+    configured_experiment, configured_resolver = make_binding_like(
+        analysis_resolver,
+        experiment=experiment_definition(analysis_experiment, analysis_resolver).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=[
@@ -68,7 +78,12 @@ def test_native_daily_inherited_methods_and_roles_reach_estimator(
             }
         ),
     )
-    results = configured.run_daily_lift(metrics=["purchase_rate", "avg_session_duration"])
+    results = view_readout(
+        configured_experiment,
+        configured_resolver,
+        Scope(view="daily", grain="daily"),
+        metrics=["purchase_rate", "avg_session_duration"],
+    )
 
     assert {(row.metric, row.method, row.method_role, row.role) for row in results} == {
         ("purchase_rate", "cuped", "decision", "secondary"),

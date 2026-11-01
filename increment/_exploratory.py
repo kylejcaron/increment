@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
     "facade.analysis.exploratory_metrics_source_limited",
     CapabilityError,
-    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- use Analysis.from_definitions.",
+    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- build the experiment with from_definitions.",
 )
 _EXPLORATORY_SEQUENTIAL = RefusalSpec(
     "facade.analysis.exploratory_metrics_sequential",
@@ -80,7 +80,7 @@ def exploratory_sibling(
         binding.source,
         "exploratory_source",
         ExploratorySourceOperation,
-        message=f"{caller}(exploratory_metrics=...) needs a native Analysis.from_definitions instance.",
+        message=f"{caller}(exploratory_metrics=...) needs an experiment built by from_definitions.",
     )
     derived = binding.with_source(source.exploratory_source(metrics=added))
     context = current_execution_context()

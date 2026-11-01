@@ -9,11 +9,12 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts
-from increment.artifacts import SourceSnapshotEvidence
+from increment import Scope, from_frame, from_moments, from_unit_day_artifact, readouts, run
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning
 from increment.estimation.encouragement import estimate_compliance
 from increment.frame import from_unit_panel
+from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.artifact_reader import ArtifactMomentSource
 from increment.query.session import WarehouseArtifactStore
@@ -27,7 +28,12 @@ from tests._evidence_requests import (
     _moments,
     _unit_counts,
 )
-from tests.analysis_factory import _native_source, lift_rows, make_analysis
+from tests.analysis_factory import (
+    bound_source,
+    lift_rows,
+    make_binding,
+    view_readout,
+)
 from tests.test_compliance_summary import design
 from tests.warning_codes import warning_codes
 
@@ -42,6 +48,16 @@ class ClickTiming:
     boundary_click_offsets: list[timedelta] | None = None
     exposure_hour: int = 0
     day_boundary: str | None = None
+
+
+_ASSIGNED = Scope(view="run", grain="total")
+_TRIGGERED = Scope(view="run", grain="total", population="triggered")
+
+
+def _both_populations(experiment, resolver, **options):
+    """Whole-window rows of the assigned and triggered populations, read from one capture."""
+    result = run(experiment.with_views(_ASSIGNED, _TRIGGERED), resolver, **options)
+    return [*result.readout(_ASSIGNED), *result.readout(_TRIGGERED)]
 
 
 def native_fixture(
@@ -228,12 +244,7 @@ def native_fixture(
         SourceSnapshotEvidence(cutoff, {"events": cutoff}) if triggered else None
     )
     supplied = None if declared else design(window=uptake_window)
-    analysis = make_analysis(
-        con,
-        definitions,
-        _design=supplied,
-        source_snapshot_evidence=evidence,
-    )
+    analysis = make_binding(con, definitions, design=supplied, source_snapshot_evidence=evidence)
     context = artifact_context(
         definitions, definitions.experiments[0], "error", encouragement_uptake=supplied
     )
@@ -243,11 +254,11 @@ def native_fixture(
 
 @pytest.mark.parametrize("order", [("full", "drop"), ("drop", "full"), ("drop",)])
 def test_native_artifact_original_witness_and_matching_late(order):
-    con, analysis, context, store, _panel = native_fixture(order)
+    con, (experiment, resolver), context, store, _panel = native_fixture(order)
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            for source in (_native_source(analysis), artifact):
+            for source in (bound_source(resolver), artifact):
                 results = readouts.run(source, estimands=["compliance", "late"])
                 comp = next(row for row in results if row.estimand == "compliance")
                 assert comp.require_lift().value == pytest.approx(0.5)
@@ -267,7 +278,7 @@ def test_native_artifact_original_witness_and_matching_late(order):
                     )
                     assert late.require_lift().value == pytest.approx(itt / stage)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -279,11 +290,11 @@ def test_native_and_artifact_agree_for_each_supported_design_form(declared):
     from increment.semantics.design import Encouragement
     from increment.sequential_source import sequential_definition_id
 
-    con, analysis, context, store, _panel = native_fixture(declared=declared)
+    con, (experiment, resolver), context, store, _panel = native_fixture(declared=declared)
     try:
-        native = _native_source(analysis)
+        native = bound_source(resolver)
         assert isinstance(native.context.design, Encouragement)
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             _, rehydrated = _artifact_source_context(context)
             assert rehydrated.design == native.context.design
@@ -314,12 +325,12 @@ def test_native_and_artifact_agree_for_each_supported_design_form(declared):
             }
             assert len(identities) == 1
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
-    con, analysis, context, store, panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, panel = native_fixture(("full",))
     frame = from_unit_panel(
         pa.Table.from_pylist(panel),
         unit="unit",
@@ -332,16 +343,16 @@ def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
         experiment_id="uptake_test",
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native_day = _native_source(analysis).day_source(
-                metrics=_native_source(analysis).context.metrics
+            native_day = bound_source(resolver).day_source(
+                metrics=bound_source(resolver).context.metrics
             )
             for day, expected in [(0, 0.25), (5, 0.25), (6, 0.5), (7, 0.5), (9, 0.5)]:
                 as_of = date(2025, 1, 1) + timedelta(days=day)
                 summaries = [
                     _compliance(source, design(7), as_of=as_of)
-                    for source in (frame, _native_source(analysis), native_day, artifact)
+                    for source in (frame, bound_source(resolver), native_day, artifact)
                 ]
                 assert all(summary == summaries[0] for summary in summaries)
                 for summary in summaries:
@@ -353,14 +364,14 @@ def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
                 _compliance(artifact, design(6))
             assert mismatch.value.code == "source.compliance_summary.design_mismatch"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.parametrize("legacy_coverage", [False, True], ids=["declared", "legacy"])
 def test_uptake_after_outcome_day_extends_native_and_artifact_spine(legacy_coverage):
     """A qualifying next-day uptake survives when outcomes end on exposure day."""
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         timing=ClickTiming(
             uptake_window=1,
@@ -371,7 +382,7 @@ def test_uptake_after_outcome_day_extends_native_and_artifact_spine(legacy_cover
         open_ended=True,
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             if legacy_coverage:
                 from increment.semantics.artifact import EncouragementUptakeExtension
@@ -388,7 +399,7 @@ def test_uptake_after_outcome_day_extends_native_and_artifact_spine(legacy_cover
                         )
                     }
                 )
-            for source in (_native_source(analysis), artifact):
+            for source in (bound_source(resolver), artifact):
                 metric = source.context.metrics[0]
                 total = next(
                     row for row in _moments(source, metric) if row["group_id"] == "treatment"
@@ -402,13 +413,13 @@ def test_uptake_after_outcome_day_extends_native_and_artifact_spine(legacy_cover
                 assert asof[date(2025, 1, 2)]["sum_d"] == pytest.approx(10.0)
                 assert asof[date(2025, 1, 2)]["n"] == 20
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned():
     """Pinned native and artifact spines include the same cutoff day and divisors."""
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         timing=ClickTiming(
             uptake_window=1,
@@ -420,9 +431,9 @@ def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned(
         source_snapshot_evidence=SourceSnapshotEvidence(datetime(2025, 1, 3, 23, 59, tzinfo=UTC)),
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            sources = (_native_source(analysis), artifact)
+            sources = (bound_source(resolver), artifact)
             asof_rows = []
             for source in sources:
                 metric = source.context.metrics[0]
@@ -442,13 +453,13 @@ def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned(
                 for field in ("ref_y", "cy1", "cy2"):
                     assert native[day][field] == pytest.approx(published[day][field])
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_published_uptake_respects_certified_local_day_edge():
     """Assigned uptake events beyond the certified edge are absent in both sources."""
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         timing=ClickTiming(
             uptake_window=5,
@@ -463,9 +474,9 @@ def test_published_uptake_respects_certified_local_day_edge():
         ),
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native = _native_source(analysis)
+            native = bound_source(analysis_resolver)
             sources = (native, artifact)
             for source in sources:
                 metric = source.context.metrics[0]
@@ -491,9 +502,16 @@ def test_published_uptake_respects_certified_local_day_edge():
                     if row["group_id"] == "treatment"
                 }
                 assert asof[date(2025, 1, 3)]["sum_d"] == pytest.approx(9.0)
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
-            native_rows = analysis.run(estimands=["itt", "late"])
-            artifact_rows = adopted.run(estimands=["itt", "late"])
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+        with adopted_resolver:
+            native_rows = view_readout(
+                analysis_experiment, analysis_resolver, estimands=["itt", "late"]
+            )
+            artifact_rows = view_readout(
+                adopted_experiment, adopted_resolver, estimands=["itt", "late"]
+            )
         native_results = {
             row.estimand: row
             for row in native_rows
@@ -506,8 +524,8 @@ def test_published_uptake_respects_certified_local_day_edge():
         }
         assert set(native_results) == set(artifact_results) == {"itt", "late"}
         for estimand in ("itt", "late"):
-            native_result = cast(Any, native_results[estimand])
-            artifact_result = cast(Any, artifact_results[estimand])
+            native_result = native_results[estimand]
+            artifact_result = artifact_results[estimand]
             assert native_result.relative_unavailable_reason == (
                 artifact_result.relative_unavailable_reason
             )
@@ -516,7 +534,7 @@ def test_published_uptake_respects_certified_local_day_edge():
                 assert artifact_result.lift is not None
                 assert native_result.lift.value == pytest.approx(artifact_result.lift.value)
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
@@ -524,7 +542,7 @@ def test_published_uptake_respects_certified_local_day_edge():
 def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_parity():
     uptake_edge = datetime(2025, 1, 4, tzinfo=UTC)
     outcome_edge = datetime(2025, 1, 31, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         separate_uptake=True,
         staggered=True,
@@ -541,13 +559,13 @@ def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_pa
             "UPDATE uptake_events SET ts = TIMESTAMP '2025-01-05 00:00:00' "
             "WHERE user_id = 'treatment0_0' AND ts >= TIMESTAMP '2025-01-01 00:00:00'"
         )
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             extension = next(
                 ext for ext in artifact.manifest.extensions if ext.kind == "encouragement_uptake"
             )
             assert extension.certified_edge == date(2025, 1, 3)
-            native = _native_source(analysis)
+            native = bound_source(analysis_resolver)
             metric = native.context.metrics[0]
             native_rows = _moments(native, metric, grain="asof")
             artifact_rows = _moments(artifact, metric, grain="asof")
@@ -567,12 +585,25 @@ def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_pa
                 artifact, metric, grain="asof", completed_windows_only=True
             )
             assert native_completed == artifact_completed == ()
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
-            native_late = analysis.run_asof_lift(estimands=["late"], completed_windows_only=True)
-            artifact_late = adopted.run_asof_lift(estimands=["late"], completed_windows_only=True)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+        with adopted_resolver:
+            native_late = view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="asof", grain="asof", completion_policy=True),
+                estimands=["late"],
+            )
+            artifact_late = view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                Scope(view="asof", grain="asof", completion_policy=True),
+                estimands=["late"],
+            )
             assert native_late == artifact_late
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
@@ -589,7 +620,7 @@ def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_pa
 def test_completed_asof_uptake_certification_uses_elapsed_timestamp_boundary(
     exposure_hour, day_boundary, uptake_complete_through, is_completed
 ):
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         separate_uptake=True,
         staggered=True,
@@ -609,9 +640,9 @@ def test_completed_asof_uptake_certification_uses_elapsed_timestamp_boundary(
             f"UPDATE events SET ts = TIMESTAMP '2025-01-01 {exposure_hour:02}:00:00' "
             "WHERE event = 'exposed'"
         )
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native = _native_source(analysis)
+            native = bound_source(resolver)
             metric = native.context.metrics[0]
             native_completed = _moments(native, metric, grain="asof", completed_windows_only=True)
             artifact_completed = _moments(
@@ -630,7 +661,7 @@ def test_completed_asof_uptake_certification_uses_elapsed_timestamp_boundary(
             completed_days = {row["ds"] for row in native_completed}
             assert (date(2025, 1, 8) in completed_days) is is_completed
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -660,7 +691,7 @@ def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
         )
         return connection
 
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         separate_uptake=True,
         staggered=True,
@@ -677,9 +708,9 @@ def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
         ),
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native = _native_source(analysis)
+            native = bound_source(analysis_resolver)
             metric = native.context.metrics[0]
             for source in (native, artifact):
                 summary = _compliance(
@@ -691,9 +722,22 @@ def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
             assert _moments(native, metric, grain="asof", completed_windows_only=True) == _moments(
                 artifact, metric, grain="asof", completed_windows_only=True
             )
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
-            expected = analysis.run_asof_lift(estimands=["late"], completed_windows_only=True)
-            actual = adopted.run_asof_lift(estimands=["late"], completed_windows_only=True)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+        with adopted_resolver:
+            expected = view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="asof", grain="asof", completion_policy=True),
+                estimands=["late"],
+            )
+            actual = view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                Scope(view="asof", grain="asof", completion_policy=True),
+                estimands=["late"],
+            )
             assert [
                 (row.ds, row.group_id, row.sampling_available, row.failure_code, row.lift)
                 for row in actual
@@ -703,14 +747,14 @@ def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
             ]
             assert any(row.sampling_available for row in actual) is completed
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         timing=ClickTiming(uptake_window=14),
         outcome=(8, "sum", 7),
@@ -735,12 +779,15 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
         """
     )
     try:
-        reference = analysis.publish_unit_day_artifact(store)
+        reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, reference, expected_context=context
+        )
         with (
             open_artifact(store, reference, expected_context=context) as artifact,
-            Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted,
+            adopted_resolver,
         ):
-            native = _native_source(analysis)
+            native = bound_source(analysis_resolver)
             for as_of, expected_uptake in (
                 (date(2025, 1, 13), 14),
                 (date(2025, 1, 14), 15),
@@ -767,11 +814,35 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                     for row in rows
                 ]
 
-            assert lift_fields(analysis.run_daily_lift(estimands=("compliance",))) == lift_fields(
-                adopted.run_daily_lift(estimands=("compliance",))
+            assert lift_fields(
+                view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    Scope(view="daily", grain="daily"),
+                    estimands=("compliance",),
+                )
+            ) == lift_fields(
+                view_readout(
+                    adopted_experiment,
+                    adopted_resolver,
+                    Scope(view="daily", grain="daily"),
+                    estimands=("compliance",),
+                )
             )
-            assert lift_fields(analysis.run_asof_lift(estimands=("compliance",))) == lift_fields(
-                adopted.run_asof_lift(estimands=("compliance",))
+            assert lift_fields(
+                view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    Scope(view="asof", grain="asof"),
+                    estimands=("compliance",),
+                )
+            ) == lift_fields(
+                view_readout(
+                    adopted_experiment,
+                    adopted_resolver,
+                    Scope(view="asof", grain="asof"),
+                    estimands=("compliance",),
+                )
             )
 
             with open_artifact(store, reference, expected_context=context) as edge_artifact:
@@ -827,42 +898,59 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                     if row["group_id"] == "treatment" and row["ds"] == date(2025, 1, 15)
                 )
                 assert boundary_asof["sum_d"] == pytest.approx(15.0)
-
-                with Analysis.from_unit_day_artifact(
+                edge_adopted_experiment, edge_adopted_resolver = from_unit_day_artifact(
                     store, reference, expected_context=context
-                ) as edge_adopted:
+                )
+
+                with edge_adopted_resolver:
                     endpoint_late = next(
                         row
-                        for row in edge_adopted.run(estimands=("late",))
+                        for row in view_readout(
+                            edge_adopted_experiment, edge_adopted_resolver, estimands=("late",)
+                        )
                         if row.estimand == "late"
                     )
                     ordinary_late = next(
-                        row for row in adopted.run(estimands=("late",)) if row.estimand == "late"
+                        row
+                        for row in view_readout(
+                            adopted_experiment, adopted_resolver, estimands=("late",)
+                        )
+                        if row.estimand == "late"
                     )
-                    assert cast(Any, endpoint_late).require_lift().value == pytest.approx(
-                        cast(Any, ordinary_late).require_lift().value
+                    assert endpoint_late.require_lift().value == pytest.approx(
+                        ordinary_late.require_lift().value
                     )
                     endpoint_asof = next(
                         row
-                        for row in edge_adopted.run_asof_lift(estimands=("late",))
+                        for row in view_readout(
+                            edge_adopted_experiment,
+                            edge_adopted_resolver,
+                            Scope(view="asof", grain="asof"),
+                            estimands=("late",),
+                        )
                         if row.ds == date(2025, 1, 15)
                     )
                     ordinary_asof = next(
                         row
-                        for row in adopted.run_asof_lift(estimands=("late",))
+                        for row in view_readout(
+                            adopted_experiment,
+                            adopted_resolver,
+                            Scope(view="asof", grain="asof"),
+                            estimands=("late",),
+                        )
                         if row.ds == date(2025, 1, 15)
                     )
-                    assert cast(Any, endpoint_asof).require_lift().value == pytest.approx(
-                        cast(Any, ordinary_asof).require_lift().value
+                    assert endpoint_asof.require_lift().value == pytest.approx(
+                        ordinary_asof.require_lift().value
                     )
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
     cutoff = datetime(2025, 1, 10, 23, 59, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         triggered=True,
         outcome=(8, "sum", 7),
@@ -883,17 +971,17 @@ def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
             "UPDATE events SET ts = TIMESTAMP '2025-01-04 00:00:00' "
             "WHERE user_id = 'treatment0_0' AND event = 'triggered'"
         )
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native = _native_source(analysis)
+            native = bound_source(analysis_resolver)
             metric = native.context.metrics[0]
             native_rows = _moments(
                 native.day_source(metrics=(metric,), population="triggered"),
@@ -916,9 +1004,22 @@ def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
             assert artifact_treatment[date(2025, 1, 4)]["sum_d"] == pytest.approx(
                 native_treatment[date(2025, 1, 4)]["sum_d"]
             )
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
-            native_late = analysis.run_asof_lift(estimands=["late"], population="triggered")
-            artifact_late = adopted.run_asof_lift(estimands=["late"], population="triggered")
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+        with adopted_resolver:
+            native_late = view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=["late"],
+            )
+            artifact_late = view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=["late"],
+            )
             native_values = {
                 row.ds: row.require_lift().value
                 for row in native_late
@@ -932,7 +1033,7 @@ def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
             assert native_values == pytest.approx(artifact_values)
             assert native_values
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
@@ -948,7 +1049,7 @@ def test_triggered_completed_asof_uses_assignment_timestamp_for_uptake_certifica
     assignment_ts, uptake_complete_through, expected_units
 ):
     cutoff = datetime(2025, 1, 31, 23, 59, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         separate_uptake=True,
         triggered=True,
@@ -972,17 +1073,15 @@ def test_triggered_completed_asof_uses_assignment_timestamp_for_uptake_certifica
             "UPDATE events SET ts = TIMESTAMP '2025-01-04 00:00:00' "
             "WHERE user_id = 'treatment0_0' AND event = 'triggered'"
         )
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native = _native_source(analysis)
+            native = bound_source(resolver)
             metric = native.context.metrics[0]
             native_rows = _moments(
                 native.day_source(metrics=(metric,), population="triggered"),
@@ -1004,35 +1103,35 @@ def test_triggered_completed_asof_uses_assignment_timestamp_for_uptake_certifica
             ]
             assert treatment_at_completion[0]["n"] == expected_units
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_late_uptake_preserves_calendar_average_total_scope():
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         open_ended=True,
         timing=ClickTiming(uptake_window=1),
         outcome=(1, "avg_calendar_day", 7),
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            for source in (_native_source(analysis), artifact):
+            for source in (bound_source(resolver), artifact):
                 rows = {row["group_id"]: row for row in _moments(source, source.context.metrics[0])}
                 for arm, total in (("control", 25.0), ("treatment", 35.0)):
                     row = rows[arm]
                     assert row["n"] == 20
                     assert row["n"] * row["ref_y"] + row["cy1"] == pytest.approx(total)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def check_uptake_outcome_coverage(outcome_day, *, warehouse_connection=None):
     from integration.warehouse_execution._suite import _drop_probe_generation
 
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         open_ended=True,
         separate_uptake=True,
@@ -1043,12 +1142,12 @@ def check_uptake_outcome_coverage(outcome_day, *, warehouse_connection=None):
     )
     cleanup = ExitStack()
     cleanup.callback(con.disconnect)
-    cleanup.callback(analysis.close)
+    cleanup.callback(resolver.close)
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         cleanup.callback(_drop_probe_generation, con, store, ref, con.name, schema_name="artifacts")
         with open_artifact(store, ref, expected_context=context) as artifact:
-            for source in (_native_source(analysis), artifact):
+            for source in (bound_source(resolver), artifact):
                 metric = source.context.metrics[0]
                 rows = _moments(source, metric, grain="asof")
                 last = max(row["ds"] for row in rows)
@@ -1085,14 +1184,14 @@ def test_uptake_coverage_cannot_supply_outcome_observations(outcome_day):
 
 def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries():
     offsets = [timedelta(0), timedelta(hours=21), timedelta(days=1)]
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         timing=ClickTiming(uptake_window=1, boundary_click_offsets=offsets, exposure_hour=12),
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            for source in (_native_source(analysis), artifact):
+            for source in (bound_source(resolver), artifact):
                 summary = _compliance(source, design(1))
                 treatment = summary.arm("treatment")
                 assert treatment is not None
@@ -1110,7 +1209,7 @@ def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries():
                     "n"
                 ] == pytest.approx(5 / 20)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1122,13 +1221,13 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
 ):
     import pyarrow.parquet as pq
 
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         () if metric_free else ("full",), clustered=clustered
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native_summary = _compliance(_native_source(analysis), design(7))
+            native_summary = _compliance(bound_source(analysis_resolver), design(7))
             with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext() as rec:
                 expected = estimate_compliance(native_summary, design(7)).results[0]
             if clustered:
@@ -1150,7 +1249,7 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
                 assert expected.require_lift().value == pytest.approx(rate)
                 assert expected.require_lift().lb == pytest.approx(rate - half_width)
                 assert expected.require_lift().ub == pytest.approx(rate + half_width)
-            for i, source in enumerate((_native_source(analysis), artifact)):
+            for i, source in enumerate((bound_source(analysis_resolver), artifact)):
                 path = tmp_path / f"cube{i}.parquet"
                 source.export_moments(path)
                 reloaded = MomentsSource(
@@ -1167,13 +1266,15 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
                 assert actual.require_lift().lb is not None and actual.require_lift().ub is not None
                 assert actual.require_lift().lb == pytest.approx(expected.require_lift().lb)
                 assert actual.require_lift().ub == pytest.approx(expected.require_lift().ub)
-                portable = Analysis.from_moments(
-                    pq.read_table(path).to_pylist(),
-                    metrics=[],
-                    design=design(7),
+                portable_experiment, portable_resolver = from_moments(
+                    pq.read_table(path).to_pylist(), metrics=[], design=design(7)
                 )
                 with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
-                    public = lift_rows(portable.run(estimands=["compliance"]))[0].require_lift()
+                    public = lift_rows(
+                        view_readout(
+                            portable_experiment, portable_resolver, estimands=["compliance"]
+                        )
+                    )[0].require_lift()
                 assert (public.value, public.lb, public.ub) == pytest.approx(
                     (
                         expected.require_lift().value,
@@ -1186,21 +1287,21 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
                     assert rec is not None
                     assert "estimation.engine.small_total_clusters" in warning_codes(rec)
                     assert _cluster_counts(reloaded) == {"control": 12, "treatment": 12}
-            in_process = _native_source(analysis).moments_source(
-                metrics=_native_source(analysis).context.metrics
+            in_process = bound_source(analysis_resolver).moments_source(
+                metrics=bound_source(analysis_resolver).context.metrics
             )
             assert _compliance(in_process, design(7)) == _compliance(
-                _native_source(analysis), design(7)
+                bound_source(analysis_resolver), design(7)
             )
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 def test_legacy_artifact_is_identified_before_any_relation_execution(monkeypatch):
-    con, analysis, context, store, _panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             manifest = artifact.manifest
             for extensions in (
@@ -1223,26 +1324,27 @@ def test_legacy_artifact_is_identified_before_any_relation_execution(monkeypatch
                         _compliance(artifact, design(7))
                     assert error.value.code == "source.compliance_summary.legacy_uptake_state"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_base_artifact_reader_implements_compliance_protocol():
-    con, analysis, context, store, _panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with ArtifactMomentSource.open(store, ref, expected_context=context) as source:
-            expected = _compliance(_native_source(analysis), design(7))
+            expected = _compliance(bound_source(resolver), design(7))
             assert _compliance(source, design(7)) == expected
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_public_asof_api_reports_one_design_level_row_per_day():
-    con, analysis, context, store, panel = native_fixture()
-    frame = Analysis.from_unit_panel(
+    con, (experiment, resolver), context, store, panel = native_fixture()
+    frame_experiment, frame_resolver = from_frame(
         pa.Table.from_pylist(panel),
+        shape="panel",
         unit="unit",
         group="arm",
         date="ds",
@@ -1252,11 +1354,22 @@ def test_public_asof_api_reports_one_design_level_row_per_day():
         experiment_id="uptake_test",
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            for source in (analysis, frame, adopted):
-                results = source.run_asof_lift(estimands=("compliance",))
+            for source_experiment, source_resolver in (
+                (experiment, resolver),
+                (frame_experiment, frame_resolver),
+                (adopted_experiment, adopted_resolver),
+            ):
+                results = view_readout(
+                    source_experiment,
+                    source_resolver,
+                    Scope(view="asof", grain="asof"),
+                    estimands=("compliance",),
+                )
                 compliance = [row for row in results if row.estimand == "compliance"]
                 keys = [(row.ds, row.group_id) for row in compliance]
                 assert len(keys) == len(set(keys)) == 10
@@ -1267,10 +1380,10 @@ def test_public_asof_api_reports_one_design_level_row_per_day():
                     assert row.require_lift().value == pytest.approx(expected)
                     assert row.require_lift().lb is not None
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        frame.close()
-        analysis.close()
+        frame_resolver.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1291,20 +1404,20 @@ def test_current_artifact_rejects_contradictory_uptake_state(monkeypatch):
         return replace(spec, rows=relation)
 
     monkeypatch.setattr(ArtifactPublisher, "_uptake_extension_spec", corrupt)
-    con, analysis, context, store, _panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as source:
             with pytest.raises(CodedError) as error:
                 _compliance(source, design(7))
             assert error.value.code == "source.compliance_summary.invalid_state"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_uptake_publication_does_not_collect_the_relation_in_python(monkeypatch):
-    con, analysis, context, store, _panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
     original = con.to_pyarrow
 
     def bounded_only(expression, *args, **kwargs):
@@ -1317,12 +1430,12 @@ def test_uptake_publication_does_not_collect_the_relation_in_python(monkeypatch)
 
     monkeypatch.setattr(con, "to_pyarrow", bounded_only)
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as source:
             arm = _compliance(source, design(7)).arm("treatment")
             assert arm is not None and arm.uptake_total == 10
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1331,7 +1444,7 @@ def test_uptake_publication_does_not_collect_the_relation_in_python(monkeypatch)
 def test_publication_pins_uptake_before_metric_validation(monkeypatch, separate_uptake, open_ended):
     from increment.query.artifact_publish import ArtifactPublisher
 
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",), separate_uptake=separate_uptake, open_ended=open_ended
     )
     original = ArtifactPublisher._validate_stats_relation
@@ -1347,10 +1460,10 @@ def test_publication_pins_uptake_before_metric_validation(monkeypatch, separate_
         return last_day
 
     try:
-        expected = _compliance(_native_source(analysis), design(7))
-        expected_dates = _compliance_dates(_native_source(analysis))
+        expected = _compliance(bound_source(resolver), design(7))
+        expected_dates = _compliance_dates(bound_source(resolver))
         monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", mutate_after_validation)
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         assert mutated
         with open_artifact(store, ref, expected_context=context) as artifact:
             actual = _compliance(artifact, design(7))
@@ -1358,15 +1471,15 @@ def test_publication_pins_uptake_before_metric_validation(monkeypatch, separate_
             assert _compliance_dates(artifact) == expected_dates
             arm = actual.arm("treatment")
             assert arm is not None and arm.uptake_total == 10
-        live = _compliance(_native_source(analysis), design(7)).arm("treatment")
+        live = _compliance(bound_source(resolver), design(7)).arm("treatment")
         assert live is not None and live.uptake_total == 0
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_publication_pins_outcome_and_uptake_before_inter_stream_mutation(monkeypatch):
-    con, analysis, context, store, _panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
     create = con.create_table
     captures = []
 
@@ -1380,12 +1493,12 @@ def test_publication_pins_outcome_and_uptake_before_inter_stream_mutation(monkey
         return table
 
     try:
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         metric = source.context.metrics[0]
         expected_moments = _moments(source, metric)
         expected_compliance = _compliance(source, design(7))
         monkeypatch.setattr(con, "create_table", capture_then_mutate)
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         assert captures, "mutation hook never ran"
         with open_artifact(store, ref, expected_context=context) as artifact:
             assert _compliance(artifact, design(7)) == expected_compliance
@@ -1395,15 +1508,25 @@ def test_publication_pins_outcome_and_uptake_before_inter_stream_mutation(monkey
         live = _compliance(source, design(7)).arm("treatment")
         assert live is not None and live.uptake_total == 0
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
-def _assert_clustered_artifact_outcome_history_refused(adopted) -> None:
+_TRIGGERED_LIFT_HISTORY = (
+    Scope(view="daily", grain="daily", population="triggered"),
+    Scope(view="asof", grain="asof", population="triggered"),
+)
+
+
+def _assert_clustered_artifact_outcome_history_refused(experiment, resolver) -> None:
     from tests.capability_consumers_auxiliary import assert_refusal
 
     with pytest.raises(CapabilityError) as refusal:
-        adopted.run_daily(population="triggered")
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", values=True, population="triggered"),
+        )
     assert refusal.value.code == "facade.analysis.clustered_day_axis"
     assert_refusal(
         "triggered_clustered_day_axis",
@@ -1421,19 +1544,17 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
 
     from tests.capability_consumers_auxiliary import assert_support
 
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",), clustered=clustered, triggered=True
     )
     try:
-        native = _native_source(analysis)
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
+        native = bound_source(resolver)
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind in {"trigger_population", "trigger_measure_stats"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
         with open_artifact(store, ref, expected_context=context) as artifact:
             expected_units = 63 if clustered else 8
             expected_uptake = 42 if clustered else 8
@@ -1457,7 +1578,7 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
                     "treatment": expected_units,
                 }
             path = tmp_path / "triggered.parquet"
-            cast(Any, sources[-1]).export_moments(path)
+            sources[-1].export_moments(path)
             cube = MomentsSource(
                 pq.read_table(path).to_pylist(),
                 metrics=native.context.metrics,
@@ -1466,7 +1587,7 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
             )
             assert _compliance(cube, design(7)) == summaries[0]
             with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext() as rec:
-                results = analysis.run(estimands=["compliance"])
+                results = _both_populations(experiment, resolver, estimands=["compliance"])
             if clustered:
                 assert rec is not None
                 assert "estimation.engine.small_total_clusters" in warning_codes(rec)
@@ -1479,13 +1600,18 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
             assert compliance.require_lift().value == pytest.approx(
                 expected_uptake / expected_units
             )
-            with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
+            adopted_experiment, adopted_resolver = from_unit_day_artifact(
+                store, ref, expected_context=context
+            )
+            with adopted_resolver:
                 if clustered:
-                    _assert_clustered_artifact_outcome_history_refused(adopted)
-                for method in ("run_daily_lift", "run_asof_lift"):
+                    _assert_clustered_artifact_outcome_history_refused(
+                        adopted_experiment, adopted_resolver
+                    )
+                for scope in _TRIGGERED_LIFT_HISTORY:
                     with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
-                        native_rows = getattr(analysis, method)(
-                            estimands=["compliance"], population="triggered"
+                        native_rows = view_readout(
+                            experiment, resolver, scope, estimands=["compliance"]
                         )
                     if clustered:
                         assert_support(
@@ -1494,8 +1620,8 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
                             native_rows,
                         )
                     with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
-                        artifact_rows = getattr(adopted, method)(
-                            estimands=["compliance"], population="triggered"
+                        artifact_rows = view_readout(
+                            adopted_experiment, adopted_resolver, scope, estimands=["compliance"]
                         )
                     if clustered:
                         assert_support(
@@ -1527,7 +1653,7 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
                         assert set(frame.get_column("analysis_population")) == {"triggered"}
                         assert set(frame.get_column("estimand")) == {"compliance"}
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1536,31 +1662,37 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
 def test_triggered_compliance_history_extends_after_trigger_to_uptake_and_maturity(
     tmp_path,
 ):
-    con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",), triggered=True)
     con.raw_sql("UPDATE events SET ts = ts + INTERVAL 2 DAY WHERE event = 'triggered'")
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
             actual = []
-            for source in (analysis, adopted):
-                for method in ("run_daily_lift", "run_asof_lift"):
-                    rows = getattr(source, method)(
-                        estimands=("compliance",), population="triggered"
+            for source_experiment, source_resolver in (
+                (experiment, resolver),
+                (adopted_experiment, adopted_resolver),
+            ):
+                for scope in _TRIGGERED_LIFT_HISTORY:
+                    rows = view_readout(
+                        source_experiment, source_resolver, scope, estimands=("compliance",)
                     )
                     actual.append([(row.ds, row.require_lift().value) for row in rows])
-                complete = source.run_asof_lift(
+                complete = view_readout(
+                    source_experiment,
+                    source_resolver,
+                    Scope(
+                        view="asof", grain="asof", completion_policy=True, population="triggered"
+                    ),
                     estimands=("compliance",),
-                    population="triggered",
-                    completed_windows_only=True,
                 )
                 assert {row.ds for row in complete} == {
                     date(2025, 1, 8) + timedelta(days=offset) for offset in range(3)
@@ -1574,9 +1706,9 @@ def test_triggered_compliance_history_extends_after_trigger_to_uptake_and_maturi
                     [value for _day, value in expected]
                 )
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1585,7 +1717,7 @@ def test_triggered_compliance_history_extends_after_trigger_to_uptake_and_maturi
 @pytest.mark.parametrize("clustered", [False, True])
 @pytest.mark.integration
 def test_sparse_triggered_compliance_keeps_later_estimable_looks(clustered):
-    con, analysis, _context, _store, _panel = native_fixture(
+    con, (experiment, resolver), _context, _store, _panel = native_fixture(
         ("full",), clustered=clustered, triggered=True
     )
     con.raw_sql(
@@ -1596,19 +1728,24 @@ def test_sparse_triggered_compliance_keeps_later_estimable_looks(clustered):
         "WHERE event = 'triggered' AND user_id IN ('control0_0', 'treatment0_0')"
     )
     try:
-        rows = analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", population="triggered"),
+            estimands=("compliance",),
+        )
         by_cell = {(row.ds, row.group_id): row for row in rows}
         assert set(by_cell) >= {(day, "treatment") for day in (date(2025, 1, 1), date(2025, 1, 2))}
         assert by_cell[(date(2025, 1, 1), "treatment")].unavailable == "few_units"
         assert by_cell[(date(2025, 1, 2), "treatment")].require_lift().value is not None
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_history_emits_missing_multi_treatment_cells():
-    con, analysis, _context, _store, _panel = native_fixture(
+    con, (experiment, resolver), _context, _store, _panel = native_fixture(
         ("full",), triggered=True, open_ended=True
     )
     con.raw_sql(
@@ -1621,7 +1758,12 @@ def test_triggered_compliance_history_emits_missing_multi_treatment_cells():
         "TIMESTAMPTZ '2025-01-03 00:00:00+00')"
     )
     try:
-        rows = analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", population="triggered"),
+            estimands=("compliance",),
+        )
         early = {
             (row.ds, row.group_id): row
             for row in rows
@@ -1646,14 +1788,14 @@ def test_triggered_compliance_history_emits_missing_multi_treatment_cells():
         assert jan3[(date(2025, 1, 3), "T2")].unavailable == "few_units"
         assert jan3[(date(2025, 1, 3), "treatment")].require_lift().value is not None
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_completed_compliance_respects_uptake_certification_edge(tmp_path):
     cutoff = datetime(2025, 1, 31, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",),
         triggered=True,
         separate_uptake=True,
@@ -1669,36 +1811,47 @@ def test_triggered_completed_compliance_respects_uptake_certification_edge(tmp_p
         "UPDATE events SET ts = TIMESTAMPTZ '2025-01-11 00:00:00+00' WHERE event = 'triggered'"
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            for source in (analysis, adopted):
-                rows = source.run_asof_lift(estimands=("compliance",), population="triggered")
-                assert rows == []
-                completed = source.run_asof_lift(
+            for source_experiment, source_resolver in (
+                (experiment, resolver),
+                (adopted_experiment, adopted_resolver),
+            ):
+                rows = view_readout(
+                    source_experiment,
+                    source_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
                     estimands=("compliance",),
-                    population="triggered",
-                    completed_windows_only=True,
+                )
+                assert rows == []
+                completed = view_readout(
+                    source_experiment,
+                    source_resolver,
+                    Scope(
+                        view="asof", grain="asof", completion_policy=True, population="triggered"
+                    ),
+                    estimands=("compliance",),
                 )
                 assert completed == []
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_history_uses_population_independent_horizon():
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",), triggered=True, open_ended=True
     )
     con.raw_sql(
@@ -1706,33 +1859,45 @@ def test_triggered_compliance_history_uses_population_independent_horizon():
         "WHERE user_id = 'treatment0_9' AND event = 'clicked'"
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
             expected = [date(2025, 1, 1) + timedelta(days=day) for day in range(12)]
-            native_rows = analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+            native_rows = view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=("compliance",),
+            )
             assert [row.ds for row in native_rows] == expected
-            rows = adopted.run_asof_lift(estimands=("compliance",), population="triggered")
+            rows = view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=("compliance",),
+            )
             assert [row.ds for row in rows] == expected
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_history_uses_uptake_feed_completion_not_trigger_feed():
     cutoff = datetime(2025, 1, 31, 23, 59, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         triggered=True,
         separate_uptake=True,
@@ -1745,102 +1910,138 @@ def test_triggered_compliance_history_uses_uptake_feed_completion_not_trigger_fe
         ),
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
             native_dates = [
                 row.ds
-                for row in analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+                for row in view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
+                    estimands=("compliance",),
+                )
             ]
             artifact_dates = [
                 row.ds
-                for row in adopted.run_asof_lift(estimands=("compliance",), population="triggered")
+                for row in view_readout(
+                    adopted_experiment,
+                    adopted_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
+                    estimands=("compliance",),
+                )
             ]
             assert native_dates == artifact_dates
             assert len(native_dates) > 2
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_history_keeps_triggers_after_uptake_events():
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",), triggered=True, open_ended=True
     )
     con.raw_sql(
         "UPDATE events SET ts = TIMESTAMPTZ '2025-01-11 00:00:00+00' WHERE event = 'triggered'"
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
             native_dates = [
                 row.ds
-                for row in analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+                for row in view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
+                    estimands=("compliance",),
+                )
             ]
             artifact_dates = [
                 row.ds
-                for row in adopted.run_asof_lift(estimands=("compliance",), population="triggered")
+                for row in view_readout(
+                    adopted_experiment,
+                    adopted_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
+                    estimands=("compliance",),
+                )
             ]
             assert native_dates == artifact_dates
             assert native_dates[0] == date(2025, 1, 11)
             assert native_dates[-1] == date(2025, 1, 11)
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_history_stops_at_pinned_observation_edge():
     cutoff = datetime(2025, 1, 5, 23, 59, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         triggered=True,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            native_rows = analysis.run_asof_lift(estimands=("compliance",), population="triggered")
-            rows = adopted.run_asof_lift(estimands=("compliance",), population="triggered")
+            native_rows = view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=("compliance",),
+            )
+            rows = view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=("compliance",),
+            )
             dates = [row.ds for row in native_rows]
             assert dates == [row.ds for row in rows]
             assert dates
             assert max(dates) <= cutoff.date()
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
@@ -1851,21 +2052,21 @@ def test_triggered_compliance_reopen_clamps_stale_persisted_edge():
     from increment.query.artifact_digest import manifest_sha256
 
     cutoff = datetime(2025, 1, 5, 23, 59, tzinfo=UTC)
-    con, analysis, context, store, _panel = native_fixture(
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
         ("full",),
         triggered=True,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         stale_extensions = tuple(
@@ -1895,12 +2096,21 @@ def test_triggered_compliance_reopen_clamps_stale_persisted_edge():
             ext for ext in reopened_manifest.extensions if ext.kind == "encouragement_uptake"
         )
         assert persisted_extension.observation_edge == date(2025, 1, 30)
-        native_rows = analysis.run_asof_lift(estimands=("compliance",), population="triggered")
-        with Analysis.from_unit_day_artifact(
+        native_rows = view_readout(
+            analysis_experiment,
+            analysis_resolver,
+            Scope(view="asof", grain="asof", population="triggered"),
+            estimands=("compliance",),
+        )
+        reopened_experiment, reopened_resolver = from_unit_day_artifact(
             reopened_store, reopened_ref, expected_context=context
-        ) as reopened:
-            artifact_rows = reopened.run_asof_lift(
-                estimands=("compliance",), population="triggered"
+        )
+        with reopened_resolver:
+            artifact_rows = view_readout(
+                reopened_experiment,
+                reopened_resolver,
+                Scope(view="asof", grain="asof", population="triggered"),
+                estimands=("compliance",),
             )
         assert [row.ds for row in artifact_rows] == [row.ds for row in native_rows]
         assert [row.require_lift().value for row in artifact_rows] == pytest.approx(
@@ -1912,13 +2122,13 @@ def test_triggered_compliance_reopen_clamps_stale_persisted_edge():
         assert artifact_rows
         assert max(cast(date, row.ds) for row in artifact_rows) <= cutoff.date()
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_keeps_missing_control_date_and_continues(tmp_path):
-    con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",), triggered=True)
     con.raw_sql(
         "UPDATE events SET ts = TIMESTAMPTZ '2025-01-04 00:00:00+00' "
         "WHERE event = 'triggered' AND group_id = 'treatment'"
@@ -1928,19 +2138,27 @@ def test_triggered_compliance_keeps_missing_control_date_and_continues(tmp_path)
         "WHERE event = 'triggered' AND group_id = 'control'"
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            for source in (analysis, adopted):
-                rows = source.run_asof_lift(estimands=("compliance",), population="triggered")
+            for source_experiment, source_resolver in (
+                (experiment, resolver),
+                (adopted_experiment, adopted_resolver),
+            ):
+                rows = view_readout(
+                    source_experiment,
+                    source_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
+                    estimands=("compliance",),
+                )
                 jan4 = [row for row in rows if row.ds == date(2025, 1, 4)]
                 assert len(jan4) == 1
                 assert jan4[0].lift is None
@@ -1949,15 +2167,15 @@ def test_triggered_compliance_keeps_missing_control_date_and_continues(tmp_path)
                 assert (jan5.n_control, jan5.n_treat) == (8, 8)
                 assert any(row.ds == date(2025, 1, 5) and row.lift is not None for row in rows)
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_completes_control_only_date_with_missing_treatment():
-    con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",), triggered=True)
     con.raw_sql(
         "UPDATE events SET ts = TIMESTAMPTZ '2025-01-04 00:00:00+00' "
         "WHERE event = 'triggered' AND group_id = 'control'"
@@ -1967,19 +2185,27 @@ def test_triggered_compliance_completes_control_only_date_with_missing_treatment
         "WHERE event = 'triggered' AND group_id = 'treatment'"
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            for source in (analysis, adopted):
-                rows = source.run_asof_lift(estimands=("compliance",), population="triggered")
+            for source_experiment, source_resolver in (
+                (experiment, resolver),
+                (adopted_experiment, adopted_resolver),
+            ):
+                rows = view_readout(
+                    source_experiment,
+                    source_resolver,
+                    Scope(view="asof", grain="asof", population="triggered"),
+                    estimands=("compliance",),
+                )
                 jan4 = next(row for row in rows if row.ds == date(2025, 1, 4))
                 assert jan4.group_id == "treatment"
                 assert jan4.lift is None
@@ -1989,9 +2215,9 @@ def test_triggered_compliance_completes_control_only_date_with_missing_treatment
                 assert jan5.lift is not None
                 assert (jan5.n_control, jan5.n_treat) == (8, 8)
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1999,7 +2225,7 @@ def test_triggered_compliance_completes_control_only_date_with_missing_treatment
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 @pytest.mark.integration
 def test_triggered_compliance_insufficient_early_sample_continues(clustered):
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",), triggered=True, clustered=clustered
     )
     con.raw_sql(
@@ -2010,50 +2236,60 @@ def test_triggered_compliance_insufficient_early_sample_continues(clustered):
         "WHERE event = 'triggered' AND user_id IN ('control0_0', 'treatment0_0')"
     )
     try:
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            for source in (analysis, adopted):
+            for source_experiment, source_resolver in (
+                (experiment, resolver),
+                (adopted_experiment, adopted_resolver),
+            ):
                 with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
-                    rows = source.run_asof_lift(estimands=("compliance",), population="triggered")
+                    rows = view_readout(
+                        source_experiment,
+                        source_resolver,
+                        Scope(view="asof", grain="asof", population="triggered"),
+                        estimands=("compliance",),
+                    )
                 early = next(row for row in rows if row.ds == date(2025, 1, 4))
                 assert early.lift is None
                 assert early.failure_code == "readout.cell.missing_metric_observations"
                 later = next(row for row in rows if row.ds == date(2025, 1, 5))
                 assert later.lift is not None
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 @pytest.mark.integration
 def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
-    con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
+    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
+        ("full",), triggered=True
+    )
     try:
         con.raw_sql(
             "UPDATE events SET ts = TIMESTAMPTZ '2025-01-04 00:00:00+00' WHERE event = 'triggered'"
         )
-        native = _native_source(analysis)
-        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-
+        native = bound_source(analysis_resolver)
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind
             in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
         ]
-        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        ref = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=extensions
+        )
         with open_artifact(store, ref, expected_context=context) as artifact:
             assert any(ext.kind == "encouragement_uptake" for ext in artifact.manifest.extensions)
             native_uptake = _compliance(
@@ -2063,9 +2299,16 @@ def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
                 cast(Any, artifact).triggered_source(), design(7), population="triggered"
             )
             assert artifact_uptake == native_uptake
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
-            native_rows = analysis.run(estimands=["itt", "late"])
-            artifact_rows = adopted.run(estimands=["itt", "late"])
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
+        with adopted_resolver:
+            native_rows = _both_populations(
+                analysis_experiment, analysis_resolver, estimands=["itt", "late"]
+            )
+            artifact_rows = _both_populations(
+                adopted_experiment, adopted_resolver, estimands=["itt", "late"]
+            )
         native_triggered = {
             row.estimand: row
             for row in native_rows
@@ -2083,8 +2326,18 @@ def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
             )
             assert native_triggered[estimand].require_lift().value != 0
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
+
+
+def _asof_lift(experiment, resolver):
+    """The public as-of lift view as a callable taking the source-level keywords."""
+
+    def read(*, completed_windows_only: bool = False, **options):
+        scope = Scope(view="asof", grain="asof", completion_policy=completed_windows_only)
+        return view_readout(experiment, resolver, scope, **options)
+
+    return read
 
 
 @pytest.mark.parametrize("path", ["analysis", "readouts"])
@@ -2094,19 +2347,21 @@ def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
 def test_native_artifact_completed_compliance_staggered_enrollment(
     path, outcome_window, observed, metric_name
 ):
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         (metric_name,), staggered=True, outcome=(8, "sum", outcome_window)
     )
     if not observed:
         con.raw_sql(f"DELETE FROM events WHERE event = '{metric_name}_event'")
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+            adopted_experiment, adopted_resolver = from_unit_day_artifact(
+                store, ref, expected_context=context
+            )
             try:
                 for source, asof_lift in (
-                    (_native_source(analysis), analysis.run_asof_lift),
-                    (artifact, adopted.run_asof_lift),
+                    (bound_source(resolver), _asof_lift(experiment, resolver)),
+                    (artifact, _asof_lift(adopted_experiment, adopted_resolver)),
                 ):
                     route = (
                         asof_lift
@@ -2124,9 +2379,9 @@ def test_native_artifact_completed_compliance_staggered_enrollment(
                     )
                     assert all(row.inference == "fixed" for row in results)
             finally:
-                adopted.close()
+                adopted_resolver.close()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2135,7 +2390,7 @@ def test_native_artifact_completed_compliance_staggered_enrollment(
 def test_open_ended_compliance_uses_persisted_enrollment_uptake_coverage(
     outcome_state, separate_uptake
 ):
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",), open_ended=True, outcome_state=outcome_state, separate_uptake=separate_uptake
     )
     try:
@@ -2154,15 +2409,17 @@ def test_open_ended_compliance_uses_persisted_enrollment_uptake_coverage(
         expected = {
             date(2025, 1, 1) + timedelta(days=day): 0.25 if day < 6 else 0.5 for day in range(11)
         }
-        native = _native_source(analysis)
+        native = bound_source(resolver)
         assert list(_compliance_dates(native)) == list(expected)
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+            adopted_experiment, adopted_resolver = from_unit_day_artifact(
+                store, ref, expected_context=context
+            )
             try:
                 for source, asof_lift in (
-                    (native, analysis.run_asof_lift),
-                    (artifact, adopted.run_asof_lift),
+                    (native, _asof_lift(experiment, resolver)),
+                    (artifact, _asof_lift(adopted_experiment, adopted_resolver)),
                 ):
                     for run in (
                         lambda source=source, **kw: readouts.asof_lift(source, **kw),
@@ -2174,25 +2431,25 @@ def test_open_ended_compliance_uses_persisted_enrollment_uptake_coverage(
                         assert len(results) == len(expected)
                         assert all(row.require_lift().lb is not None for row in results)
             finally:
-                adopted.close()
+                adopted_resolver.close()
             con.raw_sql(f"DELETE FROM {uptake_table} WHERE event = 'clicked'")
             assert list(_compliance_dates(artifact)) == list(expected)
             assert list(_compliance_dates(native)) == [date(2025, 1, 1)]
             results = readouts.asof_lift(artifact, estimands=["compliance"])
             assert {row.ds: row.require_lift().value for row in results} == pytest.approx(expected)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_older_timestamp_artifact_keeps_digest_and_uses_known_compliance_coverage():
     from increment.semantics.artifact import EncouragementUptakeExtension
 
-    con, analysis, context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel = native_fixture(
         ("full",), open_ended=True, outcome_state="absent"
     )
     try:
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             extension = next(
                 ext for ext in artifact.manifest.extensions if ext.kind == "encouragement_uptake"
@@ -2213,7 +2470,7 @@ def test_older_timestamp_artifact_keeps_digest_and_uses_known_compliance_coverag
             ]
             assert _moments(artifact, artifact.context.metrics[0], grain="asof") == ()
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2221,7 +2478,7 @@ def test_older_timestamp_artifact_keeps_digest_and_uses_known_compliance_coverag
 def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, mutate):
     from increment.query.artifact_publish import ArtifactPublisher
 
-    con, analysis, context, store, _panel = native_fixture(("full",))
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
 
     try:
         con.raw_sql(
@@ -2232,8 +2489,8 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
             "INSERT INTO events SELECT 'outsider', experiment_id, group_id, cluster_id, "
             "revenue, event, ts + INTERVAL 1 DAY FROM events WHERE event = 'full_event' LIMIT 1"
         )
-        metric = _native_source(analysis).context.metrics[0]
-        expected = _moments(_native_source(analysis), metric)
+        metric = bound_source(resolver).context.metrics[0]
+        expected = _moments(bound_source(resolver), metric)
         validate = ArtifactPublisher._validate_stats_relation
 
         def mutate_after_validation(self, stats):
@@ -2245,7 +2502,7 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
             monkeypatch.setattr(
                 ArtifactPublisher, "_validate_stats_relation", mutate_after_validation
             )
-        ref = analysis.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             arm = _compliance(artifact, design(7)).arm("treatment")
             assert arm is not None and arm.uptake_total == 10
@@ -2263,13 +2520,13 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
         assert manifest.measures[0].freshness.loaded_through == date(2025, 1, 10)
         assert manifest.measures[0].event_horizon == date(2025, 1, 10)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_publication_keeps_canonical_clusters_when_live_exposures_are_corrected(monkeypatch):
-    con, analysis, context, store, _panel = native_fixture(("full",), clustered=True)
-    source = _native_source(analysis)
+    con, (experiment, resolver), context, store, _panel = native_fixture(("full",), clustered=True)
+    source = bound_source(resolver)
     try:
         expected = _compliance(source, design(7))
         source_type = type(source)
@@ -2291,7 +2548,7 @@ def test_publication_keeps_canonical_clusters_when_live_exposures_are_corrected(
                 "_validate_mixed_assignments",
                 correct_old_cluster_after_assignment_validation,
             )
-            reference = analysis.publish_unit_day_artifact(store)
+            reference = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, reference, expected_context=context) as adopted:
             assert _compliance(adopted, design(7)) == expected
             assert _cluster_counts(adopted) == {"control": 12, "treatment": 12}
@@ -2299,7 +2556,7 @@ def test_publication_keeps_canonical_clusters_when_live_exposures_are_corrected(
             _compliance(source, design(7))
         assert raised.value.code == "query.integrity.cluster_conflict"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2313,10 +2570,10 @@ def test_design_summary_requires_complete_state_even_with_plan_override(tmp_path
         DECISION_PLAN_FIELD,
     )
 
-    con, analysis, _context, _store, _panel = native_fixture(())
+    con, (experiment, resolver), _context, _store, _panel = native_fixture(())
     try:
         path = tmp_path / "design-only.parquet"
-        _native_source(analysis).export_moments(path)
+        bound_source(resolver).export_moments(path)
         envelope = pq.read_table(path).to_pylist()[0]
         for field, code in (
             (ASSIGNMENT_COUNTS_FIELD, "source.compliance_summary.invalid_state"),
@@ -2344,7 +2601,7 @@ def test_design_summary_requires_complete_state_even_with_plan_override(tmp_path
             "{}",
         ):
             with pytest.raises(CodedError) as raised:
-                Analysis.from_moments(
+                from_moments(
                     [{**envelope, ASSIGNMENT_COUNTS_FIELD: counts}],
                     metrics=[],
                     design=design(7),
@@ -2352,7 +2609,7 @@ def test_design_summary_requires_complete_state_even_with_plan_override(tmp_path
                 )
             assert raised.value.code == "source.compliance_summary.invalid_state"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2364,10 +2621,10 @@ def test_design_summary_rejects_incompatible_shape_identity_catalog_and_plans(tm
     from increment.semantics.models import AnalysisPlan, MeanMetric
     from increment.sources import DECISION_PLAN_FIELD
 
-    con, analysis, _context, _store, _panel = native_fixture(())
+    con, (experiment, resolver), _context, _store, _panel = native_fixture(())
     try:
         path = tmp_path / "design-only.parquet"
-        _native_source(analysis).export_moments(path)
+        bound_source(resolver).export_moments(path)
         envelope = pq.read_table(path).to_pylist()[0]
         metric = MeanMetric(name="outcome", entity="user", fact="revenue")
         outcome_plan = compile_decision_plan(
@@ -2410,5 +2667,5 @@ def test_design_summary_rejects_incompatible_shape_identity_catalog_and_plans(tm
             )
         assert future.value.code == "moments.format.unsupported_future"
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()

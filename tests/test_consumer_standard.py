@@ -485,20 +485,39 @@ def _frame_factory_functions(module: _ExportingModule) -> list[tuple[str, Functi
     return functions
 
 
+# Source operations that replaced the removed ``Analysis`` members.
+_SOURCE_OPERATIONS = {
+    "estimators": (
+        "estimate_cate",
+        "validate_cate",
+        "targeting_rule",
+        "select_targeting_rule",
+        "sitewide",
+    ),
+    "query": ("build_panel_for_metric", "panel_sql", "summary_sql"),
+    "artifacts": ("artifact_context", "publish_unit_day_artifact"),
+    "dashboard": ("prepare_dashboard", "load_explore"),
+}
+
+
 def _public_callable_parameters() -> dict[str, set[str]]:
+    import importlib
+
     import increment
-    from increment import frame
-    from increment.analysis import Analysis
+    from increment import frame, workflows
 
     callables = [
         (f"increment.{name}", function) for name, function in _root_export_functions(increment)
     ]
-    for name, value in inspect.getmembers_static(Analysis):
-        if name.startswith("_"):
-            continue
-        function = _unwrapped_function(value)
-        if function is not None:
-            callables.append((f"Analysis.{name}", function))
+    callables.extend(
+        (f"workflows.{name}", function) for name, function in _root_export_functions(workflows)
+    )
+    for module_name, names in _SOURCE_OPERATIONS.items():
+        module = importlib.import_module(f"increment.{module_name}")
+        for name in names:
+            function = _unwrapped_function(getattr(module, name))
+            assert function is not None, f"increment.{module_name}.{name}"
+            callables.append((f"{module_name}.{name}", function))
     callables.extend(
         (f"frame.{name}", function) for name, function in _frame_factory_functions(frame)
     )
@@ -586,8 +605,9 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "list frame",
             "source.frame.input_type",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 [],  # ty: ignore[invalid-argument-type]
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",
@@ -597,10 +617,11 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "lazy frame",
             "source.frame.input_type",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 importlib.import_module("polars")
                 .DataFrame({"unit": ["u"], "arm": ["c"], "y": [1]})
                 .lazy(),  # ty: ignore[invalid-argument-type]
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",
@@ -610,8 +631,9 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "metric type required",
             "frame.metrics.type_required",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 importlib.import_module("pyarrow").table({"unit": ["u"], "arm": ["c"], "y": [1]}),
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",
@@ -621,10 +643,11 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "CUPED covariate on a text column",
             "frame.validation.covariate_not_numeric",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 importlib.import_module("pyarrow").table(
                     {"unit": ["u1", "u2"], "arm": ["c", "t"], "y": [1.0, 2.0], "pre": ["a", "b"]}
                 ),
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",

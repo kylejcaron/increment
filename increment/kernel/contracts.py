@@ -41,7 +41,7 @@ _REFUSALS = refusals(
         ),
         "kernel.request.population_scope_only": "Set population on Scope(population=...)",
         "kernel.run.provider_execution_unavailable": (
-            "BoundResolver verifies providers but cannot execute them; use a bound Analysis resolver",
+            "BoundResolver verifies providers but cannot execute them; use a resolver returned by a module builder",
             (),
         ),
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",

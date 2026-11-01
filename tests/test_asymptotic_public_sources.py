@@ -2,10 +2,11 @@
 
 from datetime import date, timedelta
 from fractions import Fraction as F
+from typing import Any
 
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_frame, from_moments
 from increment.breakout.estimates import DailyLiftEstimate, LiftEstimates
 from increment.errors import CapabilityError
 from increment.estimation.sequential_result import AsymptoticSequentialResult
@@ -13,6 +14,7 @@ from increment.estimators import AsymptoticMean, JointReveal, SequentialCell
 from increment.frame import MetricSpec, synthesise_metric
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec, MultiplicitySpec
+from increment.semantics.sequential import ScalarMeanModel
 from increment.sequential_source import frame_observation_mapping, sequential_definition_id
 from increment.sequential_state import (
     SequentialSnapshot,
@@ -20,6 +22,8 @@ from increment.sequential_state import (
     declare_sequential_freeze_cells,
     snapshot_from_json,
 )
+from increment.workflows import capture_sequential, export_moments, sequential_snapshot
+from tests.analysis_factory import view_readout
 from tests.asymptotic_cases import mean_capture, mean_model, mean_records, mean_registration
 
 
@@ -71,8 +75,9 @@ def _frame(control, treatment, *, offset=0):
 
 
 def _analysis(frame, specs, plan, *, design=None):
-    return Analysis.from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control" if design is None else None,
@@ -84,8 +89,8 @@ def _analysis(frame, specs, plan, *, design=None):
     )
 
 
-def _row(analysis, **kwargs):
-    rows = analysis.run(**kwargs)
+def _row(analysis: tuple[Any, Any], **kwargs):
+    rows = view_readout(*analysis, **kwargs)
     assert isinstance(rows, LiftEstimates)
     return rows[0]
 
@@ -104,23 +109,21 @@ def test_analysis_wire_export_replay_and_truthful_numeric_columns(tmp_path):
         plan,
         design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
     )
-    rows = analysis.run()
+    rows = view_readout(*analysis)
     assert isinstance(rows, LiftEstimates)
     row = rows[0]
     assert row.stat_sig()
     assert row.inference == "asymptotic_mean"
-    snapshot = analysis.sequential_snapshot()
+    snapshot = sequential_snapshot(*analysis)
     frame.loc[:, "outcome"] = 0
     assert _row(analysis) == row
-    assert analysis.capture_sequential(finalized=True, previous=snapshot) == snapshot
+    assert capture_sequential(*analysis, finalized=True, previous=snapshot) == snapshot
     path = tmp_path / "continuous.parquet"
-    analysis.export(path)
-    replay = Analysis.from_moments(
-        pq.read_table(path).to_pylist(), metrics=specs, control="control"
-    )
-    assert replay.sequential_snapshot() == snapshot
+    export_moments(*analysis, path=path)
+    replay = from_moments(pq.read_table(path).to_pylist(), metrics=specs, control="control")
+    assert sequential_snapshot(*replay) == snapshot
     assert _row(replay) == row
-    projected = replay.run().to_frame(backend="pandas")
+    projected = view_readout(*replay).to_frame(backend="pandas")
     assert isinstance(projected, pd.DataFrame)
     assert projected["sequential_log_e"].isna().iloc[0]
     assert projected["sequential_validity_regime"].iloc[0] == "asymptotic_sequential"
@@ -145,7 +148,7 @@ def test_public_stopping_freezes_first_crossing_and_rejects_rewritten_prefix():
     stop_pairs = None
     for pairs in (2, 4, 8, 16, 32, 80):
         current = _analysis(records.iloc[: 2 * pairs].copy(), specs, plan)
-        previous = current.sequential_snapshot(previous=previous)
+        previous = sequential_snapshot(*current, previous=previous)
         row = _row(current)
         if row.stat_sig():
             stopped_row = row.require_asymptotic_sequential_result()
@@ -153,14 +156,16 @@ def test_public_stopping_freezes_first_crossing_and_rejects_rewritten_prefix():
             break
     assert stopped_row is not None
     assert stop_pairs is not None
-    at_stop = _analysis(records.iloc[: 2 * stop_pairs].copy(), specs, plan)
-    declared = at_stop.capture_sequential(finalized=True, previous=previous, freeze=["outcome"])
+    experiment, resolver = _analysis(records.iloc[: 2 * stop_pairs].copy(), specs, plan)
+    declared = capture_sequential(
+        experiment, resolver, finalized=True, previous=previous, freeze=["outcome"]
+    )
     assert declared.frozen[0].cell.metric == "outcome"
     assert declared.prefix_id != previous.prefix_id
     assert any(a.prefix_id == previous.prefix_id for a in declared.ancestors)
 
     final = _analysis(records, specs, plan)
-    final.sequential_snapshot(previous=declared)
+    sequential_snapshot(*final, previous=declared)
     frozen = _row(final).require_asymptotic_sequential_result()
     assert frozen.checkpoint.status == "frozen"
     assert frozen.bounds == stopped_row.bounds
@@ -169,7 +174,7 @@ def test_public_stopping_freezes_first_crossing_and_rejects_rewritten_prefix():
     changed = records.copy()
     changed.loc[0, "outcome"] = 99
     with pytest.raises(CapabilityError) as raised:
-        _analysis(changed, specs, plan).sequential_snapshot(previous=declared)
+        sequential_snapshot(*_analysis(changed, specs, plan), previous=declared)
     assert raised.value.code == "sequential.continuation.rewrite"
     assert isinstance(records, pd.DataFrame)
 
@@ -185,9 +190,11 @@ def test_freeze_declared_next_look_and_later_look_all_agree():
     previous = None
     declared_at = None
     for pairs in (2, 4, 8, 16, 32, 80):
-        current = _analysis(records.iloc[: 2 * pairs].copy(), specs, plan)
+        experiment, resolver = _analysis(records.iloc[: 2 * pairs].copy(), specs, plan)
         freeze = ["outcome"] if pairs == 4 else []
-        previous = current.capture_sequential(finalized=True, previous=previous, freeze=freeze)
+        previous = capture_sequential(
+            experiment, resolver, finalized=True, previous=previous, freeze=freeze
+        )
         if pairs == 4:
             declared_at = previous
         elif declared_at is not None:
@@ -202,8 +209,8 @@ def test_empty_freeze_roundtrips_and_can_continue():
     specs = [MetricSpec(name="outcome", type="mean")]
     plan = _plan(specs, start=4)
     records = _frame([1, 2] * 40, [5, 7] * 40)
-    early = _analysis(records.iloc[:16].copy(), specs, plan)
-    snapshot = early.sequential_snapshot()
+    early_experiment, early_resolver = _analysis(records.iloc[:16].copy(), specs, plan)
+    snapshot = sequential_snapshot(early_experiment, early_resolver)
 
     # Empty requests must preserve replayable state through both public routes.
     empty_named = declare_sequential_freeze(snapshot, [])
@@ -211,11 +218,11 @@ def test_empty_freeze_roundtrips_and_can_continue():
     assert empty_named == snapshot
     assert empty_cells == snapshot
 
-    later = _analysis(records.iloc[:32].copy(), specs, plan)
-    expected = later.sequential_snapshot(previous=snapshot)
+    later_experiment, later_resolver = _analysis(records.iloc[:32].copy(), specs, plan)
+    expected = sequential_snapshot(later_experiment, later_resolver, previous=snapshot)
     for empty in (empty_named, empty_cells):
         reloaded = snapshot_from_json(empty.model_dump_json())
-        assert later.sequential_snapshot(previous=reloaded) == expected
+        assert sequential_snapshot(later_experiment, later_resolver, previous=reloaded) == expected
 
 
 def test_continuation_refuses_dropping_a_previously_frozen_cell():
@@ -224,9 +231,11 @@ def test_continuation_refuses_dropping_a_previously_frozen_cell():
     specs = [MetricSpec(name="outcome", type="mean")]
     plan = _plan(specs, start=4)
     records = _frame([1, 2] * 40, [5, 7] * 40)
-    early = _analysis(records.iloc[:16].copy(), specs, plan)
-    declared = early.capture_sequential(finalized=True, freeze=["outcome"])
-    later = _analysis(records.iloc[:32].copy(), specs, plan).sequential_snapshot(previous=declared)
+    experiment, resolver = _analysis(records.iloc[:16].copy(), specs, plan)
+    declared = capture_sequential(experiment, resolver, finalized=True, freeze=["outcome"])
+    later = sequential_snapshot(
+        *_analysis(records.iloc[:32].copy(), specs, plan), previous=declared
+    )
     dropped = later.model_copy(update={"frozen": ()})
     with pytest.raises(CapabilityError) as raised:
         dropped.verify_parent(declared)
@@ -268,11 +277,11 @@ def _freeze_chain_fixture():
     specs = [MetricSpec(name="outcome", type="mean")]
     plan = _plan(specs, start=4)
     records = _frame([1, 2] * 40, [5, 7] * 40)
-    early = _analysis(records.iloc[:16].copy(), specs, plan)
-    at_8 = early.sequential_snapshot()
+    experiment, resolver = _analysis(records.iloc[:16].copy(), specs, plan)
+    at_8 = sequential_snapshot(experiment, resolver)
     declared = declare_sequential_freeze(at_8, ["outcome"])
-    settled = _analysis(records, specs, plan).sequential_snapshot(previous=declared)
-    unfrozen_final = _analysis(records, specs, plan).sequential_snapshot(previous=at_8)
+    settled = sequential_snapshot(*_analysis(records, specs, plan), previous=declared)
+    unfrozen_final = sequential_snapshot(*_analysis(records, specs, plan), previous=at_8)
     return at_8, declared, settled, unfrozen_final
 
 
@@ -331,10 +340,12 @@ def test_a_same_look_reread_after_a_freeze_returns_the_frozen_previous_unchanged
     specs = [MetricSpec(name="outcome", type="mean")]
     plan = _plan(specs, start=4)
     records = _frame([1, 2] * 40, [5, 7] * 40)
-    early = _analysis(records.iloc[:16].copy(), specs, plan)
-    declared = early.capture_sequential(finalized=True, freeze=["outcome"])
-    same_look = _analysis(records.iloc[:16].copy(), specs, plan)
-    relinked = same_look.sequential_snapshot(previous=declared)
+    early_experiment, early_resolver = _analysis(records.iloc[:16].copy(), specs, plan)
+    declared = capture_sequential(
+        early_experiment, early_resolver, finalized=True, freeze=["outcome"]
+    )
+    same_look_experiment, same_look_resolver = _analysis(records.iloc[:16].copy(), specs, plan)
+    relinked = sequential_snapshot(same_look_experiment, same_look_resolver, previous=declared)
     assert relinked.frozen == declared.frozen
     assert relinked.prefix_id == declared.prefix_id
 
@@ -347,18 +358,18 @@ def test_linking_a_frozen_capture_to_an_earlier_unfrozen_parent_keeps_the_freeze
     specs = [MetricSpec(name="outcome", type="mean")]
     plan = _plan(specs, start=4)
     records = _frame([1, 2] * 40, [5, 7] * 40)
-    parent = _analysis(records.iloc[: 2 * parent_pairs].copy(), specs, plan).sequential_snapshot()
+    parent = sequential_snapshot(*_analysis(records.iloc[: 2 * parent_pairs].copy(), specs, plan))
     later = _analysis(records.iloc[:32].copy(), specs, plan)
-    declared = later.capture_sequential(finalized=True, freeze=["outcome"])
-    linked = later.sequential_snapshot(previous=parent)
+    declared = capture_sequential(*later, finalized=True, freeze=["outcome"])
+    linked = sequential_snapshot(*later, previous=parent)
     assert linked.frozen == declared.frozen
-    assert later.sequential_snapshot().frozen == declared.frozen
+    assert sequential_snapshot(*later).frozen == declared.frozen
     assert _row(later).require_asymptotic_sequential_result().checkpoint.status == "frozen"
 
 
 def test_raw_records_and_analysis_freeze_every_cell_of_a_segmented_metric_alike():
     """``declare_sequential_freeze`` on raw finalized records and
-    ``Analysis.capture_sequential(freeze=)`` on the same frame produce the same
+    ``capture_sequential(freeze=)`` on the same frame produce the same
     snapshot: every observed segment of the named metric is frozen, and the
     segment with no data yet stays monitored."""
     from increment.estimators import capture_sequential_snapshot, declare_sequential_freeze
@@ -377,7 +388,9 @@ def test_raw_records_and_analysis_freeze_every_cell_of_a_segmented_metric_alike(
     plan = _plan(specs, cells=cells)
     frame = _frame([1, 2] * 30, [8, 10] * 30)
     frame["segment"] = ["a" if i % 4 < 2 else "b" for i in range(len(frame))]
-    declared = _analysis(frame, specs, plan).capture_sequential(finalized=True, freeze=["outcome"])
+    declared = capture_sequential(
+        *_analysis(frame, specs, plan), finalized=True, freeze=["outcome"]
+    )
     registration = plan.inference.registration
     records = [
         {
@@ -496,8 +509,8 @@ def test_a_registration_stored_under_bonferroni_asymptotic_families_cannot_conti
     frame = _frame([1, 2] * 8, [5, 7] * 8)
     frame["other"] = frame["outcome"] * 2
     declared = _plan(specs, cells=cells, secondary=True)
-    analysis = _analysis(frame, specs, declared)
-    snapshot = analysis.sequential_snapshot()
+    experiment, resolver = _analysis(frame, specs, declared)
+    snapshot = sequential_snapshot(experiment, resolver)
     assert snapshot.registration.asymptotic_family == "e_bh"
     stored = json.loads(snapshot.model_dump_json())
     del stored["registration"]["asymptotic_family"]
@@ -523,18 +536,18 @@ def test_frozen_snapshot_survives_export_and_from_moments_replay(tmp_path):
     specs = [MetricSpec(name="outcome", type="mean")]
     plan = _plan(specs, start=4)
     records = _frame([1, 2] * 40, [5, 7] * 40)
-    early = _analysis(records.iloc[:16].copy(), specs, plan)
-    declared = early.capture_sequential(finalized=True, freeze=["outcome"])
-    final = _analysis(records, specs, plan)
-    final.sequential_snapshot(previous=declared)
+    early_experiment, early_resolver = _analysis(records.iloc[:16].copy(), specs, plan)
+    declared = capture_sequential(
+        early_experiment, early_resolver, finalized=True, freeze=["outcome"]
+    )
+    final_experiment, final_resolver = _analysis(records, specs, plan)
+    sequential_snapshot(final_experiment, final_resolver, previous=declared)
     path = tmp_path / "checkpoint.parquet"
-    final.export(path)
+    export_moments(final_experiment, final_resolver, path)
     import pyarrow.parquet as pq
 
-    replay = Analysis.from_moments(
-        pq.read_table(path).to_pylist(), metrics=specs, control="control"
-    )
-    replayed_snapshot = replay.sequential_snapshot()
+    replay = from_moments(pq.read_table(path).to_pylist(), metrics=specs, control="control")
+    replayed_snapshot = sequential_snapshot(*replay)
     assert replayed_snapshot.frozen[0].cell.metric == "outcome"
     assert replayed_snapshot.frozen[0].prefix_id == declared.frozen[0].prefix_id
     frozen_row = _row(replay).require_asymptotic_sequential_result()
@@ -546,7 +559,7 @@ def test_public_encouragement_itt_uses_the_asymptotic_mean_law():
     same functional and observation stream as a randomized mean contrast, so the
     asymptotic scalar-mean law admits it -- the refusal keyed on design.mechanism,
     not on any property of the observations. An Encouragement design always
-    derives its uptake column from design.uptake.fact (Analysis.from_unit_summary's
+    derives its uptake column from design.uptake.fact (the summary frame loader's
     default), so the frame and the registered definitions_id both carry it even
     though this registration monitors ITT alone, with no compliance cell."""
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
@@ -583,8 +596,9 @@ def test_public_encouragement_itt_uses_the_asymptotic_mean_law():
             for i, r in enumerate(mean_records([1, 2, 3, 4] * 20, [6, 7, 8, 9] * 20))
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=specs,
@@ -633,15 +647,18 @@ def test_scalar_mean_under_observational_design_still_refuses():
         ]
     )
     with pytest.raises(CapabilityError) as raised:
-        Analysis.from_unit_summary(
-            frame,
-            unit="unit",
-            group="arm",
-            metrics=specs,
-            experiment_id="experiment",
-            plan=plan,
-            design=design,
-        ).run()
+        view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                metrics=specs,
+                experiment_id="experiment",
+                plan=plan,
+                design=design,
+            )
+        )
     assert raised.value.code == "sequential.route.unsupported"
 
 
@@ -655,8 +672,8 @@ def test_continuous_secondary_family_is_asymptotic_e_bh():
     plan = _plan(specs, cells=cells, secondary=True)
     frame = _frame([1, 2] * 30, [8, 10] * 30)
     frame["other"] = 0
-    analysis = _analysis(frame, specs, plan)
-    rows = {row.metric: row for row in analysis.run()}
+    experiment, resolver = _analysis(frame, specs, plan)
+    rows = {row.metric: row for row in view_readout(experiment, resolver)}
     assert rows["outcome"].discovery is True
     assert rows["other"].discovery is False
     assert rows["other"].require_asymptotic_sequential_result().bounds.reason == "zero_arm_variance"
@@ -688,8 +705,11 @@ def test_public_breakout_retains_absent_segments():
     plan = _plan(specs, cells=cells)
     frame = _frame([1, 2] * 30, [8, 10] * 30)
     frame["segment"] = "present"
-    analysis = _analysis(frame, specs, plan)
-    rows = {row.dimension_value: row for row in analysis.run_breakout()}
+    experiment, resolver = _analysis(frame, specs, plan)
+    rows = {
+        row.dimension_value: row
+        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    }
     assert rows["present"].discovery is True
     assert rows["absent"].discovery is False
     assert isinstance(rows["absent"].sequential_result, AsymptoticSequentialResult)
@@ -732,7 +752,12 @@ def test_public_ratio_breakout_uses_predeclared_bonferroni():
             for arm in ("control", "treatment")
         ]
     )
-    rows = {row.dimension_value: row for row in _analysis(frame, specs, plan).run_breakout()}
+    rows = {
+        row.dimension_value: row
+        for row in view_readout(
+            *_analysis(frame, specs, plan), scope=Scope(view="breakout", grain="total")
+        )
+    }
     assert rows["present"].discovery is True
     assert rows["absent"].discovery is False
     for row in rows.values():
@@ -761,8 +786,9 @@ def test_segmented_registration_as_of_refuses_like_run():
     frame["day"] = start
     frame["exposed"] = start
     frame["segment"] = ["a" if i % 4 < 2 else "b" for i in range(len(frame))]
-    analysis = Analysis.from_unit_panel(
+    analysis = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -773,11 +799,11 @@ def test_segmented_registration_as_of_refuses_like_run():
         plan=plan,
         observation_end=start + timedelta(days=20),
     )
-    analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
+    capture_sequential(*analysis, finalized=True, as_of=start + timedelta(days=14))
     contexts = []
-    for readout in (analysis.run, analysis.run_asof_lift):
+    for scope in (None, Scope(view="asof", grain="asof")):
         with pytest.raises(CapabilityError) as raised:
-            readout()
+            view_readout(*analysis, scope=scope)
         assert raised.value.code == "sequential.route.unsupported"
         contexts.append(raised.value.context)
     assert contexts[0] == contexts[1]
@@ -793,8 +819,9 @@ def test_panel_finalization_daily_projection_and_replay(tmp_path):
     start = date(2025, 1, 1)
     frame["day"] = start
     frame["exposed"] = start
-    analysis = Analysis.from_unit_panel(
+    analysis = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -805,22 +832,24 @@ def test_panel_finalization_daily_projection_and_replay(tmp_path):
         plan=plan,
         observation_end=start + timedelta(days=20),
     )
-    early = analysis.capture_sequential(finalized=True, as_of=start)
+    early = capture_sequential(*analysis, finalized=True, as_of=start)
     assert not early.records
     assert not _row(analysis).stat_sig()
-    full = analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
+    full = capture_sequential(*analysis, finalized=True, as_of=start + timedelta(days=14))
     assert len(full.records) == 80
     assert full.parent_id == early.prefix_id
-    daily = analysis.run_asof_lift(completed_windows_only=True)
+    daily = view_readout(*analysis, Scope(view="asof", grain="asof", completion_policy=True))
     assert len(daily) == 1 and daily[0].n_control == 40
     assert daily[0].sequential_result == _row(analysis).sequential_result
     assert DailyLiftEstimate.model_validate_json(daily[0].model_dump_json()) == daily[0]
     path = tmp_path / "panel.parquet"
-    analysis.export(path)
-    replay = Analysis.from_moments(
+    export_moments(*analysis, path)
+    experiment, resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
-    assert list(replay.run_asof_lift(completed_windows_only=True)) == list(daily)
+    assert list(
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True))
+    ) == list(daily)
 
 
 def test_asymptotic_daily_repr_keeps_disconnected_bounds_and_reasons():
@@ -832,8 +861,9 @@ def test_asymptotic_daily_repr_keeps_disconnected_bounds_and_reasons():
         frame = _frame(control, treatment)
         frame["exposed"] = start
         frame["day"] = start
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             frame,
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -844,8 +874,10 @@ def test_asymptotic_daily_repr_keeps_disconnected_bounds_and_reasons():
             plan=plan,
             observation_end=start + timedelta(days=20),
         )
-        analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
-        rows = analysis.run_asof_lift(completed_windows_only=True)
+        capture_sequential(experiment, resolver, finalized=True, as_of=start + timedelta(days=14))
+        rows = view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+        )
         assert len(rows) == 1
         return rows[0]
 
@@ -884,8 +916,9 @@ def test_secondary_family_daily_decisions_preserve_allocations_and_replay(tmp_pa
     frame["other"] = 0
     frame["day"] = start
     frame["exposed"] = start
-    analysis = Analysis.from_unit_panel(
+    analysis_experiment, analysis_resolver = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -896,11 +929,17 @@ def test_secondary_family_daily_decisions_preserve_allocations_and_replay(tmp_pa
         plan=plan,
         observation_end=start + timedelta(days=20),
     )
-    analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
-    total_rows = analysis.run()
+    capture_sequential(
+        analysis_experiment, analysis_resolver, finalized=True, as_of=start + timedelta(days=14)
+    )
+    total_rows = view_readout(analysis_experiment, analysis_resolver)
     assert isinstance(total_rows, LiftEstimates)
     totals = {row.metric: row for row in total_rows}
-    daily = analysis.run_asof_lift(completed_windows_only=True)
+    daily = view_readout(
+        analysis_experiment,
+        analysis_resolver,
+        Scope(view="asof", grain="asof", completion_policy=True),
+    )
     assert {row.metric: row.discovery for row in daily} == {"outcome": True, "other": False}
     expected_decision_alpha = {"outcome": F(1, 20), "other": F(1, 40)}
     for row in daily:
@@ -914,11 +953,17 @@ def test_secondary_family_daily_decisions_preserve_allocations_and_replay(tmp_pa
         DailyLiftEstimate.model_validate({**widened.model_dump(), "discovery": False})
     assert raised.value.code == "sequential.source.invalid"
     path = tmp_path / "secondary-panel.parquet"
-    analysis.export(path)
-    replay = Analysis.from_moments(
+    export_moments(analysis_experiment, analysis_resolver, path)
+    replay_experiment, replay_resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
-    assert list(replay.run_asof_lift(completed_windows_only=True)) == list(daily)
+    assert list(
+        view_readout(
+            replay_experiment,
+            replay_resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+        )
+    ) == list(daily)
 
 
 @pytest.mark.slow
@@ -937,8 +982,11 @@ def test_explicitly_uncorrected_continuous_breakout_has_no_family_discovery():
     plan = _plan(specs, cells=cells, uncorrected=True)
     frame = _frame([1, 2] * 30, [8, 10] * 30)
     frame["segment"] = "present"
-    analysis = _analysis(frame, specs, plan)
-    rows = {row.dimension_value: row for row in analysis.run_breakout()}
+    experiment, resolver = _analysis(frame, specs, plan)
+    rows = {
+        row.dimension_value: row
+        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    }
     assert rows["present"].require_lift().value == pytest.approx(5.0)
     assert rows["present"].discovery is None
     assert rows["absent"].discovery is None
@@ -1065,11 +1113,17 @@ def test_automatic_asymptotic_segments_keep_bonferroni_and_match_the_manual_form
     frame["other"] = frame["outcome"]
     frame["segment"] = "present"
     sources = [_analysis(frame, specs, plan, design=design) for plan in (automatic, manual)]
-    assert sources[0].sequential_snapshot() == sources[1].sequential_snapshot()
-    registration = sources[0].sequential_snapshot().registration
-    assert all(m.segment_membership == "pre_assignment" for m in registration.models)
+    assert sequential_snapshot(*sources[0]) == sequential_snapshot(*sources[1])
+    registration = sequential_snapshot(*sources[0]).registration
+    assert all(
+        isinstance(m, ScalarMeanModel) and m.segment_membership == "pre_assignment"
+        for m in registration.models
+    )
     readouts = [
-        {(row.metric, row.dimension_value): row for row in source.run_breakout()}
+        {
+            (row.metric, row.dimension_value): row
+            for row in view_readout(*source, scope=Scope(view="breakout", grain="total"))
+        }
         for source in sources
     ]
     assert {k: v.model_dump() for k, v in readouts[0].items()} == {
@@ -1088,13 +1142,13 @@ def test_automatic_asymptotic_segments_keep_bonferroni_and_match_the_manual_form
         else:
             assert row.discovery is (True if family else None)
     with pytest.raises(CapabilityError) as raised:
-        sources[0].run()
+        view_readout(*sources[0])
     # The whole-window view keeps its segmented refusal: the secondary's compiled
     # family membership differs from its segment cells (a primary alone refuses the
     # segmented roster outright); either way the manual form refuses identically.
     assert raised.value.code in {"sequential.source.invalid", "sequential.route.unsupported"}
     with pytest.raises(CapabilityError) as same:
-        sources[1].run()
+        view_readout(*sources[1])
     assert same.value.code == raised.value.code
 
 
@@ -1183,16 +1237,28 @@ def test_boolean_and_null_segments_match_the_canonical_string_oracle(kind, regis
         )
         plan = _plan(specs, cells=cells)
     canonical = _canonical_segment_frame(levels[:3])
-    oracle = _analysis(canonical, specs, plan, design=design)
-    typed = _analysis(typed_segment_frame(canonical, kind), specs, plan, design=design)
+    oracle_experiment, oracle_resolver = _analysis(canonical, specs, plan, design=design)
+    typed_experiment, typed_resolver = _analysis(
+        typed_segment_frame(canonical, kind), specs, plan, design=design
+    )
 
-    snapshot = typed.sequential_snapshot()
-    assert snapshot == oracle.sequential_snapshot()
+    snapshot = sequential_snapshot(typed_experiment, typed_resolver)
+    assert snapshot == sequential_snapshot(oracle_experiment, oracle_resolver)
     assert {(s.segment[0][1], s.n > 0) for s in snapshot.states} == {
         (level, level != "absent") for level in levels
     }
-    rows = {row.dimension_value: row for row in typed.run_breakout()}
-    expected = {row.dimension_value: row for row in oracle.run_breakout()}
+    rows = {
+        row.dimension_value: row
+        for row in view_readout(
+            typed_experiment, typed_resolver, Scope(view="breakout", grain="total")
+        )
+    }
+    expected = {
+        row.dimension_value: row
+        for row in view_readout(
+            oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total")
+        )
+    }
     assert {k: v.model_dump() for k, v in rows.items()} == {
         k: v.model_dump() for k, v in expected.items()
     }
@@ -1267,16 +1333,22 @@ def test_boolean_covariate_also_declared_as_a_segment_keeps_the_adjusted_state(k
         )
     typed = _analysis(typed_frame, [spec], plan("covariate"), design=design)
 
-    def retained(analysis):
+    def retained(analysis: tuple[Any, Any]):
         return sorted(
             (s.group_id, s.segment[0][1], s.n, s.mean, s.scatter)
-            for s in analysis.sequential_snapshot().states
+            for s in sequential_snapshot(*analysis).states
         )
 
     assert retained(typed) == retained(oracle)
     assert {row[1] for row in retained(typed) if row[2] > 0} == {"true", "false"}
-    rows = {row.dimension_value: row for row in typed.run_breakout()}
-    expected = {row.dimension_value: row for row in oracle.run_breakout()}
+    rows = {
+        row.dimension_value: row
+        for row in view_readout(*typed, scope=Scope(view="breakout", grain="total"))
+    }
+    expected = {
+        row.dimension_value: row
+        for row in view_readout(*oracle, scope=Scope(view="breakout", grain="total"))
+    }
     for level in levels:
         got, want = rows[level].sequential_result, expected[level].sequential_result
         assert (got.bounds, got.decision_alpha, got.point_reason) == (

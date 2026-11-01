@@ -6,9 +6,13 @@ are in `increment.power`.
 
 ## Start here
 
-::: increment.Analysis
-    options:
-      inherited_members: true
+::: increment.from_frame
+
+::: increment.from_definitions
+
+::: increment.run
+
+::: increment.RunResult
 
 ::: increment.estimators.MetricTrends
 
@@ -98,11 +102,42 @@ change without notice.
   the new alpha in the analysis plan and rerun instead.
 - Release note (API addition): `Experiment` and `SourceReference` describe a registered
   analysis and its recorded evidence declarations; `runnable()` reports offline
-  unknowns and deferred data checks. Additive module builders `from_frame`,
+  unknowns and deferred data checks. Module builders `from_frame`,
   `from_definitions`, `from_unit_day_artifact`, `from_switchback_frame`, and
-  `from_moments` return an experiment/resolver pair. Top-level
-  `run(experiment, resolver)` returns `RunResult`; legacy `Analysis.run()` keeps
-  its result type. See the [experiment specification guide](guides/experiment-specifications.md).
+  `from_moments` return an experiment/resolver pair, and top-level
+  `run(experiment, resolver)` returns `RunResult`. See the
+  [experiment specification guide](guides/experiment-specifications.md).
+- Release note (breaking API cutover): the `Analysis` class, its
+  `increment.Analysis` export and the `increment.analysis` module are removed
+  without an alias. Build an experiment and resolver with a module builder and
+  read results with `run(experiment, resolver)`; source operations moved to
+  `increment.workflows`, `increment.query`, `increment.artifacts`,
+  `increment.estimators` and `increment.dashboard`. The narrow builder aliases
+  `increment.builders.from_unit_summary` and `from_unit_panel`, the
+  experiment-name-first `from_definitions(experiment_name, definitions_path,
+  con)` form, the `run(analysis, registration, compiled_plan, ...)` overload and
+  `increment.readouts.run_scoped` are removed too. Results, refusal codes and
+  context keys are unchanged. Context values that named an `Analysis` member
+  (`route`, `constructor`, `reason`) now name the replacement builder, `run`
+  view or workflow function, and refusal messages name the replacement call.
+  No refusal code is retired with `Analysis`, so `increment.errors.RETIRED_CODES`
+  is unchanged.
+  `repr(experiment)` is one bounded line naming the experiment, its design,
+  metrics, view count and identity prefix; `repr(resolver)` names its source
+  and whether it is closed without reopening it. See
+  [Migrating from `Analysis`](#migrating-from-analysis) for every replacement.
+- Release note (breaking API cutover): `ResultsStore.persist_results`,
+  `ParquetResultsStore.persist_results`, `WarehouseResultsStore.persist_results`
+  and the `increment.store.producer` module with its `PersistenceIdentity` are
+  removed without an alias; save a run with
+  `run(experiment, resolver, results_store=store)`. The saved run
+  and cell identities are on `RunResult.run` and `RunResult.cells` rather than
+  on the returned rows. A compliance-only selection made with a call-time
+  `estimands=("compliance",)` cannot be saved, and a live percentile-winsorized
+  confidence set refuses to save with `wire.result.raw_outcomes_unavailable`
+  before any read. Readout JSON written with persisted cells stays readable.
+  `dashboard.prepare_dashboard` replaces the dashboard capture members; a
+  dataframe or moments experiment refuses with `dashboard.unsupported_experiment`.
 - Release note (breaking API cutover): the module-builder resolver no longer
   has a `capture_sequential` method. Call
   `increment.workflows.capture_sequential(experiment, resolver, ...)`, and read
@@ -116,7 +151,7 @@ change without notice.
   to triggered units.
 - Release note (breaking API cutover): `increment.workflows.planning_baseline(experiment, resolver, metric)`
   and `increment.estimators.sitewide(experiment, resolver, metric, *, arm=None, alpha=0.05, population="assigned")`
-  are the experiment-bound forms of `Analysis.planning_baseline` and `Analysis.sitewide`. Results,
+  replace `Analysis.planning_baseline` and `Analysis.sitewide`. Results,
   trigger/CUPED/cluster/quantile/compliance handling, switchback baselines,
   calendar-window site volume, randomized-only restrictions, and refusal codes
   are unchanged. `increment.power` gains no source-reading function.
@@ -160,8 +195,114 @@ change without notice.
   refuses with `sequential.route.unsupported` when the declared or selected
   breakouts include a property other than the registered segment, instead of
   returning only the registered segment's rows.
+- Release note (bug fix): a one-view `run(..., capture=SequentialCaptureRequest(...))`
+  takes the capture inside the run's own shared evidence capture, as a
+  several-view run does, so a registered sequential breakout read reports the
+  run's `coherence` and `effective_modes` in its metadata.
+- Release note: compliance-only as-of and daily views run through `run`
+  request no outcome metrics, so their `source_snapshot_id` differs from the
+  removed `Analysis.run_asof_lift(estimands=("compliance",))`; the estimates
+  are unchanged.
+- Release note (bug fix): a breakout view of an experiment that declares no
+  breakouts returns no rows when it runs beside other views, as it does alone,
+  instead of refusing a metric that only a breakout read could not serve.
+- Release note (API addition): `run(..., results_store=)` saves switchback
+  contrast runs, replacing `Analysis.run(store=)`. A saved switchback run keeps
+  its cells, metadata and method identities for `store.query` and
+  `store.history`, but no decision plan: `RunResult.from_handle` refuses it
+  with `store.decision.reference_invalid`, and `decision_log=` refuses with
+  `wire.procedure.contrast_context`. Runs saved by `Analysis.run(store=)`
+  remain readable; history does not join them with new runs, because the
+  registration, scope and method identities differ.
+- Release note (bug fix): an experiment saved with `to_json` keeps the view
+  parameters it declared, so its hash does not change with a private executor
+  parameter and it runs against a new resolver. A `coherence` saved in an
+  experiment's request options applies to every selected view, and a
+  `coherence` passed to `run` replaces the saved one in either direction.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
+
+### Migrating from `Analysis`
+
+Every removed `Analysis` member has one replacement. In the table, `experiment,
+resolver` is the pair a builder returns, `workflows`, `query`, `artifacts`,
+`estimators` and `dashboard` are the `increment.*` namespaces of those names,
+and parameters not shown keep their names, defaults and refusals.
+
+| Removed call | Replacement |
+|---|---|
+| `Analysis(experiment_name, definitions_path, con, ...)`, `Analysis.from_definitions(experiment_name, definitions_path, con, ...)` | `experiment, resolver = from_definitions(definitions_path, con, experiment_name=..., ...)`; the path comes first and the name is a keyword |
+| `Analysis.from_unit_summary(frame, ...)`, `increment.builders.from_unit_summary(frame, ...)` | `from_frame(frame, shape="summary", ...)` |
+| `Analysis.from_unit_panel(frame, ...)`, `increment.builders.from_unit_panel(frame, ...)` | `from_frame(frame, shape="panel", ...)` |
+| `Analysis.from_unit_day_artifact(store, ref, expected_context=..., ...)` | `from_unit_day_artifact(store, ref, expected_context=..., ...)` |
+| `Analysis.from_moments(rows, ...)` | `from_moments(rows, ...)` |
+| `Analysis.from_switchback_panel(frame, ...)` | `from_switchback_frame(frame, ...)` |
+| `with analysis:`, `analysis.close()` | `with resolver:`, `resolver.close()`; neither closes a connection you supplied |
+| `analysis.run(**options)` | `run(experiment, resolver, **options).readout()`, the same `LiftEstimates` or `ContrastResults` |
+| `analysis.run(population="triggered")` | `scope = Scope(view="run", grain="total", population="triggered")`, then `run(experiment.with_views(scope), resolver).readout(scope)`; declare one run scope per population to read both |
+| `analysis.run(store=store)` | `run(experiment, resolver, results_store=store)`; `decision_log=` and `run_id=` are checked before any read |
+| `run(analysis, registration, compiled_plan, *, experiment_id=..., analysis_spec_hash=..., execution_identity_hash=..., run_id=..., ...)` | `run(experiment, resolver, run_id=..., results_store=..., decision_log=..., ...)`; the experiment supplies its registration and identities |
+| `analysis.run_breakout(...)` | `Scope(view="breakout", grain="total")`; `segment=(BreakoutIdentity(property, source), ...)` selects declared breakouts, and the empty default selects all |
+| `analysis.run_daily(dimension=property, ...)` | `Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity(property, None))` |
+| `analysis.run_daily_lift(dimension=property, ...)` | `Scope(view="daily", grain="daily", segment=BreakoutIdentity(property, None))` |
+| `analysis.run_asof(completed_windows_only=flag, ...)` | `Scope(view="asof", grain="asof", values=True, completion_policy=flag)` |
+| `analysis.run_asof_lift(completed_windows_only=flag, ...)` | `Scope(view="asof", grain="asof", completion_policy=flag)` |
+| `population=` on a day-axis or breakout method | `Scope(..., population=...)` |
+| `increment.readouts.run_scoped(analysis, ...)` | `run(experiment.with_views(*scopes), resolver)`: every declared view reads one capture of the data; `views=` selects a subset |
+| `analysis.materialize()`, `analysis.materialize().run()` | `workflows.materialize(experiment, resolver)`, then `run(experiment, resolver)` |
+| `analysis.export(path)` | `workflows.export_moments(experiment, resolver, path)` |
+| `analysis.experiment` | `workflows.experiment_definition(experiment, resolver)`, the semantic declaration |
+| `analysis.metrics`, `analysis.compiled_decision_plan`, `analysis.available_metrics` | `workflows.metrics(...)`, `workflows.compiled_decision_plan(...)`, `workflows.available_metrics(...)`, each taking `(experiment, resolver)` |
+| `analysis.unit_counts()`, `srm(...)`, `trigger_rates()`, `allocation_history(...)`, `health_check(...)`, `assignment_diagnostic()`, `planning_baseline(metric)`, `breakout_summaries(...)`, `factor_summaries()`, `capture_sequential(...)`, `sequential_snapshot(...)` | `workflows.<name>(experiment, resolver, ...)` with the same remaining parameters |
+| `analysis.artifact_context` | `artifacts.artifact_context(experiment, resolver)` |
+| `analysis.publish_unit_day_artifact(store, ...)` | `artifacts.publish_unit_day_artifact(experiment, resolver, store, ...)` |
+| `analysis.build_panel_for_metric(...)`, `panel_sql(...)`, `summary_sql(...)` | `query.<name>(experiment, resolver, ...)` |
+| `analysis.estimate_cate(...)`, `validate_cate(...)`, `targeting_rule(...)`, `select_targeting_rule(...)`, `sitewide(...)` | `estimators.<name>(experiment, resolver, ...)` |
+| `analysis.dashboard_snapshot(...)`, `dashboard_breakout_reads(...)`, `dashboard_group_data(...)` | `dashboard.prepare_dashboard(experiment, resolver, config=...)` captures the headline, group data and Explore reads once; `load_explore(experiment, snapshot=...)` and `render_dashboard(experiment, snapshot=...)` read the snapshot |
+| `increment.analysis.fit_predeclared_adjustment` | `estimators.fit_predeclared_adjustment` |
+
+Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
+`exploratory_metrics` and `coherence` are `run` keywords and apply to every
+selected view. A view's population, breakout selection and completed-window
+gate belong to its `Scope`. One `run` reads every declared view from one
+capture, so the daily, as-of and whole-window rows agree on the data they
+describe:
+
+```python
+import polars as pl
+
+from increment import Scope, from_frame, run
+from increment.evidence import BreakoutIdentity
+
+panel = pl.DataFrame(
+    {
+        "user_id": [f"u{index}" for index in range(8)] * 2,
+        "variant": ["control", "treatment"] * 8,
+        "day": ["2025-01-01"] * 8 + ["2025-01-02"] * 8,
+        "country": ["US", "US", "GB", "GB"] * 4,
+        "revenue": [float(index % 5) for index in range(16)],
+    }
+)
+experiment, resolver = from_frame(
+    panel,
+    shape="panel",
+    unit="user_id",
+    group="variant",
+    date="day",
+    control="control",
+    metrics={"revenue": "mean"},
+    breakouts=["country"],
+)
+whole = Scope(view="run", grain="total")
+daily_by_country = Scope(
+    view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
+)
+asof_lift = Scope(view="asof", grain="asof")
+result = run(experiment.with_views(whole, daily_by_country, asof_lift), resolver)
+estimates = result.readout(whole)  # was analysis.run()
+values = result.readout(daily_by_country)  # was analysis.run_daily(dimension="country")
+trend = result.readout(asof_lift)  # was analysis.run_asof_lift()
+```
 
 ### Machine-readable contracts
 
@@ -193,7 +334,7 @@ Serialize the collection and reopen it with its dedicated decoder:
 ```python
 import polars as pl
 
-from increment import Analysis, MetricSpec, Randomized
+from increment import MetricSpec, Randomized, from_frame, run
 from increment.estimation.readout_types import ReadoutResults
 
 frame = pl.DataFrame(
@@ -203,8 +344,9 @@ frame = pl.DataFrame(
         "revenue": [1.0, 2.0, 1.5, 2.5],
     }
 )
-rows = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     frame,
+    shape="summary",
     unit="unit",
     group="arm",
     design=Randomized(
@@ -213,7 +355,8 @@ rows = Analysis.from_unit_summary(
         allocation_scheme="independent",
     ),
     metrics=[MetricSpec(name="revenue", type="mean")],
-).run()
+)
+rows = run(experiment, resolver).readout()
 payload = rows.model_dump_json()
 restored = ReadoutResults.model_validate_json(payload)
 ```
@@ -308,12 +451,12 @@ construction details and operation limits.
 
 ??? info "Statistical and wire-format details"
     **Moments cubes.** `increment.workflows.export_moments(experiment, resolver, path)` stamps each row with `moments_format`;
-    `Analysis.from_moments` reads it. Formats vary by writer:
+    `from_moments` reads it. Formats vary by writer:
 
     | Format | Written by | Read by `from_moments` |
     |---|---|---|
-    | 13 | Fixed-horizon `export` when method-scoped CUPED evidence is needed: scalar families, categorical cells, or fitted continuous/mixed multicovariate QR state | Yes |
-    | 12 | Fixed-horizon `export`; source identity, exact counts, ratio denominator third moment `cden3` | Yes |
+    | 13 | Fixed-horizon `export_moments` when method-scoped CUPED evidence is needed: scalar families, categorical cells, or fitted continuous/mixed multicovariate QR state | Yes |
+    | 12 | Fixed-horizon `export_moments`; source identity, exact counts, ratio denominator third moment `cden3` | Yes |
     | 11 | Prior fixed-horizon export; source identity and exact counts | Yes; ratio denominator-skew coverage is unavailable |
     | 10 | Earlier fixed-horizon export or current sequential checkpoint export | Yes; fixed-horizon ratio denominator-skew coverage is unavailable |
     | 9 | Prior sequential checkpoint export | Yes |
@@ -355,26 +498,26 @@ construction details and operation limits.
 
     For per-arm summaries, call
     `moments_from_summaries(rows, metrics=..., control=..., study_id=..., assignment_counts=...)`
-    and pass its rows to `Analysis.from_moments`. It accepts strict mean rows
+    and pass its rows to `from_moments`. It accepts strict mean rows
     (`group_id`, `metric`, `n >= 2`, `mean`, ddof=1 `var`) and conversion rows
     (`group_id`, `metric`, `n`, exact integer `successes`). Extra fields are
     refused with `moments.summaries.invalid`. Without `assignment_counts`,
-    `unit_counts()` and health allocation checks refuse with
-    `source.moments.assignment_counts`; `srm()` does too once a target
+    `workflows.unit_counts` and health allocation checks refuse with
+    `source.moments.assignment_counts`; `workflows.srm` does too once a target
     allocation is declared, and refuses with an `integrity.allocation_*` code
-    before that. For ratios and richer summaries, use `from_unit_summary`.
+    before that. For ratios and richer summaries, use `from_frame(..., shape="summary")`.
 
     `LiftEstimate`, `BreakoutEstimate`, `DailyLiftEstimate`, `DailyMetricValue` and
     `ContrastResult` carry `metric_type`: the declared `Metric.type` of the row's metric
     (`mean`, `conversion`, `retention`, `ratio`, `total`, `active` or `quantile`), stamped
-    by every `Analysis` readout and carried through saved results and frame exports. It is
+    by every `run` view and carried through saved results and frame exports. It is
     `None` when the type is unknown: rows built directly by the low-level estimators, the
     design-level compliance row, and results saved before the field existed.
 
     `LiftEstimate`, `BreakoutEstimate`, `DailyLiftEstimate` and `ContrastResult` carry
     `metric_type`: the declared `Metric.type` of the row's metric (`mean`, `conversion`,
-    `retention`, `ratio`, `total`, `active` or `quantile`), stamped by every `Analysis`
-    readout and carried through saved results and frame exports. It is `None` when the
+    `retention`, `ratio`, `total`, `active` or `quantile`), stamped by every `run` view
+    and carried through saved results and frame exports. It is `None` when the
     type is unknown: rows built directly by the low-level estimators, the design-level
     compliance row, and results saved before the field existed.
 
@@ -539,7 +682,7 @@ available. Clustered sources refuse with `CapabilityError`.
 
 ### Mixed-covariate fixed-horizon CUPED
 
-On per-unit fixed-horizon inputs such as `Analysis.from_unit_summary`,
+On per-unit fixed-horizon inputs such as `from_frame(..., shape="summary")`,
 declare inputs on `Method.cuped_multicovariate(covariates=...)`, using
 `CupedCovariate` or the binding-aware `CupedCovariateBinding` for each input.
 Each declaration has a `name`, `kind="continuous"` or `"categorical"`, and a
@@ -558,7 +701,7 @@ Welch–Satterthwaite method. It is fixed-horizon only. Native definitions and
 verified unit-day artifacts fit continuous/mixed models in the warehouse
 without transferring unit rows; only the small triangular solve and
 finalization run client-side. A fitted continuous/mixed fit can be exported in
-a format-13 fitted envelope and replayed from `Analysis.from_moments`, including
+a format-13 fitted envelope and replayed from `from_moments`, including
 reintervalization at a changed alpha. A moments cube cannot refit a model or
 reconstruct a missing fitted envelope. Clustered assignment and sequential
 inference are unsupported. Fits outside M1 are returned as unavailable with
@@ -571,19 +714,19 @@ been run; its coverage is not established. External-prediction training
 (tracker #72) and longitudinal dependence (tracker #80) are not implemented.
 See [campaign status and commands](validation.md#mixed-covariate-linear-cuped).
 
-The day-axis collections returned by `run_daily`, `run_daily_lift`, `run_asof`, and
-`run_asof_lift` are ordered chronologically by day, then by requested metric and a stable row
+The day-axis collections returned by daily and as-of views, values or lift, are
+ordered chronologically by day, then by requested metric and a stable row
 identity order. The order is independent of backend row order.
 
-`Analysis.available_metrics` lists undeclared saved per-unit metrics on the
-experiment's unit, in definitions order. It excludes report-only `total` and
-`active` metrics and metrics for other entities. `run`, `run_breakout`,
-`run_asof_lift`, `run_asof`, and `run_daily` accept selected names through
-`exploratory_metrics=`. Lift rows from the first three carry
-`role="exploratory"`, join no plan family, and use two-sided full-plan `alpha`;
-absolute values from `run_asof` and `run_daily` have no role. Declared rows are
-unchanged. Use `metrics=[]` to read only exploratory metrics. Unknown or
-declared names refuse before querying with
+`increment.workflows.available_metrics(experiment, resolver)` lists undeclared
+saved per-unit metrics on the experiment's unit, in definitions order. It
+excludes report-only `total` and `active` metrics and metrics for other
+entities. Whole-window run, breakout, as-of lift, as-of values and daily
+values views accept selected names through `run(..., exploratory_metrics=...)`.
+Lift rows from the first three carry `role="exploratory"`, join no plan family,
+and use two-sided full-plan `alpha`; as-of and daily absolute values have no
+role. Declared rows are unchanged. Use `metrics=[]` to read only exploratory
+metrics. Unknown or declared names refuse before querying with
 `facade.analysis_config.exploratory_metric_unavailable`. Other sources refuse
 with `facade.analysis.exploratory_metrics_source_limited`; registered
 sequential plans refuse with `facade.analysis.exploratory_metrics_sequential`.
@@ -719,7 +862,7 @@ Requests validate extension definitions before publication.
 
 ### Artifact publication and storage
 
-`Analysis.from_definitions(..., source_snapshot_evidence=...)` accepts
+`from_definitions(..., source_snapshot_evidence=...)` accepts
 `increment.artifacts.SourceSnapshotEvidence` only when the source provides a timezone-aware
 event-time cutoff and, optionally, certified per-feed completeness times.
 Without a cutoff, Increment does not invent one: assigned-only operations remain
@@ -787,7 +930,7 @@ across publication and requests.
 
 Off-policy contrast compares two registered policies using a decision trace
 logged under one fixed policy version. It uses `LoggedTrace.from_records` or
-`from_frame`, not an `Analysis` constructor. See the
+`from_frame`, not an experiment builder. See the
 [guide](guides/logged-policy.md) for the estimand, assumptions, and floors.
 Each constructor requires exactly one logging-law route: `registry=`, complete
 record-level `logging_distributions=`, or frame
@@ -1106,8 +1249,7 @@ and records the source identity on its report.
     coefficients, so `TargetingRule.model_validate_json(rule.model_dump_json())`
     predicts without fitting again.
     CATE report dumps are report-only; serialize `score_state` for portable
-    point prediction. The legacy `Analysis` methods of the same names delegate
-    to these operations.
+    point prediction.
 
 ::: increment.estimators.Covariate
 
@@ -1150,7 +1292,8 @@ results together. It accepts only uncorrected fixed-horizon decision rows.
     level `q`. Each returned row records `discovery`, `family_axes`, `family_q`,
     `family_threshold`, and `family_size`. A selected row's interval is
     reissued at Benjamini-Yekutieli level `1 - R*q/m`, capped at its nominal
-    level, and matches `run_breakout(correction="bh")` for the same cell.
+    level, and matches the breakout view's row for the same cell under
+    `AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh", q=q))`.
     Unselected rows keep nominal intervals.
 
     Rows retain canonical `family_procedure` (`"bh"`, `"e_bh"`, or
@@ -1484,7 +1627,7 @@ points:
 
 `increment.dashboard` is an optional presentation layer over one bound
 experiment: a complete interactive four-tab dashboard, section-level
-`mo.Html` helpers, and thin adapters over the public `Analysis` and
+`mo.Html` helpers, and thin adapters over the public `run` results and
 CoefTable APIs. Install it with `pip install
 "increment[dashboard]"`; core Increment, estimation, power, and the
 dataframe entry points never import marimo, CoefTable, or pandas

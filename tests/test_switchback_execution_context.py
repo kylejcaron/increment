@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from increment import Analysis, Randomized
+from increment import Randomized, from_switchback_frame, workflows
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimators import (
     IndependentBernoulliOrder,
@@ -14,10 +14,11 @@ from increment.estimators import (
     SwitchbackWindow,
     UnitCycleTApproximation,
 )
+from tests.analysis_factory import view_readout
 
 
-def _run(analysis: Analysis, **kwargs: Any):
-    return analysis.run(**kwargs)
+def _run(analysis: tuple[Any, Any], **kwargs: Any):
+    return view_readout(*analysis, **kwargs)
 
 
 def _panel(
@@ -65,7 +66,7 @@ def _analysis(
     treatment_shift: float = 0.0,
     include_other: bool = False,
     frame: pd.DataFrame | None = None,
-) -> Analysis:
+) -> Any:
     sequence = (
         SharedScheduleOrder(probability_ct=0.5)
         if shared
@@ -87,7 +88,7 @@ def _analysis(
     if include_other:
         panel["other"] = panel["value"] * 2
         metrics["other"] = "mean"
-    return Analysis.from_switchback_panel(
+    return from_switchback_frame(
         panel,
         unit="unit",
         cycle="cycle",
@@ -130,11 +131,13 @@ def test_switchback_results_remain_stable_after_panel_mutation():
 
 
 def test_switchback_undeclared_metric_refuses_by_exact_declaration():
-    analysis = _analysis()
-    mismatched = analysis.metrics[0].model_copy(update={"description": "different metric"})
+    experiment, resolver = _analysis()
+    mismatched = workflows.metrics(experiment, resolver)[0].model_copy(
+        update={"description": "different metric"}
+    )
 
     with pytest.raises(InvalidRequestError) as error:
-        analysis.run(metrics=[mismatched])
+        view_readout(experiment, resolver, metrics=[mismatched])
 
     assert error.value.code == "kernel.context.undeclared_stream"
     assert error.value.context == {"stream": "metric"}
@@ -142,14 +145,14 @@ def test_switchback_undeclared_metric_refuses_by_exact_declaration():
 
 def test_switchback_triggered_population_refuses_before_readout():
     with pytest.raises(CapabilityError) as error:
-        _analysis().run(population="triggered")
+        view_readout(*_analysis(), population="triggered")
 
     assert error.value.code == "facade.analysis.trigger_unsupported"
 
 
 def test_switchback_metric_option_refuses_with_public_code():
     with pytest.raises(CapabilityError) as error:
-        _analysis().run(estimands=["itt"])
+        view_readout(*_analysis(), estimands=["itt"])
 
     assert error.value.code == "facade.analysis.contrast_unavailable"
 
@@ -184,9 +187,16 @@ def test_switchback_request_preserves_inference_grain():
 def test_switchback_neighboring_integer_oracle():
     from scipy.stats import t
 
-    from tests.parity_harness.cases import _neighboring_integer_switchback_analysis
+    from tests.parity_harness.cases import (
+        _close_parity_binding,
+        _neighboring_integer_switchback_binding,
+    )
 
-    (result,) = _run(_neighboring_integer_switchback_analysis())
+    bound = _neighboring_integer_switchback_binding()
+    try:
+        (result,) = _run(bound)
+    finally:
+        _close_parity_binding(bound)
     assert result.estimate.value == pytest.approx(1.5)
     assert result.standard_error == pytest.approx(0.5)
     radius = 0.5 * t.isf(result.alpha / 2, 1)

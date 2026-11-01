@@ -24,6 +24,7 @@ import pytest
 from scipy.stats import norm as _norm
 from scipy.stats import t as _t
 
+from increment import from_frame
 from increment.breakout.projection import to_frame
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.results import (
@@ -32,6 +33,7 @@ from increment.estimation.results import (
     Estimate,
     LiftEstimate,
 )
+from tests.analysis_factory import view_readout
 
 
 def test_result_deserialization_rejects_unknown_alternative():
@@ -1753,18 +1755,20 @@ class TestNonpositiveArmMeanUnavailableReason:
     def test_run_row_matches_the_welch_t_test_and_keeps_its_interval(self):
         from scipy.stats import ttest_ind
 
-        from increment import Analysis
         from tests.analysis_factory import lift_rows
 
         frame = _nonpositive_mean_unit_summary()
         (row,) = lift_rows(
-            Analysis.from_unit_summary(
-                frame,
-                unit="user_id",
-                group="variant",
-                control="control",
-                metrics={"delta": "mean"},
-            ).run()
+            view_readout(
+                *from_frame(
+                    frame,
+                    shape="summary",
+                    unit="user_id",
+                    group="variant",
+                    control="control",
+                    metrics={"delta": "mean"},
+                )
+            )
         )
         assert row.relative_unavailable_reason == "nonpositive_arm_mean"
         assert row.null_abs is None and row.lift is None
@@ -1891,21 +1895,23 @@ class TestNonpositiveArmMeanUnavailableReason:
         assert row_decision_available(row) is False
 
     def test_run_with_a_plan_bound_relative_margin_keeps_the_declared_null(self):
-        from increment import Analysis
         from increment.frame import MetricSpec
         from increment.semantics.models import AnalysisPlan, ExperimentMetric
         from tests.analysis_factory import lift_rows
 
         frame = _nonpositive_mean_unit_summary()
         (row,) = lift_rows(
-            Analysis.from_unit_summary(
-                frame,
-                unit="user_id",
-                group="variant",
-                control="control",
-                metrics=[MetricSpec(name="delta", preferred_direction="increase")],
-                plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="delta", margin=0.05)]),
-            ).run()
+            view_readout(
+                *from_frame(
+                    frame,
+                    shape="summary",
+                    unit="user_id",
+                    group="variant",
+                    control="control",
+                    metrics=[MetricSpec(name="delta", preferred_direction="increase")],
+                    plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="delta", margin=0.05)]),
+                )
+            )
         )
         assert row.relative_unavailable_reason == "nonpositive_arm_mean"
         assert row.null_lift == pytest.approx(-0.05)
@@ -2055,7 +2061,6 @@ class TestStatSigIsUnavailableWithoutSamplingEvidence:
         import numpy as np
         import pyarrow as pa
 
-        from increment import Analysis
         from increment.semantics.models import AnalysisPlan
         from tests.analysis_factory import lift_rows
 
@@ -2069,22 +2074,25 @@ class TestStatSigIsUnavailableWithoutSamplingEvidence:
             }
         )
         rows = lift_rows(
-            Analysis.from_unit_summary(
-                table,
-                unit="unit",
-                group="group",
-                control="C",
-                metrics=[
-                    {
-                        "name": "revenue",
-                        "winsorization": {
-                            "upper_percentile": 0.95,
-                            "support": {"lower": 0, "upper": 1000, "provenance": "fixture"},
-                        },
-                    }
-                ],
-                plan=AnalysisPlan(primary="revenue"),
-            ).run()
+            view_readout(
+                *from_frame(
+                    table,
+                    shape="summary",
+                    unit="unit",
+                    group="group",
+                    control="C",
+                    metrics=[
+                        {
+                            "name": "revenue",
+                            "winsorization": {
+                                "upper_percentile": 0.95,
+                                "support": {"lower": 0, "upper": 1000, "provenance": "fixture"},
+                            },
+                        }
+                    ],
+                    plan=AnalysisPlan(primary="revenue"),
+                )
+            )
         )
         (row,) = rows
         assert row.confidence_set is not None

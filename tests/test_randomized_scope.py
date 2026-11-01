@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from increment import Analysis, AnalysisPlan
+from increment import AnalysisPlan, from_frame
+from tests.analysis_factory import view_readout
 
 
 def test_source_content_digest_ignores_study_labels():
@@ -15,8 +16,9 @@ def test_source_content_digest_ignores_study_labels():
     )
     digests = []
     for experiment_id in ("warehouse-study", "frame"):
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             data,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -25,10 +27,10 @@ def test_source_content_digest_ignores_study_labels():
             experiment_id=experiment_id,
         )
         try:
-            cells = analysis.run().as_cells()
+            cells = view_readout(experiment, resolver).as_cells()
             digest = cells[0].identity.source_content_digest
             assert digest is not None
             digests.append(digest)
         finally:
-            analysis.close()
+            resolver.close()
     assert digests[0] == digests[1]

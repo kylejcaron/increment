@@ -6,14 +6,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import (
-    Analysis,
-    AnalysisPlan,
-    InferenceSpec,
-    Method,
-    MetricSpec,
-    UptakeSpec,
-)
+from increment import AnalysisPlan, InferenceSpec, Method, MetricSpec, Scope, UptakeSpec, from_frame
 from increment.errors import UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate
@@ -25,6 +18,7 @@ from increment.semantics.design import (
     Observational,
     Randomized,
 )
+from tests.analysis_factory import bound_source, view_readout
 
 
 def _linear_metric(*, winsorization: dict[str, Any] | None = None) -> MetricSpec:
@@ -60,9 +54,10 @@ def _panel_rows(*, unsupported_segment: bool = False) -> list[dict[str, Any]]:
     return rows
 
 
-def _linear_breakout_analysis(*, unsupported_segment: bool = False) -> Analysis:
-    return Analysis.from_unit_panel(
+def _linear_breakout_analysis(*, unsupported_segment: bool = False) -> Any:
+    return from_frame(
         pa.Table.from_pylist(_panel_rows(unsupported_segment=unsupported_segment)),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -73,9 +68,9 @@ def _linear_breakout_analysis(*, unsupported_segment: bool = False) -> Analysis:
 
 
 def test_cuped_linear_breakout_emits_complete_per_cell_family_evidence() -> None:
-    analysis = _linear_breakout_analysis()
+    experiment, resolver = _linear_breakout_analysis()
 
-    rows = analysis.run_breakout()
+    rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     assert {(row.dimension, row.dimension_value, row.group_id) for row in rows} == {
         ("segment", segment, "treatment") for segment in ("north", "south")
@@ -128,12 +123,12 @@ def test_cuped_linear_breakout_emits_complete_per_cell_family_evidence() -> None
 
 
 def test_cuped_linear_breakout_localizes_unsupported_category_cell() -> None:
-    analysis = _linear_breakout_analysis(unsupported_segment=True)
+    experiment, resolver = _linear_breakout_analysis(unsupported_segment=True)
 
     from increment.errors import IncrementWarning
 
     with pytest.warns(IncrementWarning, match="estimation.cuped_linear.level_support"):
-        rows = analysis.run_breakout()
+        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     by_segment = {row.dimension_value: row for row in rows}
     assert set(by_segment) == {"north", "south", "unsupported"}
@@ -200,8 +195,9 @@ def _summary_source(
             "exposure_date": ["2025-01-01"] * 16,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="group",
         control=None if design is not None else "control",
@@ -212,9 +208,8 @@ def _summary_source(
         uptake=uptake,
         exposure_date="exposure_date" if plan is not None and plan.inference is not None else None,
     )
-    from tests.analysis_factory import _moment_source
 
-    return _UnreadSource(_moment_source(analysis))
+    return _UnreadSource(bound_source(resolver))
 
 
 @pytest.mark.parametrize(
@@ -295,15 +290,17 @@ def test_cuped_linear_fixed_lower_and_upper_clipping_matches_preclipped_fit() ->
     ]
     clipped_rows = [{**row, "revenue": min(max(row["revenue"], lower), upper)} for row in rows]
 
-    clipped = Analysis.from_unit_summary(
+    clipped_experiment, clipped_resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics=[_linear_metric(winsorization={"lower_value": lower, "upper_value": upper})],
     )
-    preclipped = Analysis.from_unit_summary(
+    preclipped_experiment, preclipped_resolver = from_frame(
         pa.Table.from_pylist(clipped_rows),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
@@ -311,10 +308,16 @@ def test_cuped_linear_fixed_lower_and_upper_clipping_matches_preclipped_fit() ->
     )
     try:
         clipped_rows_by_arm = {
-            row.group_id: row for row in cast(list[LiftEstimate], list(clipped.run()))
+            row.group_id: row
+            for row in cast(
+                list[LiftEstimate], list(view_readout(clipped_experiment, clipped_resolver))
+            )
         }
         preclipped_rows_by_arm = {
-            row.group_id: row for row in cast(list[LiftEstimate], list(preclipped.run()))
+            row.group_id: row
+            for row in cast(
+                list[LiftEstimate], list(view_readout(preclipped_experiment, preclipped_resolver))
+            )
         }
         for arm, row in clipped_rows_by_arm.items():
             baseline = preclipped_rows_by_arm[arm]
@@ -324,8 +327,8 @@ def test_cuped_linear_fixed_lower_and_upper_clipping_matches_preclipped_fit() ->
             assert row.dof == pytest.approx(baseline.dof)
             assert (row.lift.lb, row.lift.ub) == pytest.approx((baseline.lift.lb, baseline.lift.ub))
     finally:
-        clipped.close()
-        preclipped.close()
+        clipped_resolver.close()
+        preclipped_resolver.close()
 
 
 def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
@@ -342,8 +345,9 @@ def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
         for group in ("control", "treatment")
         for index in range(24)
     ]
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         pa.Table.from_pylist(summary_rows),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
@@ -351,17 +355,20 @@ def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
     )
     try:
         with pytest.raises(CapabilityError) as breakout:
-            summary.run_breakout()
+            view_readout(
+                summary_experiment, summary_resolver, Scope(view="breakout", grain="total")
+            )
         assert breakout.value.code == "evidence.breakout_unavailable"
         with pytest.raises(CapabilityError) as triggered_summary:
-            summary.run(population="triggered")
+            view_readout(summary_experiment, summary_resolver, population="triggered")
         assert triggered_summary.value.code == "facade.analysis.trigger_unsupported"
     finally:
-        summary.close()
+        summary_resolver.close()
 
     panel_rows = _panel_rows()
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         pa.Table.from_pylist(panel_rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -370,15 +377,16 @@ def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
     )
     try:
         with pytest.raises(CapabilityError) as triggered_panel:
-            panel.run(population="triggered")
+            view_readout(panel_experiment, panel_resolver, population="triggered")
         assert triggered_panel.value.code == "facade.analysis.trigger_unsupported"
     finally:
-        panel.close()
+        panel_resolver.close()
 
     clustered_rows = [{**row, "cluster": row["unit"].split("-")[0]} for row in panel_rows]
     with pytest.raises(CapabilityError) as panel_cluster:
-        Analysis.from_unit_panel(
+        from_frame(
             pa.Table.from_pylist(clustered_rows),
+            shape="panel",
             unit="unit",
             group="group",
             date="day",
@@ -403,13 +411,16 @@ def test_cuped_linear_nonpositive_arm_failure_preserves_positive_sibling() -> No
     result = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                pa.Table.from_pylist(rows),
-                unit="unit",
-                group="group",
-                control="control",
-                metrics=[_linear_metric()],
-            ).run()
+            view_readout(
+                *from_frame(
+                    pa.Table.from_pylist(rows),
+                    shape="summary",
+                    unit="unit",
+                    group="group",
+                    control="control",
+                    metrics=[_linear_metric()],
+                )
+            )
         ),
     )
 
@@ -445,13 +456,16 @@ def test_cuped_linear_absolute_ratio_projection_failure_preserves_log_ratio() ->
     result = cast(
         list[LiftEstimate],
         list(
-            Analysis.from_unit_summary(
-                pa.Table.from_pylist(rows),
-                unit="unit",
-                group="group",
-                control="control",
-                metrics=[metric],
-            ).run()
+            view_readout(
+                *from_frame(
+                    pa.Table.from_pylist(rows),
+                    shape="summary",
+                    unit="unit",
+                    group="group",
+                    control="control",
+                    metrics=[metric],
+                )
+            )
         ),
     )
 
@@ -483,15 +497,16 @@ def test_cuped_ratio_overflow_roundtrip_reissues_withheld_alpha() -> None:
         for group in ("control", "treatment")
         for index in range(18)
     ]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics=[metric],
         plan=AnalysisPlan(alpha=0.05, primary="revenue_per_order"),
     )
-    estimates = cast(list[LiftEstimate], list(analysis.run()))
+    estimates = cast(list[LiftEstimate], list(view_readout(experiment, resolver)))
     (row,) = (estimate for estimate in estimates if estimate.group_id == "treatment")
 
     assert row.multiplicity_status == "declared_plan"

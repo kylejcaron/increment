@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, cast
@@ -13,7 +13,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
-from increment import Analysis, Method, MetricSpec, run
+from increment import Method, MetricSpec, from_definitions, run
 from increment.builders import from_frame
 from increment.errors import CodedError
 from increment.evidence import SequentialCaptureRequest
@@ -21,6 +21,8 @@ from increment.kernel.contracts import ImplementationRef, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
 from increment.semantics.design import AdjustmentSet, Observational
+from increment.workflows import capture_sequential, export_moments, unit_counts
+from tests.analysis_factory import view_readout
 from tests.test_kernel_builders import _frame
 
 
@@ -841,8 +843,9 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
     from tests.test_sequential_public_sources import gaussian_plan
 
     specs = [MetricSpec(name="outcome", type="conversion", window_days=1)]
-    analysis = Analysis.from_unit_panel(
+    analysis_experiment, analysis_resolver = from_frame(
         sequential_frame([0, 1] * 8, [1, 1] * 8).assign(day=0, exposed=0),
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -859,10 +862,14 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
             exposure_date="exposed",
         ),
     )
-    analysis.capture_sequential(finalized=True, as_of=1)
-    expected = analysis.run_asof_lift(completed_windows_only=True)
+    capture_sequential(analysis_experiment, analysis_resolver, finalized=True, as_of=1)
+    expected = view_readout(
+        analysis_experiment,
+        analysis_resolver,
+        Scope(view="asof", grain="asof", completion_policy=True),
+    )
     path = tmp_path / "checkpoint.parquet"
-    analysis.export(path)
+    export_moments(analysis_experiment, analysis_resolver, path)
     experiment, resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
@@ -901,8 +908,6 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
 
 @pytest.mark.integration
 def test_workflow_capture_sequential_checkpoint_feeds_builder_run():
-    from increment.builders import from_frame
-    from increment.workflows import capture_sequential
     from tests.test_sequential_public_sources import _frame as sequential_frame
     from tests.test_sequential_public_sources import gaussian_plan
 
@@ -936,17 +941,6 @@ def test_workflow_capture_sequential_checkpoint_feeds_builder_run():
     assert {cell.identity.key.ds for cell in result.cells} == {1}
 
 
-@pytest.mark.parametrize(
-    "option", ["experiment_id", "analysis_spec_hash", "execution_identity_hash", "compiled_plan"]
-)
-def test_experiment_run_refuses_unsupported_execution_options(option):
-    experiment, resolver = _experiment()
-    with pytest.raises(CodedError) as error:
-        options: dict[str, Any] = {option: "requested"}
-        run(experiment, resolver, **options)
-    assert error.value.code == "kernel.run.invalid_input"
-
-
 def test_run_rejects_store_request_option_before_persisting(tmp_path):
     from increment.store import ParquetResultsStore
 
@@ -978,8 +972,9 @@ def test_analysis_accepts_declared_runtime_learner_and_executes_it():
         type="mean",
         decision_method=Method(name="iptw", propensity_learner=_Propensity),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[metric],
@@ -987,22 +982,22 @@ def test_analysis_accepts_declared_runtime_learner_and_executes_it():
             control_group="control", adjustment=AdjustmentSet(covariates=("age",))
         ),
     )
-    assert analysis.unit_counts() == {"control": 20, "treatment": 20}
+    assert unit_counts(experiment, resolver) == {"control": 20, "treatment": 20}
     before = _Propensity.fitted
-    assert analysis.run()
+    assert view_readout(experiment, resolver)
     assert _Propensity.fitted > before
 
 
 def test_analysis_accepts_declared_fold_count_before_portable_export():
     metric = MetricSpec(name="value", type="mean", decision_method=Method(name="dml", folds=2))
-    analysis = Analysis.from_unit_summary(
-        _frame(), unit="unit", group="arm", control="control", metrics=[metric]
+    experiment, resolver = from_frame(
+        _frame(), shape="summary", unit="unit", group="arm", control="control", metrics=[metric]
     )
-    assert analysis.unit_counts() == {"control": 20, "treatment": 20}
+    assert unit_counts(experiment, resolver) == {"control": 20, "treatment": 20}
     from increment.errors import IncrementWarning
 
     with pytest.warns(IncrementWarning) as warnings:
-        assert analysis.run(decision_method=Method.unadjusted())
+        assert view_readout(experiment, resolver, decision_method=Method.unadjusted())
     assert {
         warning.message.code
         for warning in warnings
@@ -1056,8 +1051,6 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
 
     import yaml
 
-    from increment.builders import from_definitions
-
     path = tmp_path / "definitions"
     shutil.copytree(seeded_defs, path)
     source_path = path / "fact_sources.yaml"
@@ -1088,11 +1081,13 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
     assert captured.source_refs[0].schema
     assert not any(name.startswith("unused.") for name in captured.source_refs[0].schema)
     json.loads((path / ".increment-kernel-catalog.json").read_text())
-    with Analysis.from_definitions(
-        experiment_name="new_onboarding_v2", definitions_path=path, con=seeded_con
-    ) as analysis:
-        assert analysis.unit_counts()
-        assert analysis.run(metrics=["purchase_rate"])
+    analysis_experiment, analysis_resolver = from_definitions(
+        path, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(analysis_resolver, AbstractContextManager)
+    with analysis_resolver:
+        assert unit_counts(analysis_experiment, analysis_resolver)
+        assert view_readout(analysis_experiment, analysis_resolver, metrics=["purchase_rate"])
     source_path.write_text(source_path.read_text() + "\n# changed after binding\n")
     with pytest.raises(CodedError) as stale:
         run(experiment, resolver, metrics=["purchase_rate"])
@@ -1225,6 +1220,7 @@ def test_frozen_request_options_restore_typed_methods_metrics_and_priors():
         ("daily", "daily", "assigned", False, "facade.analysis.contrast_unavailable"),
         ("asof", "asof", "assigned", False, "facade.analysis.contrast_unavailable"),
         ("switchback", "total", "triggered", False, "facade.analysis.trigger_unsupported"),
+        ("asof", "asof", "triggered", False, "facade.analysis.trigger_unsupported"),
     ],
 )
 def test_switchback_scope_refusals_match_execution(view, grain, population, segmented, code):
@@ -1802,15 +1798,18 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
     assert selected.cells
     assert all(_scope(cell).values for cell in selected.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in selected.cells)
-    analysis = Analysis.from_unit_panel(
+    direct_experiment, direct_resolver = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
         control="control",
         metrics={"value": "mean"},
     )
-    direct_values = getattr(analysis, f"run_{view}")()
+    direct_values = view_readout(
+        direct_experiment, direct_resolver, Scope(view=view, grain=grain, values=True)
+    )
     direct_cell = direct_values.as_cells()[0]
     assert direct_cell.identity.scope.values is True
     direct_scope = direct_cell.identity.scope.model_copy(
@@ -1820,7 +1819,7 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
     assert declarative.cells
     assert all(_scope(cell).values for cell in declarative.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in declarative.cells)
-    direct_lifts = getattr(analysis, f"run_{view}_lift")()
+    direct_lifts = view_readout(direct_experiment, direct_resolver, Scope(view=view, grain=grain))
     lift_cell = direct_lifts.as_cells()[0]
     assert lift_cell.identity.scope.values is False
     lift_scope = lift_cell.identity.scope.model_copy(
@@ -1945,11 +1944,18 @@ def test_switchback_builder_returns_in_memory_run_result_and_refuses_portable_st
         ParquetResultsStore(tmp_path).put(result.run)
     assert portability.value.code == "wire.procedure.contrast_context"
     log_path = tmp_path / "decisions.jsonl"
+    runs = tmp_path / "runs"
     with _frame_read_calls() as reads, pytest.raises(CodedError) as logged:
-        run(experiment, resolver, decision_log=DecisionLog(path=log_path))
+        run(
+            experiment,
+            resolver,
+            results_store=ParquetResultsStore(runs),
+            decision_log=DecisionLog(path=log_path),
+        )
     assert logged.value.code == "wire.procedure.contrast_context"
     assert reads == []
     assert not log_path.exists()
+    assert not tuple(runs.rglob("*.parquet"))
 
 
 def test_switchback_partial_run_selection_cannot_pass_omitted_guardrail():

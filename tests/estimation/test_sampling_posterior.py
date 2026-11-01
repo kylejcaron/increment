@@ -9,6 +9,7 @@ from typing import Literal, TypedDict, cast
 import pandas as pd
 import pytest
 
+from increment import from_frame
 from increment.errors import InvalidRequestError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.engine import estimate_lift
@@ -16,6 +17,7 @@ from increment.estimation.inference import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior, mixture_posterior
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import MeanMetric, Metric
+from tests.analysis_factory import view_readout
 from tests.estimation._conversion_counts import CONVERSION_METRIC, arm_row, count_summary
 
 
@@ -222,7 +224,6 @@ def test_normal_probability_reads_stored_posterior_not_sampling_interval():
 def test_analysis_frame_and_saved_results_preserve_sampling_and_posterior(prior):
     import pandas as pd
 
-    from increment.analysis import Analysis
     from increment.estimation.readout_types import ReadoutResults
     from increment.frame import MetricSpec
 
@@ -237,14 +238,15 @@ def test_analysis_frame_and_saved_results_preserve_sampling_and_posterior(prior)
             for i in range(100)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics=[MetricSpec(name="rev", type="mean")],
     )
-    results = analysis.run(prior=prior)
+    results = view_readout(experiment, resolver, prior=prior)
     (row,) = results
     assert isinstance(row, LiftEstimate)
     assert row.lift is not None

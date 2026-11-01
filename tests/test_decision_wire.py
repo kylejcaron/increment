@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from increment import from_frame, from_moments
 from increment.decision import (
     AbsoluteArmDecisionProcedure,
     CompiledDecisionPlan,
@@ -47,7 +48,9 @@ from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.semantics.models import NormalPriorSpec
 from increment.semantics.unit_cycle import UnitCycleTApproximation
+from increment.workflows import export_moments
 from tests._override_warnings import allow_declared_overrides
+from tests.analysis_factory import view_readout
 
 _METRIC_A = "revenue_2024-01-15"
 _METRIC_B = "orders_2024-01-16"
@@ -97,7 +100,7 @@ def test_portable_prior_reset_restores_declared_family(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import AnalysisPlan, MetricSpec
     from tests.analysis_factory import lift_rows
 
     frame = pa.table(
@@ -108,26 +111,28 @@ def test_portable_prior_reset_restores_declared_family(
         }
     )
     prior = Normal(mu=0, sigma=0.1) if bound_prior else None
-    source = Analysis.from_unit_summary(
+    source_experiment, source_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics=[MetricSpec(name="y", prior=prior)],
         plan=AnalysisPlan(secondaries=["y"]),
     )
-    oracle = Analysis.from_unit_summary(
+    oracle_experiment, oracle_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics={"y": "mean"},
         plan=AnalysisPlan(secondaries=["y"]),
     )
-    replay = None
+    replay_resolver = None
     try:
         path = tmp_path / "moments.parquet"
-        source.export(path)
+        export_moments(source_experiment, source_resolver, path)
         rows = pq.read_table(path).to_pylist()
         for row in rows:
             payload = json.loads(row["decision_plan"])
@@ -137,18 +142,22 @@ def test_portable_prior_reset_restores_declared_family(
             if not named_family:
                 family["family"] = {"kind": "none"}
             row["decision_plan"] = json.dumps(payload)
-        replay = Analysis.from_moments(
+        replay_experiment, replay_resolver = from_moments(
             rows, control="control", metrics=[MetricSpec(name="y", prior=prior)]
         )
-        inherited = lift_rows(replay.run())[0]
+        inherited = lift_rows(view_readout(replay_experiment, replay_resolver))[0]
         if bound_prior and named_family:
             _assert_legacy_prior_roundtrip(
-                replay, rows, tmp_path / "legacy-roundtrip.parquet", prior
+                replay_experiment,
+                replay_resolver,
+                rows,
+                tmp_path / "legacy-roundtrip.parquet",
+                prior,
             )
 
-        expected = lift_rows(oracle.run())[0].require_lift()
+        expected = lift_rows(view_readout(oracle_experiment, oracle_resolver))[0].require_lift()
         for _ in range(2):
-            cleared = lift_rows(replay.run(prior=None))[0]
+            cleared = lift_rows(view_readout(replay_experiment, replay_resolver, prior=None))[0]
             interval = cleared.require_lift()
             assert (interval.value, interval.lb, interval.ub) == pytest.approx(
                 (expected.value, expected.lb, expected.ub)
@@ -157,7 +166,7 @@ def test_portable_prior_reset_restores_declared_family(
             assert cleared.family_axes == (
                 ("metric", "arm") if expected_discovery is not None else None
             )
-        restored = lift_rows(replay.run())[0]
+        restored = lift_rows(view_readout(replay_experiment, replay_resolver))[0]
         assert restored.discovery is None
         assert restored.require_lift().value == pytest.approx(inherited.require_lift().value)
         if bound_prior:
@@ -167,28 +176,34 @@ def test_portable_prior_reset_restores_declared_family(
             assert restored.posterior_estimate < expected.value
         if bound_prior and named_family:
             explicit_snapshot = _assert_explicit_nonmember_plan_stays_excluded(rows, prior)
-            restored_member = lift_rows(replay.run(prior=None))[0]
+            restored_member = lift_rows(
+                view_readout(replay_experiment, replay_resolver, prior=None)
+            )[0]
             assert restored_member.discovery is True
             assert restored_member.source_snapshot_id != explicit_snapshot
     finally:
-        source.close()
-        oracle.close()
-        if replay is not None:
-            replay.close()
+        source_resolver.close()
+        oracle_resolver.close()
+        if replay_resolver is not None:
+            replay_resolver.close()
 
 
 def _assert_legacy_prior_roundtrip(
-    replay: Any, rows: list[dict[str, Any]], path: Path, prior: Any
+    replay_experiment: Any,
+    replay_resolver: Any,
+    rows: list[dict[str, Any]],
+    path: Path,
+    prior: Any,
 ) -> None:
     import pyarrow.parquet as pq
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.semantics.design import Randomized
     from increment.semantics.models import MeanMetric
     from increment.sources import MomentsSource, export_source_moments
     from tests.analysis_factory import lift_rows
 
-    before = lift_rows(replay.run(prior=None))[0]
+    before = lift_rows(view_readout(replay_experiment, replay_resolver, prior=None))[0]
     source = MomentsSource(
         rows,
         metrics=[MeanMetric(name="y", entity="unit", fact="y")],
@@ -196,22 +211,22 @@ def _assert_legacy_prior_roundtrip(
         design=Randomized(control_group="control"),
     )
     export_source_moments(source, path, observational_refusal=lambda _metric: None)
-    reloaded = Analysis.from_moments(
+    experiment, resolver = from_moments(
         pq.read_table(path).to_pylist(),
         control="control",
         metrics=[MetricSpec(name="y", prior=prior)],
     )
     try:
-        after = lift_rows(reloaded.run(prior=None))[0]
+        after = lift_rows(view_readout(experiment, resolver, prior=None))[0]
         assert after.discovery == before.discovery
         assert after.family_axes == before.family_axes
         assert after.family_size == before.family_size
     finally:
-        reloaded.close()
+        resolver.close()
 
 
 def _assert_explicit_nonmember_plan_stays_excluded(rows: Any, prior: Any) -> str:
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from tests.analysis_factory import lift_rows
 
     explicit_rows = []
@@ -219,20 +234,18 @@ def _assert_explicit_nonmember_plan_stays_excluded(rows: Any, prior: Any) -> str
         payload = json.loads(row["decision_plan"])
         payload["procedures"]["y"]["family"]["member"] = False
         explicit_rows.append({**row, "decision_plan": json.dumps(payload)})
-    explicit = Analysis.from_moments(
-        explicit_rows,
-        control="control",
-        metrics=[MetricSpec(name="y", prior=prior)],
+    experiment, resolver = from_moments(
+        explicit_rows, control="control", metrics=[MetricSpec(name="y", prior=prior)]
     )
     try:
-        (row,) = lift_rows(explicit.run(prior=None))
+        (row,) = lift_rows(view_readout(experiment, resolver, prior=None))
         assert row.discovery is None
         assert row.family_axes is None
         assert row.family_size is None
         assert row.source_snapshot_id is not None
         return row.source_snapshot_id
     finally:
-        explicit.close()
+        resolver.close()
 
 
 def _rich_plan() -> CompiledDecisionPlan:
@@ -684,7 +697,6 @@ def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(t
     import pandas as pd
     import pyarrow.parquet as pq
 
-    from increment import Analysis
     from increment.frame import MetricSpec
 
     n = 10_000
@@ -698,11 +710,11 @@ def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(t
         }
     )
     metrics = [MetricSpec(name="conv", type="conversion"), MetricSpec(name="rev", type="mean")]
-    current = Analysis.from_unit_summary(
-        frame, unit="unit_id", group="group_id", control="control", metrics=metrics
+    current_experiment, current_resolver = from_frame(
+        frame, shape="summary", unit="unit_id", group="group_id", control="control", metrics=metrics
     )
     path = tmp_path / "cube.parquet"
-    current.export(path)
+    export_moments(current_experiment, current_resolver, path)
     rows = pq.read_table(path).to_pylist()
     for row in rows:
         stored = json.loads(row["decision_plan"])
@@ -710,9 +722,15 @@ def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(t
             for method in (procedure["decision_method"], *procedure["sensitivity_methods"]):
                 del method["conversion_inference"]
         row["decision_plan"] = json.dumps(stored)
-    replay = Analysis.from_moments(rows, metrics=metrics, control="control")
-    assert _lift_kinds(replay.run()) == {"conv": "binomial", "rev": "t"}
-    assert _lift_kinds(current.run()) == {"conv": "t", "rev": "t"}
+    replay_experiment, replay_resolver = from_moments(rows, metrics=metrics, control="control")
+    assert _lift_kinds(view_readout(replay_experiment, replay_resolver)) == {
+        "conv": "binomial",
+        "rev": "t",
+    }
+    assert _lift_kinds(view_readout(current_experiment, current_resolver)) == {
+        "conv": "t",
+        "rev": "t",
+    }
 
 
 def test_the_same_counts_under_a_new_default_method_take_the_delta_method_route():

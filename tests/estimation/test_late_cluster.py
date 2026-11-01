@@ -25,7 +25,7 @@ import pytest
 from scipy.stats import norm
 from scipy.stats import t as t_dist
 
-from increment.analysis import Analysis
+from increment import from_frame
 from increment.errors import CapabilityError, IncrementRuntimeWarning, InvalidRequestError
 from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
 from increment.estimation.encouragement import (
@@ -40,9 +40,10 @@ from increment.estimation.inference import Normal
 from increment.estimation.sequential import AlwaysValid
 from increment.estimation.variance import cluster_uptake_moments
 from increment.frame import CupedCovariate, MetricSpec, from_unit_summary
+from increment.query import panel_sql
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 from increment.semantics.models import Definitions, MeanMetric
-from tests.analysis_factory import make_analysis
+from tests.analysis_factory import make_binding, view_readout
 from tests.mc import CoverageSet, mcse
 from tests.sequential_cases import registration
 from tests.warning_codes import warning_codes
@@ -100,15 +101,19 @@ def test_singleton_cluster_late_matches_unclustered_exactly():
     tbl = _singleton_table(seed=3, n_per_arm=30)
 
     def _run(cluster: str | None):
-        return Analysis.from_unit_summary(
-            tbl,
-            unit="user_id",
-            group="variant",
-            metrics={"revenue": "mean"},
-            design=DESIGN,
-            uptake="took",
-            cluster=cluster,
-        ).run(estimands=("late",))
+        return view_readout(
+            *from_frame(
+                tbl,
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                metrics={"revenue": "mean"},
+                design=DESIGN,
+                uptake="took",
+                cluster=cluster,
+            ),
+            estimands=("late",),
+        )
 
     flat = next(r for r in _run(None) if r.value_scale == "absolute")
     clustered = next(r for r in _run("store_id") if r.value_scale == "absolute")
@@ -673,7 +678,7 @@ def _native_cluster_analysis(
             ],
         }
     )
-    return make_analysis(con, defs, experiment="native_late", _design=design)
+    return make_binding(con, defs, experiment="native_late", design=design)
 
 
 @pytest.mark.integration
@@ -682,13 +687,13 @@ def test_clustered_preperiod_does_not_recommend_refused_cuped() -> None:
 
     from increment.semantics.design import Randomized
 
-    analysis = _native_cluster_analysis(
+    experiment, resolver = _native_cluster_analysis(
         n_pre_periods=14,
         design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run()
+        view_readout(experiment, resolver)
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
@@ -698,14 +703,16 @@ def test_clustered_exploratory_only_run_does_not_recommend_refused_cuped() -> No
 
     from increment.semantics.design import Randomized
 
-    analysis = _native_cluster_analysis(
+    experiment, resolver = _native_cluster_analysis(
         n_pre_periods=14,
         design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
         exploratory_metric=True,
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rows = analysis.run(metrics=[], exploratory_metrics=["revenue_exploratory"])
+        rows = view_readout(
+            experiment, resolver, metrics=[], exploratory_metrics=["revenue_exploratory"]
+        )
 
     assert rows
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
@@ -823,18 +830,18 @@ def test_cluster_with_ratio_metric_and_encouragement_refuses_in_the_estimator():
 @pytest.mark.integration
 def test_native_encouragement_cluster_refuses_cuped_by_pre_periods():
     """Public panel SQL preserves the native CUPED/cluster refusal."""
-    analysis = _native_cluster_analysis(n_pre_periods=14)
+    experiment, resolver = _native_cluster_analysis(n_pre_periods=14)
     with pytest.raises(CapabilityError) as raised:
-        analysis.panel_sql()
+        panel_sql(experiment, resolver)
     assert raised.value.code == "evidence.operation_unavailable"
 
 
 @pytest.mark.integration
 def test_native_encouragement_cluster_refuses_ratio_metric():
     """Public panel SQL preserves the native ratio/cluster refusal."""
-    analysis = _native_cluster_analysis(ratio=True)
+    experiment, resolver = _native_cluster_analysis(ratio=True)
     with pytest.raises(CapabilityError) as raised:
-        analysis.panel_sql()
+        panel_sql(experiment, resolver)
     assert raised.value.code == "evidence.operation_unavailable"
 
 

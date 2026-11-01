@@ -124,8 +124,8 @@ _TRIGGER_UNSUPPORTED = RefusalSpec(
             else f"{method}: experiment {experiment!r} declares trigger {trigger!r}, "
             "which this readout does not apply."
         )
-        + " To analyze triggered populations, use Analysis.from_definitions or an "
-        "Analysis.from_unit_day_artifact carrying trigger-population evidence."
+        + " To analyze triggered populations, build the experiment with from_definitions, "
+        "or with from_unit_day_artifact from an artifact carrying trigger-population evidence."
     ),
 )
 _UNKNOWN_DIMENSION = RefusalSpec(
@@ -141,7 +141,7 @@ _UNDECLARED_METRIC_FOR_DIMENSION = RefusalSpec(
 _ENCOURAGEMENT_DAILY_LATE = RefusalSpec(
     "facade.analysis.encouragement_daily_late",
     InvalidRequestError,
-    template="run_daily_lift: per-day incremental LATE is statistically meaningless under a weak daily first stage; use run_asof_lift for the as-of trend instead",
+    template="daily lift: per-day incremental LATE is statistically meaningless under a weak daily first stage; read the as-of trend with a Scope(view='asof', grain='asof') view instead",
     keys=frozenset({"experiment"}),
 )
 _OBSERVATIONAL_DAY_AXIS = RefusalSpec(
@@ -238,8 +238,6 @@ def _compliance_readouts(
     )
 
 
-# The arm-family guard (`Analysis._require_arm_state`) stays in the facade:
-# every day-axis method must call it first, before delegating here.
 def validate_day_axis(
     req: DayAxisRequest,
     *,
@@ -1620,7 +1618,7 @@ class DayAxisReadouts:
         req = replace(req, experiment=self._experiment)
         scope = _day_axis_scope(req) if scope is None else scope
         route = self._route()
-        from increment._analysis_config import validate_scalar_route
+        from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
 
         _, requested_estimands, encouragement_design = validate_lift_request(
             req,
@@ -1768,7 +1766,7 @@ class DayAxisReadouts:
         scalar_evidence = evidence_provider(self._src).evidence.scalar
         validate_scalar_route(
             opts.configs,
-            route=f"Analysis.{req.caller}",
+            route=DAY_AXIS_ROUTES[req.caller],
             representation=(
                 "registered"
                 if getattr(self._plan.inference, "registration", None) is not None
@@ -2015,39 +2013,6 @@ def _day_axis_lift(
         prior=prior,
         options=options,
     )
-
-
-def preflight_line4_views(
-    binding: SourceBinding,
-    *,
-    population: Literal["assigned", "triggered"],
-    readouts: Sequence[Literal["run", "daily", "daily_lift", "asof", "asof_lift"]],
-) -> None:
-    """Validate the population's day-axis requests before their shared scope opens."""
-    caller_by_name: dict[
-        str, Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
-    ] = {
-        "daily": "run_daily",
-        "daily_lift": "run_daily_lift",
-        "asof": "run_asof",
-        "asof_lift": "run_asof_lift",
-    }
-    day_axis = day_axis_readouts(binding)
-    experiment = getattr(binding.state, "experiment", None)
-    for name in readouts:
-        if name == "run":
-            continue
-        grain = "daily" if name.startswith("daily") else "asof"
-        request = DayAxisRequest(
-            caller=caller_by_name[name],
-            grain=grain,
-            metrics=tuple(binding.metrics),
-            dimension=None,
-            estimands=None,
-            population=population,
-            experiment=experiment,
-        )
-        day_axis.validate_request(request, lift=name.endswith("_lift"))
 
 
 def run_daily(

@@ -4,17 +4,18 @@ import json
 import pickle
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, CupedCovariate, Method, MetricSpec
+from increment import AnalysisPlan, CupedCovariate, Method, MetricSpec, from_definitions, from_frame
 from increment.errors import CodedError
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.readout_types import ReadoutResults
 from increment.estimation.results import LiftEstimate
 from tests._override_warnings import allow_declared_overrides
+from tests.analysis_factory import view_readout
 
 
 def _method(kind: str, *, name: str, covariate: str) -> Method:
@@ -74,8 +75,13 @@ def _frame_readout(
         kwargs.pop("control")
         kwargs["design"] = Encouragement(control_group="control", uptake=UptakeSpec(fact="uptake"))
         kwargs["uptake"] = "uptake"
-    factory = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
-    return factory(pa.Table.from_pylist(rows), **kwargs).run(estimands=("itt",))
+    table = pa.Table.from_pylist(rows)
+    experiment, resolver = (
+        from_frame(table, shape="panel", **kwargs)
+        if panel
+        else from_frame(table, shape="summary", **kwargs)
+    )
+    return view_readout(experiment, resolver, estimands=("itt",))
 
 
 @pytest.mark.grid(
@@ -236,14 +242,16 @@ def test_definitions_and_artifact_keep_decision_family_when_companion_changes(
     else:
         decision = Method.unadjusted(name="decision")
     if route == "artifact":
-        analysis, _manifest = _publish_and_reopen(
+        (experiment, resolver), _manifest = _publish_and_reopen(
             path, con, request_covariate=False, full_catalog=True
         )
     else:
-        analysis = Analysis.from_definitions("cov_test", path, con)
+        experiment, resolver = from_definitions(path, con, experiment_name="cov_test")
     try:
-        with analysis:
-            first = analysis.run(decision_method=decision, sensitivity_methods=(methods[1],))
+        with cast(Any, resolver):
+            first = view_readout(
+                experiment, resolver, decision_method=decision, sensitivity_methods=(methods[1],)
+            )
             if route == "native":
                 con.raw_sql("UPDATE cov_events SET history_b = 2 * history_b")
                 companion = methods[1]
@@ -251,8 +259,12 @@ def test_definitions_and_artifact_keep_decision_family_when_companion_changes(
                 companion = Method.cuped_multicovariate(
                     name="alternate", covariates=methods[1].covariates
                 )
-            changed = analysis.run(decision_method=decision, sensitivity_methods=(companion,))
-            alone = analysis.run(decision_method=decision, sensitivity_methods=())
+            changed = view_readout(
+                experiment, resolver, decision_method=decision, sensitivity_methods=(companion,)
+            )
+            alone = view_readout(
+                experiment, resolver, decision_method=decision, sensitivity_methods=()
+            )
         assert first.metadata is not None and changed.metadata is not None
         assert first.metadata.scope.snapshot_id != changed.metadata.scope.snapshot_id
         original = next(

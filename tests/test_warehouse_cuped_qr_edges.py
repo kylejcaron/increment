@@ -8,11 +8,14 @@ from typing import Any, cast
 import ibis
 import pytest
 
+from increment import Scope, from_definitions, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CodedError
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate
 from increment.query._cuped_qr import encode_qr_covariates, fit_warehouse_qr
 from increment.query.cuped import _ResolvedCupedRequest, fit_multicovariate_source
+from tests.analysis_factory import view_readout
 from tests.test_warehouse_cuped_qr import _scratch_session
 
 pytestmark = pytest.mark.integration
@@ -192,7 +195,6 @@ def test_categorical_ratio_withholds_invalid_arm_before_fit(tmp_path):
 def test_breakout_null_and_reserved_label_stay_distinct(route, tmp_path):
     import warnings
 
-    from increment import Analysis
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -207,7 +209,7 @@ def test_breakout_null_and_reserved_label_stay_distinct(route, tmp_path):
     con.create_table("mixed_breakout_events", obj=mixed_cuped_event_rows(units))
     path = tmp_path / "reserved.yaml"
     path.write_text(mixed_cuped_definitions_yaml("mixed_breakout_events", breakout=True))
-    native = Analysis.from_definitions("mixed_cuped", path, con)
+    native = from_definitions(path, con, experiment_name="mixed_cuped")
     adopted = None
     try:
         analysis = native
@@ -218,20 +220,22 @@ def test_breakout_null_and_reserved_label_stay_distinct(route, tmp_path):
             context = artifact_context(definitions, experiment, "error")
             store = WarehouseArtifactStore(con, schema_name="reserved_artifacts")
             extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-            reference = native.publish_unit_day_artifact(store, extensions=extensions)
-            adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+            reference = publish_unit_day_artifact(*native, store, extensions=extensions)
+            adopted = from_unit_day_artifact(store, reference, expected_context=context)
             analysis = adopted
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            rows = analysis.run_breakout(metrics=["revenue"])
+            rows = view_readout(
+                *analysis, Scope(view="breakout", grain="total"), metrics=["revenue"]
+            )
         cells = {row.dimension_value: row for row in rows}
         assert set(cells) == {"__null__", "\\__null__"}
         assert cells["__null__"].lift is not None
         assert cells["\\__null__"].lift is not None
     finally:
         if adopted is not None:
-            adopted.close()
-        native.close()
+            adopted[1].close()
+        cast(Any, native[1]).close()
         con.disconnect()
 
 
@@ -309,7 +313,6 @@ def test_negative_infinite_covariate_uses_coded_refusal():
 
 
 def test_public_cuped_readout_preserves_nonfinite_fit_refusal(tmp_path):
-    from increment import Analysis
     from tests.parity_harness import matrix_data
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -319,12 +322,11 @@ def test_public_cuped_readout_preserves_nonfinite_fit_refusal(tmp_path):
     con.create_table("headline_failure_events", obj=mixed_cuped_event_rows(units))
     path = tmp_path / "headline_failure.yaml"
     path.write_text(mixed_cuped_definitions_yaml("headline_failure_events"))
-    analysis = Analysis.from_definitions("mixed_cuped", path, con)
+    experiment, resolver = from_definitions(path, con, experiment_name="mixed_cuped")
     try:
-        (row,) = analysis.run(metrics=["revenue"])
-        row = cast(Any, row)
+        (row,) = view_readout(experiment, resolver, metrics=["revenue"])
         assert row.failure_code == "estimation.cuped_linear.nonfinite"
         assert row.failure_context["name"] == "pre_revenue"
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()

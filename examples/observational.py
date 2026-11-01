@@ -14,26 +14,28 @@ def _():
 
     from increment import (
         AdjustmentSet,
-        Analysis,
         IdentificationGate,
         Method,
         Observational,
+        from_frame,
+        run,
     )
     from increment.tables import estimates_to_readout, readout_table
 
     return (
         AdjustmentSet,
-        Analysis,
         IdentificationGate,
         Method,
         Observational,
         ct,
         estimates_to_readout,
         expit,
+        from_frame,
         mo,
         np,
         pd,
         readout_table,
+        run,
     )
 
 
@@ -89,14 +91,16 @@ def _(mo):
 
 
 @app.cell
-def _(Analysis, df):
-    naive_results = Analysis.from_unit_summary(
+def _(df, from_frame, run):
+    _experiment, _resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
-    ).run()
+    )
+    naive_results = run(_experiment, _resolver).readout()
     return (naive_results,)
 
 
@@ -138,9 +142,10 @@ def _(mo):
 
 
 @app.cell
-def _(AdjustmentSet, Analysis, IdentificationGate, Observational, df):
-    iptw_analysis = Analysis.from_unit_summary(
+def _(AdjustmentSet, IdentificationGate, Observational, df, from_frame, run):
+    iptw_experiment, iptw_resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -150,8 +155,8 @@ def _(AdjustmentSet, Analysis, IdentificationGate, Observational, df):
             gate=IdentificationGate(overlap="trim"),
         ),
     )
-    iptw_results = iptw_analysis.run()
-    return iptw_analysis, iptw_results
+    iptw_results = run(iptw_experiment, iptw_resolver).readout()
+    return iptw_experiment, iptw_resolver, iptw_results
 
 
 @app.cell
@@ -173,8 +178,8 @@ def _(mo):
 
 
 @app.cell
-def _(Method, iptw_analysis):
-    dml_results = iptw_analysis.run(decision_method=Method(name="dml"))
+def _(Method, iptw_experiment, iptw_resolver, run):
+    dml_results = run(iptw_experiment, iptw_resolver, decision_method=Method(name="dml")).readout()
     return (dml_results,)
 
 

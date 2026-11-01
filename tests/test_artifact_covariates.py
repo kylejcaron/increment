@@ -4,15 +4,18 @@ property on its own `unit_covariate_level` relation."""
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import narwhals as nw
 import pytest
 
-from increment.analysis import Analysis
+from increment import Scope, from_definitions, from_frame, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CodedError
 from increment.semantics.artifact import UnitDayArtifactManifest
 from tests._evidence_requests import _unit_rows
 from tests._override_warnings import allow_declared_overrides
-from tests.analysis_factory import _moment_source
+from tests.analysis_factory import bound_source, view_readout
 from tests.covariate_cases import categorical_defs_and_con, covariate_defs_and_con
 
 pytestmark = pytest.mark.integration
@@ -38,7 +41,7 @@ _LEGACY_COVARIATE_EXTENSION_FIELDS = frozenset(
 
 def _publish_and_reopen(
     defs_path, con, *, request_covariate: bool, full_catalog: bool = False
-) -> tuple[Analysis, UnitDayArtifactManifest]:
+) -> tuple[Any, UnitDayArtifactManifest]:
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -50,7 +53,9 @@ def _publish_and_reopen(
     assert experiment is not None
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    native = Analysis.from_definitions("cov_test", defs_path, con)
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
     requests = (
         [UnitCovariateRequest(property_name="tenure", source_name="events")]
         if request_covariate
@@ -58,10 +63,10 @@ def _publish_and_reopen(
     )
     if full_catalog:
         requests = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context), manifest
+    return from_unit_day_artifact(store, ref, expected_context=context), manifest
 
 
 @pytest.mark.integration
@@ -70,8 +75,8 @@ def test_artifact_serves_declared_unit_covariate_and_keeps_missing_null(tmp_path
 
     defs_path, con, tenure, _group, _revenue = covariate_defs_and_con(tmp_path, observational=True)
     con.raw_sql("UPDATE cov_events SET tenure = NULL WHERE user_id = 'u3'")
-    analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=True)
-    source = _moment_source(analysis)
+    (_, resolver), _ = _publish_and_reopen(defs_path, con, request_covariate=True)
+    source = bound_source(resolver)
     assert isinstance(source.context.design, Observational)
     assert source.context.design.adjustment.covariates == ("tenure",)
     table = nw.from_native(
@@ -88,8 +93,8 @@ def test_artifact_auto_publishes_declared_covariate_without_explicit_request(tmp
     publishing must include it even when the caller never builds a
     `UnitCovariateRequest` by hand."""
     defs_path, con, tenure, _group, _revenue = covariate_defs_and_con(tmp_path, observational=True)
-    analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
-    source = _moment_source(analysis)
+    (_, resolver), _ = _publish_and_reopen(defs_path, con, request_covariate=False)
+    source = bound_source(resolver)
     table = nw.from_native(
         _unit_rows(source, source.context.metrics[0], covariates=["tenure"]), eager_only=True
     ).to_arrow()
@@ -108,8 +113,8 @@ def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_
             "[{name: tenure, kind: categorical, property: region, source: events}]}}}",
         )
     )
-    analysis, _ = _publish_categorical(defs_path, con)
-    source = _moment_source(analysis)
+    (_, resolver), _ = _publish_categorical(defs_path, con)
+    source = bound_source(resolver)
     table = nw.from_native(
         _unit_rows(source, source.context.metrics[0], covariates=["tenure"]), eager_only=True
     ).to_arrow()
@@ -132,13 +137,13 @@ def test_observational_property_wins_over_same_named_measure_binding_on_replay(t
             "{fact: exposure, aggregation: count}}]}}}",
         )
     )
-    analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
-    artifact = _moment_source(analysis)
+    (_, resolver), _ = _publish_and_reopen(defs_path, con, request_covariate=False)
+    artifact = bound_source(resolver)
     artifact_rows = nw.from_native(
         _unit_rows(artifact, artifact.context.metrics[0], covariates=["tenure"]),
         eager_only=True,
     ).to_arrow()
-    native = _moment_source(Analysis.from_definitions("cov_test", defs_path, con))
+    native = bound_source(from_definitions(defs_path, con, experiment_name="cov_test")[1])
     native_rows = nw.from_native(
         _unit_rows(native, native.context.metrics[0], covariates=["tenure"]),
         eager_only=True,
@@ -160,13 +165,25 @@ def test_artifact_scalar_cuped_uses_named_property_covariate(tmp_path):
             "[{name: tenure, kind: continuous, property: tenure, source: events}]}}}",
         )
     )
-    artifact, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
-    native = Analysis.from_definitions("cov_test", defs_path, con)
+    (artifact_experiment, artifact_resolver), _ = _publish_and_reopen(
+        defs_path, con, request_covariate=False
+    )
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
 
     from increment.estimation.results import LiftEstimate
 
-    artifact_row = next(row for row in artifact.run() if getattr(row, "method", None) == "scalar")
-    native_row = next(row for row in native.run() if getattr(row, "method", None) == "scalar")
+    artifact_row = next(
+        row
+        for row in view_readout(artifact_experiment, artifact_resolver)
+        if getattr(row, "method", None) == "scalar"
+    )
+    native_row = next(
+        row
+        for row in view_readout(native_experiment, native_resolver)
+        if getattr(row, "method", None) == "scalar"
+    )
     assert isinstance(artifact_row, LiftEstimate)
     assert isinstance(native_row, LiftEstimate)
     assert artifact_row.require_lift().value == pytest.approx(native_row.require_lift().value)
@@ -185,7 +202,7 @@ def test_reserved_binding_alias_has_same_native_and_artifact_refusal(tmp_path):
     )
 
     with pytest.raises(CodedError) as native_error:
-        Analysis.from_definitions("cov_test", defs_path, con)
+        from_definitions(defs_path, con, experiment_name="cov_test")
     with pytest.raises(CodedError) as artifact_error:
         _publish_and_reopen(defs_path, con, request_covariate=False)
 
@@ -202,9 +219,7 @@ def test_undeclared_covariate_cannot_be_published(tmp_path):
     assert raised.value.code == "artifact.extension.missing"
 
 
-def _publish_categorical(
-    defs_path, con, *, extensions=()
-) -> tuple[Analysis, UnitDayArtifactManifest]:
+def _publish_categorical(defs_path, con, *, extensions=()) -> tuple[Any, UnitDayArtifactManifest]:
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics import load
@@ -214,11 +229,15 @@ def _publish_categorical(
     assert experiment is not None
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    native = Analysis.from_definitions("cat_test", defs_path, con)
-    ref = native.publish_unit_day_artifact(store, extensions=list(extensions))
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
+    ref = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=list(extensions)
+    )
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context), manifest
+    return from_unit_day_artifact(store, ref, expected_context=context), manifest
 
 
 @pytest.mark.integration
@@ -230,8 +249,8 @@ def test_artifact_serves_a_string_covariate_as_levels_and_keeps_missing_null(tmp
     import pyarrow as pa
 
     defs_path, con, units = categorical_defs_and_con(tmp_path, null_units=("u3",))
-    analysis, manifest = _publish_categorical(defs_path, con)
-    source = _moment_source(analysis)
+    (_, resolver), manifest = _publish_categorical(defs_path, con)
+    source = bound_source(resolver)
     carriers = {
         extension.covariate_name: (extension.kind, extension.relation.role)
         for extension in manifest.extensions
@@ -275,12 +294,12 @@ def test_string_covariate_is_requestable_only_under_its_level_request(tmp_path):
     assert raised.value.code == "artifact.extension.missing"
 
     defs_path, con, units = categorical_defs_and_con(tmp_path)
-    analysis, _ = _publish_categorical(
+    (_, resolver), _ = _publish_categorical(
         defs_path,
         con,
         extensions=[UnitCovariateLevelRequest(property_name="region", source_name="events")],
     )
-    source = _moment_source(analysis)
+    source = bound_source(resolver)
     table = nw.from_native(
         _unit_rows(source, source.context.metrics[0], covariates=["region"]), eager_only=True
     ).to_arrow()
@@ -300,7 +319,7 @@ def test_numeric_covariate_wire_is_untouched_by_the_level_relation(tmp_path):
     from increment.semantics.artifact import UnitCovariateExtension
 
     defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
-    _analysis, manifest = _publish_and_reopen(defs_path, con, request_covariate=False)
+    _pair, manifest = _publish_and_reopen(defs_path, con, request_covariate=False)
     (extension,) = [e for e in manifest.extensions if e.kind == "unit_covariate"]
     assert extension.relation.role == "unit_covariate"
     assert extension.relation.schema_sha256 == schema_sha256(
@@ -350,13 +369,16 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
             for unit in groups
         ]
     )
-    artifact, _ = _publish_and_reopen(path, con, request_covariate=False)
+    (artifact_experiment, artifact_resolver), _ = _publish_and_reopen(
+        path, con, request_covariate=False
+    )
     try:
-        native = Analysis.from_definitions("cov_test", path, con)
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
 
         def make_frame():
-            return Analysis.from_unit_summary(
+            return from_frame(
                 table,
+                shape="summary",
                 unit="unit",
                 group="group",
                 control="control",
@@ -374,8 +396,13 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
             )
 
         if missing == "refuse":
-            with native, make_frame() as frame:
-                for result in (native.run(), frame.run(), artifact.run()):
+            frame_experiment, frame_resolver = make_frame()
+            with cast(Any, native_resolver), frame_resolver:
+                for result in (
+                    view_readout(native_experiment, native_resolver),
+                    view_readout(frame_experiment, frame_resolver),
+                    view_readout(artifact_experiment, artifact_resolver),
+                ):
                     (row,) = result
                     assert isinstance(row, LiftEstimate)
                     assert row.lift is None
@@ -383,11 +410,14 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
             return
 
         with pytest.warns(IncrementWarning):
-            frame = make_frame()
-        with native, frame:
-            (expected,) = frame.run()
+            frame_experiment, frame_resolver = make_frame()
+        with cast(Any, native_resolver), frame_resolver:
+            (expected,) = view_readout(frame_experiment, frame_resolver)
             assert isinstance(expected, LiftEstimate)
-            for result in (native.run(), artifact.run()):
+            for result in (
+                view_readout(native_experiment, native_resolver),
+                view_readout(artifact_experiment, artifact_resolver),
+            ):
                 (actual,) = result
                 assert isinstance(actual, LiftEstimate)
                 assert actual.require_lift().value == pytest.approx(
@@ -397,7 +427,7 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
                     expected.require_lift().log_se, rel=1e-10
                 )
     finally:
-        artifact.close()
+        artifact_resolver.close()
         con.disconnect()
 
 
@@ -409,13 +439,23 @@ def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
     path, con, methods, *_ = _scalar_native_case(tmp_path, bare=True, mixed=mixed)
-    artifact, _ = _publish_and_reopen(path, con, request_covariate=False)
+    (artifact_experiment, artifact_resolver), _ = _publish_and_reopen(
+        path, con, request_covariate=False
+    )
     try:
-        with Analysis.from_definitions("cov_test", path, con) as native:
-            expected = {row.method: row for row in native.run()}
-            joint = {row.method: row for row in artifact.run()}
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native_resolver):
+            expected = {row.method: row for row in view_readout(native_experiment, native_resolver)}
+            joint = {
+                row.method: row for row in view_readout(artifact_experiment, artifact_resolver)
+            }
             for method in methods:
-                (alone,) = artifact.run(decision_method=method, sensitivity_methods=())
+                (alone,) = view_readout(
+                    artifact_experiment,
+                    artifact_resolver,
+                    decision_method=method,
+                    sensitivity_methods=(),
+                )
                 for actual in (joint[method.name], alone):
                     oracle = expected[method.name]
                     assert isinstance(actual, LiftEstimate)
@@ -427,7 +467,7 @@ def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed
                         oracle.require_lift().log_se, rel=1e-10
                     )
     finally:
-        artifact.close()
+        artifact_resolver.close()
         con.disconnect()
 
 
@@ -458,14 +498,20 @@ def test_artifact_implicit_and_named_scalar_families_match_standalone(tmp_path):
         "INSERT INTO cov_events SELECT user_id, TIMESTAMP '2025-07-25', 'purchase', "
         "NULL, NULL, tenure, tenure, history_b, segment FROM cov_events WHERE tenure IS NOT NULL"
     )
-    artifact, _ = _publish_and_reopen(path, con, request_covariate=False, full_catalog=True)
+    (experiment, resolver), _ = _publish_and_reopen(
+        path, con, request_covariate=False, full_catalog=True
+    )
     try:
         joint = {
             row.method: row
-            for row in artifact.run(decision_method=implicit, sensitivity_methods=(named,))
+            for row in view_readout(
+                experiment, resolver, decision_method=implicit, sensitivity_methods=(named,)
+            )
         }
         for method in (implicit, named):
-            (alone,) = artifact.run(decision_method=method, sensitivity_methods=())
+            (alone,) = view_readout(
+                experiment, resolver, decision_method=method, sensitivity_methods=()
+            )
             actual = joint[method.name]
             assert isinstance(actual, LiftEstimate)
             assert isinstance(alone, LiftEstimate)
@@ -476,7 +522,7 @@ def test_artifact_implicit_and_named_scalar_families_match_standalone(tmp_path):
                 alone.require_lift().log_se, rel=1e-10
             )
     finally:
-        artifact.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -489,7 +535,9 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
             "    start:", "    breakouts: [{property: segment, source: events}]\n    start:"
         )
     )
-    artifact, _ = _publish_and_reopen(path, con, request_covariate=False, full_catalog=True)
+    (experiment, resolver), _ = _publish_and_reopen(
+        path, con, request_covariate=False, full_catalog=True
+    )
     try:
 
         def forbidden(*args, **kwargs):
@@ -497,11 +545,17 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
 
         monkeypatch.setattr(con, "to_pyarrow", forbidden)
         with pytest.raises(CodedError) as raised:
-            artifact.run_breakout(decision_method=methods[1], sensitivity_methods=())
+            view_readout(
+                experiment,
+                resolver,
+                Scope(view="breakout", grain="total"),
+                decision_method=methods[1],
+                sensitivity_methods=(),
+            )
         assert raised.value.code == "artifact.cuped.scalar_breakout"
         assert raised.value.context["route"] == "from_unit_day_artifact.run_breakout"
     finally:
-        artifact.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -524,7 +578,9 @@ def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path
         )
     )
     con.raw_sql("UPDATE cov_events SET tenure = NULL WHERE user_id IN ('u1', 'u12')")
-    artifact, _ = _publish_and_reopen(path, con, request_covariate=False)
+    (artifact_experiment, artifact_resolver), _ = _publish_and_reopen(
+        path, con, request_covariate=False
+    )
     requested = Method.cuped(
         name="scalar",
         covariates=CupedCovariateBinding(
@@ -537,9 +593,17 @@ def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path
     )
     path.write_text(path.read_text().replace("missing: impute", f"missing: {missing}"))
     try:
-        with Analysis.from_definitions("cov_test", path, con) as standalone:
-            (expected,) = standalone.run()
-            (actual,) = artifact.run(decision_method=requested, sensitivity_methods=())
+        standalone_experiment, standalone_resolver = from_definitions(
+            path, con, experiment_name="cov_test"
+        )
+        with cast(Any, standalone_resolver):
+            (expected,) = view_readout(standalone_experiment, standalone_resolver)
+            (actual,) = view_readout(
+                artifact_experiment,
+                artifact_resolver,
+                decision_method=requested,
+                sensitivity_methods=(),
+            )
         assert isinstance(expected, LiftEstimate)
         assert isinstance(actual, LiftEstimate)
         if missing == "refuse":
@@ -557,11 +621,11 @@ def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path
                 expected.require_lift().log_se, rel=1e-10
             )
             if missing == "zero":
-                (published,) = artifact.run()
+                (published,) = view_readout(artifact_experiment, artifact_resolver)
                 assert isinstance(published, LiftEstimate)
                 assert actual.require_lift().log_se != pytest.approx(
                     published.require_lift().log_se, rel=1e-10
                 )
     finally:
-        artifact.close()
+        artifact_resolver.close()
         con.disconnect()

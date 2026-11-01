@@ -55,7 +55,7 @@ _TRIGGER_READS = (
     ),
     (
         "dashboard",
-        "dashboard_group_data(population=...)",
+        "prepare_dashboard() group data",
         "tests.test_analysis_trigger::test_triggered_factor_group_and_allocation_preserve_population",
     ),
     (
@@ -151,11 +151,11 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "dashboard_artifact_refused",
                     _operation,
                     "from_unit_day_artifact",
-                    "dashboard group operation is not implemented by the artifact facade",
+                    "dashboard preparation requested from an adopted artifact",
                     "refused",
                     _evidence,
-                    codes=("evidence.operation_unavailable",),
-                    reason="Artifact-backed facade does not expose dashboard grouping.",
+                    codes=("dashboard.unsupported_experiment",),
+                    reason="An adopted artifact records no primary metric, so the dashboard refuses it before any read.",
                 ),
             )
         )
@@ -196,7 +196,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "refused",
                     "tests.test_allocation_history::test_allocation_history_refuses_a_seam_family_instance",
                     codes=("evidence.operation_unavailable",),
-                    reason="Moments-backed facade does not retain raw allocation events.",
+                    reason="A moments experiment does not retain raw allocation events.",
                 ),
                 *(
                     _expectation(
@@ -417,6 +417,8 @@ for _key, _operation, _evidence in _TRIGGER_READS:
             if _suffix == "switchback"
             else "evidence.breakout_unavailable"
             if _key == "breakout"
+            else "dashboard.unsupported_experiment"
+            if _key == "dashboard"
             else "evidence.operation_unavailable"
         )
         _TRIGGER_AUXILIARY_OUTCOMES.append(
@@ -608,7 +610,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         (
             _expectation(
                 "moments_checkpoint_reexport_refused",
-                "Analysis.export(sequential checkpoint)",
+                "workflows.export_moments(sequential checkpoint)",
                 "from_moments",
                 "a moments-replayed source receives an export request for a sequential checkpoint",
                 "refused",
@@ -624,7 +626,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         (
             _expectation(
                 "relative_margin_summary_constructor_refused",
-                "from_unit_summary(..., plan=relative margin)",
+                'from_frame(shape="summary", ..., plan=relative margin)',
                 "from_unit_summary",
                 "Observational design declares relative margin",
                 "refused",
@@ -635,7 +637,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
             _expectation(
                 "relative_margin_moments_constructor_refused",
-                "Analysis.from_moments(..., plan=relative margin)",
+                "from_moments(..., plan=relative margin)",
                 "from_moments",
                 "Observational design declares relative margin",
                 "refused",
@@ -657,7 +659,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
             _expectation(
                 "relative_margin_definitions_facade_refused",
-                "make_analysis_like(..., design=Observational)",
+                "from_definitions(...) with an Observational design",
                 "from_definitions",
                 "Definitions-backed metric declares a relative margin",
                 "refused",
@@ -668,7 +670,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
             _expectation(
                 "relative_margin_quantile_moments_refused",
-                "Analysis.from_moments(..., quantile + relative margin)",
+                "from_moments(..., quantile + relative margin)",
                 "from_moments",
                 "Quantile metric has a declared relative margin under Observational design",
                 "refused",
@@ -970,7 +972,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
             _expectation(
                 "itt_late_panel_refused",
-                "Analysis.from_unit_panel() with retention outcome",
+                'from_frame(shape="panel") with retention outcome',
                 "from_unit_panel",
                 "Encouragement design declares a retention outcome",
                 "refused",
@@ -981,7 +983,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
             _expectation(
                 "itt_late_summary_refused",
-                "Analysis.from_unit_summary() with retention outcome",
+                'from_frame(shape="summary") with retention outcome',
                 "from_unit_summary",
                 "retention threshold_days needs per-unit dates the summary does not carry",
                 "refused",
@@ -1016,7 +1018,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         tuple(
             _expectation(
                 f"{metric_type}_multi_arm_refused",
-                "Analysis.from_switchback_panel()",
+                "from_switchback_frame()",
                 "from_switchback_panel",
                 f"Randomized allocation has control plus multiple treatment arms; {metric_type} metric",
                 "refused",
@@ -1070,9 +1072,9 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         (
             _expectation(
                 "switchback_encouragement_identification_refused",
-                "Analysis.from_switchback_panel(identification=Encouragement)",
+                "from_switchback_frame(identification=Encouragement)",
                 "from_switchback_panel",
-                "Encouragement design supplies identification to the switchback facade",
+                "Encouragement design supplies identification to the switchback builder",
                 "refused",
                 "tests.test_readouts_encouragement::test_encouragement_switchback_identification_is_refused",
                 codes=("source.frame.switchback.identification",),
@@ -1088,10 +1090,10 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 f"analysis_ingress_{ingress}_not_expressible",
                 "estimate_policy_contrast()",
                 ingress,
-                "Analysis ingresses cannot carry a LoggedTrace, which is the required contrast input",
+                "Experiment builders cannot carry a LoggedTrace, which is the required contrast input",
                 "not_expressible",
                 "tests.logged_policy.test_public_api::test_estimator_and_results_exports_resolve_lazily_to_the_family_modules",
-                reason="Policy contrast is a separate family-owned estimand, not an Analysis readout.",
+                reason="Policy contrast is a separate family-owned estimand, not an experiment readout.",
             )
             for ingress in (
                 "from_unit_summary",
@@ -1107,10 +1109,10 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 f"policy_persistence_analysis_ingress_{ingress}_not_comparable",
                 "TabularPolicy JSON/Python persistence",
                 ingress,
-                "Analysis source persists effect-analysis results rather than policy tables",
+                "experiment runs save effect-analysis results rather than policy tables",
                 "not_comparable",
                 "tests.logged_policy.test_public_api::test_builtin_integer_keyed_policies_persist_in_python_mode_only",
-                reason="TabularPolicy persistence is family-owned and not an Analysis persistence operation.",
+                reason="TabularPolicy persistence is family-owned and not an experiment run persistence operation.",
             )
             for ingress in (
                 "from_unit_summary",
@@ -1250,13 +1252,13 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 "publication_from_definitions_supported",
                 "publish_unit_day_artifact()",
                 "from_definitions",
-                "definitions-backed Analysis publishes its warehouse artifact",
+                "a definitions experiment publishes its warehouse artifact",
                 "supported",
                 "tests.test_analysis_facade::test_public_artifact_adoption_matches_native_results",
             ),
             _expectation(
                 "dropped_artifact_read_refused",
-                "read adopted Analysis after generation drop",
+                "run an adopted artifact experiment after generation drop",
                 "from_unit_day_artifact",
                 "an already-adopted reader attempts to read a generation tombstoned by the store",
                 "refused",
@@ -1308,7 +1310,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 "this ingress has no WarehouseArtifactStore publication-generation lifecycle",
                 "not_comparable",
                 "tests.test_unit_day_artifact_production::test_abort_after_manifest_publication_invalidates_the_generation",
-                reason="Artifact-store generation lifecycle is not an operation on this Analysis ingress.",
+                reason="Artifact-store generation lifecycle is not an operation on this experiment builder.",
             )
             for ingress in (
                 "from_unit_summary",

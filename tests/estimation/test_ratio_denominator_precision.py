@@ -21,7 +21,8 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, from_frame, from_moments, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import IncrementRuntimeWarning
 from increment.estimation.armstats import ArmStats
 from increment.estimation.engine import estimate_lift
@@ -31,7 +32,8 @@ from increment.estimation.variance import (
 )
 from increment.frame import MetricSpec
 from increment.semantics.models import Measure, RatioMetric
-from tests.analysis_factory import lift_rows
+from increment.workflows import export_moments
+from tests.analysis_factory import lift_rows, view_readout
 from tests.capability_consumers_scalar import RATIO_DENOMINATOR_ADVISORY, completed
 from tests.ratio_arms import array_arm, moment_arm, summary
 
@@ -137,13 +139,16 @@ def test_advisory_reaches_the_unit_summary_path():
     unit_rows = _units()
     with pytest.warns(IncrementRuntimeWarning):
         (row,) = lift_rows(
-            Analysis.from_unit_summary(
-                pa.Table.from_pylist(unit_rows),
-                unit="unit_id",
-                group="group_id",
-                control="control",
-                metrics=[_SPEC],
-            ).run()
+            view_readout(
+                *from_frame(
+                    pa.Table.from_pylist(unit_rows),
+                    shape="summary",
+                    unit="unit_id",
+                    group="group_id",
+                    control="control",
+                    metrics=[_SPEC],
+                )
+            )
         )
     assert row.note is not None
     for group_id in ("control", "treatment"):
@@ -248,17 +253,20 @@ def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics import load
 
-    def advisory_row(ingress, analysis):
+    def advisory_row(ingress, pair):
         (row,) = lift_rows(
-            completed(RATIO_DENOMINATOR_ADVISORY, f"{ingress}-advisory", analysis.run)
+            completed(
+                RATIO_DENOMINATOR_ADVISORY, f"{ingress}-advisory", lambda: view_readout(*pair)
+            )
         )
         return row
 
     unit_rows = _units()
     summary_row = advisory_row(
         "from_unit_summary",
-        Analysis.from_unit_summary(
+        from_frame(
             pa.Table.from_pylist(unit_rows),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -267,8 +275,9 @@ def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
     )
     panel_row = advisory_row(
         "from_unit_panel",
-        Analysis.from_unit_panel(
+        from_frame(
             pa.Table.from_pylist([{**r, "ds": datetime(2025, 1, 2).date()} for r in unit_rows]),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
@@ -282,24 +291,25 @@ def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
     tmp = Path(tempfile.mkdtemp())
     defs_path = tmp / "defs.yaml"
     defs_path.write_text(_DEFS)
-    native = Analysis("rdp_test", defs_path, con)
+    native = from_definitions(defs_path, con, experiment_name="rdp_test")
     native_row = advisory_row("from_definitions", native)
+    native_experiment, native_resolver = native
 
     definitions = load(defs_path)
     experiment = next(item for item in definitions.experiments if item.name == "rdp_test")
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
     artifact_row = advisory_row(
         "from_unit_day_artifact",
-        Analysis.from_unit_day_artifact(store, reference, expected_context=context),
+        from_unit_day_artifact(store, reference, expected_context=context),
     )
 
     export_path = tmp / "moments.parquet"
-    native.export(export_path)
+    export_moments(native_experiment, native_resolver, export_path)
     portable_row = advisory_row(
         "from_moments",
-        Analysis.from_moments(
+        from_moments(
             pq.read_table(export_path).to_pylist(),
             metrics=[MetricSpec(name="rps", type="ratio", numerator="n", denominator="d")],
             control="control",

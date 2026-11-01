@@ -7,8 +7,8 @@ from typing import Any, cast
 import ibis
 import pytest
 
-from increment import Analysis
-from increment.artifacts import SourceSnapshotEvidence
+from increment import Scope, from_definitions, from_frame, from_moments, from_unit_day_artifact
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.evidence import (
     ComplianceRequest,
     ComplianceSeriesRequest,
@@ -20,8 +20,9 @@ from increment.evidence import (
     request_evidence,
 )
 from increment.semantics.models import AnalysisPlan, Definitions
+from increment.workflows import experiment_definition, export_moments, planning_baseline
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _native_source, lift_rows
+from tests.analysis_factory import bound_source, lift_rows, view_readout
 
 
 @backend_fixture()
@@ -177,10 +178,12 @@ def test_native_encouragement_declaration_runs_and_matches_dataframe_oracle(
         del defs_dict["experiments"][0]["design"]["exclusion_restriction"]
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
     estimands = None if exclusion_declared else ("itt", "compliance")
-    native = Analysis.from_definitions("native_encouragement_exp", defs_path, con, store="none")
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_encouragement_exp", store="none"
+    )
     native_rows = {
         (r.metric, r.group_id, r.estimand): r.require_lift().value
-        for r in lift_rows(native.run(estimands=estimands))
+        for r in lift_rows(view_readout(native_experiment, native_resolver, estimands=estimands))
     }
     assert any(estimand == "itt" for _, _, estimand in native_rows), (
         "a declared plan must still report itt, not only compliance/late"
@@ -199,8 +202,9 @@ def test_native_encouragement_declaration_runs_and_matches_dataframe_oracle(
                 "revenue": _revenue(i, clicked=clicked),
             }
         )
-    oracle = Analysis.from_unit_summary(
+    oracle_experiment, oracle_resolver = from_frame(
         pd.DataFrame(records),
+        shape="summary",
         unit="user_id",
         group="group",
         metrics={"revenue": "mean"},
@@ -221,7 +225,7 @@ def test_native_encouragement_declaration_runs_and_matches_dataframe_oracle(
     )
     oracle_rows = {
         (r.metric, r.group_id, r.estimand): r.require_lift().value
-        for r in lift_rows(oracle.run(estimands=estimands))
+        for r in lift_rows(view_readout(oracle_experiment, oracle_resolver, estimands=estimands))
     }
     assert set(native_rows) == set(oracle_rows)
     for key, value in oracle_rows.items():
@@ -238,15 +242,15 @@ def test_native_encouragement_day_source_declares_working_compliance_axis(con, t
     defs["experiments"][0]["trigger"] = "eligibility"
     defs_path = _write_defs_yaml(defs, tmp_path)
     cutoff = datetime(2025, 1, 31, tzinfo=UTC)
-    analysis = Analysis.from_definitions(
-        "native_encouragement_exp",
+    experiment, resolver = from_definitions(
         defs_path,
         con,
+        experiment_name="native_encouragement_exp",
         store="none",
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
     )
     try:
-        source = cast("Any", held_source(analysis))
+        source = cast("Any", held_source(resolver))
         day = source.day_source(metrics=(source.context.metrics[0],))
         assert day.evidence.method_fit == "none"
         assert day.evidence.compliance_axis == "asof"
@@ -274,9 +278,51 @@ def test_native_encouragement_day_source_declares_working_compliance_axis(con, t
         assert triggered_day.evidence.compliance_axis == "none"
         assert triggered_day.evidence.populations == frozenset({"triggered"})
         assert triggered_day.compliance_summary(source.context.design, as_of=dates[0]) == summary
-        assert analysis.run_asof_lift(estimands=("compliance",))
+        assert view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof"), estimands=("compliance",)
+        )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
+
+
+def test_asof_compliance_cells_execute_the_design_uptake_configuration(con, tmp_path):
+    """With LATE requested an as-of compliance row is named after its outcome metric, yet it
+    estimates the declared uptake: it executes the whole-window compliance cell's
+    configuration."""
+    from dataclasses import replace
+
+    from increment import run
+    from increment.builders import from_definitions
+    from increment.kernel.contracts import Scope
+
+    _seed(con)
+    defs_path = _write_defs_yaml(_encouragement_defs(), tmp_path)
+    experiment, resolver = from_definitions(
+        defs_path, con, experiment_name="native_encouragement_exp", store="none"
+    )
+    scopes = (Scope(view="run", grain="total"), Scope(view="asof", grain="asof"))
+    try:
+        result = run(
+            replace(experiment, scopes=scopes), resolver, estimands=("itt", "compliance", "late")
+        )
+    finally:
+        cast("Any", resolver).close()
+
+    def configuration(cell):
+        return (
+            cell.identity.metric_hash,
+            cell.identity.estimator_id,
+            cell.identity.method_config_hash,
+        )
+
+    compliance = [cell for cell in result.cells if cell.identity.key.estimand == "compliance"]
+    views: dict[str, list[Any]] = {"run": [], "asof": []}
+    for cell in compliance:
+        assert cell.identity.scope is not None
+        views[cell.identity.scope.view].append(cell)
+    (expected,) = {configuration(cell) for cell in views["run"]}
+    assert views["asof"]
+    assert {configuration(cell) for cell in views["asof"]} == {expected}
 
 
 def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
@@ -308,26 +354,46 @@ def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
     defs["experiments"][0]["breakouts"] = [{"property": "device", "source": "events"}]
     defs["experiments"][0]["design"]["uptake"]["window_days"] = 7
     cutoff = datetime(2025, 2, 1, tzinfo=UTC)
-    analysis = Analysis.from_definitions(
-        "native_encouragement_exp",
+    experiment, resolver = from_definitions(
         _write_defs_yaml(defs, tmp_path),
         con,
+        experiment_name="native_encouragement_exp",
         store="none",
         source_snapshot_evidence=SourceSnapshotEvidence(
             cutoff, {"events": cutoff, "uptake_events": cutoff}
         ),
     )
     try:
-        assert len(analysis.run_daily()) == 14
-        assert len(analysis.run_asof()) == 62
-        assert analysis.run_breakout(metrics=["revenue"])
-        assert len(analysis.run_asof_lift(estimands=("itt",))) == 31
-        completed = analysis.run_asof_lift(estimands=("itt",), completed_windows_only=True)
+        assert (
+            len(view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True)))
+            == 14
+        )
+        assert (
+            len(view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True)))
+            == 62
+        )
+        assert view_readout(
+            experiment, resolver, Scope(view="breakout", grain="total"), metrics=["revenue"]
+        )
+        assert (
+            len(
+                view_readout(
+                    experiment, resolver, Scope(view="asof", grain="asof"), estimands=("itt",)
+                )
+            )
+            == 31
+        )
+        completed = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+            estimands=("itt",),
+        )
         assert {row.ds for row in completed} == {
             datetime(2025, 1, day).date() for day in range(8, 32)
         }
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):
@@ -335,7 +401,6 @@ def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):
     resolved_design() returns it; the definitions unit frame serves the
     declared covariate."""
     from increment.semantics.design import Observational
-    from tests.analysis_factory import _native_source
 
     _seed(con)
     defs_dict = {
@@ -389,8 +454,10 @@ def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):
     assert design.control_group == "control"
 
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions("native_observational_exp", defs_path, con, store="none")
-    source = _native_source(native)
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_observational_exp", store="none"
+    )
+    source = bound_source(native_resolver)
     table = cast(
         UnitRows,
         request_evidence(
@@ -415,19 +482,24 @@ def test_native_encouragement_artifact_publish_and_reopen_carries_design(con, tm
     experiment = defs.experiment("native_encouragement_exp")
     assert experiment is not None
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions("native_encouragement_exp", defs_path, con, store="none")
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_encouragement_exp", store="none"
+    )
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    reopened = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    reopened_experiment, reopened_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
 
-    assert isinstance(_native_source(reopened).context.design, Encouragement)
+    assert isinstance(bound_source(reopened_resolver).context.design, Encouragement)
     native_rows = {
-        (r.metric, r.group_id, r.estimand): r.require_lift().value for r in lift_rows(native.run())
+        (r.metric, r.group_id, r.estimand): r.require_lift().value
+        for r in lift_rows(view_readout(native_experiment, native_resolver))
     }
     reopened_rows = {
         (r.metric, r.group_id, r.estimand): r.require_lift().value
-        for r in lift_rows(reopened.run())
+        for r in lift_rows(view_readout(reopened_experiment, reopened_resolver))
     }
     assert native_rows.keys() == reopened_rows.keys()
     for key, value in native_rows.items():
@@ -446,22 +518,28 @@ def test_native_encouragement_export_import_moments_carries_design(con, tmp_path
 
     _seed(con)
     defs_path = _write_defs_yaml(_encouragement_defs(), tmp_path)
-    native = Analysis.from_definitions("native_encouragement_exp", defs_path, con, store="none")
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_encouragement_exp", store="none"
+    )
     baseline = {
-        (r.metric, r.group_id, r.estimand): r.require_lift() for r in lift_rows(native.run())
+        (r.metric, r.group_id, r.estimand): r.require_lift()
+        for r in lift_rows(view_readout(native_experiment, native_resolver))
     }
 
     path = tmp_path / "moments.parquet"
-    native.export(path)
+    export_moments(native_experiment, native_resolver, path)
     rows = pq.read_table(path).to_pylist()
     specs = [MetricSpec(name="revenue", type="mean")]
-    reimported = Analysis.from_moments(
-        rows, metrics=specs, design=native.experiment.resolved_design()
+    reimported_experiment, reimported_resolver = from_moments(
+        rows,
+        metrics=specs,
+        design=experiment_definition(native_experiment, native_resolver).resolved_design(),
     )
 
-    assert isinstance(_native_source(reimported).context.design, Encouragement)
+    assert isinstance(bound_source(reimported_resolver).context.design, Encouragement)
     reimported_rows = {
-        (r.metric, r.group_id, r.estimand): r.require_lift() for r in lift_rows(reimported.run())
+        (r.metric, r.group_id, r.estimand): r.require_lift()
+        for r in lift_rows(view_readout(reimported_experiment, reimported_resolver))
     }
     assert set(reimported_rows) == set(baseline)
     for key, base_lift in baseline.items():
@@ -599,12 +677,16 @@ def test_observational_artifact_publish_and_reopen_restores_design(con, tmp_path
     experiment = defs.experiment("native_observational_exp")
     assert experiment is not None
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions("native_observational_exp", defs_path, con, store="none")
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_observational_exp", store="none"
+    )
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    reopened = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    reopened_design = _native_source(reopened).context.design
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    reopened_experiment, reopened_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    reopened_design = bound_source(reopened_resolver).context.design
     assert isinstance(reopened_design, Observational)
     assert reopened_design.control_group == "control"
 
@@ -679,20 +761,20 @@ def test_observational_quantile_refuses_on_definitions_and_reopened_artifact(con
     experiment = defs.experiment("native_observational_quantile_exp")
     assert experiment is not None
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions(
-        "native_observational_quantile_exp", defs_path, con, store="none"
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_observational_quantile_exp", store="none"
     )
     with pytest.raises(UnsupportedRequestError) as definitions_error:
-        lift_rows(native.run())
+        lift_rows(view_readout(native_experiment, native_resolver))
     assert definitions_error.value.code == "readout.observational.quantile"
     assert definitions_error.value.context == {"metric": "revenue"}
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    reopened = Analysis.from_unit_day_artifact(
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    reopened_experiment, reopened_resolver = from_unit_day_artifact(
         store, ref, expected_context=artifact_context(defs, experiment, "error")
     )
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        lift_rows(reopened.run())
+        lift_rows(view_readout(reopened_experiment, reopened_resolver))
     assert exc_info.value.code == "readout.observational.quantile"
 
 
@@ -713,14 +795,14 @@ def test_observational_quantile_refuses_before_a_leading_metric_is_read(con, tmp
         }
     )
     defs_dict["metrics"][0]["fact"] = "ghost_value"
-    native = Analysis.from_definitions(
-        "native_observational_quantile_exp",
+    experiment, resolver = from_definitions(
         _write_defs_yaml(defs_dict, tmp_path),
         con,
+        experiment_name="native_observational_quantile_exp",
         store="none",
     )
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        lift_rows(native.run())
+        lift_rows(view_readout(experiment, resolver))
     assert exc_info.value.code == "readout.observational.quantile"
 
 
@@ -738,20 +820,20 @@ def test_estimate_quantile_lift_refuses_an_observational_source(con, tmp_path, i
     defs = Definitions.model_validate(defs_dict)
     experiment = defs.experiment("native_observational_quantile_exp")
     assert experiment is not None
-    native = Analysis.from_definitions(
-        "native_observational_quantile_exp",
+    native = from_definitions(
         _write_defs_yaml(defs_dict, tmp_path),
         con,
+        experiment_name="native_observational_quantile_exp",
         store="none",
     )
     analysis = native
     if ingress == "artifact":
         store = WarehouseArtifactStore(con, schema_name="artifacts")
-        ref = native.publish_unit_day_artifact(store)
-        analysis = Analysis.from_unit_day_artifact(
+        ref = publish_unit_day_artifact(*native, store)
+        analysis = from_unit_day_artifact(
             store, ref, expected_context=artifact_context(defs, experiment, "error")
         )
-    source = _native_source(analysis)
+    source = bound_source(analysis[1])
     quantile = next(metric for metric in source.context.metrics if metric.name == "revenue")
     with pytest.raises(UnsupportedRequestError) as exc_info:
         estimate_quantile_lift(source, quantile, "control")
@@ -771,16 +853,16 @@ def test_observational_quantile_planning_baseline_reads_control_values(con, tmp_
     experiment = defs.experiment("native_observational_quantile_exp")
     assert experiment is not None
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions(
-        "native_observational_quantile_exp", defs_path, con, store="none"
+    native = from_definitions(
+        defs_path, con, experiment_name="native_observational_quantile_exp", store="none"
     )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    reopened = Analysis.from_unit_day_artifact(
+    ref = publish_unit_day_artifact(*native, store)
+    reopened = from_unit_day_artifact(
         store, ref, expected_context=artifact_context(defs, experiment, "error")
     )
     for analysis in (native, reopened):
-        assert isinstance(analysis.planning_baseline("revenue"), QuantileBaseline)
+        assert isinstance(planning_baseline(*analysis, "revenue"), QuantileBaseline)
 
 
 @pytest.mark.parametrize("entry", ["moments", "estimate_quantile_lift", "estimate_ate"])
@@ -802,15 +884,15 @@ def test_reopened_observational_artifact_validates_a_mutated_quantile_before_ref
     experiment = defs.experiment("native_observational_quantile_exp")
     assert experiment is not None
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
-    native = Analysis.from_definitions(
-        "native_observational_quantile_exp", defs_path, con, store="none"
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="native_observational_quantile_exp", store="none"
     )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    reopened = Analysis.from_unit_day_artifact(
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    reopened_experiment, reopened_resolver = from_unit_day_artifact(
         store, ref, expected_context=artifact_context(defs, experiment, "error")
     )
-    source = _native_source(reopened)
+    source = bound_source(reopened_resolver)
     design = source.context.design
     assert isinstance(design, Observational)
     quantile = next(metric for metric in source.context.metrics if metric.name == "revenue")

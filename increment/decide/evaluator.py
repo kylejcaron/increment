@@ -89,11 +89,13 @@ def _validated_plan(
         return cast(_DecisionPlan, bound_plan)
 
     reason = run.decision_plan_unavailable_reason
-    if reason == "wire.procedure.contrast_context":
-        model_dump = getattr(plan, "model_dump", None)
+    model_dump = getattr(plan, "model_dump", None)
+    contrast = hasattr(plan, "study") and hasattr(plan, "procedures") and callable(model_dump)
+    if reason == "wire.procedure.contrast_context" or (reason is None and contrast):
+        # A switchback run keeps no portable plan; the contrast context its run supplies
+        # must be the one the registration names.
         matches = (
-            hasattr(plan, "study")
-            and hasattr(plan, "procedures")
+            contrast
             and callable(model_dump)
             and registration.registration_hash
             == contract_hash("registration", model_dump(mode="json"))

@@ -130,10 +130,9 @@ def _srm_binding(
                 binding.source,
                 "triggered_counts",
                 message=(
-                    "srm(population='triggered') needs a native "
-                    "Analysis.from_definitions instance -- a frame/warehouse/"
-                    "moments-backed analysis retains no raw event stream to "
-                    "narrow to a triggered population."
+                    "srm(population='triggered') needs an experiment built by "
+                    "from_definitions -- a frame, warehouse or moments experiment "
+                    "retains no raw event stream to narrow to a triggered population."
                 ),
             )
             result = triggered_srm(
@@ -192,10 +191,7 @@ def _trigger_rates_binding(binding: SourceBinding) -> dict[str, float]:
         source,
         "triggered_counts",
         NativeCoreSource,
-        message=(
-            "trigger_rates() needs a native Analysis.from_definitions "
-            "instance with a warehouse backend"
-        ),
+        message="trigger_rates() needs an experiment built by from_definitions with a warehouse connection",
     )
     return native.trigger_rates()
 
@@ -228,8 +224,8 @@ def _allocation_history_binding(
         "allocation_history",
         AllocationHistoryOperation,
         message=(
-            "allocation_history() needs a native Analysis.from_definitions instance; "
-            "a frame/warehouse/moments-backed analysis retains no raw event stream "
+            "allocation_history() needs an experiment built by from_definitions; "
+            "a frame, warehouse or moments experiment retains no raw event stream "
             "to build a daily enrollment timeline from."
         ),
     )

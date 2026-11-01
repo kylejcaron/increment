@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 
+from increment import from_frame
 from increment.decision import (
     ArmHypothesisKey,
     DecisionComputation,
@@ -11,6 +12,7 @@ from increment.decision import (
     PValueEvidence,
 )
 from increment.estimation.results import LiftEstimate
+from tests.analysis_factory import view_readout
 
 
 def _pvalue(bundle, key) -> PValueEvidence:
@@ -185,7 +187,7 @@ def test_sequential_evalue_one_sided_uses_composite_null(alternative, c, t):
 
 @pytest.mark.slow
 def test_one_sided_always_valid_secondary_does_not_discover_wrong_direction_effect():
-    from increment import Analysis, AnalysisPlan
+    from increment import AnalysisPlan
     from increment.estimators import SequentialCell
     from increment.frame import MetricSpec
     from tests.test_sequential_public_sources import _frame, _plan
@@ -208,8 +210,9 @@ def test_one_sided_always_valid_secondary_does_not_discover_wrong_direction_effe
         alternative="greater",
         inference=base.inference,
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _frame([1, 1, 0] * 100, [0, 0, 1] * 100),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -218,7 +221,7 @@ def test_one_sided_always_valid_secondary_does_not_discover_wrong_direction_effe
         exposure_date="exposure",
         plan=plan,
     )
-    row = analysis.run()[0]
+    row = view_readout(experiment, resolver)[0]
     assert isinstance(row, LiftEstimate)
     assert row.alternative == "greater" and row.require_lift().value < 0
     assert row.discovery is False

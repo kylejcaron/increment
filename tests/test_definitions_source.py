@@ -1,6 +1,6 @@
 """Definitions-source mechanics and public view behavior.
 
-Public daily/as-of/breakout parity is exercised through Analysis; direct
+Public daily/as-of/breakout parity is exercised through ``run`` views; direct
 source calls below are limited to cache and covariate-request mechanics.
 """
 
@@ -9,6 +9,8 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+import shutil
+from pathlib import Path
 from statistics import NormalDist
 from typing import Any, cast
 
@@ -16,9 +18,16 @@ import ibis
 import pytest
 
 from examples._seed import seed_event_log
-from increment import Analysis, Method, readouts
+from increment import Method, Scope, from_definitions, from_unit_day_artifact, readouts, workflows
+from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import run_daily as _day_axis_values
-from increment.evidence import MomentRows, MomentsRequest, evidence_provider, request_evidence
+from increment.evidence import (
+    BreakoutIdentity,
+    MomentRows,
+    MomentsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.query.native_source import DefinitionsMomentSource
 from increment.semantics.models import (
     AnalysisPlan,
@@ -26,9 +35,15 @@ from increment.semantics.models import (
     MultiplicitySpec,
     Winsorization,
 )
+from increment.workflows import experiment_definition
 from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _native_source, make_analysis_like, native_connection
+from tests.analysis_factory import (
+    bound_source,
+    make_binding_like,
+    native_connection,
+    view_readout,
+)
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
 
 # Metric/guardrail set for new_onboarding_v2: d7_retention carries a
@@ -107,27 +122,38 @@ def _estimate_ub(row: Any) -> float | None:
     return None if estimate is None else estimate.ub
 
 
+@pytest.fixture(scope="module")
+def module_definitions(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A module copy so binding definitions cannot write into examples/."""
+    target = tmp_path_factory.mktemp("definitions") / "example-definitions"
+    shutil.copytree(Path("examples/definitions"), target)
+    return target
+
+
 @backend_fixture(scope="module")
-def seeded_analysis():
+def seeded_analysis(module_definitions: Path):
     con = ibis.duckdb.connect()
     seed_event_log(con)
-    return Analysis("new_onboarding_v2", "examples/definitions", con)
+    return from_definitions(module_definitions, con, experiment_name="new_onboarding_v2")
 
 
 @pytest.fixture(scope="module")
 def definitions_and_adopted_analyses():
-    """Build one definitions analysis and reopen its published day artifact."""
+    """Build one definitions binding and reopen its published day artifact."""
     from tests.test_unit_day_artifact_facade import _extensions, _native
 
     _con, native, context, store = _native()
+    native_experiment, native_resolver = native
     extensions = _extensions(
         context,
         "breakout_dimension",
         "factor_dimension",
         "assignment_counts",
     )
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=extensions
+    )
+    adopted = from_unit_day_artifact(store, ref, expected_context=context)
     return native, adopted
 
 
@@ -162,22 +188,23 @@ def _public_row_value(row: Any) -> tuple[float | None, float | None, float | Non
 
 
 def _run_public_view(
-    analysis: Analysis,
+    analysis: tuple[Any, Any],
     view: str,
     metrics: tuple[str, ...],
     dimension: str | None,
 ) -> list[Any]:
-    if view == "daily":
-        return list(analysis.run_daily(metrics=list(metrics), dimension=dimension))
-    if view == "daily_lift":
-        return list(analysis.run_daily_lift(metrics=list(metrics), dimension=dimension))
-    if view == "asof":
-        return list(analysis.run_asof(metrics=list(metrics), dimension=dimension))
-    if view == "asof_lift":
-        return list(analysis.run_asof_lift(metrics=list(metrics), dimension=dimension))
-    if view == "breakout":
-        return list(analysis.run_breakout(metrics=list(metrics)))
-    raise AssertionError(f"unknown public view {view!r}")
+    experiment, resolver = analysis
+    segment = () if dimension is None else (BreakoutIdentity(dimension, None),)
+    scopes = {
+        "daily": Scope(view="daily", grain="daily", values=True, segment=segment),
+        "daily_lift": Scope(view="daily", grain="daily", segment=segment),
+        "asof": Scope(view="asof", grain="asof", values=True, segment=segment),
+        "asof_lift": Scope(view="asof", grain="asof", segment=segment),
+        "breakout": Scope(view="breakout", grain="total"),
+    }
+    if view not in scopes:
+        raise AssertionError(f"unknown public view {view!r}")
+    return list(view_readout(experiment, resolver, scopes[view], metrics=list(metrics)))
 
 
 @pytest.mark.slow
@@ -232,7 +259,10 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
     from tests.test_unit_day_artifact_facade import _extensions, _native
 
     con, native, context, store = _native()
-    ref = native.publish_unit_day_artifact(
+    native_experiment, native_resolver = native
+    ref = publish_unit_day_artifact(
+        native_experiment,
+        native_resolver,
         store,
         extensions=_extensions(
             context, "breakout_dimension", "factor_dimension", "assignment_counts"
@@ -276,7 +306,9 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
 
     metrics = ("purchase_rate", "avg_session_duration")
     try:
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
+        adopted = from_unit_day_artifact(store, ref, expected_context=context)
+        _, adopted_resolver = adopted
+        with adopted_resolver:
             if not dimension_first:
                 for analysis in (native, adopted):
                     _run_public_view(analysis, "daily", metrics, None)
@@ -306,7 +338,7 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
                 estimates.append(estimate)
             assert estimates[0] == pytest.approx(estimates[1], rel=1e-9)
     finally:
-        native.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -318,15 +350,19 @@ def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_an
 
     native, adopted = definitions_and_adopted_analyses
     replacement = Normal(mu=0.3, sigma=0.001)
-    intervals = []
-    for analysis in (native, adopted):
-        unadjusted = Method(name="unadjusted")
-        inherited = analysis.run(metrics=["d7_retention"], decision_method=unadjusted)[0]
-        cleared = analysis.run(metrics=["d7_retention"], prior=None, decision_method=unadjusted)[0]
-        replaced = analysis.run(
-            metrics=["d7_retention"], prior=replacement, decision_method=unadjusted
+    unadjusted = Method(name="unadjusted")
+
+    def first_row(experiment: Any, resolver: Any, **options: Any) -> Any:
+        return view_readout(
+            experiment, resolver, metrics=["d7_retention"], decision_method=unadjusted, **options
         )[0]
-        unchanged = analysis.run(metrics=["d7_retention"], decision_method=unadjusted)[0]
+
+    intervals = []
+    for experiment, resolver in (native, adopted):
+        inherited = first_row(experiment, resolver)
+        cleared = first_row(experiment, resolver, prior=None)
+        replaced = first_row(experiment, resolver, prior=replacement)
+        unchanged = first_row(experiment, resolver)
         values = [row.posterior_estimate for row in (inherited, cleared, replaced, unchanged)]
         assert values[0] == pytest.approx(values[3])
         assert values[0] != values[1]
@@ -341,17 +377,24 @@ def test_adopted_breakout_refusal_has_stable_extension_code():
     from increment.query.artifact_contract import ArtifactContractError
     from tests.test_unit_day_artifact_facade import _extensions, _native
 
-    _con, native, context, store = _native()
+    _con, (native_experiment, native_resolver), context, store = _native()
     requests = _extensions(context, "assignment_counts")
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
 
     with pytest.raises(ArtifactContractError) as raised:
-        adopted.run_breakout(metrics=["purchase_rate"])
+        view_readout(
+            adopted_experiment,
+            adopted_resolver,
+            Scope(view="breakout", grain="total"),
+            metrics=["purchase_rate"],
+        )
     assert raised.value.code == "artifact.extension.missing"
 
 
-def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
+def test_day_axis_source_extends_horizon_for_late_adhoc_metric(example_definitions):
     """A selected metric's late fact rows must extend the day-axis spine."""
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=80)
@@ -362,10 +405,14 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
         "VALUES ('2025-03-10 12:00:00', 'u00000', 'u00000-late', "
         "'session_end', NULL, 99.0, 'US', 'web', 'free', NULL, NULL)"
     )
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", con, store="none")
-    analysis = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(update={"end": None}),
+    declared_experiment, declared_resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
+    )
+    experiment, resolver = make_binding_like(
+        declared_resolver,
+        experiment=experiment_definition(declared_experiment, declared_resolver).model_copy(
+            update={"end": None}
+        ),
     )
     metric = MeanMetric(
         name="late_duration",
@@ -373,8 +420,18 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
         fact="session_end",
         aggregation="sum",
     )
-    daily_rows = analysis.run_daily(metrics=["avg_session_duration", metric])
-    asof_rows = analysis.run_asof(metrics=["avg_session_duration", metric])
+    daily_rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True),
+        metrics=["avg_session_duration", metric],
+    )
+    asof_rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True),
+        metrics=["avg_session_duration", metric],
+    )
 
     assert max(row.ds for row in daily_rows) == dt.date(2025, 3, 10)
     assert max(row.ds for row in asof_rows) == dt.date(2025, 3, 10)
@@ -387,8 +444,11 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
 
 
 @pytest.mark.integration
-def test_run_daily_shares_native_day_source_across_selected_metrics(seeded_analysis, monkeypatch):
-    source = _native_source(seeded_analysis)
+def test_run_daily_shares_native_day_source_across_selected_metrics(
+    seeded_analysis: tuple[Any, Any], monkeypatch
+):
+    experiment, resolver = seeded_analysis
+    source = bound_source(resolver)
     source_type = type(source)
     original = source_type.day_source
     acquired: list[tuple[str, ...]] = []
@@ -398,8 +458,13 @@ def test_run_daily_shares_native_day_source_across_selected_metrics(seeded_analy
         return original(self, metrics=metrics, population=population)
 
     monkeypatch.setattr(source_type, "day_source", counted)
-    selected = seeded_analysis.metrics[:2]
-    rows = seeded_analysis.run_daily(metrics=list(selected))
+    selected = workflows.metrics(experiment, resolver)[:2]
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True),
+        metrics=list(selected),
+    )
 
     assert rows
     assert acquired == [tuple(metric.name for metric in selected)]
@@ -408,7 +473,8 @@ def test_run_daily_shares_native_day_source_across_selected_metrics(seeded_analy
 @pytest.mark.slow
 def test_panel_cache_distinguishes_same_name_metric_variant(seeded_analysis):
     """A caller's same-name metric variant must not reuse the declared panel."""
-    native = _native_source(seeded_analysis)
+    _, seeded_resolver = seeded_analysis
+    native = bound_source(seeded_resolver)
     declared = native.context.metrics[0]
     variant = declared.model_copy(update={"window_days": 1})
 
@@ -417,10 +483,9 @@ def test_panel_cache_distinguishes_same_name_metric_variant(seeded_analysis):
 
     before = totals(_moments(native, declared))
     actual = totals(_moments(native, variant))
-    with make_analysis_like(
-        seeded_analysis, metrics=[variant, *native.context.metrics[1:]]
-    ) as fresh:
-        expected = totals(_moments(_native_source(fresh), variant))
+    _, resolver = make_binding_like(seeded_resolver, metrics=[variant, *native.context.metrics[1:]])
+    with resolver:
+        expected = totals(_moments(bound_source(resolver), variant))
     assert actual == pytest.approx(expected)
     assert any(actual[group] != before[group] for group in actual)
 
@@ -443,11 +508,17 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_daily(cross_sou
     produced it, and `breakout_moments()` itself must resolve each
     breakout's OWN `FactSource`, never the other's.
     """
-    a = _analysis_with_cross_source_breakouts(cross_source_con)
-    matching_breakouts = [b for b in a.experiment.breakouts if b.property == "country"]
+    experiment, resolver = _analysis_with_cross_source_breakouts(cross_source_con)
+    matching_breakouts = [
+        b for b in experiment_definition(experiment, resolver).breakouts if b.property == "country"
+    ]
     assert {b.source for b in matching_breakouts} == {"src_a", "src_b"}
 
-    results = a.run_daily(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+    )
     sources_seen = {r.source for r in results}
     assert sources_seen == {"src_a", "src_b"}
 
@@ -469,11 +540,18 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_daily_lift(cros
     combined call, never a merged one, so both sources' lift estimates
     appear with correctly disambiguated `source=`.
     """
-    a = _analysis_with_cross_source_breakouts(cross_source_con)
-    matching_breakouts = [b for b in a.experiment.breakouts if b.property == "country"]
+    experiment, resolver = _analysis_with_cross_source_breakouts(cross_source_con)
+    matching_breakouts = [
+        b for b in experiment_definition(experiment, resolver).breakouts if b.property == "country"
+    ]
     assert len(matching_breakouts) == 2
 
-    results = a.run_daily_lift(decision_method=Method(name="unadjusted"), dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        decision_method=Method(name="unadjusted"),
+    )
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
@@ -488,11 +566,17 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof(cross_sour
     `breakout_moments(grain="asof")` calls must keep both `country`
     breakouts' (src_a, src_b) rows disjoint and correctly stamped.
     """
-    a = _analysis_with_cross_source_breakouts(cross_source_con)
-    matching_breakouts = [b for b in a.experiment.breakouts if b.property == "country"]
+    experiment, resolver = _analysis_with_cross_source_breakouts(cross_source_con)
+    matching_breakouts = [
+        b for b in experiment_definition(experiment, resolver).breakouts if b.property == "country"
+    ]
     assert len(matching_breakouts) == 2
 
-    results = a.run_asof(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+    )
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
@@ -507,11 +591,18 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
     both `country` breakouts' (src_a, src_b) lift estimates must appear,
     correctly disambiguated by `source=`.
     """
-    a = _analysis_with_cross_source_breakouts(cross_source_con)
-    matching_breakouts = [b for b in a.experiment.breakouts if b.property == "country"]
+    experiment, resolver = _analysis_with_cross_source_breakouts(cross_source_con)
+    matching_breakouts = [
+        b for b in experiment_definition(experiment, resolver).breakouts if b.property == "country"
+    ]
     assert len(matching_breakouts) == 2
 
-    results = a.run_asof_lift(decision_method=Method(name="unadjusted"), dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+        decision_method=Method(name="unadjusted"),
+    )
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
         assert {e.metric for e in results if e.source == source} == {"visit_rate", "checkout"}
@@ -524,8 +615,8 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
 def test_multi_source_day_axis_moments_refuse_before_acquisition(cross_source_con, monkeypatch):
     from increment.errors import CapabilityError
 
-    analysis = _analysis_with_cross_source_breakouts(cross_source_con)
-    source = _native_source(analysis)
+    analysis_experiment, analysis_resolver = _analysis_with_cross_source_breakouts(cross_source_con)
+    source = bound_source(analysis_resolver)
     source_type = type(source)
     original = source_type.day_source
     acquired: list[object] = []
@@ -538,10 +629,10 @@ def test_multi_source_day_axis_moments_refuse_before_acquisition(cross_source_co
     with pytest.raises(CapabilityError) as refused:
         evidence_provider(source).moments(
             MomentsRequest(
-                analysis.metrics[0],
+                workflows.metrics(analysis_experiment, analysis_resolver)[0],
                 grain="daily",
                 by=("country",),
-                experiment=analysis.experiment,
+                experiment=experiment_definition(analysis_experiment, analysis_resolver),
             )
         )
 
@@ -554,14 +645,14 @@ def test_multi_source_day_axis_moments_refuse_before_acquisition(cross_source_co
 
 
 @backend_fixture(scope="module")
-def pre_period_analysis():
+def pre_period_analysis(module_definitions: Path):
     """`new_onboarding_v2` with 14 days of pre-exposure activity
     seeded, so `_breakout_moments_source()`'s CUPED covariate has
     genuine nonzero variance to adjust against.
     """
     con = ibis.duckdb.connect()
     seed_event_log(con, with_pre_period=True)
-    return Analysis("new_onboarding_v2", "examples/definitions", con)
+    return from_definitions(module_definitions, con, experiment_name="new_onboarding_v2")
 
 
 # Scoped to the two metrics with a genuine pre-period covariate; d7_retention
@@ -578,8 +669,9 @@ def test_public_run_breakout_preserves_cuped_variance_reduction(pre_period_analy
     The CUPED-adjusted interval must be materially narrower than the
     unadjusted interval on every estimable segment.
     """
-    a = make_analysis_like(
-        pre_period_analysis,
+    _, pre_period_resolver = pre_period_analysis
+    experiment, resolver = make_binding_like(
+        pre_period_resolver,
         plan=AnalysisPlan(
             view_multiplicity=MultiplicitySpec(
                 correction=correction,
@@ -587,15 +679,22 @@ def test_public_run_breakout_preserves_cuped_variance_reduction(pre_period_analy
             )
         ),
     )
-    selected = [m for m in a.metrics if m.name in _CUPED_BREAKOUT_METRICS]
-    breakouts = a.experiment.breakouts
+    selected = [
+        m for m in workflows.metrics(experiment, resolver) if m.name in _CUPED_BREAKOUT_METRICS
+    ]
+    breakouts = experiment_definition(experiment, resolver).breakouts
     assert breakouts, "new_onboarding_v2 must declare a country breakout"
 
     methods = [Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")]
 
     native_list = list(
-        a.run_breakout(
-            decision_method=methods[0], sensitivity_methods=tuple(methods[1:]), metrics=selected
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total"),
+            decision_method=methods[0],
+            sensitivity_methods=tuple(methods[1:]),
+            metrics=selected,
         )
     )
 
@@ -645,19 +744,20 @@ def test_public_run_breakout_preserves_cuped_variance_reduction(pre_period_analy
 )
 def test_public_run_breakout_disambiguates_multiple_fact_sources(cross_source_con):
     """Public breakout rows preserve each breakout's source identity."""
-    a = _analysis_with_cross_source_breakouts(cross_source_con)
-    a = make_analysis_like(
-        a,
-        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none")),
+    _, declared_resolver = _analysis_with_cross_source_breakouts(cross_source_con)
+    experiment, resolver = make_binding_like(
+        declared_resolver, plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none"))
     )
-    matching_breakouts = [b for b in a.experiment.breakouts if b.property == "country"]
+    matching_breakouts = [
+        b for b in experiment_definition(experiment, resolver).breakouts if b.property == "country"
+    ]
     assert {b.source for b in matching_breakouts} == {"src_a", "src_b"}
 
     with pytest.warns(
         UserWarning,
         match=r"run_breakout: segment .* (?:excluded|skipped|no usable|fewer than)",
     ):
-        results = a.run_breakout()
+        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     sources_seen = {r.source for r in results}
     assert sources_seen == {"src_a", "src_b"}
     assert {r.metric for r in results} == {"visit_rate", "checkout"}
@@ -670,15 +770,21 @@ def test_public_run_breakout_disambiguates_multiple_fact_sources(cross_source_co
 @pytest.mark.slow
 def test_breakout_moments_source_survives_mixed_winsorization_metrics(seeded_analysis):
     """Source and public breakout paths survive mixed winsorization metrics."""
-    a = seeded_analysis
-    avg_session_duration = next(m for m in a.metrics if m.name == "avg_session_duration")
-    purchase_rate = next(m for m in a.metrics if m.name == "purchase_rate")
+    experiment, resolver = seeded_analysis
+    avg_session_duration = next(
+        m for m in workflows.metrics(experiment, resolver) if m.name == "avg_session_duration"
+    )
+    purchase_rate = next(
+        m for m in workflows.metrics(experiment, resolver) if m.name == "purchase_rate"
+    )
     winsorized = avg_session_duration.model_copy(
         update={"winsorization": Winsorization(upper_value=100_000.0)}
     )
 
-    breakout = a.experiment.breakouts[0]
-    src = _native_source(a)._breakout_moments_source(breakout, metrics=[winsorized, purchase_rate])
+    breakout = experiment_definition(experiment, resolver).breakouts[0]
+    src = bound_source(resolver)._breakout_moments_source(
+        breakout, metrics=[winsorized, purchase_rate]
+    )
 
     winsorized_rows = cast(list[dict[str, Any]], _moments(src, winsorized, by=(breakout.property,)))
     plain_rows = cast(list[dict[str, Any]], _moments(src, purchase_rate, by=(breakout.property,)))
@@ -689,7 +795,12 @@ def test_breakout_moments_source_survives_mixed_winsorization_metrics(seeded_ana
     for row in plain_rows:
         assert row["winsor_upper_bound"] is None
 
-    rows = a.run_breakout(metrics=[winsorized, purchase_rate])
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="breakout", grain="total"),
+        metrics=[winsorized, purchase_rate],
+    )
     public_winsorized_rows = [r for r in rows if r.metric == "avg_session_duration"]
     public_plain_rows = [r for r in rows if r.metric == "purchase_rate"]
     assert public_winsorized_rows
@@ -700,27 +811,33 @@ def test_breakout_moments_source_survives_mixed_winsorization_metrics(seeded_ana
 
 @pytest.mark.slow
 def test_direct_unadjusted_daily_asof_do_not_query_pre_period_stats(
-    seeded_pre_period_con, monkeypatch
+    seeded_pre_period_con, monkeypatch, example_definitions
 ):
     """Unadjusted direct reductions avoid pre-period work."""
-    analysis = Analysis(
-        "new_onboarding_v2",
-        "examples/definitions",
+    experiment, resolver = from_definitions(
+        example_definitions,
         seeded_pre_period_con,
+        experiment_name="new_onboarding_v2",
         store="none",
     )
-    metric = next(metric for metric in analysis.metrics if metric.name == "avg_session_duration")
-    source = _native_source(analysis)
+    metric = next(
+        metric
+        for metric in workflows.metrics(experiment, resolver)
+        if metric.name == "avg_session_duration"
+    )
+    source = bound_source(resolver)
 
     # A clone with no pre-period is the pinned covariate-free execution
     # baseline. Its post-period data and definitions are otherwise identical,
     # so unadjusted-only SQL must be byte-for-byte the same as the
     # pre-period-capable source's unadjusted SQL.
-    covariate_free_analysis = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(update={"n_pre_periods": 0}),
+    _, covariate_free_resolver = make_binding_like(
+        resolver,
+        experiment=experiment_definition(experiment, resolver).model_copy(
+            update={"n_pre_periods": 0}
+        ),
     )
-    covariate_free_source = _native_source(covariate_free_analysis)
+    covariate_free_source = bound_source(covariate_free_resolver)
 
     def run_direct(source_: DefinitionsMomentSource) -> tuple[list[Any], list[Any]]:
         daily = _day_axis_values(

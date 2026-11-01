@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 
+from increment import from_frame, from_moments
 from increment.errors import CapabilityError
 from increment.evidence import (
     AssignmentEvidence,
@@ -11,6 +12,7 @@ from increment.evidence import (
     EvidenceCapabilities,
     require_evidence,
 )
+from increment.workflows import allocation_history, export_moments
 
 
 class _Source:
@@ -65,7 +67,7 @@ def test_assignment_request_refuses_without_relation_capability() -> None:
         require_evidence(source, request=AssignmentRequest(experiment="exp"))
     assert error.value.code == "evidence.assignment.unavailable"
     assert error.value.context["offered"] == "none"
-    assert "from_unit_summary" in str(error.value.context["route"])
+    assert 'from_frame(shape="summary")' in str(error.value.context["route"])
 
 
 def test_custom_assignment_provider_serves_declared_evidence_or_refuses() -> None:
@@ -288,9 +290,7 @@ def test_moments_without_assignment_counts_refuses_with_constructor_route() -> N
 def test_reduced_only_analysis_refuses_allocation_history_with_identity_route() -> None:
     import pandas as pd
 
-    from increment.analysis import Analysis
-
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["u1", "u2"],
@@ -298,6 +298,7 @@ def test_reduced_only_analysis_refuses_allocation_history_with_identity_route() 
                 "value": [1.0, 2.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -306,27 +307,25 @@ def test_reduced_only_analysis_refuses_allocation_history_with_identity_route() 
     )
     try:
         with pytest.raises(CapabilityError) as refused:
-            analysis.allocation_history()
+            allocation_history(experiment, resolver)
         assert refused.value.code == "evidence.assignment.identity_unavailable"
         assert dict(refused.value.context) == {
             "constructor": "FrameTotalsSource",
             "operation": "allocation_history",
             "route": (
-                "supply a row-level assignment ledger via Analysis.from_definitions "
+                "supply a row-level assignment ledger via from_definitions "
                 "with experiment.assignment_ledger, or via a FrameLedger"
             ),
         }
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_assignment_identity_refusal_code_matches_across_summary_and_moments(tmp_path) -> None:
     import pandas as pd
     import pyarrow.parquet as pq
 
-    from increment.analysis import Analysis
-
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["u1", "u2"],
@@ -334,6 +333,7 @@ def test_assignment_identity_refusal_code_matches_across_summary_and_moments(tmp
                 "value": [1.0, 2.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -342,26 +342,24 @@ def test_assignment_identity_refusal_code_matches_across_summary_and_moments(tmp
     )
     path = tmp_path / "moments.parquet"
     try:
-        summary.export(path)
-        moments = Analysis.from_moments(
-            pq.read_table(path).to_pylist(),
-            metrics={"value": "mean"},
-            control="control",
+        export_moments(summary_experiment, summary_resolver, path)
+        moments_experiment, moments_resolver = from_moments(
+            pq.read_table(path).to_pylist(), metrics={"value": "mean"}, control="control"
         )
     finally:
-        summary.close()
+        summary_resolver.close()
 
     try:
         with pytest.raises(CapabilityError) as refused:
-            moments.allocation_history()
+            allocation_history(moments_experiment, moments_resolver)
         assert refused.value.code == "evidence.assignment.identity_unavailable"
         assert dict(refused.value.context) == {
             "constructor": "MomentsSource",
             "operation": "allocation_history",
             "route": (
-                "supply a row-level assignment ledger via Analysis.from_definitions "
+                "supply a row-level assignment ledger via from_definitions "
                 "with experiment.assignment_ledger, or via a FrameLedger"
             ),
         }
     finally:
-        moments.close()
+        moments_resolver.close()

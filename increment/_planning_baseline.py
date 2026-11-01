@@ -101,7 +101,7 @@ _REFUSALS = refusals(
                 "population's moments nor its trigger rate can be read. Republish the unit-day "
                 f"artifact with TriggerPopulationRequest(trigger_name={trigger!r}) and "
                 "AssignmentCountsRequest(populations=('assigned', 'triggered')), or plan from "
-                "Analysis.from_definitions"
+                "an experiment built by from_definitions"
             ),
         ),
     },

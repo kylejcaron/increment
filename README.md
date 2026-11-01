@@ -120,11 +120,11 @@ print(rendered)
 reads the evidence. `runnable(exp, "revenue")` checks known incompatibilities
 without reading data, including for every declared view. It is sound, not
 complete: no refusal does not guarantee the run will succeed, because some
-checks need data. Top-level `run` currently accepts one declared view at a
-time; separate calls can read changed data. The experiment can be saved with
-`exp.to_json()` and identified with `exp.hash()`. Rendering retains warnings
-about missing guardrails, checks that were not completed, and what the data can
-establish.
+checks need data. Top-level `run` reads every declared view, such as daily or
+breakout views added with `exp.with_views(...)`, from one capture of the data.
+The experiment can be saved with `exp.to_json()` and identified with
+`exp.hash()`. Rendering retains warnings about missing guardrails, checks that
+were not completed, and what the data can establish.
 
 `shape="summary"` accepts summary-specific options such as
 `intervention_grain="cluster"`. With one row per unit per day, use
@@ -134,11 +134,10 @@ for the selected shape; a summary has no `date` or `observation_end`.
 For an available guardrail and recovery, see the
 [quickstart guide](https://getincrement.io/docs/guides/quickstart/#recover-the-unavailable-guardrail).
 
-The separate compatibility route `Analysis.run()` still returns
-`LiftEstimates` or `ContrastResults`; top-level `run(exp, resolver)` returns a
-`RunResult` with result cells, effects, and decisions. `result.readout()` returns
-the same typed collection, and `result.to_frame()` and `readout_table(result)`
-read the result directly.
+`run(exp, resolver)` returns a `RunResult` with result cells, effects, and
+decisions. `result.readout()` returns the typed `LiftEstimates` collection with
+every row field, and `result.to_frame()` and `readout_table(result)` read the
+result directly.
 
 The [dataframe quickstart](https://getincrement.io/docs/guides/quickstart/) continues
 with CUPED, monitoring, and other data shapes.

@@ -13,7 +13,7 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from increment import Analysis
+    from tests.parity_harness.cases import Bound
 
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
@@ -71,10 +71,11 @@ def test_qr_cuped_rows_cover_six_ingresses_and_record_unavailable_sources():
 )
 @allow_declared_overrides
 def test_prior_reset_matches_independent_prior_free_analysis(constructor):
-    from increment import Analysis, AnalysisPlan, Method, MetricSpec
+    from increment import AnalysisPlan, Method, MetricSpec, builders
     from tests.analysis_factory import lift_rows
     from tests.parity_harness import dataset as ds
-    from tests.parity_harness.cases import _prior_reset_case
+    from tests.parity_harness.cases import _close_parity_binding, _prior_reset_case
+    from tests.parity_harness.views import read
 
     rows = ds.event_rows()
     treated = {row["user_id"] for row in rows if row["group_id"] == "treatment"}
@@ -86,8 +87,9 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
         frame = ds.unit_summary_frame(con)
     finally:
         con.disconnect()
-    oracle = Analysis.from_unit_summary(
+    oracle = builders.from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -97,19 +99,19 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
         plan=AnalysisPlan(secondaries=["revenue"]),
     )
     try:
-        expected = lift_rows(oracle.run(decision_method=Method(name="unadjusted")))[0]
+        expected = lift_rows(read(oracle, decision_method=Method(name="unadjusted")))[0]
     finally:
-        oracle.close()
+        oracle[1].close()
     assert expected.discovery is True
     assert expected.family_axes == ("metric", "arm")
 
-    analysis = _prior_reset_case().build[constructor]()
+    bound = _prior_reset_case().build[constructor]()
     try:
         method = Method(name="unadjusted")
-        inherited = lift_rows(analysis.run(metrics=["revenue"], decision_method=method))[0]
+        inherited = lift_rows(read(bound, metrics=["revenue"], decision_method=method))[0]
         for _ in range(2):
             cleared = lift_rows(
-                analysis.run(metrics=["revenue"], prior=None, decision_method=method)
+                read(bound, metrics=["revenue"], prior=None, decision_method=method)
             )[0]
             assert cleared.discovery == expected.discovery
             assert cleared.family_axes == expected.family_axes
@@ -119,7 +121,7 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
                 wanted = getattr(expected.require_lift(), field)
                 assert wanted is not None
                 assert getattr(cleared.require_lift(), field) == pytest.approx(wanted)
-        restored = lift_rows(analysis.run(metrics=["revenue"], decision_method=method))[0]
+        restored = lift_rows(read(bound, metrics=["revenue"], decision_method=method))[0]
         # The declared prior changes the posterior, not this secondary's
         # sampling-family membership; see docs/guides/priors-and-decisions.md:102.
         for row in (inherited, restored):
@@ -132,15 +134,13 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
                 getattr(inherited.require_lift(), field)
             )
     finally:
-        analysis.close()
-        for connection in getattr(analysis, "_parity_connections", ()):
-            connection.disconnect()
+        _close_parity_binding(bound)
 
 
 def _summary_builder(metrics):
     import pandas as pd
 
-    from increment import Analysis
+    from increment import builders
 
     def build():
         frame = pd.DataFrame(
@@ -150,8 +150,8 @@ def _summary_builder(metrics):
                 "y": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 6.0],
             }
         )
-        return Analysis.from_unit_summary(
-            frame, unit="unit", group="arm", control="control", metrics=metrics
+        return builders.from_frame(
+            frame, shape="summary", unit="unit", group="arm", control="control", metrics=metrics
         )
 
     return build
@@ -172,7 +172,7 @@ def _retention_summary_builder():
 def _no_design_switchback_builder():
     import pandas as pd
 
-    from increment import Analysis
+    from increment import builders
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,
@@ -181,8 +181,8 @@ def _no_design_switchback_builder():
     from increment.semantics.design import Randomized
 
     def build():
-        # `from_switchback_panel` takes no `design=`: the unsupported keyword is the attempt.
-        return Analysis.from_switchback_panel(
+        # The switchback builder takes no `design=`: the unsupported keyword is the attempt.
+        return builders.from_switchback_frame(
             pd.DataFrame(),
             unit="u",
             cycle="c",
@@ -636,20 +636,24 @@ def test_matrix_fixture_panel_nulls_reach_every_input_a_panel_metric_reads():
 
 
 class _SplitDayAxis:
-    """An analysis whose value methods return rows while its lift methods refuse, so a
-    runner that routes a view to the wrong method, or reads two methods atomically, is
-    visible in the calls it made and in the rows and refusals it kept."""
+    """A run whose value views return rows while its lift views refuse, so a runner that
+    routes a view to the wrong scope, or reads two views in one run, is visible in the scopes
+    it ran and in the rows and refusals it kept."""
 
     def __init__(self):
         self.calls = []
 
-    def _values(self, name):
+    def __call__(self, experiment, _resolver, **_options):
         from datetime import date
+        from types import SimpleNamespace
 
         from increment.breakout.estimates import DailyMetricValue
+        from increment.errors import CapabilityError
 
-        self.calls.append(name)
-        return [
+        self.calls.append(tuple((scope.view, scope.values) for scope in experiment.scopes))
+        if not all(scope.values for scope in experiment.scopes):
+            raise CapabilityError("lift refuses", code="facade.analysis.lift_refused", context={})
+        rows = [
             DailyMetricValue(
                 ds=date(2025, 1, 10),
                 metric="m",
@@ -659,52 +663,34 @@ class _SplitDayAxis:
                 n=0,
             )
         ]
-
-    def _refuse(self, name):
-        from increment.errors import CapabilityError
-
-        self.calls.append(name)
-        raise CapabilityError("lift refuses", code="facade.analysis.lift_refused", context={})
-
-    def run_daily(self, **_):
-        return self._values("run_daily")
-
-    def run_asof(self, **_):
-        return self._values("run_asof")
-
-    def run_daily_lift(self, **_):
-        self._refuse("run_daily_lift")
-
-    def run_asof_lift(self, **_):
-        self._refuse("run_asof_lift")
-
-    def close(self):
-        pass
+        return SimpleNamespace(readout=lambda _scope: rows)
 
 
 @pytest.mark.parametrize(
-    ("view", "method", "refuses"),
+    ("view", "scope", "refuses"),
     [
-        ("daily", "run_daily", False),
-        ("daily_lift", "run_daily_lift", True),
-        ("asof", "run_asof", False),
-        ("asof_lift", "run_asof_lift", True),
+        ("daily", ("daily", True), False),
+        ("daily_lift", ("daily", False), True),
+        ("asof", ("asof", True), False),
+        ("asof_lift", ("asof", False), True),
     ],
 )
-def test_each_day_axis_view_reads_only_its_own_method_and_keeps_its_own_outcome(
-    view, method, refuses
+def test_each_day_axis_view_reads_only_its_own_scope_and_keeps_its_own_outcome(
+    view, scope, refuses, monkeypatch
 ):
-    """`daily` reads `run_daily` and `daily_lift` reads `run_daily_lift` as separate legs,
-    so a refusing lift never hides its value sibling's rows and vice versa."""
+    """`daily` reads the daily value scope and `daily_lift` the daily lift scope as separate
+    runs, so a refusing lift never hides its value sibling's rows and vice versa."""
+    from tests.parity_harness import runner
     from tests.parity_harness.cases import ParityCase
 
-    analysis = _SplitDayAxis()
+    split = _SplitDayAxis()
+    monkeypatch.setattr(runner, "run", split)
     waive = {n: "SOURCE: not attempted" for n in CONSTRUCTORS if n != "from_unit_summary"}
     if refuses:
         waive["from_unit_summary"] = "SOURCE: the lift leg refuses"
     case = ParityCase(
         id=f"leg-{view}",
-        build={"from_unit_summary": lambda: cast("Analysis", analysis)},
+        build={"from_unit_summary": _mean_summary_builder()},
         waive=waive,
         waived_refusal_codes=(
             {"from_unit_summary": "facade.analysis.lift_refused"} if refuses else {}
@@ -712,17 +698,13 @@ def test_each_day_axis_view_reads_only_its_own_method_and_keeps_its_own_outcome(
         refusal_only=refuses,
         view=view,
         unscoped_outputs=(
-            {
-                "from_unit_summary": (
-                    "_SplitDayAxis is a synthetic dispatcher stub without source evidence."
-                )
-            }
+            {"from_unit_summary": "_SplitDayAxis is a synthetic run stub without source evidence."}
             if not refuses
             else {}
         ),
     )
     result = run_case(case)
-    assert analysis.calls == [method]
+    assert split.calls == [(scope,)]
     if refuses:
         assert result.rows == {}
         assert result.refusals == {"from_unit_summary": "facade.analysis.lift_refused"}
@@ -859,7 +841,7 @@ def test_the_parity_verdict_does_not_depend_on_which_ingress_is_the_oracle(seed)
     names = ("from_definitions", "from_unit_summary", "from_unit_panel")
     agreeing = [_lift_row(), _lift_row(log_se=0.04 * (1 + 1e-12)), _lift_row()]
     disagreeing = [*agreeing[:2], _lift_row(n_clusters=40)]
-    case = _case({name: cast("Callable[[], Analysis]", None) for name in names})
+    case = _case({name: cast("Callable[[], Bound]", None) for name in names})
     assert set(CONSTRUCTORS) >= set(names)
     order = list(itertools.permutations(range(3)))[seed]
     for rows, fails in ((agreeing, False), (disagreeing, True)):
@@ -873,7 +855,7 @@ def test_the_parity_verdict_does_not_depend_on_which_ingress_is_the_oracle(seed)
 
 def _definitions_schema_builder(*, metric_type: str, winsorization: bool, missing: str | None):
     """A `Definitions` declaration carrying only the named unsupported inputs; validating it
-    raises before an `Analysis` exists."""
+    raises before any builder pair exists."""
     from increment.semantics.models import Definitions
     from tests.parity_harness.matrix import Cell
     from tests.parity_harness.matrix_cases import definitions_payload
@@ -884,7 +866,7 @@ def _definitions_schema_builder(*, metric_type: str, winsorization: bool, missin
         payload = definitions_payload(cell)
         if missing is not None:
             payload["metrics"][0]["missing"] = missing
-        return cast("Analysis", Definitions.model_validate(payload))
+        return cast("Bound", Definitions.model_validate(payload))
 
     return build
 
@@ -934,14 +916,17 @@ def test_keyword_absence_must_name_a_keyword_the_signature_does_not_accept():
 
 def _sequential_row():
     """A real sequential row from the asymptotic-mean scenario's frame ingress."""
+    from increment import workflows
+    from tests.parity_harness.cases import _capture_kwargs, _close_parity_binding
+    from tests.parity_harness.views import read
+
     case = next(c for c in PARITY_CASES if c.id == "sequential_asymptotic_mean_revenue")
-    analysis = case.build["from_unit_summary"]()
+    bound = case.build["from_unit_summary"]()
     try:
-        as_of = getattr(analysis, "_sequential_as_of", None)
-        analysis.capture_sequential(finalized=True, **({"as_of": as_of} if as_of else {}))
-        rows = [r for r in analysis.run() if getattr(r, "sequential_result", None) is not None]
+        workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
+        rows = [r for r in read(bound) if getattr(r, "sequential_result", None) is not None]
     finally:
-        analysis.close()
+        _close_parity_binding(bound)
     assert rows
     return rows[0]
 
@@ -991,7 +976,7 @@ def test_sequential_rows_compare_every_public_field_except_route_identifiers():
 def test_srm_undeclared_allocation_refusal_matches_summary_and_panel_ingress():
     import pandas as pd
 
-    from increment import Analysis
+    from increment import builders, workflows
     from increment.errors import CapabilityError
 
     per_unit = pd.DataFrame(
@@ -1004,16 +989,18 @@ def test_srm_undeclared_allocation_refusal_matches_summary_and_panel_ingress():
     panel = per_unit.loc[per_unit.index.repeat(2)].copy()
     panel["day"] = ["2026-01-01", "2026-01-02"] * len(per_unit)
 
-    analyses = (
-        Analysis.from_unit_summary(
+    pairs = (
+        builders.from_frame(
             per_unit,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
             metrics={"metric": "mean"},
         ),
-        Analysis.from_unit_panel(
+        builders.from_frame(
             panel,
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -1022,9 +1009,9 @@ def test_srm_undeclared_allocation_refusal_matches_summary_and_panel_ingress():
         ),
     )
     refusals = []
-    for analysis in analyses:
+    for pair in pairs:
         with pytest.raises(CapabilityError) as raised:
-            analysis.srm(inference="fixed")
+            workflows.srm(*pair, inference="fixed")
         refusals.append((raised.value.code, raised.value.context))
 
     assert refusals[0] == refusals[1]

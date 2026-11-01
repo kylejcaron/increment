@@ -1,6 +1,6 @@
 # integration/warehouse_execution/test_snowflake_execution.py
-"""Real Snowflake execution through the actual public Analysis entry
-points: a ratio metric, materialized-cache correction, and artifact
+"""Real Snowflake execution through the public builders and ``run``:
+a ratio metric, materialized-cache correction, and artifact
 publish/adopt parity -- not a hand-assembled query-builder pipeline."""
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, run
 from integration.warehouse_execution._suite import (
     _assert_materializations_absent,
     _cache_correction_sql,
@@ -323,13 +323,15 @@ def _run_changed_default_namespace_probe(
     if force_bare_name_cleanup:
         monkeypatch.setattr(con, "drop_table", bare_name_drop)
 
-    analysis = None
+    resolver = None
     try:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "defs.yaml"
             path.write_text(yaml)
-            analysis = Analysis.from_definitions("exp", path, con, store="always")
-            before = analysis.run()[0].lift.value
+            experiment, resolver = from_definitions(
+                path, con, experiment_name="exp", store="always"
+            )
+            before = run(experiment, resolver).readout()[0].lift.value
             first_materializations = _required_materializations(con, created_relations)
             first_creation_count = len(created_relations)
 
@@ -348,7 +350,7 @@ def _run_changed_default_namespace_probe(
                 with con.raw_sql(f'USE SCHEMA "{original_catalog}"."{sentinel_schema}"'):
                     pass
 
-            cached = analysis.run()[0].lift.value
+            cached = run(experiment, resolver).readout()[0].lift.value
             second_materializations = _required_materializations(
                 con, created_relations[first_creation_count:]
             )
@@ -356,7 +358,11 @@ def _run_changed_default_namespace_probe(
 
             with con.raw_sql(f'USE SCHEMA "{original_catalog}"."{original_schema}"'):
                 pass
-            current = Analysis.from_definitions("exp", path, con, store="none").run()[0].lift.value
+            current = (
+                run(*from_definitions(path, con, experiment_name="exp", store="none"))
+                .readout()[0]
+                .lift.value
+            )
 
             if cleanup == "close":
                 sentinel_names.update(
@@ -369,11 +375,11 @@ def _run_changed_default_namespace_probe(
             assert abs(cached - (15 / 11)) < 1e-9
             assert abs(current - (15 / 11)) < 1e-9
 
-            analysis.close()
+            resolver.close()
             _assert_materializations_absent(con, second_materializations)
     finally:
-        if analysis is not None:
-            analysis.close()
+        if resolver is not None:
+            resolver.close()
         with con.raw_sql(f'USE SCHEMA "{original_catalog}"."{original_schema}"'):
             pass
         _drop_created_materializations(drop_table, created_relations)
@@ -455,7 +461,8 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
     import pyarrow as pa
     import yaml
 
-    from increment import Analysis
+    from increment import from_frame, from_unit_day_artifact
+    from increment.artifacts import publish_unit_day_artifact
     from increment.errors import CodedError
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
@@ -543,8 +550,9 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
     scratch_relations = []
     tiny_name = None
     try:
-        local = Analysis.from_unit_summary(
+        local = from_frame(
             frame(units),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=[
@@ -562,7 +570,7 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
             design=Randomized(control_group="control", allocation=dict.fromkeys(arms, 1 / 3)),
         )
         con.create_table(event_name, obj=events, overwrite=True)
-        native = Analysis.from_definitions("mixed_cuped", definitions_path, con)
+        native = from_definitions(definitions_path, con, experiment_name="mixed_cuped")
         definitions = load(definitions_path)
         experiment = definitions.experiment("mixed_cuped")
         assert experiment is not None
@@ -570,8 +578,8 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
         store = WarehouseArtifactStore(con, schema_name=artifact_namespace)
         context = artifact_context(definitions, experiment, "error")
         extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-        artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
-        adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+        artifact_ref = publish_unit_day_artifact(*native, store, extensions=extensions)
+        adopted = from_unit_day_artifact(store, artifact_ref, expected_context=context)
         fetch_arrow = WarehouseSession.fetch_arrow
         materialize_table = WarehouseSession.materialize_table
         transferred = []
@@ -594,7 +602,7 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
         monkeypatch.setattr(WarehouseSession, "fetch_arrow", bounded_fetch)
         monkeypatch.setattr(WarehouseSession, "materialize_table", capture_qr_materializations)
         outputs = [
-            analysis.run(metrics=["revenue", "rpo"]) for analysis in (local, native, adopted)
+            run(*bound, metrics=["revenue", "rpo"]).readout() for bound in (local, native, adopted)
         ]
         assert transferred
         expected = {(row.metric, row.group_id, row.method_role): row for row in outputs[0]}
@@ -638,17 +646,17 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
                     categorical_covariates if entry["metric"] == "revenue" else qr_covariates
                 )
         tiny_path.write_text(yaml.safe_dump(tiny_data, sort_keys=False))
-        refused = Analysis.from_definitions("mixed_cuped", tiny_path, con)
+        refused = from_definitions(tiny_path, con, experiment_name="mixed_cuped")
         try:
             with pytest.raises(CodedError) as raised:
-                refused.run(metrics=["revenue"])
+                run(*refused, metrics=["revenue"])
             assert raised.value.code == "query.cuped.magnitude_range"
         finally:
-            refused.close()
+            refused[1].close()
     finally:
-        for analysis in (adopted, native, local):
-            if analysis is not None:
-                analysis.close()
+        for bound in (adopted, native, local):
+            if bound is not None:
+                bound[1].close()
         _assert_materializations_absent(con, scratch_relations)
         con.drop_table(event_name, force=True)
         if tiny_name is not None:
@@ -671,10 +679,10 @@ def test_mixed_cuped_probe_cleans_source_table_when_setup_fails(tmp_path, monkey
         def __getattr__(self, name):
             return getattr(backend, name)
 
-    def fail_native_setup(cls, *_args, **_kwargs):
+    def fail_native_setup(*_args, **_kwargs):
         raise RuntimeError("native setup failed")
 
-    monkeypatch.setattr(Analysis, "from_definitions", classmethod(fail_native_setup))
+    monkeypatch.setitem(globals(), "from_definitions", fail_native_setup)
     monkeypatch.setattr(_suite, "_drop_scratch_namespace", lambda *_args, **_kwargs: None)
     before = set(backend.list_tables())
 

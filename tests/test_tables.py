@@ -1236,8 +1236,8 @@ def test_estimates_to_readout_with_breakout_estimate_adds_segment_columns():
 
 
 def test_estimates_to_readout_with_breakout_estimate_source_column():
-    """A BreakoutEstimate carrying a `source` (e.g. from
-    Analysis.run_breakout, which always resolves one) adds a
+    """A BreakoutEstimate carrying a `source` (e.g. from a breakout
+    view, which always resolves one) adds a
     `source` column too, disambiguating two breakouts that share a
     `dimension`/`dimension_value` but resolve to different FactSources."""
     est = _breakout_estimate(

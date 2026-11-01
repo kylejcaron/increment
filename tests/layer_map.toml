@@ -21,7 +21,6 @@ core = [
   "increment.readouts*",
   "increment.breakout*",
   "increment.builders",
-  "increment.analysis",
   "increment.workflows",
   "increment._analysis*",
   "increment.summaries",
@@ -46,6 +45,7 @@ core = [
   "increment._whole_window",
   "increment._breakout*",
   "increment._sitewide",
+  "increment._predeclared_adjustment",
   "increment._planning*",
   "increment._sequential*",
 ]

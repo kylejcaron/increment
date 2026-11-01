@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, MetricSpec
+from increment import MetricSpec, from_frame
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import IncrementWarning
 from increment.estimation.readout_types import CellKey, ReadoutResults
@@ -16,6 +16,7 @@ from increment.semantics.design import (
     Observational,
     UptakeSpec,
 )
+from tests.analysis_factory import view_readout
 from tests.warning_codes import warning_codes, warning_context
 
 
@@ -41,8 +42,9 @@ def _encouragement(frame):
             justification="uptake does not gate the outcome"
         ),
     )
-    return Analysis.from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="group_id",
         metrics=[MetricSpec(name="rev", type="mean")],
@@ -52,7 +54,7 @@ def _encouragement(frame):
 
 
 def test_encouragement_enumerates_itt_late_and_compliance_cells_with_compliance_evidence():
-    results = _encouragement(_encouragement_frame()).run()
+    results = view_readout(*_encouragement(_encouragement_frame()))
     assert isinstance(results, LiftEstimates)
     metadata = results.metadata
     assert metadata is not None
@@ -78,8 +80,9 @@ def test_encouragement_scope_matches_itt_only_family_selection():
             justification="uptake does not gate the outcome"
         ),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="group_id",
         metrics=[MetricSpec(name="rev", type="mean"), MetricSpec(name="other", type="mean")],
@@ -87,7 +90,7 @@ def test_encouragement_scope_matches_itt_only_family_selection():
         uptake="uptake",
         plan=AnalysisPlan(primary="rev", secondaries=["other"]),
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert results.metadata is not None
     family = next(
         family for family in results.metadata.scope.families if family.name == "secondary"
@@ -103,7 +106,7 @@ def test_encouragement_scope_matches_itt_only_family_selection():
 
 
 def test_compliance_only_encouragement_readout_records_compliance_evidence():
-    results = _encouragement(_encouragement_frame()).run(estimands=["compliance"])
+    results = view_readout(*_encouragement(_encouragement_frame()), estimands=["compliance"])
     assert {cell.estimand for cell in results.metadata.scope.cells} == {"compliance"}
     assert "compliance_summary" in {c["kind"] for c in results.source["components"]}
     assert all(row.failure_code is None for row in results)
@@ -126,8 +129,9 @@ def _observational_frame(n=400, seed=5, drop_second_metric_in="T2"):
 
 def _observational(frame):
     design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x1", "x2")))
-    return Analysis.from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[
@@ -148,7 +152,7 @@ def test_design_scoped_cell_records_retain_declared_posterior(mechanism, with_pr
     else:
         analysis = _encouragement(_encouragement_frame())
     prior = Normal(mu=0.0, sigma=0.1) if with_prior else None
-    results = analysis.run(**({"prior": prior} if with_prior else {}))
+    results = view_readout(*analysis, **({"prior": prior} if with_prior else {}))
 
     rows_by_cell = {CellKey.from_row(row): row for row in results}
     records = results.metadata.cells
@@ -172,10 +176,10 @@ def test_design_scoped_cell_records_retain_declared_posterior(mechanism, with_pr
 
 def test_observational_metric_lacking_an_arm_is_a_typed_failed_cell_beside_a_complete_metric():
     with pytest.warns(IncrementWarning) as captured:
-        analysis = _observational(_observational_frame())
+        experiment, resolver = _observational(_observational_frame())
     assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
     assert warning_context(captured, "frame.validation.metric_missing_drop")["name"] == "other"
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert results.metadata is not None
     assert {row.multiplicity_status for row in results} == {"undeclared_plan"}
     failed = [row for row in results if row.failure_code is not None]
@@ -197,7 +201,7 @@ def test_observational_metric_lacking_an_arm_is_a_typed_failed_cell_beside_a_com
 
 
 def test_observational_with_every_arm_observed_has_no_failed_cells():
-    results = _observational(_observational_frame(drop_second_metric_in=None)).run()
+    results = view_readout(*_observational(_observational_frame(drop_second_metric_in=None)))
     assert all(row.failure_code is None for row in results)
     assert {(cell.metric, cell.group_id) for cell in results.metadata.scope.cells} >= {
         ("rev", "T1"),

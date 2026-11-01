@@ -144,9 +144,10 @@ def test_log_t_reintervalization_withholds_only_the_unrepresentable_interval(
     alpha: float,
 ) -> None:
     from increment.estimation.results import LiftEstimate
+    from tests.analysis_factory import view_readout
     from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
 
-    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(view_readout(*_linear_breakout_analysis())))
 
     projected = row.reintervalize(alpha)
 
@@ -252,9 +253,10 @@ def test_withheld_independent_mean_interval_survives_json_replay() -> None:
 
 def test_later_reintervalization_clears_a_stale_relative_refusal() -> None:
     from increment.estimation.results import LiftEstimate
+    from tests.analysis_factory import view_readout
     from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
 
-    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(view_readout(*_linear_breakout_analysis())))
 
     withheld = row.reintervalize(1e-100)
     assert withheld.relative_error_code is not None
@@ -276,9 +278,10 @@ def test_withheld_interval_rows_survive_pickle_and_deepcopy() -> None:
     import pickle
 
     from increment.estimation.results import LiftEstimate
+    from tests.analysis_factory import view_readout
     from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
 
-    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(view_readout(*_linear_breakout_analysis())))
     for withheld in (row.reintervalize(1e-100), _welch_df_one_row().reintervalize(1e-310)):
         assert withheld.relative_error_code is not None
         assert pickle.loads(pickle.dumps(withheld)) == withheld

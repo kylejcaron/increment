@@ -1,16 +1,19 @@
-"""The day-axis quartet on ``Analysis``: metric selection, dimension
-handling and coded refusals through the public entry points.
+"""The day-axis views: metric selection, dimension handling and coded
+refusals through the public entry points.
 """
 
+from contextlib import AbstractContextManager
 from typing import Any, cast
 
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_definitions, from_frame, workflows
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.engine import Method
+from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec
 from increment.semantics.models import AnalysisPlan
+from tests.analysis_factory import bind_pair, make_binding_like, view_readout
 
 
 def _panel(*, metrics=None, breakouts=(), plan=None, exposure_date=None):
@@ -33,8 +36,9 @@ def _panel(*, metrics=None, breakouts=(), plan=None, exposure_date=None):
                 "d7": float(i % 2),
             }
         )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pl.DataFrame(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="ds",
@@ -50,14 +54,14 @@ def test_run_asof_serves_activity_and_retention_metrics_together():
     """Grain ``asof`` keeps every requested metric in one pass: a bounded
     retention metric is neither split off nor refused.
     """
-    analysis = _panel(
+    experiment, resolver = _panel(
         metrics=[
             MetricSpec(name="y", type="mean"),
             MetricSpec(name="d7", type="retention", threshold_days=(0, 7)),
         ],
         exposure_date="ds",
     )
-    results = analysis.run_asof()
+    results = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
     assert {row.metric for row in results} == {"y", "d7"}
     assert all(row.ds_basis == "calendar" for row in results)
     by_metric = {row.metric: row for row in results if row.group_id == "control"}
@@ -66,9 +70,18 @@ def test_run_asof_serves_activity_and_retention_metrics_together():
 
 
 def test_run_daily_refuses_unknown_dimension():
-    analysis = _panel()
+    experiment, resolver = _panel()
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_daily(dimension="missing")
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=(BreakoutIdentity("missing", None),),
+            ),
+        )
     assert raised.value.code == "facade.analysis.unknown_dimension"
     assert raised.value.context["dimension"] == "missing"
 
@@ -76,20 +89,22 @@ def test_run_daily_refuses_unknown_dimension():
 def test_run_daily_refuses_no_definitions_on_unit_summary_source():
     import polars as pl
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pl.DataFrame({"unit": ["a", "b"], "group": ["control", "treat"], "y": [1.0, 2.0]}),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics={"y": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        analysis.run_daily()
+        view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
     assert raised.value.code == "evidence.grain_unavailable"
 
 
 def test_run_daily_values_carry_slice_fields():
-    results = _panel().run_daily()
+    experiment, resolver = _panel()
+    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
     by_arm = {row.group_id: row for row in results}
     assert set(by_arm) == {"control", "treat"}
     for row in results:
@@ -102,8 +117,8 @@ def test_run_daily_values_carry_slice_fields():
 
 
 def test_run_daily_lift_narrows_to_the_requested_metric_and_carries_plan_alpha():
-    analysis = _panel(metrics={"y": "mean", "w": "mean"}, plan=AnalysisPlan(alpha=0.1))
-    narrowed = analysis.run_daily_lift(metrics=["y"])
+    experiment, resolver = _panel(metrics={"y": "mean", "w": "mean"}, plan=AnalysisPlan(alpha=0.1))
+    narrowed = view_readout(experiment, resolver, Scope(view="daily", grain="daily"), metrics=["y"])
     assert narrowed
     assert {row.metric for row in narrowed} == {"y"}
     (row,) = narrowed
@@ -117,8 +132,12 @@ def test_run_daily_honors_dimension_on_the_moments_route():
     """The moments route must honor ``dimension``, not silently emit
     undimensioned rows.
     """
-    analysis = _panel(breakouts=("country",))
-    dimensioned = analysis.run_daily(dimension="country")
+    experiment, resolver = _panel(breakouts=("country",))
+    dimensioned = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+    )
 
     by_cell = {(row.group_id, row.dimension_value): row for row in dimensioned}
     assert set(by_cell) == {("control", "us"), ("treat", "uk")}
@@ -129,7 +148,9 @@ def test_run_daily_honors_dimension_on_the_moments_route():
     assert by_cell[("treat", "uk")].value.value == pytest.approx(3.0)
     assert all(row.n == 6 for row in dimensioned)
 
-    undimensioned = analysis.run_daily()
+    undimensioned = view_readout(
+        experiment, resolver, Scope(view="daily", grain="daily", values=True)
+    )
     assert undimensioned
     assert all(row.dimension_value is None for row in undimensioned)
 
@@ -138,11 +159,11 @@ def test_run_daily_lift_refuses_a_config_bound_observational_method():
     """An observational adjustment method bound in a metric's own config,
     with no call-time override, still refuses on the lift path.
     """
-    analysis = _panel(
+    experiment, resolver = _panel(
         metrics=[MetricSpec(name="y", type="mean", decision_method=Method(name="aipw"))]
     )
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_daily_lift()
+        view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
     assert raised.value.code == "estimation.engine.method_name_observational"
 
 
@@ -150,29 +171,35 @@ def test_run_daily_lift_refuses_a_config_bound_observational_method():
 @pytest.mark.parametrize("readout", ["run_daily_lift", "run_asof_lift"])
 @pytest.mark.parametrize("metric_count, explicit_decision", [(1, False), (2, False), (1, True)])
 def test_native_observational_lift_uses_the_day_axis_refusal(
-    con, readout, metric_count, explicit_decision
+    con, example_definitions, readout, metric_count, explicit_decision
 ):
     from increment.errors import UnsupportedRequestError
     from increment.semantics.design import AdjustmentSet, Observational
     from increment.semantics.models import Metric, RetentionMetric
-    from tests.analysis_factory import make_analysis_like
 
     design = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("country",))
     )
-    with Analysis.from_definitions("new_onboarding_v2", "examples/definitions/", con) as native:
+    scope = {
+        "run_daily_lift": Scope(view="daily", grain="daily"),
+        "run_asof_lift": Scope(view="asof", grain="asof"),
+    }[readout]
+    options = {"decision_method": Method(name="unadjusted")} if explicit_decision else {}
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         metrics: list[Metric] = [
-            metric for metric in native.metrics if not isinstance(metric, RetentionMetric)
+            metric
+            for metric in workflows.metrics(experiment, resolver)
+            if not isinstance(metric, RetentionMetric)
         ]
-        with make_analysis_like(
-            native, metrics=metrics[:metric_count], design=design, plan=AnalysisPlan()
-        ) as analysis:
-            call = getattr(analysis, readout)
-            with pytest.raises(UnsupportedRequestError) as raised:
-                if explicit_decision:
-                    call(decision_method=Method(name="unadjusted"))
-                else:
-                    call()
+        observational, observational_resolver = make_binding_like(
+            resolver, metrics=metrics[:metric_count], design=design, plan=AnalysisPlan()
+        )
+        with observational_resolver, pytest.raises(UnsupportedRequestError) as raised:
+            view_readout(observational, observational_resolver, scope, **options)
     assert raised.value.code == "facade.analysis.observational_day_axis"
     assert raised.value.context["method"] == readout
 
@@ -183,7 +210,7 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
     from increment.evidence import evidence_provider
     from tests.analysis_factory import held_source
 
-    original = _panel(breakouts=("country",))
+    _, original = _panel(breakouts=("country",))
     source = cast(Any, held_source(original))
 
     class Provider:
@@ -242,14 +269,22 @@ def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
 
     provider = Provider()
     assert not hasattr(provider, "shape")
-    analysis = Analysis._from_source(cast(Any, provider))
+    experiment, resolver = bind_pair(cast(Any, provider))
     try:
-        results = analysis.run_daily(dimension="country")
+        results = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
+            ),
+        )
         assert results
         assert {row.dimension_value for row in results} == {"uk", "us"}
-        asof_results = analysis.run_asof()
+        asof_results = view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof", values=True)
+        )
         assert asof_results
         assert {row.metric for row in asof_results} == {"y"}
     finally:
-        analysis.close()
+        resolver.close()
         original.close()

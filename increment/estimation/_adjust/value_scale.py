@@ -10,7 +10,7 @@ from increment.estimation.armstats import ScoreStats
 
 _ABSOLUTE_REMEDY = (
     "The ADDITIVE effect is identified: request it with "
-    "value_scale={{{name!r}: 'absolute'}} on estimate_ate / readouts.run / Analysis.run."
+    "value_scale={{{name!r}: 'absolute'}} on estimate_ate / readouts.run / run(experiment, resolver)."
 )
 
 

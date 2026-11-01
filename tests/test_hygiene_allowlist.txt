@@ -1,12 +1,10 @@
 # H1: pytest.raises(..., match=...) on coded or unresolved exceptions
 # ---
 # H2: private-attribute reach-ins outside the two sanctioned shims
-tests/test_kernel_context_measurement.py::test_measurement_duckdb_source_disables_progress_output::_src
 tests/test_readout_execution_context.py::test_analysis_run_exposes_live_coherence_when_temp_tables_are_denied::_con
 tests/test_readout_execution_context.py::test_custom_provider_preserves_snapshot_after_update::_con
 tests/test_readout_execution_context.py::test_mutable_sql_panel_is_not_reported_as_captured::_con
 tests/test_readout_execution_context.py::test_whole_window_assigned_and_triggered_reads_share_capture.count_snapshot::_con
-tests/test_sequential_public_sources.py::test_sequential_readout_refuses_execution_context_before_evidence_read::_state
 # H3: patches targeting increment internals
 tests/breakout/test_daily.py 1
 tests/breakout/test_estimates.py 1
@@ -48,7 +46,7 @@ tests/simulate/test_dgp.py 2
 tests/simulate/test_end_to_end.py 3
 tests/simulate/test_switchback.py 3
 tests/test_analysis_asof.py 2
-tests/test_analysis_facade.py 3
+tests/test_analysis_facade.py 2
 tests/test_analysis_moments.py 1
 tests/test_analysis_trigger.py 1
 tests/test_cate.py 1
@@ -58,7 +56,7 @@ tests/test_cuped_covariate_sources.py 1
 tests/test_cuped_cross_route_consistency.py 2
 tests/test_cuped_evidence.py 2
 tests/test_cuped_review_regressions.py 1
-tests/test_cuped_route_admission.py 9
+tests/test_cuped_route_admission.py 8
 tests/test_cuped_warehouse_cells.py 4
 tests/test_dashboard.py 1
 tests/test_dashboard_capture.py 2
@@ -152,7 +150,6 @@ tests/oracles/generate/gen_dml_oracle.py 1
 tests/oracles/generate/gen_winsor_positive_roots.py 1
 tests/oracles/test_winsor_positive_roots_oracle.py 1
 tests/parity_harness/cases.py 2
-tests/parity_harness/runner.py 1
 tests/power/_sequential.py 11
 tests/power/test_binomial_planning.py 27
 tests/power/test_calibration.py 1
@@ -187,10 +184,10 @@ tests/test_allocation_endpoints.py 1
 tests/test_analysis_asof.py 2
 tests/test_analysis_config.py 9
 tests/test_analysis_config_roles.py 3
-tests/test_analysis_facade.py 2
+tests/test_analysis_facade.py 1
 tests/test_analysis_frame_sources.py 1
 tests/test_analysis_moments.py 2
-tests/test_analysis_trigger.py 4
+tests/test_analysis_trigger.py 5
 tests/test_asymptotic_public_sources.py 1
 tests/test_cate_calibration.py 7
 tests/test_compatibility_contract.py 1
@@ -208,14 +205,14 @@ tests/test_dashboard.py 23
 tests/test_dashboard_capture.py 1
 tests/test_dashboard_group_data.py 5
 tests/test_dashboard_group_laws.py 1
-tests/test_dashboard_group_source.py 1
+tests/test_dashboard_group_source.py 2
 tests/test_dashboard_overview.py 15
 tests/test_dashboard_population.py 6
 tests/test_dashboard_result_evidence.py 11
 tests/test_errors.py 1
 tests/test_evidence_identity_parity.py 2
-tests/test_experiment_health.py 3
-tests/test_exploratory_metrics.py 1
+tests/test_experiment_health.py 2
+tests/test_exploratory_metrics.py 2
 tests/test_frame_exact_successes.py 4
 tests/test_frame_missing.py 6
 tests/test_frame_panel.py 2
@@ -223,12 +220,14 @@ tests/test_frame_specs.py 2
 tests/test_frame_switchback.py 3
 tests/test_frame_window_parity.py 2
 tests/test_imports.py 1
+tests/test_kernel_builders.py 1
 tests/test_moment_plan_parity.py 2
 tests/test_multiplicity_disclosure.py 1
 tests/test_plan_compatibility.py 3
 tests/test_plan_resolver.py 3
 tests/test_policy_alpha.py 2
 tests/test_policy_parity.py 1
+tests/test_readout_execution_context.py 1
 tests/test_readout_interpretation.py 11
 tests/test_readout_metadata.py 4
 tests/test_readout_public_scope.py 8
@@ -248,8 +247,8 @@ tests/test_unit_day_artifact_adoption.py 8
 tests/test_unit_day_artifact_digest_v2.py 3
 tests/test_unit_day_artifact_digest_v2_dialects.py 8
 tests/test_unit_day_artifact_extensions.py 1
-tests/test_unit_day_artifact_facade.py 3
-tests/test_unit_day_artifact_parity.py 1
+tests/test_unit_day_artifact_facade.py 2
+tests/test_unit_day_artifact_parity.py 2
 tests/test_warehouse_cuped_qr.py 47
 tests/test_warehouse_cuped_qr_edges.py 4
 tests/test_warehouse_cuped_qr_regressions.py 3

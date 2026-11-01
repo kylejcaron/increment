@@ -15,8 +15,9 @@ from increment.declarations import Method
 from increment.errors import CodedError, IncrementWarning
 from increment.evidence import BreakoutIdentity
 from increment.kernel.contracts import Scope
+from increment.query import panel_sql
 from increment.semantics.models import AnalysisPlan, Definitions
-from tests.analysis_factory import make_analysis
+from tests.analysis_factory import make_binding, view_readout
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.comparison import nested_close
 
@@ -36,7 +37,7 @@ def _analysis(con, *, running=False):
             aggregation="avg_calendar_day",
             window_days=None,
         )
-    return make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
+    return make_binding(con, Definitions.model_validate(definitions), experiment="exp")
 
 
 def _builder(
@@ -184,17 +185,28 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
         }
     )
     con = ds.duckdb_connection(rows)
-    analysis = _analysis(con, running=True)
+    analysis_experiment, analysis_resolver = _analysis(con, running=True)
     try:
-        declared = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
-        all_declared = analysis.run(decision_method=Method(name="unadjusted"))
+        declared = view_readout(
+            analysis_experiment,
+            analysis_resolver,
+            metrics=["revenue"],
+            decision_method=Method(name="unadjusted"),
+        )
+        all_declared = view_readout(
+            analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+        )
         full_revenue = next(row for row in all_declared if row.metric == "revenue")
         narrowed_revenue = next(row for row in declared if row.metric == "revenue")
         assert nested_close(
             narrowed_revenue.lift.model_dump(),
             full_revenue.lift.model_dump(),
         )
-        panel = cast(Any, con).sql(analysis.panel_sql()["revenue"]).execute()
+        panel = (
+            cast(Any, con)
+            .sql(panel_sql(analysis_experiment, analysis_resolver)["revenue"])
+            .execute()
+        )
         observed_day_counts = panel.groupby("unit_id").size().to_dict()
         expected_day_counts = {
             row["user_id"]: (datetime(2025, 1, 25).date() - row["event_at"].date()).days + 1
@@ -202,14 +214,18 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
             if row["event"] == "exposure"
         }
         assert observed_day_counts == expected_day_counts
-        live_analysis = _analysis(con, running=True)
+        live_experiment, live_resolver = _analysis(con, running=True)
         try:
-            live_narrowed = live_analysis.run(
+            live_narrowed = view_readout(
+                live_experiment,
+                live_resolver,
                 metrics=["revenue"],
                 coherence="live",
                 decision_method=Method(name="unadjusted"),
             )
-            live_all = live_analysis.run(
+            live_all = view_readout(
+                live_experiment,
+                live_resolver,
                 coherence="live",
                 decision_method=Method(name="unadjusted"),
             )
@@ -220,13 +236,17 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
                 live_all_revenue.lift.model_dump(),
             )
         finally:
-            live_analysis.close()
-        extra = analysis.run(
+            live_resolver.close()
+        extra = view_readout(
+            analysis_experiment,
+            analysis_resolver,
             metrics=[],
             exploratory_metrics=["rps", "revenue_cuped"],
             decision_method=Method(name="unadjusted"),
         )
-        actual = analysis.run(
+        actual = view_readout(
+            analysis_experiment,
+            analysis_resolver,
             metrics=["revenue"],
             exploratory_metrics=["rps", "revenue_cuped"],
             decision_method=Method(name="unadjusted"),
@@ -241,7 +261,7 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
             [row.model_dump(exclude={"source_snapshot_id"}) for row in (*declared, *extra)],
         )
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
@@ -680,6 +700,38 @@ def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
         con.disconnect()
 
 
+def test_two_population_run_advises_each_unused_covariate_once(tmp_path):
+    """The unused-covariate advisory names a metric's configuration, not a population, so
+    reading both populations in one run advises exactly what reading one does."""
+    import warnings
+
+    con = ds.duckdb_connection()
+    experiment, resolver = _builder(con, tmp_path, triggered=True)
+    scopes = (
+        Scope(view="run", grain="total", population="assigned"),
+        Scope(view="run", grain="total", population="triggered"),
+    )
+
+    def advisories(selected):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run(replace(experiment, scopes=selected), resolver)
+        return [
+            dict(item.message.context)
+            for item in caught
+            if isinstance(item.message, IncrementWarning)
+            and item.message.code == "analysis.cuped.covariate_unused"
+        ]
+
+    try:
+        single = advisories(scopes[:1])
+        assert len(single) == 1
+        assert advisories(scopes) == single
+    finally:
+        resolver.close()
+        con.disconnect()
+
+
 def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_variant(tmp_path):
     from increment.semantics.models import MeanMetric
 
@@ -830,10 +882,9 @@ def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
     "ignore:metric 'm' has window_days=None:increment.errors.IncrementWarning"
 )
 def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
-    from tests.analysis_factory import facade_binding
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
     from tests.parity_harness import matrix, matrix_cases
-    from tests.parity_harness.cases import _close_parity_analysis
+    from tests.parity_harness.cases import _close_parity_binding
 
     baseline = matrix.Cell("mean", "run", "none", "utc", "error")
     temporal = replace(baseline, view="daily")
@@ -844,9 +895,9 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
         **matrix_cases.build_switchback_case(baseline, "rows", outcomes).build,
     }
     for ingress, build in builders.items():
-        analysis = build()
+        bound = build()
         try:
-            experiment, resolver = facade_binding(analysis)
+            experiment, resolver = bound
             scopes = (Scope(view="run", grain="total"), Scope(view="daily", grain="daily"))
             experiment = replace(experiment, scopes=scopes)
             disposition = dispositions[ingress]
@@ -883,23 +934,22 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
                     stage="read",
                 )
         finally:
-            _close_parity_analysis(analysis)
+            _close_parity_binding(bound)
 
 
 def test_switchback_metric_selection_scopes_share_contrast_evidence():
-    from tests.analysis_factory import facade_binding
     from tests.parity_harness import matrix, matrix_cases
-    from tests.parity_harness.cases import _close_parity_analysis
+    from tests.parity_harness.cases import _close_parity_binding
 
     cell = matrix.Cell("mean", "run", "none", "utc", "error")
     case = matrix_cases.build_switchback_case(cell, "rows", matrix.classify(cell).outcomes("rows"))
-    analysis = case.build["from_switchback_panel"]()
+    bound = case.build["from_switchback_panel"]()
     try:
-        experiment, resolver = facade_binding(analysis)
+        experiment, resolver = bound
         scope = Scope(
             view="switchback",
             grain="total",
-            metrics=tuple(dict(item) for item in experiment.metrics.values()),
+            metrics=tuple(dict(cast(Any, item)) for item in experiment.metrics.values()),
         )
         scopes = (*experiment.scopes, scope)
         experiment = replace(experiment, scopes=scopes)
@@ -912,4 +962,4 @@ def test_switchback_metric_selection_scopes_share_contrast_evidence():
                 expected.cells,
             )
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)

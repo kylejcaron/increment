@@ -1,10 +1,10 @@
-"""Readout dispatch + `Analysis.design=` plumbing for an
+"""Readout dispatch + `design=` plumbing for an
 `Observational` design.
 
-Exercises the seam from `Analysis.from_unit_summary(..., design=Observational(...))`
+Exercises the seam from `from_frame(..., shape="summary", design=Observational(...))`
 through `increment.readouts` into `increment.estimation.adjust.estimate_ate`
 (real `LogisticPropensity`, not a stub) - and confirms the randomized path
-stays byte-identical, `srm()`/`run_breakout()` refuse under an observational
+stays byte-identical, `srm()` and the breakout view refuse under an observational
 design, and `control=`/`design=` are mutually exclusive on every seam
 constructor.
 """
@@ -19,7 +19,19 @@ import pyarrow as pa
 import pytest
 from scipy.special import expit
 
-from increment import AdjustmentSet, Analysis, IdentificationGate, Method, Observational
+from increment import (
+    AdjustmentSet,
+    IdentificationGate,
+    Method,
+    Observational,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+    workflows,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import (
     CapabilityError,
     IncrementWarning,
@@ -28,7 +40,14 @@ from increment.errors import (
 )
 from increment.estimation.diagnostics import SRMResult
 from increment.results import NotApplicable
-from tests.analysis_factory import _moment_source, lift_rows, make_analysis_like
+from increment.workflows import export_moments, srm
+from tests.analysis_factory import (
+    bound_source,
+    lift_rows,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 from tests.warning_codes import warning_codes, warning_context
 
 
@@ -70,9 +89,10 @@ _OBS = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x1
 _OBS_TRIM = _OBS.model_copy(update={"gate": IdentificationGate(overlap="trim")})
 
 
-def _obs_analysis(n=200, seed=11, design=None):
-    return Analysis.from_unit_summary(
+def _obs_analysis(n=200, seed=11, design=None) -> tuple[Any, Any]:
+    return from_frame(
         _confounded_table(n, seed=seed),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -96,17 +116,18 @@ def test_observational_adjustment_covariates_change_source_snapshot_identity():
         )
 
     def readout(*, reverse_covariate: bool):
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             table(reverse_covariate=reverse_covariate),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics={"revenue": "mean"},
             design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",))),
         )
         try:
-            return analysis.run()
+            return view_readout(experiment, resolver)
         finally:
-            analysis.close()
+            resolver.close()
 
     aligned = readout(reverse_covariate=False)
     permuted = readout(reverse_covariate=True)
@@ -126,17 +147,18 @@ def test_binary_success_count_changes_readout_snapshot_identity():
                 ),
             }
         )
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="arm",
             control="C",
             metrics={"purchase": "conversion"},
         )
         try:
-            return analysis.run()
+            return view_readout(experiment, resolver)
         finally:
-            analysis.close()
+            resolver.close()
 
     five = readout(5)
     six = readout(6)
@@ -145,11 +167,15 @@ def test_binary_success_count_changes_readout_snapshot_identity():
 
 
 def test_unadjusted_sensitivity_keeps_observational_design_default():
-    analysis = _obs_analysis(n=400, seed=11, design=_OBS_TRIM)
+    experiment, resolver = _obs_analysis(n=400, seed=11, design=_OBS_TRIM)
     with pytest.warns(IncrementWarning):
-        implicit = lift_rows(analysis.run(sensitivity_methods=[Method(name="unadjusted")]))
+        implicit = lift_rows(
+            view_readout(experiment, resolver, sensitivity_methods=[Method(name="unadjusted")])
+        )
         explicit = lift_rows(
-            analysis.run(
+            view_readout(
+                experiment,
+                resolver,
                 decision_method=Method(name="iptw"),
                 sensitivity_methods=[Method(name="unadjusted")],
             )
@@ -173,8 +199,9 @@ def test_declared_and_call_time_methods_match_explicit_secondary_decision(decisi
     table = _confounded_table(400, seed=11, effect=1.5)
     sensitivity = Method(name="dml")
     decision = None if decision_name is None else Method(name=decision_name)
-    declared = Analysis.from_unit_summary(
+    declared_experiment, declared_resolver = from_frame(
         table,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -183,8 +210,9 @@ def test_declared_and_call_time_methods_match_explicit_secondary_decision(decisi
         design=_OBS_TRIM,
         plan=AnalysisPlan(secondaries=["revenue"], q=0.01),
     )
-    call_time = Analysis.from_unit_summary(
+    call_time_experiment, call_time_resolver = from_frame(
         table,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -192,20 +220,35 @@ def test_declared_and_call_time_methods_match_explicit_secondary_decision(decisi
         plan=AnalysisPlan(secondaries=["revenue"], q=0.01),
     )
     with pytest.warns(IncrementWarning) as caught:
-        declared_rows = lift_rows(declared.run())
+        declared_rows = lift_rows(view_readout(declared_experiment, declared_resolver))
         call_rows = lift_rows(
-            call_time.run(sensitivity_methods=[sensitivity])
+            view_readout(
+                call_time_experiment, call_time_resolver, sensitivity_methods=[sensitivity]
+            )
             if decision is None
-            else call_time.run(decision_method=decision, sensitivity_methods=[sensitivity])
+            else view_readout(
+                call_time_experiment,
+                call_time_resolver,
+                decision_method=decision,
+                sensitivity_methods=[sensitivity],
+            )
         )
         oracle = lift_rows(
-            call_time.run(
+            view_readout(
+                call_time_experiment,
+                call_time_resolver,
                 decision_method=Method(name=decision_name or "iptw"),
                 sensitivity_methods=[sensitivity],
             )
         )
-        inherited = lift_rows(declared.run(decision_method=Method(name="unadjusted")))
-        cleared = lift_rows(declared.run(sensitivity_methods=[]))
+        inherited = lift_rows(
+            view_readout(
+                declared_experiment, declared_resolver, decision_method=Method(name="unadjusted")
+            )
+        )
+        cleared = lift_rows(
+            view_readout(declared_experiment, declared_resolver, sensitivity_methods=[])
+        )
     assert any(
         getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
         for warning in caught
@@ -237,8 +280,9 @@ def test_run_dispatches_clustered_dml_with_arm_atomic_folds():
         geo_ids.append(f"{variant}-geo-{seen[variant] // 2}")
         seen[variant] += 1
     tbl = tbl.append_column("geo_id", pa.array(geo_ids))
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         tbl,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -246,7 +290,9 @@ def test_run_dispatches_clustered_dml_with_arm_atomic_folds():
         design=_OBS_TRIM,
     )
     with pytest.warns(IncrementWarning) as rec:
-        (estimate,) = lift_rows(analysis.run(decision_method=Method(name="dml")))
+        (estimate,) = lift_rows(
+            view_readout(experiment, resolver, decision_method=Method(name="dml"))
+        )
     assert "estimation.adjust_common.covariate_balance_advisory" in warning_codes(rec)
     assert estimate.method == "dml"
     assert estimate.n_clusters is not None and estimate.n_clusters >= 10
@@ -261,8 +307,9 @@ def test_clustered_observational_cuped_sensitivity_refuses_and_dropping_it_keeps
     for variant in tbl["variant"].to_pylist():
         geo_ids.append(f"{variant}-geo-{seen[variant] // 2}")
         seen[variant] += 1
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         tbl.append_column("geo_id", pa.array(geo_ids)),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -271,11 +318,18 @@ def test_clustered_observational_cuped_sensitivity_refuses_and_dropping_it_keeps
     )
     cuped_unadjusted = Method(name="unadjusted", variance_reduction="cuped")
     with pytest.raises(CapabilityError) as exc_info:
-        analysis.run(decision_method=Method(name="iptw"), sensitivity_methods=[cuped_unadjusted])
+        view_readout(
+            experiment,
+            resolver,
+            decision_method=Method(name="iptw"),
+            sensitivity_methods=[cuped_unadjusted],
+        )
     assert exc_info.value.code == "arm.adjustment.cluster_cuped"
     assert exc_info.value.context["cluster"] == "geo_id"
     with pytest.warns(IncrementWarning):
-        (estimate,) = lift_rows(analysis.run(decision_method=Method(name="iptw")))
+        (estimate,) = lift_rows(
+            view_readout(experiment, resolver, decision_method=Method(name="iptw"))
+        )
     assert (estimate.method, estimate.method_role) == ("iptw", "decision")
 
 
@@ -290,11 +344,16 @@ def test_run_refuses_a_control_only_observational_source():
         "variant",
         pa.array(["C"] * table.num_rows),
     )
-    analysis = Analysis.from_unit_summary(
-        control_only, unit="user_id", group="variant", metrics={"revenue": "mean"}, design=_OBS
+    experiment, resolver = from_frame(
+        control_only,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=_OBS,
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        analysis.run()
+        view_readout(experiment, resolver)
     assert exc_info.value.code == "readout.arms.no_treatment"
     assert exc_info.value.context["observed_arms"] == ("C",)
 
@@ -302,7 +361,7 @@ def test_run_refuses_a_control_only_observational_source():
 def test_run_dispatches_iptw_end_to_end():
     # Real LogisticPropensity, confounded frame; run() must return one
     # LiftEstimate with method == "iptw" and a finite ordered interval.
-    (est,) = lift_rows(_obs_analysis(design=_OBS_TRIM).run())
+    (est,) = lift_rows(view_readout(*_obs_analysis(design=_OBS_TRIM)))
     assert est.method == "iptw"
     lift = est.require_lift()
     assert lift.lb is not None
@@ -316,11 +375,11 @@ def test_run_undeclared_metric_preferred_direction_is_none_under_observational()
     `preferred_direction=metric.preferred_direction` stamps (unadjusted
     branch and adjust_fn branch) bypassed the readouts' explicitness fix
     entirely for every Observational-design run -- an undeclared metric
-    silently reported "increase" end-to-end through `Analysis.run()`."""
-    (est,) = lift_rows(_obs_analysis(design=_OBS_TRIM).run())
+    silently reported "increase" end-to-end through a run."""
+    (est,) = lift_rows(view_readout(*_obs_analysis(design=_OBS_TRIM)))
     assert est.preferred_direction is None
     (unadj,) = lift_rows(
-        _obs_analysis(design=_OBS_TRIM).run(decision_method=Method(name="unadjusted"))
+        view_readout(*_obs_analysis(design=_OBS_TRIM), decision_method=Method(name="unadjusted"))
     )
     assert unadj.preferred_direction is None
 
@@ -328,8 +387,9 @@ def test_run_undeclared_metric_preferred_direction_is_none_under_observational()
 def test_control_and_design_mutually_exclusive():
     tbl = _confounded_table(20, seed=0)
     with pytest.raises(InvalidRequestError) as exc:
-        Analysis.from_unit_summary(
+        from_frame(
             tbl,
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics={"revenue": "mean"},
@@ -338,14 +398,14 @@ def test_control_and_design_mutually_exclusive():
         )
     assert exc.value.code == "query.fact_resolution.pass_exactly_one"
     with pytest.raises(InvalidRequestError) as exc:
-        Analysis.from_unit_summary(
-            tbl, unit="user_id", group="variant", metrics={"revenue": "mean"}
+        from_frame(
+            tbl, shape="summary", unit="user_id", group="variant", metrics={"revenue": "mean"}
         )
     assert exc.value.code == "query.fact_resolution.pass_exactly_one"
 
 
 def test_srm_not_applicable_under_observational():
-    result = _obs_analysis().srm()
+    result = srm(*_obs_analysis())
     assert isinstance(result, NotApplicable)
     assert result.check == "srm"
     assert "not randomized" in result.reason
@@ -353,7 +413,7 @@ def test_srm_not_applicable_under_observational():
 
 def test_run_breakout_refused_under_observational():
     with pytest.raises(CapabilityError) as exc:
-        _obs_analysis().run_breakout()
+        view_readout(*_obs_analysis(), Scope(view="breakout", grain="total"))
     assert exc.value.code == "evidence.breakout_unavailable"
 
 
@@ -470,7 +530,7 @@ def test_run_observational_declared_relative_margin_refused_at_construction():
 
 
 def test_moments_source_observational_declared_relative_margin_refused_at_construction():
-    """`MomentsSource` (reached via `Analysis.from_moments`) is a second
+    """`MomentsSource` (reached via `from_moments`) is a second
     `MomentSource`-implementing constructor that can carry
     `design=Observational(...)` alongside a declared plan; a cleanup that
     moved this refusal into `increment.frame._resolve_design_and_plan`
@@ -635,15 +695,17 @@ def test_from_moments_observational_hits_capability_error():
         }
         for g, s, q in (("T", 45.0, 240.0), ("C", 30.0, 110.0))
     ]
-    an = Analysis.from_moments(rows, metrics={"revenue": "mean"}, design=_OBS, plan=AnalysisPlan())
+    experiment, resolver = from_moments(
+        rows, metrics={"revenue": "mean"}, design=_OBS, plan=AnalysisPlan()
+    )
     with pytest.raises(CapabilityError) as exc_info:
-        lift_rows(an.run())
+        lift_rows(view_readout(experiment, resolver))
     assert exc_info.value.code == "evidence.covariate_unavailable"
 
 
 def test_from_unit_panel_observational_missing_covariate_column():
     # FramePanelSource now serves unit_frame for an unwindowed mean metric
-    # (Analysis.from_unit_panel's own docstring): _OBS declares covariates
+    # (the panel builder's own contract): _OBS declares covariates
     # x1/x2, which this panel frame does not carry, so the refusal now
     # names the missing covariate columns rather than the whole path.
     tbl = pa.table(
@@ -654,8 +716,9 @@ def test_from_unit_panel_observational_missing_covariate_column():
             "revenue": [1.0, 2.0, 3.0, 4.0, 1.0, 1.5, 2.0, 2.5],
         }
     )
-    an = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         tbl,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -663,7 +726,7 @@ def test_from_unit_panel_observational_missing_covariate_column():
         design=_OBS,
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        lift_rows(an.run())
+        lift_rows(view_readout(experiment, resolver))
     assert exc_info.value.code == "frame.frame_panel.unit_covariate_column"
 
 
@@ -676,16 +739,27 @@ def test_observational_quantile_metric_refuses_on_every_frame_shape(shape):
     table = _confounded_table(200, seed=11)
     metrics = [MetricSpec(name="revenue", type="quantile", quantile=0.5)]
     if shape == "summary":
-        analysis = Analysis.from_unit_summary(
-            table, unit="user_id", group="variant", metrics=metrics, design=_OBS_TRIM
+        analysis = from_frame(
+            table,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics=metrics,
+            design=_OBS_TRIM,
         )
     else:
         panel = table.append_column("day", pa.array(["2025-01-01"] * table.num_rows))
-        analysis = Analysis.from_unit_panel(
-            panel, unit="user_id", group="variant", date="day", metrics=metrics, design=_OBS_TRIM
+        analysis = from_frame(
+            panel,
+            shape="panel",
+            unit="user_id",
+            group="variant",
+            date="day",
+            metrics=metrics,
+            design=_OBS_TRIM,
         )
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        lift_rows(analysis.run())
+        lift_rows(view_readout(*analysis))
     assert exc_info.value.code == "readout.observational.quantile"
     assert exc_info.value.context == {"metric": "revenue"}
 
@@ -704,8 +778,9 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
             "x1": [0.0, 1.0, 0.5, 1.5] * 2,
         }
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         table,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -720,7 +795,7 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
         design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x1",))),
     )
 
-    daily = analysis.run_daily()
+    daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
 
     assert len(daily) == 4
     assert {row.metric for row in daily} == {"revenue_per_session"}
@@ -742,26 +817,30 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
 def test_randomized_frame_path_unchanged():
     # control="C" sugar still builds Randomized and yields unadjusted estimates.
     table = _confounded_table(200, seed=11)
-    an = Analysis.from_unit_summary(
+    an_experiment, an_resolver = from_frame(
         table,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="C",
         metrics={"revenue": "mean"},
     )
-    (est,) = lift_rows(an.run())
+    (est,) = lift_rows(view_readout(an_experiment, an_resolver))
     assert est.method == "unadjusted"
 
     from increment.semantics.design import Randomized
 
-    declared = Analysis.from_unit_summary(
+    declared_experiment, declared_resolver = from_frame(
         table,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=Randomized(control_group="C", allocation_scheme="independent"),
     )
-    assert isinstance(declared.srm(expected={"C": 0.5, "T": 0.5}), SRMResult)
+    assert isinstance(
+        srm(declared_experiment, declared_resolver, expected={"C": 0.5, "T": 0.5}), SRMResult
+    )
 
 
 # The absolute (additive) channel at the readout layer: margins_abs
@@ -1437,16 +1516,17 @@ def test_analysis_run_forwards_value_scale():
     """The mapping reaches the readout through the facade: the only
     difference between these two calls is the kwarg, so the scale the rows
     report is what proves it was forwarded rather than dropped."""
-    an = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _near_zero_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=_OBS_X,
     )
-    (default,) = lift_rows(an.run())
+    (default,) = lift_rows(view_readout(experiment, resolver))
     assert default.value_scale == "relative"
-    (est,) = lift_rows(an.run(value_scale={"revenue": "absolute"}))
+    (est,) = lift_rows(view_readout(experiment, resolver, value_scale={"revenue": "absolute"}))
     assert est.value_scale == "absolute"
     assert est.require_lift().value == pytest.approx(0.3, abs=0.15)
 
@@ -1454,15 +1534,16 @@ def test_analysis_run_forwards_value_scale():
 def test_value_scale_refused_under_a_randomized_design():
     """The randomized path already reports the absolute axis on every row;
     a second, incompatible way to ask for it would be a silent no-op."""
-    an = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _confounded_table(200, seed=11),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="C",
         metrics={"revenue": "mean"},
     )
     with pytest.raises(UnsupportedRequestError) as exc:
-        lift_rows(an.run(value_scale={"revenue": "absolute"}))
+        lift_rows(view_readout(experiment, resolver, value_scale={"revenue": "absolute"}))
     assert exc.value.code == "readout.randomized.value_scale"
 
 
@@ -1489,7 +1570,7 @@ def test_value_scale_refused_under_an_encouragement_design():
 
 
 def test_value_scale_refused_on_the_moments_only_analysis_path():
-    """`Analysis.run` also serves definitions/warehouse sources that never
+    """A run also serves definitions/warehouse sources that never
     reach readouts.run - the selector must not be silently dropped there."""
     from increment.semantics.models import AnalysisPlan
 
@@ -1505,9 +1586,11 @@ def test_value_scale_refused_on_the_moments_only_analysis_path():
         }
         for g, s, q in (("T", 45.0, 240.0), ("C", 30.0, 110.0))
     ]
-    an = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="C", plan=AnalysisPlan())
+    experiment, resolver = from_moments(
+        rows, metrics={"revenue": "mean"}, control="C", plan=AnalysisPlan()
+    )
     with pytest.raises(UnsupportedRequestError) as exc:
-        lift_rows(an.run(value_scale={"revenue": "absolute"}))
+        lift_rows(view_readout(experiment, resolver, value_scale={"revenue": "absolute"}))
     assert exc.value.code == "readout.randomized.value_scale"
 
 
@@ -1534,8 +1617,9 @@ def _observational_multi_arm_two_secondaries(seed=5):
             "tenure": tenure,
         }
     )
-    return Analysis.from_unit_summary(
+    return from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean", "errors": "mean"},
@@ -1548,8 +1632,8 @@ def _observational_multi_arm_two_secondaries(seed=5):
 
 
 def test_observational_primary_alpha_splits_across_treatment_arms():
-    analysis = _observational_multi_arm_two_secondaries()
-    rows = lift_rows(analysis.run())
+    experiment, resolver = _observational_multi_arm_two_secondaries()
+    rows = lift_rows(view_readout(experiment, resolver))
     primary_rows = [r for r in rows if r.metric == "revenue"]
     assert len(primary_rows) == 2  # one row per non-control arm
     for row in primary_rows:
@@ -1559,8 +1643,8 @@ def test_observational_primary_alpha_splits_across_treatment_arms():
 
 
 def test_observational_secondary_family_selects_and_stamps_fcr():
-    analysis = _observational_multi_arm_two_secondaries()
-    rows = lift_rows(analysis.run())
+    experiment, resolver = _observational_multi_arm_two_secondaries()
+    rows = lift_rows(view_readout(experiment, resolver))
     secondary_rows = [r for r in rows if r.metric == "errors"]
     assert secondary_rows  # at least the single-secondary family ran
     assert all(row.role == "secondary" for row in secondary_rows)
@@ -1601,8 +1685,9 @@ def test_observational_secondary_family_refuses_on_failed_cell_not_silently_shru
             "tenure": tenure,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -1624,7 +1709,7 @@ def test_observational_secondary_family_refuses_on_failed_cell_not_silently_shru
     for name in ("moments", "unit_frame"):
         monkeypatch.setattr(FrameTotalsSource, name, _no_read)
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        lift_rows(analysis.run())
+        lift_rows(view_readout(experiment, resolver))
     error = exc_info.value
     assert error.code == "estimation.adjust_common.supported_ratio_metric"
     assert error.context["metric"] == "spend_per_click"
@@ -1665,8 +1750,9 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
                 prior=Normal(mu=0.0, sigma=0.1) if bound else None,
             ),
         ]
-        return Analysis.from_unit_summary(
+        return from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=metrics[::-1] if reverse_metrics else metrics,
@@ -1684,7 +1770,7 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
         if method == "iptw":
             for kwargs in ({}, {"prior": None}):
                 with pytest.raises(UnsupportedRequestError) as raised:
-                    bound.run(decision_method=decision, **kwargs)
+                    view_readout(*bound, decision_method=decision, **kwargs)
                 assert raised.value.code == "estimation.adjust_common.supported_ratio_metric"
                 assert raised.value.context["metric"] == "spend_per_click"
                 assert raised.value.context["method"] == "iptw"
@@ -1694,7 +1780,7 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
         expected = (
             {
                 row.metric: row
-                for row in lift_rows(prior_free.run(decision_method=decision))
+                for row in lift_rows(view_readout(*prior_free, decision_method=decision))
                 if row.method_role == "decision" and row.sampling_available is True
             }
             if prior_free is not None
@@ -1708,14 +1794,14 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
             kwargs = {"prior": None} if clear else {}
             if clear:
                 with pytest.warns(IncrementWarning) as caught:
-                    rows = lift_rows(bound.run(decision_method=decision, **kwargs))
+                    rows = lift_rows(view_readout(*bound, decision_method=decision, **kwargs))
                 assert any(
                     getattr(warning.message, "code", None)
                     == "analysis.run.override_replaces_declared"
                     for warning in caught
                 )
             else:
-                rows = lift_rows(bound.run(decision_method=decision, **kwargs))
+                rows = lift_rows(view_readout(*bound, decision_method=decision, **kwargs))
             rows = [
                 row
                 for row in rows
@@ -1744,20 +1830,30 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
                         if row.metric == "spend_per_click":
                             assert row.posterior_estimate is not None
     finally:
-        bound.close()
+        bound[1].close()
         if prior_free is not None:
-            prior_free.close()
+            prior_free[1].close()
 
 
 def test_observational_secondary_ratio_refuses_early_on_definitions_path(seeded_defs, seeded_con):
     """Native definitions validation rejects before the warehouse readout."""
     from increment.semantics.models import AnalysisPlan
 
-    base = Analysis.from_definitions("pricing_tier_test", seeded_defs, seeded_con, store="none")
-    ratio = next(metric for metric in base.metrics if metric.name == "revenue_per_session")
-    mean = next(metric for metric in base.metrics if metric.name == "avg_session_duration")
-    analysis = make_analysis_like(
-        base,
+    base_experiment, base_resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="pricing_tier_test", store="none"
+    )
+    ratio = next(
+        metric
+        for metric in workflows.metrics(base_experiment, base_resolver)
+        if metric.name == "revenue_per_session"
+    )
+    mean = next(
+        metric
+        for metric in workflows.metrics(base_experiment, base_resolver)
+        if metric.name == "avg_session_duration"
+    )
+    analysis_experiment, analysis_resolver = make_binding_like(
+        base_resolver,
         metrics=[mean, ratio],
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("revenue",))
@@ -1765,7 +1861,7 @@ def test_observational_secondary_ratio_refuses_early_on_definitions_path(seeded_
         plan=AnalysisPlan(primary="avg_session_duration", secondaries=["revenue_per_session"]),
     )
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        analysis.run()
+        view_readout(analysis_experiment, analysis_resolver)
     error = exc_info.value
     assert error.code == "estimation.adjust_common.supported_ratio_metric"
     assert error.context["metric"] == "revenue_per_session"
@@ -1792,8 +1888,9 @@ def test_all_ratio_secondary_family_refusal_names_the_family():
             "tenure": rng.normal(100, 15, size=n),
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -1810,7 +1907,7 @@ def test_all_ratio_secondary_family_refusal_names_the_family():
         plan=AnalysisPlan(secondaries=["spend_per_click", "revenue_per_click"]),
     )
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        analysis.run()
+        view_readout(experiment, resolver)
     context = exc_info.value.context
     assert exc_info.value.code == "estimation.adjust_common.supported_ratio_metric"
     assert (context["role"], context["family"], context["correction"]) == (
@@ -1841,8 +1938,9 @@ def test_observational_guardrail_keeps_full_alpha_outside_any_family():
             "tenure": tenure,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -1854,7 +1952,7 @@ def test_observational_guardrail_keeps_full_alpha_outside_any_family():
         ),
         plan=AnalysisPlan(primary="revenue", guardrails=["errors"]),
     )
-    rows = lift_rows(analysis.run())
+    rows = lift_rows(view_readout(experiment, resolver))
     guardrail_row = next(r for r in rows if r.metric == "errors")
     assert guardrail_row.role == "guardrail"
     assert guardrail_row.alternative == "less"
@@ -1908,18 +2006,24 @@ def test_three_arm_aipw_reaches_the_common_population_from_definitions_and_frame
     )
     method = Method(name="aipw", propensity_learner=_CellMean, outcome_learner=_CellMean, folds=5)
     warehouse = lift_rows(
-        Analysis.from_definitions("tri_obs", defs_path, con).run(decision_method=method)
+        view_readout(
+            *from_definitions(defs_path, con, experiment_name="tri_obs"), decision_method=method
+        )
     )
     oracle = lift_rows(
-        Analysis.from_unit_summary(
-            frame,
-            unit="user_id",
-            group="variant",
-            metrics={"revenue": "mean"},
-            design=Observational(
-                control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
+        view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                metrics={"revenue": "mean"},
+                design=Observational(
+                    control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
+                ),
             ),
-        ).run(decision_method=method)
+            decision_method=method,
+        )
     )
     for rows in (warehouse, oracle):
         by_arm = {row.group_id: row for row in rows if row.metric == "revenue"}
@@ -1951,12 +2055,18 @@ def _categorical_analysis(constructor: str, *, dummies: bool):
         gate=IdentificationGate(overlap="trim"),
     )
     if constructor == "from_unit_summary":
-        return Analysis.from_unit_summary(
-            table, unit="user_id", group="variant", metrics={"revenue": "mean"}, design=design
+        return from_frame(
+            table,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=design,
         )
     panel = table.append_column("date", pa.array([dt.date(2025, 1, 10)] * table.num_rows))
-    return Analysis.from_unit_panel(
+    return from_frame(
         panel,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -1975,13 +2085,15 @@ def test_categorical_adjustment_readout_matches_dummy_oracle(constructor, method
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         oracle = lift_rows(
-            _categorical_analysis(constructor, dummies=True).run(
-                decision_method=Method(name=method)
+            view_readout(
+                *_categorical_analysis(constructor, dummies=True),
+                decision_method=Method(name=method),
             )
         )
         actual = lift_rows(
-            _categorical_analysis(constructor, dummies=False).run(
-                decision_method=Method(name=method)
+            view_readout(
+                *_categorical_analysis(constructor, dummies=False),
+                decision_method=Method(name=method),
             )
         )
     assert [row.method for row in actual] == [method]
@@ -2030,8 +2142,9 @@ def _categorical_oracle(
     from increment.semantics.models import AnalysisPlan
 
     covariates = ("tenure", "region_west", "region_north") if dummies else ("tenure", "region")
-    return Analysis.from_unit_summary(
+    return from_frame(
         _categorical_oracle_table(units, dummies=dummies),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -2043,7 +2156,7 @@ def _categorical_oracle(
     )
 
 
-def _adopted_categorical_artifact(defs_path, con) -> Analysis:
+def _adopted_categorical_artifact(defs_path, con) -> Any:
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics import load
@@ -2053,8 +2166,10 @@ def _adopted_categorical_artifact(defs_path, con) -> Analysis:
     assert experiment is not None
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = Analysis.from_definitions("cat_test", defs_path, con).publish_unit_day_artifact(store)
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(
+        *from_definitions(defs_path, con, experiment_name="cat_test"), store
+    )
+    return from_unit_day_artifact(store, ref, expected_context=context)
 
 
 @pytest.mark.slow
@@ -2074,15 +2189,15 @@ def test_categorical_adjustment_on_definitions_paths_matches_the_dummy_oracle(
     from tests.parity_harness.runner import _normalize
 
     defs_path, con, units = categorical_defs_and_con(tmp_path)
-    analysis = (
-        Analysis.from_definitions("cat_test", defs_path, con)
+    experiment, resolver = (
+        from_definitions(defs_path, con, experiment_name="cat_test")
         if constructor == "from_definitions"
         else _adopted_categorical_artifact(defs_path, con)
     )
     oracle = _normalize(
-        _categorical_oracle(units, dummies=True).run(decision_method=Method(name=method))
+        view_readout(*_categorical_oracle(units, dummies=True), decision_method=Method(name=method))
     )
-    actual = _normalize(analysis.run(decision_method=Method(name=method)))
+    actual = _normalize(view_readout(experiment, resolver, decision_method=Method(name=method)))
     assert {method_name for methods in actual.values() for method_name in methods} == {method}
     # The dummy oracle and definitions-backed source intentionally have different identities.
     assert_rows_match(oracle, actual, skip=("source_snapshot_id", "family_id"))
@@ -2094,7 +2209,6 @@ def test_categorical_null_level_in_warehouse_source_matches_frame_when_imputed(t
     the same full-cohort ATE as the frame. Public definitions constructors
     instead use the declared default missing-value refusal."""
     from increment.semantics import load
-    from tests.analysis_factory import make_analysis
     from tests.categorical_cases import assert_rows_match
     from tests.covariate_cases import categorical_defs_and_con
     from tests.parity_harness.runner import _normalize
@@ -2105,10 +2219,14 @@ def test_categorical_null_level_in_warehouse_source_matches_frame_when_imputed(t
         control_group="control",
         adjustment=AdjustmentSet(covariates=("tenure", "region"), missing="impute-indicator"),
     )
-    warehouse = make_analysis(con, load(defs_path), experiment="cat_test", _design=design)
-    oracle = _categorical_oracle(units, dummies=False, missing="impute-indicator")
-    oracle_rows = lift_rows(oracle.run())
-    warehouse_rows = lift_rows(warehouse.run())
+    warehouse_experiment, warehouse_resolver = make_binding(
+        con, load(defs_path), experiment="cat_test", design=design
+    )
+    oracle_experiment, oracle_resolver = _categorical_oracle(
+        units, dummies=False, missing="impute-indicator"
+    )
+    oracle_rows = lift_rows(view_readout(oracle_experiment, oracle_resolver))
+    warehouse_rows = lift_rows(view_readout(warehouse_experiment, warehouse_resolver))
     assert [row.estimand for row in warehouse_rows] == ["ate"]
     # The frame oracle and warehouse source have distinct provenance identities.
     assert_rows_match(
@@ -2130,13 +2248,13 @@ def test_categorical_null_level_refuses_by_name_on_definitions_paths(tmp_path, c
 
     null_units = ("u3", "u10", "u21")
     defs_path, con, units = categorical_defs_and_con(tmp_path, null_units=null_units)
-    analysis = (
-        Analysis.from_definitions("cat_test", defs_path, con)
+    experiment, resolver = (
+        from_definitions(defs_path, con, experiment_name="cat_test")
         if constructor == "from_definitions"
         else _adopted_categorical_artifact(defs_path, con)
     )
     with pytest.raises(CodedError) as raised:
-        analysis.run()
+        view_readout(experiment, resolver)
     assert raised.value.code == "adjust.identification.missing_covariates"
     assert raised.value.context["missing_covariates"] == (("region", len(null_units)),)
     assert raised.value.context["n"] == len(units)
@@ -2162,8 +2280,9 @@ def _scalar_mean_cube_rows():
             "latency": [1.0 + (i % 7) * 0.3 + (0.2 if i % 2 else 0.0) for i in range(n)],
         }
     )
-    producer = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         table,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="C",
@@ -2176,10 +2295,10 @@ def _scalar_mean_cube_rows():
     try:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "moments.parquet"
-            producer.export(path)
+            export_moments(experiment, resolver, path)
             return pq.read_table(path).to_pylist()
     finally:
-        producer.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize(
@@ -2245,16 +2364,16 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
 
     def construct():
         if design is not None:
-            return Analysis.from_moments(rows, metrics=spec, design=design, plan=plan)
-        return Analysis.from_moments(rows, metrics=spec, control="C", plan=plan)
+            return from_moments(rows, metrics=spec, design=design, plan=plan)
+        return from_moments(rows, metrics=spec, control="C", plan=plan)
 
     if stage == "construct":
         with pytest.raises(CodedError) as raised:
             construct()
     else:
-        analysis = construct()
+        experiment, resolver = construct()
         with pytest.raises(CodedError) as raised:
-            analysis.run()
+            view_readout(experiment, resolver)
     assert raised.value.code == code
     if outcome_id is not None:
         assert_refusal(
@@ -2297,8 +2416,9 @@ def test_public_observational_quantile_margin_precedence(ingress, request_kind):
     try:
         with pytest.raises((UnsupportedRequestError, InvalidRequestError)) as raised:
             if ingress == "summary":
-                analysis = Analysis.from_unit_summary(
+                analysis = from_frame(
                     table,
+                    shape="summary",
                     unit="user_id",
                     group="variant",
                     metrics=metrics,
@@ -2306,8 +2426,9 @@ def test_public_observational_quantile_margin_precedence(ingress, request_kind):
                     plan=plan,
                 )
             else:
-                analysis = Analysis.from_unit_panel(
+                analysis = from_frame(
                     table,
+                    shape="panel",
                     unit="user_id",
                     group="variant",
                     date="day",
@@ -2316,11 +2437,11 @@ def test_public_observational_quantile_margin_precedence(ingress, request_kind):
                     plan=plan,
                 )
             stage = "read"
-            analysis.run()
+            view_readout(*analysis)
         assert_refusal("observational_relative_margin_boundary", outcome, raised.value, stage=stage)
     finally:
         if analysis is not None:
-            analysis.close()
+            analysis[1].close()
 
 
 class _DriftingMoments:
@@ -2344,16 +2465,15 @@ class _DriftingMoments:
 
 
 def _drifting_analysis(early, late):
-    source = _DriftingMoments(_moment_source(early), _moment_source(late))
+    source = _DriftingMoments(bound_source(early[1]), bound_source(late[1]))
     # Capture both original reductions before substituting the drifting read behavior.
-    _moment_source(late).moments = source.moments
+    bound_source(late[1]).moments = source.moments
     return late, source
 
 
 def test_public_definitions_relative_margin_refused_during_construction(tmp_path):
     """A plan-bound relative margin on a real observational Definitions
     source is rejected by the public constructor, before any warehouse read."""
-    from increment import Analysis
     from tests.capability_consumers_auxiliary import assert_refusal
     from tests.covariate_cases import covariate_defs_and_con
 
@@ -2369,7 +2489,7 @@ def test_public_definitions_relative_margin_refused_during_construction(tmp_path
     )
     try:
         with pytest.raises(UnsupportedRequestError) as raised:
-            Analysis.from_definitions("cov_test", definitions, con, store="none")
+            from_definitions(definitions, con, experiment_name="cov_test", store="none")
         assert raised.value.code == "plan.observational.relative_margin"
         assert_refusal(
             "observational_relative_margin_boundary",
@@ -2384,7 +2504,6 @@ def test_public_definitions_relative_margin_refused_during_construction(tmp_path
 def test_observational_relative_margin_context_cannot_produce_an_artifact(tmp_path):
     """A native producer refuses the plan before it can publish an artifact;
     there is no valid artifact context carrying this observational request."""
-    from increment import Analysis
     from tests.capability_consumers_auxiliary import assert_expected
     from tests.covariate_cases import covariate_defs_and_con
 
@@ -2399,7 +2518,7 @@ def test_observational_relative_margin_context_cannot_produce_an_artifact(tmp_pa
     )
     try:
         with pytest.raises(UnsupportedRequestError) as raised:
-            Analysis.from_definitions("cov_test", definitions, con, store="none")
+            from_definitions(definitions, con, experiment_name="cov_test", store="none")
         assert raised.value.code == "plan.observational.relative_margin"
         assert_expected(
             "observational_relative_margin_boundary",
@@ -2440,8 +2559,9 @@ def _conversion_family_analysis(arms, t1_successes):
                 }
             )
         )
-    return Analysis.from_unit_summary(
+    return from_frame(
         pl.concat(frames),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[MetricSpec(name="a", type="conversion"), MetricSpec(name="b", type="conversion")],
@@ -2460,12 +2580,14 @@ def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t
 
     early = _conversion_family_analysis(["control", "T1"], t1_successes)
     late = _conversion_family_analysis(["control", "T1", "T2"], t1_successes)
-    drifting, source = _drifting_analysis(early, late)
+    (experiment, resolver), source = _drifting_analysis(early, late)
     try:
-        rows = list(lift_rows(drifting.run(decision_method=Method(name="unadjusted"))))
+        rows = list(
+            lift_rows(view_readout(experiment, resolver, decision_method=Method(name="unadjusted")))
+        )
     finally:
-        for analysis in (early, late):
-            analysis.close()
+        for _, family_resolver in (early, late):
+            family_resolver.close()
 
     assert {(row.metric, row.group_id) for row in rows} == {("a", "T1"), ("b", "T1")}
     assert source.reads == {"a": 1, "b": 1}
@@ -2505,8 +2627,9 @@ def _mean_family_analysis(arms):
                 }
             )
         )
-    return Analysis.from_unit_summary(
+    return from_frame(
         pl.concat(frames),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"a": "mean", "b": "mean"},
@@ -2538,8 +2661,8 @@ def test_readouts_run_uses_only_request_based_provider_evidence():
     from increment.readouts import run
     from tests.analysis_factory import held_source
 
-    analysis = _mean_family_analysis(["control", "T1"])
-    source = cast(Any, held_source(analysis))
+    experiment, resolver = _mean_family_analysis(["control", "T1"])
+    source = cast(Any, held_source(resolver))
     built_in = evidence_provider(source)
 
     class PureProvider(EvidenceProvider):
@@ -2576,7 +2699,7 @@ def test_readouts_run_uses_only_request_based_provider_evidence():
             return request_evidence(built_in, request)
 
     try:
-        expected = analysis.run()
+        expected = view_readout(experiment, resolver)
         actual = run(PureProvider())
         expected_rows = list(lift_rows(expected))
         actual_rows = list(actual)
@@ -2599,7 +2722,7 @@ def test_readouts_run_uses_only_request_based_provider_evidence():
 
         assert estimate_signature(actual_rows) == estimate_signature(expected_rows)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
@@ -2607,12 +2730,14 @@ def test_readouts_run_uses_only_request_based_provider_evidence():
 def test_observational_adjusted_family_estimates_only_the_inventory_it_selected_from(method):
     early = _mean_family_analysis(["control", "T1"])
     late = _mean_family_analysis(["control", "T1", "T2"])
-    drifting, source = _drifting_analysis(early, late)
+    (experiment, resolver), source = _drifting_analysis(early, late)
     try:
-        rows = list(lift_rows(drifting.run(decision_method=Method(name=method))))
+        rows = list(
+            lift_rows(view_readout(experiment, resolver, decision_method=Method(name=method)))
+        )
     finally:
-        for analysis in (early, late):
-            analysis.close()
+        for _, family_resolver in (early, late):
+            family_resolver.close()
 
     assert {(row.metric, row.group_id) for row in rows} == {("a", "T1"), ("b", "T1")}
     assert source.reads == {"a": 1, "b": 1}
@@ -2626,9 +2751,9 @@ def test_estimate_ate_reads_each_metrics_moments_once_across_methods():
 
     early = _mean_family_analysis(["control", "T1"])
     late = _mean_family_analysis(["control", "T1", "T2"])
-    drifting, source = _drifting_analysis(early, late)
+    (_, resolver), source = _drifting_analysis(early, late)
     try:
-        context = _moment_source(late).context
+        context = bound_source(resolver).context
         computation = estimate_ate(
             cast(Any, source),
             cast("Observational", context.design),
@@ -2636,8 +2761,8 @@ def test_estimate_ate_reads_each_metrics_moments_once_across_methods():
             metrics=list(context.metrics),
         )
     finally:
-        for analysis in (early, late):
-            analysis.close()
+        for _, family_resolver in (early, late):
+            family_resolver.close()
 
     assert {(row.metric, row.method, row.group_id) for row in computation.results} == {
         (metric, method, "T1") for metric in ("a", "b") for method in ("unadjusted", "iptw")
@@ -2657,7 +2782,7 @@ def _snapshot_units(tag: str, arm: str, n: int, seed: int) -> list[dict[str, obj
     return rows
 
 
-def _snapshot_analysis(tmp_path, name):
+def _snapshot_analysis(tmp_path, name) -> tuple[Any, tuple[Any, Any]]:
     import ibis
 
     from tests.covariate_cases import _defs_yaml
@@ -2667,7 +2792,7 @@ def _snapshot_analysis(tmp_path, name):
     con.create_table("snap_events", obj=rows)
     defs_path = tmp_path / f"{name}.yaml"
     defs_path.write_text(_defs_yaml("snap_events", "snap_obs", observational=True))
-    return con, Analysis.from_definitions("snap_obs", defs_path, con)
+    return con, from_definitions(defs_path, con, experiment_name="snap_obs")
 
 
 @pytest.mark.parametrize("method", ["iptw", "unadjusted"])
@@ -2681,13 +2806,15 @@ def test_native_observational_readout_is_one_snapshot_when_arms_land_mid_readout
     execution."""
     from increment.query.native_source import DefinitionsMomentSource
 
-    clean_con, clean = _snapshot_analysis(tmp_path, "clean")
-    live_con, live = _snapshot_analysis(tmp_path, "live")
+    clean_con, (clean_experiment, clean_resolver) = _snapshot_analysis(tmp_path, "clean")
+    live_con, (live_experiment, live_resolver) = _snapshot_analysis(tmp_path, "live")
     try:
         decision = Method(name=method)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            expected = list(lift_rows(clean.run(decision_method=decision)))
+            expected = list(
+                lift_rows(view_readout(clean_experiment, clean_resolver, decision_method=decision))
+            )
 
             original = DefinitionsMomentSource.moments
             landed: list[str] = []
@@ -2700,9 +2827,13 @@ def test_native_observational_readout_is_one_snapshot_when_arms_land_mid_readout
                 return rows
 
             monkeypatch.setattr(DefinitionsMomentSource, "moments", moments_then_land_an_arm)
-            actual = list(lift_rows(live.run(decision_method=decision)))
+            actual = list(
+                lift_rows(view_readout(live_experiment, live_resolver, decision_method=decision))
+            )
             monkeypatch.setattr(DefinitionsMomentSource, "moments", original)
-            fresh = list(lift_rows(live.run(decision_method=decision)))
+            fresh = list(
+                lift_rows(view_readout(live_experiment, live_resolver, decision_method=decision))
+            )
 
         assert landed, "the warehouse never changed, so nothing was pinned against"
         assert {row.group_id for row in actual} == {"treatment"}
@@ -2721,8 +2852,8 @@ def test_native_observational_readout_is_one_snapshot_when_arms_land_mid_readout
                 want.family_threshold,
             )
     finally:
-        clean.close()
-        live.close()
+        clean_resolver.close()
+        live_resolver.close()
         clean_con.disconnect()
         live_con.disconnect()
 
@@ -2735,7 +2866,7 @@ def test_native_observational_empty_selection_touches_no_source(tmp_path, monkey
     from increment import readouts
     from increment.query.native_source import DefinitionsMomentSource
 
-    con, analysis = _snapshot_analysis(tmp_path, "empty")
+    con, (experiment, resolver) = _snapshot_analysis(tmp_path, "empty")
     touched: list[str] = []
 
     def spy(name):
@@ -2750,22 +2881,22 @@ def test_native_observational_empty_selection_touches_no_source(tmp_path, monkey
     try:
         for name in ("readout_snapshot", "_pinned_source_execution", "moments", "unit_frame"):
             spy(name)
-        source = _moment_source(analysis)
+        source = bound_source(resolver)
         assert isinstance(source.context.design, Observational)
 
-        assert list(analysis.run(metrics=[])) == []
+        assert list(view_readout(experiment, resolver, metrics=[])) == []
         assert readouts.run(source, metrics=[]) == []
         assert readouts.arm_moments(source, metrics=[]) == []
         assert touched == []
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            rows = list(lift_rows(analysis.run()))
+            rows = list(lift_rows(view_readout(experiment, resolver)))
         assert len(rows) == 1
         assert touched.count("readout_snapshot") == 1
         assert "moments" in touched
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2776,7 +2907,6 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
 ):
     """Quantile is a real Definitions/artifact metric input; absolute-margin
     and one-sided requests reach the quantile engine gate on both ingresses."""
-    from increment import Analysis
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics import load
@@ -2795,10 +2925,11 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
         else "plan: {primary: revenue, alternative: greater}"
     )
     definitions.write_text(text.replace("plan: {secondaries: [revenue]}", plan))
-    native = adopted = None
+    native: tuple[Any, Any] | None = None
+    adopted: tuple[Any, Any] | None = None
     store = None
     try:
-        native = Analysis.from_definitions("cov_test", definitions, con, store="none")
+        native = from_definitions(definitions, con, experiment_name="cov_test", store="none")
         if ingress == "from_definitions":
             consumer = native
         else:
@@ -2807,17 +2938,21 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
             assert experiment is not None
             context = artifact_context(loaded, experiment, "error")
             store = WarehouseArtifactStore(con, schema_name="observational_quantile")
-            reference = native.publish_unit_day_artifact(
+            native_experiment, native_resolver = native
+            reference = publish_unit_day_artifact(
+                native_experiment,
+                native_resolver,
                 store,
                 extensions=[UnitCovariateRequest(property_name="tenure", source_name="events")],
             )
-            native.close()
+            cast(Any, native_resolver).close()
             native = None
-            adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+            adopted = from_unit_day_artifact(store, reference, expected_context=context)
             consumer = adopted
 
+        consumer_experiment, consumer_resolver = consumer
         with pytest.raises(UnsupportedRequestError) as raised:
-            consumer.run()
+            view_readout(consumer_experiment, consumer_resolver)
         assert raised.value.code == "readout.metric.quantile_alternative"
         outcome = f"{ingress}_{'absolute_margin' if request_kind == 'margin_abs' else 'one_sided'}_quantile_precedence_refused"
         assert_refusal(
@@ -2828,9 +2963,9 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
         )
     finally:
         if adopted is not None:
-            adopted.close()
+            adopted[1].close()
         if native is not None:
-            native.close()
+            cast(Any, native[1]).close()
         con.disconnect()
 
 

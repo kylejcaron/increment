@@ -575,44 +575,41 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
     tmp_path, monkeypatch, correction
 ):
     import tests.test_dashboard_capture as capture
+    from increment import Scope
     from increment.dashboard import load_explore
     from increment.dashboard._data import ExploreView
-    from increment.workflows import experiment_definition
-    from tests.analysis_factory import bound_analysis
+    from increment.evidence import BreakoutIdentity
+    from tests.analysis_factory import view_readout
+    from tests.parity_harness.comparison import nested_close
 
     monkeypatch.setattr(
         capture,
         "_PLAN",
         capture._PLAN.replace("correction: bonferroni", f"correction: {correction}"),
     )
+    source, dimension = COUNTRY
+    alone: dict[tuple[ExploreView, tuple[str, str] | None], Scope] = {
+        ("cumulative_lift", None): Scope(view="asof", grain="asof"),
+        ("cumulative_values", None): Scope(view="asof", grain="asof", values=True),
+        ("daily_values", None): Scope(view="daily", grain="daily", values=True),
+        ("segments", COUNTRY): Scope(
+            view="breakout", grain="total", segment=BreakoutIdentity(dimension, source)
+        ),
+    }
     # Enough units that a segment is a BH discovery, so a joint family would move its threshold.
     with _workspace(tmp_path, metrics=_TWO_SAVED, units=2000) as (_, experiment, resolver):
         snapshot = prepare_dashboard(experiment, resolver, config=_config(ADDED, SECOND))
-        analysis = bound_analysis(resolver)
-        (declared,) = experiment_definition(experiment, resolver).breakouts
-        segments = analysis.dashboard_breakout_reads(declared)
         discoveries = 0
         for name in (ADDED, SECOND):
-            alone: dict[tuple[ExploreView, tuple[str, str] | None], Any] = {
-                ("cumulative_lift", None): analysis.run_asof_lift(
-                    metrics=[], exploratory_metrics=[name]
-                ),
-                ("cumulative_values", None): analysis.run_asof(
-                    metrics=[], exploratory_metrics=[name]
-                ),
-                ("daily_values", None): analysis.run_daily(metrics=[], exploratory_metrics=[name]),
-                ("segments", COUNTRY): segments.run_breakout(
-                    metrics=[], exploratory_metrics=[name]
-                ),
-            }
-            for (view, breakout), expected in alone.items():
+            for (view, breakout), scope in alone.items():
+                expected = view_readout(
+                    experiment, resolver, scope, metrics=[], exploratory_metrics=[name]
+                )
                 captured = load_explore(
                     experiment, snapshot=snapshot, metric=name, view=view, breakout=breakout
                 )
                 want, got = _rows(expected), _rows(captured)
                 assert len(got) == len(want) > 0
-                from tests.parity_harness.comparison import nested_close
-
                 assert nested_close(want, got)
                 if view == "segments":
                     discoveries += sum(bool(getattr(row, "discovery", None)) for row in captured)

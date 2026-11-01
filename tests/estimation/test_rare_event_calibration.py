@@ -45,6 +45,7 @@ import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import ibis
 import numpy as np
@@ -54,7 +55,8 @@ from scipy.special import gammaln, xlog1py, xlogy
 from scipy.stats import beta as _beta
 from scipy.stats import binom as _binom
 
-from increment.analysis import Analysis
+from increment import from_definitions, from_frame, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import InvalidRequestError
 from increment.estimation import binomial_rr
 from increment.estimation.armstats import ArmStats
@@ -64,6 +66,7 @@ from increment.estimation.sequential import AlwaysValid
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import ConversionMetric
 from increment.simulate.dgp import binomial_fixture_units, simulate_binomial_conversion_logs
+from tests.analysis_factory import view_readout
 from tests.mc import binomial_error_upper_bound, coverage_lower_bound, family_eta, scientific_delta
 
 # --- Shared fixtures -------------------------------------------------------
@@ -795,7 +798,7 @@ class TestReplicatedCalibration:
 
 
 # --- Producer-path fixtures: native, frame, artifact ------------------------
-# Raw binary fixtures run through native DuckDB `Analysis`, `from_unit_summary`
+# Raw binary fixtures run through native DuckDB `from_definitions`, `from_frame`
 # and published `from_unit_day_artifact` paths, not hand-built group_summary
 # rows. increment/simulate/dgp.py's binomial fixture helpers fix exact counts.
 
@@ -853,16 +856,17 @@ def _native_analysis(x_c: int, n_c: int, x_t: int, n_t: int, *, seed: int = 0):
     tmp = Path(tempfile.mkdtemp())
     defs_path = tmp / "defs.yaml"
     defs_path.write_text(_NATIVE_DEFS_TEMPLATE)
-    return con, Analysis("rare_event_test", defs_path, con), defs_path
+    return con, from_definitions(defs_path, con, experiment_name="rare_event_test"), defs_path
 
 
-def _frame_analysis(x_c: int, n_c: int, x_t: int, n_t: int, *, seed: int = 0) -> Analysis:
+def _frame_analysis(x_c: int, n_c: int, x_t: int, n_t: int, *, seed: int = 0) -> Any:
     unit_ids, group_ids, converted = binomial_fixture_units(x_c, n_c, x_t, n_t, seed=seed)
     df = pd.DataFrame(
         {"unit_id": unit_ids, "group_id": group_ids, "converted": converted.astype(float)}
     )
-    return Analysis.from_unit_summary(
+    return from_frame(
         df,
+        shape="summary",
         unit="unit_id",
         group="group_id",
         control="control",
@@ -870,17 +874,19 @@ def _frame_analysis(x_c: int, n_c: int, x_t: int, n_t: int, *, seed: int = 0) ->
     )
 
 
-def _artifact_analysis(x_c: int, n_c: int, x_t: int, n_t: int, *, seed: int = 0) -> Analysis:
+def _artifact_analysis(x_c: int, n_c: int, x_t: int, n_t: int, *, seed: int = 0) -> Any:
     from increment.query.artifact_publish import artifact_context
     from increment.semantics import load
 
-    con, native, defs_path = _native_analysis(x_c, n_c, x_t, n_t, seed=seed)
+    con, (native_experiment, native_resolver), defs_path = _native_analysis(
+        x_c, n_c, x_t, n_t, seed=seed
+    )
     definitions = load(defs_path)
     experiment = next(item for item in definitions.experiments if item.name == "rare_event_test")
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    return from_unit_day_artifact(store, ref, expected_context=context)
 
 
 def _conv_row(results):
@@ -930,12 +936,12 @@ class TestProducerPathFixtures:
         x_c, n_c, x_t, n_t = counts
         reference = _estimate(x_c, n_c, x_t, n_t)
 
-        con, native, _defs_path = _native_analysis(x_c, n_c, x_t, n_t, seed=7)
-        native_row = _conv_row(native.run())
+        con, (experiment, resolver), _defs_path = _native_analysis(x_c, n_c, x_t, n_t, seed=7)
+        native_row = _conv_row(view_readout(experiment, resolver))
 
-        frame_row = _conv_row(_frame_analysis(x_c, n_c, x_t, n_t, seed=7).run())
+        frame_row = _conv_row(view_readout(*_frame_analysis(x_c, n_c, x_t, n_t, seed=7)))
 
-        artifact_row = _conv_row(_artifact_analysis(x_c, n_c, x_t, n_t, seed=7).run())
+        artifact_row = _conv_row(view_readout(*_artifact_analysis(x_c, n_c, x_t, n_t, seed=7)))
 
         _assert_binomial_sets_agree(reference, native_row, frame_row, artifact_row)
         con.disconnect()

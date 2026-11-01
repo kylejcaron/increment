@@ -1,7 +1,6 @@
 # Export name: one-line user task served by the root import.
 # Keep this inventory in exact parity with increment.__all__; the check rejects
 # both unjustified root names and entries for names no longer exported.
-Analysis: Declare an experiment and its analysis inputs.
 Definitions: Load experiment and metric definitions from YAML.
 Metric: Select a metric definition from the supported metric types.
 MetricSpec: Define a metric to estimate from a dataframe column.

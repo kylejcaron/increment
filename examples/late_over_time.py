@@ -11,13 +11,15 @@ def _():
     import pandas as pd
 
     from increment import (
-        Analysis,
         AnalysisPlan,
         Encouragement,
         ExclusionRestriction,
         InferenceSpec,
         MetricSpec,
+        Scope,
         UptakeSpec,
+        from_frame,
+        run,
     )
     from increment.estimators import (
         JointReveal,
@@ -31,9 +33,9 @@ def _():
     from increment.frame import synthesise_metric
     from increment.sequential_source import frame_observation_mapping
     from increment.simulate.dgp import Scenario, simulate_raw_logs
+    from increment.workflows import capture_sequential
 
     return (
-        Analysis,
         AnalysisPlan,
         Encouragement,
         ExclusionRestriction,
@@ -42,15 +44,19 @@ def _():
         MetricSpec,
         PredictivePrior,
         Scenario,
+        Scope,
         SequentialCell,
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
         UptakeSpec,
+        capture_sequential,
         frame_observation_mapping,
+        from_frame,
         mo,
         np,
         pd,
+        run,
         sequential_definition_id,
         simulate_raw_logs,
         synthesise_metric,
@@ -157,7 +163,7 @@ def _(W, exposures, outcome_rows, pd, uptake_rows):
         source_frame = source_frame.copy()
         source_frame["exposed_on"] = source_frame["exposed_on"].dt.date
         frames.append(source_frame[cols])
-    # from_unit_panel expects at most one row per (unit, day): a unit whose
+    # A panel frame expects at most one row per (unit, day): a unit whose
     # outcome and uptake land on the same day merges here before it is seen.
     panel = (
         pd.concat(frames, ignore_index=True)
@@ -191,10 +197,11 @@ def _(Encouragement, ExclusionRestriction, UptakeSpec, W):
 
 
 @app.cell
-def _(Analysis, MetricSpec, W, design, panel):
+def _(MetricSpec, W, design, from_frame, panel):
     metrics = [MetricSpec(name="revenue", type="mean", window_days=W)]
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         panel,
+        shape="panel",
         unit="unit_id",
         group="group_id",
         date="ds",
@@ -203,13 +210,13 @@ def _(Analysis, MetricSpec, W, design, panel):
         exposure_date="exposed_on",
         experiment_id="reengagement_email",
     )
-    return analysis, metrics
+    return experiment, metrics, resolver
 
 
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## `run_daily_lift` refuses under encouragement
+    ## The daily lift view refuses under encouragement
 
     A single day's clicks are too small a first stage to divide by; the
     per-day LATE it would imply is not statistically meaningful. Increment
@@ -219,9 +226,9 @@ def _(mo):
 
 
 @app.cell
-def _(analysis):
+def _(Scope, experiment, resolver, run):
     try:
-        analysis.run_daily_lift()
+        run(experiment.with_views(Scope(view="daily", grain="daily")), resolver)
         daily_lift_message = "no error raised"
     except ValueError as daily_lift_error:
         daily_lift_message = str(daily_lift_error)
@@ -234,7 +241,8 @@ def _(mo):
     mo.md(r"""
     ## The as-of LATE trend
 
-    `run_asof_lift(completed_windows_only=True)` admits each unit only once
+    The completed-window as-of view, `Scope(view="asof", grain="asof",
+    completion_policy=True)`, admits each unit only once
     both its outcome and uptake windows have closed, so every plotted date
     reports the LATE over units mature enough to trust.
     """)
@@ -242,12 +250,16 @@ def _(mo):
 
 
 @app.cell
-def _(analysis):
+def _(Scope, experiment, resolver, run):
+    completed_windows = Scope(view="asof", grain="asof", completion_policy=True)
+
     def _late_trend(results):
         return [r for r in results if r.estimand == "late" and r.value_scale == "relative"]
 
-    fixed_late_trend = _late_trend(analysis.run_asof_lift(completed_windows_only=True))
-    return (fixed_late_trend,)
+    fixed_late_trend = _late_trend(
+        run(experiment.with_views(completed_windows), resolver).readout(completed_windows)
+    )
+    return completed_windows, fixed_late_trend
 
 
 @app.cell
@@ -272,7 +284,6 @@ def _(mo):
 
 @app.cell
 def _(
-    Analysis,
     AnalysisPlan,
     InferenceSpec,
     JointReveal,
@@ -282,11 +293,15 @@ def _(
     SequentialModel,
     SequentialRegistration,
     W,
+    capture_sequential,
+    completed_windows,
     completion_rows,
     design,
     frame_observation_mapping,
+    from_frame,
     metrics,
     panel,
+    run,
     sequential_definition_id,
     synthesise_metric,
 ):
@@ -331,8 +346,9 @@ def _(
         inference=InferenceSpec(kind="always_valid", registration=registration),
         compliance=SequentialCompliancePolicy(alpha=registration.roster[0].alpha),
     )
-    av_analysis = Analysis.from_unit_panel(
+    av_experiment, av_resolver = from_frame(
         panel,
+        shape="panel",
         unit="unit_id",
         group="group_id",
         date="ds",
@@ -344,9 +360,13 @@ def _(
     )
     uptake_trend = []
     for _day in sorted(set(completion_rows["ds"])):
-        av_analysis.capture_sequential(finalized=True, as_of=_day)
+        capture_sequential(av_experiment, av_resolver, finalized=True, as_of=_day)
         uptake_trend.extend(
-            av_analysis.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+            run(
+                av_experiment.with_views(completed_windows),
+                av_resolver,
+                estimands=("compliance",),
+            ).readout(completed_windows)
         )
     return (uptake_trend,)
 

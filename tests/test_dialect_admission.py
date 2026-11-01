@@ -19,6 +19,7 @@ from __future__ import annotations
 import ibis
 import pytest
 
+from increment import from_definitions
 from increment.semantics.loader import (
     resolve_execution_dialect,
     verify_sql_admission_matches_execution,
@@ -110,10 +111,9 @@ def test_verify_sql_admission_is_a_no_op_when_dialect_is_declared():
 def test_analysis_still_constructs_when_the_backend_has_no_known_dialect(tmp_path):
     """End-to-end regression: a backend name with no sqlglot dialect at all
     (neither stock sqlglot nor any imported ibis compiler module) must keep
-    constructing exactly as it does today -- Analysis.__init__ calling
+    constructing exactly as it does today -- from_definitions calling
     verify_sql_admission_matches_execution must never turn a working
     definitions load into a construction-time refusal."""
-    from increment import Analysis
 
     definitions_path = tmp_path / "definitions"
     definitions_path.mkdir()
@@ -144,5 +144,5 @@ experiments:
     con = ibis.duckdb.connect()
     con.create_table("events", obj=ibis.memtable({"user_id": ["u1"], "ts": ["2025-01-01"]}))
     con.name = "totallymadeupdb"
-    analysis = Analysis.from_definitions("exp", definitions_path, con)
-    assert analysis is not None
+    experiment, resolver = from_definitions(definitions_path, con, experiment_name="exp")
+    assert experiment is not None and resolver is not None

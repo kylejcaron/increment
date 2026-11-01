@@ -156,7 +156,7 @@ _REFUSALS = refusals(
         "readout.inference.disjoint_slices": RefusalSpec(
             "readout.inference.disjoint_slices",
             UnsupportedRequestError,
-            template="run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view='asof' (Analysis.run_asof_lift), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)",
+            template='run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view=\'asof\' (Scope(view="asof", grain="asof") with run()), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)',
             keys=frozenset({"view"}),
         ),
         "breakout.breakout.exactly_one_lift": RefusalSpec(
@@ -1408,7 +1408,7 @@ class DailyLiftEstimate(_RowIdentity):
     # unavailable; never reconstructed from the relative interval.
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory"
     # Output provenance for the lightweight standalone default versus the
-    # compiled policy supplied by Analysis.
+    # compiled policy an experiment run supplies.
 
     n_treat: int | None = None
     n_control: int | None = None
@@ -1698,8 +1698,7 @@ class DailyLiftEstimate(_RowIdentity):
 
 
 class LiftEstimates(EstimateList[LiftEstimate]):
-    """``list[LiftEstimate]`` with ``.to_frame()`` - :meth:`~increment.
-    analysis.Analysis.run`'s return type."""
+    """``list[LiftEstimate]`` with ``.to_frame()``: the whole-window lift rows of a run."""
 
     _model = LiftEstimate
     _summary_columns = (
@@ -1791,7 +1790,6 @@ def _envelope_identity(
 
 class BreakoutEstimates(EstimateList[BreakoutEstimate]):
     """``list[BreakoutEstimate]`` with ``.to_frame()`` - :func:`run_breakout`'s
-    (and :meth:`~increment.analysis.Analysis.run_breakout`'s)
     return type."""
 
     _model = BreakoutEstimate
@@ -1856,8 +1854,7 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
 
 class DailyMetricValues(EstimateList[DailyMetricValue]):
     """``list[DailyMetricValue]`` with ``.to_frame()`` - :func:`run_daily`'s
-    (and :meth:`~increment.analysis.Analysis.run_daily`/
-    ``run_asof``'s) return type."""
+    return type."""
 
     _model = DailyMetricValue
     _envelope_view: Literal["daily", "asof"] | None = None
@@ -1888,8 +1885,7 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
 
 class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     """``list[DailyLiftEstimate]`` with ``.to_frame()`` - :func:`run_daily_lift`'s
-    (and :meth:`~increment.analysis.Analysis.run_daily_lift`/
-    ``run_asof_lift``'s) return type."""
+    return type."""
 
     _model = DailyLiftEstimate
     _envelope_view: Literal["daily", "asof"] | None = None

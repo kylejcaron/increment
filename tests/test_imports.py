@@ -1,7 +1,7 @@
 """Import-time weight checks.
 
 ``increment``'s top-level package and its estimation submodule re-export
-names that live in heavier modules (``Analysis`` pulls in ibis
+names that live in heavier modules (the warehouse builders pull in ibis
 and narwhals, ``Method``/``estimate_lift`` pull in narwhals). Those re-exports
 must be lazy so that importing lightweight entry points (``increment.power``
 and ``increment.estimation.armstats``) never drags ibis, narwhals, or
@@ -317,15 +317,16 @@ def test_estimation_import_leaves_decision_core_unloaded():
 def test_resolving_analysis_leaves_warehouse_and_scipy_stats_unloaded():
     code = (
         "import sys\n"
-        "from increment import Analysis\n"
+        "from increment import from_frame, run\n"
         "heavy = {'ibis', 'sqlglot', 'scipy.stats'} & set(sys.modules)\n"
         "assert not heavy, sorted(heavy)\n"
         "import pandas as pd\n"
         "frame = pd.DataFrame({'unit': ['u1', 'u2', 'u3', 'u4'], "
         "'group': ['control', 'control', 'treatment', 'treatment'], "
         "'value': [1.0, 2.0, 3.0, 4.0]})\n"
-        "Analysis.from_unit_summary(frame, unit='unit', group='group', "
-        "control='control', metrics={'value': 'mean'}).run()\n"
+        "experiment, resolver = from_frame(frame, shape='summary', unit='unit', group='group', "
+        "control='control', metrics={'value': 'mean'})\n"
+        "run(experiment, resolver)\n"
         "heavy = {'ibis', 'sqlglot'} & set(sys.modules)\n"
         "assert not heavy, sorted(heavy)\n"
     )

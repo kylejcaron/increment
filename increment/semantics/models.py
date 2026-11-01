@@ -1717,9 +1717,9 @@ def _refuse_design_tuning_keys(mechanism: str, data: object, known: frozenset[st
             "definition.experiment.design_tuning_key_not_yaml",
             f"design: {{mechanism: {mechanism}, ...}} does not accept "
             f"{present} from YAML -- statistical tuning keeps its "
-            f"library default here; declare a full "
-            f"Encouragement/Observational object from "
-            f"Analysis.from_unit_summary/from_unit_panel to override it",
+            f"library default here; pass a full "
+            f"Encouragement/Observational object as design= to "
+            f"from_frame to override it",
             mechanism=mechanism,
             keys=present,
         )
@@ -1732,8 +1732,8 @@ class EncouragementDeclaration(_Base):
     arm and target allocation come from the experiment's own
     ``control_group``/``allocation`` -- see ``Experiment.resolved_design()``.
     Statistical tuning (``min_first_stage_z``) keeps its library default;
-    declare it from ``Analysis.from_unit_summary``/``from_unit_panel`` with a
-    full ``Encouragement`` object if you need to override it."""
+    pass a full ``Encouragement`` object as ``design=`` to ``from_frame`` if
+    you need to override it."""
 
     @model_validator(mode="before")
     @classmethod
@@ -1828,8 +1828,8 @@ class ObservationalDeclaration(_Base):
     in YAML: the covariates sufficient to identify the effect. The
     control arm comes from ``Experiment.control_group``. Overlap/positivity
     policy (``gate``) and missing-covariate handling (``adjustment.missing``)
-    keep their library defaults; override them from
-    ``Analysis.from_unit_summary`` with a full ``Observational`` object."""
+    keep their library defaults; override them by passing a full
+    ``Observational`` object as ``design=`` to ``from_frame``."""
 
     @model_validator(mode="before")
     @classmethod

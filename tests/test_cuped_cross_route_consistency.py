@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, Method, MetricSpec
+from increment import (
+    Method,
+    MetricSpec,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    run,
+)
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
+from tests.analysis_factory import view_readout
 from tests.test_cuped_route_evidence import _records, _scalar
 
 
@@ -21,17 +32,18 @@ def test_fixed_horizon_unadjusted_factory_preserves_custom_label(mechanism):
     estimates = []
     for label in ("naive", "comparison"):
         method = Method.model_validate_json(Method.unadjusted(name=label).model_dump_json())
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pa.Table.from_pylist(_records()),
+            shape="summary",
             unit="unit",
             group="arm",
             design=design,
             metrics=[MetricSpec(name="outcome", decision_method=method)],
         )
         try:
-            (row,) = analysis.run()
+            (row,) = view_readout(experiment, resolver)
         finally:
-            analysis.close()
+            resolver.close()
         assert isinstance(row, LiftEstimate)
         assert row.method == label
         assert row.method_role == "decision"
@@ -53,8 +65,9 @@ def test_panel_repeated_conversion_refuses_before_scalar_inference(scalar):
         for i, row in enumerate(_records())
         for day in (0, 1)
     ]
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(records),
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -68,7 +81,7 @@ def test_panel_repeated_conversion_refuses_before_scalar_inference(scalar):
         ],
     )
     with pytest.raises(CodedError) as raised:
-        analysis.run()
+        view_readout(experiment, resolver)
     assert raised.value.code == "frame.moments.metric_type_conversion"
     assert raised.value.context["metric"] == "converted"
     assert raised.value.context["value"] == pytest.approx(2.0)
@@ -142,22 +155,29 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
     path, con, table = _linear_binding_case(tmp_path)
     requested = _rebound_linear(binding)
     try:
-        with Analysis.from_definitions("cov_test", path, con) as native:
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native_resolver):
             with pytest.warns(IncrementWarning) as caught:
                 warnings.filterwarnings(
                     "ignore",
                     message=r"fetch_arrow_table\(\) is deprecated",
                     category=DeprecationWarning,
                 )
-                (actual,) = native.run(decision_method=requested, sensitivity_methods=())
+                (actual,) = view_readout(
+                    native_experiment,
+                    native_resolver,
+                    decision_method=requested,
+                    sensitivity_methods=(),
+                )
             assert {
                 getattr(warning.message, "context", {})["setting"]
                 for warning in caught
                 if getattr(warning.message, "code", None)
                 == "analysis.run.override_replaces_declared"
             } == {"decision_method"}
-        with Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             table,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -172,8 +192,9 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
                     ),
                 )
             ],
-        ) as frame:
-            (expected,) = frame.run()
+        )
+        with resolver:
+            (expected,) = view_readout(experiment, resolver)
         assert isinstance(actual, LiftEstimate) and isinstance(expected, LiftEstimate)
         assert actual.require_lift().value == pytest.approx(
             expected.require_lift().value, rel=1e-10
@@ -184,25 +205,24 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
 
         import yaml
 
-        from increment.readouts import run_scoped
-
         definitions = yaml.safe_load(path.read_text())
         definitions["experiments"][0]["breakouts"] = [{"property": "segment", "source": "events"}]
         path.write_text(yaml.safe_dump(definitions))
-        with Analysis.from_definitions("cov_test", path, con) as native:
-            (separate_run,) = native.run()
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native_resolver):
+            (separate_run,) = view_readout(native_experiment, native_resolver)
+            whole = Scope(view="run", grain="total")
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",
                     message=r"fetch_arrow_table\(\) is deprecated",
                     category=DeprecationWarning,
                 )
-                scoped = run_scoped(
-                    native,
-                    readouts=("run", "breakout"),
-                    breakout_decision_method=Method.unadjusted(),
+                scoped = run(
+                    native_experiment.with_views(whole, Scope(view="breakout", grain="total")),
+                    native_resolver,
                 )
-            (shared_run,) = scoped["run"]
+            (shared_run,) = scoped.readout(whole)
             assert isinstance(shared_run, LiftEstimate) and isinstance(separate_run, LiftEstimate)
             assert shared_run.require_lift().value == pytest.approx(
                 separate_run.require_lift().value, rel=1e-10
@@ -287,7 +307,7 @@ def test_native_scalar_imputation_uses_population_before_window_censoring(tmp_pa
     # values are filled before the two immature outcomes are excluded.
     population_mean = 2312.0 / 18
     mature = [unit for unit in groups if unit not in {"u9", "u19"}]
-    frame = Analysis.from_unit_summary(
+    frame_experiment, frame_resolver = from_frame(
         pa.Table.from_pylist(
             [
                 {
@@ -299,16 +319,18 @@ def test_native_scalar_imputation_uses_population_before_window_censoring(tmp_pa
                 for unit in mature
             ]
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics=[MetricSpec(name="revenue", decision_method=_scalar("adjusted", "history_a"))],
     )
     try:
-        (expected,) = frame.run()
+        (expected,) = view_readout(frame_experiment, frame_resolver)
         assert isinstance(expected, LiftEstimate)
-        with Analysis.from_definitions("cov_test", path, con) as native:
-            (native_row,) = native.run()
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native_resolver):
+            (native_row,) = view_readout(native_experiment, native_resolver)
         artifact = _artifact_source(path, con)
         try:
             (artifact_row,) = run(artifact)
@@ -323,7 +345,7 @@ def test_native_scalar_imputation_uses_population_before_window_censoring(tmp_pa
                 expected.require_lift().log_se, rel=1e-10
             )
     finally:
-        frame.close()
+        frame_resolver.close()
         con.disconnect()
 
 
@@ -350,16 +372,19 @@ def test_encouragement_breakout_preserves_refused_scalar_decision_cells(with_pri
     from tests.test_cuped_route_evidence import _frame
 
     scalar = _scalar("adjusted", "history_a", missing="refuse")
-    analysis = _frame(
+    experiment, resolver = _frame(
         _refusing_breakout_records(),
         (scalar, Method.unadjusted()),
         panel=False,
         encouragement=True,
     )
-    try:
-        result = analysis.run_breakout(prior=Normal(mu=0.0, sigma=0.1) if with_prior else None)
-    finally:
-        analysis.close()
+    with resolver:
+        result = view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total"),
+            prior=Normal(mu=0.0, sigma=0.1) if with_prior else None,
+        )
     payload = json.loads(result.model_dump_json())
     restored = ReadoutResults.model_validate_json(json.dumps(payload))
     for collection in (result, restored):
@@ -441,8 +466,9 @@ def test_breakout_scalar_refusal_preserves_requested_posterior_unavailability(ro
 
     scalar, naive = _scalar("adjusted", "history_a", missing="refuse"), Method.unadjusted()
     methods = (scalar, naive) if role == "decision" else (naive, scalar)
-    result = _frame(_refusing_breakout_records(), methods, panel=False).run_breakout(
-        prior=Normal(mu=0.0, sigma=0.1)
+    experiment, resolver = _frame(_refusing_breakout_records(), methods, panel=False)
+    result = view_readout(
+        experiment, resolver, Scope(view="breakout", grain="total"), prior=Normal(mu=0.0, sigma=0.1)
     )
     failed = next(
         row for row in result if row.dimension_value == "unavailable" and row.method == "adjusted"
@@ -467,8 +493,9 @@ def test_scalar_only_breakout_refusal_remains_in_bh_family():
 
     from increment import AnalysisPlan, MultiplicitySpec
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(_refusing_breakout_records()),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -483,7 +510,7 @@ def test_scalar_only_breakout_refusal_remains_in_bh_family():
     )
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        result = analysis.run_breakout()
+        result = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert not captured
     failed = next(row for row in result if row.dimension_value == "unavailable")
     assert failed.failure_code == "frame.validation.metric_covariate_column"
@@ -530,21 +557,21 @@ def test_portable_moments_enforce_recorded_scalar_preparation(tmp_path, monkeypa
         missing="impute",
     )
     if override in {"matching_after_unadjusted", "matching_renamed"}:
-        restored = Analysis.from_moments(
+        restored = from_moments(
             payload,
             control="control",
             metrics=[MetricSpec(name="outcome", decision_method=Method.unadjusted())],
         )
-        (expected,) = Analysis.from_moments(
-            payload, metrics=[MetricSpec(name="outcome")], control="control"
-        ).run()
+        (expected,) = view_readout(
+            *from_moments(payload, metrics=[MetricSpec(name="outcome")], control="control")
+        )
         requested = (
             _scalar("adjusted", "history_b", missing="zero")
             if override == "matching_renamed"
             else original
         )
         with pytest.warns(IncrementWarning) as caught:
-            (actual,) = restored.run(decision_method=requested, sensitivity_methods=())
+            (actual,) = view_readout(*restored, decision_method=requested, sensitivity_methods=())
         assert any(
             getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
             for warning in caught
@@ -563,19 +590,17 @@ def test_portable_moments_enforce_recorded_scalar_preparation(tmp_path, monkeypa
         reads.append("evidence")
         pytest.fail("changed preparation accessed fixed moments")
 
-    restored = Analysis.from_moments(
-        payload, metrics=[MetricSpec(name="outcome")], control="control"
-    )
+    restored = from_moments(payload, metrics=[MetricSpec(name="outcome")], control="control")
     monkeypatch.setattr(MomentsSource, "moments", unread)
     with pytest.raises(CodedError) as raised:
         if override in {"construction", "renamed_construction"}:
-            Analysis.from_moments(
+            from_moments(
                 payload,
                 metrics=[MetricSpec(name="outcome", decision_method=changed)],
                 control="control",
             )
         else:
-            restored.run(decision_method=changed, sensitivity_methods=())
+            view_readout(*restored, decision_method=changed, sensitivity_methods=())
     assert raised.value.code == "readout.scalar_method_evidence"
     assert reads == []
 
@@ -634,13 +659,14 @@ def test_sequential_subset_retains_unselected_declared_family_methods(override):
         )
         for name in ("outcome", "second")
     ]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(
             [
                 {**row, "second": 2 * row["outcome"] + index % 5}
                 for index, row in enumerate(_records())
             ]
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         exposure_date="exposure",
@@ -661,7 +687,7 @@ def test_sequential_subset_retains_unselected_declared_family_methods(override):
             ),
         ),
     )
-    full = analysis.run()
+    full = view_readout(experiment, resolver)
     kwargs = (
         {
             "decision_method": _scalar("requested", "history_a"),
@@ -672,13 +698,13 @@ def test_sequential_subset_retains_unselected_declared_family_methods(override):
     )
     if override:
         with pytest.warns(IncrementWarning) as caught:
-            subset = analysis.run(metrics=["outcome"], **kwargs)
+            subset = view_readout(experiment, resolver, metrics=["outcome"], **kwargs)
         assert {getattr(warning.message, "context", {})["setting"] for warning in caught} == {
             "decision_method",
             "sensitivity_methods",
         }
     else:
-        subset = analysis.run(metrics=["outcome"], **kwargs)
+        subset = view_readout(experiment, resolver, metrics=["outcome"], **kwargs)
     assert full.metadata is not None and subset.metadata is not None
 
     def methods_in_families(result, name):
@@ -744,7 +770,7 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
     )
     definitions["experiments"][0]["plan"]["primary"]["sensitivity_methods"] = []
     path.write_text(yaml.safe_dump(definitions))
-    frame = Analysis.from_unit_summary(
+    frame_experiment, frame_resolver = from_frame(
         pa.Table.from_pylist(
             [
                 {
@@ -757,6 +783,7 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
                 for unit in groups
             ]
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         design=design,
@@ -764,13 +791,14 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
         metrics=[MetricSpec(name="revenue", decision_method=_scalar("scalar_a", "history_a"))],
     )
     expected = {}
-    for row in frame.run(estimands=("itt", "late")):
+    for row in view_readout(frame_experiment, frame_resolver, estimands=("itt", "late")):
         assert isinstance(row, LiftEstimate)
         expected[row.estimand] = row.require_lift()
     try:
-        with Analysis.from_definitions("cov_test", path, con) as native:
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native_resolver):
             actual = {}
-            for row in native.run(estimands=("itt", "late")):
+            for row in view_readout(native_experiment, native_resolver, estimands=("itt", "late")):
                 assert isinstance(row, LiftEstimate)
                 actual[row.estimand] = row.require_lift()
         assert actual.keys() == expected.keys() == {"itt", "late"}
@@ -784,30 +812,25 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
 @pytest.mark.slow
 @pytest.mark.integration
 def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tmp_path):
-    from typing import Any
 
     import yaml
 
+    from increment.dashboard import DashboardConfig, prepare_dashboard
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
     path, con, _methods, _tenure, _groups, _revenue = _scalar_native_case(tmp_path)
     definitions = yaml.safe_load(path.read_text())
     definitions["experiments"][0]["end"] = None
     path.write_text(yaml.safe_dump(definitions))
+    config = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
 
     def read(backend):
-        with Analysis.from_definitions(
-            "cov_test", path, con, backend=backend, store="none"
-        ) as analysis:
-            direct = list(analysis.run())
-
-            def snapshot_read(isolated: Any) -> Any:
-                return list(isolated.run())
-
-            snapshotted = analysis.dashboard_snapshot(
-                snapshot_read,
-                metrics=analysis.metrics,
-            )
+        experiment, resolver = from_definitions(
+            path, con, experiment_name="cov_test", backend=backend, store="none"
+        )
+        with cast(Any, resolver):
+            direct = list(view_readout(experiment, resolver))
+            snapshotted = list(prepare_dashboard(experiment, resolver, config=config).estimates)
         return direct, snapshotted
 
     try:
@@ -831,7 +854,7 @@ def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tm
         con.disconnect()
 
 
-def _run_with_override_warning(analysis, **kwargs):
+def _run_with_override_warning(analysis: tuple[Any, Any], **kwargs):
     import warnings
 
     with pytest.warns(IncrementWarning) as caught:
@@ -840,7 +863,7 @@ def _run_with_override_warning(analysis, **kwargs):
             message=r"fetch_arrow_table\(\) is deprecated",
             category=DeprecationWarning,
         )
-        rows = analysis.run(**kwargs)
+        rows = view_readout(*analysis, **kwargs)
     assert any(
         getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
         for warning in caught
@@ -855,6 +878,7 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
 
     import yaml
 
+    from increment.dashboard import DashboardConfig, prepare_dashboard
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
     path, con, methods, _tenure, groups, _revenue = _scalar_native_case(tmp_path)
@@ -943,7 +967,8 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
     definitions["experiments"][0]["plan"]["secondaries"] = ["coverage"]
     path.write_text(yaml.safe_dump(definitions))
     try:
-        with Analysis.from_definitions("cov_test", path, con) as native:
+        native = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native[1]):
             selected = ["revenue"]
 
             baseline = next(
@@ -998,29 +1023,12 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
 
             monkeypatch.setattr(WarehouseSession, "pin_sources", advance_before_capture)
 
-            def read_pinned(isolated):
-                return next(
-                    iter(
-                        _run_with_override_warning(
-                            isolated,
-                            metrics=selected,
-                            decision_method=Method.unadjusted(),
-                            sensitivity_methods=(),
-                        )
-                    )
-                )
-
-            captured = native.dashboard_snapshot(read_pinned, metrics=native.metrics)
-            after_capture = next(
-                iter(
-                    _run_with_override_warning(
-                        native,
-                        metrics=selected,
-                        decision_method=Method.unadjusted(),
-                        sensitivity_methods=(),
-                    )
-                )
+            snapshot = prepare_dashboard(
+                *native,
+                config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5}),
             )
+            captured = next(row for row in snapshot.estimates if row.metric == "revenue")
+            after_capture = next(iter(view_readout(*native, metrics=selected)))
         assert isinstance(baseline, LiftEstimate)
         assert isinstance(with_companion, LiftEstimate)
         assert isinstance(full_run["revenue"], LiftEstimate)

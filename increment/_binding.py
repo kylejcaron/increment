@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import reprlib
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
 
@@ -499,6 +500,14 @@ class ResolverBinding:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    def __repr__(self) -> str:
+        """Name the source and whether it is closed, from recorded state only; never reads it."""
+        kind, _, name = self.experiment.source_refs[0].uri.partition("://")
+        return (
+            f"{type(self).__name__}(source={kind!r}, name={reprlib.repr(name)}, "
+            f"closed={self._closed})"
+        )
 
 
 def binding_for(experiment: Experiment, resolver: Resolver) -> SourceBinding:

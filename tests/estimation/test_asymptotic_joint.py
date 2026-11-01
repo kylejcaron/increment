@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, CupedCovariate, Method
+from increment import CupedCovariate, Method, from_frame
 from increment.errors import CodedError
 from increment.estimation._certified import log_interval
 from increment.estimation._sequential_likelihood import GaussianState
@@ -31,6 +31,7 @@ from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.estimation.sequential_runtime import evaluate_checkpoint, selected_snapshot_results
 from increment.estimators import (
     AsymptoticMean,
+    ScalarMeanModel,
     SequentialCell,
     declare_sequential_freeze,
     estimate_sequential,
@@ -38,6 +39,8 @@ from increment.estimators import (
 from increment.frame import MetricSpec
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment.workflows import sequential_snapshot
+from tests.analysis_factory import view_readout
 from tests.asymptotic_cases import mean_capture, mean_model, mean_records, mean_registration
 from tests.mc import binomial_error_upper_bound, family_eta, scientific_delta
 
@@ -67,8 +70,9 @@ def _run(frame, spec):
     frame = frame.copy()
     if "exposure" not in frame:
         frame["exposure"] = range(len(frame))
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[spec],
@@ -77,7 +81,7 @@ def _run(frame, spec):
         design=_DESIGN,
         exposure_date="exposure",
     )
-    return analysis, analysis.run()[0]
+    return (experiment, resolver), view_readout(experiment, resolver)[0]
 
 
 def _width(row):
@@ -87,7 +91,7 @@ def _width(row):
 def test_adjusted_mean_narrows_with_a_predictive_covariate_and_not_with_noise():
     frame = _frame(np.random.default_rng(11))
     _, plain = _run(frame, MetricSpec(name="m", type="mean"))
-    analysis, adjusted = _run(
+    (experiment, resolver), adjusted = _run(
         frame,
         MetricSpec(
             name="m",
@@ -105,7 +109,7 @@ def test_adjusted_mean_narrows_with_a_predictive_covariate_and_not_with_noise():
             ),
         ),
     )
-    model = analysis.sequential_snapshot().registration.models[0]
+    model = sequential_snapshot(experiment, resolver).registration.models[0]
     assert model.law == "adjusted_mean" and adjusted.method == "cuped"
     assert _width(adjusted) < 0.5 * _width(plain)
     assert abs(_width(noise) - _width(plain)) < 0.01 * _width(plain)
@@ -138,8 +142,10 @@ def test_adjusted_mean_with_an_orthogonal_covariate_is_the_scalar_set():
 def test_ratio_metric_is_monitored_sequentially_and_an_unresolved_denominator_withholds_it():
     rng = np.random.default_rng(3)
     frame = _frame(rng)
-    analysis, row = _run(frame, MetricSpec(name="m", type="ratio", numerator="m", denominator="d"))
-    assert analysis.sequential_snapshot().registration.models[0].law == "ratio_mean"
+    (experiment, resolver), row = _run(
+        frame, MetricSpec(name="m", type="ratio", numerator="m", denominator="d")
+    )
+    assert sequential_snapshot(experiment, resolver).registration.models[0].law == "ratio_mean"
     assert row.inference == "asymptotic_mean" and row.lift.lb < row.lift.value < row.lift.ub
     assert row.require_asymptotic_sequential_result().bounds.status == "bounded"
     near_zero = frame.assign(d=rng.normal(0.0, 1.0, size=len(frame)))
@@ -653,7 +659,7 @@ def _raw_form(scatter, n, left, right):
 def test_adjusted_ratio_narrows_ratio_and_keeps_the_covariate_induced_covariance():
     frame = _induced_frame(np.random.default_rng(5))
     _, ratio = _run(frame, MetricSpec(name="m", type="ratio", numerator="m", denominator="d"))
-    analysis, adjusted = _run(
+    (experiment, resolver), adjusted = _run(
         frame,
         MetricSpec(
             name="m",
@@ -663,16 +669,24 @@ def test_adjusted_ratio_narrows_ratio_and_keeps_the_covariate_induced_covariance
             decision_method=Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
         ),
     )
-    assert analysis.sequential_snapshot().registration.models[0].law == "adjusted_ratio_mean"
+    assert (
+        sequential_snapshot(experiment, resolver).registration.models[0].law
+        == "adjusted_ratio_mean"
+    )
     assert _width(adjusted) < _width(ratio)
 
     # Zeroing the adjusted components' covariance Cov(N', D') = S_ND - theta_D
     # S_NX - theta_N S_DX + theta_N theta_D S_XX (only the raw S_ND entry moves)
     # visibly narrows the set here, so the reported set carries the covariance
     # the shared covariate induces rather than a diagonal shortcut.
-    snapshot = analysis.sequential_snapshot()
-    states = {s.group_id: s.kernel() for s in snapshot.states}
+    snapshot = sequential_snapshot(experiment, resolver)
+    states: dict[str, GaussianState] = {}
+    for retained in snapshot.states:
+        state = retained.kernel()
+        assert isinstance(state, GaussianState)
+        states[retained.group_id] = state
     declaration = snapshot.registration.models[0]
+    assert isinstance(declaration, ScalarMeanModel)
     linearisation, _ = linearise(states["control"], states["treatment"], declaration)
     assert linearisation is not None
     theta_n = _coefficient(states["control"], states["treatment"], 0, 2)

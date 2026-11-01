@@ -18,6 +18,8 @@ import pyarrow as pa
 import pytest
 from narwhals.typing import IntoDataFrame
 
+from increment import Scope, from_frame, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import (
     CapabilityError,
@@ -44,7 +46,9 @@ from increment.evidence import (
 from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import AnalysisPlan, MeanMetric
+from increment.workflows import capture_sequential
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import bound_source, make_binding, view_readout
 from tests.test_sequential_public_sources import gaussian_plan
 
 
@@ -333,7 +337,6 @@ def test_memtable_source_refuses_a_frame_missing_the_declared_control_arm(con):
 
 
 def test_run_plain_cuped_methods_have_unique_to_frame_rows():
-    from increment import Analysis
 
     frame = pa.table(
         {
@@ -343,8 +346,9 @@ def test_run_plain_cuped_methods_have_unique_to_frame_rows():
             "pre_revenue": [9.0, 19.0, 14.0, 28.0, 39.0, 23.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -358,7 +362,9 @@ def test_run_plain_cuped_methods_have_unique_to_frame_rows():
         ],
     )
     with pytest.warns(IncrementWarning) as caught:
-        results = analysis.run(
+        results = view_readout(
+            experiment,
+            resolver,
             decision_method=Method(name="plain"),
             sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
         )
@@ -1038,14 +1044,15 @@ def test_count_roster_marks_known_but_unobserved_metric_arm_as_missing_observati
 def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_triggered():
     from datetime import date
 
+    from tests.test_analysis_trigger import _both_populations
     from tests.test_sequential_public_sources import _native_fixture
 
-    connection, _, analysis = _native_fixture("bernoulli", triggered=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", triggered=True)
     try:
-        snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
-        results = analysis.run()
+        snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 20))
+        results = _both_populations(experiment, resolver)
     finally:
-        analysis.close()
+        resolver.close()
         connection.disconnect()
 
     assert len(results) == 2
@@ -1084,13 +1091,12 @@ def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_cou
     from datetime import date
 
     from increment import readouts
-    from tests.analysis_factory import _native_source
     from tests.test_sequential_public_sources import _native_fixture
 
-    connection, _, analysis = _native_fixture("bernoulli", triggered=True)
+    connection, _, (experiment, resolver) = _native_fixture("bernoulli", triggered=True)
     try:
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
-        source = _native_source(analysis)
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 20))
+        source = bound_source(resolver)
         assert source.context.trigger_name == "triggered"
 
         def unexpected_trigger_read(*args: Any, **kwargs: Any) -> None:
@@ -1101,7 +1107,7 @@ def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_cou
         results = _lift_results(readouts.run(source))
         rows = _lift_rows(results)
     finally:
-        analysis.close()
+        resolver.close()
         connection.disconnect()
 
     assert len(rows) == 2
@@ -1115,14 +1121,17 @@ def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_cou
 def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monkeypatch):
     from datetime import date
 
-    from increment import Analysis, readouts
+    from increment import readouts
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from tests.test_analysis_trigger import _both_populations
     from tests.test_sequential_public_sources import _native_fixture
 
-    connection, definitions, native = _native_fixture("bernoulli", triggered=True)
+    connection, definitions, (experiment, resolver) = _native_fixture("bernoulli", triggered=True)
     try:
-        native_snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        native_snapshot = capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 1, 20)
+        )
         store = WarehouseArtifactStore(connection, schema_name="triggered_readout_artifacts")
         expected_context = artifact_context(definitions, definitions.experiments[0], "error")
         from increment.query.artifact_contract import unit_day_artifact_extension_catalog
@@ -1134,18 +1143,21 @@ def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monk
             if entry.request.kind
             in {"trigger_population", "assignment_counts", "trigger_measure_stats"}
         ]
-        reference = native.publish_unit_day_artifact(store, extensions=requests)
+        reference = publish_unit_day_artifact(experiment, resolver, store, extensions=requests)
         reader = ArtifactMomentSource.open(store, reference, expected_context=expected_context)
         try:
             assert reader.context.trigger_name == "triggered"
         finally:
             reader.close()
-        with Analysis.from_unit_day_artifact(
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
             store, reference, expected_context=expected_context
-        ) as adopted:
-            adopted_snapshot = adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        )
+        with adopted_resolver:
+            adopted_snapshot = capture_sequential(
+                adopted_experiment, adopted_resolver, finalized=True, as_of=date(2025, 1, 20)
+            )
             assert adopted_snapshot == native_snapshot
-            source = adopted._readout_source()
+            source = bound_source(adopted_resolver)
             assert source.context.trigger_name == "triggered"
 
             def unexpected_trigger_read(*args, **kwargs):
@@ -1154,9 +1166,10 @@ def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monk
             monkeypatch.setattr(source, "triggered_counts", unexpected_trigger_read)
             monkeypatch.setattr(source, "triggered_source", unexpected_trigger_read)
             direct = readouts.run(source)
-            through_analysis = adopted.run()
+            through_analysis = _both_populations(adopted_experiment, adopted_resolver)
             native_rows = {
-                row.analysis_population: row.require_sequential_result() for row in native.run()
+                row.analysis_population: row.require_sequential_result()
+                for row in _both_populations(experiment, resolver)
             }
             for result in (direct, through_analysis):
                 rows = _lift_rows(_lift_results(result))
@@ -1167,7 +1180,7 @@ def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monk
                     assert evaluated.checkpoint.population == population
                     assert evaluated == native_rows[population]
     finally:
-        native.close()
+        resolver.close()
         connection.disconnect()
 
 
@@ -2352,8 +2365,8 @@ def test_asof_lift_refuses_segmentation_with_a_stable_code():
     """A segmented as-of series has no segment identity on its row type, so
     every segment for a date would collapse into one bucket and estimate
     against the wrong segment's control. Refuse rather than emit a silently
-    wrong number; the supported per-segment as-of path is
-    Analysis.run_asof_lift(dimension=...)."""
+    wrong number; the supported per-segment as-of path is an as-of ``Scope``
+    with a breakout ``segment``."""
     from datetime import date
 
     from increment import readouts
@@ -2459,7 +2472,6 @@ class TestDailyInferenceRefusalIsCoded:
     not raise an unstructured exception for it."""
 
     def test_the_facade_validator_raises_the_registered_refusal(self):
-        from increment import Analysis
         from increment.errors import CodedError
         from increment.frame import synthesise_metric
         from increment.sequential_source import frame_observation_mapping
@@ -2475,8 +2487,9 @@ class TestDailyInferenceRefusalIsCoded:
             source_mapping=frame_observation_mapping(unit="unit_id", group="group_id", date="ds"),
             public_mean=True,
         )
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             _daily_panel(),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
@@ -2486,15 +2499,15 @@ class TestDailyInferenceRefusalIsCoded:
         )
 
         with pytest.raises(CodedError) as exc:
-            analysis.run_daily_lift()
+            view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
         assert exc.value.code == "readout.inference.disjoint_slices"
         assert exc.value.context["inference"] == "AsymptoticMean"
 
     def test_no_inference_is_accepted(self):
-        from increment import Analysis
 
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             _daily_panel(),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
@@ -2503,7 +2516,7 @@ class TestDailyInferenceRefusalIsCoded:
             plan=AnalysisPlan(primary="revenue"),
         )
 
-        assert analysis.run_daily_lift()
+        assert view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
 
 
 def test_readout_cells_refuse_duplicate_metric_group_rows():
@@ -2768,11 +2781,12 @@ def test_mixed_native_readout_pins_selected_metrics_before_source_mutation(popul
     from increment import readouts
     from increment.artifacts import SourceSnapshotEvidence
     from increment.semantics.models import AnalysisPlan, Winsorization
-    from tests.analysis_factory import _native_source, make_analysis
     from tests.test_sequential_public_sources import _native_fixture
 
-    connection, definitions, original = _native_fixture("scalar_mean")
-    analysis = None
+    connection, definitions, (_original_experiment, original_resolver) = _native_fixture(
+        "scalar_mean"
+    )
+    resolver = None
     try:
         outcome = definitions.metrics[0].model_copy(update={"window_days": 1})
         metric_source = next(
@@ -2813,7 +2827,7 @@ def test_mixed_native_readout_pins_selected_metrics_before_source_mutation(popul
             }
         )
         evidence_time = dt.datetime(2025, 1, 21, tzinfo=dt.UTC)
-        analysis = make_analysis(
+        _, resolver = make_binding(
             connection,
             definitions,
             experiment=experiment,
@@ -2823,7 +2837,7 @@ def test_mixed_native_readout_pins_selected_metrics_before_source_mutation(popul
                 complete_through_by_feed={"events": evidence_time},
             ),
         )
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         view = source.triggered_source() if population == "triggered" else source
         raw = _unit_rows(source, metrics[0], population=population, outcome_stage="raw")
         assert raw.num_rows == (96 if population == "triggered" else 192)
@@ -2850,9 +2864,9 @@ def test_mixed_native_readout_pins_selected_metrics_before_source_mutation(popul
         }
         assert fresh["plain"].require_lift().value == pytest.approx(47.0)
     finally:
-        if analysis is not None:
-            analysis.close()
-        original.close()
+        if resolver is not None:
+            resolver.close()
+        original_resolver.close()
 
 
 def test_run_declared_secondary_family_survives_a_degenerate_cell():
@@ -2862,7 +2876,6 @@ def test_run_declared_secondary_family_survives_a_degenerate_cell():
     the family -- revenue (primary) and converted (the other
     secondary) must still return, AND refunds itself must return a
     real row with its additive result."""
-    from increment.analysis import Analysis
 
     rng = np.random.default_rng(0)
     n = 200
@@ -2881,10 +2894,16 @@ def test_run_declared_secondary_family_survives_a_degenerate_cell():
         MetricSpec(name="converted", type="conversion"),
     ]
     plan = AnalysisPlan(primary=["revenue"], secondaries=["refunds", "converted"])
-    analysis = Analysis.from_unit_summary(
-        df, unit="unit_id", group="group_id", control="control", metrics=metrics, plan=plan
+    experiment, resolver = from_frame(
+        df,
+        shape="summary",
+        unit="unit_id",
+        group="group_id",
+        control="control",
+        metrics=metrics,
+        plan=plan,
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert {r.metric for r in results} == {"revenue", "refunds", "converted"}
     refunds_row = cast("LiftEstimate", next(r for r in results if r.metric == "refunds"))
     assert refunds_row.lift is None

@@ -263,7 +263,7 @@ def test_moments_source_preserves_format3_winsorization_metadata():
 
 
 def test_moments_source_resolves_plan_on_the_frame_path_like_from_unit_summary():
-    """MomentsSource (reached via Analysis.from_moments) resolves a
+    """MomentsSource (reached via from_moments) resolves a
     declared plan the same way FrameTotalsSource (from_unit_summary) does:
     every declared metric not named primary/guardrail defaults to
     role="secondary" and is BH-eligible, not the warehouse path's

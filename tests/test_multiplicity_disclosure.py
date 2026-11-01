@@ -7,15 +7,16 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import AnalysisPlan, MetricSpec, from_frame
 from increment.decision import MultiplicityFamily
+from tests.analysis_factory import view_readout
 
 
 def _analysis(plan=None):
     n = 400
     noise = np.tile(np.linspace(-1.0, 1.0, n), 2)
     treatment = np.repeat([0.0, 1.0], n)
-    return Analysis.from_unit_summary(
+    return from_frame(
         pa.table(
             {
                 "unit": [f"u{i}" for i in range(2 * n)],
@@ -23,6 +24,7 @@ def _analysis(plan=None):
                 **{f"m{i}": 10.0 + noise + treatment * 0.2 for i in range(6)},
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -51,7 +53,7 @@ def test_five_unplanned_metrics_are_visibly_unadjusted():
     from increment.estimation.readout_types import ReadoutResults
     from increment.tables import estimates_to_readout
 
-    rows = _analysis().run(metrics=[f"m{i}" for i in range(5)])
+    rows = view_readout(*_analysis(), metrics=[f"m{i}" for i in range(5)])
     assert len(rows) == 5
     assert {row.role for row in rows} == {None}
     assert {row.multiplicity_status for row in rows} == {"undeclared_plan"}
@@ -200,8 +202,8 @@ def test_mixed_multiplicity_notes_keep_full_status_mapping_for_truncated_groups(
 
 def test_primary_allocation_and_family_survive_filter_and_additional_declared_metric_selection():
     names = [f"m{i}" for i in range(5)]
-    analysis = _analysis(AnalysisPlan(primary=names))
-    rows = analysis.run(metrics=names)
+    experiment, resolver = _analysis(AnalysisPlan(primary=names))
+    rows = view_readout(experiment, resolver, metrics=names)
     assert {row.role for row in rows} == {"primary"}
     assert {row.multiplicity_status for row in rows} == {"declared_plan"}
     assert [row.require_lift().alpha for row in rows] == pytest.approx([0.01] * 5)
@@ -216,7 +218,7 @@ def test_primary_allocation_and_family_survive_filter_and_additional_declared_me
         "multiplicity_status"
     ].to_list() == ["declared_plan"]
     assert filtered[0].require_lift().alpha == pytest.approx(0.01)
-    extended = analysis.run(metrics=names + ["m5"])
+    extended = view_readout(experiment, resolver, metrics=names + ["m5"])
     assert [row.require_lift().alpha for row in extended if row.metric in names] == pytest.approx(
         [0.01] * 5
     )

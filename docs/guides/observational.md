@@ -9,7 +9,7 @@ IPTW is the default; AIPW and DML are alternatives with different targets and
 assumptions. Ratio metrics and `from_moments` are not supported on this route;
 see [Current limits](#current-limits).
 The same unwindowed mean/conversion estimators are supported by
-`from_definitions`, `from_unit_day_artifact`, and `from_unit_panel`. Read each
+`from_definitions`, `from_unit_day_artifact`, and `from_frame(..., shape="panel")`. Read each
 row's estimand, scale, interval, and method; see [Reading
 results](reading-results.md) for result status and [Multiplicity](multiplicity.md)
 for the population and status table.
@@ -61,15 +61,17 @@ df = pl.DataFrame(
 
 from increment import (
     AdjustmentSet,
-    Analysis,
     IdentificationGate,
     Method,
     Observational,
+    from_frame,
+    run,
 )
 from increment.estimators import IdentificationError
 
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,  # one row per unit; must also carry the adjustment covariate columns
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
@@ -77,7 +79,8 @@ results = Analysis.from_unit_summary(
         control_group="control",
         adjustment=AdjustmentSet(covariates=("tenure_days", "plan_tier_rank")),
     ),
-).run()
+)
+results = run(experiment, resolver).readout()
 
 for r in results:
     print(
@@ -147,8 +150,9 @@ df2 = df.with_columns(
 )
 
 try:
-    Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df2,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -156,7 +160,8 @@ try:
             control_group="control",
             adjustment=AdjustmentSet(covariates=("signup_score",)),
         ),
-    ).run()
+    )
+    run(experiment, resolver)
 except IdentificationError as err:
     print(err)
 ```
@@ -175,13 +180,15 @@ design = Observational(
     adjustment=AdjustmentSet(covariates=("tenure_days", "plan_tier_rank")),
     gate=IdentificationGate(overlap="trim", min_propensity=0.05),
 )
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
     design=design,
-).run()
+)
+results = run(experiment, resolver).readout()
 
 for r in results:
     print(f"{r.group_id}: lift={r.lift.value:+.2%} population={r.population}")
@@ -236,7 +243,7 @@ degrees of freedom.
     by the estimator.
 
     The diagnostics are available for unwindowed mean and conversion outcomes
-    through `from_unit_summary`, `from_unit_panel`, `from_definitions`, and
+    through `from_frame` summaries and panels, `from_definitions`, and
     `from_unit_day_artifact`; matched per-unit inputs on these four paths are
     checked for row and interval parity. A moments cube has no per-unit
     propensities or attached covariates and cannot reconstruct the required
@@ -431,7 +438,7 @@ m = 800
 x = rng2.normal(0.0, 1.0, m)
 opted = rng2.random(m) < 1 / (1 + np.exp(-0.5 * x))
 net_delta = 0.05 * x + 0.02 * opted + rng2.normal(0, 1, m)
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     pl.DataFrame(
         {
             "user_id": [f"u{i}" for i in range(m)],
@@ -440,6 +447,7 @@ analysis = Analysis.from_unit_summary(
             "x": x,
         }
     ),
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics={"net_delta": "mean"},
@@ -451,7 +459,7 @@ analysis = Analysis.from_unit_summary(
 -->
 
 ```python
-results = analysis.run(value_scale={"net_delta": "absolute"})
+results = run(experiment, resolver, value_scale={"net_delta": "absolute"}).readout()
 ```
 
 The mapping keys METRICS, not methods, so one call serves a mixed source:
@@ -502,14 +510,15 @@ Three adjustment methods are available under the same design, selected via
 role-aware `run(...)`:
 
 ```python
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
     design=design,
 )
-results = analysis.run(decision_method=Method(name="dml"))  # default: iptw
+results = run(experiment, resolver, decision_method=Method(name="dml")).readout()  # default: iptw
 ```
 
 - `Method(name="iptw")` (the default) fits one propensity model per
@@ -722,7 +731,7 @@ none of it. A dataframe source is immutable; a custom provider with no snapshot
 scope is trusted not to change during the call. The lower-level
 `estimate_ate()` likewise reduces each metric's evidence through the declared
 provider acquisition boundary, which validates the request before reading.
-Custom sources backing either `Analysis` or the lower-level estimator facade
+Custom sources backing either a builder's resolver or the lower-level estimator facade
 must declare `EvidenceCapabilities` or implement the typed provider requests;
 see the [custom-provider example](https://github.com/kylejcaron/increment/blob/main/examples/custom_evidence_provider.py)
 and the [migration map](../development/adding-an-estimator.md#custom-evidence-providers).
@@ -752,8 +761,9 @@ geo_df = pl.DataFrame(
     }
 )
 
-(geo_result,) = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     geo_df,
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
@@ -762,7 +772,8 @@ geo_df = pl.DataFrame(
         control_group="control",
         adjustment=AdjustmentSet(covariates=("geo_z",)),
     ),
-).run()
+)
+(geo_result,) = run(experiment, resolver).readout()
 print(f"K={geo_result.n_clusters}, reference={geo_result.reference_kind}, dof={geo_result.dof}")
 ```
 
@@ -897,8 +908,8 @@ experiments:
         - {property: tenure_days, source: users}
 ```
 
-`Analysis.from_definitions("rollout", "definitions/", con).run()` returns the
-same rows as `from_unit_summary(..., design=Observational(...))` over the same
+`run(*from_definitions("definitions/", con, experiment_name="rollout"))` returns the
+same rows as `from_frame(..., shape="summary", design=Observational(...))` over the same
 per-unit data. Each unit's covariate is its latest value strictly before its
 first exposure (`pre_exposure`) or its latest value overall (`static`); a unit
 with no such value gets a missing covariate. Numeric (`dtype: int`, `float`,
@@ -911,7 +922,7 @@ exactly like a breakout.
 Definitions and artifact constructors retain `missing="refuse"`, including
 for a null categorical level. YAML `design:` rejects `missing` and `gate`
 with `definition.experiment.design_tuning_key_not_yaml`; these are not
-warehouse configuration keys. Use `from_unit_summary` or `from_unit_panel`
+warehouse configuration keys. Use a `from_frame` summary or panel
 with a full `Observational` design for another missing-value policy.
 
 A unit-day artifact automatically publishes every declared covariate:
@@ -955,8 +966,9 @@ conversion_units = pl.DataFrame(
         "converted": (conversion_rng.random(conversion_n) < risk).astype(int),
     }
 )
-conversion_analysis = inc.Analysis.from_unit_summary(
+experiment, resolver = inc.from_frame(
     conversion_units,
+    shape="summary",
     unit="unit",
     group="arm",
     metrics=[inc.MetricSpec(name="converted", type="conversion")],
@@ -964,15 +976,16 @@ conversion_analysis = inc.Analysis.from_unit_summary(
         control_group="control", adjustment=inc.AdjustmentSet(covariates=("segment",))
     ),
 )
-try:
-    conversion_rows = conversion_analysis.run(
-        decision_method=inc.Method(name="iptw"), sensitivity_methods=[inc.Method(name="aipw")]
-    )
+with resolver:
+    conversion_rows = inc.run(
+        experiment,
+        resolver,
+        decision_method=inc.Method(name="iptw"),
+        sensitivity_methods=[inc.Method(name="aipw")],
+    ).readout()
     for conversion_row in conversion_rows:
         sensitivity = confounding_sensitivity(conversion_row, threshold_risk_ratio=1.05)
         print(sensitivity.model_dump())
-finally:
-    conversion_analysis.close()
 ```
 
 The threshold above is a 5% increase, not the no-effect RR of one. `bias_factor_point` is the
@@ -1001,10 +1014,10 @@ reaching the tipping strength means confounding could explain the effect, not
 that it does. The deterministic bound inherits the row's asymptotic interval,
 including its working-approximation qualifications, rather than adding coverage.
 
-Conversion-row parity is exercised for `from_unit_summary`, `from_unit_panel`,
+Conversion-row parity is exercised for `from_frame` summaries and panels,
 `from_definitions` and `from_unit_day_artifact`. Observational adjusted reads from
 `from_moments` refuse upstream with `evidence.covariate_unavailable`;
-`from_switchback_panel` refuses with `source.frame.switchback.identification`.
+`from_switchback_frame` refuses with `source.frame.switchback.identification`.
 The accepted estimands are `ate` and `overlap_subpopulation_ate`, on relative scale.
 
 | Interaction | Disposition |
@@ -1022,13 +1035,13 @@ bound is not supplied by this construction.
 
 ## Current limits
 
-- **`from_unit_panel` covers unwindowed metrics only.** It collapses to a
+- **A `from_frame` panel covers unwindowed metrics only.** It collapses to a
   per-unit total for an unwindowed mean/conversion metric (the same
   collapse `moments(grain="total")` already uses) and reads a covariate
   that is constant across each unit's own rows; a windowed or retention
   metric still refuses by name (`source.frame.unit_frame_panel`). For a
   windowed metric, compute each unit's windowed value upstream and declare it
-  as an unwindowed metric on `from_unit_summary`; no frame source serves
+  as an unwindowed metric on a `from_frame` summary; no frame source serves
   unit-grain estimators for a retention metric. A
   covariate that genuinely varies within a unit refuses by name too
   (`frame.frame_panel.unit_covariate_varies`), naming the offending units.
@@ -1044,14 +1057,14 @@ bound is not supplied by this construction.
   the `metric` context, raised by `run()`, `estimate_ate` and
   `estimate_quantile_lift` before any outcome is read, and identically from
   every path that supports an observational design (`from_definitions`,
-  `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`) for a
+  `from_unit_day_artifact`, and `from_frame` summaries and panels) for a
   two-sided, zero-null request. A request that carries an absolute
   `margin_abs` is refused first with `readout.metric.quantile_alternative`
   (a one-sided tail), and a relative margin never reaches a readout: the
   constructor refuses it with `plan.observational.relative_margin`. Run a
   quantile metric under a randomized design. Fixed-horizon inference does not
   change this: no inference kind has an observational quantile estimator.
-  No observational ingress can export a quantile cube either (`export()`
+  No observational ingress can export a quantile cube either (`export_moments()`
   raises the same code on definitions, a reopened artifact, and both frames,
   before any earlier metric in the catalog is read). `from_moments` therefore
   never receives a genuine
@@ -1060,11 +1073,11 @@ bound is not supplied by this construction.
   those moments can be used as quantile data (an absolute `margin_abs` raises
   `readout.metric.quantile_alternative` first; a relative margin raises
   `plan.observational.relative_margin` at construction), whereas
-  `run_breakout()` raises
-  `evidence.breakout_unavailable` and the day-axis methods
+  a breakout view raises
+  `evidence.breakout_unavailable` and the day-axis views
   `evidence.grain_unavailable` (source limits). See
   [Quantiles and portable moments](quantile-metrics.md#quantiles-and-portable-moments).
-  `Analysis.planning_baseline` of a quantile metric still reads the control
+  `workflows.planning_baseline` of a quantile metric still reads the control
   arm's per-unit values, since a planning baseline estimates no effect.
 - **Ratio metrics refuse.** IPTW, DML, and AIPW reweight or residualize a
   single per-unit outcome; a ratio's numerator and denominator would need

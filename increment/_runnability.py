@@ -135,17 +135,17 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 
         try:
-            if operation != "run":
-                refuse(CONTRAST_UNAVAILABLE, method=operation)
-            if scope.population == "triggered":
+            if scope.population == "triggered" and operation not in _VALUE_OPERATIONS:
                 refuse(
                     _TRIGGER_UNSUPPORTED,
-                    method="run",
+                    method=operation,
                     experiment="<unknown>",
                     trigger=None,
                     route="switchback",
                     supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
+            if operation != "run":
+                refuse(CONTRAST_UNAVAILABLE, method=operation)
         except CodedError as refusal:
             return (refusal,)
     try:
@@ -172,7 +172,11 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
 def operation_options(
     experiment: Any, scope: Any, overrides: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Normalize and validate saved or immediate readout arguments."""
+    """Normalize and validate saved or immediate readout arguments.
+
+    ``coherence`` belongs to the run's shared capture: a view that takes no
+    coherence of its own reads under the run's, so it is not a view argument.
+    """
     values = {**typed_request_options(experiment.request_options), **(overrides or {})}
     if values.get("metrics") is None:
         values["metrics"] = list(scope.metrics) or list(experiment.metrics)
@@ -193,6 +197,8 @@ def operation_options(
     operation = scope_operation(experiment, scope)
     declaration = experiment.analysis_context.get("operation_parameters", {}).get(operation)
     if declaration is not None:
+        if not declaration["variadic"] and "coherence" not in declaration["accepted"]:
+            values.pop("coherence", None)
         unexpected = (
             set(values) - set(declaration["accepted"]) if not declaration["variadic"] else set()
         )
@@ -208,6 +214,9 @@ def operation_options(
                     "missing": tuple(sorted(missing)),
                 },
             )
+    # `store` stays declared for saved experiments; a set store is refused before
+    # execution, and no view receives it.
+    values.pop("store", None)
     return values
 
 
@@ -552,12 +561,12 @@ def readout_refusals(
 
         check(_validate_daily_inference, inference)
     if operation in {"run_daily_lift", "run_asof_lift"}:
-        from increment._analysis_config import validate_scalar_route
+        from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
 
         check(
             validate_scalar_route,
             configs,
-            route=f"Analysis.{operation}",
+            route=DAY_AXIS_ROUTES[operation],
             representation="registered" if inference is not None else "implicit",
             registered_plan=plan,
             design=context.design,

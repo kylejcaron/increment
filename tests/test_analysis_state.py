@@ -1,57 +1,29 @@
-"""Test Analysis facade — integration with examples/definitions.
-
-TDD Step 1: this test should fail before analysis.py exists, then pass
-after the facade is implemented.
-"""
+"""Declared-plan roles on definitions and frame builders."""
 
 from __future__ import annotations
 
 import warnings
 from datetime import datetime
+from typing import Any
 
 import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, from_frame
 from increment.semantics.models import AnalysisPlan, ConversionMetric
-from tests.analysis_factory import _make_event_log_table, make_analysis_like
-
-_ANALYSIS_SOURCE_SHIMS = {
-    "_materialized",
-    "_materialize",
-    "_panel_cache",
-    "_reduction_calls",
-    "_mixed_assignment_units",
-    "_site_volume_row",
-    "_day_axis_source",
-    "_breakout_moments_source",
-    "_get_exposures",
-    "_get_trigger_population",
-    "_validate_mixed_assignments",
-    "_metric_primary_events",
-    "_union_event_horizon",
-    "_note_reduction",
-    "_build_exposure_events_table",
-    "_data_as_of",
-    "_resolve_breakout_props",
-    "_build_pre_events",
-    "_resolve_uptake",
-    "_build_metric_summary",
-    "_panel_sql_for_metrics",
-    "_summary_sql_for_metrics",
-    "_moments_for_metrics",
-}
+from increment.workflows import experiment_definition, metrics
+from tests.analysis_factory import _make_event_log_table, make_binding_like, view_readout
 
 
-def _run_roles(analysis: Analysis) -> set[tuple[str, str | None]]:
-    """The (metric, declared-plan role) pairs ``Analysis.run`` reports.
+def _run_roles(experiment: Any, resolver: Any) -> set[tuple[str, str | None]]:
+    """The (metric, declared-plan role) pairs a whole-window run reports.
 
     A refused cell warns; these assertions are about the reported roles.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        return {(row.metric, row.role) for row in analysis.run()}
+        return {(row.metric, row.role) for row in view_readout(experiment, resolver)}
 
 
 def _aov_decomposition_rows() -> list[dict]:
@@ -102,18 +74,9 @@ def _aov_decomposition_rows() -> list[dict]:
     return rows
 
 
-def test_analysis_has_no_private_source_forwarding_shims():
-    """Private source implementation belongs on ``Analysis._src``.
-
-    The broader ratchet against tests reaching into those private attributes
-    lives in tests/test_test_hygiene.py::test_no_private_attribute_reach_ins.
-    """
-    assert _ANALYSIS_SOURCE_SHIMS.isdisjoint(vars(Analysis))
-
-
 def test_full_plan_resolves_every_declared_role(tmp_path):
     """A plan declaring a primary, a secondary, and a guardrail resolves
-    each metric to its own role on the rows ``Analysis.run`` reports."""
+    each metric to its own role on the rows a run reports."""
     events = []
     for unit, group in (
         ("u1", "control"),
@@ -209,80 +172,88 @@ experiments:
         - error_rate
 """
     )
-    analysis = Analysis("full_plan_exp", definitions_path=definitions_yaml, con=events_con)
-    roles = _run_roles(analysis)
+    roles = _run_roles(
+        *from_definitions(definitions_yaml, events_con, experiment_name="full_plan_exp")
+    )
     assert ("conversion_rate", "primary") in roles
     assert ("click_rate", "secondary") in roles
     assert ("error_rate", "guardrail") in roles
 
 
 @pytest.mark.slow
-def test_plan_declaring_only_secondaries_resolves_every_test_as_secondary():
+def test_plan_declaring_only_secondaries_resolves_every_test_as_secondary(example_definitions):
     """The minimal migration case - a plan with just ``secondaries:`` -
     resolves every declared test to role="secondary" under a real declared
     (not implicit-default) plan."""
     con = ibis.duckdb.connect()
     _make_event_log_table(con, extra_rows=_aov_decomposition_rows())
-    analysis = Analysis("aov_decomposition", definitions_path="examples/definitions/", con=con)
-    assert {role for _, role in _run_roles(analysis)} == {"secondary"}
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="aov_decomposition"
+    )
+    assert {role for _, role in _run_roles(experiment, resolver)} == {"secondary"}
 
 
 @pytest.mark.slow
-def test_constructor_with_new_experiment_resolves_plan_against_it(con):
+def test_constructor_with_new_experiment_resolves_plan_against_it(con, example_definitions):
     """Constructing from a different declared experiment resolves its plan
     fresh rather than carrying the original experiment's roles forward."""
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2", "examples/definitions", con, store="none"
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
-    assert ("avg_session_duration", "secondary") in _run_roles(analysis)
+    assert ("avg_session_duration", "secondary") in _run_roles(experiment, resolver)
 
-    analysis = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(
+    declared = experiment_definition(experiment, resolver)
+    replaced = make_binding_like(
+        resolver,
+        experiment=declared.model_copy(
             update={
                 "plan": AnalysisPlan(
-                    primary="avg_session_duration",
-                    guardrails=analysis.experiment.plan.guardrails,
+                    primary="avg_session_duration", guardrails=declared.plan.guardrails
                 )
             }
         ),
     )
-    assert ("avg_session_duration", "primary") in _run_roles(analysis)
+    assert ("avg_session_duration", "primary") in _run_roles(*replaced)
 
 
-def test_constructor_with_new_experiment_after_metric_narrowing_keeps_plan_catalog(con):
+def test_constructor_with_new_experiment_after_metric_narrowing_keeps_plan_catalog(
+    con, example_definitions
+):
     """A narrowed metric selection still resolves a replacement experiment
     against that experiment's complete declared catalog."""
-    full = Analysis.from_definitions("new_onboarding_v2", "examples/definitions", con, store="none")
-    purchase_rate = next(m for m in full.metrics if m.name == "purchase_rate")
+    full_experiment, full_resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
+    )
+    full_metrics = metrics(full_experiment, full_resolver)
+    purchase_rate = next(m for m in full_metrics if m.name == "purchase_rate")
     narrow_plan = AnalysisPlan(secondaries=("purchase_rate",))
-    analysis = make_analysis_like(
-        full, [purchase_rate], plan=narrow_plan
+    narrow_experiment, narrow_resolver = make_binding_like(
+        full_resolver, [purchase_rate], plan=narrow_plan
     )  # narrows away avg_session_duration/d7_retention
-    assert {metric.name for metric in analysis.metrics} == {"purchase_rate"}
-    complete_metrics = [
-        metric for metric in full.metrics if metric.name in analysis.experiment.metric_names
-    ]
-    analysis = make_analysis_like(
-        analysis,
+    assert {metric.name for metric in metrics(narrow_experiment, narrow_resolver)} == {
+        "purchase_rate"
+    }
+    declared = experiment_definition(narrow_experiment, narrow_resolver)
+    complete_metrics = [metric for metric in full_metrics if metric.name in declared.metric_names]
+    replaced = make_binding_like(
+        narrow_resolver,
         complete_metrics,
-        experiment=analysis.experiment.model_copy(
+        experiment=declared.model_copy(
             update={
                 "plan": AnalysisPlan(
-                    primary="avg_session_duration",
-                    guardrails=analysis.experiment.plan.guardrails,
+                    primary="avg_session_duration", guardrails=declared.plan.guardrails
                 )
             }
         ),
     )
-    assert ("avg_session_duration", "primary") in _run_roles(analysis)
+    assert ("avg_session_duration", "primary") in _run_roles(*replaced)
 
 
 @pytest.mark.slow
-def test_constructor_with_new_metric_adds_a_plan_test_entry(con):
+def test_constructor_with_new_metric_adds_a_plan_test_entry(con, example_definitions):
     """Constructing with an additional metric gives it a real plan entry."""
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2", "examples/definitions", con, store="none"
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
     new_metric = ConversionMetric(
         name="revenue_extra_for_plan_test",
@@ -290,22 +261,22 @@ def test_constructor_with_new_metric_adds_a_plan_test_entry(con):
         fact="purchase",
         window_days=14,
     )
-    assert new_metric.name not in {metric for metric, _ in _run_roles(analysis)}
+    assert new_metric.name not in {metric for metric, _ in _run_roles(experiment, resolver)}
 
-    analysis = make_analysis_like(analysis, [*analysis.metrics, new_metric])
+    extended = make_binding_like(resolver, [*metrics(experiment, resolver), new_metric])
 
-    assert (new_metric.name, "unassigned") in _run_roles(analysis)
+    assert (new_metric.name, "unassigned") in _run_roles(*extended)
 
 
-def test_constructor_with_narrowed_then_adhoc_metrics_keeps_plan(con):
+def test_constructor_with_narrowed_then_adhoc_metrics_keeps_plan(con, example_definitions):
     """Narrowing then adding an ad-hoc metric keeps plan resolution valid."""
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2", "examples/definitions", con, store="none"
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
-    purchase_rate = next(m for m in analysis.metrics if m.name == "purchase_rate")
+    purchase_rate = next(m for m in metrics(experiment, resolver) if m.name == "purchase_rate")
     narrow_plan = AnalysisPlan(secondaries=("purchase_rate",))
-    analysis = make_analysis_like(
-        analysis, [purchase_rate], plan=narrow_plan
+    narrow_experiment, narrow_resolver = make_binding_like(
+        resolver, [purchase_rate], plan=narrow_plan
     )  # narrows away avg_session_duration/d7_retention
 
     adhoc_metric = ConversionMetric(
@@ -314,18 +285,19 @@ def test_constructor_with_narrowed_then_adhoc_metrics_keeps_plan(con):
         fact="purchase",
         window_days=14,
     )
-    analysis = make_analysis_like(
-        analysis, [*analysis.metrics, adhoc_metric], plan=narrow_plan
+    extended = make_binding_like(
+        narrow_resolver,
+        [*metrics(narrow_experiment, narrow_resolver), adhoc_metric],
+        plan=narrow_plan,
     )  # must not raise
 
-    roles = _run_roles(analysis)
+    roles = _run_roles(*extended)
     assert ("purchase_rate", "secondary") in roles
     assert (adhoc_metric.name, "unassigned") in roles
 
 
 def test_from_source_seam_instance_has_a_working_plan_property() -> None:
-    """``Analysis._from_source`` (bypassing ``__init__``) must retain the
-    default un-declared plan, reported as role-less rows."""
+    """A frame builder without a declared plan reports role-less rows."""
     frame = pa.table(
         {
             "user_id": ["u1", "u2", "u3", "u4"],
@@ -333,14 +305,15 @@ def test_from_source_seam_instance_has_a_working_plan_property() -> None:
             "revenue": [10.0, 12.0, 15.0, 18.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
-    assert {role for _, role in _run_roles(analysis)} == {None}
+    assert {role for _, role in _run_roles(experiment, resolver)} == {None}
 
 
 pytestmark = pytest.mark.integration

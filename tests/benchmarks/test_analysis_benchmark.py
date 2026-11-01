@@ -9,10 +9,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, AnalysisPlan, InferenceSpec, Method, MetricSpec
+from increment import (
+    AnalysisPlan,
+    InferenceSpec,
+    Method,
+    MetricSpec,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_unit_day_artifact,
+)
+from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.semantics.design import Randomized
+from tests.analysis_factory import view_readout
 
-_DEFINITIONS = Path("examples/definitions")
 # Generated frames and seeded DuckDB event logs are prepared before benchmarking.
 _CASES = (
     ("dataframe-mean-10000", "dataframe", "mean", 10_000),
@@ -78,8 +88,9 @@ def _dataframe_analysis(
         )
 
     def execute() -> object:
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             metrics=metrics,
@@ -89,12 +100,8 @@ def _dataframe_analysis(
                 control_group="control", allocation={"control": 0.5, "treatment": 0.5}
             ),
         )
-        try:
-            return analysis.run()
-        finally:
-            close = getattr(analysis, "close", None)
-            if close is not None:
-                close()
+        with resolver:
+            return view_readout(experiment, resolver)
 
     return execute
 
@@ -130,70 +137,82 @@ def test_dataframe_benchmark_callable_recomputes_from_mutated_frame() -> None:
     assert first != second
 
 
-def _readout(analysis: Analysis, operation: str) -> Callable[[], object]:
+def _readout(experiment: Any, resolver: Any, operation: str) -> Callable[[], object]:
     match operation:
         case "mean":
-            return lambda: analysis.run(metrics=["avg_session_duration"])
+            return lambda: view_readout(experiment, resolver, metrics=["avg_session_duration"])
         case "conversion":
-            return lambda: analysis.run(metrics=["purchase_rate"])
+            return lambda: view_readout(experiment, resolver, metrics=["purchase_rate"])
         case "retention":
-            return lambda: analysis.run(metrics=["d7_retention"])
-        case "all":
-            return analysis.run
+            return lambda: view_readout(experiment, resolver, metrics=["d7_retention"])
+        case "all" | "run":
+            return lambda: view_readout(experiment, resolver)
         case "breakout" | "breakout_lift":
-            return analysis.run_breakout
+            return lambda: view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
         case "daily" | "daily_conversion" | "daily_mean":
             metric = {
                 "daily_conversion": ["purchase_rate"],
                 "daily_mean": ["avg_session_duration"],
             }.get(operation)
-            return lambda: analysis.run_daily(metrics=metric)
+            return lambda: view_readout(
+                experiment,
+                resolver,
+                Scope(view="daily", grain="daily", values=True),
+                metrics=metric,
+            )
         case "asof" | "asof_conversion":
             metric = ["purchase_rate"] if operation == "asof_conversion" else None
-            return lambda: analysis.run_asof(metrics=metric)
+            return lambda: view_readout(
+                experiment, resolver, Scope(view="asof", grain="asof", values=True), metrics=metric
+            )
         case "daily_lift":
-            return analysis.run_daily_lift
+            return lambda: view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
         case "asof_lift":
-            return analysis.run_asof_lift
+            return lambda: view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
         case "cuped" | "cuped_readout":
-            return lambda: analysis.run(sensitivity_methods=(Method.cuped(),))
+            return lambda: view_readout(experiment, resolver, sensitivity_methods=(Method.cuped(),))
         case "windowed_conversion":
-            return lambda: analysis.run(metrics=["purchase_rate"])
+            return lambda: view_readout(experiment, resolver, metrics=["purchase_rate"])
         case "windowed_mean" | "mean_readout":
-            return lambda: analysis.run(metrics=["avg_session_duration"])
-        case "run":
-            return analysis.run
+            return lambda: view_readout(experiment, resolver, metrics=["avg_session_duration"])
         case other:
             raise AssertionError(other)
 
 
-def _prepare(case: str, route: str, operation: str, rows: int, seeded_con, seeded_pre_period_con):
+def _prepare(
+    case: str,
+    route: str,
+    operation: str,
+    rows: int,
+    seeded_con,
+    seeded_pre_period_con,
+    definitions: Path,
+):
     if route == "dataframe":
         return _dataframe_analysis(rows, operation)
     con = seeded_pre_period_con if operation in ("cuped", "cuped_readout") else seeded_con
     artifact_counter = count()
 
     def execute() -> object:
-        analysis = Analysis.from_definitions("new_onboarding_v2", _DEFINITIONS, con)
-        try:
+        experiment, resolver = cast(
+            "tuple[Any, Any]",
+            from_definitions(definitions, con, experiment_name="new_onboarding_v2"),
+        )
+        with resolver:
             if route != "artifact":
-                return _readout(analysis, operation)()
+                return _readout(experiment, resolver, operation)()
             from increment.query.session import WarehouseArtifactStore
 
             store = WarehouseArtifactStore(
                 con,
                 schema_name=f"bench_{case.replace('-', '_')}_{next(artifact_counter)}",
             )
-            ref = analysis.publish_unit_day_artifact(store)
-            artifact = Analysis.from_unit_day_artifact(
-                store, ref, expected_context=analysis.artifact_context
+            ref = publish_unit_day_artifact(experiment, resolver, store)
+            artifact_experiment, artifact_resolver = from_unit_day_artifact(
+                store, ref, expected_context=artifact_context(experiment, resolver)
             )
-            try:
-                return _readout(artifact, operation)()
-            finally:
-                artifact.close()
-        finally:
-            analysis.close()
+            with artifact_resolver:
+                return _readout(artifact_experiment, artifact_resolver, operation)()
 
     return execute
 
@@ -210,9 +229,18 @@ def _prepare(case: str, route: str, operation: str, rows: int, seeded_con, seede
     ids=[case[0] for case in _CASES],
 )
 def test_analysis_end_to_end_benchmark(
-    benchmark, case: str, route: str, operation: str, rows: int, seeded_con, seeded_pre_period_con
+    benchmark,
+    case: str,
+    route: str,
+    operation: str,
+    rows: int,
+    seeded_con,
+    seeded_pre_period_con,
+    example_definitions: Path,
 ) -> None:
-    execute = _prepare(case, route, operation, rows, seeded_con, seeded_pre_period_con)
+    execute = _prepare(
+        case, route, operation, rows, seeded_con, seeded_pre_period_con, example_definitions
+    )
     result = benchmark(execute)
     assert result
 

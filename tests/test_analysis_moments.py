@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 
-from increment import Analysis
+from increment import from_frame, from_moments, from_switchback_frame, run
 from increment.errors import CapabilityError, InvalidRequestError, WireFormatError
 from increment.estimation.diagnostics import SRMResult
 from increment.estimation.results import LiftEstimate
@@ -20,7 +20,8 @@ from increment.frame import MetricSpec
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.loader import load
 from increment.semantics.models import AnalysisPlan, MeanMetric, Winsorization
-from tests.analysis_factory import make_analysis
+from increment.workflows import export_moments, srm, unit_counts
+from tests.analysis_factory import make_binding, view_readout
 from tests.capability_consumers_auxiliary import assert_refusal
 from tests.sequential_cases import registration
 
@@ -45,13 +46,7 @@ def _analysis_with_metrics(con, definitions_path, metrics, *, store):
             ],
         }
     )
-    return make_analysis(
-        con,
-        defs,
-        experiment=experiment,
-        metrics=list(metrics),
-        store=store,
-    )
+    return make_binding(con, defs, experiment=experiment, metrics=list(metrics), store=store)
 
 
 def _legacy_fixed10_rows(**extra: object) -> list[dict[str, object]]:
@@ -99,7 +94,7 @@ def test_current_conformance_runs_restored_writer_rows(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pa.table(
             {
                 "unit": [1, 2, 3, 4, 5, 6],
@@ -108,20 +103,25 @@ def test_current_conformance_runs_restored_writer_rows(tmp_path):
                 "converted": [0, 1, 0, 1, 1, 0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics={"revenue": "mean", "converted": "conversion"},
         control="control",
     )
     path = tmp_path / "current.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     payload = pq.read_table(path).to_pylist()
     assert {row["moments_format"] for row in payload} == {12}
-    replay = Analysis.from_moments(
+    replay_experiment, replay_resolver = from_moments(
         payload, metrics={"revenue": "mean", "converted": "conversion"}, control="control"
     )
-    original_rows = {row.metric: row for row in _lift_rows(original.run())}
-    replay_rows = {row.metric: row for row in _lift_rows(replay.run())}
+    original_rows = {
+        row.metric: row for row in _lift_rows(view_readout(original_experiment, original_resolver))
+    }
+    replay_rows = {
+        row.metric: row for row in _lift_rows(view_readout(replay_experiment, replay_resolver))
+    }
     assert replay_rows.keys() == original_rows.keys()
     for metric, original_row in original_rows.items():
         replay_row = replay_rows[metric]
@@ -144,35 +144,30 @@ def test_current_conformance_runs_restored_writer_rows(tmp_path):
 def test_moments_source_persists_declared_identity(tmp_path):
     from increment.store import ParquetResultsStore
 
-    analysis = Analysis.from_moments(
-        _legacy_fixed10_rows(),
-        metrics={"revenue": "mean"},
-        control="control",
+    experiment, resolver = from_moments(
+        _legacy_fixed10_rows(), metrics={"revenue": "mean"}, control="control"
     )
     store = ParquetResultsStore(tmp_path)
     try:
-        rows = analysis.run(store=store)
-        assert rows.metadata is not None
-        assert rows.metadata.analysis_spec_hash is not None
-        assert rows.metadata.run_id is not None
-        handle = store.open_run("moments", rows.metadata.analysis_spec_hash, rows.metadata.run_id)
-        assert handle.get(rows.as_cells()[0].identity)
+        saved = run(experiment, resolver, results_store=store).run
+        assert saved.analysis_spec_hash is not None
+        assert saved.run_id is not None
+        handle = store.open_run("moments", saved.analysis_spec_hash, saved.run_id)
+        assert handle.get(saved.cells[0].identity)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_legacy_moments_preserve_missing_evidence():
 
-    legacy = Analysis.from_moments(
-        _legacy_fixed10_rows(),
-        metrics={"revenue": "mean"},
-        control="control",
+    experiment, resolver = from_moments(
+        _legacy_fixed10_rows(), metrics={"revenue": "mean"}, control="control"
     )
-    result = _lift_rows(legacy.run())[0]
+    result = _lift_rows(view_readout(experiment, resolver))[0]
     assert result.require_lift().value == pytest.approx(0.6901408450703352)
     assert result.source_snapshot_id
     with pytest.raises(CapabilityError) as exc:
-        legacy.srm(inference="fixed")
+        srm(experiment, resolver, inference="fixed")
     assert exc.value.code == "integrity.allocation_scheme_missing"
     assert exc.value.context == {"population": "assigned"}
 
@@ -186,41 +181,36 @@ def test_legacy_fixed10_identity_is_stable_across_reload(tmp_path):
     assert all("source_identity" not in row for row in legacy_rows)
     legacy_path = tmp_path / "legacy-fixed10.parquet"
     pq.write_table(pa.Table.from_pylist(legacy_rows), legacy_path)
-    legacy = Analysis.from_moments(
-        pq.read_table(legacy_path).to_pylist(),
-        metrics={"revenue": "mean"},
-        control="control",
+    experiment, resolver = from_moments(
+        pq.read_table(legacy_path).to_pylist(), metrics={"revenue": "mean"}, control="control"
     )
     reloaded = None
     try:
-        (legacy_row,) = legacy.run()
-        reloaded = Analysis.from_moments(
-            pq.read_table(legacy_path).to_pylist(),
-            metrics={"revenue": "mean"},
-            control="control",
+        (legacy_row,) = view_readout(experiment, resolver)
+        reloaded = from_moments(
+            pq.read_table(legacy_path).to_pylist(), metrics={"revenue": "mean"}, control="control"
         )
-        (reloaded_row,) = reloaded.run()
+        (reloaded_row,) = view_readout(*reloaded)
         assert reloaded_row.source_snapshot_id == legacy_row.source_snapshot_id
     finally:
         if reloaded is not None:
-            reloaded.close()
-        legacy.close()
+            reloaded[1].close()
+        resolver.close()
 
 
 def test_triggered_run_refuses_unit_summary_and_moment_replay():
     import pyarrow as pa
 
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.table({"unit": [1, 2], "arm": ["control", "treatment"], "revenue": [1.0, 2.0]}),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics={"revenue": "mean"},
         control="control",
     )
-    replay = Analysis.from_moments(
-        _legacy_fixed10_rows(), metrics={"revenue": "mean"}, control="control"
-    )
-    panel = Analysis.from_unit_panel(
+    replay = from_moments(_legacy_fixed10_rows(), metrics={"revenue": "mean"}, control="control")
+    panel = from_frame(
         pa.table(
             {
                 "unit": [1, 2],
@@ -229,6 +219,7 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
                 "revenue": [1.0, 2.0],
             }
         ),
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -243,7 +234,7 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
     from increment.semantics.design import Randomized
     from increment.semantics.unit_cycle import UnitCycleTApproximation
 
-    switchback = Analysis.from_switchback_panel(
+    switchback = from_switchback_frame(
         pa.Table.from_pylist(
             [
                 {
@@ -286,7 +277,7 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
     )
     for ingress, candidate in candidates:
         with pytest.raises(CapabilityError) as refused:
-            candidate.run(population="triggered")
+            view_readout(*candidate, population="triggered")
         assert refused.value.code == "facade.analysis.trigger_unsupported"
         assert refused.value.context["route"] in {"moments", "native", "switchback"}
         assert refused.value.context["supported_sources"] == (
@@ -299,7 +290,7 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
 @pytest.mark.parametrize("version", [7, 8])
 def test_legacy_moments_cannot_claim_exact_count_transport(version):
     with pytest.raises(WireFormatError) as exc:
-        Analysis.from_moments(
+        from_moments(
             _legacy_fixed10_rows(moments_format=version),
             metrics={"revenue": "mean"},
             control="control",
@@ -315,7 +306,7 @@ def test_moments_reject_noncanonical_source_identity_at_replay():
         row[SOURCE_IDENTITY_FIELD] = json.dumps({"oversized": 2**53})
 
     with pytest.raises(WireFormatError) as refused:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+        from_moments(rows, metrics={"revenue": "mean"}, control="control")
     assert refused.value.code == "moments.format.invalid"
 
 
@@ -327,7 +318,7 @@ def test_moments_reject_conflicting_boolean_and_integer_identities():
     rows[1][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": 1})
 
     with pytest.raises(WireFormatError) as refused:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+        from_moments(rows, metrics={"revenue": "mean"}, control="control")
     assert refused.value.code == "moments.format.invalid"
 
 
@@ -337,10 +328,8 @@ def test_moments_reject_conflicting_boolean_and_integer_identities():
 )
 def test_moments_refuse_counts_encoded_as_floats_or_booleans(field, value):
     with pytest.raises(WireFormatError) as exc:
-        Analysis.from_moments(
-            _legacy_fixed10_rows(**{field: value}),
-            metrics={"revenue": "mean"},
-            control="control",
+        from_moments(
+            _legacy_fixed10_rows(**{field: value}), metrics={"revenue": "mean"}, control="control"
         )
     assert exc.value.code == "moments.count_not_integer"
 
@@ -349,17 +338,13 @@ def test_current_moments_require_the_nullable_success_count_field():
     rows = _legacy_fixed10_rows()
     del rows[0]["successes"]
     with pytest.raises(WireFormatError) as exc:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+        from_moments(rows, metrics={"revenue": "mean"}, control="control")
     assert exc.value.code == "moments.count_field_missing"
 
 
 def test_moments_metric_name_requires_explicit_type() -> None:
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_moments(
-            _legacy_fixed10_rows(),
-            metrics=["revenue"],
-            control="control",
-        )
+        from_moments(_legacy_fixed10_rows(), metrics=["revenue"], control="control")
     assert raised.value.code == "frame.metrics.type_required"
     assert raised.value.context == {
         "metric": "revenue",
@@ -379,7 +364,7 @@ def test_moments_count_ranges_are_validated_even_for_unselected_rows(field, valu
     else:
         rows.append({**rows[0], "metric": "unselected", field: value})
     with pytest.raises(WireFormatError) as exc:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+        from_moments(rows, metrics={"revenue": "mean"}, control="control")
     assert exc.value.code == "moments.count_out_of_range"
     assert exc.value.context["field"] == field
 
@@ -421,9 +406,8 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     """Source operations export and replay moments without changing numerical answers."""
     import yaml
 
-    from increment import from_definitions, from_moments, run
+    from increment import from_definitions, run
     from increment.estimation.engine import Method
-    from increment.workflows import export_moments
 
     definitions = load(seeded_defs)
     experiment_definition = definitions.experiment("new_onboarding_v2")
@@ -447,18 +431,20 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     experiment, resolver = from_definitions(
         definitions_path, seeded_con, experiment_name="new_onboarding_v2", store="auto"
     )
-    a = make_analysis(
+    a_experiment, a_resolver = make_binding(
         seeded_con,
         definitions,
         experiment=experiment_definition,
-        _design=experiment_definition.resolved_design(),
+        design=experiment_definition.resolved_design(),
         store="auto",
     )
     replay_resolver = None
     try:
         baseline = {
             (row.metric, row.group_id): row.require_lift().value
-            for row in _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+            for row in _lift_rows(
+                view_readout(a_experiment, a_resolver, decision_method=Method(name="unadjusted"))
+            )
         }
         assert {"purchase_rate", "avg_session_duration"} <= {m for m, _ in baseline}
 
@@ -480,13 +466,17 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
 
         payloads = {row[ASSIGNMENT_COUNTS_FIELD] for row in rows}
         assert len(payloads) == 1
-        legacy_replay = Analysis.from_moments(
+        legacy_replay_experiment, legacy_replay_resolver = from_moments(
             rows,
             metrics={"purchase_rate": "conversion", "avg_session_duration": "mean"},
             design=experiment_definition.resolved_design(),
         )
-        native_srm = a.srm(expected={"control": 0.5, "treatment": 0.5})
-        restored_srm = legacy_replay.srm(expected={"control": 0.5, "treatment": 0.5})
+        native_srm = srm(a_experiment, a_resolver, expected={"control": 0.5, "treatment": 0.5})
+        restored_srm = srm(
+            legacy_replay_experiment,
+            legacy_replay_resolver,
+            expected={"control": 0.5, "treatment": 0.5},
+        )
         assert isinstance(restored_srm, SRMResult)
         assert isinstance(native_srm, SRMResult)
         assert restored_srm.observed == native_srm.observed
@@ -514,7 +504,7 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
                 close = getattr(active_resolver, "close", None)
                 if callable(close):
                     close()
-        a.close()
+        a_resolver.close()
 
 
 @pytest.mark.integration
@@ -526,7 +516,7 @@ def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
         aggregation="sum",
         winsorization=Winsorization(upper_percentile=0.99),
     )
-    analysis = _analysis_with_metrics(
+    analysis_experiment, analysis_resolver = _analysis_with_metrics(
         con,
         "examples/definitions",
         [metric],
@@ -534,10 +524,10 @@ def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
     )
 
     path = tmp_path / "winsorized-moments.parquet"
-    analysis.export(path)
+    export_moments(analysis_experiment, analysis_resolver, path)
     import pyarrow.parquet as pq
 
-    _reloaded = Analysis.from_moments(
+    reloaded_experiment, reloaded_resolver = from_moments(
         pq.read_table(path).to_pylist(),
         metrics=[
             MetricSpec(
@@ -564,7 +554,7 @@ def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
         }
         for row in pq.read_table(path).to_pylist()
     ]
-    reloaded_output = Analysis.from_moments(
+    reloaded_output_experiment, reloaded_output_resolver = from_moments(
         fixed_rows,
         metrics=[
             MetricSpec(
@@ -576,11 +566,11 @@ def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        output_rows = _lift_rows(reloaded_output.run())
+        output_rows = _lift_rows(view_readout(reloaded_output_experiment, reloaded_output_resolver))
     assert output_rows
     assert all(row.winsor_upper_bound == pytest.approx(expected_bound) for row in output_rows)
     with pytest.raises(CapabilityError) as exc_info:
-        _reloaded.run()
+        view_readout(reloaded_experiment, reloaded_resolver)
     assert exc_info.value.code == "evidence.raw_outcomes_unavailable"
 
 
@@ -601,27 +591,25 @@ def test_portable_subset_validates_only_selected_winsorization_declarations(tmp_
         MetricSpec(name="plain"),
         MetricSpec(name="capped", winsorization={"upper_value": 25.0}),
     ]
-    original = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=metrics,
+    original_experiment, original_resolver = from_frame(
+        frame, shape="summary", unit="unit", group="arm", control="control", metrics=metrics
     )
     path = tmp_path / "portable-winsorization.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     rows = pq.read_table(path).to_pylist()
 
-    full = Analysis.from_moments(rows, control="control", metrics=metrics)
-    subset = Analysis.from_moments(rows, control="control", metrics={"plain": "mean"})
+    full_experiment, full_resolver = from_moments(rows, control="control", metrics=metrics)
+    subset_experiment, subset_resolver = from_moments(
+        rows, control="control", metrics={"plain": "mean"}
+    )
     full_plain = {
         result.group_id: result.require_lift()
-        for result in _lift_rows(full.run())
+        for result in _lift_rows(view_readout(full_experiment, full_resolver))
         if result.metric == "plain"
     }
     subset_plain = {
         result.group_id: result.require_lift()
-        for result in _lift_rows(subset.run())
+        for result in _lift_rows(view_readout(subset_experiment, subset_resolver))
         if result.metric == "plain"
     }
     assert set(subset_plain) == set(full_plain) == {"treatment"}
@@ -633,14 +621,14 @@ def test_portable_subset_validates_only_selected_winsorization_declarations(tmp_
     assert subset_plain["treatment"].value == pytest.approx(0.0, abs=1e-12)
 
     with pytest.raises(CapabilityError) as missing:
-        Analysis.from_moments(rows, control="control", metrics={"capped": "mean"})
+        from_moments(rows, control="control", metrics={"capped": "mean"})
     assert missing.value.code == "moments.winsorization.metadata_missing"
 
     malformed = [dict(row) for row in rows]
     capped_row = next(row for row in malformed if row["metric"] == "capped")
     capped_row["moments_format"] = 7
     with pytest.raises(WireFormatError) as global_refusal:
-        Analysis.from_moments(malformed, control="control", metrics={"plain": "mean"})
+        from_moments(malformed, control="control", metrics={"plain": "mean"})
     assert global_refusal.value.code == "moments.format.mixed"
 
 
@@ -709,7 +697,7 @@ def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):
     con = ibis.duckdb.connect()
     _make_event_log_table(con, extra_rows=extra_rows)
 
-    analysis = _analysis_with_metrics(
+    experiment, resolver = _analysis_with_metrics(
         con,
         "examples/definitions",
         [winsorized, plain],
@@ -718,11 +706,11 @@ def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):
 
     from increment.estimation.engine import Method
 
-    results = analysis.run(decision_method=Method(name="unadjusted"))
+    results = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert {e.metric for e in _lift_rows(results)} == {"revenue", "revenue_unwinsorized"}
 
     path = tmp_path / "mixed-winsorization-moments.parquet"
-    analysis.export(path)
+    export_moments(experiment, resolver, path)
     import pyarrow.parquet as pq
 
     exported = pq.read_table(path).to_pylist()
@@ -744,8 +732,9 @@ def test_from_unit_panel_control_and_design_mutually_exclusive():
         control_group="control", adjustment=AdjustmentSet(covariates=("revenue",))
     )
     with pytest.raises(InvalidRequestError) as both:
-        Analysis.from_unit_panel(
+        from_frame(
             df,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="day",
@@ -754,8 +743,13 @@ def test_from_unit_panel_control_and_design_mutually_exclusive():
             design=design,
         )
     with pytest.raises(InvalidRequestError) as neither:
-        Analysis.from_unit_panel(
-            df, unit="user_id", group="variant", date="day", metrics={"revenue": "mean"}
+        from_frame(
+            df,
+            shape="panel",
+            unit="user_id",
+            group="variant",
+            date="day",
+            metrics={"revenue": "mean"},
         )
     assert both.value.code == neither.value.code == "query.fact_resolution.pass_exactly_one"
 
@@ -774,9 +768,9 @@ def test_from_moments_control_and_design_mutually_exclusive():
     ]
     design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("sum_y",)))
     with pytest.raises(InvalidRequestError) as both:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="C", design=design)
+        from_moments(rows, metrics={"revenue": "mean"}, control="C", design=design)
     with pytest.raises(InvalidRequestError) as neither:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"})
+        from_moments(rows, metrics={"revenue": "mean"})
     assert both.value.code == neither.value.code == "query.fact_resolution.pass_exactly_one"
 
 
@@ -791,22 +785,24 @@ def test_from_moments_run_refuses_call_time_epistemic_policy_kwargs():
     from increment.estimators import AlwaysValid
 
     rows = _legacy_fixed10_rows()
-    a = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
-    baseline = _lift_rows(a.run())
+    experiment, resolver = from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    baseline = _lift_rows(view_readout(experiment, resolver))
     assert baseline[0].require_lift().level == pytest.approx(0.95)
 
     with pytest.raises(TypeError):
-        a.run(alpha=0.01)  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, alpha=0.01)
     with pytest.raises(TypeError):
-        a.run(alternative="greater")  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, alternative="greater")
     with pytest.raises(TypeError):
-        a.run(inference=AlwaysValid(registration=registration("gaussian")))  # ty: ignore[unknown-argument]
+        view_readout(
+            experiment, resolver, inference=AlwaysValid(registration=registration("gaussian"))
+        )
     with pytest.raises(TypeError):
-        a.run(margins={"revenue": 0.02})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, margins={"revenue": 0.02})
     with pytest.raises(TypeError):
-        a.run(null_lifts={"revenue": 0.02})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, null_lifts={"revenue": 0.02})
     with pytest.raises(TypeError):
-        a.run(margins_abs={"revenue": 0.02})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, margins_abs={"revenue": 0.02})
 
 
 def test_from_moments_declared_plan_reaches_role_based_dispatch():
@@ -823,16 +819,15 @@ def test_from_moments_declared_plan_reaches_role_based_dispatch():
     `discovery=None`, while the same rows with no `plan=` stay
     undeclared (`role=None`)."""
     rows = _legacy_fixed10_rows()
-    undeclared = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
-    assert undeclared.run()[0].role is None
-
-    declared = Analysis.from_moments(
-        rows,
-        metrics={"revenue": "mean"},
-        control="control",
-        plan=AnalysisPlan(primary="revenue"),
+    undeclared_experiment, undeclared_resolver = from_moments(
+        rows, metrics={"revenue": "mean"}, control="control"
     )
-    result = _lift_rows(declared.run())[0]
+    assert view_readout(undeclared_experiment, undeclared_resolver)[0].role is None
+
+    declared_experiment, declared_resolver = from_moments(
+        rows, metrics={"revenue": "mean"}, control="control", plan=AnalysisPlan(primary="revenue")
+    )
+    result = _lift_rows(view_readout(declared_experiment, declared_resolver))[0]
     assert result.role == "primary"
 
 
@@ -878,12 +873,14 @@ def test_moments_cube_refuses_duplicate_and_cross_experiment_arm_rows():
     """One cube is one experiment with exactly one row per (metric, group_id)."""
     import pytest
 
-    from increment import Analysis
     from increment.errors import CodedError
 
     def run(rows):
-        analysis = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
-        return [(row.group_id, row.require_lift().value) for row in _lift_rows(analysis.run())]
+        experiment, resolver = from_moments(rows, metrics={"revenue": "mean"}, control="control")
+        return [
+            (row.group_id, row.require_lift().value)
+            for row in _lift_rows(view_readout(experiment, resolver))
+        ]
 
     rows = _v7_rows("e1", 30.0, 5000.0)
     extra = {**rows[0], "ref_y": 99.0, "n": 5, "cy2": 10.0}
@@ -907,13 +904,12 @@ def test_moments_cube_refuses_duplicate_and_cross_experiment_arm_rows():
 def test_moments_cube_refuses_disjoint_arms_from_different_experiments():
     import pytest
 
-    from increment import Analysis
     from increment.errors import CodedError
 
     rows = [_v7_rows("e1", 30.0, 5000.0)[1], _v7_rows("e2", 99.0, 10.0)[0]]
     for cube in (rows, list(reversed(rows))):
         with pytest.raises(CodedError) as refusal:
-            Analysis.from_moments(cube, metrics={"revenue": "mean"}, control="control")
+            from_moments(cube, metrics={"revenue": "mean"}, control="control")
         assert refusal.value.code == "moments.rows.experiment_conflict"
         assert refusal.value.context["experiments"] == ("e1", "e2")
 
@@ -921,7 +917,6 @@ def test_moments_cube_refuses_disjoint_arms_from_different_experiments():
 def test_moments_cube_normalizes_arm_identity_before_duplicate_check():
     import pytest
 
-    from increment import Analysis
     from increment.errors import CodedError
 
     rows = _v7_rows("e1", 30.0, 5000.0)
@@ -929,14 +924,13 @@ def test_moments_cube_normalizes_arm_identity_before_duplicate_check():
     extra = {**rows[0], "group_id": "1"}
     for cube in ([*rows, extra], [extra, *rows]):
         with pytest.raises(CodedError) as refusal:
-            Analysis.from_moments(cube, metrics={"revenue": "mean"}, control="control")
+            from_moments(cube, metrics={"revenue": "mean"}, control="control")
         assert refusal.value.code == "moments.rows.duplicate"
 
 
 def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
     import pandas as pd
 
-    from increment import Analysis
     from increment.estimators import moments_from_summaries
 
     units = [
@@ -948,8 +942,9 @@ def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
         for index, (value, converted) in enumerate(zip(values, conversions, strict=True))
     ]
     offset_units = [{**unit, "value": 1_000_000_000.0 + float(unit["value"])} for unit in units]
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(offset_units),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -960,7 +955,7 @@ def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
     import pyarrow.parquet as pq
 
     source_export = tmp_path / "source.parquet"
-    original.export(source_export)
+    export_moments(original_experiment, original_resolver, source_export)
     source_rows = {
         (row["metric"], row["group_id"]): row for row in pq.read_table(source_export).to_pylist()
     }
@@ -977,13 +972,15 @@ def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
         control="control",
         study_id="summary-audit",
     )
-    replay = Analysis.from_moments(
-        exported,
-        metrics={"value": "mean", "converted": "conversion"},
-        control="control",
+    replay_experiment, replay_resolver = from_moments(
+        exported, metrics={"value": "mean", "converted": "conversion"}, control="control"
     )
-    original_rows = {row.metric: row for row in _lift_rows(original.run())}
-    replay_rows = {row.metric: row for row in _lift_rows(replay.run())}
+    original_rows = {
+        row.metric: row for row in _lift_rows(view_readout(original_experiment, original_resolver))
+    }
+    replay_rows = {
+        row.metric: row for row in _lift_rows(view_readout(replay_experiment, replay_resolver))
+    }
     for metric, original_row in original_rows.items():
         replay_row = replay_rows[metric]
         assert replay_row.require_lift().value == pytest.approx(
@@ -1026,10 +1023,8 @@ def test_moments_from_summaries_refuses_n_one_mean_summary():
 def test_moments_from_summaries_preserves_optional_assignment_counts():
     import json
 
-    from increment import from_moments
     from increment.estimators import moments_from_summaries
     from increment.sources import ASSIGNMENT_COUNTS_FIELD
-    from increment.workflows import srm, unit_counts
 
     rows = moments_from_summaries(
         [
@@ -1085,11 +1080,10 @@ def test_moments_from_summaries_rejects_invalid_assignment_counts(assignment_cou
 
 
 def test_moments_from_summaries_without_assignment_counts_refuses_count_operations():
-    from increment import from_moments
     from increment.errors import CodedError
     from increment.estimators import moments_from_summaries
     from increment.semantics.design import Randomized
-    from increment.workflows import health_check, srm, unit_counts
+    from increment.workflows import health_check
 
     rows = moments_from_summaries(
         [
@@ -1234,7 +1228,6 @@ def test_moments_from_summaries_rejects_unknown_metric_type():
 
 
 def test_moments_from_summaries_runs_two_arm_example():
-    from increment import Analysis
     from increment.estimators import moments_from_summaries
 
     rows = moments_from_summaries(
@@ -1245,7 +1238,7 @@ def test_moments_from_summaries_runs_two_arm_example():
         metrics={"value": "mean"},
         control="control",
     )
-    assert Analysis.from_moments(rows, metrics={"value": "mean"}, control="control").run()
+    assert view_readout(*from_moments(rows, metrics={"value": "mean"}, control="control"))
 
 
 @pytest.mark.parametrize(
@@ -1330,7 +1323,7 @@ def test_boolean_moment_control_preserves_count_only_literal_false(tmp_path):
     import pandas as pd
     import pyarrow.parquet as pq
 
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -1338,18 +1331,19 @@ def test_boolean_moment_control_preserves_count_only_literal_false(tmp_path):
                 "y": [1.0, 2.0, 3.0, 4.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics={"y": "mean"},
     )
     path = tmp_path / "literal-false-count-only.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     rows = pq.read_table(path).to_pylist()
     counts = {"True": 2, "treatment": 2, "False": 2}
     expected_counts = {"true": 2, "treatment": 2, "False": 2}
     for row in rows:
         row["assignment_counts"] = json.dumps(counts)
         row["group_id"] = True if row["group_id"] == "treatment" else "treatment"
-    replay = Analysis.from_moments(rows, metrics={"y": "mean"}, control="False")
-    assert replay.unit_counts() == expected_counts
+    replay_experiment, replay_resolver = from_moments(rows, metrics={"y": "mean"}, control="False")
+    assert unit_counts(replay_experiment, replay_resolver) == expected_counts

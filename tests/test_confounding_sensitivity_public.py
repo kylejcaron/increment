@@ -10,22 +10,25 @@ import pytest
 
 from increment import (
     AdjustmentSet,
-    Analysis,
     IdentificationGate,
     Method,
     MetricSpec,
     Observational,
+    from_frame,
+    from_switchback_frame,
 )
 from increment.errors import CodedError, UnsupportedRequestError
 from increment.estimators import confounding_sensitivity
 from increment.results import ConfoundingSensitivity, LiftEstimate
+from tests.analysis_factory import view_readout
 from tests.capability_consumers_scalar import CONFOUNDING_SENSITIVITY, completed, refused
 from tests.parity_harness.cases import (
-    _close_parity_analysis,
+    _close_parity_binding,
     _observational_aipw_conversion_case,
     _observational_conversion_case,
 )
 from tests.parity_harness.comparison import nested_close
+from tests.parity_harness.views import read
 
 _RISKS = np.array([[0.08, 0.20], [0.30, 0.45], [0.06, 0.16]])
 
@@ -64,8 +67,9 @@ def _design(*, trimmed=False):
 
 
 def _analysis(df, *, trimmed=False, clustered=False, metric_type="conversion"):
-    return Analysis.from_unit_summary(
+    return from_frame(
         df,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[MetricSpec(name="converted", type=metric_type)],
@@ -90,10 +94,13 @@ def _assert_rr_scale(row: LiftEstimate, expected_rr):
 
 @pytest.mark.parametrize("clustered", [False, True], ids=["unit", "cluster"])
 def test_iptw_and_aipw_rows_report_marginal_risk_ratio(clustered):
-    analysis = _analysis(_frame(), clustered=clustered)
+    experiment, resolver = _analysis(_frame(), clustered=clustered)
     try:
-        rows = analysis.run(
-            decision_method=Method(name="iptw"), sensitivity_methods=[Method(name="aipw")]
+        rows = view_readout(
+            experiment,
+            resolver,
+            decision_method=Method(name="iptw"),
+            sensitivity_methods=[Method(name="aipw")],
         )
         assert {row.method for row in rows} == {"iptw", "aipw"}
         for row in rows:
@@ -103,15 +110,15 @@ def test_iptw_and_aipw_rows_report_marginal_risk_ratio(clustered):
             if clustered:
                 assert row.n_clusters == 2_000
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize("method", ["iptw", "aipw"])
 @pytest.mark.parametrize("scale", ["log", "absolute"])
 def test_marginal_risk_ratio_check_rejects_other_scales(method, scale):
-    analysis = _analysis(_frame())
+    experiment, resolver = _analysis(_frame())
     try:
-        (row,) = analysis.run(decision_method=Method(name=method))
+        (row,) = view_readout(experiment, resolver, decision_method=Method(name=method))
         assert isinstance(row, LiftEstimate)
         lift = row.require_lift()
         assert lift.lb is not None and lift.ub is not None
@@ -129,14 +136,17 @@ def test_marginal_risk_ratio_check_rejects_other_scales(method, scale):
         with pytest.raises(AssertionError):
             _assert_rr_scale(mutant, _RISKS[1].mean() / _RISKS[0].mean())
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_trimmed_rows_are_accepted_with_population():
-    analysis = _analysis(_frame(trimmed=True), trimmed=True)
+    experiment, resolver = _analysis(_frame(trimmed=True), trimmed=True)
     try:
-        rows = analysis.run(
-            decision_method=Method(name="iptw"), sensitivity_methods=[Method(name="aipw")]
+        rows = view_readout(
+            experiment,
+            resolver,
+            decision_method=Method(name="iptw"),
+            sensitivity_methods=[Method(name="aipw")],
         )
         assert {row.method for row in rows} == {"iptw", "aipw"}
         for row in rows:
@@ -145,14 +155,17 @@ def test_trimmed_rows_are_accepted_with_population():
             result = _assert_rr_scale(row, 0.30 / 0.08)
             assert result.population == row.population is not None
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_three_arm_rows_are_bounded_over_all_arms():
-    analysis = _analysis(_frame(three_arms=True))
+    experiment, resolver = _analysis(_frame(three_arms=True))
     try:
-        rows = analysis.run(
-            decision_method=Method(name="iptw"), sensitivity_methods=[Method(name="aipw")]
+        rows = view_readout(
+            experiment,
+            resolver,
+            decision_method=Method(name="iptw"),
+            sensitivity_methods=[Method(name="aipw")],
         )
         assert {(row.group_id, row.method) for row in rows} == {
             (arm, method) for arm in ("t1", "t2") for method in ("iptw", "aipw")
@@ -163,7 +176,7 @@ def test_three_arm_rows_are_bounded_over_all_arms():
             assert row.estimand == "ate"
             _assert_rr_scale(row, expected[row.group_id])
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -182,10 +195,10 @@ def test_cross_ingress_sensitivity_parity(method):
         "from_definitions",
         "from_unit_day_artifact",
     ):
-        analysis = completed(CONFOUNDING_SENSITIVITY, ingress, case.build[ingress])
+        bound = completed(CONFOUNDING_SENSITIVITY, ingress, case.build[ingress])
         try:
             rows: list[LiftEstimate] = []
-            for row in analysis.run():
+            for row in read(bound):
                 assert isinstance(row, LiftEstimate)
                 rows.append(row)
             assert {row.group_id for row in rows} == {"treat_a", "treat_b"}
@@ -200,16 +213,16 @@ def test_cross_ingress_sensitivity_parity(method):
                 assert result.source_snapshot_id == row.source_snapshot_id
                 dumps[ingress][row.group_id] = result.model_dump(exclude={"source_snapshot_id"})
         finally:
-            _close_parity_analysis(analysis)
+            _close_parity_binding(bound)
     for ingress, actual in dumps.items():
         assert nested_close(dumps["from_unit_summary"], actual), ingress
 
     def moments_request():
-        analysis = case.build["from_moments"]()
+        bound = case.build["from_moments"]()
         try:
-            return analysis.run()
+            return read(bound)
         finally:
-            _close_parity_analysis(analysis)
+            _close_parity_binding(bound)
 
     error = refused(CONFOUNDING_SENSITIVITY, "from_moments", moments_request)
     assert isinstance(error, CodedError)
@@ -220,7 +233,7 @@ def test_cross_ingress_sensitivity_parity(method):
     error = refused(
         CONFOUNDING_SENSITIVITY,
         "from_switchback_panel",
-        lambda: Analysis.from_switchback_panel(
+        lambda: from_switchback_frame(
             pl.DataFrame(_rows()),
             unit="unit",
             cycle="cycle",
@@ -237,40 +250,41 @@ def test_cross_ingress_sensitivity_parity(method):
 
 
 def test_randomized_row_is_refused():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _frame(),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics=[MetricSpec(name="converted", type="conversion")],
     )
     try:
-        (row,) = analysis.run()
+        (row,) = view_readout(experiment, resolver)
         assert isinstance(row, LiftEstimate)
         with pytest.raises(UnsupportedRequestError) as excinfo:
             confounding_sensitivity(row)
         assert excinfo.value.code == "sensitivity.confounding.estimand_unsupported"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_dml_row_is_refused():
-    analysis = _analysis(_frame())
+    experiment, resolver = _analysis(_frame())
     try:
-        (row,) = analysis.run(decision_method=Method(name="dml"))
+        (row,) = view_readout(experiment, resolver, decision_method=Method(name="dml"))
         assert isinstance(row, LiftEstimate)
         assert row.estimand == "plr_slope"
         with pytest.raises(UnsupportedRequestError) as excinfo:
             confounding_sensitivity(row)
         assert excinfo.value.code == "sensitivity.confounding.estimand_unsupported"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_mean_metric_row_is_refused_from_its_metric_type():
-    analysis = _analysis(_frame(), metric_type="mean")
+    experiment, resolver = _analysis(_frame(), metric_type="mean")
     try:
-        (row,) = analysis.run(decision_method=Method(name="iptw"))
+        (row,) = view_readout(experiment, resolver, decision_method=Method(name="iptw"))
         assert isinstance(row, LiftEstimate)
         assert row.estimand == "ate"
         assert row.metric_type == "mean"
@@ -279,7 +293,7 @@ def test_mean_metric_row_is_refused_from_its_metric_type():
         assert excinfo.value.code == "sensitivity.confounding.outcome_unsupported"
         assert excinfo.value.context["metric_type"] == "mean"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_sensitivity_report_row_round_trips_as_report_only_cell():
@@ -287,9 +301,9 @@ def test_sensitivity_report_row_round_trips_as_report_only_cell():
 
     from increment.result_envelope import ResultCell
 
-    analysis = _analysis(_frame(), clustered=True)
+    experiment, resolver = _analysis(_frame(), clustered=True)
     try:
-        (lift,) = analysis.run()
+        (lift,) = view_readout(experiment, resolver)
         report = confounding_sensitivity(lift, threshold_risk_ratio=1.05)
         cell = report.as_cell()
         assert cell.row_kind == "sensitivity"
@@ -302,7 +316,7 @@ def test_sensitivity_report_row_round_trips_as_report_only_cell():
         )
         assert ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0].row_payload == cell.row_payload
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -320,7 +334,7 @@ def test_conversion_family_confounding_sensitivity_keeps_fcr_identity():
     secondary = rng.random(n) < np.where(
         treatment, np.where(segment == 0, 0.45, 0.60), np.where(segment == 0, 0.08, 0.18)
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pl.DataFrame(
             {
                 "unit": np.arange(n),
@@ -330,6 +344,7 @@ def test_conversion_family_confounding_sensitivity_keeps_fcr_identity():
                 "secondary": secondary.astype(int),
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[
@@ -341,7 +356,9 @@ def test_conversion_family_confounding_sensitivity_keeps_fcr_identity():
     )
     decision_method = Method(name="iptw")
     sensitivity_methods = [Method(name="aipw"), Method(name="unadjusted")]
-    rows = analysis.run(
+    rows = view_readout(
+        experiment,
+        resolver,
         decision_method=decision_method,
         sensitivity_methods=sensitivity_methods,
     )
@@ -370,4 +387,4 @@ def test_conversion_family_confounding_sensitivity_keeps_fcr_identity():
     assert result.bias_factor_interval is not None
     assert result.assumptions
     assert result.robustness_not_identification is True
-    analysis.close()
+    resolver.close()

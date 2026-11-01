@@ -19,11 +19,11 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from increment import from_definitions, workflows
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 
 pytestmark = [pytest.mark.slow, pytest.mark.examples]
-
-DEFINITIONS = "examples/definitions/"
 
 
 def _schema():
@@ -176,13 +176,14 @@ def seeded():
     return con, expected
 
 
-def test_aov_mix_shift_decomposition(seeded):
-    from increment import Analysis
+def test_aov_mix_shift_decomposition(seeded, example_definitions):
     from tests.analysis_factory import lift_rows
 
     con, expected = seeded
-    analysis = Analysis("aov_decomposition", definitions_path=DEFINITIONS, con=con)
-    by_name = {est.metric: est for est in lift_rows(analysis.run())}
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="aov_decomposition"
+    )
+    by_name = {est.metric: est for est in lift_rows(view_readout(experiment, resolver))}
     assert set(by_name) == {"aov", "revenue_per_user", "orders_per_user"}
 
     aov = by_name["aov"].require_lift().value
@@ -202,14 +203,15 @@ def test_aov_mix_shift_decomposition(seeded):
     assert rev > 0 and orders > 0 and aov < 0
 
 
-def test_session_unit_experiment_runs_end_to_end(seeded):
-    from increment import Analysis
+def test_session_unit_experiment_runs_end_to_end(seeded, example_definitions):
     from increment.results import SRMResult
     from tests.analysis_factory import lift_rows
 
     con, expected = seeded
-    analysis = Analysis("session_checkout", definitions_path=DEFINITIONS, con=con)
-    (est,) = lift_rows(analysis.run())
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="session_checkout"
+    )
+    (est,) = lift_rows(view_readout(experiment, resolver))
 
     assert est.metric == "session_purchase_rate"
     assert est.require_lift().value == pytest.approx(expected["conv_lift"], rel=1e-6)
@@ -218,7 +220,9 @@ def test_session_unit_experiment_runs_end_to_end(seeded):
 
     # The enrolled population is SESSIONS: 30 per arm, even though only
     # 15 distinct users exist and each appears in both arms.
-    srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    srm = workflows.srm(
+        experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+    )
     assert isinstance(srm, SRMResult)
     assert srm.observed == expected["n_sessions"]
     assert not srm.is_srm

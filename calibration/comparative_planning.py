@@ -32,11 +32,13 @@ def _frame(n: int, seed: int):
 
 
 def _analysis_run(frame, route: str):
-    from increment import Analysis, Method, MetricSpec
+    from increment import Method, MetricSpec, from_frame
+    from increment import run as run_experiment
     from tests.analysis_factory import lift_rows
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="variant",
         control="control",
@@ -44,23 +46,27 @@ def _analysis_run(frame, route: str):
     )
     try:
         if route == "auto":
-            return lift_rows(analysis.run())
+            return lift_rows(run_experiment(experiment, resolver).readout())
         return lift_rows(
-            analysis.run(
-                decision_method=Method(name="unadjusted", conversion_inference="finite_sample")
-            )
+            run_experiment(
+                experiment,
+                resolver,
+                decision_method=Method(name="unadjusted", conversion_inference="finite_sample"),
+            ).readout()
         )
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def _route_timing_worker(route: str, *, warm: bool, n: int, seed: int) -> float:
     """Measure one route in an isolated worker process; warm mode primes that route first."""
-    from increment import Analysis, Method, MetricSpec
+    from increment import Method, MetricSpec, from_frame
+    from increment import run as run_experiment
 
     frame = _frame(n, seed)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="variant",
         control="control",
@@ -69,10 +75,12 @@ def _route_timing_worker(route: str, *, warm: bool, n: int, seed: int) -> float:
 
     def run_route():
         if route == "auto":
-            return analysis.run()
-        return analysis.run(
-            decision_method=Method(name="unadjusted", conversion_inference="finite_sample")
-        )
+            return run_experiment(experiment, resolver).readout()
+        return run_experiment(
+            experiment,
+            resolver,
+            decision_method=Method(name="unadjusted", conversion_inference="finite_sample"),
+        ).readout()
 
     try:
         if warm:
@@ -81,7 +89,7 @@ def _route_timing_worker(route: str, *, warm: bool, n: int, seed: int) -> float:
         run_route()
         return time.perf_counter() - started
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def _measure_in_fresh_process(route: str, *, warm: bool, n: int, seed: int) -> float:
@@ -174,7 +182,7 @@ def _summary(reps: int, seed: int) -> tuple[dict[str, object], dict[str, object]
     return (
         {
             **shared,
-            "runtime_procedure": "Analysis.from_unit_summary(...).run() automatic conversion inference",
+            "runtime_procedure": "run(*from_frame(..., shape='summary')).readout() automatic conversion inference",
             "runtime_rejection_rate": rate,
             "runtime_power_mcse": math.sqrt(rate * (1 - rate) / usable)
             if rate is not None
@@ -190,7 +198,7 @@ def _summary(reps: int, seed: int) -> tuple[dict[str, object], dict[str, object]
         },
         {
             **shared,
-            "runtime_procedure": "Analysis.run(decision_method=Method(conversion_inference='finite_sample'))",
+            "runtime_procedure": "run(..., decision_method=Method(conversion_inference='finite_sample'))",
             "available": exact_available,
             "unavailable": reps - exact_available,
             "runtime_timings": {

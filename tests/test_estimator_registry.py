@@ -3,16 +3,18 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
 from increment import (
     AdjustmentSet,
-    Analysis,
     IdentificationGate,
     MetricSpec,
     Observational,
+    from_definitions,
+    from_frame,
 )
 from increment.declarations import ADJUSTMENTS, EstimatorRef, Method, MomentsSpec, UnitRowsSpec
 from increment.errors import CodedError
@@ -33,6 +35,7 @@ from increment.evidence import (
     UnitRowsRequest,
     require_evidence,
 )
+from tests.analysis_factory import view_readout
 
 
 def test_every_legacy_name_resolves_to_its_registered_adjustment():
@@ -264,9 +267,7 @@ def test_direct_observational_registration_validates_callback_contract():
 def test_distinct_same_setting_sensitivity_methods_produce_distinct_rows():
     import pandas as pd
 
-    from increment import Analysis
-
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": range(8),
@@ -274,16 +275,19 @@ def test_distinct_same_setting_sensitivity_methods_produce_distinct_rows():
                 "outcome": [1, 2, 3, 4, 2, 3, 4, 5],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="c",
         metrics={"outcome": "mean"},
     )
-    rows = analysis.run(
+    rows = view_readout(
+        experiment,
+        resolver,
         sensitivity_methods=(
             Method.unadjusted(name="same_setting_a"),
             Method.unadjusted(name="same_setting_b"),
-        )
+        ),
     )
     assert len(rows) == 3
     assert {row.method for row in rows} == {"unadjusted", "same_setting_a", "same_setting_b"}
@@ -294,16 +298,16 @@ def test_observational_decision_roles_resolve_in_a_fresh_process():
     code = """\\
 import sys
 import pandas as pd
-from increment import Analysis, Method
+from increment import Method, from_frame, run
 from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
 assert 'increment.estimation._adjust.iptw' not in sys.modules
 frame = pd.DataFrame({'unit': range(100), 'arm': ['c'] * 50 + ['t'] * 50, 'y': [float(i % 7) for i in range(100)], 'x': [i % 2 for i in range(100)]})
-analysis = Analysis.from_unit_summary(frame, unit='unit', group='arm', metrics={'y': 'mean'}, design=Observational(control_group='c', adjustment=AdjustmentSet(covariates=('x',)), gate=IdentificationGate(overlap='trim')))
-rows = analysis.run(decision_method=Method(name='iptw'), sensitivity_methods=[Method.unadjusted(name='none')])
+experiment, resolver = from_frame(frame, shape='summary', unit='unit', group='arm', metrics={'y': 'mean'}, design=Observational(control_group='c', adjustment=AdjustmentSet(covariates=('x',)), gate=IdentificationGate(overlap='trim')))
+rows = run(experiment, resolver, decision_method=Method(name='iptw'), sensitivity_methods=[Method.unadjusted(name='none')]).readout()
 roles = {(row.method, row.method_role) for row in rows}
 assert ('iptw', 'decision') in roles and ('none', 'sensitivity') in roles
 try:
-    analysis.run(decision_method=Method(name='nope'))
+    run(experiment, resolver, decision_method=Method(name='nope'))
 except Exception as exc:
     assert exc.code == 'estimation.variance.registry.no_registered_available'
 else:
@@ -577,7 +581,9 @@ def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import(
         )
     )
     defs_path, connection, _ = categorical_defs_and_con(tmp_path)
-    analysis = Analysis.from_definitions("cat_test", defs_path, connection, store="none")
+    experiment, resolver = from_definitions(
+        defs_path, connection, experiment_name="cat_test", store="none"
+    )
     warehouse_reads = []
     original_create_table = connection.create_table
     original_to_pyarrow = connection.to_pyarrow
@@ -594,11 +600,15 @@ def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import(
     monkeypatch.setattr(connection, "to_pyarrow", count_to_pyarrow)
     try:
         with pytest.raises(CodedError) as exc:
-            analysis.run(decision_method=Method(name=selector, variance_reduction="cuped"))
+            view_readout(
+                experiment,
+                resolver,
+                decision_method=Method(name=selector, variance_reduction="cuped"),
+            )
         assert exc.value.code == "adjust.variance_reduction.unsupported"
         assert warehouse_reads == []
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         connection.disconnect()
         unregister_estimator(estimator_id)
 
@@ -689,14 +699,14 @@ register_implementation(ESTIMATOR_ID, estimate)
 """)
     code = """\\
 import importlib.util, sys
-from increment import Analysis, Method
+from increment import Method, from_frame, run
 from increment.semantics.design import Observational, AdjustmentSet, IdentificationGate
 import pandas as pd
 spec = importlib.util.spec_from_file_location('dummy_estimator', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 frame = pd.DataFrame({'unit': range(8), 'arm': ['c'] * 4 + ['t'] * 4, 'y': [1, 2, 3, 4, 2, 3, 4, 5], 'x': [0, 1, 0, 1] * 2})
-analysis = Analysis.from_unit_summary(frame, unit='unit', group='arm', metrics={'y': 'mean'}, design=Observational(control_group='c', adjustment=AdjustmentSet(covariates=('x',)), gate=IdentificationGate(overlap='trim')))
-rows = analysis.run(decision_method=Method(name='dummy'))
+experiment, resolver = from_frame(frame, shape='summary', unit='unit', group='arm', metrics={'y': 'mean'}, design=Observational(control_group='c', adjustment=AdjustmentSet(covariates=('x',)), gate=IdentificationGate(overlap='trim')))
+rows = run(experiment, resolver, decision_method=Method(name='dummy')).readout()
 assert any(row.note and 'registry-sentinel' in row.note for row in rows)
 """
     result = subprocess.run(
@@ -728,7 +738,7 @@ def test_observational_dispatch_refuses_undeclared_cluster_counts_before_estimat
     register(ref)
     register_implementation(estimator_id, lambda *_args, **_kwargs: [])
     try:
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pd.DataFrame(
                 {
                     "unit": range(8),
@@ -737,6 +747,7 @@ def test_observational_dispatch_refuses_undeclared_cluster_counts_before_estimat
                     "x": [0, 1, 0, 1, 0, 1, 0, 1],
                 }
             ),
+            shape="summary",
             unit="unit",
             group="arm",
             metrics={"outcome": "mean"},
@@ -747,7 +758,7 @@ def test_observational_dispatch_refuses_undeclared_cluster_counts_before_estimat
             ),
         )
         with pytest.raises(CodedError) as exc:
-            analysis.run(decision_method=Method(name=selector))
+            view_readout(experiment, resolver, decision_method=Method(name=selector))
         assert exc.value.code == "evidence.cluster_unavailable"
     finally:
         unregister_estimator(estimator_id)

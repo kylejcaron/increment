@@ -1,13 +1,14 @@
 """Transforms admitted under sequential inference iff predictable at each reveal."""
 
 from fractions import Fraction as F
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
 
-from increment import Analysis, Method
+from increment import Method, from_frame
 from increment.errors import CodedError
 from increment.estimation.arm_contract import (
     AnalysisAxes,
@@ -27,6 +28,8 @@ from increment.semantics.assignment import ParallelAssignment
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec
 from increment.sequential_state import validate_sequential_transform
+from increment.workflows import sequential_snapshot
+from tests.analysis_factory import view_readout
 from tests.asymptotic_cases import mean_records, mean_registration
 from tests.capability_consumers_scalar import (
     FIXED_WINSOR_SEQUENTIAL,
@@ -52,8 +55,9 @@ def _run(frame, spec, plan):
     frame = frame.copy()
     if "exposure" not in frame:
         frame["exposure"] = range(len(frame))
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[spec],
@@ -62,9 +66,7 @@ def _run(frame, spec, plan):
         design=_DESIGN,
         exposure_date="exposure",
     )
-    from increment.readouts import run_scoped
-
-    return analysis, run_scoped(analysis, lambda: analysis.run()[0])
+    return (experiment, resolver), view_readout(experiment, resolver)[0]
 
 
 _ASYMPTOTIC = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
@@ -78,7 +80,7 @@ def test_fixed_winsorization_runs_and_retains_clipped_scalars():
         lambda: _run(_frame([1, 2, 3, 40] * 30, [7, 10, 13, 50] * 30), spec, _ASYMPTOTIC),
     )
     assert row.inference == "asymptotic_mean" and row.lift is not None
-    means = {s.group_id: s.mean[0] for s in analysis.sequential_snapshot().states}
+    means = {s.group_id: s.mean[0] for s in sequential_snapshot(*analysis).states}
     assert means == {"control": F(13, 2), "treatment": F(25, 2)}
 
 
@@ -169,14 +171,14 @@ def test_predeclared_cuped_narrows_the_asymptotic_interval_and_labels_the_row():
     )
     assert plain.method == "unadjusted" and adjusted.method == "cuped"
     assert adjusted.lift.ub - adjusted.lift.lb < plain.lift.ub - plain.lift.lb
-    model = analysis.sequential_snapshot().registration.models[0]
+    model = cast(Any, sequential_snapshot(*analysis).registration.models[0])
     assert model.adjustment == adjustment
 
     # The coefficient never reads an in-experiment outcome: rewriting every
     # outcome moves the retained state but leaves the registration untouched.
     mutated = frame.assign(outcome=frame["outcome"] * 3 + 100)
-    other, _ = _run(mutated, spec, adjusted_plan)
-    before, after = analysis.sequential_snapshot(), other.sequential_snapshot()
+    (experiment, resolver), _ = _run(mutated, spec, adjusted_plan)
+    before, after = sequential_snapshot(*analysis), sequential_snapshot(experiment, resolver)
     assert before.registration_id == after.registration_id
     assert before.prefix_id != after.prefix_id
 
@@ -195,10 +197,10 @@ def test_in_experiment_coefficient_is_retained_as_joint_moments_on_the_asymptoti
         "in-experiment-cuped-summary-joint-moments",
         lambda: _run(_experiment_frame(rng), spec, _ASYMPTOTIC),
     )
-    model = analysis.sequential_snapshot().registration.models[0]
+    model = cast(Any, sequential_snapshot(*analysis).registration.models[0])
     assert model.law == "adjusted_mean" and model.adjustment is None
     assert row.method == "cuped"
-    assert {len(s.mean) for s in analysis.sequential_snapshot().states} == {2}
+    assert {len(s.mean) for s in sequential_snapshot(*analysis).states} == {2}
 
 
 def test_in_experiment_coefficient_still_refuses_on_the_exact_routes():
@@ -232,8 +234,8 @@ def test_capture_retains_the_adjusted_scalar_exactly():
             covariates=CupedCovariate(name="covariate", kind="continuous", missing="impute")
         ),
     )
-    analysis, _ = _run(frame, spec, plan)
-    means = {s.group_id: s.mean[0] for s in analysis.sequential_snapshot().states}
+    (experiment, resolver), _ = _run(frame, spec, plan)
+    means = {s.group_id: s.mean[0] for s in sequential_snapshot(experiment, resolver).states}
     # control: 10 - (2-4)/2 = 11, 12 - (6-4)/2 = 11; treatment: 20, 22.
     assert means == {"control": F(11), "treatment": F(21)}
 
@@ -439,8 +441,9 @@ def _missing_zero_summary_snapshot(*, outcome, denominator=1.0, ratio=False):
         if ratio
         else MetricSpec(name="outcome", missing="zero")
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[spec],
@@ -449,7 +452,7 @@ def _missing_zero_summary_snapshot(*, outcome, denominator=1.0, ratio=False):
         design=_DESIGN,
         exposure_date="exposure",
     )
-    return analysis.sequential_snapshot()
+    return sequential_snapshot(experiment, resolver)
 
 
 def test_sequential_missing_zero_normalizes_nan_and_null_identically():
@@ -508,8 +511,9 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
 
     def capture(covariate_missing):
         with pytest.warns(UserWarning):
-            analysis = Analysis.from_unit_summary(
+            experiment, resolver = from_frame(
                 frame,
+                shape="summary",
                 unit="unit",
                 group="arm",
                 metrics=[
@@ -530,14 +534,18 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
                 design=_DESIGN,
                 exposure_date="exposure",
             )
-        return {state.group_id: state.mean[0] for state in analysis.sequential_snapshot().states}
+        return {
+            state.group_id: state.mean[0]
+            for state in sequential_snapshot(experiment, resolver).states
+        }
 
     assert capture("impute") == {"control": F(4), "treatment": F(0)}
     assert capture("zero") == {"control": F(4), "treatment": F(2)}
 
     with pytest.raises(CodedError) as covariate_error:
-        Analysis.from_unit_summary(
+        from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             metrics=[
@@ -563,8 +571,9 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
         ("drop", "sequential.route.unsupported"),
     ):
         with pytest.raises(CodedError) as missing_error:
-            Analysis.from_unit_summary(
+            from_frame(
                 frame.drop("covariate"),
+                shape="summary",
                 unit="unit",
                 group="arm",
                 metrics=[MetricSpec(name="outcome", missing=policy)],
@@ -577,8 +586,9 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
 
     infinite = frame.drop("covariate").with_columns(pl.lit(float("inf")).alias("outcome"))
     with pytest.raises(CodedError) as nonfinite:
-        Analysis.from_unit_summary(
+        from_frame(
             infinite,
+            shape="summary",
             unit="unit",
             group="arm",
             metrics=[

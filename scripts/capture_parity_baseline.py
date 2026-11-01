@@ -17,7 +17,8 @@ from pathlib import Path
 import ibis
 
 from examples._seed import seed_event_log
-from increment import Analysis, Method
+from increment import Method, RunResult, Scope, from_definitions, run
+from increment.results import BreakoutEstimates, DailyLiftEstimates, DailyMetricValues
 
 OUT = Path("tests/fixtures/parity_baseline.json")
 DEFINITIONS = "examples/definitions"
@@ -33,6 +34,14 @@ def _arm_rows(results):
         if not isinstance(row, LiftEstimate):
             raise SystemExit("expected arm lift rows; this experiment returned contrasts")
         rows.append(row)
+    return rows
+
+
+def _view[T](result: RunResult, scope: Scope, kind: type[T]) -> T:
+    """One view's typed rows."""
+    rows = result.readout(scope)
+    if not isinstance(rows, kind):
+        raise SystemExit(f"expected {kind.__name__} from the {scope.view} view")
     return rows
 
 
@@ -69,17 +78,29 @@ def main() -> None:
     # equivalent config={"threads": 1} form.
     con = ibis.duckdb.connect(threads=1)
     seed_event_log(con)
-    # Analysis loads the YAML from definitions_path and one shared instance
-    # serves all six readouts. Its common spine bound keeps results independent
-    # of readout order and of whether later calls materialize temporary tables.
-    a = Analysis(EXPERIMENT, DEFINITIONS, con)
+    # One builder pair serves all six readouts. Its common spine bound keeps
+    # results independent of readout order and of whether later reads
+    # materialize temporary tables. Value views take no decision method, so
+    # they read in their own run.
+    experiment, resolver = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    whole = Scope(view="run", grain="total")
+    daily_values = Scope(view="daily", grain="daily", values=True)
+    asof_values = Scope(view="asof", grain="asof", values=True)
+    breakout = Scope(view="breakout", grain="total")
+    daily_lift = Scope(view="daily", grain="daily")
+    asof_lift = Scope(view="asof", grain="asof")
+    values = run(experiment.with_views(daily_values, asof_values), resolver)
+    lifts = run(
+        experiment.with_views(whole, breakout, daily_lift, asof_lift),
+        resolver,
+        decision_method=Method(name="unadjusted"),
+    )
 
     baseline: dict[str, dict[str, float | None]] = {}
 
     # 1. Whole-window lift, per (metric, arm).
     baseline["run"] = {
-        f"{e.metric}|{e.group_id}": _lift_value(e)
-        for e in _arm_rows(a.run(decision_method=Method(name="unadjusted")))
+        f"{e.metric}|{e.group_id}": _lift_value(e) for e in _arm_rows(lifts.readout(whole))
     }
 
     # 2. Per-day absolute values, per (metric, arm, ds). The spine's right edge
@@ -87,32 +108,34 @@ def main() -> None:
     #    sensitive to a change in the spine's bounds. DailyMetricValue.value
     #    is an Estimate, not a float -- .value.value is the point estimate.
     baseline["run_daily"] = {
-        f"{v.metric}|{v.group_id}|{_day(v.ds)}": _value_of(v) for v in a.run_daily()
+        f"{v.metric}|{v.group_id}|{_day(v.ds)}": _value_of(v)
+        for v in _view(values, daily_values, DailyMetricValues)
     }
 
     # 3. Cumulative-to-date values -- catches a spine change that shifts the
     #    cumulation window without changing any single day's value.
     baseline["run_asof"] = {
-        f"{v.metric}|{v.group_id}|{_day(v.ds)}": _value_of(v) for v in a.run_asof()
+        f"{v.metric}|{v.group_id}|{_day(v.ds)}": _value_of(v)
+        for v in _view(values, asof_values, DailyMetricValues)
     }
 
     # 4. Per-segment lift, which re-derives unit_totals with a dimension join.
     baseline["run_breakout"] = {
         f"{e.metric}|{e.group_id}|{e.dimension}={e.dimension_value}": _lift_value(e)
-        for e in a.run_breakout(decision_method=Method(name="unadjusted"))
+        for e in _view(lifts, breakout, BreakoutEstimates)
     }
 
     # 5. Per-day relative lift -- the estimand key matters: an encouragement
     #    or estimands change that adds/drops rows shows as a key-set diff.
     baseline["run_daily_lift"] = {
         f"{e.metric}|{e.group_id}|{_day(e.ds)}|{e.estimand}": _lift_value(e)
-        for e in a.run_daily_lift(decision_method=Method(name="unadjusted"))
+        for e in _view(lifts, daily_lift, DailyLiftEstimates)
     }
 
     # 6. Cumulative-to-date relative lift.
     baseline["run_asof_lift"] = {
         f"{e.metric}|{e.group_id}|{_day(e.ds)}|{e.estimand}": _lift_value(e)
-        for e in a.run_asof_lift(decision_method=Method(name="unadjusted"))
+        for e in _view(lifts, asof_lift, DailyLiftEstimates)
     }
 
     empty = [k for k, v in baseline.items() if not v]

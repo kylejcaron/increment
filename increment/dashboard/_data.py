@@ -831,14 +831,15 @@ def prepare_dashboard(
     )
 
 
-_DEFINITION_REQUIRED = "the dashboard needs an Analysis with a declared experiment definition"
+_DEFINITION_REQUIRED = "the dashboard needs an experiment built by from_definitions"
 
 
 def _refuse_design(mechanism: str) -> NoReturn:
     refuse(
         _UNSUPPORTED_EXPERIMENT,
         reason=(
-            f"the experiment declares a {mechanism} design; read its estimates with Analysis.run()"
+            f"the experiment declares a {mechanism} design; read its estimates with "
+            "run(experiment, resolver)"
         ),
         mechanism=mechanism,
     )

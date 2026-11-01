@@ -13,6 +13,8 @@ import ibis
 import ibis.expr.types as ir
 import pytest
 
+from increment import Scope, from_definitions, from_moments, from_unit_day_artifact, workflows
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError
 from increment.frame import MetricSpec
 from increment.query.artifact_contract import (
@@ -77,8 +79,10 @@ from increment.semantics.models import (
     RetentionMetric,
     Winsorization,
 )
+from increment.workflows import experiment_definition
 from tests._evidence_requests import _moments, _unit_counts, _unit_rows
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 from tests.semantics.test_unit_day_artifact import _manifest
 
 
@@ -878,11 +882,9 @@ def test_adopted_export_is_parquet_reloadable_by_analysis_from_moments(tmp_path)
     fixture["source"].export_moments(path)
     import pyarrow.parquet as pq
 
-    from increment import Analysis
-
     rows = pq.read_table(path).to_pylist()
-    reloaded = Analysis.from_moments(rows, metrics=[fixture["spec"]], control="control")
-    assert reloaded.run()
+    experiment, resolver = from_moments(rows, metrics=[fixture["spec"]], control="control")
+    assert view_readout(experiment, resolver)
     fixture["source"].close()
 
 
@@ -1098,7 +1100,6 @@ def test_published_manifest_records_the_experiment_day_boundary(tmp_path) -> Non
     import ibis
 
     from examples._seed import EXPERIMENT_ID, seed_event_log
-    from increment import Analysis
     from increment.query.session import WarehouseArtifactStore
 
     definitions = tmp_path / "definitions"
@@ -1112,15 +1113,17 @@ def test_published_manifest_records_the_experiment_day_boundary(tmp_path) -> Non
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=300, seed=13, with_pre_period=True)
-    analysis = Analysis.from_definitions(EXPERIMENT_ID, definitions, con, store="none")
-    assert analysis.experiment.day_boundary == "UTC-05:00"
+    experiment, resolver = from_definitions(
+        definitions, con, experiment_name=EXPERIMENT_ID, store="none"
+    )
+    assert experiment_definition(experiment, resolver).day_boundary == "UTC-05:00"
 
     store = WarehouseArtifactStore(con, schema_name="day_boundary_artifact")
-    ref = analysis.publish_unit_day_artifact(store)
+    ref = publish_unit_day_artifact(experiment, resolver, store)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
 
-    assert manifest.day_boundary == analysis.experiment.day_boundary
+    assert manifest.day_boundary == experiment_definition(experiment, resolver).day_boundary
 
 
 @pytest.mark.slow
@@ -1140,7 +1143,6 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     An older artifact predating this field still parses and falls back to
     freshness-based sizing."""
     from examples._seed import seed_event_log
-    from increment import Analysis
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.query.source import open_artifact
@@ -1151,12 +1153,18 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     definitions = _definitions(tmp_path, open_ended=True)
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200, seed=7, with_pre_period=True)
-    analysis = Analysis.from_definitions("new_onboarding_v2", definitions, con, store="none")
-    assert analysis.experiment.observation_horizon is None
-    metric = next(m for m in analysis.metrics if m.name == "avg_session_duration")
+    analysis_experiment, analysis_resolver = from_definitions(
+        definitions, con, experiment_name="new_onboarding_v2", store="none"
+    )
+    assert experiment_definition(analysis_experiment, analysis_resolver).observation_horizon is None
+    metric = next(
+        m
+        for m in workflows.metrics(analysis_experiment, analysis_resolver)
+        if m.name == "avg_session_duration"
+    )
 
     store = WarehouseArtifactStore(con, schema_name="event_horizon_artifact")
-    ref = analysis.publish_unit_day_artifact(store)
+    ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     binding = next(b for b in manifest.metric_measures if b.metric_name == metric.name)
@@ -1179,9 +1187,11 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
         "(event_at, user_id, session_id, event, duration_s, device_type) "
         "VALUES ('2025-02-20 00:00:00', 'u00031', 'u00031-late', 'session_end', NULL, 'web')"
     )
-    late_analysis = Analysis.from_definitions("new_onboarding_v2", definitions, con, store="none")
+    late_experiment, late_resolver = from_definitions(
+        definitions, con, experiment_name="new_onboarding_v2", store="none"
+    )
     late_store = WarehouseArtifactStore(con, schema_name="event_horizon_artifact_late")
-    late_ref = late_analysis.publish_unit_day_artifact(late_store)
+    late_ref = publish_unit_day_artifact(late_experiment, late_resolver, late_store)
     with late_store.open_snapshot(late_ref) as snapshot:
         late_manifest = snapshot.read_manifest(
             late_ref.manifest, expected_sha256=late_ref.manifest_sha256
@@ -1196,7 +1206,12 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     assert late_manifest.context.sha256 == context.sha256
     late_adopted = open_artifact(late_store, late_ref, expected_context=context)
     late_max_ds = max(row["ds"] for row in _moments(late_adopted, metric, grain="asof"))
-    native_asof = late_analysis.run_asof(metrics=[metric.name])
+    native_asof = view_readout(
+        late_experiment,
+        late_resolver,
+        Scope(view="asof", grain="asof", values=True),
+        metrics=[metric.name],
+    )
     assert late_max_ds == max(row.ds for row in native_asof)
     # The freshness-only change never moved the adopted spine: it stayed
     # pinned to the persisted (filtered) event horizon both times.
@@ -1222,12 +1237,14 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     assert all(m.event_horizon is None for m in stale_measures)
     stale_measure = next(m for m in stale_measures if m.measure_key == binding.measure_key)
     assert stale_measure.freshness.loaded_through == date(2025, 2, 20)
-    analysis.close()
-    late_analysis.close()
+    cast(Any, analysis_resolver).close()
+    cast(Any, late_resolver).close()
 
 
 @pytest.mark.slow
-def test_legacy_manifest_json_without_event_horizon_verifies_through_the_store() -> None:
+def test_legacy_manifest_json_without_event_horizon_verifies_through_the_store(
+    example_definitions,
+) -> None:
     """A manifest published before `event_horizon` existed never emitted the
     key in its stored `manifest_json` at all. Overwrite a freshly published
     artifact's persisted row to strip the key from every measure (as if it
@@ -1238,16 +1255,17 @@ def test_legacy_manifest_json_without_event_horizon_verifies_through_the_store()
     legacy artifact's stored digest byte-identical."""
 
     from examples._seed import EXPERIMENT_ID, seed_event_log
-    from increment import Analysis
     from increment.query.artifact_digest import manifest_sha256
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics.artifact import MeasureManifest
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200, seed=7, with_pre_period=True)
-    analysis = Analysis.from_definitions(EXPERIMENT_ID, "examples/definitions", con, store="none")
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name=EXPERIMENT_ID, store="none"
+    )
     store = WarehouseArtifactStore(con, schema_name="legacy_event_horizon_artifact")
-    ref = analysis.publish_unit_day_artifact(store)
+    ref = publish_unit_day_artifact(experiment, resolver, store)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert all("event_horizon" in m.model_fields_set for m in manifest.measures)
@@ -1282,7 +1300,7 @@ def test_legacy_manifest_json_without_event_horizon_verifies_through_the_store()
     assert all("event_horizon" not in m.model_fields_set for m in reopened.measures)
     assert all(m.event_horizon is None for m in reopened.measures)
     assert reopened.manifest_sha256 == manifest_sha256(reopened) == legacy_digest
-    analysis.close()
+    cast(Any, resolver).close()
 
 
 @pytest.mark.slow
@@ -1453,21 +1471,20 @@ def test_validate_stats_impossible_sum_is_coded(reader_snapshot, monkeypatch) ->
 def test_streaming_snapshot_isolates_external_mutation():
     from pathlib import Path
 
-    from increment.analysis import Analysis
     from tests.capability_consumers_auxiliary import assert_refusal
     from tests.test_unit_day_artifact_facade import _native
 
-    con, native, context, store = _native(
+    con, (experiment, resolver), context, store = _native(
         definitions=Path(__file__).resolve().parents[1] / "examples" / "definitions"
     )
     adopted = None
     try:
-        ref = native.publish_unit_day_artifact(store)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
+        adopted = from_unit_day_artifact(store, ref, expected_context=context)
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-        metric = adopted.metrics[0]
-        before = adopted.run(metrics=[metric.name])
+        metric = workflows.metrics(*adopted)[0]
+        before = view_readout(*adopted, metrics=[metric.name])
         assert before
         published = manifest.base.measure_stats.relation
         con.raw_sql(
@@ -1475,7 +1492,7 @@ def test_streaming_snapshot_isolates_external_mutation():
         )
         # The adopted analysis keeps reading the snapshot it opened with, so the
         # externally mutated relation never reaches its numbers.
-        assert adopted.run(metrics=[metric.name]) == before
+        assert view_readout(*adopted, metrics=[metric.name]) == before
         with store.open_snapshot(ref) as fresh:
             with pytest.raises(ArtifactContractError) as error:
                 fresh.verify_relation(manifest.base.measure_stats, expected_role="measure_stats")
@@ -1488,8 +1505,8 @@ def test_streaming_snapshot_isolates_external_mutation():
         )
     finally:
         if adopted is not None:
-            adopted.close()
-        native.close()
+            adopted[1].close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1879,7 +1896,6 @@ def _restored_legacy_artifact(label: str) -> tuple[Any, Any, Any, Any]:
 def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
     tmp_path: Path, label: str
 ) -> None:
-    from increment.analysis import Analysis
     from increment.query.artifact_publish import artifact_context
     from increment.query.source import open_artifact
     from increment.semantics.loader import load
@@ -1893,7 +1909,7 @@ def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
     assert experiment is not None
     compiled_pin = artifact_context(definitions, experiment, "error")
     entry_points = {
-        "adopt": lambda pin: Analysis.from_unit_day_artifact(store, ref, expected_context=pin),
+        "adopt": lambda pin: from_unit_day_artifact(store, ref, expected_context=pin),
         "source": lambda pin: open_artifact(store, ref, expected_context=pin),
         "reader": lambda pin: ArtifactMomentSource.open(store, ref, expected_context=pin),
     }
@@ -1910,10 +1926,14 @@ def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
                     refused.value,
                     stage="admission",
                 )
-        analysis = Analysis.from_definitions("new_onboarding_v2", definitions_path, connection)
+        analysis_experiment, analysis_resolver = from_definitions(
+            definitions_path, connection, experiment_name="new_onboarding_v2"
+        )
         try:
             with pytest.raises(ArtifactContractError) as refreshed:
-                analysis.publish_unit_day_artifact(store, refresh_of=ref)
+                publish_unit_day_artifact(
+                    analysis_experiment, analysis_resolver, store, refresh_of=ref
+                )
             assert refreshed.value.code == "artifact.context.mismatch"
             assert refreshed.value.context["missing"] == "window_days"
             assert_refusal(
@@ -1923,7 +1943,7 @@ def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
                 stage="admission",
             )
         finally:
-            analysis.close()
+            cast(Any, analysis_resolver).close()
     finally:
         connection.disconnect()
 

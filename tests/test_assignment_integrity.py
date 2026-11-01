@@ -5,9 +5,10 @@ from copy import deepcopy
 
 import pytest
 
-from increment import Encouragement, Randomized, UptakeSpec
+from increment import Encouragement, Randomized, UptakeSpec, from_definitions
 from increment.errors import InvalidRequestError
 from increment.semantics.design import AdjustmentSet, Observational
+from tests.analysis_factory import view_readout
 
 
 @pytest.mark.parametrize("model", [Randomized, Encouragement])
@@ -303,8 +304,6 @@ def test_clustered_run_keeps_mixed_and_unassigned_audit_counts_in_scope(tmp_path
     import ibis
     import pyarrow as pa
 
-    from increment import Analysis
-
     definitions = tmp_path / "clustered.yml"
     definitions.write_text(
         """
@@ -397,8 +396,10 @@ experiments:
     def run(include_audit_units: bool):
         con = ibis.duckdb.connect()
         con.create_table("events", obj=rows(include_audit_units=include_audit_units))
-        analysis = Analysis.from_definitions("exp", definitions, con, on_mixed_assignment="exclude")
-        return analysis.run()
+        experiment, resolver = from_definitions(
+            definitions, con, experiment_name="exp", on_mixed_assignment="exclude"
+        )
+        return view_readout(experiment, resolver)
 
     audited = run(True)
     baseline = run(False)

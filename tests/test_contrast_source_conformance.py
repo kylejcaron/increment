@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from tests.source_conformance import switchback_experiment, switchback_source
@@ -37,16 +39,16 @@ def test_switchback_absent_metric_is_a_stable_coded_refusal() -> None:
 
 
 def test_switchback_result_serialization_and_to_frame() -> None:
-    from tests.source_conformance import switchback_analysis
+    from tests.analysis_factory import contrast_rows, view_readout
 
-    analysis = switchback_analysis()
-    results = analysis.run()
+    experiment, resolver = switchback_experiment()
+    with resolver:
+        results = contrast_rows(view_readout(experiment, resolver))
     assert results
     for result in results:
         restored = type(result).model_validate_json(result.model_dump_json())
         assert restored == result
-    frame = results.to_frame()
+    frame: Any = results.to_frame()
     assert len(frame) == len(results)
     columns = frame.column_names if hasattr(frame, "column_names") else list(frame.columns)
     assert {"metric", "estimate", "lb", "ub"} <= set(columns)
-    analysis.close()

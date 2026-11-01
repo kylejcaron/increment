@@ -30,7 +30,7 @@ covariate whose column holds text or dates is refused with
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, CupedCovariate, Method, MetricSpec
+from increment import CupedCovariate, Method, MetricSpec, from_frame, run
 
 rng = np.random.default_rng(11)
 n = 20_000
@@ -52,8 +52,9 @@ df = pl.DataFrame(
     }
 )
 
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
@@ -70,7 +71,8 @@ results = Analysis.from_unit_summary(
             ),
         )
     ],
-).run(decision_method=Method.unadjusted(name="unadjusted"))
+)
+results = run(experiment, resolver, decision_method=Method.unadjusted(name="unadjusted")).readout()
 
 for r in results:
     width = r.lift.ub - r.lift.lb
@@ -126,7 +128,7 @@ enclosing horizon. An unselected feed is not fetched just to extend a snapshot.
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, CupedCovariate, Method, MetricSpec
+from increment import CupedCovariate, Method, MetricSpec, from_frame, run
 
 rng = np.random.default_rng(21)
 n_per_arm = 80
@@ -136,7 +138,7 @@ effect = np.repeat([0.0, 0.4, 0.8], n_per_arm)
 outcome = 10 + effect + 0.9 * pre_period + rng.normal(0, 1, size=3 * n_per_arm)
 covariate = CupedCovariate(name="pre_period", kind="continuous")
 
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     pl.DataFrame(
         {
             "unit": [f"u{i}" for i in range(len(arm))],
@@ -145,6 +147,7 @@ analysis = Analysis.from_unit_summary(
             "pre_period": pre_period,
         }
     ),
+    shape="summary",
     unit="unit",
     group="arm",
     control="control",
@@ -157,7 +160,7 @@ analysis = Analysis.from_unit_summary(
     ],
 )
 
-for row in analysis.run():
+for row in run(experiment, resolver).readout():
     lift = row.require_lift()
     print(
         f"{row.method:>6} {row.group_id}: "
@@ -178,7 +181,7 @@ ordinary scalar CUPED is the one-continuous-covariate default, while the
 multicovariate fit is an explicit alternative.
 
 !!! warning "Panel covariates must be constant per unit"
-    Under fixed-horizon inference, `from_unit_panel` supports CUPED for
+    Under fixed-horizon inference, a `from_frame` panel supports CUPED for
     unwindowed mean and ratio metrics when each method-owned CUPED covariate
     is constant across every unit's rows; varying values raise
     `frame.frame_panel.unit_covariate_varies`. Windowed and retention metrics
@@ -238,7 +241,7 @@ On `from_definitions` and `from_unit_day_artifact`, the covariate is the
 exposure, computed like a mean metric's covariate (see
 [In YAML definitions](#in-yaml-definitions)). The numerator is usually the
 outcome of interest and correlates with the denominator, so one covariate can
-improve both components. Under fixed-horizon inference, `from_unit_panel`
+improve both components. Under fixed-horizon inference, a `from_frame` panel
 accepts the same constant-per-unit covariate for an unwindowed ratio metric,
 keeping it once per unit rather than summing it across days.
 
@@ -268,7 +271,7 @@ keeping it once per unit rather than summing it across days.
 
 ## In YAML definitions
 
-With `Analysis.from_definitions`, the experiment's `n_pre_periods` setting
+With `from_definitions`, the experiment's `n_pre_periods` setting
 supplies the covariate: each metric's total over
 `[first exposure date − n_pre_periods days, first exposure timestamp)`,
 including exposure-day events before the unit's first exposure. For a ratio
@@ -336,7 +339,7 @@ Artifact publication retains raw named property and measure covariates, with
 numeric NaNs represented as missing values. Replay applies each method's own
 missing policy. Implicit scalar CUPED additionally needs its `cuped_preperiod`
 extension selected at publication. Named scalar breakouts are not supported
-by the artifact route: `from_unit_day_artifact.run_breakout` refuses with
+by the artifact route: a breakout view of a `from_unit_day_artifact` experiment refuses with
 `artifact.cuped.scalar_breakout` before reading evidence. Use definitions or
 frame input for those breakouts, or run the artifact's scalar headline.
 
@@ -351,9 +354,9 @@ Direct `readouts.asof_lift` retains method identity for the implicit pre-period
 scalar family at every date. Fixed-horizon day-axis moments cannot select a
 named scalar binding: direct requests refuse with
 `readout.scalar_method_evidence`, route `readouts.asof_lift`, before reading
-outcome or compliance evidence. The facade applies the same admission rule to
-`Analysis.run_asof_lift` and `Analysis.run_daily_lift`, including dimensioned
-reads, and reports the corresponding facade route. Existing operation and
+outcome or compliance evidence. Daily and as-of lift views apply the same
+admission rule, including dimensioned reads, and report the corresponding
+route. Existing operation and
 source capabilities are checked first: a non-panel moments source retains
 `evidence.grain_unavailable`, and a panel without covariate moments retains
 `estimation.cuped.arm_no_covariate`.
@@ -409,7 +412,7 @@ experiments:
     control_group: C
 ```
 
-Each `analysis.run()` now reports unadjusted and CUPED rows for
+Each `run(experiment, resolver)` now reports unadjusted and CUPED rows for
 `purchase_rate`; `avg_session_duration` stays unadjusted. Call-wide
 `decision_method` and `sensitivity_methods` overrides take precedence. The
 dataframe path uses the same precedence through
@@ -438,15 +441,16 @@ data at each look. A method declares the source covariate and registers
 
 <!-- skip: next "requires a prepared unit frame" -->
 ```python
-from increment import Analysis, AnalysisPlan, CupedCovariate, InferenceSpec, Method, MetricSpec
+from increment import AnalysisPlan, CupedCovariate, InferenceSpec, Method, MetricSpec, from_frame
 
 plan = AnalysisPlan(primary="revenue", inference=InferenceSpec(kind="asymptotic_mean"))
 spec = MetricSpec(
     name="revenue",
     decision_method=Method.cuped(covariates=CupedCovariate(name="revenue_pre", kind="continuous")),
 )
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     units,
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics=[spec],
@@ -459,7 +463,7 @@ analysis = Analysis.from_unit_summary(
 The method needs positive within-group covariate variance (a constant
 covariate reports `zero_covariate_variance`) and per-unit covariate data:
 
-- `from_unit_summary`: declare the covariate on a CUPED method.
+- `from_frame` summary: declare the covariate on a CUPED method.
 - `from_definitions`: set `n_pre_periods > 0`. A plan binding with a CUPED
   method registers the adjusted law automatically.
 - `from_unit_day_artifact`: publish each adjusted method's `cuped_preperiod`
@@ -591,8 +595,9 @@ df = pl.DataFrame(
 ```python
 import increment as inc
 
-analysis = inc.Analysis.from_unit_summary(
+experiment, resolver = inc.from_frame(
     df,  # one row per unit, carrying the uptake column and the pre-period covariate
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics=[
@@ -611,9 +616,11 @@ analysis = inc.Analysis.from_unit_summary(
         ),
     ),
 )
-results = analysis.run(
+results = inc.run(
+    experiment,
+    resolver,
     estimands=("itt", "compliance", "late"),
-)
+).readout()
 ```
 
 Three details matter:
@@ -684,8 +691,9 @@ df = pl.DataFrame(
 ```python
 import increment as inc
 
-analysis = inc.Analysis.from_unit_summary(
+experiment, resolver = inc.from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
@@ -699,7 +707,7 @@ analysis = inc.Analysis.from_unit_summary(
     ),
     cluster="store_id",  # the randomization-grain column
 )
-results = analysis.run(estimands=("itt", "compliance", "late"))
+results = inc.run(experiment, resolver, estimands=("itt", "compliance", "late")).readout()
 (late,) = [r for r in results if r.estimand == "late" and r.value_scale == "absolute"]
 print(f"LATE={late.lift.value:+.2f}  CI=({late.lift.lb:+.2f}, {late.lift.ub:+.2f})")
 print(f"K={late.n_clusters}, dof={late.dof:g}")
@@ -789,7 +797,7 @@ transferring unit values; the structured context identifies the metric,
 component, arm, and violated bound.
 DuckDB, PostgreSQL, Snowflake, and BigQuery execution use this same support
 envelope. Rescale the inputs or explicitly choose the local per-unit route
-with `Analysis.from_unit_summary` or `Analysis.from_unit_panel`; the warehouse
+with `from_frame(..., shape="summary")` or `from_frame(..., shape="panel")`; the warehouse
 route never falls back to transferring units. The bound does not change the
 local per-unit fitters.
 
@@ -827,7 +835,7 @@ must be strings (encode a Boolean as labels such as `"new"` and `"returning"`).
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, Method, MetricSpec
+from increment import Method, MetricSpec, from_frame, run
 from increment.semantics.models import CupedCovariate
 
 rng = np.random.default_rng(20261013)
@@ -891,17 +899,20 @@ methods = [
         denominator="orders",
     ),
 ]
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     units,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=methods,
 )
-results = analysis.run(
+results = run(
+    experiment,
+    resolver,
     decision_method=Method.unadjusted(name="unadjusted"),
     sensitivity_methods=(Method.cuped_multicovariate(name="linear", covariates=covariates),),
-)
+).readout()
 
 for result in results:
     lift = result.lift
@@ -1154,11 +1165,11 @@ the client.
 From definitions or an adopted unit-day artifact, use
 `increment.workflows.export_moments(experiment, resolver, path)` to write the
 cube. Build the pair with `from_definitions(...)` or
-`from_unit_day_artifact(...)`. Reload its rows with `Analysis.from_moments`,
+`from_unit_day_artifact(...)`. Reload its rows with `from_moments`,
 passing each metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
 design: the embedded plan supplies the decision and sensitivity methods,
 including scalar companions, so estimates, intervals and roles replay. The
-cube has no breakout dimension, so `run_breakout` refuses with
+cube has no breakout dimension, so a breakout view refuses with
 `evidence.breakout_unavailable`. Warehouse-backed QR also enforces the per-arm
 component/covariate magnitude range $[10^{-50}, 10^{50}]`; violations refuse
 with `query.cuped.magnitude_range` before any unit values can leave the

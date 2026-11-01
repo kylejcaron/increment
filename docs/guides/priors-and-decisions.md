@@ -7,7 +7,7 @@
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, MetricSpec
+from increment import MetricSpec, from_frame, run
 from increment.estimators import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior
 
@@ -19,19 +19,20 @@ df = pl.DataFrame({"user_id": [f"u{i}" for i in range(n)], "variant": variant, "
 
 # A skeptical prior: log-lift centered at 0, sigma=0.05 (~5% typical move).
 skeptical = Normal(mu=0.0, sigma=0.05)
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[MetricSpec(name="revenue", type="mean", preferred_direction="increase")],
 )
-results = analysis.run(prior=skeptical)
+results = run(experiment, resolver, prior=skeptical).readout()
 for r in results:
     print(f"sampling_lift={r.lift.value:+.2%} posterior_estimate={r.posterior_estimate!r}")
 ```
 
-Pass `prior=` to `run(...)`, not to an `Analysis` constructor. A call-time prior takes precedence over a metric's declared prior for that run; `prior=None` resets to flat. A differing override of a non-default declared prior emits one warning for that run. If omitted, `AnalysisPlan` or `ExperimentMetric` declarations supply the default.
+Pass `prior=` to `run(...)`, not to a builder such as `from_frame`. A call-time prior takes precedence over a metric's declared prior for that run; `prior=None` resets to flat. A differing override of a non-default declared prior emits one warning for that run. If omitted, `AnalysisPlan` or `ExperimentMetric` declarations supply the default.
 
 Choose `Normal` for a single bell-shaped prior, `StudentTPrior` for heavier tails, or `MixturePrior` for a mix of shapes. The declared prior and updated posterior are stored separately.
 
@@ -65,7 +66,7 @@ A valid sampling result does not guarantee an available posterior. Check `poster
 
     Zero-success, all-success and sufficiently imprecise binary samples can fail the approximate posterior's log-mean/SE requirements even when the prior-free binomial route can report a confidence set.
 
-    The Normal, Student-t and mixture cases are compared across `from_definitions`, `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel` and `from_moments` on identical mean, ratio, conversion and CUPED data, including posterior probabilities and prior metadata. The warehouse cases run on DuckDB and PostgreSQL. This is fixed-horizon parallel-arm coverage, not a switchback or sequential posterior claim.
+    The Normal, Student-t and mixture cases are compared across `from_definitions`, `from_unit_day_artifact`, `from_frame` summaries and panels, and `from_moments` on identical mean, ratio, conversion and CUPED data, including posterior probabilities and prior metadata. The warehouse cases run on DuckDB and PostgreSQL. This is fixed-horizon parallel-arm coverage, not a switchback or sequential posterior claim.
 
 ## `prob_favorable`, `p_value`, and `stat_sig`
 
@@ -97,7 +98,7 @@ For a neutral metric, neither accessor assigns a favorable side: `prob_favorable
 `MetricSpec(prior=...)` and YAML `ExperimentMetric` bindings declare a metric's default prior. A call-time `run(prior=...)`, including `run(prior=None)`, overrides every metric for that call only.
 
 ??? info "Prior declaration and override guarantees"
-    `prior=` belongs on `run(...)`, not on `from_unit_summary`/`from_definitions`/etc. The constructor assembles the source and its declared metrics. `run(prior=...)` overrides the epistemic policy for that call; `AnalysisPlan`/`ExperimentMetric` declarations provide the default when `prior` is `UNSET`, and `prior=None` resets it to flat.
+    `prior=` belongs on `run(...)`, not on `from_frame`/`from_definitions`/etc. The builder assembles the source and its declared metrics. `run(prior=...)` overrides the epistemic policy for that call; `AnalysisPlan`/`ExperimentMetric` declarations provide the default when `prior` is `UNSET`, and `prior=None` resets it to flat.
 
     `MetricSpec(prior=...)` declares one metric's own prior on the dataframe path. It applies only when the call itself leaves `prior` at its default `UNSET`: an *explicit* `run(prior=...)` call -- including `run(prior=None)` -- overrides every metric's prior for that call, including metrics that declared their own `MetricSpec.prior`, the same call-wide-overrides-per-metric-declaration precedence `decision_method`/`sensitivity_methods` use (see [The data model](data-model.md)).
 

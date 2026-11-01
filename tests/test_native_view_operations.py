@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import warnings
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_definitions
 from increment.errors import CapabilityError
 from increment.estimation.sitewide import SitewideImpact
+from increment.evidence import BreakoutIdentity
 from increment.semantics.models import (
     AnalysisPlan,
     Breakout,
@@ -19,9 +20,19 @@ from increment.semantics.models import (
     QuantileMetric,
     Winsorization,
 )
+from increment.workflows import (
+    breakout_summaries,
+    experiment_definition,
+    factor_summaries,
+    metrics,
+)
 from tests._evidence_requests import _breakout_moments, _moments
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _native_source, make_analysis_like
+from tests.analysis_factory import (
+    bound_source,
+    make_binding_like,
+    view_readout,
+)
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
 from tests.test_analysis_breakout import _analysis_with_country_breakout
 from tests.test_analysis_sitewide import _REVENUE_PER_USER, _pricing_experiment
@@ -99,8 +110,8 @@ def _assert_model_rows_match(actual_rows, expected_rows, *, ignore_source_scope=
 
 
 @pytest.fixture
-def pricing_analysis(pricing_con):
-    return Analysis.from_definitions("pricing_tier_test", "examples/definitions/", pricing_con)
+def pricing_analysis(pricing_con, example_definitions):
+    return from_definitions(example_definitions, pricing_con, experiment_name="pricing_tier_test")
 
 
 def test_sitewide_impact_is_typed_and_reports_iid_arm_attribution(tmp_path, pricing_con):
@@ -121,23 +132,25 @@ def test_sitewide_impact_is_typed_and_reports_iid_arm_attribution(tmp_path, pric
     assert result.delta == pytest.approx(18.0)
 
 
-def test_sitewide_evidence_refuses_ratio_before_raw_work(pricing_analysis):
+def test_sitewide_evidence_refuses_ratio_before_raw_work(pricing_analysis: tuple[Any, Any]):
     """The named (non-ratio) evidence contract refuses a ratio metric.
 
-    ``Analysis.sitewide`` requests the ratio-specific reducer instead, so the
+    ``sitewide`` requests the ratio-specific reducer instead, so the
     default flag this refusal guards is only reachable at the source.
     """
-    metric = next(m for m in pricing_analysis.metrics if m.name == "revenue_per_session")
-    source = _native_source(pricing_analysis)
+    metric = next(m for m in metrics(*pricing_analysis) if m.name == "revenue_per_session")
+    source = bound_source(pricing_analysis[1])
     with pytest.raises(CapabilityError) as raised:
         source.sitewide_evidence(metric)
     assert raised.value.code == "evidence.operation_unavailable"
 
 
-def test_sitewide_evidence_refuses_winsorization_before_raw_work(pricing_analysis, monkeypatch):
-    metric = next(m for m in pricing_analysis.metrics if m.name == "purchase_rate")
+def test_sitewide_evidence_refuses_winsorization_before_raw_work(
+    pricing_analysis: tuple[Any, Any], monkeypatch
+):
+    metric = next(m for m in metrics(*pricing_analysis) if m.name == "purchase_rate")
     winsorized = metric.model_copy(update={"winsorization": Winsorization(upper_value=1.0)})
-    source = _native_source(pricing_analysis)
+    source = bound_source(pricing_analysis[1])
     monkeypatch.setattr(
         source,
         "_note_reduction",
@@ -164,9 +177,9 @@ def test_sitewide_evidence_refuses_winsorization_before_raw_work(pricing_analysi
 def test_breakout_summaries_refuses_winsorization_before_warehouse_work(
     pricing_con, monkeypatch, winsorization
 ):
-    analysis = _analysis_with_country_breakout(pricing_con)
-    source = _native_source(analysis)
-    metric = analysis.metrics[0].model_copy(update={"winsorization": winsorization})
+    experiment, resolver = _analysis_with_country_breakout(pricing_con)
+    source = bound_source(resolver)
+    metric = metrics(experiment, resolver)[0].model_copy(update={"winsorization": winsorization})
     monkeypatch.setattr(
         source,
         "_note_reduction",
@@ -190,9 +203,9 @@ def test_breakout_summaries_refuses_winsorization_before_warehouse_work(
 
 
 def test_breakout_summaries_preserves_fixed_value_winsorization(pricing_con):
-    analysis = _analysis_with_country_breakout(pricing_con)
-    source = _native_source(analysis)
-    metric = analysis.metrics[0].model_copy(
+    experiment, resolver = _analysis_with_country_breakout(pricing_con)
+    source = bound_source(resolver)
+    metric = metrics(experiment, resolver)[0].model_copy(
         update={"winsorization": Winsorization(upper_value=15.0)}
     )
 
@@ -205,9 +218,9 @@ def test_breakout_summaries_preserves_fixed_value_winsorization(pricing_con):
 
 @pytest.mark.slow
 def test_breakout_summaries_keep_multi_source_keys(con):
-    analysis = _analysis_with_cross_source_breakouts(con)
+    experiment, resolver = _analysis_with_cross_source_breakouts(con)
 
-    result = analysis.breakout_summaries()
+    result = breakout_summaries(experiment, resolver)
 
     assert set(result) == {
         "visit_rate:country:src_a",
@@ -219,41 +232,49 @@ def test_breakout_summaries_keep_multi_source_keys(con):
 
 def test_run_breakout_preserves_all_declared_sources(con):
     analysis = _analysis_with_cross_source_breakouts(con)
-    analysis = make_analysis_like(
-        analysis,
-        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none")),
+    analysis = make_binding_like(
+        analysis[1], plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none"))
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        results = analysis.run_breakout()
+        results = view_readout(*analysis, Scope(view="breakout", grain="total"))
 
     assert {result.source for result in results} == {"src_a", "src_b"}
 
 
 @pytest.mark.slow
-def test_day_source_matches_daily_and_asof_views(pricing_analysis):
+def test_day_source_matches_daily_and_asof_views(pricing_analysis: tuple[Any, Any]):
     from increment.breakout.estimates import DailyMetricValues
     from increment.breakout.estimates import run_daily as _run_daily_values
 
-    metric = next(m for m in pricing_analysis.metrics if m.name == "purchase_rate")
-    source = _native_source(pricing_analysis)
+    metric = next(m for m in metrics(*pricing_analysis) if m.name == "purchase_rate")
+    source = bound_source(pricing_analysis[1])
     day = source.day_source(metrics=(metric,))
 
     daily_rows = _moments(day, metric, grain="daily")
     asof_rows = _moments(day, metric, grain="asof")
     direct_daily = DailyMetricValues(_run_daily_values(daily_rows, metrics=[metric], view="daily"))
     direct_asof = DailyMetricValues(_run_daily_values(asof_rows, metrics=[metric], view="asof"))
-    facade_daily = pricing_analysis.run_daily(metrics=(metric,))
-    facade_asof = pricing_analysis.run_asof(metrics=(metric,))
+    facade_daily = view_readout(
+        *pricing_analysis, Scope(view="daily", grain="daily", values=True), metrics=(metric,)
+    )
+    facade_asof = view_readout(
+        *pricing_analysis, Scope(view="asof", grain="asof", values=True), metrics=(metric,)
+    )
     _assert_model_rows_match(direct_daily, facade_daily, ignore_source_scope=True)
     _assert_model_rows_match(direct_asof, facade_asof, ignore_source_scope=True)
 
 
 def test_day_source_dimensioned_result_is_typed_and_attributed(pricing_con):
-    analysis = _analysis_with_country_breakout(pricing_con)
-    metric = analysis.metrics[0]
+    experiment, resolver = _analysis_with_country_breakout(pricing_con)
+    metric = metrics(experiment, resolver)[0]
 
-    values = analysis.run_daily(metrics=(metric,), dimension="country")
+    values = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        metrics=(metric,),
+    )
 
     assert {row.metric for row in values} == {metric.name}
     assert {row.dimension for row in values} == {"country"}
@@ -262,7 +283,7 @@ def test_day_source_dimensioned_result_is_typed_and_attributed(pricing_con):
 
 
 @pytest.mark.slow
-def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon():
+def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon(example_definitions):
     import ibis
 
     from tests.analysis_factory import _make_event_log_table
@@ -287,8 +308,10 @@ def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon():
             }
         ],
     )
-    analysis = Analysis.from_definitions("pricing_tier_test", "examples/definitions/", con)
-    declared = next(m for m in analysis.metrics if m.name == "revenue_per_session")
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="pricing_tier_test"
+    )
+    declared = next(m for m in metrics(experiment, resolver) if m.name == "revenue_per_session")
     assert hasattr(declared, "denominator")
     adhoc = declared.model_copy(
         update={
@@ -298,9 +321,15 @@ def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon():
         }
     )
 
-    declared_daily = analysis.run_daily(metrics=(declared,))
-    daily = analysis.run_daily(metrics=(adhoc,))
-    asof = analysis.run_asof(metrics=(adhoc,))
+    declared_daily = view_readout(
+        experiment, resolver, Scope(view="daily", grain="daily", values=True), metrics=(declared,)
+    )
+    daily = view_readout(
+        experiment, resolver, Scope(view="daily", grain="daily", values=True), metrics=(adhoc,)
+    )
+    asof = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof", values=True), metrics=(adhoc,)
+    )
 
     declared_horizon = max(row.ds for row in declared_daily)
     assert max(row.ds for row in daily) > declared_horizon
@@ -312,9 +341,9 @@ def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon():
 def test_day_source_validates_missing_breakout_before_reduction_or_properties(
     pricing_con, monkeypatch
 ):
-    analysis = _analysis_with_country_breakout(pricing_con)
-    metric = analysis.metrics[0]
-    source = _native_source(analysis)
+    experiment, resolver = _analysis_with_country_breakout(pricing_con)
+    metric = metrics(experiment, resolver)[0]
+    source = bound_source(resolver)
     day = source.day_source(metrics=(metric,))
     monkeypatch.setattr(
         source,
@@ -332,11 +361,11 @@ def test_day_source_validates_missing_breakout_before_reduction_or_properties(
 
 
 def test_day_source_validates_breakout_source_before_reduction(pricing_con, monkeypatch):
-    analysis = _analysis_with_country_breakout(pricing_con)
-    metric = analysis.metrics[0]
-    source = _native_source(analysis)
+    experiment, resolver = _analysis_with_country_breakout(pricing_con)
+    metric = metrics(experiment, resolver)[0]
+    source = bound_source(resolver)
     day = source.day_source(metrics=(metric,))
-    breakout = analysis.experiment.breakouts[0]
+    breakout = experiment_definition(experiment, resolver).breakouts[0]
     monkeypatch.setattr(
         source,
         "_note_reduction",
@@ -353,13 +382,13 @@ def test_day_source_validates_breakout_source_before_reduction(pricing_con, monk
 
 def test_day_source_rejects_existing_undeclared_source_before_warehouse_work(con, monkeypatch):
     analysis = _analysis_with_cross_source_breakouts(con)
-    declared = analysis.experiment.breakouts[0]
-    analysis = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(update={"breakouts": (declared,)}),
+    declared = experiment_definition(*analysis).breakouts[0]
+    analysis = make_binding_like(
+        analysis[1],
+        experiment=experiment_definition(*analysis).model_copy(update={"breakouts": (declared,)}),
     )
-    source = _native_source(analysis)
-    metric = analysis.metrics[0]
+    source = bound_source(analysis[1])
+    metric = metrics(*analysis)[0]
     monkeypatch.setattr(
         source,
         "_note_reduction",
@@ -388,13 +417,13 @@ def test_day_source_rejects_existing_undeclared_source_before_warehouse_work(con
 
 def test_breakout_source_rejects_existing_undeclared_source_before_warehouse_work(con, monkeypatch):
     analysis = _analysis_with_cross_source_breakouts(con)
-    declared = analysis.experiment.breakouts[0]
-    analysis = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(update={"breakouts": (declared,)}),
+    declared = experiment_definition(*analysis).breakouts[0]
+    analysis = make_binding_like(
+        analysis[1],
+        experiment=experiment_definition(*analysis).model_copy(update={"breakouts": (declared,)}),
     )
-    source = _native_source(analysis)
-    metric = analysis.metrics[0]
+    source = bound_source(analysis[1])
+    metric = metrics(*analysis)[0]
     monkeypatch.setattr(
         source,
         "_note_reduction",
@@ -423,15 +452,15 @@ def test_breakout_source_rejects_existing_undeclared_source_before_warehouse_wor
     assert raised.value.context["route"]
 
 
-def _with_breakout_source(analysis: Analysis, source: str | None) -> Analysis:
+def _with_breakout_source(analysis: tuple[Any, Any], source: str | None) -> Any:
     """The same analysis with every declared breakout's source set explicitly."""
-    return make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(
+    return make_binding_like(
+        analysis[1],
+        experiment=experiment_definition(*analysis).model_copy(
             update={
                 "breakouts": tuple(
                     breakout.model_copy(update={"source": source})
-                    for breakout in analysis.experiment.breakouts
+                    for breakout in experiment_definition(*analysis).breakouts
                 )
             }
         ),
@@ -442,13 +471,17 @@ def test_breakout_source_treats_inferred_and_explicit_breakout_sources_as_equiva
     pricing_con,
 ):
     analysis = _analysis_with_country_breakout(pricing_con)
-    inferred_analysis = _with_breakout_source(analysis, None)
-    explicit_analysis = _with_breakout_source(analysis, "events")
+    inferred_experiment, inferred_resolver = _with_breakout_source(analysis, None)
+    explicit_experiment, explicit_resolver = _with_breakout_source(analysis, "events")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        inferred = inferred_analysis.run_breakout()
-        explicit = explicit_analysis.run_breakout()
+        inferred = view_readout(
+            inferred_experiment, inferred_resolver, Scope(view="breakout", grain="total")
+        )
+        explicit = view_readout(
+            explicit_experiment, explicit_resolver, Scope(view="breakout", grain="total")
+        )
 
     assert {result.source for result in inferred} == {"events"}
     assert {result.source for result in explicit} == {"events"}
@@ -459,21 +492,31 @@ def test_day_source_treats_inferred_and_explicit_breakout_sources_as_equivalent(
     pricing_con,
 ):
     analysis = _analysis_with_country_breakout(pricing_con)
-    metric = analysis.metrics[0]
-    inferred_analysis = _with_breakout_source(analysis, None)
-    explicit_analysis = _with_breakout_source(analysis, "events")
+    metric = metrics(*analysis)[0]
+    inferred_experiment, inferred_resolver = _with_breakout_source(analysis, None)
+    explicit_experiment, explicit_resolver = _with_breakout_source(analysis, "events")
 
-    inferred = inferred_analysis.run_daily(metrics=(metric,), dimension="country")
-    explicit = explicit_analysis.run_daily(metrics=(metric,), dimension="country")
+    inferred = view_readout(
+        inferred_experiment,
+        inferred_resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        metrics=(metric,),
+    )
+    explicit = view_readout(
+        explicit_experiment,
+        explicit_resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        metrics=(metric,),
+    )
 
     assert {row.source for row in inferred} == {"events"}
     assert {row.source for row in explicit} == {"events"}
     _assert_model_rows_match(inferred, explicit)
 
 
-def test_day_source_preserves_retention_cohort_path(pricing_analysis):
-    metric = next(m for m in pricing_analysis.metrics if m.name == "d7_retention")
-    source = _native_source(pricing_analysis)
+def test_day_source_preserves_retention_cohort_path(pricing_analysis: tuple[Any, Any]):
+    metric = next(m for m in metrics(*pricing_analysis) if m.name == "d7_retention")
+    source = bound_source(pricing_analysis[1])
     rows = _moments(source.day_source(metrics=(metric,)), metric, grain="daily")
     assert rows
     assert {row["metric"] for row in rows} == {metric.name}
@@ -483,11 +526,15 @@ def test_day_source_preserves_retention_cohort_path(pricing_analysis):
 def test_day_preflight_uptake_cluster_refusal_is_coded_before_builder(con, monkeypatch):
     from tests.test_analysis_asof import _analysis_with_asof_encouragement_events
 
-    analysis = _analysis_with_asof_encouragement_events(con)
-    experiment = analysis.experiment.model_copy(update={"cluster": "store_id"})
-    clustered = make_analysis_like(analysis, experiment=experiment)
-    source = _native_source(clustered)
-    metric = clustered.metrics[0]
+    analysis_experiment, analysis_resolver = _analysis_with_asof_encouragement_events(con)
+    experiment = experiment_definition(analysis_experiment, analysis_resolver).model_copy(
+        update={"cluster": "store_id"}
+    )
+    clustered_experiment, clustered_resolver = make_binding_like(
+        analysis_resolver, experiment=experiment
+    )
+    source = bound_source(clustered_resolver)
+    metric = metrics(clustered_experiment, clustered_resolver)[0]
 
     def fail(*args, **kwargs):
         raise AssertionError("clustered encouragement day request touched warehouse")
@@ -514,11 +561,15 @@ def test_day_source_clustered_encouragement_refuses_before_uptake_warehouse_work
     """Cluster incompatibility is a pure preflight, even without CUPED."""
     from tests.test_analysis_asof import _analysis_with_asof_encouragement_events
 
-    analysis = _analysis_with_asof_encouragement_events(con)
-    experiment = analysis.experiment.model_copy(update={"cluster": "store_id", "n_pre_periods": 0})
-    clustered = make_analysis_like(analysis, experiment=experiment)
-    source = _native_source(clustered)
-    metric = clustered.metrics[0]
+    analysis_experiment, analysis_resolver = _analysis_with_asof_encouragement_events(con)
+    experiment = experiment_definition(analysis_experiment, analysis_resolver).model_copy(
+        update={"cluster": "store_id", "n_pre_periods": 0}
+    )
+    clustered_experiment, clustered_resolver = make_binding_like(
+        analysis_resolver, experiment=experiment
+    )
+    source = bound_source(clustered_resolver)
+    metric = metrics(clustered_experiment, clustered_resolver)[0]
 
     def fail(*args, **kwargs):
         raise AssertionError("clustered encouragement day request touched warehouse")
@@ -544,22 +595,26 @@ def test_day_source_clustered_encouragement_refuses_before_uptake_warehouse_work
 
 def test_native_view_operations_refuse_missing_extension_evidence(pricing_analysis, con):
     quantile = QuantileMetric(name="p50_revenue", entity="user_id", fact="purchase", quantile=0.5)
-    analysis = _analysis_with_country_breakout(con)
-    source = _native_source(analysis)
+    experiment, resolver = _analysis_with_country_breakout(con)
+    source = bound_source(resolver)
     with pytest.raises(CapabilityError) as raised:
         source.breakout_summaries(metrics=(quantile,))
     assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
-        source.breakout_source(analysis.experiment.breakouts[0], metrics=(quantile,))
+        source.breakout_source(
+            experiment_definition(experiment, resolver).breakouts[0], metrics=(quantile,)
+        )
     assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         source.day_source(metrics=(quantile,))
     assert raised.value.code == "evidence.operation_unavailable"
 
 
-def test_day_source_refuses_winsorized_metrics_before_warehouse_work(pricing_analysis, monkeypatch):
-    source = _native_source(pricing_analysis)
-    metric = next(m for m in pricing_analysis.metrics if m.name == "purchase_rate").model_copy(
+def test_day_source_refuses_winsorized_metrics_before_warehouse_work(
+    pricing_analysis: tuple[Any, Any], monkeypatch
+):
+    source = bound_source(pricing_analysis[1])
+    metric = next(m for m in metrics(*pricing_analysis) if m.name == "purchase_rate").model_copy(
         update={"winsorization": Winsorization(upper_value=1.0)}
     )
     monkeypatch.setattr(
@@ -582,9 +637,9 @@ def test_day_source_refuses_winsorized_metrics_before_warehouse_work(pricing_ana
     }
 
 
-def test_day_source_validates_metrics_passed_directly(pricing_analysis):
-    source = _native_source(pricing_analysis)
-    declared = pricing_analysis.metrics[0]
+def test_day_source_validates_metrics_passed_directly(pricing_analysis: tuple[Any, Any]):
+    source = bound_source(pricing_analysis[1])
+    declared = metrics(*pricing_analysis)[0]
     day = source.day_source(metrics=(declared,))
     quantile = QuantileMetric(name="p50", entity="user_id", fact="purchase", quantile=0.5)
     winsorized = declared.model_copy(update={"winsorization": Winsorization(upper_value=1.0)})
@@ -632,9 +687,9 @@ def test_direct_native_sitewide_uses_assigned_evidence_with_declared_trigger(tmp
     path.write_text(definitions)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_with_preassignment_region(_events(n_per_arm=10)))
-    analysis = Analysis.from_definitions("exp", path, con)
-    source = _native_source(analysis)
-    metric = analysis.metrics[0]
+    experiment, resolver = from_definitions(path, con, experiment_name="exp")
+    source = bound_source(resolver)
+    metric = metrics(experiment, resolver)[0]
 
     try:
         evidence = source.sitewide_evidence(metric)
@@ -650,22 +705,22 @@ def test_direct_native_sitewide_uses_assigned_evidence_with_declared_trigger(tmp
             "_note_reduction",
             lambda: (_ for _ in ()).throw(AssertionError("warehouse work started")),
         )
-        for call in (analysis.breakout_summaries, analysis.factor_summaries):
+        for call in (breakout_summaries, factor_summaries):
             with pytest.raises(CapabilityError) as raised:
-                call()
+                call(experiment, resolver)
             assert raised.value.code == "source.native.trigger_evidence_required"
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
-def test_day_source_subset_plan_is_frozen(pricing_analysis):
-    source = _native_source(pricing_analysis)
-    metric = pricing_analysis.metrics[0]
+def test_day_source_subset_plan_is_frozen(pricing_analysis: tuple[Any, Any]):
+    source = bound_source(pricing_analysis[1])
+    metric = metrics(*pricing_analysis)[0]
     day = source.day_source(metrics=(metric,))
     assert set(day.context.plan.procedures) == {metric.name}
     with pytest.raises(TypeError):
-        day.context.plan.procedures["new"] = day.context.plan.procedures[metric.name]  # type: ignore[index]  # ty: ignore[invalid-assignment]
+        day.context.plan.procedures["new"] = day.context.plan.procedures[metric.name]  # type: ignore[index]
 
 
 pytestmark = pytest.mark.integration

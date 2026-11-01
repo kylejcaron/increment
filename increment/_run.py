@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
 from increment._binding import ResolverBinding, _run_identity_hashes
@@ -21,6 +21,7 @@ from increment.kernel.contracts import (
     Registration,
     Scope,
     _refuse,
+    contract_hash,
     method_config_hash,
     method_estimator_id,
     metric_hash,
@@ -39,13 +40,12 @@ if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
     from pydantic import BaseModel
 
-    from increment._analysis_execution import Analysis
     from increment._binding import SourceBinding
     from increment._evidence_types import SequentialCaptureRequest
     from increment._literals import Backend, ValueScale
     from increment.breakout.estimates import EstimateList
     from increment.decide.evaluator import Decisions
-    from increment.decision import CompiledDecisionPlan
+    from increment.decision import CompiledDecisionPlan, ContrastContext
     from increment.estimation.contrast_results import ContrastResults
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
@@ -104,7 +104,10 @@ class RunResult:
         """Restore a saved run's portable cells and decide them again under ``registration``.
 
         The saved decision plan must belong to ``registration``. Live readouts are
-        not stored, so every restored cell reports none and ``readout`` refuses.
+        not stored, so every restored cell reports none and ``readout`` refuses. A
+        saved switchback run keeps no decision plan and refuses with
+        ``store.decision.reference_invalid``; read its cells with
+        ``handle.envelope()``, ``store.query`` or ``store.history``.
         """
         from increment.decide import decide
 
@@ -228,7 +231,7 @@ class _InMemoryRunHandle:
 
 
 def _validate_registered_options(
-    compiled_plan: CompiledDecisionPlan, options: Mapping[str, object]
+    compiled_plan: CompiledDecisionPlan | ContrastContext, options: Mapping[str, object]
 ) -> None:
     values = dict(options)
     requested_metrics = values.pop("metrics", None)
@@ -260,14 +263,15 @@ def _require_registered_plan(registration: Registration, plan: CompiledDecisionP
         )
 
 
-def _validate_analysis_binding(
-    analysis: Analysis,
-    registration: Registration,
-    compiled_plan: CompiledDecisionPlan,
-    options: Mapping[str, object],
-) -> None:
-    _require_registered_plan(registration, analysis.compiled_decision_plan)
-    _validate_registered_options(compiled_plan, options)
+def _require_registered_contrast(registration: Registration, contrast: ContrastContext) -> None:
+    if registration.registration_hash != contract_hash(
+        "registration", contrast.model_dump(mode="json")
+    ):
+        raise CodedError(
+            "Switchback contrast context differs from its pre-estimation registration",
+            code="store.decision.reference_invalid",
+            context={},
+        )
 
 
 def _contrast_context(binding: SourceBinding) -> Any | None:
@@ -354,7 +358,8 @@ def _execution_config_for_cell(binding: SourceBinding, cell: Any) -> tuple[Any, 
     from increment._analysis_config import effective_methods
 
     key = cell.identity.key
-    if key.metric == "uptake" and key.estimand == "compliance":
+    # A compliance cell estimates the declared uptake, whichever outcome row names it.
+    if key.estimand == "compliance":
         uptake = getattr(binding.design, "uptake", None)
         if uptake is not None:
             from increment.estimation.engine import Method
@@ -378,40 +383,18 @@ def _execution_config_for_cell(binding: SourceBinding, cell: Any) -> tuple[Any, 
     return config.metric, tuple(effective_methods(config, design=binding.design))
 
 
-def _persistence_identity(
+def _execution_identities(
     binding: SourceBinding,
     results: Any,
     decision_method: Any,
     sensitivity_methods: Any,
     extra_metrics: Sequence[Any] = (),
-    runtime_request: Mapping[str, object] | None = None,
-):
-    from increment._analysis_config import UNSET
-    from increment._canonical import declaration_value
-    from increment.decision import ContrastAnalysisState
+) -> tuple[dict[tuple[str, str, str], Method], dict[str, Any]]:
+    """The effective method of each emitted cell and the metric declarations it names."""
     from increment.estimation.engine import Method
-    from increment.kernel.contracts import contract_hash
-
-    persistence_identity = program_store_operations().PersistenceIdentity
 
     design = binding.design
-    if isinstance(binding.state, ContrastAnalysisState):
-        procedures = binding.context.procedures
-        registration_hash = Registration(
-            registration_hash=contract_hash(
-                "registration",
-                {
-                    "design": design.model_dump(mode="json"),
-                    "procedures": {
-                        name: procedure.model_dump(mode="json")
-                        for name, procedure in sorted(procedures.items())
-                    },
-                },
-            )
-        ).hash()
-    else:
-        procedures = binding.plan.procedures
-        registration_hash = Registration.from_plan(binding.plan).hash()
+    procedures = binding.plan.procedures
     cells = results.as_cells()
     cell_metrics = {cell.identity.key.metric for cell in cells}
     metrics = {metric.name: metric for metric in (*binding.metrics, *extra_metrics)}
@@ -427,31 +410,11 @@ def _persistence_identity(
             window_days=getattr(uptake, "window_days", None),
         )
     methods: dict[tuple[str, str, str], Method] = {}
-    source_refs: dict[tuple[str, str], str] = {}
     method_overrides: list[Method] = []
     if isinstance(decision_method, Method):
         method_overrides.append(decision_method)
     if sensitivity_methods is not UNSET:
         method_overrides.extend(cast(Sequence[Method], sensitivity_methods))
-
-    source = binding.source
-    source_context = getattr(source, "context", None)
-    declaration_identity = getattr(source, "declaration_identity", None)
-    if callable(declaration_identity):
-        declaration = declaration_identity()
-        declaration_unavailable_reason = None
-    else:
-        declaration = {"context": declaration_value(source_context)}
-        declaration_unavailable_reason = "source_declaration_identity_unavailable"
-    source_declaration_hash = contract_hash("source_declaration_v1", declaration_value(declaration))
-    if runtime_request:
-        registration_hash = contract_hash(
-            "analysis_runtime_request_v1",
-            {
-                "registration_hash": registration_hash,
-                "request": declaration_value(runtime_request),
-            },
-        )
     for cell in cells:
         key = cell.identity.key
         estimator = key.method or "unadjusted"
@@ -476,15 +439,7 @@ def _persistence_identity(
         if selected is None:
             selected = Method.cuped() if estimator == "cuped" else Method(name=estimator)
         methods[(key.metric, estimator, role)] = selected
-        source_refs[(key.analysis_population, key.metric)] = source_declaration_hash
-    return persistence_identity(
-        design=design,
-        metrics=metrics,
-        registration_hash=registration_hash,
-        methods=methods,
-        source_refs=source_refs,
-        source_declaration_identity_unavailable_reason=declaration_unavailable_reason,
-    )
+    return methods, metrics
 
 
 def _execution_identity_fields(
@@ -507,11 +462,17 @@ def _execution_identity_fields(
                 code="store.run.identity_incomplete",
                 context={"field": "metric_identity"},
             )
+        contrast = _contrast_context(binding)
+        procedure = None if contrast is None else contrast.procedures.get(key.metric)
+        reference = None if procedure is None else procedure.reference
         return {
             "metric_hash": metric_hash(metric),
-            "estimator_id": None,
-            "method_config_hash": None,
-            "method_instance_id": None,
+            "estimator_id": key.method,
+            "method_config_hash": contract_hash(
+                "contrast_reference_config",
+                None if reference is None else reference.model_dump(mode="json"),
+            ),
+            "method_instance_id": f"{key.metric}:{key.method_role}:{key.method}",
         }
     if key.method is None and key.method_role is None:
         if metric is None:
@@ -694,7 +655,7 @@ def _execution_overrides(
         extra_metrics += tuple(
             select_exploratory(binding, cast(Sequence[str], exploratory_names), caller="run")
         )
-    identity = _persistence_identity(
+    methods, metrics = _execution_identities(
         binding,
         rows,
         cast(Any, options.get("decision_method")),
@@ -702,7 +663,7 @@ def _execution_overrides(
         extra_metrics=cast(Any, extra_metrics),
     )
     runtime_method_unavailable = False
-    for (metric_name, _method_name, role), method in identity.methods.items():
+    for (metric_name, _method_name, role), method in methods.items():
         if (
             method.folds is not None
             or method.propensity_learner is not None
@@ -717,7 +678,7 @@ def _execution_overrides(
                 raise
             runtime_method_unavailable = True
             break
-    return identity.methods, identity.metrics, runtime_method_unavailable
+    return methods, metrics, runtime_method_unavailable
 
 
 def _scope_for_cell(cell: ResultCell, declared_scope: Scope | None) -> Scope:
@@ -857,13 +818,13 @@ def _run_rows(
     runtime_method_unavailable = any(item[2] for item in overrides)
     rows = _merge_scoped_readouts(parts)
     if contrast_context is not None:
-        if results_store is not None or decision_log is not None:
-            refuse(
-                _CONTRAST_CONTEXT_NOT_PORTABLE,
-                action="saving",
-            )
+        if decision_log is not None:
+            refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="logging")
         binding = None
-        binding_unavailable_reason = "wire.procedure.contrast_context"
+        # A saved switchback run keeps no decision plan; only an in-memory run names why.
+        binding_unavailable_reason = (
+            None if results_store is not None else "wire.procedure.contrast_context"
+        )
     else:
         try:
             if runtime_method_unavailable:
@@ -1029,13 +990,23 @@ def _experiment_result(
 
 def _readout_overrides(**options: object) -> dict[str, object]:
     """Keep the readout options a caller set; an explicit ``prior=None`` differs from omitted."""
-    unset_defaults = {"decision_method", "sensitivity_methods", "prior"}
+    unset_defaults = {"decision_method", "sensitivity_methods", "prior", "coherence"}
     return {
         name: value
         for name, value in options.items()
         if (value is not UNSET if name in unset_defaults else value is not None)
-        and not (name == "coherence" and value == "captured")
     }
+
+
+def _coherence_override(experiment: Experiment, overrides: dict[str, object]) -> dict[str, object]:
+    """Drop a call-time coherence that equals the saved one, or ``captured`` when none is saved.
+
+    The run then keeps the identity and saving admission of an omitted coherence;
+    any other call-time value replaces the saved one.
+    """
+    if overrides.get("coherence") == experiment.request_options.get("coherence", "captured"):
+        del overrides["coherence"]
+    return overrides
 
 
 def _scope_population(experiment: Experiment, overrides: dict[str, object]) -> dict[str, object]:
@@ -1054,23 +1025,27 @@ def _preflight_persistence(
     overrides: Mapping[str, object],
     *,
     saving: bool,
+    logging: bool,
 ) -> None:
     """Refuse a run that cannot be saved or logged under its registration, before any read."""
     from increment._runnability import operation_options, typed_request_options
 
     binding = resolver.binding
-    contrast = _contrast_context(binding) is not None
-    if not contrast:
+    contrast = _contrast_context(binding)
+    if contrast is None:
         _require_registered_plan(experiment.registration, binding.plan)
+    else:
+        _require_registered_contrast(experiment.registration, contrast)
     resolver.validate_experiment(experiment)
-    if contrast:
-        refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="saving")
-    CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
+    if contrast is None:
+        CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
+    elif logging:
+        refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="logging")
     registered = {**typed_request_options(experiment.request_options), **overrides}
     if not registered.get("metrics", True):
         # An empty selection is an empty run, which the store refuses itself.
         del registered["metrics"]
-    _validate_registered_options(binding.plan, registered)
+    _validate_registered_options(binding.plan if contrast is None else contrast, registered)
     if saving and any(
         _selected_percentile_winsorization(binding, operation_options(experiment, scope, overrides))
         for scope in experiment.scopes
@@ -1078,8 +1053,7 @@ def _preflight_persistence(
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
 
 
-@overload
-def run(
+def run(  # noqa: PLR0913
     experiment: Experiment,
     resolver: Resolver,
     *,
@@ -1097,69 +1071,20 @@ def run(
     value_scale: Mapping[str, ValueScale] | None = None,
     exploratory_metrics: Sequence[str] | None = None,
     population: Literal["assigned", "triggered"] | None = None,
-    coherence: Literal["captured", "live"] = "captured",
-) -> RunResult: ...
-
-
-@overload
-def run(
-    experiment: Analysis,
-    resolver: Registration,
-    compiled_plan: CompiledDecisionPlan,
-    *,
-    experiment_id: str,
-    analysis_spec_hash: str,
-    execution_identity_hash: str,
-    run_id: str,
-    results_store: ResultsStorePort | None = None,
-    decision_log: DecisionLogPort | None = None,
-    decision_method: Method | _Unset = UNSET,
-    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-    prior: Prior | None | _Unset = UNSET,
-    metrics: Sequence[str | Metric] | None = None,
-    estimands: Sequence[str] | None = None,
-    value_scale: Mapping[str, ValueScale] | None = None,
-    exploratory_metrics: Sequence[str] | None = None,
-    population: Literal["assigned", "triggered"] | None = None,
-    coherence: Literal["captured", "live"] = "captured",
-) -> RunResult: ...
-
-
-def run(  # noqa: PLR0913
-    experiment: Experiment | Analysis,
-    resolver: Resolver | Registration | None = None,
-    compiled_plan: CompiledDecisionPlan | None = None,
-    *,
-    views: Sequence[Scope] | None = None,
-    run_id: str | None = None,
-    results_store: ResultsStorePort | None = None,
-    decision_log: DecisionLogPort | None = None,
-    capture: SequentialCaptureRequest | None = None,
-    execution_context: EvidenceExecutionContext | None = None,
-    decision_method: Method | _Unset = UNSET,
-    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-    prior: Prior | None | _Unset = UNSET,
-    metrics: Sequence[str | Metric] | None = None,
-    estimands: Sequence[str] | None = None,
-    value_scale: Mapping[str, ValueScale] | None = None,
-    exploratory_metrics: Sequence[str] | None = None,
-    population: Literal["assigned", "triggered"] | None = None,
-    coherence: Literal["captured", "live"] = "captured",
-    experiment_id: str | None = None,
-    analysis_spec_hash: str | None = None,
-    execution_identity_hash: str | None = None,
-) -> Any:
-    """Run an experiment through its resolver, or a legacy Analysis through its registration.
+    coherence: Literal["captured", "live"] | _Unset = UNSET,
+) -> RunResult:
+    """Run an experiment through its resolver.
 
     ``views`` selects declared Experiment scopes by hash, in declaration order.
-    ``None`` executes all declared scopes in one capture. The readout options
-    match ``Analysis.run``; only options set by the caller apply. A population
-    must match every selected scope, which declares it. ``results_store`` and
-    ``decision_log`` save or log the run under the experiment's registration,
-    checked before the source is read; ``run_id`` is generated when omitted.
-    Legacy Analysis uses its registered scope and does not accept view selection.
+    ``None`` executes all declared scopes in one capture. Only the readout
+    options set by the caller apply; ``coherence`` defaults to the experiment's
+    saved value, else ``captured``. A population must match every selected
+    scope, which declares it. ``results_store`` and ``decision_log`` save or log
+    the run under the experiment's registration, checked before the source is
+    read; ``run_id`` is generated when omitted.
     """
-    from increment.kernel.experiment import Experiment
+    from increment.kernel.resolver import _select_views
+    from increment.kernel.resolver import run as run_experiment
 
     overrides = _readout_overrides(
         decision_method=decision_method,
@@ -1172,123 +1097,52 @@ def run(  # noqa: PLR0913
         population=population,
         coherence=coherence,
     )
-    if isinstance(experiment, Experiment):
-        from increment.kernel.resolver import _select_views
-        from increment.kernel.resolver import run as run_experiment
-
-        unsupported = {
-            "compiled_plan": compiled_plan,
-            "experiment_id": experiment_id,
-            "analysis_spec_hash": analysis_spec_hash,
-            "execution_identity_hash": execution_identity_hash,
-        }
-        supplied = tuple(name for name, value in unsupported.items() if value is not None)
-        if supplied:
-            raise CodedError(
-                "Experiment execution derives its own registration and run identities",
-                code="kernel.run.invalid_input",
-                context={"fields": supplied},
-            )
-        if resolver is None:
-            raise CodedError(
-                "Running an experiment requires a source resolver",
-                code="kernel.run.resolver_missing",
-                context={},
-            )
-        selected = _select_views(experiment, views)
-        overrides = _scope_population(selected, overrides)
-        persisted = {"run_id": run_id, "results_store": results_store, "decision_log": decision_log}
-        identified = tuple(name for name, value in persisted.items() if value is not None)
-        if identified and not isinstance(resolver, ResolverBinding):
-            raise CodedError(
-                "Saving or identifying a run requires a resolver returned by a module builder",
-                code="kernel.run.invalid_input",
-                context={"fields": identified},
-            )
-        if run_id is not None and not run_id:
-            refuse_store(
-                "store.run.identity_incomplete",
-                "A complete run identity is required",
-                field="run_id",
-            )
-        if results_store is not None or decision_log is not None:
-            _preflight_persistence(
-                cast(ResolverBinding, resolver),
-                selected,
-                overrides,
-                saving=results_store is not None,
-            )
-        scoped = run_experiment(
-            selected,
-            cast("Resolver", resolver),
-            options=overrides,
-            capture=capture,
-            execution_context=execution_context,
-        )
-        if not isinstance(resolver, ResolverBinding):
-            return scoped
-        from uuid import uuid4
-
-        return _experiment_result(
-            resolver.binding,
-            selected,
-            scoped,
-            run_id=f"run-{uuid4().hex}" if run_id is None else run_id,
-            results_store=results_store,
-            decision_log=decision_log,
-        )
-    for option, value in (
-        ("views", views),
-        ("capture", capture),
-        ("execution_context", execution_context),
-    ):
-        if value is not None:
-            raise CodedError(
-                "This option requires an Experiment",
-                code="kernel.run.invalid_input",
-                context={"field": option},
-            )
-    analysis = cast(Any, experiment)
-    registration = resolver
-    if (
-        not isinstance(registration, Registration)
-        or compiled_plan is None
-        or experiment_id is None
-        or analysis_spec_hash is None
-        or execution_identity_hash is None
-        or run_id is None
-    ):
+    if resolver is None:
         raise CodedError(
-            "Legacy Analysis runs require a registration, plan, and run identities",
-            code="store.run.identity_incomplete",
-            context={"field": "run_arguments"},
-        )
-    # Legacy calls retain the established Analysis execution and return contract.
-    if not registration.matches(compiled_plan):
-        raise CodedError(
-            "Compiled plan differs from the pre-evidence registration",
-            code="store.decision.reference_invalid",
+            "Running an experiment requires a source resolver",
+            code="kernel.run.resolver_missing",
             context={},
         )
-    _validate_analysis_binding(analysis, registration, compiled_plan, overrides)
-    if results_store is not None and _selected_percentile_winsorization(
-        analysis._binding, overrides
-    ):
-        refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
+    selected = _select_views(experiment, views)
+    overrides = _coherence_override(selected, _scope_population(selected, overrides))
+    persisted = {"run_id": run_id, "results_store": results_store, "decision_log": decision_log}
+    identified = tuple(name for name, value in persisted.items() if value is not None)
+    if identified and not isinstance(resolver, ResolverBinding):
+        raise CodedError(
+            "Saving or identifying a run requires a resolver returned by a module builder",
+            code="kernel.run.invalid_input",
+            context={"fields": identified},
+        )
+    if run_id is not None and not run_id:
+        refuse_store(
+            "store.run.identity_incomplete",
+            "A complete run identity is required",
+            field="run_id",
+        )
     if results_store is not None or decision_log is not None:
-        # Check wire portability before Analysis.run() can read the source.
-        CompiledPlanBinding.from_plan(registration, compiled_plan)
-    execute = cast(Callable[..., Any], analysis.run)
-    rows = execute(**overrides)
-    return _run_rows(
-        analysis._binding,
-        (ScopedReadout(rows, None, {}),),
-        registration,
-        compiled_plan,
-        experiment_id=experiment_id,
-        analysis_spec_hash=analysis_spec_hash,
-        execution_identity_hash=execution_identity_hash,
-        run_id=run_id,
+        _preflight_persistence(
+            cast(ResolverBinding, resolver),
+            selected,
+            overrides,
+            saving=results_store is not None,
+            logging=decision_log is not None,
+        )
+    scoped = run_experiment(
+        selected,
+        resolver,
+        options=overrides,
+        capture=capture,
+        execution_context=execution_context,
+    )
+    if not isinstance(resolver, ResolverBinding):
+        return scoped
+    from uuid import uuid4
+
+    return _experiment_result(
+        resolver.binding,
+        selected,
+        scoped,
+        run_id=f"run-{uuid4().hex}" if run_id is None else run_id,
         results_store=results_store,
         decision_log=decision_log,
     )

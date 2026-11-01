@@ -4,12 +4,13 @@ from typing import Any
 
 import pytest
 
-from increment import Analysis, Method
+from increment import Method, Scope, from_definitions, from_switchback_frame
 from increment.declarations import CellKey
 from increment.kernel.contracts import CellIdentity
+from tests.analysis_factory import view_readout
 
 
-def _contrast_analysis() -> Analysis:
+def _contrast_analysis() -> Any:
     import pandas as pd
 
     from increment.semantics.assignment import (
@@ -45,7 +46,7 @@ def _contrast_analysis() -> Analysis:
                         }
                     )
     metrics = {"value_a": "mean", "value_b": "mean", "value_c": "mean"}
-    return Analysis.from_switchback_panel(
+    return from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -69,13 +70,24 @@ def _contrast_analysis() -> Analysis:
 def test_cell_identity_from_row_agrees_with_cell_key_for_readout_rows(
     seeded_con: Any, seeded_defs: str
 ):
-    analysis = Analysis("new_onboarding_v2", seeded_defs, seeded_con)
-    contrast_analysis = _contrast_analysis()
+    analysis_experiment, analysis_resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    contrast_experiment, contrast_resolver = _contrast_analysis()
     rows_by_kind = {
-        "arm": analysis.run(decision_method=Method(name="unadjusted")),
-        "daily": analysis.run_daily(),
-        "breakout": analysis.run_breakout(decision_method=Method(name="unadjusted")),
-        "contrast": contrast_analysis.run(),
+        "arm": view_readout(
+            analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+        ),
+        "daily": view_readout(
+            analysis_experiment, analysis_resolver, Scope(view="daily", grain="daily", values=True)
+        ),
+        "breakout": view_readout(
+            analysis_experiment,
+            analysis_resolver,
+            Scope(view="breakout", grain="total"),
+            decision_method=Method(name="unadjusted"),
+        ),
+        "contrast": view_readout(contrast_experiment, contrast_resolver),
     }
     checked: set[str] = set()
     for kind, rows in rows_by_kind.items():

@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import copy
 import pickle
+from functools import partial
 
 import pandas as pd
 import polars as pl
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_frame, from_moments
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.semantics.design import Randomized
 from increment.sequential_source import validate_frame_registration
-from tests.analysis_factory import lift_rows
+from increment.workflows import export_moments, srm, unit_counts
+from tests.analysis_factory import lift_rows, view_readout
 from tests.sequential_cases import registration
 
 
@@ -40,12 +42,12 @@ def test_boolean_groups_use_canonical_labels_for_every_control_spelling(backend)
     frame = pd.DataFrame(data) if backend == "pandas" else pl.DataFrame(data)
     results = []
     for control in (True, "True", "true"):
-        analysis = Analysis.from_unit_summary(
-            frame, unit="unit", group="arm", control=control, metrics={"y": "mean"}
+        experiment, resolver = from_frame(
+            frame, shape="summary", unit="unit", group="arm", control=control, metrics={"y": "mean"}
         )
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         assert {getattr(row, "group_id", None) for row in rows} == {"false"}
-        results.append((analysis.unit_counts(), rows))
+        results.append((unit_counts(experiment, resolver), rows))
     assert results[0] == results[1] == results[2]
     assert results[0][0] == {"true": 2, "false": 2}
 
@@ -60,9 +62,13 @@ def test_boolean_labels_normalize_explicit_design_and_allocation(constructor):
             "y": [1, 2, 3, 4],
         }
     )
-    factory = Analysis.from_unit_summary if constructor == "summary" else Analysis.from_unit_panel
+    factory = (
+        partial(from_frame, shape="summary")
+        if constructor == "summary"
+        else partial(from_frame, shape="panel")
+    )
     kwargs = {"date": "date"} if constructor == "panel" else {}
-    analysis = factory(
+    experiment, resolver = factory(
         frame,
         unit="unit",
         group="arm",
@@ -74,12 +80,12 @@ def test_boolean_labels_normalize_explicit_design_and_allocation(constructor):
         metrics={"y": "mean"},
         **kwargs,
     )
-    assert analysis.unit_counts() == {"true": 2, "false": 2}
-    assert analysis.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
+    assert unit_counts(experiment, resolver) == {"true": 2, "false": 2}
+    assert srm(experiment, resolver).model_dump().get("expected") == {"true": 0.5, "false": 0.5}
 
 
 def test_boolean_moments_control_coerces_only_for_boolean_labels(tmp_path):
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -87,24 +93,25 @@ def test_boolean_moments_control_coerces_only_for_boolean_labels(tmp_path):
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control=True,
         metrics={"y": "mean"},
     )
     path = tmp_path / "moments.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
     replayed = [
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control=value).run()
+        view_readout(*from_moments(rows, metrics={"y": "mean"}, control=value))
         for value in (True, "true")
     ]
-    assert replayed[0] == replayed[1] == original.run()
+    assert replayed[0] == replayed[1] == view_readout(original_experiment, original_resolver)
     with pytest.raises(InvalidRequestError) as noncanonical:
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control="True")
-    explicit = Analysis.from_moments(
+        from_moments(rows, metrics={"y": "mean"}, control="True")
+    explicit_experiment, explicit_resolver = from_moments(
         rows,
         metrics={"y": "mean"},
         design=Randomized(
@@ -113,22 +120,21 @@ def test_boolean_moments_control_coerces_only_for_boolean_labels(tmp_path):
             allocation_scheme="independent",
         ),
     )
-    assert explicit.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
+    assert srm(explicit_experiment, explicit_resolver).model_dump().get("expected") == {
+        "true": 0.5,
+        "false": 0.5,
+    }
     assert noncanonical.value.code == "source.frame.control_missing"
     with pytest.raises(InvalidRequestError) as explicit_design:
-        Analysis.from_moments(
-            rows,
-            metrics={"y": "mean"},
-            design=Randomized(control_group="True"),
-        )
+        from_moments(rows, metrics={"y": "mean"}, design=Randomized(control_group="True"))
     assert explicit_design.value.code == "source.frame.control_missing"
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control=["true"])
+        from_moments(rows, metrics={"y": "mean"}, control=["true"])
     assert raised.value.code == "source.frame.control_invalid"
 
 
 def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
-    original = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -136,13 +142,14 @@ def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control=True,
         metrics={"y": "mean"},
     )
     path = tmp_path / "boolean-group-id-ingress.parquet"
-    original.export(path)
+    export_moments(experiment, resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
@@ -152,11 +159,11 @@ def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
         boolean_row.pop("assignment_counts", None)
         string_row.pop("assignment_counts", None)
         boolean_row["group_id"] = boolean_row["group_id"] == "true"
-    expected = Analysis.from_moments(string_rows, metrics={"y": "mean"}, control="true").run()
-    actual = Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control=True).run()
+    expected = view_readout(*from_moments(string_rows, metrics={"y": "mean"}, control="true"))
+    actual = view_readout(*from_moments(boolean_rows, metrics={"y": "mean"}, control=True))
     assert actual == expected
     with pytest.raises(InvalidRequestError) as wrong_case:
-        Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control="True")
+        from_moments(boolean_rows, metrics={"y": "mean"}, control="True")
     assert wrong_case.value.code == "source.frame.control_missing"
 
 
@@ -172,25 +179,24 @@ def test_dropped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path)
         }
     )
     with pytest.warns(IncrementWarning):
-        original = Analysis.from_unit_summary(
+        original_experiment, original_resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control=True,
             metrics=[MetricSpec(name="y", missing="drop")],
         )
     path = tmp_path / "dropped-boolean-arm.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
-    replay = Analysis.from_moments(
-        rows,
-        metrics=[MetricSpec(name="y", missing="drop")],
-        control=True,
+    replay_experiment, replay_resolver = from_moments(
+        rows, metrics=[MetricSpec(name="y", missing="drop")], control=True
     )
     with pytest.raises(InvalidRequestError) as no_treatment:
-        replay.run()
+        view_readout(replay_experiment, replay_resolver)
     assert no_treatment.value.code == "readout.arms.no_treatment"
     assert no_treatment.value.context["control_group"] == "true"
 
@@ -198,7 +204,7 @@ def test_dropped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path)
 def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):
     import json
 
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -206,13 +212,14 @@ def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control=True,
         metrics={"y": "mean"},
     )
     path = tmp_path / "boolean-count-identities.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
@@ -221,20 +228,26 @@ def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):
         boolean_row["group_id"] = boolean_row["group_id"] == "true"
         boolean_row["assignment_counts"] = json.dumps({"True": 2, "False": 2})
 
-    boolean_analysis = Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control=True)
+    boolean_experiment, boolean_resolver = from_moments(
+        boolean_rows, metrics={"y": "mean"}, control=True
+    )
     expected_rows = copy.deepcopy(rows)
     for row in expected_rows:
         row["assignment_counts"] = json.dumps({"true": 2, "false": 2})
-    expected = Analysis.from_moments(expected_rows, metrics={"y": "mean"}, control="true")
-    assert boolean_analysis.unit_counts() == {"true": 2, "false": 2}
-    assert boolean_analysis.run() == expected.run()
+    expected_experiment, expected_resolver = from_moments(
+        expected_rows, metrics={"y": "mean"}, control="true"
+    )
+    assert unit_counts(boolean_experiment, boolean_resolver) == {"true": 2, "false": 2}
+    assert view_readout(boolean_experiment, boolean_resolver) == view_readout(
+        expected_experiment, expected_resolver
+    )
     with pytest.raises(InvalidRequestError) as wrong_case:
-        Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control="True")
+        from_moments(boolean_rows, metrics={"y": "mean"}, control="True")
     assert wrong_case.value.code == "source.frame.control_missing"
 
 
 def test_string_boolean_looking_moments_labels_stay_case_sensitive(tmp_path):
-    original = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -242,23 +255,24 @@ def test_string_boolean_looking_moments_labels_stay_case_sensitive(tmp_path):
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="True",
         metrics={"y": "mean"},
     )
     path = tmp_path / "string-moments.parquet"
-    original.export(path)
+    export_moments(experiment, resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
-    assert (
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control="True").run() == original.run()
+    assert view_readout(*from_moments(rows, metrics={"y": "mean"}, control="True")) == view_readout(
+        experiment, resolver
     )
 
 
 def test_lowercase_string_moments_labels_do_not_infer_boolean_provenance(tmp_path):
-    original = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -266,21 +280,22 @@ def test_lowercase_string_moments_labels_do_not_infer_boolean_provenance(tmp_pat
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="true",
         metrics={"y": "mean"},
     )
     path = tmp_path / "lowercase-string-moments.parquet"
-    original.export(path)
+    export_moments(experiment, resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
-    assert (
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control="true").run() == original.run()
+    assert view_readout(*from_moments(rows, metrics={"y": "mean"}, control="true")) == view_readout(
+        experiment, resolver
     )
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control="True")
+        from_moments(rows, metrics={"y": "mean"}, control="True")
     assert raised.value.code == "source.frame.control_missing"
 
 
@@ -295,8 +310,9 @@ def test_design_summary_boolean_controls_use_only_python_bool_alias(tmp_path):
         }
     )
     design = Encouragement(control_group="true", uptake=UptakeSpec(fact="clicked"))
-    analysis = Analysis.from_unit_summary(
+    analysis_experiment, analysis_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[],
@@ -304,13 +320,13 @@ def test_design_summary_boolean_controls_use_only_python_bool_alias(tmp_path):
         uptake="clicked",
     )
     path = tmp_path / "boolean-design-summary.parquet"
-    analysis.export(path)
+    export_moments(analysis_experiment, analysis_resolver, path)
     import pyarrow.parquet as pq
 
     payload = pq.read_table(path).to_pylist()
     assert payload[0]["record_kind"] == "design_summary"
     with pytest.raises(InvalidRequestError) as wrong_case:
-        Analysis.from_moments(
+        from_moments(
             payload,
             metrics=[],
             design=Encouragement(control_group="True", uptake=UptakeSpec(fact="clicked")),
@@ -319,12 +335,12 @@ def test_design_summary_boolean_controls_use_only_python_bool_alias(tmp_path):
     assert wrong_case.value.context["observed"] == ("false", "true")
     assert isinstance(wrong_case.value.context["route"], str)
     assert wrong_case.value.context["route"]
-    replay = Analysis.from_moments(payload, metrics=[], control=True)
-    assert replay.unit_counts() == {"true": 2, "false": 2}
+    replay_experiment, replay_resolver = from_moments(payload, metrics=[], control=True)
+    assert unit_counts(replay_experiment, replay_resolver) == {"true": 2, "false": 2}
 
 
 def test_numeric_moments_control_matches_stringified_group_label(tmp_path):
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -332,13 +348,14 @@ def test_numeric_moments_control_matches_stringified_group_label(tmp_path):
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control=0,
         metrics={"y": "mean"},
     )
     path = tmp_path / "numeric-control-moments.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
@@ -346,8 +363,8 @@ def test_numeric_moments_control_matches_stringified_group_label(tmp_path):
         row.pop("assignment_counts", None)
         if row["group_id"] == "0":
             row["group_id"] = 0
-    replay = Analysis.from_moments(rows, metrics={"y": "mean"}, control=0)
-    assert len(replay.run()) == 1
+    replay_experiment, replay_resolver = from_moments(rows, metrics={"y": "mean"}, control=0)
+    assert len(view_readout(replay_experiment, replay_resolver)) == 1
 
 
 def test_design_summary_control_only_reload_accepts_mapping_compliance(tmp_path):
@@ -362,8 +379,9 @@ def test_design_summary_control_only_reload_accepts_mapping_compliance(tmp_path)
             "clicked": [0, 1, 0, 1],
         }
     )
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[],
@@ -371,13 +389,13 @@ def test_design_summary_control_only_reload_accepts_mapping_compliance(tmp_path)
         uptake="clicked",
     )
     path = tmp_path / "boolean-design-summary-mapping.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
     rows = pq.read_table(path).to_pylist()
     rows[0]["compliance_summary"] = json.loads(rows[0]["compliance_summary"])
-    replay = Analysis.from_moments(rows, metrics=[], control=True)
-    assert replay.unit_counts() == {"true": 2, "false": 2}
+    replay_experiment, replay_resolver = from_moments(rows, metrics=[], control=True)
+    assert unit_counts(replay_experiment, replay_resolver) == {"true": 2, "false": 2}
 
 
 def test_boolean_design_allocation_is_frozen_and_collisions_are_coded():
@@ -393,22 +411,22 @@ def test_boolean_design_allocation_is_frozen_and_collisions_are_coded():
         allocation={"True": 1, "False": 1},
         allocation_scheme="independent",
     )
-    analysis = Analysis.from_unit_summary(
-        data, unit="unit", group="arm", design=design, metrics={"y": "mean"}
+    experiment, resolver = from_frame(
+        data, shape="summary", unit="unit", group="arm", design=design, metrics={"y": "mean"}
     )
     allocation = design.allocation
     assert allocation is not None
     with pytest.raises(TypeError):
         setitem(cast(MutableMapping[str, int | float], allocation), "true", 3)
-    assert analysis.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
+    assert srm(experiment, resolver).model_dump().get("expected") == {"true": 0.5, "false": 0.5}
 
     colliding = Randomized(
         control_group="True",
         allocation={"True": 1, "true": 1},
     )
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
-            data, unit="unit", group="arm", design=colliding, metrics={"y": "mean"}
+        from_frame(
+            data, shape="summary", unit="unit", group="arm", design=colliding, metrics={"y": "mean"}
         )
     assert raised.value.code == "frame.validation.group_label_collision"
 
@@ -439,8 +457,9 @@ def test_public_constructor_refuses_old_boolean_registration_with_replay_route()
         inference=InferenceSpec(kind="always_valid", registration=legacy),
     )
     with pytest.raises(CapabilityError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             pd.DataFrame({"unit": ["c1", "c2"], "arm": [True, False], "outcome": [0, 1]}),
+            shape="summary",
             unit="unit",
             group="arm",
             design=design,
@@ -452,7 +471,7 @@ def test_public_constructor_refuses_old_boolean_registration_with_replay_route()
 
 
 def test_string_boolean_looking_group_values_are_unchanged():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -460,28 +479,33 @@ def test_string_boolean_looking_group_values_are_unchanged():
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="True",
         metrics={"y": "mean"},
     )
-    assert {getattr(row, "group_id", None) for row in analysis.run()} == {"False"}
+    assert {getattr(row, "group_id", None) for row in view_readout(experiment, resolver)} == {
+        "False"
+    }
 
 
 def test_integer_group_accepts_integer_control_and_missing_control_is_coded():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame({"unit": ["c1", "c2", "t1", "t2"], "arm": [0, 0, 1, 1], "y": [1, 2, 3, 4]}),
+        shape="summary",
         unit="unit",
         group="arm",
         control=0,
         metrics={"y": "mean"},
     )
-    assert {getattr(row, "group_id", None) for row in analysis.run()} == {"1"}
+    assert {getattr(row, "group_id", None) for row in view_readout(experiment, resolver)} == {"1"}
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             pd.DataFrame(
                 {"unit": ["c1", "c2", "t1", "t2"], "arm": [0, 0, 1, 1], "y": [1, 2, 3, 4]}
             ),
+            shape="summary",
             unit="unit",
             group="arm",
             control=2,
@@ -493,8 +517,9 @@ def test_integer_group_accepts_integer_control_and_missing_control_is_coded():
 
 def test_non_scalar_control_is_coded():
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             pd.DataFrame({"unit": ["c"], "arm": ["control"], "y": [1]}),
+            shape="summary",
             unit="unit",
             group="arm",
             control=["control"],
@@ -506,7 +531,7 @@ def test_non_scalar_control_is_coded():
 def test_explicit_design_can_omit_control_argument():
     from increment.semantics.design import Randomized
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -514,12 +539,13 @@ def test_explicit_design_can_omit_control_argument():
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(control_group="control"),
         metrics={"y": "mean"},
     )
-    assert analysis.unit_counts() == {"control": 2, "treatment": 2}
+    assert unit_counts(experiment, resolver) == {"control": 2, "treatment": 2}
 
 
 def test_mixed_boolean_moments_keep_canonical_assignment_count_identity(tmp_path):
@@ -527,23 +553,29 @@ def test_mixed_boolean_moments_keep_canonical_assignment_count_identity(tmp_path
 
     import pyarrow.parquet as pq
 
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {"unit": ["a", "b", "c", "d"], "arm": [True, True, False, False], "y": [1, 2, 3, 4]}
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control=True,
         metrics={"y": "mean"},
     )
     path = tmp_path / "mixed-boolean-labels.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     rows = pq.read_table(path).to_pylist()
     for row in rows:
         row["group_id"] = "control" if row["group_id"] == "false" else True
         row["assignment_counts"] = json.dumps({"True": 2, "control": 2})
-    analysis = Analysis.from_moments(rows, metrics={"y": "mean"}, control="control")
-    assert {getattr(row, "group_id", None) for row in analysis.run()} == {"true"}
+    analysis_experiment, analysis_resolver = from_moments(
+        rows, metrics={"y": "mean"}, control="control"
+    )
+    assert {
+        getattr(row, "group_id", None)
+        for row in view_readout(analysis_experiment, analysis_resolver)
+    } == {"true"}
 
 
 @pytest.mark.parametrize(
@@ -559,7 +591,7 @@ def test_mixed_moments_preserve_literal_boolean_looking_count_keys(
 
     canonical_arm = "true" if boolean_arm else "false"
     counts = {"control": 2, canonical_arm: 2, literal_arm: 2}
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": range(6),
@@ -567,24 +599,29 @@ def test_mixed_moments_preserve_literal_boolean_looking_count_keys(
                 "y": [1.0, 2.0, 2.0, 3.0, 3.0, 4.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics={"y": "mean"},
     )
     path = tmp_path / "mixed-literal-labels.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     rows = pq.read_table(path).to_pylist()
     for row in rows:
         if row["group_id"] == canonical_arm:
             row["group_id"] = boolean_arm
         row["assignment_counts"] = json.dumps(counts)
-    reloaded = Analysis.from_moments(rows, metrics={"y": "mean"}, control="control")
-    assert reloaded.unit_counts() == counts
-    results = lift_rows(reloaded.run())
+    reloaded_experiment, reloaded_resolver = from_moments(
+        rows, metrics={"y": "mean"}, control="control"
+    )
+    assert unit_counts(reloaded_experiment, reloaded_resolver) == counts
+    results = lift_rows(view_readout(reloaded_experiment, reloaded_resolver))
     assert {row.group_id for row in results} == {canonical_arm, literal_arm}
     assert all(row.lift is not None and row.failure_code is None for row in results)
-    assert reloaded.run() == original.run()
+    assert view_readout(reloaded_experiment, reloaded_resolver) == view_readout(
+        original_experiment, original_resolver
+    )
 
 
 def test_direct_frame_api_canonicalizes_boolean_explicit_design():
@@ -605,7 +642,7 @@ def test_direct_frame_api_canonicalizes_boolean_explicit_design():
 
 
 def test_empty_string_moments_control_survives_export_reload(tmp_path):
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["a", "b", "c", "d"],
@@ -613,26 +650,29 @@ def test_empty_string_moments_control_survives_export_reload(tmp_path):
                 "y": [1, 2, 3, 4],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="",
         metrics={"y": "mean"},
     )
     path = tmp_path / "empty-control.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     import pyarrow.parquet as pq
 
-    reloaded = Analysis.from_moments(
+    reloaded_experiment, reloaded_resolver = from_moments(
         pq.read_table(path).to_pylist(), metrics={"y": "mean"}, control=""
     )
-    assert reloaded.run() == original.run()
+    assert view_readout(reloaded_experiment, reloaded_resolver) == view_readout(
+        original_experiment, original_resolver
+    )
 
 
 def test_literal_true_count_only_arm_does_not_collide_with_boolean_alias(tmp_path):
 
     import pyarrow.parquet as pq
 
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2", "l1", "l2"],
@@ -640,17 +680,20 @@ def test_literal_true_count_only_arm_does_not_collide_with_boolean_alias(tmp_pat
                 "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics={"y": "mean"},
     )
     path = tmp_path / "literal-true-count-only.parquet"
-    original.export(path)
+    export_moments(original_experiment, original_resolver, path)
     rows = [row for row in pq.read_table(path).to_pylist() if row["group_id"] != "True"]
     counts = {"control": 2, "true": 2, "True": 2}
     for row in rows:
         if row["group_id"] == "true":
             row["group_id"] = True
-    replay = Analysis.from_moments(rows, metrics={"y": "mean"}, control="control")
-    assert replay.unit_counts() == counts
+    replay_experiment, replay_resolver = from_moments(
+        rows, metrics={"y": "mean"}, control="control"
+    )
+    assert unit_counts(replay_experiment, replay_resolver) == counts

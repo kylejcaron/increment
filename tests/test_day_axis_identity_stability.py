@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -44,7 +43,9 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
     ingress: str, expected: dict[str, str]
 ):
     """Kernel-4 commit 192a5026 pre-kernel IDs are spec oracles for this exact fixture data."""
-    from tests.parity_harness.cases import PARITY_CASES
+    from increment import Scope
+    from tests.analysis_factory import view_readout
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
     from tests.source_conformance import frame_panel_analysis
 
     if ingress == "from_definitions":
@@ -52,19 +53,21 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
         analysis = case.build[ingress]()
     else:
         analysis = frame_panel_analysis()
+    experiment, resolver = analysis
     try:
-        operations: dict[str, Callable[[], Any]] = {
-            "daily": analysis.run_daily,
-            "daily_lift": analysis.run_daily_lift,
-            "asof": analysis.run_asof,
-            "asof_lift": analysis.run_asof_lift,
-            "breakout": analysis.run_breakout,
+        views = {
+            "daily": Scope(view="daily", grain="daily", values=True),
+            "daily_lift": Scope(view="daily", grain="daily"),
+            "asof": Scope(view="asof", grain="asof", values=True),
+            "asof_lift": Scope(view="asof", grain="asof"),
+            "breakout": Scope(view="breakout", grain="total"),
         }
         assert {
-            name: _snapshot_id(operation()) for name, operation in operations.items()
+            name: _snapshot_id(view_readout(experiment, resolver, scope))
+            for name, scope in views.items()
         } == expected
     finally:
-        analysis.close()
+        _close_parity_binding(analysis)
 
 
 @pytest.mark.parametrize(
@@ -100,16 +103,21 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
 def test_triggered_day_axis_source_snapshot_ids_match_frozen_capture(
     scenario: str, operation: str, expected: str
 ) -> None:
-    """Triggered IDs are frozen operations.json.gz pre-kernel from_definitions oracles."""
-    from tests.parity_harness.cases import PARITY_CASES
+    """Triggered IDs are frozen operations.json.gz pre-kernel from_definitions oracles, migrated
+    by a recorded expected difference where the case has one."""
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
+    from tests.parity_harness.expected_differences import with_expected_difference
+    from tests.parity_harness.views import View, read
 
     case = next(case for case in PARITY_CASES if case.id == scenario)
-    analysis = case.build["from_definitions"]()
+    bound = case.build["from_definitions"]()
     try:
-        kwargs = {"population": "triggered"}
+        kwargs: dict[str, Any] = {"population": "triggered"}
         if scenario == "triggered_encouragement_compliance_asof":
             kwargs["estimands"] = ("compliance",)
-        result = getattr(analysis, operation)(**kwargs)
-        assert _snapshot_id(result) == expected
+        result = read(bound, cast(View, operation.removeprefix("run_")), **kwargs)
+        assert _snapshot_id(result) == with_expected_difference(
+            scenario, "from_definitions", expected
+        )
     finally:
-        analysis.close()
+        _close_parity_binding(bound)

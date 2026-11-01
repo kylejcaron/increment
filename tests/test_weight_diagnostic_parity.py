@@ -1,9 +1,12 @@
 """All six ingress classifications and four supported diagnostic paths."""
 
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
+from increment import from_definitions, from_frame
+from tests.analysis_factory import view_readout
 from tests.parity_harness.cases import (
     _observational_aipw_conversion_case,
     _observational_aipw_dml_case,
@@ -79,7 +82,6 @@ def test_observational_conversion_diagnostics_match_on_every_supported_ingress(b
 def test_conversion_weight_diagnostics_are_retained_on_unit_summary():
     import pandas as pd
 
-    from increment import Analysis
     from increment.breakout.estimates import LiftEstimates
     from increment.frame import MetricSpec
     from increment.semantics.design import AdjustmentSet, Observational
@@ -97,8 +99,9 @@ def test_conversion_weight_diagnostics_are_retained_on_unit_summary():
             for index in range(60)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         metrics=[MetricSpec(name="converted", type="conversion")],
@@ -108,7 +111,7 @@ def test_conversion_weight_diagnostics_are_retained_on_unit_summary():
         plan=AnalysisPlan(primary="converted"),
     )
     try:
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         assert isinstance(rows, LiftEstimates)
         weighted = [row for row in rows if row.method == "iptw"]
         assert weighted
@@ -117,13 +120,12 @@ def test_conversion_weight_diagnostics_are_retained_on_unit_summary():
         assert all(row.control_weight_n == 60 for row in weighted)
         assert all(row.treatment_weight_n == 60 for row in weighted)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
     import pandas as pd
 
-    from increment import Analysis
     from increment.breakout.estimates import LiftEstimates
     from increment.frame import MetricSpec
     from increment.semantics.design import AdjustmentSet, Observational
@@ -144,8 +146,9 @@ def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
             for index in range(12)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         cluster="store",
@@ -156,7 +159,7 @@ def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
         plan=AnalysisPlan(primary="revenue"),
     )
     try:
-        results = analysis.run()
+        results = view_readout(experiment, resolver)
         assert isinstance(results, LiftEstimates)
         rows = [row for row in results if row.method == "iptw"]
         assert rows
@@ -170,7 +173,7 @@ def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
             rows,
         )
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -182,7 +185,6 @@ def test_definitions_cluster_weight_diagnostics_are_retained_at_cluster_grain(tm
     import ibis
     import pyarrow as pa
 
-    from increment import Analysis
     from tests.capability_consumers_auxiliary import assert_support
     from tests.test_analysis_cluster import _DEFS_TEMPLATE, N_STORES, _event_rows
 
@@ -222,11 +224,13 @@ def test_definitions_cluster_weight_diagnostics_are_retained_at_cluster_grain(tm
         {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "pre_exposure"}
     ]
     definitions.write_text(yaml.safe_dump(declared))
-    analysis = Analysis.from_definitions("store_test", definitions, con, store="none")
+    analysis_experiment, analysis_resolver = from_definitions(
+        definitions, con, experiment_name="store_test", store="none"
+    )
     try:
         from increment.breakout.estimates import LiftEstimates
 
-        rows = analysis.run()
+        rows = view_readout(analysis_experiment, analysis_resolver)
         assert isinstance(rows, LiftEstimates)
         weighted = [row for row in rows if row.method == "iptw"]
         assert weighted
@@ -240,7 +244,7 @@ def test_definitions_cluster_weight_diagnostics_are_retained_at_cluster_grain(tm
             weighted,
         )
     finally:
-        analysis.close()
+        cast(Any, analysis_resolver).close()
         con.disconnect()
 
 

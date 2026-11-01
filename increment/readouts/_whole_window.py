@@ -1,13 +1,12 @@
-"""Analysis.run behind one WholeWindowReadouts object.
+"""Whole-window readouts behind one WholeWindowReadouts object.
 
 Both the seam/artifact-moments family (one readouts.arm_moments call per
 population) and the native design-routed family (per-metric arm estimation
 with guardrail/estimand handling and a triggered-population second pass)
 answer through the same WholeWindowRequest/WholeWindowReadouts pair; the
-facade decides only which state it holds, never how a route resolves. Also
-hosts the operation-lookup and switchback-override helpers analysis.py,
-_breakout_readouts.py, and _sitewide.py all need, so none of the three
-modules imports from another.
+caller decides only which state it holds, never how a route resolves. Also
+hosts the operation-lookup and switchback-override helpers that
+_breakout_readouts.py and _sitewide.py both need, so neither imports the other.
 """
 
 from __future__ import annotations
@@ -122,7 +121,7 @@ def validate_contrast_request(
 
 @dataclass(frozen=True, slots=True)
 class WholeWindowRequest:
-    """Static inputs for one Analysis.run() call after metric selection."""
+    """Static inputs for one whole-window run after metric selection."""
 
     metrics: tuple[Metric, ...]
     estimands: tuple[str, ...] | None
@@ -190,7 +189,7 @@ def validate_whole_window(
 
 
 class WholeWindowReadouts:
-    """Evidence acquisition for Analysis.run()."""
+    """Evidence acquisition for a whole-window run."""
 
     def __init__(
         self,

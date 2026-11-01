@@ -29,12 +29,14 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 
 # Contributor guidelines
 
-Increment turns experiment data into decisions. Six public constructors load data
-(`Analysis.from_definitions`, `from_unit_day_artifact`, `from_unit_summary`,
-`from_unit_panel`, `from_switchback_panel`, `from_moments`); one evidence layer
-answers typed requests; estimators compute from data; readouts assemble results.
-A new method should touch an estimator, the evidence request it needs, the
-parity matrix and a guide — not every loader.
+Increment turns experiment data into decisions. Six public builder routes load
+data (`from_frame(shape="summary")`, `from_frame(shape="panel")`,
+`from_switchback_frame`, `from_definitions`, `from_unit_day_artifact`,
+`from_moments`), each returning an experiment and its resolver; `run(experiment,
+resolver)` executes them; one evidence layer answers typed requests; estimators
+compute from data; readouts assemble results. A new method should touch an
+estimator, the evidence request it needs, the parity matrix and a guide — not
+every loader.
 
 ## Layers
 
@@ -49,7 +51,7 @@ parity matrix and a guide — not every loader.
 | `increment/power/` | Sample size, power and MDE solvers | access a warehouse |
 | `calibration/` | Certification campaigns | be collected by a bare `pytest` |
 
-- Statistics code receives data (rows, moments, fitted evidence), never a source object. Evidence acquisition lives only in `increment/readouts/_evidence.py` and `increment/_evidence_loaders.py` when present. Public facades in `analysis.py`, `cate.py::estimate_cate`, and the named estimation facades validate and delegate; they do not introduce a second acquisition path. Custom sources MUST declare `EvidenceCapabilities` or implement the public `EvidenceProvider` before reads. The boundary is enforced by `tests/test_evidence_boundary.py`.
+- Statistics code receives data (rows, moments, fitted evidence), never a source object. Evidence acquisition lives only in `increment/readouts/_evidence.py` and `increment/_evidence_loaders.py` when present. The public builders and `run` (`builders.py`, `_run.py`), the `workflows`, `query`, `artifacts` and `dashboard` functions, `cate.py::estimate_cate`, and the named estimation facades validate and delegate; they do not introduce a second acquisition path. Custom sources MUST declare `EvidenceCapabilities` or implement the public `EvidenceProvider` before reads. The boundary is enforced by `tests/test_evidence_boundary.py`.
 - Each built-in loader declares what it can answer once through `evidence`; legacy plain attributes are private or derived from that declaration. Refusals are validated against declaration data before any read. `tests/test_evidence_capabilities.py` pins the declaration contract. One hazard, one code, on every constructor. Raise the registered `RefusalSpec`; `tests/test_refusal_uniqueness.py::test_each_evidence_hazard_has_one_code_on_every_constructor` enforces the public-constructor contract; never add a per-loader variant of an existing hazard.
 - `tach check` enforces module dependencies; add one only where the table allows.
 

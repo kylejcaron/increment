@@ -7,6 +7,8 @@ import polars as pl
 import pytest
 
 from calibration.comparative_efficiency import Comparison, evaluate_comparison
+from increment import from_frame
+from tests.analysis_factory import view_readout
 
 
 @pytest.fixture
@@ -54,7 +56,7 @@ def test_efficiency_budgets_are_inclusive_at_the_limit_and_fail_beyond(ordinary_
 def test_real_public_inference_path_flags_inflated_and_rounded_intervals():
     from scipy.stats import t as student_t
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from tests.analysis_factory import lift_rows
 
     rng = np.random.default_rng(174)
@@ -68,17 +70,18 @@ def test_real_public_inference_path_flags_inflated_and_rounded_intervals():
             "y": np.concatenate((control, treatment)),
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="variant",
         control="control",
         metrics=[MetricSpec(name="y", type="mean")],
     )
     try:
-        (row,) = lift_rows(analysis.run())
+        (row,) = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     assert row.abs_lb is not None and row.abs_ub is not None
 
     variance_control = float(control.var(ddof=1))
@@ -119,7 +122,7 @@ def test_real_public_inference_path_flags_inflated_and_rounded_intervals():
 
 
 def test_public_readout_detects_disabled_useful_cuped():
-    from increment import Analysis, CupedCovariate, Method, MetricSpec
+    from increment import CupedCovariate, Method, MetricSpec
     from tests.analysis_factory import lift_rows
 
     rng = np.random.default_rng(175)
@@ -138,8 +141,9 @@ def test_public_readout_detects_disabled_useful_cuped():
             "x": covariate,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit_id",
         group="variant",
         control="control",
@@ -155,9 +159,9 @@ def test_public_readout_detects_disabled_useful_cuped():
         ],
     )
     try:
-        rows = lift_rows(analysis.run())
+        rows = lift_rows(view_readout(experiment, resolver))
     finally:
-        analysis.close()
+        resolver.close()
     widths = {
         row.method: row.lift.ub - row.lift.lb
         for row in rows

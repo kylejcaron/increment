@@ -2,7 +2,7 @@
 seam every readout resolves metric names and per-metric ``methods``/``prior``
 through.
 
-Selection is asserted through ``Analysis`` results, and method/prior
+Selection is asserted through ``run`` results, and method/prior
 resolution through the compiled decision plan (``compile_decision_plan``,
 and the ``src.plan`` a source publishes). Three selection contracts have no
 cheap public route -- accepting undeclared call-time ``Metric`` objects, the
@@ -13,11 +13,11 @@ so those are exercised on ``select_metrics`` directly.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from increment import Analysis
+from increment import from_frame
 from increment._analysis_config import select_metrics
 from increment.decision import ArmDecisionProcedure
 from increment.errors import IncrementWarning, InvalidRequestError
@@ -35,6 +35,7 @@ from increment.semantics.models import (
     MethodSpec,
     NormalPriorSpec,
 )
+from tests.analysis_factory import view_readout
 from tests.warning_codes import warning_codes
 
 if TYPE_CHECKING:
@@ -78,9 +79,10 @@ def _procedure(compiled: CompiledDecisionPlan, name: str = "revenue") -> ArmDeci
 
 
 @pytest.fixture(scope="module")
-def analysis() -> Analysis:
-    return Analysis.from_unit_summary(
+def analysis() -> Any:
+    return from_frame(
         _unit_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -88,38 +90,38 @@ def analysis() -> Analysis:
     )
 
 
-# ── select_metrics: selection and order, through Analysis results ────────
+# ── select_metrics: selection and order, through run results ────────
 
 
-def test_select_metrics_none_returns_declared_order(analysis):
-    assert [row.metric for row in analysis.run()] == ["revenue", "orders", "latency"]
+def test_select_metrics_none_returns_declared_order(analysis: tuple[Any, Any]):
+    assert [row.metric for row in view_readout(*analysis)] == ["revenue", "orders", "latency"]
 
 
-def test_select_metrics_by_name_resolves_to_declared_objects(analysis):
-    assert [row.metric for row in analysis.run(metrics=["orders"])] == ["orders"]
+def test_select_metrics_by_name_resolves_to_declared_objects(analysis: tuple[Any, Any]):
+    assert [row.metric for row in view_readout(*analysis, metrics=["orders"])] == ["orders"]
 
 
-def test_select_metrics_output_follows_declared_order_not_request_order(analysis):
+def test_select_metrics_output_follows_declared_order_not_request_order(analysis: tuple[Any, Any]):
     """Result order follows declaration order, never caller order (Global
     Constraint)."""
-    rows = analysis.run(metrics=["latency", "revenue"])
+    rows = view_readout(*analysis, metrics=["latency", "revenue"])
     assert [row.metric for row in rows] == ["revenue", "latency"]
 
 
-def test_select_metrics_duplicate_name_rejected(analysis):
+def test_select_metrics_duplicate_name_rejected(analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(metrics=["revenue", "revenue"])
+        view_readout(*analysis, metrics=["revenue", "revenue"])
     assert raised.value.code == "facade.analysis_config.duplicate_metric_name"
 
 
-def test_select_metrics_duplicate_across_string_and_object_rejected(analysis):
+def test_select_metrics_duplicate_across_string_and_object_rejected(analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(metrics=["revenue", REVENUE])
+        view_readout(*analysis, metrics=["revenue", REVENUE])
     assert raised.value.code == "facade.analysis_config.duplicate_metric_name"
 
 
-def test_select_metrics_accepts_declared_metric_objects(analysis):
-    rows = analysis.run(metrics=[ORDERS, REVENUE])
+def test_select_metrics_accepts_declared_metric_objects(analysis: tuple[Any, Any]):
+    rows = view_readout(*analysis, metrics=[ORDERS, REVENUE])
     assert [row.metric for row in rows] == ["revenue", "orders"]
 
 
@@ -140,10 +142,10 @@ def test_select_metrics_preserves_caller_object_over_declared_when_names_coincid
     assert selected[0].fact == "a_different_fact"
 
 
-def test_select_metrics_undeclared_object_refused_by_default(analysis):
+def test_select_metrics_undeclared_object_refused_by_default(analysis: tuple[Any, Any]):
     undeclared = MeanMetric(name="undeclared", entity="user_id", fact="x", aggregation="sum")
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(metrics=[undeclared])
+        view_readout(*analysis, metrics=[undeclared])
     assert raised.value.code == "facade.analysis_config.unknown_metric_declared"
 
 
@@ -199,8 +201,8 @@ def test_strict_metric_selection_refusal_precedence(extra, code, field, names):
     assert raised.value.context["caller"] == "breakout_summaries"
 
 
-def test_select_metrics_empty_request_returns_empty(analysis):
-    assert list(analysis.run(metrics=[])) == []
+def test_select_metrics_empty_request_returns_empty(analysis: tuple[Any, Any]):
+    assert list(view_readout(*analysis, metrics=[])) == []
 
 
 # ── resolve_configs: method-role precedence, through the compiled plan ───
@@ -469,15 +471,17 @@ def test_prior_overrides_inherit_clear_replace_without_mutating_declaration():
 
     declared_prior = Normal(mu=0.0, sigma=0.2)
     replacement = Normal(mu=0.0, sigma=0.01)
-    declared = Analysis.from_unit_summary(
+    declared_experiment, declared_resolver = from_frame(
         _unit_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[MetricSpec(name="revenue", prior=declared_prior)],
     )
-    unshrunk = Analysis.from_unit_summary(
+    unshrunk_experiment, unshrunk_resolver = from_frame(
         _unit_frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -491,17 +495,19 @@ def test_prior_overrides_inherit_clear_replace_without_mutating_declaration():
 
     def override_prior(value):
         with pytest.warns(IncrementWarning) as caught:
-            report = declared.run(prior=value)
+            report = view_readout(declared_experiment, declared_resolver, prior=value)
         assert warning_codes(caught) == ["analysis.run.override_replaces_declared"]
         return report
 
-    inherited = interval(declared.run())
+    inherited = interval(view_readout(declared_experiment, declared_resolver))
     cleared = interval(override_prior(None))
     replaced = interval(override_prior(replacement))
     assert inherited == pytest.approx(cleared)
-    assert inherited == pytest.approx(interval(unshrunk.run()))
+    assert inherited == pytest.approx(
+        interval(view_readout(unshrunk_experiment, unshrunk_resolver))
+    )
     assert replaced == pytest.approx(inherited)
-    [inherited_row] = lift_rows(declared.run())
+    [inherited_row] = lift_rows(view_readout(declared_experiment, declared_resolver))
     [replaced_row] = lift_rows(override_prior(replacement))
     assert inherited_row.posterior_available
     assert replaced_row.posterior_available
@@ -510,4 +516,6 @@ def test_prior_overrides_inherit_clear_replace_without_mutating_declaration():
     [cleared_row] = lift_rows(override_prior(None))
     assert not cleared_row.posterior_available
     assert cleared_row.posterior_estimate is None
-    assert interval(declared.run()) == pytest.approx(inherited)
+    assert interval(view_readout(declared_experiment, declared_resolver)) == pytest.approx(
+        inherited
+    )

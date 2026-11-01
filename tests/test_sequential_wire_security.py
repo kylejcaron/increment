@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from increment import Analysis
+from increment import from_moments
 from increment.decision_wire import (
     WireCompiledDecisionPlan,
     compiled_plan_from_dict,
@@ -99,7 +99,7 @@ def _assert_refusal(exc: CodedError, field: str, hostile: str | None = None) -> 
 
 def test_hostile_checkpoint_row_refuses_before_rational_expansion():
     with pytest.raises(InvalidRequestError) as exc:
-        Analysis.from_moments([_hostile_row("1e50000")], metrics={"m": "mean"}, control="c")
+        from_moments([_hostile_row("1e50000")], metrics={"m": "mean"}, control="c")
     _assert_refusal(exc.value, "SequentialArmState.mean", "1e50000")
 
 
@@ -435,7 +435,7 @@ def test_checkpoint_row_json_floating_literal_refuses_at_its_owning_field():
     row = _hostile_row("__RAW__")
     row["sequential_snapshot"] = _json_text(_hostile_snapshot("__RAW__"), "0.05")
     with pytest.raises(InvalidRequestError) as exc:
-        Analysis.from_moments([row], metrics={"m": "mean"}, control="c")
+        from_moments([row], metrics={"m": "mean"}, control="c")
     _assert_refusal(exc.value, "SequentialArmState.mean", "0.05")
 
 

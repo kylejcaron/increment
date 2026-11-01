@@ -6,10 +6,23 @@ from typing import Any, Literal, cast
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, Method, MetricSpec
+from increment import (
+    AnalysisPlan,
+    Method,
+    MetricSpec,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CodedError
 from increment.frame import CupedCovariate, from_unit_summary
 from increment.readouts import run
+from increment.workflows import export_moments
+from tests.analysis_factory import view_readout
+
+_BREAKOUT = Scope(view="breakout", grain="total")
 
 
 def _records() -> list[dict[str, Any]]:
@@ -36,8 +49,15 @@ def _scalar(name: str, column: str, *, missing: Literal["zero", "impute", "refus
     )
 
 
-def _frame(records, methods, *, panel: bool, encouragement: bool = False):
-    kwargs: dict[str, Any] = {"date": "day"} if panel else {}
+def _frame(records, methods, *, panel: bool, encouragement: bool = False) -> tuple[Any, Any]:
+    kwargs: dict[str, Any] = {
+        "unit": "unit",
+        "group": "arm",
+        "metrics": [
+            MetricSpec(name="outcome", decision_method=methods[0], sensitivity_methods=methods[1:])
+        ],
+        "breakouts": ["segment"],
+    }
     if encouragement:
         from increment import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -53,25 +73,21 @@ def _frame(records, methods, *, panel: bool, encouragement: bool = False):
         )
     else:
         kwargs["control"] = "control"
-    return (Analysis.from_unit_panel if panel else Analysis.from_unit_summary)(
-        pa.Table.from_pylist(records),
-        unit="unit",
-        group="arm",
-        metrics=[
-            MetricSpec(name="outcome", decision_method=methods[0], sensitivity_methods=methods[1:])
-        ],
-        breakouts=["segment"],
-        **kwargs,
-    )
+    table = pa.Table.from_pylist(records)
+    if panel:
+        return from_frame(table, shape="panel", date="day", **kwargs)
+    return from_frame(table, shape="summary", **kwargs)
 
 
 @pytest.mark.parametrize("panel", [False, True])
 def test_frame_breakout_acquires_effective_scalar_binding(panel):
     first = _scalar("declared", "history_a")
     requested = _scalar("requested", "history_b")
-    analysis = _frame(_records(), (first,), panel=panel)
-    actual = analysis.run_breakout(decision_method=requested, sensitivity_methods=())[0]
-    expected = _frame(_records(), (requested,), panel=panel).run()[0]
+    experiment, resolver = _frame(_records(), (first,), panel=panel)
+    actual = view_readout(
+        experiment, resolver, _BREAKOUT, decision_method=requested, sensitivity_methods=()
+    )[0]
+    expected = view_readout(*_frame(_records(), (requested,), panel=panel))[0]
     assert actual.require_lift().value == pytest.approx(expected.require_lift().value, rel=1e-10)
     assert actual.require_lift().log_se == pytest.approx(expected.require_lift().log_se, rel=1e-10)
     assert actual.method == "requested"
@@ -88,9 +104,9 @@ def test_frame_breakout_scalar_failure_is_method_local(panel, role, missing):
     failed = _scalar("unavailable", "history_a", missing=missing)
     naive = Method.unadjusted()
     methods = (failed, naive) if role == "decision" else (naive, failed)
-    result = _frame(records, methods, panel=panel).run_breakout()
+    result = view_readout(*_frame(records, methods, panel=panel), _BREAKOUT)
     indexed = {row.method: row for row in result}
-    expected = _frame(records, (naive,), panel=panel).run_breakout()[0]
+    expected = view_readout(*_frame(records, (naive,), panel=panel), _BREAKOUT)[0]
     assert indexed["naive"].require_lift().value == pytest.approx(
         expected.require_lift().value, rel=1e-10
     )
@@ -118,7 +134,7 @@ def test_anonymous_moments_refuse_multiple_scalar_inputs(construction):
     first, second = _scalar("first", "history_a"), _scalar("second", "history_b")
     with pytest.raises(CodedError) as raised:
         if construction:
-            Analysis.from_moments(
+            from_moments(
                 rows,
                 metrics=[
                     MetricSpec(name="revenue", decision_method=first, sensitivity_methods=(second,))
@@ -126,8 +142,10 @@ def test_anonymous_moments_refuse_multiple_scalar_inputs(construction):
                 control="control",
             )
         else:
-            Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control").run(
-                decision_method=first, sensitivity_methods=(second,)
+            view_readout(
+                *from_moments(rows, metrics={"revenue": "mean"}, control="control"),
+                decision_method=first,
+                sensitivity_methods=(second,),
             )
     assert raised.value.code == "facade.analysis_config.cuped_scalar_moments"
 
@@ -167,9 +185,12 @@ def _artifact_source(path, con):
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    producer = Analysis.from_definitions("cov_test", path, con)
-    ref = producer.publish_unit_day_artifact(
-        store, extensions=[entry.request for entry in unit_day_artifact_extension_catalog(context)]
+    producer_experiment, producer_resolver = from_definitions(path, con, experiment_name="cov_test")
+    ref = publish_unit_day_artifact(
+        producer_experiment,
+        producer_resolver,
+        store,
+        extensions=[entry.request for entry in unit_day_artifact_extension_catalog(context)],
     )
     return open_artifact(store, ref, expected_context=context)
 
@@ -199,7 +220,7 @@ def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, 
             rows = pq.read_table(destination).to_pylist()
             assert {row["moments_format"] for row in rows} == {13}
             assert sum(row.get("record_kind") == "cuped_evidence" for row in rows) == 2
-            restored = Analysis.from_moments(
+            experiment, resolver = from_moments(
                 rows,
                 metrics=[
                     MetricSpec(
@@ -210,9 +231,9 @@ def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, 
                 experiment_id="cov_test",
             )
             try:
-                actual = restored.run()
+                actual = view_readout(experiment, resolver)
             finally:
-                restored.close()
+                resolver.close()
         else:
             actual = run(
                 source.moments_source(metrics=source.context.metrics, methods=list(methods))
@@ -300,7 +321,7 @@ def test_native_sequential_explicit_scalar_refuses_before_capture(tmp_path, monk
     )
     try:
         with pytest.raises(CodedError) as raised:
-            Analysis.from_definitions("cov_test", path, con)
+            from_definitions(path, con, experiment_name="cov_test")
         assert raised.value.code == "sequential.source.invalid", raised.value
     finally:
         con.disconnect()
@@ -431,16 +452,17 @@ def test_frame_breakout_scalar_missing_is_local_to_segment(panel):
     ]
     scalar = _scalar("adjusted", "history_a", missing="refuse")
     methods = (Method.unadjusted(), scalar)
-    rows = _frame(records, methods, panel=panel).run_breakout()
+    rows = view_readout(*_frame(records, methods, panel=panel), _BREAKOUT)
     indexed = {(row.dimension_value, row.method): row for row in rows}
     assert len(indexed) == 4
     assert indexed[("unavailable", "adjusted")].failure_code == (
         "frame.validation.metric_covariate_column"
     )
     healthy = indexed[("healthy", "adjusted")]
-    expected = _frame(
-        [row for row in records if row["segment"] == "healthy"], (scalar,), panel=panel
-    ).run_breakout()[0]
+    expected = view_readout(
+        *_frame([row for row in records if row["segment"] == "healthy"], (scalar,), panel=panel),
+        _BREAKOUT,
+    )[0]
     assert healthy.require_lift().value == pytest.approx(expected.require_lift().value, rel=1e-10)
     assert healthy.require_lift().log_se == pytest.approx(expected.require_lift().log_se, rel=1e-10)
     assert all(
@@ -482,12 +504,15 @@ def test_encouragement_breakout_acquires_effective_scalar_binding(panel):
         for i, row in enumerate(_records())
     ]
     declared, requested = _scalar("declared", "history_a"), _scalar("requested", "history_b")
-    result = _frame(records, (declared,), panel=panel, encouragement=True).run_breakout(
-        decision_method=requested, sensitivity_methods=()
+    result = view_readout(
+        *_frame(records, (declared,), panel=panel, encouragement=True),
+        _BREAKOUT,
+        decision_method=requested,
+        sensitivity_methods=(),
     )
     result = [row for row in result if row.estimand == "itt"]
-    expected = _frame(records, (requested,), panel=panel, encouragement=True).run(
-        estimands=("itt",)
+    expected = view_readout(
+        *_frame(records, (requested,), panel=panel, encouragement=True), estimands=("itt",)
     )
     assert len(result) == len(expected) == 1
     assert result[0].require_lift().value == pytest.approx(
@@ -509,10 +534,14 @@ def test_encouragement_breakout_scalar_failure_keeps_naive_sibling(panel):
         for i, row in enumerate(_records())
     ]
     scalar, naive = _scalar("unavailable", "history_a", missing="refuse"), Method.unadjusted()
-    result = _frame(records, (naive, scalar), panel=panel, encouragement=True).run_breakout()
+    result = view_readout(
+        *_frame(records, (naive, scalar), panel=panel, encouragement=True), _BREAKOUT
+    )
     expected = next(
         row
-        for row in _frame(records, (naive,), panel=panel, encouragement=True).run_breakout()
+        for row in view_readout(
+            *_frame(records, (naive,), panel=panel, encouragement=True), _BREAKOUT
+        )
         if row.estimand == "itt"
     )
     indexed = {row.method: row for row in result if row.estimand == "itt"}
@@ -571,16 +600,21 @@ def _scaled_run(records, method, *, ratio, ingress, tmp_path):
     common: dict[str, Any] = {"unit": "unit", "group": "arm", "control": "control"}
     table = pa.Table.from_pylist(records)
     if ingress == "panel":
-        with Analysis.from_unit_panel(table, date="day", metrics=[spec], **common) as analysis:
-            return analysis.run()
-    with Analysis.from_unit_summary(table, metrics=[spec], **common) as analysis:
+        experiment, resolver = from_frame(
+            table, shape="panel", date="day", metrics=[spec], **common
+        )
+        with resolver:
+            return view_readout(experiment, resolver)
+    experiment, resolver = from_frame(table, shape="summary", metrics=[spec], **common)
+    with resolver:
         if ingress == "summary":
-            return analysis.run()
+            return view_readout(experiment, resolver)
         path = tmp_path / "moments.parquet"
-        analysis.export(path)
+        export_moments(experiment, resolver, path)
     rows = pq.read_table(path).to_pylist()
-    with Analysis.from_moments(rows, metrics=[spec], control="control") as replay:
-        return replay.run()
+    experiment, resolver = from_moments(rows, metrics=[spec], control="control")
+    with resolver:
+        return view_readout(experiment, resolver)
 
 
 @pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
@@ -626,14 +660,16 @@ def test_overflowing_denominator_third_moment_keeps_ratio_inference(tmp_path, in
     from increment.estimation.results import LiftEstimate
 
     records = _scaled_records(outcome=10.0, denominator=1e105)
-    with Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(records),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics=[MetricSpec(name="outcome", type="ratio", numerator="outcome", denominator="den")],
-    ) as plain:
-        plain.export(tmp_path / "plain.parquet")
+    )
+    with resolver:
+        export_moments(experiment, resolver, tmp_path / "plain.parquet")
     third = [row["cden3"] for row in pq.read_table(tmp_path / "plain.parquet").to_pylist()]
     assert any(not math.isfinite(value) for value in third)
     (row,) = (

@@ -16,7 +16,7 @@ import pyarrow as pa
 import pytest
 from scipy.stats import norm
 
-from increment import Analysis, readouts
+from increment import from_frame, readouts
 from increment.errors import (
     CapabilityError,
     IncrementRuntimeWarning,
@@ -55,6 +55,7 @@ from increment.semantics.design import (
     Observational,
     UptakeSpec,
 )
+from tests.analysis_factory import bound_source, make_binding_like, view_readout
 from tests.warning_codes import warning_codes, warning_context
 
 if TYPE_CHECKING:
@@ -530,14 +531,12 @@ def test_unit_weight_diagnostics_use_the_actual_arm_weights():
             "z": [0.0] * 24,
         }
     )
-    analysis = Analysis.from_unit_summary(
-        tbl,
-        unit="u",
-        group="g",
-        metrics={"y": "mean"},
-        design=DESIGN,
+    experiment, resolver = from_frame(
+        tbl, shape="summary", unit="u", group="g", metrics={"y": "mean"}, design=DESIGN
     )
-    results = analysis.run(
+    results = view_readout(
+        experiment,
+        resolver,
         decision_method=Method(name="iptw"),
         sensitivity_methods=[Method(name="unadjusted")],
     )
@@ -1821,14 +1820,15 @@ def test_unadjusted_source_consumes_only_canonical_cluster_metadata():
 @pytest.mark.parametrize("spanning", [False, True])
 @pytest.mark.integration
 def test_unadjusted_definitions_source_uses_cluster_metadata_without_covariates(tmp_path, spanning):
-    from tests.analysis_factory import _native_source, make_analysis_like
     from tests.test_analysis_cluster import _analysis, _event_rows
 
     design = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("baseline",))
     )
-    with _analysis(tmp_path, rows=_event_rows(spanning_store=spanning)) as analysis:
-        source = _native_source(make_analysis_like(analysis, design=design))
+    _, resolver = _analysis(tmp_path, rows=_event_rows(spanning_store=spanning))
+    with resolver:
+        _, rebuilt = make_binding_like(resolver, design=design)
+        source = bound_source(rebuilt)
         frame = _unit_rows(source, source.context.metrics[0])
         assert "cluster_id" in frame.column_names and "store_id" not in frame.column_names
         (row,) = estimate_ate(source, design, methods=[Method(name="unadjusted")]).results

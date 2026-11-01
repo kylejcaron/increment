@@ -26,7 +26,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from increment import Method
+from increment import Method, from_frame
 from increment.errors import (
     CapabilityError,
     IncrementRuntimeWarning,
@@ -49,6 +49,7 @@ from increment.semantics.design import (
     Observational,
     UptakeSpec,
 )
+from tests.analysis_factory import view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -491,8 +492,6 @@ def test_run_identity_singleton_clusters_match_unclustered_run():
     reference; what still widens the clustered interval is its degrees of
     freedom -- one per cluster rather than the unclustered Welch df."""
 
-    from increment.analysis import Analysis
-
     rows = [
         {
             "user_id": f"{arm[:1]}{i}",
@@ -505,14 +504,17 @@ def test_run_identity_singleton_clusters_match_unclustered_run():
     ]
 
     def _run(cluster):
-        return Analysis.from_unit_summary(
-            _frame(rows, "pandas"),
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics={"revenue": "mean"},
-            cluster=cluster,
-        ).run()[0]
+        return view_readout(
+            *from_frame(
+                _frame(rows, "pandas"),
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics={"revenue": "mean"},
+                cluster=cluster,
+            )
+        )[0]
 
     flat, clustered = _run(None), _run("store_id")
     assert clustered.require_lift().value == pytest.approx(flat.require_lift().value, rel=1e-9)

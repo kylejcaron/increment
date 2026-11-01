@@ -54,8 +54,8 @@ class RevenueProvider:
         scalar=None,
         available_covariates=None,
     )
-    # This example exercises request dispatch only. A provider installed in an
-    # Analysis supplies its real SourceContext from its construction metadata.
+    # This example exercises request dispatch only. A provider behind an
+    # experiment's resolver supplies its real SourceContext from its construction metadata.
     context = cast(SourceContext, None)
 
     def moments(self, request: MomentsRequest) -> tuple[dict[str, object], ...]:

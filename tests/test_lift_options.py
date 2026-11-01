@@ -1,14 +1,21 @@
 """Call-time lift option overrides as they reach run_daily_lift's rows."""
 
 import warnings
+from typing import Any
 
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import AnalysisPlan, MetricSpec, Scope, from_frame
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.priors import StudentTPrior
 from increment.estimators import Normal
+from tests.analysis_factory import view_readout
+
+
+def _daily_lift(pair: tuple[Any, Any], **options: Any) -> Any:
+    experiment, resolver = pair
+    return view_readout(experiment, resolver, Scope(view="daily", grain="daily"), **options)
 
 
 def _panel_analysis(**overrides):
@@ -24,8 +31,9 @@ def _panel_analysis(**overrides):
         }
         for i in range(12)
     ]
-    return Analysis.from_unit_panel(
+    return from_frame(
         pl.DataFrame(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="ds",
@@ -36,7 +44,7 @@ def _panel_analysis(**overrides):
 
 
 def test_defaults_resolve_the_single_declared_metric_config():
-    rows = _panel_analysis().run_daily_lift()
+    rows = _daily_lift(_panel_analysis())
     assert {row.metric for row in rows} == {"y"}
     assert {row.method for row in rows} == {"unadjusted"}
     assert {row.method_role for row in rows} == {"decision"}
@@ -44,8 +52,11 @@ def test_defaults_resolve_the_single_declared_metric_config():
 
 
 def test_call_time_prior_is_applied_to_the_estimate():
-    (default,) = _panel_analysis().run_daily_lift()
-    (shrunk,) = _panel_analysis().run_daily_lift(prior=StudentTPrior(nu=4.0, scale=0.05))
+    (default,) = _daily_lift(_panel_analysis())
+    (shrunk,) = _daily_lift(
+        _panel_analysis(),
+        prior=StudentTPrior(nu=4.0, scale=0.05),
+    )
     assert default.lift is not None and shrunk.lift is not None
     assert default.lift.value == shrunk.lift.value
     # Call-time priors update the separate posterior, not prior-free `lift`
@@ -58,8 +69,10 @@ def test_call_time_prior_is_applied_to_the_estimate():
 
 
 def test_explicit_methods_stamp_decision_and_sensitivity_roles():
-    rows = _panel_analysis().run_daily_lift(
-        decision_method=Method(name="dec"), sensitivity_methods=[Method(name="sens")]
+    rows = _daily_lift(
+        _panel_analysis(),
+        decision_method=Method(name="dec"),
+        sensitivity_methods=[Method(name="sens")],
     )
     assert {(row.method, row.method_role) for row in rows} == {
         ("dec", "decision"),
@@ -81,10 +94,12 @@ def test_run_warns_once_per_setting_when_override_replaces_declaration():
         )
         for name in ("y", "z")
     ]
-    analysis = _panel_analysis(metric_specs=metrics)
+    experiment, resolver = _panel_analysis(metric_specs=metrics)
 
     with pytest.warns(IncrementWarning) as caught:
-        rows = analysis.run(
+        rows = view_readout(
+            experiment,
+            resolver,
             decision_method=Method(name="override"),
             sensitivity_methods=[Method(name="override-sensitivity")],
             prior=StudentTPrior(nu=4.0, scale=0.05),
@@ -126,7 +141,7 @@ def test_run_warns_once_per_setting_when_override_replaces_declaration():
 
 def test_run_does_not_warn_when_override_matches_or_nothing_declared():
     declared = Method(name="declared")
-    analysis = _panel_analysis(
+    experiment, resolver = _panel_analysis(
         metric_specs=[
             MetricSpec(name="y", type="mean", decision_method=declared),
             MetricSpec(name="z", type="mean"),
@@ -135,7 +150,7 @@ def test_run_does_not_warn_when_override_matches_or_nothing_declared():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", IncrementWarning)
-        rows = analysis.run(decision_method=declared)
+        rows = view_readout(experiment, resolver, decision_method=declared)
     overrides = [
         record.message
         for record in caught
@@ -146,12 +161,12 @@ def test_run_does_not_warn_when_override_matches_or_nothing_declared():
 
 
 def test_explicit_prior_none_override_is_reported():
-    analysis = _panel_analysis(
+    experiment, resolver = _panel_analysis(
         metric_specs=[MetricSpec(name="y", type="mean", prior=Normal(mu=0.0, sigma=0.1))]
     )
 
     with pytest.warns(IncrementWarning) as caught:
-        rows = analysis.run(prior=None)
+        rows = view_readout(experiment, resolver, prior=None)
     overrides = [
         record.message
         for record in caught
@@ -168,8 +183,10 @@ def test_decision_method_override_wins_over_the_unadjusted_default():
     """decision_method= must force the named method into the decision role
     even though 'unadjusted', also present via sensitivity_methods, is what
     the no-override default would pick."""
-    rows = _panel_analysis().run_daily_lift(
-        decision_method=Method(name="dec"), sensitivity_methods=[Method(name="unadjusted")]
+    rows = _daily_lift(
+        _panel_analysis(),
+        decision_method=Method(name="dec"),
+        sensitivity_methods=[Method(name="unadjusted")],
     )
     assert {(row.method, row.method_role) for row in rows} == {
         ("dec", "decision"),
@@ -178,12 +195,12 @@ def test_decision_method_override_wins_over_the_unadjusted_default():
 
 
 def test_decision_method_alone_is_the_only_method():
-    rows = _panel_analysis().run_daily_lift(decision_method=Method(name="dec"))
+    rows = _daily_lift(_panel_analysis(), decision_method=Method(name="dec"))
     assert {(row.method, row.method_role) for row in rows} == {("dec", "decision")}
 
 
 def test_plan_alpha_reaches_the_interval():
-    (row,) = _panel_analysis(plan=AnalysisPlan(alpha=0.2)).run_daily_lift()
+    (row,) = _daily_lift(_panel_analysis(plan=AnalysisPlan(alpha=0.2)))
     assert row.lift is not None
     assert row.lift.alpha == 0.2
     assert row.lift.level == pytest.approx(0.8)
@@ -191,7 +208,8 @@ def test_plan_alpha_reaches_the_interval():
 
 def test_cuped_sensitivity_method_needs_the_pre_period_covariate():
     with pytest.raises(InvalidRequestError) as raised:
-        _panel_analysis().run_daily_lift(
-            sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")]
+        _daily_lift(
+            _panel_analysis(),
+            sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")],
         )
     assert raised.value.code == "estimation.cuped.arm_no_covariate"

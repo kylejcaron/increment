@@ -241,8 +241,8 @@ def _validate_encouragement_asof_inference(
 
     Both policies carry an exact Bernoulli uptake cell, which needs the same
     finalized-bounded-window guarantee AlwaysValid needs; AsymptoticMean alone
-    (no compliance cell) does not. Shared by asof_lift and
-    Analysis.run_asof_lift so both as-of routes enforce the same contract.
+    (no compliance cell) does not. Shared by asof_lift and the as-of view of
+    run() so both as-of routes enforce the same contract.
     """
     from increment.estimation.sequential import UPTAKE_COMPLETION_POLICIES
     from increment.semantics.design import Encouragement as _Encouragement

@@ -283,17 +283,19 @@ def test_measurement_gate_requires_baseline_repetitions_to_agree():
 def test_stress_workload_inserts_the_requested_number_of_rows(tmp_path):
     from calibration.kernel_context_measurement import _append_units
     from increment.evidence import UnitRowsRequest, evidence_provider
+    from increment.workflows import metrics
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    (experiment, resolver), _ = definitions_source(tmp_path, return_binding=True)
     try:
-        source = held_source(analysis)
+        source = held_source(resolver)
         _append_units(source, 2)
-        rows = evidence_provider(source).unit_rows(UnitRowsRequest(metric=analysis.metrics[0]))
+        request = UnitRowsRequest(metric=metrics(experiment, resolver)[0])
+        rows = evidence_provider(source).unit_rows(request)
         assert len(rows) == 6
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -507,16 +509,16 @@ def test_measurement_duckdb_source_disables_progress_output(tmp_path, monkeypatc
     import calibration.kernel_context_measurement as measurement
     from tests import source_conformance
 
-    analysis, _ = source_conformance.definitions_source(
-        tmp_path, store="always", return_analysis=True
+    binding, _ = source_conformance.definitions_source(
+        tmp_path, store="always", return_binding=True
     )
-    source = analysis._src
-    connection = measurement._duckdb_connection(source)
+    _, resolver = binding
+    connection = measurement._duckdb_connection(resolver.binding.source)
     connection.raw_sql("SET enable_progress_bar = true")
     monkeypatch.setattr(
         source_conformance,
         "definitions_source",
-        lambda *args, **kwargs: (analysis, None),
+        lambda *args, **kwargs: (binding, None),
     )
     try:
         measurement._source("duckdb", tmp_path)
@@ -524,4 +526,4 @@ def test_measurement_duckdb_source_disables_progress_output(tmp_path, monkeypatc
 
         assert enabled is False
     finally:
-        analysis.close()
+        resolver.close()

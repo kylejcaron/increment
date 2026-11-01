@@ -2,11 +2,12 @@
 
     import increment as inc
 
-    src = inc.Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control",
+    experiment, resolver = inc.from_frame(
+        df, shape="summary", unit="user_id", group="variant",
+        design=inc.Randomized(control_group="control"),
         metrics={"revenue": "mean", "converted": "conversion"},
     )
-    results = src.run()
+    result = inc.run(experiment, resolver)
 
 Pure narwhals over pandas/polars/pyarrow, so this works with no backend
 installed and can never import ibis or `increment/query/`. `from_unit_panel`
@@ -1132,7 +1133,7 @@ def from_unit_summary(  # noqa: PLR0913
     frame : IntoDataFrame
         A narwhals-supported eager frame with one row per unit. A lazy Polars frame
         must be collected first; ibis tables should use
-        :meth:`Analysis.from_definitions`.
+        :func:`increment.from_definitions`.
     unit, group : str
         Columns identifying the unit and its variant label.
     control : str
@@ -2648,7 +2649,7 @@ def from_unit_panel(  # noqa: PLR0913
     frame : IntoDataFrame
         Eager frame with at most one row per (*unit*, *date*). A lazy Polars frame
         must be collected first; ibis tables should use
-        :meth:`Analysis.from_definitions`.
+        :func:`increment.from_definitions`.
     unit, group, control, cluster : str
         As :func:`from_unit_summary`.
     date : str
@@ -2712,10 +2713,10 @@ def from_unit_panel(  # noqa: PLR0913
 
         refuse(
             CLUSTER_UNAVAILABLE,
-            constructor="Analysis.from_unit_panel",
+            constructor="from_frame",
             requested=cluster,
             offered=(),
-            route="aggregate to one row per unit and use from_unit_summary(cluster=...)",
+            route='aggregate to one row per unit and use from_frame(shape="summary", cluster=...)',
         )
     return FramePanelSource.from_frame(
         frame,

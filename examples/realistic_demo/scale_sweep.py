@@ -1,15 +1,15 @@
 """Scaling sweep over the REAL realistic_demo normalized warehouse.
 
 Regenerates ``examples/realistic_demo/warehouse`` at a series of partition
-counts and times the full 5-metric experiment ``Analysis`` (materialized)
+counts and times the full 5-metric experiment run (materialized)
 against the real generator (``examples/realistic_demo/generate.py``) and the
 real Hive-partitioned Parquet layout it writes -- not a simplified fixture.
 
 An earlier investigation on a smaller synthetic single-file-per-table
 fixture found that querying a normalized warehouse (dimension joins pushed
 into SQL) costs only ~1.06-1.24x versus a pre-joined "mart" table, with no
-upward trend across 16x of data, and that calling ``Analysis.materialize()``
-before ``.run()`` is the fastest option at every scale measured. This module
+upward trend across 16x of data, and that calling ``workflows.materialize()``
+before ``run()`` is the fastest option at every scale measured. This module
 exists to confirm (or refute) that finding against the real generator and
 real partitioned warehouse this repo ships.
 
@@ -38,7 +38,8 @@ from typing import TYPE_CHECKING
 import ibis
 import pyarrow.parquet as pq
 
-from increment import Analysis
+from increment import from_definitions, run
+from increment.workflows import export_moments, materialize
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -109,7 +110,7 @@ def sweep(
       partitions        -- int, the partition count for this row
       events_scanned    -- int, total events + orders rows in the warehouse
       warehouse_bytes    -- int, total size on disk of all Parquet files
-      wall_clock_secs    -- float, Analysis.materialize() + .run() time
+      wall_clock_secs    -- float, materialize() + run() time
       moments_rows       -- int, row count of the exported moments cube
       moments_bytes       -- int, size on disk of the exported moments cube
     One row per requested partition count, in the order given. Restores the
@@ -140,17 +141,19 @@ def sweep(
 
             con = ibis.duckdb.connect()
             try:
-                analysis = Analysis.from_definitions(_EXPERIMENT, _DEFINITIONS, con)
+                experiment, resolver = from_definitions(
+                    _DEFINITIONS, con, experiment_name=_EXPERIMENT
+                )
 
                 start = time.perf_counter()
-                analysis.materialize()
-                analysis.run()
+                materialize(experiment, resolver)
+                run(experiment, resolver)
                 wall_clock_secs = time.perf_counter() - start
 
                 export_dir = _WAREHOUSE / ".scale_sweep_tmp"
                 export_dir.mkdir(parents=True, exist_ok=True)
                 export_path = export_dir / f"moments_{partitions:05d}.parquet"
-                analysis.export(export_path)
+                export_moments(experiment, resolver, export_path)
 
                 moments_rows = pq.read_metadata(export_path).num_rows
                 moments_bytes = export_path.stat().st_size

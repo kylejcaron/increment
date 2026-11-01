@@ -6,7 +6,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import Analysis
+from increment import from_switchback_frame
 from increment.errors import InvalidRequestError
 from increment.estimation.contrast_results import ContrastResult, ContrastResults
 from increment.estimators import (
@@ -18,7 +18,8 @@ from increment.estimators import (
 from increment.semantics.design import Randomized
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.tables import contrast_results_to_readout
-from tests.analysis_factory import contrast_rows
+from increment.workflows import assignment_diagnostic
+from tests.analysis_factory import contrast_rows, view_readout
 
 
 def test_public_switchback_surface_smoke():
@@ -37,7 +38,7 @@ def test_public_switchback_surface_smoke():
                             "value": float(step + (group == "treatment")),
                         }
                     )
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -54,9 +55,9 @@ def test_public_switchback_surface_smoke():
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
-    result = contrast_rows(analysis.run())[0]
+    result = contrast_rows(view_readout(experiment, resolver))[0]
     assert math.isfinite(result.estimate.value)
-    assert analysis.assignment_diagnostic().n_units == 2
+    assert assignment_diagnostic(experiment, resolver).n_units == 2
 
 
 def test_zero_variance_contrast_is_not_stat_sig():
@@ -79,7 +80,7 @@ def test_zero_variance_contrast_is_not_stat_sig():
                             "value": 10.0 if group == "treatment" else 5.0,
                         }
                     )
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -96,7 +97,7 @@ def test_zero_variance_contrast_is_not_stat_sig():
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
-    result = contrast_rows(analysis.run())[0]
+    result = contrast_rows(view_readout(experiment, resolver))[0]
     assert result.standard_error == 0.0
     assert result.estimate.lb is None and result.estimate.ub is None
     row = contrast_results_to_readout([result])[0]
@@ -140,7 +141,7 @@ def test_shared_schedule_public_surface_smoke():
         return 10.0 + (6.0 + eps[cycle]) * (group == "treatment")
 
     rows = _shared_panel_rows(roster, block_order, outcome_fn)
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -156,7 +157,7 @@ def test_shared_schedule_public_surface_smoke():
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
-    result = contrast_rows(analysis.run())[0]
+    result = contrast_rows(view_readout(experiment, resolver))[0]
     assert math.isfinite(result.estimate.value)
     assert result.estimate.value == pytest.approx(6.0)
     assert result.method == "switchback_block_t"
@@ -174,7 +175,7 @@ def test_shared_schedule_public_surface_smoke():
     assert result.estimate.ub == pytest.approx(6.0 + half_width)
     assert result.estimate.lb is not None and result.estimate.ub is not None
     assert result.estimate.lb < result.estimate.value < result.estimate.ub
-    diagnostics = analysis.assignment_diagnostic()
+    diagnostics = assignment_diagnostic(experiment, resolver)
     assert diagnostics.n_units == 3
     assert diagnostics.n_blocks == 4
 
@@ -196,7 +197,7 @@ def test_shared_schedule_zero_variance_contrast_is_not_stat_sig():
         return 10.0 if group == "treatment" else 5.0
 
     rows = _shared_panel_rows(roster, block_order, outcome_fn)
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -212,7 +213,7 @@ def test_shared_schedule_zero_variance_contrast_is_not_stat_sig():
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
-    results = contrast_rows(analysis.run())
+    results = contrast_rows(view_readout(experiment, resolver))
     result = results[0]
     assert result.standard_error == 0.0
     estimate = result.estimate
@@ -263,7 +264,7 @@ def test_degenerate_320_ct_witness_refuses_public_unit_cycle_declaration(
     assert binomtest(ct, ct + tc, 0.5).pvalue < 1e-6
 
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis.from_switchback_panel(
+        from_switchback_frame(
             frame,
             unit="unit",
             cycle="cycle",
@@ -300,7 +301,7 @@ def test_degenerate_320_ct_witness_now_refuses_under_public_shared_declaration(
     only observation noise, not the treatment contrast -- which is exactly
     the hazard this task refuses."""
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis.from_switchback_panel(
+        from_switchback_frame(
             degenerate_320_ct_panel,
             unit="unit",
             cycle="cycle",
@@ -356,7 +357,7 @@ def test_public_retained_window_metadata_and_effect_round_trip(shared, carryover
     )
     restored_assignment = SwitchbackAssignment.model_validate_json(assignment.model_dump_json())
     assert type(restored_assignment.sequence) is type(sequence)
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -370,7 +371,7 @@ def test_public_retained_window_metadata_and_effect_round_trip(shared, carryover
         assignment=restored_assignment,
         contrast_references=None if shared else {"value": UnitCycleTApproximation()},
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     result = contrast_rows(results)[0]
     retained = 3 - carryover_order
     expected_se = retained * (math.sqrt(10 / 12) if shared else math.sqrt(8 / 6))
@@ -381,7 +382,7 @@ def test_public_retained_window_metadata_and_effect_round_trip(shared, carryover
     assert result.estimate.lb < result.estimate.value < result.estimate.ub
     assert ContrastResult.model_validate_json(result.model_dump_json()) == result
 
-    diagnostic = analysis.assignment_diagnostic()
+    diagnostic = assignment_diagnostic(experiment, resolver)
     assert diagnostic.n_cycles == 12
     assert (diagnostic.ct_count, diagnostic.tc_count) == ((2, 2) if shared else (6, 6))
     assert diagnostic.observation_rows == 72

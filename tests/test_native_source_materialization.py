@@ -12,7 +12,7 @@ from typing import cast
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import from_definitions
 from increment.evidence import (
     CountEvidence,
     CountsRequest,
@@ -21,7 +21,8 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from tests.analysis_factory import _native_source
+from increment.workflows import metrics
+from tests.analysis_factory import bound_source
 
 
 def _defs_and_con(tmp_path):
@@ -90,9 +91,9 @@ def test_materialized_panel_reflects_a_valid_exposure_and_fact_added_after_mater
     materialized) already saw the new unit.
     """
     defs_path, con = _defs_and_con(tmp_path)
-    analysis = Analysis.from_definitions("exp", defs_path, con, store="always")
-    src = _native_source(analysis)
-    metric = analysis.metrics[0]
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp", store="always")
+    src = bound_source(resolver)
+    metric = metrics(experiment, resolver)[0]
 
     baseline = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))[0]
     assert baseline["n"] == 1

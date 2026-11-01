@@ -21,7 +21,9 @@ from typing import Any
 
 import pytest
 
+from increment import Scope
 from increment.errors import CapabilityError, InvalidRequestError
+from increment.evidence import BreakoutIdentity
 from tests._unit_boundary import backend_fixture
 
 pytest.importorskip("coeftable")
@@ -701,7 +703,8 @@ def test_health_renderer_consumes_restored_health_report(
                     "route": (
                         "Declare allocation_scheme='independent' on a design that uses an "
                         "independent constant-probability draw, or use "
-                        "Analysis.srm(inference='fixed') for one predeclared look."
+                        "workflows.srm(experiment, resolver, inference='fixed') for one "
+                        "predeclared look."
                     ),
                 },
             ),
@@ -1846,24 +1849,46 @@ def _fingerprint(rows) -> list[tuple[Any, ...]]:
     return out
 
 
+_COUNTRY_SEGMENT = BreakoutIdentity("country", None)
+
+
 @pytest.mark.parametrize(
     ("view", "engine", "kwargs"),
     [
-        ("cumulative_lift", "run_asof_lift", {}),
-        ("cumulative_values", "run_asof", {}),
-        ("cumulative_values", "run_asof", {"completed_windows_only": True}),
-        ("daily_values", "run_daily", {}),
+        ("cumulative_lift", Scope(view="asof", grain="asof", segment=_COUNTRY_SEGMENT), {}),
+        (
+            "cumulative_values",
+            Scope(view="asof", grain="asof", values=True, segment=_COUNTRY_SEGMENT),
+            {},
+        ),
+        (
+            "cumulative_values",
+            Scope(
+                view="asof",
+                grain="asof",
+                values=True,
+                completion_policy=True,
+                segment=_COUNTRY_SEGMENT,
+            ),
+            {"completed_windows_only": True},
+        ),
+        (
+            "daily_values",
+            Scope(view="daily", grain="daily", values=True, segment=_COUNTRY_SEGMENT),
+            {},
+        ),
     ],
+    ids=["asof-lift", "asof-values", "asof-values-completed", "daily-values"],
 )
 def test_declared_breakout_temporal_views_are_the_engine_segment_trajectories(
     dashboard_con,
     dashboard_definitions,
     storefront: DashboardSnapshot,
     view: ExploreView,
-    engine: str,
+    engine: Scope,
     kwargs: dict,
 ) -> None:
-    from tests.analysis_factory import bound_analysis
+    from tests.analysis_factory import view_readout
 
     metric = "checkout_conversion"
     experiment, resolver = _bind(dashboard_con, dashboard_definitions, "storefront_refresh")
@@ -1876,8 +1901,7 @@ def test_declared_breakout_temporal_views_are_the_engine_segment_trajectories(
             breakout=COUNTRY,
             **kwargs,
         )
-        live = bound_analysis(resolver)
-        direct = getattr(live, engine)(metrics=[metric], dimension="country", **kwargs)
+        direct = view_readout(experiment, resolver, engine, metrics=[metric])
     assert segmented, "a declared breakout must produce a segment trajectory"
     actual, expected = _fingerprint(segmented), _fingerprint(direct)
     assert len(actual) == len(expected)

@@ -9,7 +9,7 @@ available through `run()` rather than additive moments.
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, MetricSpec
+from increment import MetricSpec, from_frame, run
 
 rng = np.random.default_rng(12)
 n = 2000
@@ -20,13 +20,15 @@ df = pl.DataFrame(
     {"user_id": [f"u{i}" for i in range(n)], "variant": variant, "latency_ms": latency}
 )
 
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[MetricSpec(name="latency_ms", type="quantile", quantile=0.9)],
-).run()
+)
+results = run(experiment, resolver).readout()
 for r in results:
     print(f"p90 relative lift: {r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}]")
 ```
@@ -115,8 +117,8 @@ an `Observational` design (`readout.observational.quantile` -- the
 order-statistic interval assumes independently randomized arms, and no
 observational quantile estimator exists; run the metric under a randomized
 design). Where `readout.observational.quantile` is reached, it is the same on
-`from_definitions`, `from_unit_day_artifact`, `from_unit_summary`, and
-`from_unit_panel`, and fixed-horizon inference does not lift it. It is the
+`from_definitions`, `from_unit_day_artifact`, and `from_frame` summaries and
+panels, and fixed-horizon inference does not lift it. It is the
 refusal for a two-sided, zero-null request. Any one-sided or shifted-null
 request is refused first by `readout.metric.quantile_alternative` -- a plan
 `alternative="greater"`/`"less"`, a guardrail without a margin (its adverse
@@ -144,11 +146,11 @@ only.
 A portable moments cube holds additive moments, never the per-unit values an
 order statistic needs, and two different requests reach it:
 
-- **Exporting a quantile** refuses at `export()` with
+- **Exporting a quantile** refuses at `export_moments()` with
   `source.frame.quantile_no_moments` (a source limit: a quantile has no moments
   representation), so no quantile cube ever exists to replay. Every
   export-capable ingress (`from_definitions`, a reopened unit-day artifact,
-  `from_unit_summary`, `from_unit_panel`) refuses a fixed-horizon moments
+  `from_frame` summaries and panels) refuses a fixed-horizon moments
   export the same way, from the metric catalog alone, before reading any
   count or moment or writing a file, even when additive metrics accompany the
   quantile. An observational design refuses with
@@ -176,8 +178,8 @@ order statistic needs, and two different requests reach it:
   | `Observational`, one-sided `alternative`, marginless guardrail, or absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
   | `Observational`, relative margin | `plan.observational.relative_margin`, at construction, before any read |
 
-  `run_breakout()` raises `evidence.breakout_unavailable`, the day-axis methods
-  (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`) raise
+  A breakout view raises `evidence.breakout_unavailable`, the daily and as-of
+  views (values or lift) raise
   `evidence.grain_unavailable`, and `planning_baseline` raises
   `analysis.planning_baseline.quantile_source_unavailable`; these source limits
   fire before any estimator reads the cube, under either design. A clustered

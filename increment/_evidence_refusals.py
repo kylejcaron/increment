@@ -241,7 +241,7 @@ def refuse_assignment_identity(src: object, *, operation: str) -> NoReturn:
         constructor=_constructor_name(src),
         operation=operation,
         route=(
-            "supply a row-level assignment ledger via Analysis.from_definitions "
+            "supply a row-level assignment ledger via from_definitions "
             "with experiment.assignment_ledger, or via a FrameLedger"
         ),
     )
@@ -309,12 +309,12 @@ def refuse_assignment(src: object, *, offered: str) -> NoReturn:
     from increment._source_types import declared_evidence
 
     instructions = {
-        "definitions": "use Analysis.from_definitions(...) with experiment.assignment_ledger and semantic roles",
+        "definitions": "use from_definitions(...) with experiment.assignment_ledger and semantic roles",
         "artifact": "publish retained assignment_counts with from_unit_day_artifact or use from_definitions with an identity ledger",
-        "unit_summary": "retain unit and group columns with Analysis.from_unit_summary",
-        "unit_panel": "retain a unit-stable group column with Analysis.from_unit_panel",
-        "moments": "retain exact assignment_counts when using Analysis.from_moments",
-        "switchback": "retain cycle, period and group roles with Analysis.from_switchback_panel",
+        "unit_summary": 'retain unit and group columns with from_frame(shape="summary")',
+        "unit_panel": 'retain a unit-stable group column with from_frame(shape="panel")',
+        "moments": "retain exact assignment_counts when using from_moments",
+        "switchback": "retain cycle, period and group roles with from_switchback_frame",
     }
     guidance = instructions.get(
         declared_evidence(src).kind,

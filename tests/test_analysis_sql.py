@@ -1,8 +1,4 @@
-"""Test Analysis facade — integration with examples/definitions.
-
-TDD Step 1: this test should fail before analysis.py exists, then pass
-after the facade is implemented.
-"""
+"""Definitions-built experiments: integration with examples/definitions."""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ from datetime import datetime
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import Scope, workflows
 from increment.builders import from_definitions
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult
@@ -34,7 +30,13 @@ from increment.semantics.models import (
     MeanMetric,
     Winsorization,
 )
-from tests.analysis_factory import _recovered_sum, make_analysis, make_analysis_like
+from increment.workflows import experiment_definition, srm
+from tests.analysis_factory import (
+    _recovered_sum,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 
 
 def _srm_result(result: object) -> SRMResult:
@@ -161,22 +163,15 @@ def _union_horizon_defs():
 
 
 def _union_horizon_analysis(con, defs, *, store, metrics=None):
-    """Build an ``Analysis`` for ``union_horizon_exp``.
+    """Build the ``(experiment, resolver)`` pair for ``union_horizon_exp``.
 
-    *metrics*, when given, is threaded through ``make_analysis``'s
+    *metrics*, when given, is threaded through ``make_binding``'s
     ``metrics=`` kwarg, which wires the selected metric list directly while
-    building the instance. This scopes which metrics are declared for the
-    instance without needing a second experiment or exposure population.
+    building the binding. This scopes which metrics are declared for the
+    binding without needing a second experiment or exposure population.
     """
     experiment = defs.experiment("union_horizon_exp")
-    analysis = make_analysis(
-        con,
-        defs,
-        experiment=experiment,
-        store=store,
-        metrics=metrics,
-    )
-    return analysis
+    return make_binding(con, defs, experiment=experiment, store=store, metrics=metrics)
 
 
 def _sql_pair(
@@ -204,12 +199,12 @@ def test_constructor_with_new_experiment_refreshes_the_declared_design_control_g
     group while preserving explicitly pinned designs."""
     con, defs = _union_horizon_defs()
     a = _union_horizon_analysis(con, defs, store="none")
-    assert a.experiment.control_group == "control"
+    assert experiment_definition(*a).control_group == "control"
 
-    a = make_analysis_like(
-        a, experiment=a.experiment.model_copy(update={"control_group": "treatment"})
+    a = make_binding_like(
+        a[1], experiment=experiment_definition(*a).model_copy(update={"control_group": "treatment"})
     )
-    assert a.experiment.control_group == "treatment"
+    assert experiment_definition(*a).control_group == "treatment"
 
     # A hand-pinned Encouragement test double owns its own control_group
     # and must be left untouched when rebuilding with a new experiment.
@@ -225,11 +220,11 @@ def test_constructor_with_new_experiment_refreshes_the_declared_design_control_g
         uptake=UptakeSpec(fact="page_view"),
         exclusion_restriction=ExclusionRestriction(justification="test double, not a real design"),
     )
-    a = make_analysis_like(a, design=encouragement)
-    a = make_analysis_like(
-        a, experiment=a.experiment.model_copy(update={"control_group": "control"})
+    a = make_binding_like(a[1], design=encouragement)
+    a = make_binding_like(
+        a[1], experiment=experiment_definition(*a).model_copy(update={"control_group": "control"})
     )
-    late = a.run(estimands=("late",))
+    late = view_readout(*a, estimands=("late",))
     assert late
 
     # A hand-pinned Randomized design with a non-default allocation is a
@@ -239,31 +234,31 @@ def test_constructor_with_new_experiment_refreshes_the_declared_design_control_g
         allocation={"control": 0.3, "treatment": 0.7},
         allocation_scheme="independent",
     )
-    a = make_analysis_like(a, design=custom_randomized)
-    a = make_analysis_like(
-        a, experiment=a.experiment.model_copy(update={"control_group": "treatment"})
+    a = make_binding_like(a[1], design=custom_randomized)
+    a = make_binding_like(
+        a[1], experiment=experiment_definition(*a).model_copy(update={"control_group": "treatment"})
     )
-    assert _srm_result(a.srm()).expected == {"control": 0.3, "treatment": 0.7}
+    assert _srm_result(srm(*a)).expected == {"control": 0.3, "treatment": 0.7}
 
     # A hand-pinned Observational design is likewise never the plain
     # declared default and must survive untouched too.
     observational = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("x",))
     )
-    a = make_analysis_like(a, design=observational)
-    a = make_analysis_like(
-        a, experiment=a.experiment.model_copy(update={"control_group": "treatment"})
+    a = make_binding_like(a[1], design=observational)
+    a = make_binding_like(
+        a[1], experiment=experiment_definition(*a).model_copy(update={"control_group": "treatment"})
     )
     # The pinned observational design routes the readout to the per-unit
     # frame, which then refuses the undeclared covariate "x" by name.
     with pytest.raises(CapabilityError) as raised:
-        a.run()
+        view_readout(*a)
     assert raised.value.code == "source.native.covariate_unresolved"
 
 
 @pytest.mark.slow
 def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs, tmp_path):
-    """Analysis.run() returns one LiftEstimate per experiment metric.
+    """A run returns one LiftEstimate per experiment metric.
 
     Validates the full pipeline from definitions through builders to
     estimation with the pre-period covariate materialized: new_onboarding_v2
@@ -281,15 +276,15 @@ def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs, tmp_p
     past infer_lift's log-scale SE ceiling), so `con` would exercise the
     refusal path instead of the pipeline this test is about.
     """
-    analysis = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path=seeded_defs,
-        con=seeded_pre_period_con,
+    analysis_experiment, analysis_resolver = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
     )
-    assert analysis.experiment.n_pre_periods == 14, (
+    assert experiment_definition(analysis_experiment, analysis_resolver).n_pre_periods == 14, (
         "test fixture drifted -- this test intends to materialize a covariate"
     )
-    results = analysis.run(decision_method=Method(name="unadjusted"))
+    results = view_readout(
+        analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+    )
 
     assert isinstance(results, list)
     assert len(results) > 0, "Expected at least one LiftEstimate"
@@ -327,10 +322,14 @@ def test_ratio_metric_with_n_pre_periods_never_builds_covariate(
 ):
     """A ratio metric with an unadjusted binding must not build covariate
     evidence even when the experiment declares a pre-period."""
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    assert analysis.experiment.n_pre_periods == 14
+    base_experiment, base_resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert experiment_definition(base_experiment, base_resolver).n_pre_periods == 14
     ratio_metric = next(m for m in load(seeded_defs).metrics if m.name == "revenue_per_session")
-    analysis = make_analysis_like(analysis, [*analysis.metrics, ratio_metric])
+    experiment, resolver = make_binding_like(
+        base_resolver, [*workflows.metrics(base_experiment, base_resolver), ratio_metric]
+    )
     queries: list[str] = []
     execute = seeded_con.to_pyarrow
 
@@ -339,7 +338,7 @@ def test_ratio_metric_with_n_pre_periods_never_builds_covariate(
         return execute(expr, *args, **kwargs)
 
     monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
-    results = analysis.run(decision_method=Method(name="unadjusted"))
+    results = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
     ratio_rows = [r for r in results if r.metric == "revenue_per_session"]
     assert ratio_rows
     assert all(r.method == "unadjusted" for r in ratio_rows)
@@ -348,7 +347,7 @@ def test_ratio_metric_with_n_pre_periods_never_builds_covariate(
     )
 
 
-def test_run_rejects_unknown_estimand_loudly(con):
+def test_run_rejects_unknown_estimand_loudly(con, example_definitions):
     """A typo'd ``estimands`` value must refuse loudly on the native
     (non-frame) path, not silently drop every non-guardrail metric's rows:
     pre-fix, ``run(estimands=("typo",))`` on an experiment with a declared
@@ -357,29 +356,25 @@ def test_run_rejects_unknown_estimand_loudly(con):
     OTHER metric's rows - which also carry ``estimand="itt"`` - got
     filtered out as "not requested", leaving one silent guardrail-only
     row and no error."""
-    analysis = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
     )
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(estimands=("typo",))
+        view_readout(experiment, resolver, estimands=("typo",))
     assert raised.value.code == "readout.estimands.unknown"
 
 
-def test_run_rejects_unidentifiable_estimand_on_native_randomized_path(con):
+def test_run_rejects_unidentifiable_estimand_on_native_randomized_path(con, example_definitions):
     """A known-but-unidentifiable ``estimands`` value (``"late"``/
     ``"compliance"``) must refuse loudly on the native (non-frame) path
     for a design that isn't an Encouragement, same as it already does on
     the frame path (``increment.readouts``), rather than returning itt rows the
     caller never requested."""
-    analysis = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
     )
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(estimands=("late",))
+        view_readout(experiment, resolver, estimands=("late",))
     assert raised.value.code == "readout.assignment.estimands"
 
 
@@ -390,7 +385,8 @@ def test_run_itt_estimand_works_on_native_randomized_path(seeded_defs, seeded_co
     fixture's purchase_rate control arm is saturated (every unit
     purchased) and infer_lift's degenerate-arm guard refuses it, aborting
     run() before the estimands plumbing under test here is reached."""
-    results = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
+    results = view_readout(
+        *from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2"),
         estimands=("itt",),
         decision_method=Method(name="unadjusted"),
     )
@@ -398,8 +394,8 @@ def test_run_itt_estimand_works_on_native_randomized_path(seeded_defs, seeded_co
 
 
 @pytest.mark.slow
-def test_experiment_analysis_with_ratio_metric(con, tmp_path):
-    """Analysis.run() handles a RatioMetric through the facade.
+def test_experiment_analysis_with_ratio_metric(con, tmp_path, example_definitions):
+    """A run handles a RatioMetric from definitions.
 
     Regression test: RatioMetric has no top-level `.fact` (only
     `.numerator.fact`/`.denominator.fact`), and the facade's metric loop
@@ -407,12 +403,10 @@ def test_experiment_analysis_with_ratio_metric(con, tmp_path):
     crashing with AttributeError on any ratio metric. pricing_tier_test
     (n_pre_periods=0) includes revenue_per_session, a RatioMetric.
     """
-    analysis = Analysis(
-        experiment_name="pricing_tier_test",
-        definitions_path="examples/definitions/",
-        con=con,
+    analysis_experiment, analysis_resolver = from_definitions(
+        example_definitions, con, experiment_name="pricing_tier_test"
     )
-    results = analysis.run()
+    results = view_readout(analysis_experiment, analysis_resolver)
 
     assert isinstance(results, list)
     result_metrics = {r.metric for r in results}
@@ -437,7 +431,7 @@ def test_experiment_analysis_with_ratio_metric(con, tmp_path):
 
 
 def _analysis_with_ratio_metric_material_censoring(con):
-    """Build an ``Analysis`` (no breakout) whose only metric is
+    """Build an ``(experiment, resolver)`` pair (no breakout) whose only metric is
     a :class:`RatioMetric` (``revenue_per_session`` = sum(purchase.revenue)
     / count(session_end), ``numerator.window_days=7``) sized so that
     censoring drops a material (>10%) share of enrolled units, forcing
@@ -453,7 +447,7 @@ def _analysis_with_ratio_metric_material_censoring(con):
     ``ir.Scalar.execute()`` cannot resolve directly (it calls
     ``.as_table()`` internally, which raises
     ``ibis.common.exceptions.RelationError`` for a multi-relation
-    scalar). This crashed ``Analysis.run()`` for ANY
+    scalar). This crashed a run for ANY
     RatioMetric whose censoring warning fired - not an edge case.
 
     2 early units per arm (c_early0/c_early1, t_early0/t_early1, exposed
@@ -593,12 +587,11 @@ def _analysis_with_ratio_metric_material_censoring(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
-    return analysis
+    return make_binding(con, defs)
 
 
 def test_run_ratio_metric_with_material_censoring_does_not_crash(con):
-    """``Analysis.run()`` on a RatioMetric whose censoring
+    """A run on a RatioMetric whose censoring
     warning fires must not crash.
 
     Regression: the warning's attribution branch resolves a lazy
@@ -609,11 +602,11 @@ def test_run_ratio_metric_with_material_censoring_does_not_crash(con):
     table references`` before the fix (anchoring the resolution in a
     throwaway single-row memtable).
     """
-    analysis = _analysis_with_ratio_metric_material_censoring(con)
+    experiment, resolver = _analysis_with_ratio_metric_material_censoring(con)
 
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        results = analysis.run()
+        results = view_readout(experiment, resolver)
 
     censoring_warnings = [
         w
@@ -673,12 +666,12 @@ def test_cuped_covariate_is_per_metric_not_metric_zero(
     assert con.sql("select 1").execute().shape == (1, 1)
 
     # The cuped method must be reachable via the public API on data that supports it: runs on the seeded warehouse (with a pre-period) rather than the hand-written fixture, scoped to the two metrics with a genuine nonzero-variance pre-period covariate (d7_retention shares its fact with the exposure definition, so has none).
-    scoped = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path=seeded_defs,
-        con=seeded_pre_period_con,
+    scoped_experiment, scoped_resolver = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
     )
-    results = scoped.run(
+    results = view_readout(
+        scoped_experiment,
+        scoped_resolver,
         decision_method=Method(name="unadjusted"),
         sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
         metrics=["purchase_rate", "avg_session_duration"],
@@ -738,16 +731,13 @@ def test_exposure_events_not_dropped_when_fact_source_lacks_experiment_id():
     )
     defs = Definitions(fact_sources=[fs], exposures=[exposure], experiments=[experiment])
 
-    analysis = make_analysis(
-        con,
-        defs,
-        experiment=experiment,
-        backend="duckdb",
-        metrics=[],
-        _exp_lookup_exposures={exposure.name: exposure},
+    analysis_experiment, analysis_resolver = make_binding(
+        con, defs, experiment=experiment, backend="duckdb", metrics=[]
     )
 
-    result = _srm_result(analysis.srm(expected={"control": 0.5, "treatment": 0.5}))
+    result = _srm_result(
+        srm(analysis_experiment, analysis_resolver, expected={"control": 0.5, "treatment": 0.5})
+    )
     assert sum(result.observed.values()) == 2, (
         f"expected both signup events retained (no experiment_id to filter on), got {result.observed}"
     )
@@ -800,16 +790,13 @@ def test_enrollment_not_empty_when_fact_source_lacks_experiment_id():
     )
     defs = Definitions(fact_sources=[fs], exposures=[exposure], experiments=[experiment])
 
-    analysis = make_analysis(
-        con,
-        defs,
-        experiment=experiment,
-        backend="duckdb",
-        metrics=[],
-        _exp_lookup_exposures={exposure.name: exposure},
+    analysis_experiment, analysis_resolver = make_binding(
+        con, defs, experiment=experiment, backend="duckdb", metrics=[]
     )
 
-    result = _srm_result(analysis.srm(expected={"control": 0.5, "treatment": 0.5}))
+    result = _srm_result(
+        srm(analysis_experiment, analysis_resolver, expected={"control": 0.5, "treatment": 0.5})
+    )
     assert result.observed == {"control": 1, "treatment": 1}
 
 
@@ -881,12 +868,12 @@ def test_explicit_backend_overrides_connection_name(con, tmp_path):
     assert not any("`" in sql for sql in duckdb_sql)
 
 
-@pytest.mark.parametrize("method", ["run", "run_breakout"])
+@pytest.mark.parametrize("view", ["run", "breakout"])
 def test_native_analysis_rejects_percentile_winsorization_before_reduction(
-    con, monkeypatch, method
+    con, monkeypatch, view, example_definitions
 ):
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2", "examples/definitions", con, store="none"
+    base_experiment, base_resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
     revenue_metric = MeanMetric(
         name="revenue",
@@ -900,8 +887,8 @@ def test_native_analysis_rejects_percentile_winsorization_before_reduction(
     # Pin a revenue-only plan so the ad-hoc metric reaches the
     # percentile-winsorization guard without re-resolving new_onboarding_v2's
     # declared plan against metrics it never named.
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = make_binding_like(
+        base_resolver,
         [revenue_metric],
         plan=compile_decision_plan(None, [revenue_metric], path="warehouse"),
     )
@@ -913,39 +900,41 @@ def test_native_analysis_rejects_percentile_winsorization_before_reduction(
     )
 
     with pytest.raises(CapabilityError) as raised:
-        getattr(analysis, method)()
+        view_readout(experiment, resolver, Scope(view=view, grain="total"))
     expected = (
         "estimation.winsor.support_required"
-        if method == "run"
+        if view == "run"
         else "readout.metric.percentile_winsorization"
     )
     assert getattr(raised.value, "code", None) == expected
 
 
-def test_zero_metrics_returns_empty_list(con):
-    """analysis.run() with no metrics/guardrails returns [] instead of crashing."""
-    analysis = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
-    analysis = make_analysis_like(analysis, [], plan=AnalysisPlan())
+def _zero_metric_pricing_pair(con, definitions):
+    _, resolver = from_definitions(definitions, con, experiment_name="pricing_tier_test")
+    return make_binding_like(resolver, [], plan=AnalysisPlan())
 
-    result = analysis.run()
+
+def test_zero_metrics_returns_empty_list(con, example_definitions):
+    """A run with no metrics/guardrails returns [] instead of crashing."""
+    experiment, resolver = _zero_metric_pricing_pair(con, example_definitions)
+
+    result = view_readout(experiment, resolver)
     assert result == []
 
 
-def test_zero_metrics_panel_sql_returns_empty_dict(con):
-    """analysis.panel_sql() with no metrics returns {}."""
-    analysis = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
-    analysis = make_analysis_like(analysis, [], plan=AnalysisPlan())
+def test_zero_metrics_panel_sql_returns_empty_dict(con, example_definitions):
+    """panel_sql() with no metrics returns {}."""
+    experiment, resolver = _zero_metric_pricing_pair(con, example_definitions)
 
-    result = analysis.panel_sql()
+    result = panel_sql(experiment, resolver)
     assert result == {}
 
 
-def test_zero_metrics_summary_sql_returns_empty_dict(con):
-    """analysis.summary_sql() with no metrics returns {}."""
-    analysis = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
-    analysis = make_analysis_like(analysis, [], plan=AnalysisPlan())
+def test_zero_metrics_summary_sql_returns_empty_dict(con, example_definitions):
+    """summary_sql() with no metrics returns {}."""
+    experiment, resolver = _zero_metric_pricing_pair(con, example_definitions)
 
-    result = analysis.summary_sql()
+    result = summary_sql(experiment, resolver)
     assert result == {}
 
 
@@ -960,7 +949,7 @@ def test_panel_sql_and_summary_sql_never_execute_even_when_censoring_would_warn(
     neither happens, no warning is raised and both calls still return
     real, non-empty SQL text.
     """
-    analysis = _analysis_with_stale_retention_data(con)
+    experiment, resolver = _analysis_with_stale_retention_data(con)
     monkeypatch.setattr(
         con,
         "to_pyarrow",
@@ -969,15 +958,15 @@ def test_panel_sql_and_summary_sql_never_execute_even_when_censoring_would_warn(
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        panel_sql = analysis.panel_sql()
-        summary_sql = analysis.summary_sql()
+        panel = panel_sql(experiment, resolver)
+        summary = summary_sql(experiment, resolver)
 
-    assert panel_sql["returned"]
-    assert summary_sql["returned"]
+    assert panel["returned"]
+    assert summary["returned"]
 
 
 def _analysis_with_stale_retention_data(con):
-    """Build an ``Analysis`` (no breakout) with one bounded
+    """Build an ``(experiment, resolver)`` pair (no breakout) with one bounded
     RetentionMetric where the fact source's real data stops well before
     the cohort's maturity date, but ``observation_end`` is declared far
     enough out that - WITHOUT the ``data_as_of`` cap threaded from the
@@ -989,7 +978,7 @@ def _analysis_with_stale_retention_data(con):
     event data, between "did not return" and "data for that unit hasn't
     loaded yet". The fact source's freshness bound comes from the metric's
     own fact (``app_open``, filtered via ``event == fact`` - see
-    :meth:`Analysis.data_as_of`, whose last event is
+    the source's ``data_as_of``, whose last event is
     2025-08-02, long before the cohort's maturity date (exposure + window_days=10 =
     2025-08-11). ``observation_end=2025-12-01`` is declared far past that
     maturity date, so only the ``data_as_of`` cap can prevent the cohort
@@ -1062,8 +1051,7 @@ def _analysis_with_stale_retention_data(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
-    return analysis
+    return make_binding(con, defs)
 
 
 def test_public_facade_uses_experiment_unit_when_entities_are_reordered():
@@ -1107,15 +1095,13 @@ def test_public_facade_uses_experiment_unit_when_entities_are_reordered():
         plan=AnalysisPlan(),
     )
     defs = Definitions(fact_sources=[fs], exposures=[exposure], experiments=[experiment])
-    analysis = make_analysis(
-        con,
-        defs,
-        experiment=experiment,
-        metrics=[],
-        _exp_lookup_exposures={exposure.name: exposure},
+    analysis_experiment, analysis_resolver = make_binding(
+        con, defs, experiment=experiment, metrics=[]
     )
 
-    result = _srm_result(analysis.srm(expected={"control": 0.5, "treatment": 0.5}))
+    result = _srm_result(
+        srm(analysis_experiment, analysis_resolver, expected={"control": 0.5, "treatment": 0.5})
+    )
     assert result.observed == {"control": 1, "treatment": 1}
 
 

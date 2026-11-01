@@ -440,7 +440,7 @@ PLANNING_BASELINE = ConsumerContract(
             "from_switchback_panel",
             "cluster= on the switchback constructor",
             "not_expressible",
-            reason="from_switchback_panel has no cluster= parameter: a switchback contrast has no arm-cluster shape",
+            reason="from_switchback_frame has no cluster= parameter: a switchback contrast has no arm-cluster shape",
             stage="construction",
             evidence=(_BASELINE_SWITCHBACK,),
         ),
@@ -569,7 +569,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
     (
         _e(
             "from_unit_summary_supported",
-            "Analysis.run() mixed-covariate mean/ratio/conversion",
+            "run() mixed-covariate mean/ratio/conversion",
             "from_unit_summary",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
@@ -579,7 +579,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
         ),
         _e(
             "from_unit_panel_supported",
-            "Analysis.run() mixed-covariate mean/ratio/conversion",
+            "run() mixed-covariate mean/ratio/conversion",
             "from_unit_panel",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
@@ -589,7 +589,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
         ),
         _e(
             "from_definitions_supported",
-            "Analysis.run() mixed-covariate mean/ratio/conversion",
+            "run() mixed-covariate mean/ratio/conversion",
             "from_definitions",
             "same per-unit mean, ratio, categorical and missing-history data; warehouse QR keeps unit values in place and leaves only the bounded triangular solve and fit finalization client-side (verified on DuckDB, PostgreSQL, Snowflake and BigQuery)",
             "supported",
@@ -599,7 +599,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
         ),
         _e(
             "from_unit_day_artifact_supported",
-            "Analysis.run() mixed-covariate mean/ratio/conversion",
+            "run() mixed-covariate mean/ratio/conversion",
             "from_unit_day_artifact",
             "format-4 artifact extensions are SQL-verified; native QR keeps unit values in the warehouse and leaves only the bounded triangular solve and fit finalization client-side (verified on DuckDB, PostgreSQL, Snowflake and BigQuery)",
             "supported",
@@ -610,7 +610,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
         ),
         _e(
             "from_moments_categorical_supported",
-            "Analysis.run() categorical-only mixed-covariate mean/ratio with scalar companions",
+            "run() categorical-only mixed-covariate mean/ratio with scalar companions",
             "from_moments",
             "format-13 joint-cell evidence exported from a unit, definitions or artifact source",
             "supported",
@@ -621,7 +621,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
         ),
         _e(
             "from_moments_fitted_supported",
-            "Analysis.run() continuous/mixed-covariate mean/ratio",
+            "run() continuous/mixed-covariate mean/ratio",
             "from_moments",
             "format-13 fitted_multicovariate evidence replays the retained QR fit at a changed alpha",
             "supported",
@@ -632,7 +632,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
         ),
         _e(
             "switchback_source_limited",
-            "Analysis.run() mixed-covariate mean",
+            "run() mixed-covariate mean",
             "from_switchback_panel",
             "switchback contrasts use a different design and construction",
             "source_limited",

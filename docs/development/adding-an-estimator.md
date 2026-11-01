@@ -6,7 +6,7 @@ This guide follows two completed changes: refining exact conversion-interval end
 
 For randomized lift, `increment/declarations.py` owns the lightweight `Method`, variance-reduction ids, and static estimator declarations; `increment/estimation/engine.py` owns `estimate_lift` dispatch. Observational estimator identities and lazy implementation lookup also live in `increment/declarations.py` and `increment/estimators/registry.py`; `increment/estimation/adjust.py` owns observational `estimate_ate` orchestration. Built-in implementations are declared by module path rather than eagerly imported. Keep these boundaries separate: don't add observational adjustments to randomized lift or warehouse queries to the estimator. Sources and reductions obtain evidence; estimators consume `ArmStats` or the per-unit data their construction requires.
 
-Analysis CATE routes and registered run persistence use narrow contracts in `increment.kernel.ports` and resolve installed operation providers lazily from distribution entry-point metadata. Keep estimator and store implementations in their specialist namespaces; do not import them from core orchestration or add another runtime registry.
+CATE routes and registered run persistence use narrow contracts in `increment.kernel.ports` and resolve installed operation providers lazily from distribution entry-point metadata. Keep estimator and store implementations in their specialist namespaces; do not import them from core orchestration or add another runtime registry.
 Missing bundled provider declarations refuse with
 `package.builtin_provider_unavailable`; reinstall Increment to restore them.
 
@@ -25,7 +25,7 @@ Missing bundled provider declarations refuse with
 
 ## Custom evidence providers
 
-For an `Analysis` backed by custom data, implement `EvidenceProvider` from
+For an experiment backed by custom data, implement `EvidenceProvider` from
 `increment.evidence`, declare `evidence: EvidenceCapabilities`, and preserve
 analysis metadata in `context: SourceContext`. Its required primitive methods
 are `moments(MomentsRequest)`, `breakout_method_moments(BreakoutMethodMomentsRequest)`,
@@ -223,18 +223,18 @@ make test TESTS=tests/test_parity_harness.py
 
 ### Contract, assumptions and source requirements
 
-`Analysis.health_check()` returns a frozen `ExperimentHealth` report (`increment/estimation/health.py`) with ordered `HealthCheck` entries. Availability is not a conclusion: missing trigger membership or feed-completeness evidence remains unavailable with its exact code and context, not a failure or pass. Assigned allocation integrity and triggered-population balance are separate.
+`increment.workflows.health_check(experiment, resolver)` returns a frozen `ExperimentHealth` report (`increment/estimation/health.py`) with ordered `HealthCheck` entries. Availability is not a conclusion: missing trigger membership or feed-completeness evidence remains unavailable with its exact code and context, not a failure or pass. Assigned allocation integrity and triggered-population balance are separate.
 
 !!! warning "Balanced triggers do not establish causal validity"
     Balanced trigger rates do not establish treatment-independent membership,
     stationarity, randomization integrity or causal validity; report the
     assumption risk rather than converting the diagnostic into a guarantee.
 
-The report is available from all public analysis factories, but trigger diagnostics need specific evidence:
+The report is available from every experiment builder, but trigger diagnostics need specific evidence:
 
-- `Analysis.from_definitions` needs retained native trigger and source-snapshot evidence.
-- `Analysis.from_unit_day_artifact` needs `trigger_population`, `assignment_counts`, and `trigger_measure_stats`; without them, trigger checks are unavailable.
-- `Analysis.from_unit_summary`, `from_unit_panel`, `from_switchback_panel`, and `from_moments` do not retain trigger membership. They report the exact unavailable or not-applicable status; they do not infer trigger diagnostics.
+- `from_definitions` needs retained native trigger and source-snapshot evidence.
+- `from_unit_day_artifact` needs `trigger_population`, `assignment_counts`, and `trigger_measure_stats`; without them, trigger checks are unavailable.
+- `from_frame` summaries and panels, `from_switchback_frame`, and `from_moments` do not retain trigger membership. They report the exact unavailable or not-applicable status; they do not infer trigger diagnostics.
 
 `tests/capability_entry_point_catalog.py` and `tests/capability_consumers_auxiliary.py` record dispositions across six entry points. `increment/_source_diagnostics.py` owns the source-bound diagnostics and `increment/_health.py` composes their evidence; `increment/estimation/health.py` defines reports; `increment/dashboard/_data.py` and `increment/dashboard/_html.py` render them.
 

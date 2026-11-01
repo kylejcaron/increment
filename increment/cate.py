@@ -945,11 +945,7 @@ __all__ = [
 
 
 def core_operations():
-    """Return the CATE routes used by core orchestration.
-
-    The public operations take an experiment and its resolver; the
-    ``*_binding`` operations take a source binding that is already verified.
-    """
+    """Return the CATE routes used by core orchestration; each takes an experiment and resolver."""
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -957,8 +953,4 @@ def core_operations():
         validate_cate=validate_cate,
         targeting_rule=targeting_rule,
         select_targeting_rule=select_targeting_rule,
-        estimate_cate_binding=_estimate_cate_binding,
-        validate_cate_binding=_validate_cate_binding,
-        targeting_rule_binding=_targeting_rule_binding,
-        select_targeting_rule_binding=_select_targeting_rule_binding,
     )

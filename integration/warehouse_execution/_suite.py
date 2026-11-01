@@ -1,6 +1,6 @@
 """Shared, dialect-parametrized probes reused by every real-backend
 warehouse execution test. Each function drives the actual PUBLIC
-Analysis.from_definitions entry point end to end -- never a
+``from_definitions`` builder and ``run`` end to end -- never a
 hand-assembled query_builders-only pipeline -- so a real backend's
 source binding, moments-source dispatch, cache/materialization, and
 artifact publish/adopt code all execute for real. Expected values are
@@ -12,11 +12,20 @@ import datetime as dt
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from increment import Analysis
+from increment import Scope, from_definitions, from_unit_day_artifact, run, workflows
+from increment._dashboard_capture import dashboard_group_data
+from increment.artifacts import artifact_context, publish_unit_day_artifact
+from increment.evidence import BreakoutIdentity
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.session import WarehouseArtifactStore
+
+if TYPE_CHECKING:
+    from increment._source_resolver import SourceResolver
+    from increment.kernel.experiment import Experiment
+
+    Bound = tuple[Experiment, SourceResolver]
 
 
 def _postgres_temp_schema(con):
@@ -106,7 +115,7 @@ def _cache_correction_sql(con, dialect: str) -> str:
 
 def run_ratio_metric_probe(con, dialect: str) -> None:
     """The avg_event/count ratio returns the corrected +25% lift through
-    Analysis.from_definitions. Backend aggregation order may differ in
+    ``from_definitions``. Backend aggregation order may differ in
     the last few bits, so assert the independently derived value within
     tolerance rather than byte identity."""
     source = _qualified_table_identifier(con, dialect, "events_ratio_smoke")
@@ -183,13 +192,17 @@ experiments:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "defs.yaml"
             path.write_text(yaml)
-            analysis = Analysis.from_definitions("exp", path, con, store="none")
+            experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")
             try:
-                row = next(row for row in analysis.run() if row.metric == "ratio")
+                row = next(
+                    row for row in run(experiment, resolver).readout() if row.metric == "ratio"
+                )
                 assert abs(row.lift.value - 0.25) < 1e-9, (
                     f"expected +25% ratio lift, got {row.lift.value}"
                 )
-                groups = analysis.dashboard_group_data(metrics=analysis.metrics)
+                groups = dashboard_group_data(
+                    resolver.binding, metrics=workflows.metrics(experiment, resolver)
+                )
                 # Linear q=.25 uses zero-based rank 7.25 for 30 units.
                 # Unit-total ramps are 0.75 + i/2 and 1.375 + i/4, respectively.
                 expected = {
@@ -230,7 +243,7 @@ experiments:
                     if group.metric in ("conversion", "retention"):
                         assert group.retained_units == 30
             finally:
-                analysis.close()
+                resolver.close()
     finally:
         con.drop_table("events_ratio_smoke", force=True)
 
@@ -309,24 +322,29 @@ def run_materialized_cache_correction_probe(
         return relation
 
     monkeypatch.setattr(con, "create_table", recording_create_table)
-    analysis = None
+    resolver = None
     try:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "defs.yaml"
             path.write_text(yaml)
-            analysis = Analysis.from_definitions("exp", path, con, store="always")
-            before = analysis.run(coherence=coherence)[0].lift.value
+            experiment, resolver = from_definitions(
+                path, con, experiment_name="exp", store="always"
+            )
+            before = run(experiment, resolver, coherence=coherence).readout()[0].lift.value
             first_materializations = _required_materializations(con, created_relations)
             first_creation_count = len(created_relations)
             con.raw_sql(_cache_correction_sql(con, dialect))
-            cached = analysis.run(coherence=coherence)[0].lift.value
+            cached = run(experiment, resolver, coherence=coherence).readout()[0].lift.value
             second_materializations = _required_materializations(
                 con, created_relations[first_creation_count:]
             )
             _assert_materializations_absent(con, first_materializations)
             current = (
-                Analysis.from_definitions("exp", path, con, store="none")
-                .run(coherence="live")[0]
+                run(
+                    *from_definitions(path, con, experiment_name="exp", store="none"),
+                    coherence="live",
+                )
+                .readout()[0]
                 .lift.value
             )
             assert abs(before - (2 / 11)) < 1e-9, f"expected pre-correction lift 2/11, got {before}"
@@ -339,11 +357,11 @@ def run_materialized_cache_correction_probe(
             assert abs(current - cached) < 1e-9, (
                 f"materialized re-read stayed stale: {cached} vs {current}"
             )
-            analysis.close()
+            resolver.close()
             _assert_materializations_absent(con, second_materializations)
     finally:
-        if analysis is not None:
-            analysis.close()
+        if resolver is not None:
+            resolver.close()
         con.drop_table("events_cache_smoke", force=True)
 
 
@@ -438,17 +456,19 @@ def _drop_scratch_namespace(con, schema: str, catalog: str | None = None) -> Non
         con.drop_database(schema, catalog=catalog, force=True)
 
 
-def _assert_boolean_dimension_labels(
-    native: Analysis, adopted: Analysis, *, clustered: bool
-) -> None:
+def _assert_boolean_dimension_labels(native: Bound, adopted: Bound, *, clustered: bool) -> None:
     """A genuine BOOLEAN dimension with one NULL unit labels like the native path.
 
     Only the unclustered design declares the ``is_vip`` breakout.
     """
     if clustered:
         return
-    for name, analysis in (("native", native), ("adopted", adopted)):
-        labels = {row.dimension_value for row in analysis.run_daily(dimension="is_vip")}
+    daily = Scope(
+        view="daily", grain="daily", values=True, segment=BreakoutIdentity("is_vip", None)
+    )
+    for name, (experiment, resolver) in (("native", native), ("adopted", adopted)):
+        rows = run(experiment.with_views(daily), resolver).readout(daily)
+        labels = {row.dimension_value for row in rows}
         assert labels == {"true", "false", "__null__"}, (name, labels)
 
 
@@ -597,20 +617,20 @@ experiments:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "defs.yaml"
                 path.write_text(yaml)
-                live = Analysis.from_definitions("exp", path, con, store="none")
-                analyses.callback(live.close)
-                before = live.run()[0]
-                context = live.artifact_context
+                live = from_definitions(path, con, experiment_name="exp", store="none")
+                analyses.callback(live[1].close)
+                before = run(*live).readout()[0]
+                context = artifact_context(*live)
                 requests = [
                     e.request
                     for e in unit_day_artifact_extension_catalog(context)
                     if e.request.kind in requested_kinds
                 ]
-                ref = live.publish_unit_day_artifact(store, extensions=requests)
+                ref = publish_unit_day_artifact(*live, store, extensions=requests)
                 cleanup.callback(_drop_probe_generation, con, store, ref, dialect)
-                adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-                analyses.callback(adopted.close)
-                after = adopted.run()[0]
+                adopted = from_unit_day_artifact(store, ref, expected_context=context)
+                analyses.callback(adopted[1].close)
+                after = run(*adopted).readout()[0]
                 assert abs(before.lift.value - (-0.5)) < 1e-9, (
                     f"native artifact fixture lift was not -50%: {before.lift.value}"
                 )
@@ -621,8 +641,8 @@ experiments:
                 assert abs(before.lift.lb - after.lift.lb) < 1e-9
                 assert abs(before.lift.ub - after.lift.ub) < 1e-9
                 _assert_boolean_dimension_labels(live, adopted, clustered=clustered)
-                for counted in (live, adopted):
-                    assert counted._src.unit_counts() == {"control": 60, "treatment": 60}
+                for _, counted in (live, adopted):
+                    assert counted.binding.source.unit_counts() == {"control": 60, "treatment": 60}
                 with store.open_snapshot(ref) as snapshot:
                     manifest = snapshot.read_manifest(
                         ref.manifest, expected_sha256=ref.manifest_sha256
@@ -730,20 +750,20 @@ experiments:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "defs.yaml"
             path.write_text(yaml)
-            live = Analysis.from_definitions("exp", path, con, store="none")
-            cleanup.callback(live.close)
-            before = live.run()[0]
-            context = live.artifact_context
+            live = from_definitions(path, con, experiment_name="exp", store="none")
+            cleanup.callback(live[1].close)
+            before = run(*live).readout()[0]
+            context = artifact_context(*live)
             requests = [
                 e.request
                 for e in unit_day_artifact_extension_catalog(context)
                 if e.request.kind in {"breakout_dimension", "assignment_counts"}
             ]
-            ref = live.publish_unit_day_artifact(store, extensions=requests)
+            ref = publish_unit_day_artifact(*live, store, extensions=requests)
             cleanup.callback(_drop_probe_generation, con, store, ref, dialect)
-            adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-            cleanup.callback(adopted.close)
-            after = adopted.run()[0]
+            adopted = from_unit_day_artifact(store, ref, expected_context=context)
+            cleanup.callback(adopted[1].close)
+            after = run(*adopted).readout()[0]
             assert abs(before.lift.value - (-0.5)) < 1e-9, before.lift.value
             assert abs(before.lift.value - after.lift.value) < 1e-9
             assert abs(before.lift.lb - after.lift.lb) < 1e-9
@@ -812,13 +832,13 @@ def _close_to(left, right, *, path="value") -> None:
         assert left == right, (path, left, right)
 
 
-def _assert_same_sequential_readout(native: Analysis, adopted: Analysis) -> None:
+def _assert_same_sequential_readout(native: Bound, adopted: Bound) -> None:
     """Adopted equals native: registration, retained state, moments and interval."""
     from tests.binary_sequential_cases import AS_OF
     from tests.parity_harness.runner import sequential_fingerprint
 
-    native_snapshot = native.capture_sequential(finalized=True, as_of=AS_OF)
-    adopted_snapshot = adopted.capture_sequential(finalized=True, as_of=AS_OF)
+    native_snapshot = workflows.capture_sequential(*native, finalized=True, as_of=AS_OF)
+    adopted_snapshot = workflows.capture_sequential(*adopted, finalized=True, as_of=AS_OF)
     assert (
         native_snapshot.registration.definitions_id == adopted_snapshot.registration.definitions_id
     )
@@ -829,11 +849,13 @@ def _assert_same_sequential_readout(native: Analysis, adopted: Analysis) -> None
     assert sorted((r.unit_id, r.group_id, r.digest) for r in native_snapshot.records) == sorted(
         (r.unit_id, r.group_id, r.digest) for r in adopted_snapshot.records
     )
-    native_moments = native._src.moments(
-        native._src.context.metrics[0], grain="asof", completed_windows_only=True
+    native_source = native[1].binding.source
+    adopted_source = adopted[1].binding.source
+    native_moments = native_source.moments(
+        native_source.context.metrics[0], grain="asof", completed_windows_only=True
     )
-    adopted_moments = adopted._src.moments(
-        adopted._src.context.metrics[0], grain="asof", completed_windows_only=True
+    adopted_moments = adopted_source.moments(
+        adopted_source.context.metrics[0], grain="asof", completed_windows_only=True
     )
     assert native_moments, "native sequential fixture produced no moments"
     _close_to(
@@ -841,8 +863,8 @@ def _assert_same_sequential_readout(native: Analysis, adopted: Analysis) -> None
         sorted(adopted_moments, key=lambda row: (str(row["ds"]), row["metric"], row["group_id"])),
         path="moments",
     )
-    native_lift = native.run()[0].require_lift()
-    adopted_lift = adopted.run()[0].require_lift()
+    native_lift = run(*native).readout()[0].require_lift()
+    adopted_lift = run(*adopted).readout()[0].require_lift()
     assert native_lift.open_side == adopted_lift.open_side
     assert native_lift.level == adopted_lift.level
     for field in ("value", "lb", "ub"):
@@ -856,6 +878,15 @@ def _sequential_fixture_table(con, dialect: str, name: str) -> str:
     return _qualified_table_identifier(con, dialect, name)
 
 
+def _sequential_binding(con, dialect: str, source: str, plan_yaml: str, stack: ExitStack) -> Bound:
+    """Bind one route's definitions; the file lives, as every run needs, until *stack* closes."""
+    from tests.binary_sequential_cases import _definitions_file
+
+    directory = stack.enter_context(tempfile.TemporaryDirectory())
+    path = _definitions_file(directory, dialect, source, plan_yaml)
+    return from_definitions(path, con, experiment_name="exp", store="none")
+
+
 def run_artifact_sequential_identity_probe(con, dialect: str) -> None:
     """An adopted artifact is the same sequential study as its native capture.
 
@@ -864,13 +895,9 @@ def run_artifact_sequential_identity_probe(con, dialect: str) -> None:
     ``sequential_definition_id``, the same retained state, the same daily
     moments and the same interval as the native definitions source.
     """
-    from increment.query.artifact_publish import artifact_context
-    from tests.analysis_factory import make_analysis
-    from tests.binary_sequential_cases import (
-        ROUTES,
-        expected_artifact_context,
-        warehouse_analysis,
-    )
+    from increment.query.artifact_publish import artifact_context as definitions_context
+    from tests.analysis_factory import make_binding
+    from tests.binary_sequential_cases import ROUTES, expected_artifact_context
 
     table = "events_seqid_smoke"
     with ExitStack() as cleanup:
@@ -880,19 +907,19 @@ def run_artifact_sequential_identity_probe(con, dialect: str) -> None:
         cases = [(ROUTES[kind].plan_yaml, None) for kind in ("asymptotic_mean", "always_valid")]
         cases.append((None, _sequential_definitions(dialect, source, registered=True)))
         for plan_yaml, registered_definitions in cases:
-            if registered_definitions is None:
-                native = warehouse_analysis(con, dialect, source, plan_yaml)
-                context = expected_artifact_context(dialect, source, plan_yaml)
-            else:
-                experiment = registered_definitions.experiments[0]
-                native = make_analysis(con, registered_definitions, experiment=experiment)
-                context = artifact_context(registered_definitions, experiment, "error")
             with ExitStack() as case:
-                case.callback(native.close)
-                ref = native.publish_unit_day_artifact(store)
+                if registered_definitions is None:
+                    native = _sequential_binding(con, dialect, source, plan_yaml, case)
+                    context = expected_artifact_context(dialect, source, plan_yaml)
+                else:
+                    experiment = registered_definitions.experiments[0]
+                    native = make_binding(con, registered_definitions, experiment=experiment)
+                    context = definitions_context(registered_definitions, experiment, "error")
+                case.callback(native[1].close)
+                ref = publish_unit_day_artifact(*native, store)
                 case.callback(_drop_probe_generation, con, store, ref, dialect)
-                adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-                case.callback(adopted.close)
+                adopted = from_unit_day_artifact(store, ref, expected_context=context)
+                case.callback(adopted[1].close)
                 _assert_same_sequential_readout(native, adopted)
 
 
@@ -915,7 +942,7 @@ def run_artifact_namespace_probe(con, dialect: str) -> None:
     from uuid import uuid4
 
     from increment.errors import CapabilityError
-    from tests.binary_sequential_cases import ROUTES, expected_artifact_context, warehouse_analysis
+    from tests.binary_sequential_cases import ROUTES, expected_artifact_context
 
     index_columns = WarehouseArtifactStore._INDEX_TABLE_COLUMNS
     reversed_columns = dict.fromkeys(reversed(index_columns), "string")
@@ -937,10 +964,10 @@ def run_artifact_namespace_probe(con, dialect: str) -> None:
         assert tuple(con.table("ud_manifest_index", database=reordered).columns) == tuple(
             reversed_columns
         ), "backend did not preserve the reversed physical column order"
-        native = warehouse_analysis(con, dialect, source, plan_yaml)
-        cleanup.callback(native.close)
+        native = _sequential_binding(con, dialect, source, plan_yaml, cleanup)
+        cleanup.callback(native[1].close)
         context = expected_artifact_context(dialect, source, plan_yaml)
-        ref = native.publish_unit_day_artifact(WarehouseArtifactStore(con, schema_name=reordered))
+        ref = publish_unit_day_artifact(*native, WarehouseArtifactStore(con, schema_name=reordered))
         # A fresh store keeps no in-process generation: the ref resolves only
         # through what the reversed physical index persisted.
         fresh = WarehouseArtifactStore(con, schema_name=reordered)
@@ -952,8 +979,8 @@ def run_artifact_namespace_probe(con, dialect: str) -> None:
         with fresh.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         assert json.loads(row["manifest_json"]) == manifest.model_dump(mode="json")
-        adopted = Analysis.from_unit_day_artifact(fresh, ref, expected_context=context)
-        cleanup.callback(adopted.close)
+        adopted = from_unit_day_artifact(fresh, ref, expected_context=context)
+        cleanup.callback(adopted[1].close)
         _assert_same_sequential_readout(native, adopted)
 
         for label, broken in (

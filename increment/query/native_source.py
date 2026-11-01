@@ -218,8 +218,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     and the fully-resolved ``AnalysisPlan`` this instance was constructed
     under. ``plan`` is a required constructor argument, so it is always
     set (never ``None``). ``design`` defaults to ``None`` for direct source
-    construction, while ``Analysis.__init__`` resolves and passes the
-    declared design on the native facade path. This instance has no
+    construction, while ``from_definitions`` resolves and passes the
+    declared design. This instance has no
     ``design`` setter; callers that need a different design should build a
     new source through the appropriate constructor.
 
@@ -429,7 +429,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 operation=operation,
                 route=(
                     "pass source_snapshot_evidence=SourceSnapshotEvidence(...) to "
-                    "Analysis.from_definitions using the upstream source's explicit "
+                    "from_definitions using the upstream source's explicit "
                     "event-time cutoff; provide feed watermarks only when certified"
                 ),
             )
@@ -4171,9 +4171,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Write this experiment's moments (per-metric ``group_summary``
         rows, unioned) to a parquet file at *path*.
 
-        The native family's transport format for
-        ``Analysis.from_moments`` - see that facade method's docstring
-        for the wire-format contract.
+        The native family's transport format for ``from_moments``; see
+        ``docs/guides/data-model.md`` for the wire-format contract.
 
         Fixed-horizon exports carry ``group_summary`` rows, or one metric-free
         ``design_summary`` envelope, stamped ``moments_format=12`` with the

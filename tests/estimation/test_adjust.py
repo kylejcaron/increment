@@ -12,7 +12,7 @@ import pyarrow as pa
 import pytest
 from scipy.special import expit
 
-from increment import Analysis
+from increment import from_frame
 from increment.errors import (
     CapabilityError,
     IncrementRuntimeWarning,
@@ -43,7 +43,7 @@ from increment.evidence import (
 )
 from increment.frame import MetricSpec, from_unit_summary
 from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
-from tests.analysis_factory import lift_rows
+from tests.analysis_factory import bind_pair, lift_rows, view_readout
 from tests.categorical_cases import (
     DUMMY_COLUMNS,
     assert_rows_match,
@@ -1185,11 +1185,11 @@ def test_public_run_refuses_missing_builtin_covariates_before_scope_or_reads():
             events.append("scope")
             return adapter.scope(request)
 
-    analysis = Analysis._from_source(cast(Any, Provider()))
+    experiment, resolver = bind_pair(cast(Any, Provider()))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         with pytest.raises(CapabilityError):
-            analysis.run(decision_method=Method(name="iptw"))
+            view_readout(experiment, resolver, decision_method=Method(name="iptw"))
 
     assert events == []
 
@@ -1602,22 +1602,24 @@ _OBS_TRIM = Observational(
 
 def test_iptw_beats_naive_under_confounding_smoke():
     truth = 0.2
-    an_obs = Analysis.from_unit_summary(
+    an_obs_experiment, an_obs_resolver = from_frame(
         _confounded_table(4000, seed=3),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=_OBS_TRIM,
     )
-    (iptw,) = lift_rows(lift_rows(an_obs.run()))
-    an_naive = Analysis.from_unit_summary(
+    (iptw,) = lift_rows(lift_rows(view_readout(an_obs_experiment, an_obs_resolver)))
+    an_naive_experiment, an_naive_resolver = from_frame(
         _confounded_table(4000, seed=3),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="C",
         metrics={"revenue": "mean"},
     )
-    (naive,) = lift_rows(lift_rows(an_naive.run()))
+    (naive,) = lift_rows(lift_rows(view_readout(an_naive_experiment, an_naive_resolver)))
     # Load-bearing comparative claim + coverage of the truth:
     iptw_lift = iptw.require_lift()
     naive_lift = naive.require_lift()
@@ -1635,8 +1637,9 @@ def test_iptw_beats_naive_under_confounding_smoke():
 def test_iptw_coverage_and_bias():
     truth, hits, points = 0.2, 0, []
     for seed in range(120):
-        an = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             _confounded_table(2000, seed=seed),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics={"revenue": "mean"},
@@ -1648,7 +1651,7 @@ def test_iptw_coverage_and_bias():
                 message=r"(?:IPTW|DML|AIPW) covariate balance advisory",
                 category=UserWarning,
             )
-            (est,) = lift_rows(lift_rows(an.run()))
+            (est,) = lift_rows(lift_rows(view_readout(experiment, resolver)))
         est_lift = est.require_lift()
         points.append(est_lift.value)
         assert est_lift.lb is not None and est_lift.ub is not None

@@ -4,6 +4,7 @@ from typing import Literal
 
 import pytest
 
+from increment import from_frame
 from increment.compatibility import (
     ARM_COMPATIBILITY_REFUSALS,
     PowerDesign,
@@ -29,6 +30,7 @@ from increment.estimation.arm_contract import (
 from increment.estimation.sequential import AlwaysValid
 from increment.semantics.assignment import ParallelAssignment
 from increment.semantics.models import MethodSpec
+from tests.analysis_factory import view_readout
 from tests.sequential_cases import registration
 
 
@@ -195,7 +197,7 @@ def test_cluster_floor_matches_small_cluster_runtime_admission() -> None:
 
     import pyarrow as pa
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimation.arm_contract import ARM_EVIDENCE_CONTRACT
     from increment.estimation.results import LiftEstimate
 
@@ -222,7 +224,7 @@ def test_cluster_floor_matches_small_cluster_runtime_admission() -> None:
         sensitivity_methods=(),
     )
     assert ARM_EVIDENCE_CONTRACT.planning_support(planning) == runtime
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.table(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -231,13 +233,14 @@ def test_cluster_floor_matches_small_cluster_runtime_admission() -> None:
                 "outcome": [1.0, 2.0, 3.0, 4.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="C",
         cluster="cluster",
         metrics=[MetricSpec(name="outcome", type="mean")],
     )
-    (row,) = analysis.run()
+    (row,) = view_readout(experiment, resolver)
     assert isinstance(row, LiftEstimate)
     assert row.lift is not None
     assert row.lift.value == pytest.approx(4 / 3)

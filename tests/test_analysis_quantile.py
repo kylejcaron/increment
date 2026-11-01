@@ -8,13 +8,18 @@ estimator instead.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 import increment as inc
-from tests.analysis_factory import lift_rows, make_analysis_like
+from increment import Scope
+from increment.query import panel_sql, summary_sql
+from increment.workflows import factor_summaries, metrics
+from tests.analysis_factory import lift_rows, make_binding_like, view_readout
 from tests.sequential_cases import registration
 
 
@@ -138,7 +143,7 @@ def _analysis(tmp_path, table):
     con.create_table("events", table)
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml())
-    return inc.Analysis.from_definitions("exp", defs_path, con)
+    return inc.from_definitions(defs_path, con, experiment_name="exp")
 
 
 def _analysis_with_breakout(tmp_path, table):
@@ -151,19 +156,19 @@ def _analysis_with_breakout(tmp_path, table):
     con.create_table("events", table)
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml_with_breakout())
-    return inc.Analysis.from_definitions("exp", defs_path, con)
+    return inc.from_definitions(defs_path, con, experiment_name="exp")
 
 
 def _analysis_from_defs(defs_path, con):
-    return inc.Analysis.from_definitions("exp", defs_path, con)
+    return inc.from_definitions(defs_path, con, experiment_name="exp")
 
 
 @pytest.mark.integration
 def test_quantile_metric_estimates_on_the_definitions_path(tmp_path):
     """The load-time refusal is gone and the metric produces a real,
     ordered interval with a positive lift for a positive shift."""
-    an = _analysis(tmp_path, _events_table())
-    rows = {r.metric: r for r in lift_rows(an.run())}
+    experiment, resolver = _analysis(tmp_path, _events_table())
+    rows = {r.metric: r for r in lift_rows(view_readout(experiment, resolver))}
     assert set(rows) == {"p90_latency", "mean_latency"}
     q = rows["p90_latency"]
     lift = q.require_lift()
@@ -212,9 +217,11 @@ def _events_with_null_assignment(table, *, mixed: bool = False):
 def test_quantile_default_assignment_policy_rejects_null_unit(tmp_path, mixed):
     from increment.errors import InvalidRequestError
 
-    an = _analysis(tmp_path, _events_with_null_assignment(_events_table(), mixed=mixed))
+    experiment, resolver = _analysis(
+        tmp_path, _events_with_null_assignment(_events_table(), mixed=mixed)
+    )
     with pytest.raises(InvalidRequestError) as raised:
-        lift_rows(an.run(metrics=["p90_latency"]))
+        lift_rows(view_readout(experiment, resolver, metrics=["p90_latency"]))
     assert raised.value.code == (
         "query.integrity.mixed_assignment_units"
         if mixed
@@ -241,9 +248,9 @@ def test_sparse_metric_refuses_rather_than_reporting_a_zero_quantile(tmp_path):
 
     from increment.errors import InvalidRequestError
 
-    an = _analysis(tmp_path, combined)
+    experiment, resolver = _analysis(tmp_path, combined)
     with pytest.raises(InvalidRequestError) as raised:
-        lift_rows(an.run())
+        lift_rows(view_readout(experiment, resolver))
     assert raised.value.code == "estimation.quantile.estimate_quantile.metric_arm"
     assert raised.value.context["metric"] == "p90_latency"
 
@@ -261,14 +268,17 @@ def test_warehouse_quantile_matches_the_frame_path(tmp_path):
     import pyarrow.compute as pc
 
     table = _events_table()
-    warehouse = {r.metric: r for r in lift_rows(_analysis(tmp_path, table).run())}["p90_latency"]
+    warehouse = {r.metric: r for r in lift_rows(view_readout(*_analysis(tmp_path, table)))}[
+        "p90_latency"
+    ]
 
     latency_rows = table.filter(pc.field("event") == "latency")
     per_unit = latency_rows.select(["user_id", "group_id", "value"]).rename_columns(
         ["user_id", "group_id", "latency"]
     )
-    frame_an = inc.Analysis.from_unit_summary(
+    frame_experiment, frame_resolver = inc.from_frame(
         per_unit,
+        shape="summary",
         unit="user_id",
         group="group_id",
         control="C",
@@ -280,7 +290,9 @@ def test_warehouse_quantile_matches_the_frame_path(tmp_path):
         ],
         plan=inc.AnalysisPlan(secondaries=["p90_latency", "mean_latency"]),
     )
-    frame = {r.metric: r for r in lift_rows(frame_an.run())}["p90_latency"]
+    frame = {r.metric: r for r in lift_rows(view_readout(frame_experiment, frame_resolver))}[
+        "p90_latency"
+    ]
 
     assert warehouse.discovery is True and warehouse.discovery == frame.discovery
     assert warehouse.require_lift().level == pytest.approx(frame.require_lift().level, rel=1e-12)
@@ -291,21 +303,32 @@ def test_warehouse_quantile_matches_the_frame_path(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "method_name",
-    ["panel_sql", "summary_sql", "run_daily", "run_asof", "run_daily_lift", "run_asof_lift"],
+    "surface",
+    ["panel_sql", "summary_sql", "daily_values", "asof_values", "daily_lift", "asof_lift"],
 )
-def test_moments_only_surfaces_refuse_a_quantile_metric(tmp_path, method_name):
+def test_moments_only_surfaces_refuse_a_quantile_metric(tmp_path, surface):
     """No summary SQL, day-axis, or as-of moments exist for an order
     statistic. Refuse by name rather than emit a dict/rows that silently
     treat the quantile's per-unit column as an additive sum."""
     from increment.errors import CapabilityError
 
-    sql_methods = {"panel_sql", "summary_sql"}
-    an = _analysis(tmp_path, _events_table(n_per_arm=50))
+    read = {
+        "panel_sql": panel_sql,
+        "summary_sql": summary_sql,
+        "daily_values": partial(
+            view_readout, scope=Scope(view="daily", grain="daily", values=True)
+        ),
+        "asof_values": partial(view_readout, scope=Scope(view="asof", grain="asof", values=True)),
+        "daily_lift": partial(view_readout, scope=Scope(view="daily", grain="daily")),
+        "asof_lift": partial(view_readout, scope=Scope(view="asof", grain="asof")),
+    }[surface]
+    experiment, resolver = _analysis(tmp_path, _events_table(n_per_arm=50))
     with pytest.raises(CapabilityError) as raised:
-        getattr(an, method_name)()
+        read(experiment, resolver)
     expected = (
-        "evidence.operation_unavailable" if method_name in sql_methods else "breakout.quantile"
+        "evidence.operation_unavailable"
+        if surface in {"panel_sql", "summary_sql"}
+        else "breakout.quantile"
     )
     assert raised.value.code == expected
 
@@ -315,6 +338,7 @@ def test_unit_day_artifact_daily_quantile_refuses_before_estimation(tmp_path):
     """The artifact readout gate wins before a day-axis quantile reaches variance fitting."""
     import ibis
 
+    from increment.artifacts import artifact_context, publish_unit_day_artifact
     from increment.errors import CapabilityError
     from increment.query.session import WarehouseArtifactStore
 
@@ -322,26 +346,30 @@ def test_unit_day_artifact_daily_quantile_refuses_before_estimation(tmp_path):
     con.create_table("events", _events_table(n_per_arm=50))
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml())
-    native = inc.Analysis.from_definitions("exp", defs_path, con)
-    artifact = None
+    native_experiment, native_resolver = inc.from_definitions(defs_path, con, experiment_name="exp")
+    assert isinstance(native_resolver, AbstractContextManager)
     store = WarehouseArtifactStore(con, schema_name="quantile_daily_refusal")
     try:
-        context = native.artifact_context
-        reference = native.publish_unit_day_artifact(store)
-        artifact = inc.Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-        with pytest.raises(CapabilityError) as raised:
-            artifact.run_daily()
+        with native_resolver:
+            context = artifact_context(native_experiment, native_resolver)
+            reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+            artifact_experiment, artifact_resolver = inc.from_unit_day_artifact(
+                store, reference, expected_context=context
+            )
+            with artifact_resolver, pytest.raises(CapabilityError) as raised:
+                view_readout(
+                    artifact_experiment,
+                    artifact_resolver,
+                    Scope(view="daily", grain="daily", values=True),
+                )
         assert raised.value.code == "readout.metric.quantile_grain"
     finally:
-        if artifact is not None:
-            artifact.close()
-        native.close()
         con.disconnect()
 
 
 @pytest.mark.integration
 def test_run_breakout_refuses_a_quantile_metric(tmp_path):
-    """A quantile does not decompose over segment moments - run_breakout()
+    """A quantile does not decompose over segment moments - a breakout read
     must refuse rather than silently sum the per-unit column into a
     mean-shaped breakout row."""
     import pyarrow as pa
@@ -351,9 +379,9 @@ def test_run_breakout_refuses_a_quantile_metric(tmp_path):
     table = _events_table(n_per_arm=50).append_column(
         "country_code", pa.array(["US"] * (2 * 2 * 50))
     )
-    an = _analysis_with_breakout(tmp_path, table)
+    experiment, resolver = _analysis_with_breakout(tmp_path, table)
     with pytest.raises(CapabilityError) as raised:
-        an.run_breakout()
+        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert raised.value.code == "readout.metric.quantile_breakout"
 
 
@@ -367,9 +395,9 @@ def test_factor_summaries_refuses_a_quantile_metric(tmp_path):
     table = _events_table(n_per_arm=50).append_column(
         "country_code", pa.array(["US"] * (2 * 2 * 50))
     )
-    an = _analysis_with_breakout(tmp_path, table)
+    experiment, resolver = _analysis_with_breakout(tmp_path, table)
     with pytest.raises(CapabilityError) as raised:
-        an.factor_summaries()
+        factor_summaries(experiment, resolver)
     assert raised.value.code == "breakout.quantile"
 
 
@@ -383,28 +411,32 @@ def test_warehouse_quantile_refuses_call_time_inference(tmp_path):
     from increment.estimators import AlwaysValid
     from increment.plan import compile_decision_plan
 
-    an = _analysis(tmp_path, _events_table(n_per_arm=50))
-    an = make_analysis_like(an, plan=compile_decision_plan(None, an.metrics, path="warehouse"))
-    assert lift_rows(an.run())
+    declared_experiment, declared = _analysis(tmp_path, _events_table(n_per_arm=50))
+    experiment, resolver = make_binding_like(
+        declared,
+        plan=compile_decision_plan(None, metrics(declared_experiment, declared), path="warehouse"),
+    )
+    assert lift_rows(view_readout(experiment, resolver))
     with pytest.raises(TypeError):
-        lift_rows(an.run(inference=AlwaysValid(registration=registration())))  # ty: ignore[unknown-argument]
+        lift_rows(
+            view_readout(experiment, resolver, inference=AlwaysValid(registration=registration()))
+        )
 
 
 @pytest.mark.integration
 def test_native_encouragement_refuses_a_quantile_metric(tmp_path):
-    """No native (Analysis.from_definitions) call site populates an
+    """No native (``from_definitions``) call site populates an
     Encouragement design today (this guard is currently unreachable in
     practice), but if one ever does, a quantile metric must be refused
     here rather than silently pushed through estimate_encouragement on
-    its mean-based group_summary moments. Manual `_design` assignment
-    mirrors the established native-encouragement test fixture pattern
-    (tests/test_analysis.py::_analysis_with_asof_encouragement_events)."""
+    its mean-based group_summary moments. The test constructor rebuilds the
+    native binding with an Encouragement design."""
     from increment.errors import CapabilityError
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
-    an = _analysis(tmp_path, _events_table(n_per_arm=50))
-    an = make_analysis_like(
-        an,
+    _, declared = _analysis(tmp_path, _events_table(n_per_arm=50))
+    experiment, resolver = make_binding_like(
+        declared,
         design=Encouragement(
             control_group="C",
             uptake=UptakeSpec(fact="enrolled"),
@@ -414,7 +446,7 @@ def test_native_encouragement_refuses_a_quantile_metric(tmp_path):
         ),
     )
     with pytest.raises(CapabilityError) as raised:
-        lift_rows(an.run())
+        lift_rows(view_readout(experiment, resolver))
     assert raised.value.code == "breakout.quantile"
 
 
@@ -458,8 +490,8 @@ def test_quantile_primary_splits_alpha_by_treatment_arm_count(tmp_path):
             "plan: {primary: [p90_latency, mean_latency]}",
         )
     )
-    an = _analysis_from_defs(defs_path, con)
-    results = lift_rows(an.run())
+    experiment, resolver = _analysis_from_defs(defs_path, con)
+    results = lift_rows(view_readout(experiment, resolver))
     assert {r.group_id for r in results} == {"A", "B"}
     for r in results:
         assert r.role == "primary"
@@ -516,8 +548,8 @@ def test_quantile_primary_casts_int_group_id_before_arm_counting(tmp_path):
         .replace("plan: {secondaries: [p90_latency, mean_latency]}", "plan: {primary: p90_latency}")
         .replace("control_group: C", "control_group: '0'")
     )
-    an = _analysis_from_defs(defs_path, con)
-    result = {r.metric: r for r in lift_rows(an.run())}["p90_latency"]
+    experiment, resolver = _analysis_from_defs(defs_path, con)
+    result = {r.metric: r for r in lift_rows(view_readout(experiment, resolver))}["p90_latency"]
     assert result.role == "primary"
     assert result.require_lift().level == pytest.approx(0.95)
 
@@ -534,7 +566,7 @@ def test_declared_plan_always_valid_inference_reaches_quantile_readout(tmp_path)
     with pytest.raises(CapabilityError) as raised:
         registered_native(
             original,
-            metrics=[m for m in original.metrics if m.type == "quantile"],
+            metrics=[m for m in metrics(*original) if m.type == "quantile"],
         )
     assert raised.value.code == "sequential.route.unsupported"
 
@@ -571,8 +603,9 @@ def test_quantile_family_discovery_is_independent_of_display_alpha():
 
     for alpha in (0.05, 0.005):
         for q, discovery in ((0.19, False), (0.20, True)):
-            analysis = inc.Analysis.from_unit_summary(
+            experiment, resolver = inc.from_frame(
                 rows,
+                shape="summary",
                 unit="unit_id",
                 group="group_id",
                 control="C",
@@ -581,7 +614,7 @@ def test_quantile_family_discovery_is_independent_of_display_alpha():
                 ],
                 plan=inc.AnalysisPlan(secondaries=["median"], alpha=alpha, q=q),
             )
-            result = lift_rows(analysis.run())[0]
+            result = lift_rows(view_readout(experiment, resolver))[0]
             assert result.p_value() == pytest.approx(0.19334790449564246)
             assert result.discovery is discovery
 
@@ -600,8 +633,9 @@ def test_quantile_joint_metric_arm_family_uses_inversion_at_every_display_alpha(
         }
     )
     for alpha in (0.05, 0.005):
-        analysis = inc.Analysis.from_unit_summary(
+        experiment, resolver = inc.from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="C",
@@ -611,7 +645,7 @@ def test_quantile_joint_metric_arm_family_uses_inversion_at_every_display_alpha(
             ],
             plan=inc.AnalysisPlan(secondaries=["median", "other"], alpha=alpha, q=0.26),
         )
-        rows = lift_rows(analysis.run())
+        rows = lift_rows(view_readout(experiment, resolver))
         assert {(row.metric, row.group_id) for row in rows} == {
             ("median", "T1"),
             ("median", "T2"),
@@ -633,7 +667,7 @@ def test_equal_quantiles_are_not_selected_at_the_largest_family_threshold():
 
     import pyarrow as pa
 
-    analysis = inc.Analysis.from_unit_summary(
+    experiment, resolver = inc.from_frame(
         pa.table(
             {
                 "unit": list(range(200)),
@@ -641,6 +675,7 @@ def test_equal_quantiles_are_not_selected_at_the_largest_family_threshold():
                 "outcome": np.tile(np.arange(1.0, 101.0), 2),
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="C",
@@ -649,7 +684,7 @@ def test_equal_quantiles_are_not_selected_at_the_largest_family_threshold():
         ],
         plan=inc.AnalysisPlan(secondaries=["median"], q=math.nextafter(1.0, 0.0)),
     )
-    row = lift_rows(analysis.run())[0]
+    row = lift_rows(view_readout(experiment, resolver))[0]
     assert row.lift is not None
     assert row.lift.lb is not None and row.lift.ub is not None
     assert row.lift.lb < 0.0 < row.lift.ub

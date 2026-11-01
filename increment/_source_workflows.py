@@ -49,7 +49,7 @@ def _artifact_context_binding(binding: SourceBinding) -> ArtifactContext:
             binding.source,
             "materialize",
             tuple(sorted(declared_evidence(binding.source).operations)),
-            route="artifact_context requires Analysis.from_definitions",
+            route="artifact_context() requires an experiment built by from_definitions",
         )
     from increment.query.artifact_ports import artifact_query_ports
 
@@ -122,7 +122,7 @@ def _publish_unit_day_artifact_binding(
             binding.source,
             "materialize",
             tuple(sorted(declared_evidence(binding.source).operations)),
-            route="publish_unit_day_artifact() requires Analysis.from_definitions",
+            route="publish_unit_day_artifact() requires an experiment built by from_definitions",
         )
     native = _require_analysis_operation(
         binding.source,
@@ -158,8 +158,8 @@ def _materialize_binding(binding: SourceBinding) -> None:
         "materialize",
         MaterializeOperation,
         message=(
-            "materialize() needs a native Analysis.from_definitions instance -- "
-            "a frame/warehouse/moments-backed analysis has nothing to materialize."
+            "materialize() needs an experiment built by from_definitions -- "
+            "a frame, warehouse or moments experiment has nothing to materialize."
         ),
     )
     if binding.store != "none" and binding.metrics:
@@ -210,7 +210,7 @@ def _compiled_decision_plan_binding(binding: SourceBinding) -> CompiledDecisionP
     except AttributeError:
         plan = None
     if plan is None:
-        refuse(_PLAN_MISSING, route="Analysis.run()")
+        refuse(_PLAN_MISSING, route="run(experiment, resolver)")
     return plan
 
 
@@ -262,8 +262,8 @@ def _breakout_summaries_binding(
             requested,
             offered,
             route=(
-                "breakout_summaries() needs a native Analysis.from_definitions or "
-                "Analysis.from_unit_day_artifact instance with breakout evidence"
+                "breakout_summaries() needs an experiment built by from_definitions or "
+                "from_unit_day_artifact with breakout evidence"
             ),
         )
     native = _require_analysis_operation(
@@ -271,8 +271,8 @@ def _breakout_summaries_binding(
         "breakout_summaries",
         NativeViewSource,
         message=(
-            "breakout_summaries() needs a native Analysis.from_definitions or "
-            "Analysis.from_unit_day_artifact instance with breakout evidence."
+            "breakout_summaries() needs an experiment built by from_definitions or "
+            "from_unit_day_artifact with breakout evidence."
         ),
     )
     effective = select_metrics(
@@ -325,8 +325,8 @@ def _factor_summaries_binding(binding: SourceBinding) -> dict[str, pa.Table]:
         "factor_summaries",
         NativeViewSource,
         message=(
-            "factor_summaries() needs a native Analysis.from_definitions or "
-            "Analysis.from_unit_day_artifact instance with factor evidence."
+            "factor_summaries() needs an experiment built by from_definitions or "
+            "from_unit_day_artifact with factor evidence."
         ),
     )
     semantic_experiment = binding.experiment

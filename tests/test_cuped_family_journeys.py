@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, Method, MetricSpec
+from increment import AnalysisPlan, Method, MetricSpec, from_definitions, from_frame
 from increment.estimation.readout_types import ReadoutResults
 from increment.frame import CupedCovariate
 from increment.semantics.models import ExperimentMetric
+from tests.analysis_factory import view_readout
 
 
 def _family_analysis(ingress: str, q: float):
@@ -88,8 +90,9 @@ def _family_analysis(ingress: str, q: float):
         secondaries=["secondary_mean", "secondary_ratio"],
     )
     if ingress == "from_unit_panel":
-        return Analysis.from_unit_panel(
+        return from_frame(
             frame,
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -97,14 +100,20 @@ def _family_analysis(ingress: str, q: float):
             metrics=metrics,
             plan=plan,
         )
-    return Analysis.from_unit_summary(
-        frame, unit="unit", group="arm", control="control", metrics=metrics, plan=plan
+    return from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=metrics,
+        plan=plan,
     )
 
 
 @pytest.mark.parametrize("ingress", ["from_unit_summary", "from_unit_panel"])
 def test_mixed_cuped_family_and_json_replay(ingress):
-    result = _family_analysis(ingress, 0.2).run()
+    result = view_readout(*_family_analysis(ingress, 0.2))
     rows = {row.metric: row for row in result}
     assert set(rows) == {"primary_mean", "guardrail_ratio", "secondary_mean", "secondary_ratio"}
     assert rows["primary_mean"].role == "primary"
@@ -127,8 +136,12 @@ def test_mixed_cuped_family_and_json_replay(ingress):
 @pytest.mark.parametrize("ingress", ["from_unit_summary", "from_unit_panel"])
 @pytest.mark.integration
 def test_secondary_cuped_fcr_reintervalizes_without_refitting(ingress):
-    q05 = {row.metric: row for row in _family_analysis(ingress, 0.05).run()}["secondary_mean"]
-    q20 = {row.metric: row for row in _family_analysis(ingress, 0.2).run()}["secondary_mean"]
+    q05 = {row.metric: row for row in view_readout(*_family_analysis(ingress, 0.05))}[
+        "secondary_mean"
+    ]
+    q20 = {row.metric: row for row in view_readout(*_family_analysis(ingress, 0.2))}[
+        "secondary_mean"
+    ]
     assert q05.discovery is q20.discovery is True
     assert q05.require_lift().value == pytest.approx(q20.require_lift().value)
     assert q05.p_value() == pytest.approx(q20.p_value())
@@ -145,7 +158,7 @@ def test_selected_cuped_fcr_row_respects_plan_alpha_on_reissue():
 
     row = next(
         row
-        for row in _family_analysis("from_unit_summary", 0.2).run()
+        for row in view_readout(*_family_analysis("from_unit_summary", 0.2))
         if row.metric == "secondary_mean"
     )
 
@@ -213,11 +226,13 @@ def test_complete_cuped_yaml_guide_examples_execute(tmp_path):
             document["experiments"] = [experiment]
             path = tmp_path / f"cuped-guide-{index}.yaml"
             path.write_text(yaml.safe_dump(document))
-            analysis = Analysis.from_definitions("new_onboarding_v2", path, connection)
+            analysis_experiment, analysis_resolver = from_definitions(
+                path, connection, experiment_name="new_onboarding_v2"
+            )
             try:
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
-                    rows = analysis.run()
+                    rows = view_readout(analysis_experiment, analysis_resolver)
                 if index == 0:
                     assert [
                         getattr(warning.message, "code", None)
@@ -234,6 +249,6 @@ def test_complete_cuped_yaml_guide_examples_execute(tmp_path):
                 else:
                     assert {row.method for row in purchase_rows} == {"unadjusted", "cuped"}
             finally:
-                analysis.close()
+                cast(Any, analysis_resolver).close()
     finally:
         connection.disconnect()

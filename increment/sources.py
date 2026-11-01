@@ -175,7 +175,7 @@ if TYPE_CHECKING:
 _MOMENTS_COUNTS = _RefusalSpec(
     "source.moments.assignment_counts",
     _CapabilityError,
-    template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
+    template="trustworthy source-level assignment counts; use workflows.export_moments() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
 )
 
 
@@ -351,7 +351,7 @@ _READOUT_METRIC_QUANTILE_GRAIN = _RefusalSpec(
 _MOMENTS_FORMAT_LEGACY = _RefusalSpec(
     "moments.format.unsupported_legacy",
     _WireFormatError,
-    template="moments_format {received!r} is a legacy format; this reader requires format {required}. Re-export the cube from the current Analysis.",
+    template="moments_format {received!r} is a legacy format; this reader requires format {required}. Re-export the cube with workflows.export_moments().",
 )
 _MOMENTS_FORMAT_FUTURE = _RefusalSpec(
     "moments.format.unsupported_future",

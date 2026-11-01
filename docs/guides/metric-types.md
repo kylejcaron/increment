@@ -7,7 +7,7 @@ in warehouse YAML or in a dataframe `MetricSpec`.
 ```python
 import polars as pl
 
-from increment import Analysis
+from increment import from_frame, run
 
 metric_demo = pl.DataFrame(
     {
@@ -17,13 +17,15 @@ metric_demo = pl.DataFrame(
         "converted": [0, 1, 0, 1, 1, 0, 1, 1],
     }
 )
-metric_results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     metric_demo,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics={"revenue": "mean", "converted": "conversion"},
-).run()
+)
+metric_results = run(experiment, resolver).readout()
 for row in metric_results:
     print(row.metric, row.group_id, row.lift)
 ```
@@ -403,10 +405,10 @@ a DST-aware zone does not.
 
 Retention has two readouts, and they answer different questions:
 
-- `run()` / `run_breakout` compare each unit's **mature, whole-window**
+- Whole-window and breakout views compare each unit's **mature, whole-window**
   outcome, arm to arm: the windowed decision estimand. Unbiased, and the
   number a ship/no-ship call should be made on.
-- `run_asof` / `run_asof_lift` return a **cumulative monitoring series**
+- As-of values and as-of lift views return a **cumulative monitoring series**
   indexed by calendar date: each date's value blends whatever tenure every
   unit has reached by that date. It starts earlier (as soon as a unit clears
   `threshold_days`, rather than once its whole band closes) and carries much
@@ -645,7 +647,7 @@ unit-summary sources can carry covariate columns directly.
 ??? info "Counts, covariates, and cluster policies"
     Fitted CATE results report `n_clusters`, while targeting policies retain
     the intervention grain and required scoring columns. All four entry points
-    also work through `Analysis`. `n_train` and `n_holdout` count members;
+    take a builder's `(experiment, resolver)` pair. `n_train` and `n_holdout` count members;
     validation's `n_clusters` counts independent heldout clusters. Selection's
     count describes the inner population, while `selection.rule.n_clusters`
     describes the untouched outer holdout. Repeating members under the same
@@ -731,7 +733,7 @@ metric's own catalog-declared value; there is no call-time override on
 
 ## The dataframe path: `MetricSpec`
 
-On the dataframe path (`Analysis.from_unit_summary` / `from_unit_panel`), your
+On the dataframe path (`from_frame` with `shape="summary"` or `"panel"`), your
 columns already hold per-unit values, so a metric is a column plus a type. The
 mapping form `{"revenue": "mean", "converted": "conversion"}` covers the
 simple cases; explicit `MetricSpec` objects unlock the rest:
@@ -740,7 +742,7 @@ For floating-point and boolean columns, you can start with column names:
 boolean columns use `conversion`. Integer columns are intentionally not
 inferred: choose `mean` or `conversion` explicitly, because an integer column
 may represent either a count or a 0/1 indicator. A bare name cannot be used
-with `Analysis.from_moments`, which has no source dataframe schema.
+with `from_moments`, which has no source dataframe schema.
 
 
 ```python
@@ -748,7 +750,7 @@ import random
 
 import polars as pl
 
-from increment import Analysis, MetricSpec
+from increment import MetricSpec, from_frame, run
 
 random.seed(11)
 n = 400
@@ -764,8 +766,9 @@ df = pl.DataFrame(
     }
 )
 
-results = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
@@ -779,7 +782,8 @@ results = Analysis.from_unit_summary(
             denominator="orders",
         ),
     ],
-).run()
+)
+results = run(experiment, resolver).readout()
 
 for r in results:
     print(f"{r.metric}: lift={r.lift.value:+.2%}")
@@ -812,9 +816,9 @@ name; `covariate` attaches a pre-experiment column for CUPED (see
     unit's own day 0 (a derived anchor would silently define the window).
     `observation_end=` bounds late-enrollee censoring; omitted, it falls back
     to each metric's own observed extent. Both parameters are accepted by
-    `Analysis.from_unit_panel` and forwarded to
+    `from_frame(..., shape="panel")` and forwarded to
     `increment.frame.from_unit_panel`, the lower-level factory it wraps.
-    `from_unit_summary` refuses `window_days`/`threshold_days` outright (a
+    A summary refuses `window_days`/`threshold_days` outright (a
     one-row-per-unit summary carries no dates to window or band against), and
     `window_days` on `type="quantile"` is refused on either constructor. See
     [the dataframe analysis example](../examples/analysis_from_a_dataframe.md)

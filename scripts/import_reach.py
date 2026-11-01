@@ -28,7 +28,7 @@ DEFAULT_ENTRY_POINTS = (
     "increment.estimation.cuped",
     "increment.estimation.readout_types",
     "increment.power",
-    "increment.analysis",
+    "increment.builders",
     "increment.declarations",
     "increment.estimators.registry",
 )

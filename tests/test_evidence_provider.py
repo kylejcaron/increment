@@ -6,7 +6,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from increment import Analysis, Method
+from increment import Method, Scope, from_definitions, from_frame, from_moments, run, workflows
 from increment.errors import CapabilityError, CodedError
 from increment.evidence import (
     BreakoutIdentity,
@@ -31,7 +31,13 @@ from increment.evidence import (
     require_evidence,
 )
 from increment.semantics.design import Encouragement
-from tests.analysis_factory import held_source
+from increment.workflows import (
+    experiment_definition,
+    export_moments,
+    sequential_snapshot,
+    unit_counts,
+)
+from tests.analysis_factory import bind_pair, bound_source, held_source, view_readout
 from tests.source_conformance import (
     definitions_source,
     frame_panel_source,
@@ -227,7 +233,7 @@ def test_each_builtin_arm_adapter_matches_every_declared_evidence_path(tmp_path)
             assert exc_info.value.code == "evidence.operation_unavailable"
         else:
             assert adapter.analysis_factory is not None, adapter.name
-            analysis = adapter.analysis_factory()
+            experiment, resolver = adapter.analysis_factory()
             try:
                 from datetime import date
 
@@ -236,8 +242,12 @@ def test_each_builtin_arm_adapter_matches_every_declared_evidence_path(tmp_path)
                         finalized=True, as_of=date(2026, 1, 3), freeze=freeze
                     )
                     try:
-                        expected = analysis.capture_sequential(
-                            finalized=True, as_of=date(2026, 1, 3), freeze=freeze
+                        expected = workflows.capture_sequential(
+                            experiment,
+                            resolver,
+                            finalized=True,
+                            as_of=date(2026, 1, 3),
+                            freeze=freeze,
                         )
                     except CapabilityError as expected_error:
                         with pytest.raises(CapabilityError) as actual_error:
@@ -250,7 +260,7 @@ def test_each_builtin_arm_adapter_matches_every_declared_evidence_path(tmp_path)
                         assert actual.records == expected.records
                         assert actual.frozen == expected.frozen
             finally:
-                analysis.close()
+                resolver.close()
         close = getattr(source, "close", None)
         if callable(close):
             close()
@@ -284,8 +294,9 @@ def test_compliance_requests_match_the_source_summary_path() -> None:
         for index in range(2)
         for arm in ("control", "treatment")
     ]
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -296,7 +307,7 @@ def test_compliance_requests_match_the_source_summary_path() -> None:
         metrics={"revenue": "mean"},
     )
     try:
-        source = cast(Any, held_source(analysis))
+        source = cast(Any, held_source(resolver))
         provider = evidence_provider(source)
 
         summary = provider.compliance(ComplianceRequest(design))
@@ -308,7 +319,7 @@ def test_compliance_requests_match_the_source_summary_path() -> None:
         )
         assert actual_series == expected_series
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -370,13 +381,12 @@ def test_sql_panel_unadjusted_method_uses_ordinary_moments() -> None:
 
 @pytest.mark.integration
 def test_compliance_series_does_not_reconvert_triggered_source() -> None:
-    from tests.analysis_factory import _native_source
     from tests.test_compliance_artifacts import native_fixture
     from tests.test_compliance_summary import design
 
     con, analysis, _, _, _ = native_fixture(("full",), triggered=True)
     try:
-        native = _native_source(analysis)
+        native = bound_source(analysis[1])
         triggered = native.triggered_source()
         uptake_design = design(7)
         request = ComplianceSeriesRequest(uptake_design, population="triggered")
@@ -505,7 +515,7 @@ def test_triggered_count_request_validates_triggered_population_on_artifact_view
     from tests.source_conformance import unit_day_artifact_analysis
 
     analysis = unit_day_artifact_analysis(tmp_path)
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
     triggered = source.triggered_source()
     try:
         grain, counts, units = source.triggered_counts()
@@ -515,7 +525,7 @@ def test_triggered_count_request_validates_triggered_population_on_artifact_view
         assert request_evidence(evidence_provider(source), request) == expected
         assert request_evidence(evidence_provider(triggered), request) == expected
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 @pytest.mark.integration
@@ -532,7 +542,7 @@ def test_categorical_fit_evidence_precedes_available_multicovariate_fit(tmp_path
         covariates=(CupedCovariate(name="segment", kind="categorical"),),
     )
     spec = MetricSpec(name="revenue", type="mean", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    analysis_experiment, analysis_resolver = from_frame(
         pa.table(
             {
                 "unit": [f"u{i}" for i in range(16)],
@@ -542,6 +552,7 @@ def test_categorical_fit_evidence_precedes_available_multicovariate_fit(tmp_path
                 "segment": ["a", "a", "b", "b"] * 4,
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -549,13 +560,11 @@ def test_categorical_fit_evidence_precedes_available_multicovariate_fit(tmp_path
         plan=AnalysisPlan(primary="revenue"),
     )
     cube_path = tmp_path / "categorical.parquet"
-    analysis.export(cube_path)
-    replay = Analysis.from_moments(
-        pq.read_table(cube_path).to_pylist(),
-        metrics=[spec],
-        control="control",
+    export_moments(analysis_experiment, analysis_resolver, cube_path)
+    replay_experiment, replay_resolver = from_moments(
+        pq.read_table(cube_path).to_pylist(), metrics=[spec], control="control"
     )
-    source = cast(Any, held_source(replay))
+    source = cast(Any, held_source(replay_resolver))
     try:
         metric = source.context.metrics[0]
         assert callable(getattr(source, "fit_cuped_multicovariate", None))
@@ -575,8 +584,8 @@ def test_categorical_fit_evidence_precedes_available_multicovariate_fit(tmp_path
         assert actual.cells == expected.cells
         assert actual.evidence_sha256 == expected.payload_sha256
     finally:
-        analysis.close()
-        replay.close()
+        analysis_resolver.close()
+        replay_resolver.close()
 
 
 @pytest.mark.integration
@@ -618,20 +627,20 @@ def test_assignment_count_refusal_from_moments_cube_is_preserved() -> None:
         }
         for group, total, square in (("control", 3.0, 5.0), ("treatment", 7.0, 25.0))
     ]
-    analysis = Analysis.from_moments(
+    experiment, resolver = from_moments(
         rows,
         metrics=[MetricSpec(name="revenue", type="mean")],
         control="control",
         plan=AnalysisPlan(primary="revenue"),
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     try:
         with pytest.raises(CodedError) as raised:
             evidence_provider(source).counts(CountsRequest("assignment"))
 
         assert raised.value.code == "source.moments.assignment_counts"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -642,13 +651,15 @@ def test_sequential_capture_applies_freeze_like_analysis() -> None:
     specs = [MetricSpec(name="outcome", type="mean")]
     frame = _frame([1, 2] * 8, [5, 7] * 8)
     plan = _plan(specs, start=2)
-    expected_analysis = _analysis(frame.copy(), specs, plan)
+    experiment, resolver = _analysis(frame.copy(), specs, plan)
     actual_analysis = _analysis(frame.copy(), specs, plan)
-    source = cast(Any, held_source(actual_analysis))
+    source = cast(Any, held_source(actual_analysis[1]))
     try:
         for freeze in ((), ("outcome",)):
             request = SequentialCaptureRequest(finalized=True, freeze=freeze)
-            expected = expected_analysis.capture_sequential(finalized=True, freeze=freeze)
+            expected = workflows.capture_sequential(
+                experiment, resolver, finalized=True, freeze=freeze
+            )
             actual = evidence_provider(source).capture_sequential(request)
             assert actual == expected
             assert actual.states == expected.states
@@ -656,8 +667,8 @@ def test_sequential_capture_applies_freeze_like_analysis() -> None:
             assert actual.prefix_id == expected.prefix_id
             assert actual.frozen == expected.frozen
     finally:
-        expected_analysis.close()
-        actual_analysis.close()
+        resolver.close()
+        actual_analysis[1].close()
 
 
 @pytest.mark.integration
@@ -667,19 +678,31 @@ def test_sequential_capture_matches_registered_temporal_snapshot(con) -> None:
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    previous_analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
+    previous_experiment, previous_resolver = registered_native(
+        _analysis_with_asof_events(con, sequential=True)
+    )
     actual_analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
-    expected_analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
+    expected_experiment, expected_resolver = registered_native(
+        _analysis_with_asof_events(con, sequential=True)
+    )
     try:
         first_horizon = date(2025, 7, 1)
         next_horizon = date(2025, 8, 1)
-        previous = previous_analysis.capture_sequential(
-            finalized=True, as_of=first_horizon, freeze=("revenue",)
+        previous = workflows.capture_sequential(
+            previous_experiment,
+            previous_resolver,
+            finalized=True,
+            as_of=first_horizon,
+            freeze=("revenue",),
         )
-        expected = expected_analysis.capture_sequential(
-            finalized=True, previous=previous, as_of=next_horizon
+        expected = workflows.capture_sequential(
+            expected_experiment,
+            expected_resolver,
+            finalized=True,
+            previous=previous,
+            as_of=next_horizon,
         )
-        actual = evidence_provider(held_source(actual_analysis)).capture_sequential(
+        actual = evidence_provider(held_source(actual_analysis[1])).capture_sequential(
             SequentialCaptureRequest(
                 finalized=True,
                 previous=previous,
@@ -696,23 +719,24 @@ def test_sequential_capture_matches_registered_temporal_snapshot(con) -> None:
         assert actual.frozen == expected.frozen
         assert all(checkpoint.cell.metric == "revenue" for checkpoint in actual.frozen)
     finally:
-        actual_analysis.close()
-        expected_analysis.close()
-        previous_analysis.close()
+        actual_analysis[1].close()
+        expected_resolver.close()
+        previous_resolver.close()
 
 
 def test_unknown_evidence_requests_refuse_with_stable_coded_context() -> None:
     import copy
     import pickle
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     provider = evidence_provider(source)
     try:
         with pytest.raises(CapabilityError) as raised:
@@ -728,19 +752,20 @@ def test_unknown_evidence_requests_refuse_with_stable_coded_context() -> None:
             assert restored.code == refusal.code
             assert restored.context == refusal.context
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     metric = source.context.metrics[0]
 
     class Provider:
@@ -799,7 +824,7 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
         request_evidence(provider, CountsRequest("assignment", population="triggered"))
     assert counts_refused.value.code == "evidence.operation_unavailable"
     assert provider.read is False
-    analysis.close()
+    resolver.close()
 
 
 def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() -> None:
@@ -857,12 +882,10 @@ def test_cluster_count_cube_does_not_require_unit_or_assignment_counts(tmp_path)
     for row in rows:
         row.pop("assignment_counts", None)
 
-    analysis = Analysis.from_moments(
-        rows,
-        metrics=[MetricSpec(name="full", type="mean")],
-        design=design(),
+    experiment, resolver = from_moments(
+        rows, metrics=[MetricSpec(name="full", type="mean")], design=design()
     )
-    cube = cast(Any, held_source(analysis))
+    cube = cast(Any, held_source(resolver))
     try:
         provider = evidence_provider(cube)
         actual = provider.counts(CountsRequest("cluster"))
@@ -878,7 +901,7 @@ def test_cluster_count_cube_does_not_require_unit_or_assignment_counts(tmp_path)
             cube.unit_counts()
         assert missing_units.value.code == "source.moments.assignment_counts"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -892,18 +915,16 @@ def test_cluster_count_cube_returns_exact_cluster_grain_counts(tmp_path) -> None
     path = tmp_path / "cluster-counts-with-assignment.parquet"
     source.export_moments(path)
     rows = pq.read_table(path).to_pylist()
-    analysis = Analysis.from_moments(
-        rows,
-        metrics=[MetricSpec(name="full", type="mean")],
-        design=design(),
+    experiment, resolver = from_moments(
+        rows, metrics=[MetricSpec(name="full", type="mean")], design=design()
     )
-    cube = cast(Any, held_source(analysis))
+    cube = cast(Any, held_source(resolver))
     try:
         expected = cube.cluster_counts()
         actual = evidence_provider(cube).counts(CountsRequest("cluster"))
         assert actual == CountEvidence("assigned", "cluster", expected, cube.unit_counts())
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -940,7 +961,7 @@ def test_triggered_artifact_refuses_unavailable_cluster_counts_before_selecting_
     from tests.source_conformance import unit_day_artifact_analysis
 
     analysis = unit_day_artifact_analysis(tmp_path)
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
 
     def invalid_trigger_view():
         raise ArtifactContractError("artifact.extension.invalid", "invalid trigger membership")
@@ -951,7 +972,7 @@ def test_triggered_artifact_refuses_unavailable_cluster_counts_before_selecting_
             evidence_provider(source).counts(CountsRequest("cluster", population="triggered"))
         assert refused.value.code == "evidence.cluster_unavailable"
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 @pytest.mark.integration
@@ -998,7 +1019,7 @@ def test_unadjusted_breakout_moments_use_the_declared_method_family() -> None:
 def test_assignment_counts_use_randomization_cluster_counts() -> None:
     import pyarrow as pa
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.table(
             {
                 "unit": ["c1", "c2", "c3", "t1", "t2", "t3", "t4"],
@@ -1015,22 +1036,23 @@ def test_assignment_counts_use_randomization_cluster_counts() -> None:
                 "revenue": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         cluster="cluster",
         control="control",
         metrics={"revenue": "mean"},
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     try:
         cluster_counts = evidence_provider(source).counts(CountsRequest("cluster"))
         assert cluster_counts == CountEvidence(
-            "assigned", "cluster", source.cluster_counts(), analysis.unit_counts()
+            "assigned", "cluster", source.cluster_counts(), unit_counts(experiment, resolver)
         )
         assignment_counts = evidence_provider(source).counts(CountsRequest("assignment"))
         assert assignment_counts == CountEvidence("assigned", "assignment", source.cluster_counts())
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -1056,7 +1078,7 @@ def test_unit_rows_supports_custom_source_without_outcome_stage_parameter() -> N
 def test_breakout_method_moments_preserve_rows_and_refused_cells() -> None:
     import pyarrow as pa
 
-    from increment.evidence import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.evidence import BreakoutMethodMomentsRequest
     from increment.frame import from_unit_summary
     from increment.semantics.models import CupedCovariate
 
@@ -1102,12 +1124,12 @@ def test_breakout_method_moments_preserve_rows_and_refused_cells() -> None:
 
 @pytest.mark.integration
 def test_breakout_method_moments_refuse_another_source_before_reading(tmp_path) -> None:
-    from increment.evidence import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.evidence import BreakoutMethodMomentsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
-    analysis, declared_breakout = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), declared_breakout = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     reads = 0
 
     class CountingSource:
@@ -1178,19 +1200,19 @@ def test_breakout_method_moments_refuse_another_source_before_reading(tmp_path) 
             ("treatment", "US"),
         }
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_scoped_breakout_moments_reject_another_source_before_reading(
     tmp_path, monkeypatch
 ) -> None:
-    from increment.evidence import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.evidence import BreakoutMethodMomentsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
-    analysis, declared_breakout = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), declared_breakout = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     reads = 0
 
     try:
@@ -1218,17 +1240,17 @@ def test_scoped_breakout_moments_reject_another_source_before_reading(
         assert unsupported.value.code == "evidence.breakout_unavailable"
         assert reads == 0
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_scoped_breakout_unit_rows_reject_another_source(tmp_path) -> None:
-    from increment.evidence import BreakoutIdentity, BreakoutUnitRowsRequest
+    from increment.evidence import BreakoutUnitRowsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
-    analysis, declared_breakout = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), declared_breakout = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     try:
         metric = source.context.metrics[0]
         scoped = source.breakout_source(declared_breakout, metrics=(metric,))
@@ -1242,7 +1264,7 @@ def test_scoped_breakout_unit_rows_reject_another_source(tmp_path) -> None:
             request_evidence(evidence_provider(scoped), request)
         assert refused.value.code == "evidence.breakout_unavailable"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_legacy_source_without_evidence_refuses_before_reading() -> None:
@@ -1282,16 +1304,15 @@ def test_refusals_precede_population_or_source_reads(
     tmp_path, kind, expected_code, monkeypatch
 ) -> None:
     from increment.evidence import (
-        BreakoutIdentity,
         BreakoutMethodMomentsRequest,
         BreakoutSlicesRequest,
         BreakoutUnitRowsRequest,
     )
 
-    analysis, declared_breakout = definitions_source(
-        tmp_path, trigger=True, partial_trigger=True, return_analysis=True
+    (_, resolver), declared_breakout = definitions_source(
+        tmp_path, trigger=True, partial_trigger=True, return_binding=True
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     metric = source.context.metrics[0]
     wrong_source = "src_b" if declared_breakout.source != "src_b" else "src_c"
     identity = BreakoutIdentity(declared_breakout.property, wrong_source)
@@ -1342,7 +1363,7 @@ def test_refusals_precede_population_or_source_reads(
         assert refused.value.code == expected_code
         assert reads == 0
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_custom_compound_requests_use_primitive_reads_inside_provider_scope() -> None:
@@ -1664,7 +1685,7 @@ def test_triggered_multicovariate_fallback_reads_triggered_unit_rows() -> None:
 
 @pytest.mark.integration
 def test_builtin_breakout_unit_rows_respect_triggered_population(tmp_path) -> None:
-    from increment.evidence import BreakoutIdentity, BreakoutUnitRowsRequest
+    from increment.evidence import BreakoutUnitRowsRequest
 
     source, identity = definitions_source(tmp_path, trigger=True, partial_trigger=True)
     metric = source.context.metrics[0]
@@ -1700,8 +1721,9 @@ def test_custom_unit_counts_are_not_cluster_integrity_counts() -> None:
             for member in range(count)
         ]
     )
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         cluster="cluster_id",
@@ -1712,7 +1734,7 @@ def test_custom_unit_counts_are_not_cluster_integrity_counts() -> None:
         ),
         metrics={"revenue": "mean"},
     )
-    source = cast(Any, held_source(original))
+    source = cast(Any, held_source(original_resolver))
 
     class Provider:
         def __init__(self) -> None:
@@ -1753,16 +1775,16 @@ def test_custom_unit_counts_are_not_cluster_integrity_counts() -> None:
         def close(self):
             return None
 
-    analysis = Analysis._from_source(cast(Any, Provider()))
+    analysis_experiment, analysis_resolver = bind_pair(cast(Any, Provider()))
     try:
-        results = analysis.run()
+        results = view_readout(analysis_experiment, analysis_resolver)
         assert results.metadata is not None
         (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
         assert integrity.status == "not_checked_missing_counts"
         assert integrity.observed is None
     finally:
-        analysis.close()
-        original.close()
+        analysis_resolver.close()
+        original_resolver.close()
 
 
 def test_custom_triggered_counts_are_not_assigned_integrity_counts() -> None:
@@ -1779,8 +1801,9 @@ def test_custom_triggered_counts_are_not_assigned_integrity_counts() -> None:
             "revenue": [float(i % 7) for i in range(40)],
         }
     )
-    original = Analysis.from_unit_summary(
+    original_experiment, original_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(
@@ -1790,7 +1813,7 @@ def test_custom_triggered_counts_are_not_assigned_integrity_counts() -> None:
         ),
         metrics={"revenue": "mean"},
     )
-    source = cast(Any, held_source(original))
+    source = cast(Any, held_source(original_resolver))
     provider = evidence_provider(source)
 
     class Provider:
@@ -1837,16 +1860,16 @@ def test_custom_triggered_counts_are_not_assigned_integrity_counts() -> None:
         def close(self):
             return None
 
-    analysis = Analysis._from_source(cast(Any, Provider()))
+    analysis_experiment, analysis_resolver = bind_pair(cast(Any, Provider()))
     try:
-        results = analysis.run()
+        results = view_readout(analysis_experiment, analysis_resolver)
         assert results.metadata is not None
         (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
         assert integrity.status == "not_checked_missing_counts"
         assert integrity.observed is None
     finally:
-        analysis.close()
-        original.close()
+        analysis_resolver.close()
+        original_resolver.close()
 
 
 def test_custom_provider_covariates_are_checked_from_declaration_before_reads() -> None:
@@ -2059,7 +2082,7 @@ def test_warehouse_fit_breakout_uses_per_cell_fit_answers_without_unit_rows(tmp_
         covariates=(CupedCovariate(name="segment", kind="categorical"),),
     )
     spec = MetricSpec(name="revenue", type="mean", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    analysis_experiment, analysis_resolver = from_frame(
         pa.table(
             {
                 "unit": [f"u{i}" for i in range(16)],
@@ -2070,6 +2093,7 @@ def test_warehouse_fit_breakout_uses_per_cell_fit_answers_without_unit_rows(tmp_
                 "country": ["US", "CA"] * 8,
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -2078,13 +2102,11 @@ def test_warehouse_fit_breakout_uses_per_cell_fit_answers_without_unit_rows(tmp_
         breakouts=("country",),
     )
     cube_path = tmp_path / "categorical.parquet"
-    analysis.export(cube_path)
-    replay = Analysis.from_moments(
-        pq.read_table(cube_path).to_pylist(),
-        metrics=[spec],
-        control="control",
+    export_moments(analysis_experiment, analysis_resolver, cube_path)
+    replay_experiment, replay_resolver = from_moments(
+        pq.read_table(cube_path).to_pylist(), metrics=[spec], control="control"
     )
-    source = cast(Any, held_source(replay))
+    source = cast(Any, held_source(replay_resolver))
     source_provider = evidence_provider(source)
     metric = source.context.metrics[0]
     fit_requests: list[MethodFitRequest] = []
@@ -2152,8 +2174,8 @@ def test_warehouse_fit_breakout_uses_per_cell_fit_answers_without_unit_rows(tmp_
     try:
         breakout(Provider(), "country", metrics=(metric.name,))
     finally:
-        analysis.close()
-        replay.close()
+        analysis_resolver.close()
+        replay_resolver.close()
 
     assert len(fit_requests) == 2
     assert all(request.cell is not None for request in fit_requests)
@@ -2179,7 +2201,7 @@ def test_breakout_retained_cell_digest_changes_identity_not_estimates(tmp_path) 
         covariates=(CupedCovariate(name="segment", kind="categorical"),),
     )
     spec = MetricSpec(name="revenue", type="mean", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    analysis_experiment, analysis_resolver = from_frame(
         pa.table(
             {
                 "unit": [f"u{i}" for i in range(16)],
@@ -2190,6 +2212,7 @@ def test_breakout_retained_cell_digest_changes_identity_not_estimates(tmp_path) 
                 "country": ["US", "CA"] * 8,
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -2198,13 +2221,11 @@ def test_breakout_retained_cell_digest_changes_identity_not_estimates(tmp_path) 
         breakouts=("country",),
     )
     cube_path = tmp_path / "categorical.parquet"
-    analysis.export(cube_path)
-    replay = Analysis.from_moments(
-        pq.read_table(cube_path).to_pylist(),
-        metrics=[spec],
-        control="control",
+    export_moments(analysis_experiment, analysis_resolver, cube_path)
+    replay_experiment, replay_resolver = from_moments(
+        pq.read_table(cube_path).to_pylist(), metrics=[spec], control="control"
     )
-    source = cast(Any, held_source(replay))
+    source = cast(Any, held_source(replay_resolver))
     source_provider = evidence_provider(source)
     metric = source.context.metrics[0]
 
@@ -2272,8 +2293,8 @@ def test_breakout_retained_cell_digest_changes_identity_not_estimates(tmp_path) 
         first = breakout(Provider("a" * 64), "country", metrics=(metric.name,))
         second = breakout(Provider("b" * 64), "country", metrics=(metric.name,))
     finally:
-        analysis.close()
-        replay.close()
+        analysis_resolver.close()
+        replay_resolver.close()
 
     assert [row.lift.value if row.lift is not None else None for row in first] == [
         row.lift.value if row.lift is not None else None for row in second
@@ -2283,15 +2304,15 @@ def test_breakout_retained_cell_digest_changes_identity_not_estimates(tmp_path) 
 
 @pytest.mark.integration
 def test_custom_provider_daily_uses_typed_triggered_moments(tmp_path) -> None:
-    from increment import Analysis
 
-    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
+    source = cast(Any, held_source(resolver))
+    triggered_daily = Scope(view="daily", grain="daily", population="triggered")
 
     class Provider:
         evidence = source.evidence
         context = source.context
-        artifact_experiment = analysis.experiment
+        artifact_experiment = experiment_definition(experiment, resolver)
 
         def moments(self, request: MomentsRequest):
             day_source = source.day_source(metrics=(request.metric,), population=request.population)
@@ -2331,12 +2352,12 @@ def test_custom_provider_daily_uses_typed_triggered_moments(tmp_path) -> None:
 
             return EvidenceScopeResult(scoped(), request)
 
-    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    provider_experiment, provider_resolver = bind_pair(cast(Any, Provider()))
     try:
-        expected = analysis.run_daily_lift(population="triggered")
-        actual = provider_analysis.run_daily_lift(population="triggered")
+        expected = view_readout(experiment, resolver, triggered_daily)
+        actual = view_readout(provider_experiment, provider_resolver, triggered_daily)
     finally:
-        analysis.close()
+        resolver.close()
 
     assert [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual] == [
         row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected
@@ -2357,7 +2378,7 @@ def test_breakout_cell_without_fit_evidence_is_fitted_locally_from_unit_rows() -
         covariates=(CupedCovariate(name="segment", kind="categorical"),),
     )
     spec = MetricSpec(name="revenue", type="mean", decision_method=method)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.table(
             {
                 "unit": [f"u{i}" for i in range(32)],
@@ -2368,6 +2389,7 @@ def test_breakout_cell_without_fit_evidence_is_fitted_locally_from_unit_rows() -
                 "country": ["US", "CA"] * 16,
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -2375,7 +2397,7 @@ def test_breakout_cell_without_fit_evidence_is_fitted_locally_from_unit_rows() -
         plan=AnalysisPlan(primary="revenue"),
         breakouts=("country",),
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     local = evidence_provider(source)
     unit_row_requests: list[object] = []
 
@@ -2420,7 +2442,7 @@ def test_breakout_cell_without_fit_evidence_is_fitted_locally_from_unit_rows() -
         actual = breakout(Provider(), "country", metrics=("revenue",))
         expected = breakout(source, "country", metrics=("revenue",))
     finally:
-        analysis.close()
+        resolver.close()
 
     assert unit_row_requests
     lifts = {(row.dimension_value, row.method): row.lift for row in actual}
@@ -2435,19 +2457,19 @@ def test_breakout_cell_without_fit_evidence_is_fitted_locally_from_unit_rows() -
 
 @pytest.mark.integration
 def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_path) -> None:
-    from increment import Analysis
 
     # One treatment unit never triggers, so triggered and assigned day-axis rows differ.
-    analysis, _ = definitions_source(
-        tmp_path, trigger=True, partial_trigger=True, return_analysis=True
+    (experiment, resolver), _ = definitions_source(
+        tmp_path, trigger=True, partial_trigger=True, return_binding=True
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
+    triggered_daily = Scope(view="daily", grain="daily", population="triggered")
     builtin = evidence_provider(source)
 
     class Provider:
         evidence = source.evidence
         context = source.context
-        artifact_experiment = analysis.experiment
+        artifact_experiment = experiment_definition(experiment, resolver)
 
         def moments(self, request: MomentsRequest):
             raise AssertionError("the scoped built-in loader answers day-axis reads")
@@ -2476,12 +2498,12 @@ def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_p
         def scope(self, request: EvidenceScope):
             return builtin.scope(request)
 
-    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    provider_experiment, provider_resolver = bind_pair(cast(Any, Provider()))
     try:
-        expected = analysis.run_daily_lift(population="triggered")
-        actual = provider_analysis.run_daily_lift(population="triggered")
+        expected = view_readout(experiment, resolver, triggered_daily)
+        actual = view_readout(provider_experiment, provider_resolver, triggered_daily)
     finally:
-        analysis.close()
+        resolver.close()
 
     assert [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual] == [
         row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected
@@ -2490,8 +2512,8 @@ def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_p
 
 @pytest.mark.integration
 def test_scoped_builtin_metadata_keeps_day_axis_breakouts(tmp_path) -> None:
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     builtin = evidence_provider(source)
     provider = _forwarding_provider(source)
     provider.scope = builtin.scope
@@ -2510,7 +2532,7 @@ def test_scoped_builtin_metadata_keeps_day_axis_breakouts(tmp_path) -> None:
         )
         assert tuple(result.slices)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def _forwarding_provider(source: Any, **attributes: Any) -> Any:
@@ -2568,7 +2590,7 @@ def _categorical_cuped_analysis() -> Any:
         name="categorical",
         covariates=(CupedCovariate(name="segment", kind="categorical"),),
     )
-    return Analysis.from_unit_summary(
+    return from_frame(
         pa.table(
             {
                 "unit": [f"u{i}" for i in range(32)],
@@ -2579,6 +2601,7 @@ def _categorical_cuped_analysis() -> Any:
                 "country": ["US", "CA"] * 16,
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -2590,13 +2613,19 @@ def _categorical_cuped_analysis() -> Any:
 
 @pytest.mark.integration
 def test_provider_declaring_breakouts_runs_breakouts_through_analysis() -> None:
-    analysis = _categorical_cuped_analysis()
+    analysis_experiment, analysis_resolver = _categorical_cuped_analysis()
     try:
-        expected = analysis.run_breakout()
-        provider_analysis = Analysis._from_source(_forwarding_provider(held_source(analysis)))
-        actual = provider_analysis.run_breakout()
+        expected = view_readout(
+            analysis_experiment, analysis_resolver, Scope(view="breakout", grain="total")
+        )
+        provider_experiment, provider_resolver = bind_pair(
+            _forwarding_provider(held_source(analysis_resolver))
+        )
+        actual = view_readout(
+            provider_experiment, provider_resolver, Scope(view="breakout", grain="total")
+        )
     finally:
-        analysis.close()
+        analysis_resolver.close()
 
     assert expected
     assert {(row.dimension_value, row.method): row.lift for row in actual}.keys() == {
@@ -2619,14 +2648,14 @@ def test_provider_fit_requests_are_checked_against_its_own_declaration() -> None
 
     from increment.readouts import run
 
-    analysis = _categorical_cuped_analysis()
+    experiment, resolver = _categorical_cuped_analysis()
     try:
-        expected = analysis.run()
+        expected = view_readout(experiment, resolver)
         # A provider may keep its own data under any attribute name, including `_source`.
-        provider = _forwarding_provider(held_source(analysis), _source=pa.table({"revenue": [1.0]}))
+        provider = _forwarding_provider(held_source(resolver), _source=pa.table({"revenue": [1.0]}))
         actual = run(provider)
     finally:
-        analysis.close()
+        resolver.close()
 
     assert [(row.method, row.group_id) for row in actual] == [
         (row.method, row.group_id) for row in expected
@@ -2640,29 +2669,28 @@ def test_provider_fit_requests_are_checked_against_its_own_declaration() -> None
 def test_custom_provider_sequential_run_uses_its_current_checkpoint(con) -> None:
     from datetime import date
 
-    from increment import Analysis
     from increment.sequential_source import adopt_source_snapshot
     from tests.analysis_factory import held_source
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    experiment, resolver = registered_native(_analysis_with_asof_events(con, sequential=True))
     provider_analysis = None
     try:
-        source = cast(Any, held_source(native))
-        snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        source = cast(Any, held_source(resolver))
+        snapshot = workflows.capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 7, 1)
+        )
         adopt_source_snapshot(source, snapshot)
-        expected = list(native.run())
-        provider_analysis = Analysis._from_source(
+        expected = list(view_readout(experiment, resolver))
+        provider_analysis = bind_pair(
             _forwarding_provider(
                 source,
                 sequential_snapshot=lambda request: snapshot,
                 close=lambda: None,
             )
         )
-        from increment.readouts import run_scoped
-
-        result = run_scoped(provider_analysis, provider_analysis.run)
+        result = view_readout(*provider_analysis)
         actual = list(result)
         assert actual == expected
         metadata = result.metadata
@@ -2671,28 +2699,28 @@ def test_custom_provider_sequential_run_uses_its_current_checkpoint(con) -> None
         assert set(metadata.effective_modes.values()) == {"provider"}
     finally:
         if provider_analysis is not None:
-            provider_analysis.close()
-        native.close()
+            provider_analysis[1].close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -> None:
-    from increment import Analysis
     from tests.analysis_factory import held_source
 
     native, _ = definitions_source(
-        tmp_path, trigger=True, partial_trigger=False, return_analysis=True
+        tmp_path, trigger=True, partial_trigger=False, return_binding=True
     )
     populations: list[str] = []
     operations_seen: set[str] = set()
     filtered_analysis = None
     provider_analysis = None
     try:
-        expected = list(native.run(population="triggered"))
-        source = cast(Any, held_source(native))
+        expected = list(view_readout(*native, population="triggered"))
+        source = cast(Any, held_source(native[1]))
+        declared = experiment_definition(*native)
         provider = _forwarding_provider(
             source,
-            artifact_experiment=native.experiment,
+            artifact_experiment=declared,
             close=lambda: None,
         )
         provider.source = source
@@ -2705,8 +2733,8 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
                 return original(request)
 
             setattr(provider, operation, record_population)
-        provider_analysis = Analysis._from_source(provider, experiment=native.experiment)
-        result = provider_analysis.run(population="triggered")
+        provider_analysis = bind_pair(provider, experiment=declared)
+        result = view_readout(*provider_analysis, population="triggered")
         actual = list(result)
         assert result.metadata is not None
         assert set(result.metadata.effective_modes.values()) == {"provider"}
@@ -2715,23 +2743,23 @@ def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -
         ]
         filtered_provider = _forwarding_provider(
             source,
-            artifact_experiment=native.experiment,
+            artifact_experiment=declared,
             close=lambda: None,
         )
         filtered_provider.source = source
         filtered_provider.moments = lambda request: ()
-        filtered_analysis = Analysis._from_source(filtered_provider, experiment=native.experiment)
+        filtered_analysis = bind_pair(filtered_provider, experiment=declared)
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as filtered:
-            list(filtered_analysis.run(population="triggered"))
+            list(view_readout(*filtered_analysis, population="triggered"))
         assert filtered.value.code == "readout.arms.no_treatment"
     finally:
         if provider_analysis is not None:
-            provider_analysis.close()
+            provider_analysis[1].close()
         if filtered_analysis is not None:
-            filtered_analysis.close()
-        native.close()
+            filtered_analysis[1].close()
+        native[1].close()
     assert populations
     assert set(populations) == {"triggered"}
     assert "moments" in operations_seen
@@ -2744,7 +2772,7 @@ def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
     from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
 
     analysis = _categorical_cuped_analysis()
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
     builtin = evidence_provider(source)
     covariate = CupedCovariate(name="segment", kind="categorical")
     fitted_method = Method.cuped_multicovariate(name="warehouse", covariates=(covariate,))
@@ -2809,7 +2837,7 @@ def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
             ),
         )
     finally:
-        analysis.close()
+        analysis[1].close()
 
     assert evidence.unit_frame is not None
     assert unit_requests
@@ -2822,7 +2850,7 @@ def test_warehouse_fit_input_digest_uses_declared_unit_rows():
     from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
 
     analysis = _categorical_cuped_analysis()
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
     builtin = evidence_provider(source)
     segment = CupedCovariate(name="segment", kind="categorical")
     country = CupedCovariate(name="country", kind="categorical")
@@ -2891,7 +2919,7 @@ def test_warehouse_fit_input_digest_uses_declared_unit_rows():
 
         unavailable_readout = run(NoUnitRowsProvider())
     finally:
-        analysis.close()
+        analysis[1].close()
     assert all(answer.evidence_sha256 is None for _, answer in unavailable.method_fit_answers)
     assert unavailable_readout.metadata is not None
     assert unavailable_readout.metadata.source_content_digest is None
@@ -2908,7 +2936,7 @@ def test_local_cuped_fallback_preserves_retained_categorical_components() -> Non
     from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
 
     analysis = _categorical_cuped_analysis()
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
     builtin = evidence_provider(source)
     covariate = CupedCovariate(name="segment", kind="categorical")
     decision = Method.cuped_multicovariate(name="retained", covariates=(covariate,))
@@ -2969,7 +2997,7 @@ def test_local_cuped_fallback_preserves_retained_categorical_components() -> Non
             ),
         )
     finally:
-        analysis.close()
+        analysis[1].close()
 
     component = ("categorical_cells:retained", "retained-categorical-evidence", 1)
     assert component in evidence.evidence_components
@@ -2979,7 +3007,7 @@ def test_local_cuped_fallback_preserves_retained_categorical_components() -> Non
 @pytest.mark.integration
 def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
     analysis = _categorical_cuped_analysis()
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
     failure = CodedError(
         "retained categorical fit failed",
         code="estimation.cuped.covariate_zero_variance",
@@ -2991,12 +3019,14 @@ def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
     provider.close = lambda: None
     provider_analysis = None
     try:
-        provider_analysis = Analysis._from_source(provider)
-        rows = list(provider_analysis.run(sensitivity_methods=[Method(name="unadjusted")]))
+        provider_analysis = bind_pair(provider)
+        rows = list(
+            view_readout(*provider_analysis, sensitivity_methods=[Method(name="unadjusted")])
+        )
     finally:
         if provider_analysis is not None:
-            provider_analysis.close()
-        analysis.close()
+            provider_analysis[1].close()
+        analysis[1].close()
 
     unavailable = [row for row in cast(Any, rows) if row.method == "categorical"]
     assert unavailable
@@ -3007,19 +3037,22 @@ def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
 def test_provider_checkpoint_wins_when_its_scope_yields_a_builtin_loader(con) -> None:
     from datetime import date
 
-    from increment import Analysis
     from increment.sequential_source import adopt_source_snapshot
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    experiment, resolver = registered_native(_analysis_with_asof_events(con, sequential=True))
     provider_analysis = None
     try:
-        source = cast(Any, held_source(native))
+        source = cast(Any, held_source(resolver))
         builtin = evidence_provider(source)
         # The provider owns the June 1 checkpoint; the loader it scopes to has moved to June 3.
-        snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 6, 1))
-        later = native.capture_sequential(finalized=True, as_of=date(2025, 6, 3))
+        snapshot = workflows.capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 6, 1)
+        )
+        later = workflows.capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 6, 3)
+        )
         adopt_source_snapshot(source, later)
         checkpoint_requests: list[object] = []
 
@@ -3027,7 +3060,7 @@ def test_provider_checkpoint_wins_when_its_scope_yields_a_builtin_loader(con) ->
             checkpoint_requests.append(request)
             return snapshot
 
-        provider_analysis = Analysis._from_source(
+        provider_analysis = bind_pair(
             _forwarding_provider(
                 source,
                 scope=builtin.scope,
@@ -3035,15 +3068,15 @@ def test_provider_checkpoint_wins_when_its_scope_yields_a_builtin_loader(con) ->
                 close=lambda: None,
             )
         )
-        actual = list(provider_analysis.run())
+        actual = list(view_readout(*provider_analysis))
         adopt_source_snapshot(source, snapshot)
-        expected = list(native.run())
+        expected = list(view_readout(experiment, resolver))
         assert checkpoint_requests
         assert actual == expected
     finally:
         if provider_analysis is not None:
-            provider_analysis.close()
-        native.close()
+            provider_analysis[1].close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -3055,15 +3088,18 @@ def test_builtin_adapter_keeps_the_loader_checkpoint_for_sequential_readouts(con
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    experiment, resolver = registered_native(_analysis_with_asof_events(con, sequential=True))
     try:
-        source = cast(Any, held_source(native))
+        source = cast(Any, held_source(resolver))
         adopt_source_snapshot(
-            source, native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+            source,
+            workflows.capture_sequential(
+                experiment, resolver, finalized=True, as_of=date(2025, 7, 1)
+            ),
         )
-        assert list(run(evidence_provider(source))) == list(native.run())
+        assert list(run(evidence_provider(source))) == list(view_readout(experiment, resolver))
     finally:
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -3075,29 +3111,33 @@ def test_request_evidence_answers_sequential_snapshot_requests(con) -> None:
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    experiment, resolver = registered_native(_analysis_with_asof_events(con, sequential=True))
     try:
-        source = cast(Any, held_source(native))
-        checkpoint = native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        source = cast(Any, held_source(resolver))
+        checkpoint = workflows.capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 7, 1)
+        )
         adopt_source_snapshot(source, checkpoint)
         answer = request_evidence(evidence_provider(source), SequentialSnapshotRequest())
-        assert answer == native.sequential_snapshot()
+        assert answer == sequential_snapshot(experiment, resolver)
     finally:
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_triggered_daily_lift_without_trigger_edges_refuses_before_reading(tmp_path) -> None:
-    from increment import Analysis
 
-    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (native_experiment, native_resolver), _ = definitions_source(
+        tmp_path, trigger=True, return_binding=True
+    )
+    source = cast(Any, held_source(native_resolver))
+    declared = experiment_definition(native_experiment, native_resolver)
     reads: list[object] = []
 
     class Provider:
         evidence = source.evidence
         context = source.context
-        artifact_experiment = analysis.experiment
+        artifact_experiment = declared
 
         def moments(self, request: MomentsRequest):
             reads.append(request)
@@ -3132,13 +3172,17 @@ def test_triggered_daily_lift_without_trigger_edges_refuses_before_reading(tmp_p
 
             return EvidenceScopeResult(scoped(), request)
 
-    assert analysis.experiment.trigger is not None
-    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    assert declared.trigger is not None
+    provider_experiment, provider_resolver = bind_pair(cast(Any, Provider()))
     try:
         with pytest.raises(CodedError) as refused:
-            provider_analysis.run_daily_lift(population="triggered")
+            view_readout(
+                provider_experiment,
+                provider_resolver,
+                Scope(view="daily", grain="daily", population="triggered"),
+            )
     finally:
-        analysis.close()
+        native_resolver.close()
 
     assert refused.value.code == "evidence.operation_unavailable"
     assert reads == []
@@ -3148,12 +3192,11 @@ def test_triggered_daily_lift_without_trigger_edges_refuses_before_reading(tmp_p
 def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) -> None:
     from dataclasses import replace as replace_dataclass
 
-    from increment import Analysis
     from increment.semantics.models import Breakout
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
-    experiment = analysis.experiment.model_copy(
+    (native_experiment, native_resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(native_resolver))
+    experiment = experiment_definition(native_experiment, native_resolver).model_copy(
         update={
             "breakouts": (
                 Breakout(property="country", source="web"),
@@ -3202,39 +3245,27 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
             return EvidenceScopeResult(scoped(), request)
 
     provider = Provider()
-    provider_analysis = Analysis._from_source(cast(Any, provider))
+    provider_experiment, provider_resolver = bind_pair(cast(Any, provider))
+    daily_values = Scope(view="daily", grain="daily", values=True)
+    daily_by_country = Scope(
+        view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
+    )
     try:
-        provider_analysis.run_daily(dimension="country")
+        view_readout(provider_experiment, provider_resolver, daily_by_country)
         assert sorted(
             tuple((item.property, item.source) for item in items) for items in scoped_breakouts
         ) == [(("country", "app"),), (("country", "web"),)]
         scoped_breakouts.clear()
-        from increment.readouts import run_scoped
-
-        run_scoped(
-            provider_analysis,
-            lambda: provider_analysis.run_daily(dimension="country"),
-            population="assigned",
-            readouts=("daily",),
-            include_breakouts=True,
-        )
+        run(provider_experiment.with_views(daily_values, daily_by_country), provider_resolver)
         scoped_identities = {
             tuple((item.property, item.source) for item in items) for items in scoped_breakouts
         }
         assert {(("country", "app"),), (("country", "web"),)} <= scoped_identities
         scoped_breakouts.clear()
-        context_breakouts: list[tuple[Any, ...]] = []
-        run_scoped(
-            provider_analysis,
-            lambda: None,
-            population="assigned",
-            readouts=("run",),
-            on_context=lambda context: context_breakouts.append(context.scope.breakouts),
-        )
+        view_readout(provider_experiment, provider_resolver, daily_values)
         assert scoped_breakouts == [()]
-        assert context_breakouts == [()]
     finally:
-        analysis.close()
+        native_resolver.close()
 
 
 @pytest.mark.integration
@@ -3246,9 +3277,9 @@ def test_custom_daily_joint_grouping_refuses_dimensions_split_across_sources(
     from increment.readouts import daily
     from increment.semantics.models import Breakout
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
-    experiment = analysis.experiment.model_copy(
+    (native_experiment, native_resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(native_resolver))
+    experiment = experiment_definition(native_experiment, native_resolver).model_copy(
         update={
             "breakouts": (
                 Breakout(property="country", source="web"),
@@ -3302,7 +3333,7 @@ def test_custom_daily_joint_grouping_refuses_dimensions_split_across_sources(
             daily(Provider(), by=("country", "device"))
         assert error.value.code == "evidence.joint_grouping_unavailable"
     finally:
-        analysis.close()
+        native_resolver.close()
 
     assert events == []
 
@@ -3316,9 +3347,9 @@ def test_custom_daily_joint_grouping_keeps_dimensions_declared_on_same_source(
     from increment.readouts import daily
     from increment.semantics.models import Breakout
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
-    experiment = analysis.experiment.model_copy(
+    (native_experiment, native_resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(native_resolver))
+    experiment = experiment_definition(native_experiment, native_resolver).model_copy(
         update={
             "breakouts": (
                 Breakout(property="country", source="web"),
@@ -3375,7 +3406,7 @@ def test_custom_daily_joint_grouping_keeps_dimensions_declared_on_same_source(
     try:
         daily(Provider(), by=("country", "device"))
     finally:
-        analysis.close()
+        native_resolver.close()
 
     assert events == [("scope", (("country", "web"), ("device", "web"))), "read"]
     assert requested_dimensions
@@ -3383,7 +3414,6 @@ def test_custom_daily_joint_grouping_keeps_dimensions_declared_on_same_source(
 
 
 def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading() -> None:
-    from increment import Analysis
 
     source = frame_panel_source()
     context = replace(source.context, trigger_name="trigger")
@@ -3394,10 +3424,14 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
     reads: list[object] = []
     provider = _forwarding_provider(source, context=context, evidence=evidence)
     provider.moments = lambda request: reads.append(request)
-    analysis = Analysis._from_source(provider)
+    experiment, resolver = bind_pair(provider)
 
     with pytest.raises(CodedError) as refused:
-        analysis.run_daily(population="triggered")
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", values=True, population="triggered"),
+        )
 
     assert refused.value.code == "evidence.operation_unavailable"
     assert refused.value.context["requested"] == "artifact_experiment"
@@ -3407,23 +3441,20 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
 def test_analysis_unit_counts_uses_declared_typed_count_evidence() -> None:
     from dataclasses import replace
 
-    from increment import Analysis
-
     source = frame_panel_source()
     evidence = replace(source.evidence, operations=source.evidence.operations - {"unit_counts"})
     provider = _forwarding_provider(source, evidence=evidence)
-    analysis = Analysis._from_source(provider)
+    experiment, resolver = bind_pair(provider)
 
-    assert analysis.unit_counts() == source.unit_counts()
+    assert unit_counts(experiment, resolver) == source.unit_counts()
 
 
 def test_analysis_close_accepts_provider_without_close_method() -> None:
-    from increment import Analysis
 
     provider = _forwarding_provider(frame_panel_source())
-    analysis = Analysis._from_source(provider)
+    experiment, resolver = bind_pair(provider)
 
-    analysis.close()
+    resolver.close()
 
 
 def _assert_bound_daily_slice_reads_only_its_source(
@@ -3511,8 +3542,6 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
 
     import ibis
     import yaml
-
-    from increment import Analysis
 
     rows = [
         {
@@ -3608,9 +3637,11 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     con = ibis.duckdb.connect()
     con.create_table("raw_events", obj=rows)
     con.create_table("raw_app", obj=rows)
-    analysis = Analysis.from_definitions("conformance", defs_path, con)
-    source = cast(Any, held_source(analysis))
-    experiment = analysis.experiment
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="conformance"
+    )
+    source = cast(Any, held_source(analysis_resolver))
+    experiment = experiment_definition(analysis_experiment, analysis_resolver)
     builtin = evidence_provider(source)
 
     class Provider:
@@ -3710,8 +3741,12 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
 
     provider = Provider()
     forwarding = _forwarding_provider(source, scope=builtin.scope, artifact_experiment=experiment)
-    forwarding_analysis = Analysis._from_source(forwarding)
-    actual = forwarding_analysis.run_daily(dimension="country")
+    forwarding_experiment, forwarding_resolver = bind_pair(forwarding)
+    actual = view_readout(
+        forwarding_experiment,
+        forwarding_resolver,
+        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+    )
     identities = [
         (row.source, row.ds, row.dimension, row.dimension_value, row.group_id) for row in actual
     ]
@@ -3804,13 +3839,13 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             assert len(acquired) == len(expected) == 1
             assert acquired[0].rows == expected[0].rows
 
-    analysis.close()
+    cast(Any, analysis_resolver).close()
 
 
 @pytest.mark.integration
 def test_daily_moments_for_a_method_refuse_on_builtin_loaders(tmp_path, monkeypatch) -> None:
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     reads: list[str] = []
     for name in ("moments", "moments_for_method"):
         original = getattr(source, name)
@@ -3827,7 +3862,7 @@ def test_daily_moments_for_a_method_refuse_on_builtin_loaders(tmp_path, monkeypa
                 MomentsRequest(metric=metric, grain="daily", method=Method(name="unadjusted"))
             )
     finally:
-        analysis.close()
+        resolver.close()
 
     assert refused.value.code == "evidence.grain_unavailable"
     assert reads == []
@@ -3844,20 +3879,23 @@ def test_provider_forwarding_its_checkpoint_through_request_evidence_runs_sequen
     from tests.sequential_cases import registered_native
     from tests.test_analysis_asof import _analysis_with_asof_events
 
-    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    experiment, resolver = registered_native(_analysis_with_asof_events(con, sequential=True))
     provider_analysis = None
     try:
-        source = cast(Any, held_source(native))
+        source = cast(Any, held_source(resolver))
         builtin = evidence_provider(source)
         adopt_source_snapshot(
-            source, native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+            source,
+            workflows.capture_sequential(
+                experiment, resolver, finalized=True, as_of=date(2025, 7, 1)
+            ),
         )
-        expected = list(native.run())
+        expected = list(view_readout(experiment, resolver))
 
         def forwarded_checkpoint(request: SequentialSnapshotRequest):
             return request_evidence(builtin, request)
 
-        provider_analysis = Analysis._from_source(
+        provider_analysis = bind_pair(
             _forwarding_provider(
                 source,
                 scope=builtin.scope,
@@ -3865,11 +3903,11 @@ def test_provider_forwarding_its_checkpoint_through_request_evidence_runs_sequen
                 close=lambda: None,
             )
         )
-        assert list(provider_analysis.run()) == expected
+        assert list(view_readout(*provider_analysis)) == expected
     finally:
         if provider_analysis is not None:
-            provider_analysis.close()
-        native.close()
+            provider_analysis[1].close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -3878,10 +3916,10 @@ def test_day_axis_scopes_keep_requested_dimensions_the_experiment_does_not_decla
 ) -> None:
     from increment.semantics.models import Breakout
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (native_experiment, native_resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(native_resolver))
     scoped_breakouts: list[tuple[Any, ...]] = []
-    experiment = analysis.experiment.model_copy(
+    experiment = experiment_definition(native_experiment, native_resolver).model_copy(
         update={"breakouts": (Breakout(property="country", source="events"),)}
     )
 
@@ -3939,7 +3977,7 @@ def test_day_axis_scopes_keep_requested_dimensions_the_experiment_does_not_decla
         )
         list(rows.slices)
     finally:
-        analysis.close()
+        native_resolver.close()
 
     assert scoped_breakouts
     assert all(set(breakouts) == {"country", "device"} for breakouts in scoped_breakouts)
@@ -3947,8 +3985,8 @@ def test_day_axis_scopes_keep_requested_dimensions_the_experiment_does_not_decla
 
 @pytest.mark.integration
 def test_scope_result_source_is_evidence_provider(tmp_path):
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     provider = evidence_provider(source)
     metric = source.context.metrics[0]
     request = EvidenceScope(metrics=(metric,), execution=True)
@@ -3958,4 +3996,4 @@ def test_scope_result_source_is_evidence_provider(tmp_path):
             assert isinstance(scoped, EvidenceProvider)
             assert scoped.moments(MomentsRequest(metric)) == tuple(source.moments(metric))
     finally:
-        analysis.close()
+        resolver.close()

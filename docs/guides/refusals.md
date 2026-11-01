@@ -29,7 +29,7 @@ similar codes can mean different things.
 | --- | --- |
 | `analysis.*`, `facade.*`, `plan.*`, `power.*`, `arm_planning.*` | Check the declared analysis, population, method, planning inputs, and supported source path in the [capability reference](../reference/capabilities-by-entry-point.md), [power analysis](power-analysis.md), or [method guide](choose-a-method.md). Correct the request or use a supported entry point. |
 | `source.*`, `frame.*`, `query.*`, `artifact.*`, `artifact_contract.*`, `definition.*`, `model.*`, `compatibility.*` | Check the reported column, grain, identity, assignment, artifact version, or source capability. Repair the input at its source, then follow the [data model guide](data-model.md), [API reference](../api.md), or [compatibility policy](../api.md#pre-10-compatibility). |
-| `evidence.*` | Check `requested`, `offered`, and `route` in the refusal context. Grain, breakout, unit-row, raw-outcome, cluster, covariate, assignment, and operation codes identify which evidence is unavailable; use a source that retains it or choose an operation it supports. `evidence.assignment.unavailable` means the source has no assignment evidence; `evidence.assignment.selection_unavailable` means the requested experiment, version, period, or population is not retained; `evidence.assignment.identity_unavailable` means a replay, whole-ledger exposure, or allocation-history request needs row-level assignment records; supply a row-level ledger through `Analysis.from_definitions` with `experiment.assignment_ledger`, or a `FrameLedger`. `evidence.assignment.invalid` names malformed roles, duplicate identities, inconsistent cluster membership, invalid periods, or invalid replay specifications; `evidence.assignment.replay_mismatch` means replay disagrees with the selected ledger. Compliance declarations distinguish total from as-of evidence; operation codes name unavailable product operations; `evidence.operation_unavailable` covers an operation that the source does not retain. Follow the route in the context rather than fabricating missing evidence. |
+| `evidence.*` | Check `requested`, `offered`, and `route` in the refusal context. Grain, breakout, unit-row, raw-outcome, cluster, covariate, assignment, and operation codes identify which evidence is unavailable; use a source that retains it or choose an operation it supports. `evidence.assignment.unavailable` means the source has no assignment evidence; `evidence.assignment.selection_unavailable` means the requested experiment, version, period, or population is not retained; `evidence.assignment.identity_unavailable` means a replay, whole-ledger exposure, or allocation-history request needs row-level assignment records; supply a row-level ledger through `from_definitions` with `experiment.assignment_ledger`, or a `FrameLedger`. `evidence.assignment.invalid` names malformed roles, duplicate identities, inconsistent cluster membership, invalid periods, or invalid replay specifications; `evidence.assignment.replay_mismatch` means replay disagrees with the selected ledger. Compliance declarations distinguish total from as-of evidence; operation codes name unavailable product operations; `evidence.operation_unavailable` covers an operation that the source does not retain. Follow the route in the context rather than fabricating missing evidence. |
 | `query.session.warehouse_artifact.verification_unavailable` | The stored relation format cannot be verified by this warehouse route; refusal context names the relation and digest format. Do not read or relabel its hashes. Republish from trusted definitions with warehouse-side integrity enabled. |
 | `readout.*`, `readouts.*`, `estimation.*`, `integrity.*`, `breakout.*`, `contrast.*`, `conversion_inference.*`, `arm.*`, `moments.*`, `decision.*`, `design.*`, `identification.*`, `sequential.*`, `absorption.*`, `adjust.*`, `allocation.*`, `impute.*`, `unit_cycle.*`, `sensitivity.*` | Check the requested estimand, inference and multiplicity scope in [reading results](reading-results.md), [multiplicity](multiplicity.md), and the [method guide](choose-a-method.md). For SRM integrity codes, declare the actual target allocation and, for always-valid checks, the assignment law. For `sensitivity.*`, check the row's estimand, declared metric type and scale in the [observational guide](observational.md#how-strong-would-an-omitted-confounder-need-to-be). Use the route named in the refusal; do not treat an omitted or refused cell as a null effect. |
 | `cate.*`, `logged_policy.*` | Check identification and support assumptions in [heterogeneity](heterogeneity-and-rollout.md) or [logged policies](logged-policy.md); select a supported estimand rather than weakening a validity gate. |
@@ -38,7 +38,7 @@ similar codes can mean different things.
 | `package.*` | Bundled support is missing or inconsistent in the installed package. Reinstall a complete, matching Increment distribution; changing the experiment or data will not repair the installation. |
 | `kernel.*` | Check the saved or shared analysis description named in the refusal context (`field`, `kind`). A scope, request or method description is inconsistent or cannot be saved portably. Request identity datetimes must include a timezone; aware offsets are normalized to UTC. For `kernel.definitions.catalog_missing`, bind the definitions with a connection to write the offline catalog; for `kernel.definitions.catalog_stale`, rebind after changing the definitions. Rebuild the description from the analysis rather than editing stored identifiers. |
 | `store.*` | The saved run manifest, cell roster, scope map or immutable publication is inconsistent. Keep run IDs unique, publish a complete roster once, and use the pinned `RunHandle` for reads; correct the source run and write a new ID rather than replacing a committed run. |
-| `wire.*` | A result cannot be represented in the portable wire format. `wire.procedure.contrast_context` means a switchback contrast run has in-memory cells and decisions but no portable arm decision plan; keep the result in memory, or use legacy `Analysis.run()` when its `ContrastResults` return contract is required. |
+| `wire.*` | A result cannot be represented in the portable wire format. `wire.procedure.contrast_context` means a switchback contrast run has cells and decisions but no portable arm decision plan, so its decisions cannot be logged or restored; save its cells with `run(..., results_store=...)` alone, keep the result in memory, or read its `ContrastResults` collection with `result.readout()`. |
 
 `store.run.empty` means an empty metric selection has no result cells to
 persist. Select at least one metric before saving the run; an empty result may
@@ -80,8 +80,8 @@ Warehouse-backed CUPED can refuse with `query.cuped.magnitude_range` when an
 arm's root-mean-square outcome component (including a ratio denominator) or
 continuous covariate is outside `[1e-50, 1e50]`. The refusal context identifies
 the metric, arm, component, and bound. Change units to rescale the values, or
-use explicitly supplied per-unit data with `Analysis.from_unit_summary` or
-`Analysis.from_unit_panel`; local per-unit fitters are unchanged.
+use explicitly supplied per-unit data with `from_frame(..., shape="summary")` or
+`from_frame(..., shape="panel")`; local per-unit fitters are unchanged.
 
 ## Recover from a missing sequential allocation
 
@@ -94,7 +94,7 @@ corrected rerun:
 ```python
 import pandas as pd
 
-from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
+from increment import AnalysisPlan, InferenceSpec, MetricSpec, Randomized, from_frame, run
 from increment.errors import CapabilityError
 
 frame = pd.DataFrame(
@@ -109,8 +109,9 @@ plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_
 metrics = [MetricSpec(name="outcome", type="mean")]
 
 try:
-    Analysis.from_unit_summary(
+    from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(control_group="control"),
@@ -128,8 +129,9 @@ else:
     raise AssertionError("the missing allocation should be refused")
 
 # This example's units were assigned 1:1; use the real allocation.
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     frame,
+    shape="summary",
     unit="unit",
     group="arm",
     design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
@@ -138,7 +140,7 @@ analysis = Analysis.from_unit_summary(
     plan=plan,
     exposure_date="exposure",
 )
-results = analysis.run()
+results = run(experiment, resolver).readout()
 assert len(results) == 1
 assert results[0].metric == "outcome"
 ```

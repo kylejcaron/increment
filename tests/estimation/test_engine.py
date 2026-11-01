@@ -7,6 +7,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
+from increment import from_frame
 from increment.errors import InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.decision_types import PValueEvidence
@@ -22,6 +23,7 @@ from increment.semantics.models import (
     Measure,
     RatioMetric,
 )
+from tests.analysis_factory import view_readout
 
 
 @pytest.mark.parametrize(
@@ -2551,7 +2553,7 @@ class TestEncouragementItiRetainsBinomialRoute:
 def test_clustered_arm_facts_use_unit_counts_and_unit_means():
     import pyarrow as pa
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.estimation.results import LiftEstimate
 
     sizes = {"control": (1, 2, 5), "treatment": (2, 3, 4)}
@@ -2570,22 +2572,30 @@ def test_clustered_arm_facts_use_unit_counts_and_unit_means():
     revenue = {g: [float(r["revenue"]) for r in rows if r["group"] == g] for g in sizes}
     frame = pa.Table.from_pylist(rows)
 
-    (mean_row,) = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="group",
-        control="control",
-        cluster="store",
-        metrics=[MetricSpec(name="revenue", type="mean")],
-    ).run()
-    (ratio_row,) = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="group",
-        control="control",
-        cluster="store",
-        metrics=[MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")],
-    ).run()
+    (mean_row,) = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="control",
+            cluster="store",
+            metrics=[MetricSpec(name="revenue", type="mean")],
+        )
+    )
+    (ratio_row,) = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="control",
+            cluster="store",
+            metrics=[
+                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")
+            ],
+        )
+    )
 
     assert isinstance(mean_row, LiftEstimate) and isinstance(ratio_row, LiftEstimate)
     assert (mean_row.n_control, mean_row.n_treat) == (8, 9)

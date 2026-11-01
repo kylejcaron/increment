@@ -9,15 +9,23 @@ degenerate trigger is refused rather than analyzed.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import ibis
 import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, from_definitions, run
-from increment.artifacts import SourceSnapshotEvidence
+from increment import (
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+    from_unit_day_artifact,
+    run,
+    workflows,
+)
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import (
     CapabilityError,
     DefinitionError,
@@ -27,9 +35,25 @@ from increment.errors import (
 )
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sitewide import SitewideImpact
-from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+from increment.estimators import sitewide
+from increment.evidence import (
+    BreakoutIdentity,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.kernel.contracts import Scope
 from increment.semantics import load
+from increment.workflows import (
+    capture_sequential,
+    compiled_decision_plan,
+    experiment_definition,
+    export_moments,
+    metrics,
+    sequential_snapshot,
+)
+from tests.analysis_factory import bound_source, make_binding, view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -41,6 +65,52 @@ def _unit_rows(source, metric, **kwargs) -> UnitRows:
     return cast(
         UnitRows,
         request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
+
+
+_POPULATION_SCOPES = (
+    Scope(view="run", grain="total"),
+    Scope(view="run", grain="total", population="triggered"),
+)
+_BREAKOUT_POPULATION_SCOPES = (
+    Scope(view="breakout", grain="total"),
+    Scope(view="breakout", grain="total", population="triggered"),
+)
+
+
+def _both_populations(
+    experiment: Any, resolver: Any, *, breakout: bool = False, **options: Any
+) -> Any:
+    """One run's assigned then triggered whole-window (or breakout) collections, concatenated."""
+    assigned, triggered = _BREAKOUT_POPULATION_SCOPES if breakout else _POPULATION_SCOPES
+    result = run(experiment.with_views(assigned, triggered), resolver, **options)
+    return result.readout(assigned).concat(result.readout(triggered))
+
+
+_DAY_AXIS_VIEWS: dict[str, tuple[Literal["daily", "asof"], bool]] = {
+    "run_daily": ("daily", True),
+    "run_daily_lift": ("daily", False),
+    "run_asof": ("asof", True),
+    "run_asof_lift": ("asof", False),
+}
+
+
+def _day_axis_scope(
+    view_name: str,
+    *,
+    population: Literal["assigned", "triggered"],
+    dimension: str | None = None,
+    completed_windows_only: bool = False,
+) -> Scope:
+    """The day-axis scope a parametrized view name (values or lift) reads."""
+    view, values = _DAY_AXIS_VIEWS[view_name]
+    return Scope(
+        view=view,
+        grain=view,
+        values=values,
+        population=population,
+        completion_policy=completed_windows_only,
+        segment=() if dimension is None else (BreakoutIdentity(dimension, None),),
     )
 
 
@@ -135,7 +205,7 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         cast(Any, resolver).close()
 
 
-def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
+def test_mixed_assignment_refusal_repeats_for_pinned_public_runs(tmp_path):
     events = _events(n_per_arm=2)
     rows = events.to_pylist()
     control_assignment = next(
@@ -145,32 +215,27 @@ def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows, schema=events.schema))
     evidence_cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         _write_defs(tmp_path),
         con,
+        experiment_name="exp",
         on_mixed_assignment="error",
         source_snapshot_evidence=SourceSnapshotEvidence(
             evidence_cutoff, {"events": evidence_cutoff}
         ),
     )
     codes = []
-
-    def read_pinned_snapshot(snapshot: Analysis) -> Any:
+    try:
         for _ in range(2):
             with pytest.raises(InvalidRequestError) as raised:
-                snapshot.unit_counts()
+                run(experiment, resolver)
             codes.append(raised.value.code)
-        return None
-
-    try:
-        analysis.dashboard_snapshot(read_pinned_snapshot, metrics=analysis.metrics)
         assert codes == [
             "query.integrity.mixed_assignment_units",
             "query.integrity.mixed_assignment_units",
         ]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_kernel_run_preserves_triggered_population_identity(tmp_path):
@@ -207,23 +272,20 @@ def test_uncertified_source_rechecks_assignment_integrity_between_runs(tmp_path)
     rows.append({**control_assignment, "group_id": "T"})
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows, schema=events.schema))
-    analysis = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path, trigger=None),
-        con,
-        on_mixed_assignment="warn",
+    experiment, resolver = from_definitions(
+        _write_defs(tmp_path, trigger=None), con, experiment_name="exp", on_mixed_assignment="warn"
     )
     try:
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always")
-            analysis.run()
-            analysis.run()
+            view_readout(experiment, resolver)
+            view_readout(experiment, resolver)
         assert warning_codes(recorded) == [
             "query.integrity.mixed_assignments_excluded",
             "query.integrity.mixed_assignments_excluded",
         ]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
@@ -234,17 +296,17 @@ def test_certified_source_rechecks_integrity_after_assignment_change(tmp_path):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=events)
     cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         _write_defs(tmp_path, trigger=None),
         con,
+        experiment_name="exp",
         on_mixed_assignment="warn",
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {}),
     )
     try:
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always")
-            analysis.run()
+            view_readout(experiment, resolver)
             control_assignment = next(
                 row
                 for row in events.to_pylist()
@@ -254,10 +316,10 @@ def test_certified_source_rechecks_integrity_after_assignment_change(tmp_path):
                 "events",
                 obj=pa.Table.from_pylist([{**control_assignment, "group_id": "T"}]),
             )
-            analysis.run()
+            view_readout(experiment, resolver)
         assert warning_codes(recorded) == ["query.integrity.mixed_assignments_excluded"]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
@@ -280,33 +342,41 @@ def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
             connection = ibis.duckdb.connect()
             connection.create_table("events", obj=_events(n_per_arm=100))
             connections.append(connection)
-            analysis = Analysis.from_definitions(
-                "exp",
+            analysis = from_definitions(
                 path,
                 connection,
+                experiment_name="exp",
                 source_snapshot_evidence=SourceSnapshotEvidence(
                     evidence_cutoff, {"events": watermark}
                 ),
             )
             analyses.append(analysis)
         first, same, different_cutoff, different_watermark = [
-            analysis.run(metrics=["revenue"]) for analysis in analyses
+            view_readout(*analysis, metrics=["revenue"]) for analysis in analyses
         ]
         assert all((first, same, different_cutoff, different_watermark))
         assert first[0].source_snapshot_id == same[0].source_snapshot_id
         assert first[0].source_snapshot_id != different_cutoff[0].source_snapshot_id
         assert first[0].source_snapshot_id != different_watermark[0].source_snapshot_id
         asof_first, asof_same, asof_different = [
-            analysis.run_asof(metrics=["revenue"], population="assigned")
+            view_readout(
+                *analysis,
+                Scope(view="asof", grain="asof", values=True, population="assigned"),
+                metrics=["revenue"],
+            )
             for analysis in analyses[:3]
         ]
         assert asof_first[0].source_snapshot_id == asof_same[0].source_snapshot_id
         assert asof_first[0].source_snapshot_id != asof_different[0].source_snapshot_id
-        triggered = analyses[0].run_asof(metrics=["revenue"], population="triggered")
+        triggered = view_readout(
+            *analyses[0],
+            Scope(view="asof", grain="asof", values=True, population="triggered"),
+            metrics=["revenue"],
+        )
         assert triggered[0].source_snapshot_id != asof_first[0].source_snapshot_id
     finally:
         for analysis in analyses:
-            analysis.close()
+            cast(Any, analysis[1]).close()
         for connection in connections:
             connection.disconnect()
 
@@ -318,10 +388,10 @@ def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
 
     connection = ibis.duckdb.connect()
     connection.create_table("events", obj=_events(n_per_arm=100))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         _write_defs(tmp_path, trigger=None),
         connection,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 30, tzinfo=dt.UTC)},
@@ -330,7 +400,7 @@ def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
     replay = changed_replay = None
     try:
         path = tmp_path / "pinned-moments.parquet"
-        analysis.export(path)
+        export_moments(experiment, resolver, path)
         rows = pq.read_table(path).to_pylist()
         source_identity = json.loads(rows[0]["source_identity"])
         assert source_identity["source_snapshot_evidence"] == {
@@ -339,12 +409,8 @@ def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
                 "events": "2024-01-30T00:00:00+00:00",
             },
         }
-        replay = Analysis.from_moments(
-            rows,
-            metrics={"revenue": "mean"},
-            control="C",
-        )
-        replay_row = replay.run()[0]
+        replay = from_moments(rows, metrics={"revenue": "mean"}, control="C")
+        replay_row = view_readout(*replay)[0]
 
         changed_identity = {
             **source_identity,
@@ -362,18 +428,14 @@ def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
             }
             for row in rows
         ]
-        changed_replay = Analysis.from_moments(
-            changed_rows,
-            metrics={"revenue": "mean"},
-            control="C",
-        )
-        assert changed_replay.run()[0].source_snapshot_id != replay_row.source_snapshot_id
+        changed_replay = from_moments(changed_rows, metrics={"revenue": "mean"}, control="C")
+        assert view_readout(*changed_replay)[0].source_snapshot_id != replay_row.source_snapshot_id
     finally:
         if changed_replay is not None:
-            changed_replay.close()
+            changed_replay[1].close()
         if replay is not None:
-            replay.close()
-        analysis.close()
+            replay[1].close()
+        cast(Any, resolver).close()
         connection.disconnect()
 
 
@@ -456,56 +518,86 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
     }
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.table(rows))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 31, tzinfo=dt.UTC)},
         ),
     )
     try:
-        from tests.analysis_factory import _native_source
-
-        moments = _native_source(analysis)._moments_for_metrics(population="triggered").to_pylist()
+        moments = bound_source(resolver)._moments_for_metrics(population="triggered").to_pylist()
         by_group = {row["group_id"]: row for row in moments}
         assert by_group["T"]["sum_d"] == 2.0
-        completed = analysis.run_asof(population="triggered", completed_windows_only=True)
+        completed = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                values=True,
+                completion_policy=True,
+                population="triggered",
+            ),
+        )
         mature_by_day_arm = {(row.ds, row.group_id): row.n for row in completed}
         assert mature_by_day_arm[(dt.date(2024, 1, 9), "T")] == 2
         assert by_group["C"]["sum_d"] == 0.0
-        triggered_asof = analysis.run_asof_lift(estimands=["compliance"], population="triggered")
+        triggered_asof = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", population="triggered"),
+            estimands=["compliance"],
+        )
         assert triggered_asof
         assert {row.estimand for row in triggered_asof} == {"compliance"}
         assert {row.analysis_population for row in triggered_asof} == {"triggered"}
         expected_history = {dt.date(2024, 1, 4) + dt.timedelta(days=offset) for offset in range(27)}
         assert {row.ds for row in triggered_asof} == expected_history
         assert all(row.require_lift().value == pytest.approx(1.0) for row in triggered_asof)
-        triggered_daily = analysis.run_daily_lift(estimands=["compliance"], population="triggered")
+        triggered_daily = view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", population="triggered"),
+            estimands=["compliance"],
+        )
         assert triggered_daily
         assert {row.estimand for row in triggered_daily} == {"compliance"}
         assert {row.analysis_population for row in triggered_daily} == {"triggered"}
         assert {row.ds for row in triggered_daily} == expected_history
         assert all(row.require_lift().value == pytest.approx(1.0) for row in triggered_daily)
         with pytest.raises(InvalidRequestError) as unknown_dimension:
-            analysis.run_asof_lift(
+            view_readout(
+                experiment,
+                resolver,
+                Scope(
+                    view="asof",
+                    grain="asof",
+                    segment=BreakoutIdentity("missing_dimension", None),
+                    population="triggered",
+                ),
                 estimands=["compliance"],
-                population="triggered",
-                dimension="missing_dimension",
             )
         assert unknown_dimension.value.code == "facade.analysis.unknown_dimension"
         with pytest.raises(UnsupportedRequestError) as daily_dimension:
-            analysis.run_daily_lift(
+            view_readout(
+                experiment,
+                resolver,
+                Scope(
+                    view="daily",
+                    grain="daily",
+                    segment=BreakoutIdentity("missing_dimension", None),
+                    population="triggered",
+                ),
                 estimands=["compliance"],
-                population="triggered",
-                dimension="missing_dimension",
             )
         assert daily_dimension.value.code == (
             "facade.analysis.daily_compliance_dimension_unsupported"
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
@@ -545,17 +637,22 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
             row["ts"] = dt.datetime(2024, 1, 17)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(events))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
     try:
-        rows = analysis.run_asof_lift(population="triggered", estimands=["itt", "late"])
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", population="triggered"),
+            estimands=["itt", "late"],
+        )
         assert rows
         assert {row.estimand for row in rows} == {"itt", "late"}
         assert {row.value_scale for row in rows if row.estimand == "late"} == {
@@ -567,7 +664,7 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
         assert {row.null_lift for row in rows} == {-0.25}
         assert {row.policy_name for row in rows} == {"compiled_plan"}
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -600,35 +697,33 @@ def test_trigger_after_enrollment_end_remains_eligible_at_snapshot_cutoff(tmp_pa
         dt.datetime(2024, 1, 23, 12, tzinfo=dt.UTC),
         {"events": dt.datetime(2024, 1, 23, 12, tzinfo=dt.UTC)},
     )
-    analysis = Analysis.from_definitions(
-        "exp", extended_definitions, con, source_snapshot_evidence=evidence
+    analysis_experiment, analysis_resolver = from_definitions(
+        extended_definitions, con, experiment_name="exp", source_snapshot_evidence=evidence
     )
-    default_analysis = Analysis.from_definitions(
-        "exp", default_definitions, con, source_snapshot_evidence=evidence
+    default_experiment, default_resolver = from_definitions(
+        default_definitions, con, experiment_name="exp", source_snapshot_evidence=evidence
     )
     try:
-        from tests.analysis_factory import _native_source
-
-        source = _native_source(analysis)
+        source = bound_source(analysis_resolver)
         grain, randomization_counts, unit_counts = source.triggered_counts()
         assert grain == "unit"
         assert randomization_counts == {"C": 1, "T": 1}
         assert unit_counts == {}
         with pytest.warns(IncrementWarning):
             extended_rows = _unit_rows(
-                source, analysis.metrics[0], population="triggered"
+                source, metrics(analysis_experiment, analysis_resolver)[0], population="triggered"
             ).to_pylist()
         assert extended_rows == []
         with pytest.warns(IncrementWarning):
             default_rows = _unit_rows(
-                _native_source(default_analysis),
-                default_analysis.metrics[0],
+                bound_source(default_resolver),
+                metrics(default_experiment, default_resolver)[0],
                 population="triggered",
             ).to_pylist()
         assert default_rows == []
     finally:
-        analysis.close()
-        default_analysis.close()
+        cast(Any, analysis_resolver).close()
+        cast(Any, default_resolver).close()
 
 
 def test_unknown_trigger_refused_at_load(tmp_path):
@@ -744,11 +839,10 @@ def _analysis(
     allocation_scheme=None,
     end=None,
     window_days=7,
-):
+) -> tuple[Any, Any]:
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    return Analysis.from_definitions(
-        "exp",
+    return from_definitions(
         _write_defs(
             tmp_path,
             trigger,
@@ -757,6 +851,7 @@ def _analysis(
             window_days=window_days,
         ),
         con,
+        experiment_name="exp",
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
@@ -829,29 +924,29 @@ def test_headline_run_does_not_capture_unrequested_failing_breakout(tmp_path):
         "events",
         obj=_with_preassignment_region(_events(n_per_arm=20, trigger_rate=0.5)),
     )
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         definitions_path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
         ),
     )
     try:
-        rows = analysis.run()
+        rows = _both_populations(experiment, resolver)
         by_population = {row.analysis_population for row in rows if row.metric == "revenue"}
         assert by_population == {"assigned", "triggered"}
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
 @pytest.mark.integration
 def test_reports_both_populations_and_the_triggered_effect_is_undiluted(tmp_path):
     rate, effect = 0.2, 0.5
-    an = _analysis(tmp_path, _events(trigger_rate=rate, effect=effect))
-    rows = an.run()
+    experiment, resolver = _analysis(tmp_path, _events(trigger_rate=rate, effect=effect))
+    rows = _both_populations(experiment, resolver)
 
     by_pop = {r.analysis_population: r for r in rows if r.metric == "revenue"}
     assert set(by_pop) == {"assigned", "triggered"}
@@ -894,21 +989,17 @@ def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path
     from increment import run
     from increment.kernel.contracts import Registration
 
-    analysis = _analysis(tmp_path, _events(trigger_rate=0.2, effect=0.5))
-    compiled = analysis.compiled_decision_plan
+    experiment, resolver = _analysis(tmp_path, _events(trigger_rate=0.2, effect=0.5))
+    compiled = compiled_decision_plan(experiment, resolver)
     registration = Registration.from_plan(compiled)
     try:
         result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="exp",
-            analysis_spec_hash="sha256:" + "a" * 64,
-            execution_identity_hash="sha256:" + "b" * 64,
+            experiment.with_views(*_POPULATION_SCOPES),
+            resolver,
             run_id="run-triggered-family-scopes",
         )
     finally:
-        analysis.close()
+        resolver.close()
 
     metadata = result.run.metadata
     assert result.decisions.program.status == "not_evaluated"
@@ -1019,14 +1110,16 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
         dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
         {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
     )
-    analysis = Analysis.from_definitions("exp", path, con, source_snapshot_evidence=evidence)
+    experiment, resolver = from_definitions(
+        path, con, experiment_name="exp", source_snapshot_evidence=evidence
+    )
     reopened = None
     try:
         from increment.query.artifact_contract import unit_day_artifact_extension_catalog
         from increment.query.artifact_publish import artifact_context
         from increment.semantics.loader import load
 
-        context = artifact_context(load(path), analysis.experiment, "error")
+        context = artifact_context(load(path), experiment_definition(experiment, resolver), "error")
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
@@ -1036,11 +1129,13 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
         from increment.query.session import WarehouseArtifactStore
 
         store = WarehouseArtifactStore(con, schema_name="triggered_multiplicity")
-        reference = analysis.publish_unit_day_artifact(store, extensions=extensions)
-        reopened = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        reference = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        reopened = from_unit_day_artifact(store, reference, expected_context=context)
 
-        native_rows = analysis.run(metrics=["revenue", "partial", "missing"])
-        artifact_rows = reopened.run(metrics=["revenue", "partial", "missing"])
+        native_rows = _both_populations(
+            experiment, resolver, metrics=["revenue", "partial", "missing"]
+        )
+        artifact_rows = _both_populations(*reopened, metrics=["revenue", "partial", "missing"])
         for rows in (native_rows, artifact_rows):
             triggered = rows.filter(lambda row: row.analysis_population == "triggered")
             family = next(
@@ -1113,18 +1208,17 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
             key: row.failure_code for key, row in artifact_triggered.items()
         }
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         if reopened is not None:
-            reopened.close()
+            reopened[1].close()
         con.disconnect()
 
 
 def test_observed_trigger_rate_is_reported(tmp_path):
     """The planner needs the measured rate to size a follow-up."""
     from increment.workflows import trigger_rates
-    from tests.analysis_factory import facade_binding
 
-    rates = trigger_rates(*facade_binding(_analysis(tmp_path, _events(trigger_rate=0.2))))
+    rates = trigger_rates(*_analysis(tmp_path, _events(trigger_rate=0.2)))
     assert set(rates) == {"C", "T"}
     for arm in ("C", "T"):
         assert rates[arm] == pytest.approx(0.2, abs=0.03)
@@ -1170,7 +1264,6 @@ def test_trigger_rates_enforces_assignment_policy(tmp_path, policy, warning):
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
     from increment.workflows import trigger_rates
-    from tests.analysis_factory import facade_binding
 
     rows = _events(trigger_rate=0.2).to_pylist()
     assignments = [row for row in rows if row["event"] == "enrolled"]
@@ -1179,29 +1272,29 @@ def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
     unassigned_row = dict(assignments[1])
     unassigned_row["group_id"] = None
     rows.extend((mixed_row, unassigned_row))
-    analysis = _analysis(tmp_path, pa.Table.from_pylist(rows), on_mixed_assignment="exclude")
+    experiment, resolver = _analysis(
+        tmp_path, pa.Table.from_pylist(rows), on_mixed_assignment="exclude"
+    )
 
     try:
-        assert trigger_rates(*facade_binding(analysis)) == pytest.approx(
+        assert trigger_rates(experiment, resolver) == pytest.approx(
             {"C": 0.20270270270270271, "T": 0.1925}
         )
-        assert analysis.run()
-        assert analysis.run(population="triggered")
+        assert _both_populations(experiment, resolver)
+        assert view_readout(experiment, resolver, population="triggered")
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_triggered_analysis_store_uses_triggered_scope_for_history(tmp_path):
     from increment.store import HistorySelector, ParquetResultsStore
 
-    analysis = _analysis(tmp_path, _events(trigger_rate=0.2))
+    experiment, resolver = _analysis(tmp_path, _events(trigger_rate=0.2))
+    triggered = _POPULATION_SCOPES[1]
     try:
         store = ParquetResultsStore(tmp_path / "results")
-        rows = analysis.run(population="triggered", store=store)
-        metadata = rows.metadata
-        assert metadata is not None
-        assert metadata.analysis_spec_hash is not None
-        handle = store.open_run("exp", metadata.analysis_spec_hash)
+        result = run(experiment.with_views(triggered), resolver, results_store=store)
+        handle = store.open_run("exp", result.run.analysis_spec_hash)
         (cell,) = handle.run.cells
         assert cell.identity.scope is not None
         assert cell.identity.scope.population == "triggered"
@@ -1221,32 +1314,28 @@ def test_triggered_analysis_store_uses_triggered_scope_for_history(tmp_path):
         )
         assert history.num_rows == 1
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_persisted_population_specs_keep_their_own_source_reference(tmp_path):
     from increment.store import ParquetResultsStore
 
-    analysis = _analysis(tmp_path, _events(trigger_rate=0.2))
+    experiment, resolver = _analysis(tmp_path, _events(trigger_rate=0.2))
     try:
         store = ParquetResultsStore(tmp_path / "results")
-        both = analysis.run(store=store)
-        assert both.metadata is not None
-        assert both.metadata.analysis_spec_hash is not None
-        combined = store.open_run("exp", both.metadata.analysis_spec_hash).run
+        both = run(experiment.with_views(*_POPULATION_SCOPES), resolver, results_store=store)
+        combined = store.open_run("exp", both.run.analysis_spec_hash).run
         combined_hashes = {
             cell.identity.scope.population: cell.identity.analysis_spec_hash
             for cell in combined.cells
             if cell.identity.scope is not None
         }
-        assigned = analysis.run(population="assigned", store=store)
-        assert assigned.metadata is not None
-        assert assigned.metadata.analysis_spec_hash is not None
-        assigned_run = store.open_run("exp", assigned.metadata.analysis_spec_hash).run
+        assigned = run(experiment.with_views(_POPULATION_SCOPES[0]), resolver, results_store=store)
+        assigned_run = store.open_run("exp", assigned.run.analysis_spec_hash).run
         (assigned_cell,) = assigned_run.cells
         assert combined_hashes["assigned"] == assigned_cell.identity.analysis_spec_hash
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_one_arm_trigger_refused(tmp_path):
@@ -1257,17 +1346,17 @@ def test_one_arm_trigger_refused(tmp_path):
     keep = [
         i for i in range(table.num_rows) if not (events[i] == "saw_surface" and groups[i] == "C")
     ]
-    an = _analysis(tmp_path, table.take(keep))
+    experiment, resolver = _analysis(tmp_path, table.take(keep))
     with pytest.raises(InvalidRequestError) as caught:
-        an.run()
+        _both_populations(experiment, resolver)
     assert caught.value.code == "query.integrity.trigger_arm_missing"
 
 
 def test_no_trigger_declared_leaves_every_row_assigned(tmp_path):
     """Backwards compatibility: an experiment with no trigger behaves
     exactly as before and reports one row per metric."""
-    an = _analysis(tmp_path, _events(), trigger=None)
-    rows = [r for r in an.run() if r.metric == "revenue"]
+    experiment, resolver = _analysis(tmp_path, _events(), trigger=None)
+    rows = [r for r in view_readout(experiment, resolver) if r.metric == "revenue"]
     assert len(rows) == 1
     assert rows[0].analysis_population == "assigned"
 
@@ -1331,19 +1420,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
-        native_summaries = analysis.breakout_summaries()
-        native_factors = analysis.factor_summaries()
+        native_summaries = workflows.breakout_summaries(*native)
+        native_factors = workflows.factor_summaries(*native)
         assert_support(
             "triggered_auxiliary_reads",
             "breakout_definitions_triggered_population",
@@ -1357,7 +1438,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 set(table["analysis_population"].to_pylist()) == {population}
                 for table in tables.values()
             )
-        rows = analysis.run_breakout()
+        rows = _both_populations(*native, breakout=True)
         assert "analysis_population" in rows.to_frame(backend="polars").columns
         assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
         assert {row.dimension_value for row in rows} == {"north", "south"}
@@ -1385,11 +1466,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
             "assigned",
             "triggered",
         }
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "breakout_dimension",
                 "factor_dimension",
@@ -1397,7 +1478,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 "trigger_measure_stats",
             ),
         )
-        artifact_factors = adopted.factor_summaries()
+        artifact_factors = workflows.factor_summaries(*adopted)
         assert_support(
             "triggered_auxiliary_reads",
             "factor_artifact_complete_trigger_evidence",
@@ -1410,7 +1491,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 artifact_factors[key],
                 keys=("analysis_population", "group_id", "region"),
             )
-        artifact_summaries = adopted.breakout_summaries()
+        artifact_summaries = workflows.breakout_summaries(*adopted)
         assert_support(
             "triggered_auxiliary_reads",
             "breakout_artifact_complete_trigger_evidence",
@@ -1429,7 +1510,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                         if column in table.column_names
                     ),
                 )
-        artifact_rows = adopted.run_breakout()
+        artifact_rows = _both_populations(*adopted, breakout=True)
         native_by_cell = {
             (row.analysis_population, row.dimension_value, row.group_id): row for row in rows
         }
@@ -1447,14 +1528,14 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
             )
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_path):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     con = ibis.duckdb.connect()
     con.create_table(
@@ -1476,45 +1557,39 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
             "    breakouts: [{property: region, source: events}]\n    plan:\n",
         )
     )
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
-        adopted = _publish_and_adopt(
-            con, analysis, kinds=("breakout_dimension", "assignment_counts")
-        )
+        adopted = _publish_and_adopt(con, native, kinds=("breakout_dimension", "assignment_counts"))
         with pytest.raises(InvalidRequestError) as raised:
-            adopted.run_breakout(population="triggered")
+            view_readout(*adopted, Scope(view="breakout", grain="total", population="triggered"))
         assert raised.value.code == "frame.metric.window_days_supported"
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_breakout_without_declared_trigger_is_refused_even_without_breakouts(tmp_path):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
-    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, trigger=None), con)
+    experiment, resolver = from_definitions(
+        _write_defs(tmp_path, trigger=None), con, experiment_name="exp"
+    )
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis.run_breakout(population="triggered")
+            view_readout(
+                experiment, resolver, Scope(view="breakout", grain="total", population="triggered")
+            )
         assert raised.value.code == "facade.analysis.trigger_unsupported"
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     path = _write_defs(tmp_path)
     path.write_text(
@@ -1522,55 +1597,42 @@ def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
         )
-        assert adopted.run_breakout() == []
-        assert adopted.run_breakout(population="assigned") == []
-        assert adopted.run_breakout(population="triggered") == []
+        assert _both_populations(*adopted, breakout=True) == []
+        assert view_readout(*adopted, Scope(view="breakout", grain="total")) == []
+        assert (
+            view_readout(*adopted, Scope(view="breakout", grain="total", population="triggered"))
+            == []
+        )
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_artifact_run_refuses_invalid_estimand_before_population_read(
     tmp_path, monkeypatch
 ):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
-    analysis = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path),
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(_write_defs(tmp_path), con)
     adopted = None
     armed = False
     try:
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
         )
         query_calls = []
@@ -1587,23 +1649,23 @@ def test_triggered_artifact_run_refuses_invalid_estimand_before_population_read(
                 monkeypatch.setattr(con, method, guard_query)
         armed = True
         with pytest.raises(InvalidRequestError) as refused:
-            adopted.run(population="triggered", estimands=["late"])
+            view_readout(*adopted, population="triggered", estimands=["late"])
         assert refused.value.code == "readout.assignment.estimands"
         assert query_calls == []
     finally:
         armed = False
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_artifact_breakout_refuses_invalid_method_before_population_read(
     tmp_path, monkeypatch
 ):
     from increment.estimation.engine import Method
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     definitions = (
         _defs_yaml()
@@ -1622,21 +1684,13 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
     con.create_table("events", obj=_with_preassignment_region(_events(n_per_arm=10)))
     path = tmp_path / "triggered-breakout.yml"
     path.write_text(definitions)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     armed = False
     try:
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "breakout_dimension",
                 "trigger_population",
@@ -1658,8 +1712,9 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
                 monkeypatch.setattr(con, method, guard_query)
         armed = True
         with pytest.raises(InvalidRequestError) as refused:
-            adopted.run_breakout(
-                population="triggered",
+            view_readout(
+                *adopted,
+                Scope(view="breakout", grain="total", population="triggered"),
                 decision_method=Method(name="iptw"),
             )
         assert refused.value.code == "estimation.engine.method_name_observational"
@@ -1667,10 +1722,10 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
     finally:
         armed = False
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -1699,18 +1754,10 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native_pair = _pinned_experiment(path, con)
     adopted = None
     try:
-        native = analysis.breakout_summaries()
+        native = workflows.breakout_summaries(*native_pair)
         native_daily = native["revenue:region:events:triggered"]["daily_group_summary"]
         zero_days = {dt.date(2024, 1, day) for day in (6, 7, 8, 9)}
         native_rows = native_daily.to_pylist()
@@ -1720,14 +1767,14 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
             for row in native_rows
             if row["ds"] in zero_days
         )
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native_pair,
             kinds=("breakout_dimension", "trigger_population", "trigger_measure_stats"),
         )
-        artifact_daily = adopted.breakout_summaries()["revenue:region:events:triggered"][
+        artifact_daily = workflows.breakout_summaries(*adopted)["revenue:region:events:triggered"][
             "daily_group_summary"
         ]
         _assert_parity_tables_close(
@@ -1738,10 +1785,10 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
         assert zero_days <= {row["ds"] for row in artifact_daily.to_pylist()}
     finally:
         if adopted is None:
-            analysis.close()
+            native_pair[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -1780,31 +1827,23 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 5, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 5, tzinfo=dt.UTC)},
-        ),
-    )
+    native_pair = _pinned_experiment(path, con, cutoff_day=5)
     adopted = None
     try:
         with pytest.warns(IncrementWarning):
-            native = analysis.breakout_summaries()
+            native = workflows.breakout_summaries(*native_pair)
         native_daily = native["revenue:region:events:triggered"]["daily_group_summary"]
         native_days = native_daily["ds"].to_pylist()
         assert native_days
         assert max(native_days) <= dt.date(2024, 1, 4)
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native_pair,
             kinds=("breakout_dimension", "trigger_population", "trigger_measure_stats"),
         )
-        artifact = adopted.breakout_summaries()
+        artifact = workflows.breakout_summaries(*adopted)
         artifact_daily = artifact["revenue:region:events:triggered"]["daily_group_summary"]
         assert max(artifact_daily["ds"].to_pylist()) <= dt.date(2024, 1, 4)
         _assert_parity_tables_close(
@@ -1814,28 +1853,26 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
         )
     finally:
         if adopted is None:
-            analysis.close()
+            native_pair[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
-def _triggered_cate_experiment(path, con) -> tuple[Any, Any]:
+def _pinned_experiment(path, con, *, cutoff_day: int = 16) -> tuple[Any, Any]:
+    """Definitions pinned to a snapshot whose evidence is complete through `cutoff_day`."""
+    cutoff = dt.datetime(2024, 1, cutoff_day, tzinfo=dt.UTC)
     return from_definitions(
         path,
         con,
         experiment_name="exp",
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
     )
 
 
 def _adopted_cate_experiment(con, native: tuple[Any, Any], kinds) -> tuple[Any, Any]:
     """Publish *native* with the named extensions and reopen the trusted artifact."""
-    from increment import from_unit_day_artifact
-    from increment.artifacts import artifact_context, publish_unit_day_artifact
+    from increment.artifacts import artifact_context
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
 
@@ -1882,7 +1919,7 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    native = _triggered_cate_experiment(path, con)
+    native = _pinned_experiment(path, con)
     experiments = [native]
     try:
         from increment.estimation.cate import Covariate
@@ -1975,7 +2012,7 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    native = _triggered_cate_experiment(path, con)
+    native = _pinned_experiment(path, con)
     experiments = [native]
     try:
         from increment.estimation.cate import Covariate
@@ -2124,10 +2161,10 @@ def _observational_triggered_analysis(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
+    analysis = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
@@ -2141,29 +2178,31 @@ def _lifts(rows):
 
 
 def test_triggered_observational_run_estimates_the_undiluted_triggered_lift(tmp_path):
-    analysis, con = _observational_triggered_analysis(tmp_path)
+    (experiment, resolver), con = _observational_triggered_analysis(tmp_path)
     try:
-        triggered = analysis.run(metrics=["revenue"], population="triggered")
-        assigned = _lifts(analysis.run(metrics=["revenue"], population="assigned"))
+        triggered = view_readout(experiment, resolver, metrics=["revenue"], population="triggered")
+        assigned = _lifts(
+            view_readout(experiment, resolver, metrics=["revenue"], population="assigned")
+        )
         assert {row.analysis_population for row in triggered} == {"triggered"}
         assert set(assigned) == set(_lifts(triggered))
         for key, value in _lifts(triggered).items():
             assert value > 1.4 * assigned[key] > 0
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_path):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
-    analysis, con = _observational_triggered_analysis(tmp_path)
+    native, con = _observational_triggered_analysis(tmp_path)
     adopted = None
     try:
-        expected = _lifts(analysis.run(metrics=["revenue"], population="triggered"))
+        expected = _lifts(view_readout(*native, metrics=["revenue"], population="triggered"))
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "trigger_population",
                 "assignment_counts",
@@ -2171,16 +2210,16 @@ def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_pa
                 "unit_covariate_level",
             ),
         )
-        actual = _lifts(adopted.run(metrics=["revenue"], population="triggered"))
+        actual = _lifts(view_readout(*adopted, metrics=["revenue"], population="triggered"))
         assert actual.keys() == expected.keys()
         for key, value in expected.items():
             assert actual[key] == pytest.approx(value)
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
@@ -2194,7 +2233,7 @@ def test_triggered_cate_randomized_artifact_without_covariates_preserves_populat
     counts = Counter(row["group_id"] for row in table.to_pylist() if row["event"] == "saw_surface")
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    native = _triggered_cate_experiment(_write_defs(tmp_path), con)
+    native = _pinned_experiment(_write_defs(tmp_path), con)
     experiments = [native]
     try:
         native_result = estimate_cate(*native, "revenue", control="C", interact=[])
@@ -2271,28 +2310,20 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 20, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 20, tzinfo=dt.UTC)},
-        ),
-    )
+    native_pair = _pinned_experiment(path, con, cutoff_day=20)
     adopted = None
     try:
-        native = analysis.breakout_summaries(metrics=["revenue_per_session"])
+        native = workflows.breakout_summaries(*native_pair, metrics=["revenue_per_session"])
         native_daily = native["revenue_per_session:region:events:triggered"]["daily_group_summary"]
         assert {dt.date(2024, 1, day) for day in (9, 10, 11)} <= set(native_daily["ds"].to_pylist())
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native_pair,
             kinds=("breakout_dimension", "trigger_population", "trigger_measure_stats"),
         )
-        artifact = adopted.breakout_summaries(metrics=["revenue_per_session"])
+        artifact = workflows.breakout_summaries(*adopted, metrics=["revenue_per_session"])
         artifact_daily = artifact["revenue_per_session:region:events:triggered"][
             "daily_group_summary"
         ]
@@ -2303,16 +2334,17 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
         )
     finally:
         if adopted is None:
-            analysis.close()
+            native_pair[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
 def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
+    from increment._dashboard_capture import dashboard_group_data
+    from increment.dashboard import DashboardConfig, prepare_dashboard
     from increment.workflows import allocation_history
-    from tests.analysis_factory import facade_binding
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
@@ -2336,18 +2368,10 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
-        factors = analysis.factor_summaries()
+        factors = workflows.factor_summaries(*native)
         assert_support(
             "triggered_auxiliary_reads", "factor_definitions_triggered_population", factors
         )
@@ -2362,16 +2386,19 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             for value in table["analysis_population"].to_pylist()
         } == {"assigned", "triggered"}
 
-        assigned = analysis.dashboard_group_data(metrics=analysis.metrics)
-        triggered = analysis.dashboard_group_data(metrics=analysis.metrics, population="triggered")
+        declared = metrics(*native)
+        assigned = dashboard_group_data(native[1].binding, metrics=declared)
+        triggered = dashboard_group_data(
+            native[1].binding, metrics=declared, population="triggered"
+        )
         assert_support("triggered_auxiliary_reads", "dashboard_definitions_population", triggered)
         assert assigned and triggered
         assert {row.analysis_population for row in assigned} == {"assigned"}
         assert {row.analysis_population for row in triggered} == {"triggered"}
         assert all(row.assigned_units is not None and row.assigned_units < 300 for row in triggered)
 
-        assigned_history = allocation_history(*facade_binding(analysis))
-        triggered_history = allocation_history(*facade_binding(analysis), population="triggered")
+        assigned_history = allocation_history(*native)
+        triggered_history = allocation_history(*native, population="triggered")
         assert_support(
             "triggered_auxiliary_reads", "allocation_definitions_population", triggered_history
         )
@@ -2382,15 +2409,15 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         assert set(assigned_history["ds"].to_pylist()) == {dt.date(2024, 1, 2)}
         assert set(triggered_history["ds"].to_pylist()) == {dt.date(2024, 1, 3)}
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
-            con, analysis, kinds=("trigger_population", "trigger_measure_stats")
+            con, native, kinds=("trigger_population", "trigger_measure_stats")
         )
         from increment.query.artifact_contract import ArtifactContractError
 
         with pytest.raises(ArtifactContractError) as missing:
-            adopted.run_breakout()
+            _both_populations(*adopted, breakout=True)
         assert_refusal(
             "triggered_auxiliary_reads",
             "breakout_artifact_missing_extension",
@@ -2398,7 +2425,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             stage="read",
         )
         with pytest.raises(CapabilityError) as missing_factor:
-            adopted.factor_summaries()
+            workflows.factor_summaries(*adopted)
         assert_refusal(
             "triggered_auxiliary_reads",
             "factor_artifact_missing_extension",
@@ -2407,11 +2434,13 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         for operation, outcome_id in (
             (
-                lambda: adopted.dashboard_group_data(metrics=adopted.metrics),
+                lambda: prepare_dashboard(
+                    *adopted, config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5})
+                ),
                 "dashboard_artifact_refused",
             ),
             (
-                lambda: allocation_history(*facade_binding(adopted), population="triggered"),
+                lambda: allocation_history(*adopted, population="triggered"),
                 "allocation_artifact_refused",
             ),
         ):
@@ -2420,22 +2449,21 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             expected_code = (
                 "evidence.assignment.identity_unavailable"
                 if outcome_id == "allocation_artifact_refused"
-                else "evidence.operation_unavailable"
+                else "dashboard.unsupported_experiment"
             )
             assert refused.value.code == expected_code
             assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
-    from increment.estimators import sitewide
     from tests.analysis_factory import native_connection
 
     native = _experiment(
@@ -2488,7 +2516,6 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path):
-    from increment.estimators import sitewide
     from tests.analysis_factory import native_connection
 
     base = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
@@ -2526,21 +2553,19 @@ def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_requires_an_experiment_end_before_loading(tmp_path, monkeypatch):
-    analysis = _analysis(tmp_path, _events(n_per_arm=10), end=None, window_days=None)
+    experiment, resolver = _analysis(tmp_path, _events(n_per_arm=10), end=None, window_days=None)
     try:
-        from tests.analysis_factory import _native_source
-
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         monkeypatch.setattr(
             source,
             "sitewide_evidence",
             lambda *args, **kwargs: pytest.fail("loaded sitewide data"),
         )
         with pytest.raises(CapabilityError) as refused:
-            analysis.sitewide("revenue", population="triggered")
+            sitewide(experiment, resolver, "revenue", population="triggered")
         assert refused.value.code == "facade.analysis.sitewide_triggered_end_missing"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress():
@@ -2557,22 +2582,22 @@ def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress()
         _switchback_panel_analysis(),
     )
     try:
-        for analysis in analyses:
+        for experiment, resolver in analyses:
             with pytest.raises(CapabilityError) as refused:
-                analysis.sitewide("revenue", population="triggered")
+                sitewide(experiment, resolver, "revenue", population="triggered")
             assert refused.value.code in {
                 "evidence.operation_unavailable",
                 "facade.analysis.contrast_unavailable",
             }
     finally:
-        for analysis in analyses:
-            analysis.close()
+        for _, resolver in analyses:
+            resolver.close()
 
 
 def test_triggered_sitewide_seam_keeps_source_specific_refusal():
     import pandas as pd
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "user_id": ["c1", "c2", "t1", "t2"],
@@ -2580,26 +2605,26 @@ def test_triggered_sitewide_seam_keeps_source_specific_refusal():
                 "revenue": [1.0, 2.0, 2.0, 3.0],
             }
         ),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        analysis.sitewide("revenue")
+        sitewide(experiment, resolver, "revenue")
     assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_sitewide_unknown_population_refuses():
-    from tests.analysis_factory import make_analysis
 
-    analysis = make_analysis()
+    experiment, resolver = make_binding()
     try:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("revenue", population="both")  # ty: ignore[invalid-argument-type]
+            sitewide(experiment, resolver, "revenue", population="both")  # ty: ignore[invalid-argument-type]
         assert raised.value.code == "facade.analysis.invalid_population"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize("population", ["assigned", "triggered"])
@@ -2610,9 +2635,14 @@ def test_sitewide_unknown_population_refuses():
 def test_triggered_experiment_day_axis_readouts_retain_population_identity(
     tmp_path, method_name, population
 ):
-    analysis = _analysis(tmp_path, _events(n_per_arm=100))
+    experiment, resolver = _analysis(tmp_path, _events(n_per_arm=100))
     try:
-        rows = getattr(analysis, method_name)(population=population, coherence="captured")
+        rows = view_readout(
+            experiment,
+            resolver,
+            _day_axis_scope(method_name, population=population),
+            coherence="captured",
+        )
         assert rows
         assert {row.analysis_population for row in rows} == {population}
         assert rows.metadata is not None
@@ -2635,7 +2665,7 @@ def test_triggered_experiment_day_axis_readouts_retain_population_identity(
                 population
             }
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_srm_population_triggered_counts_the_narrowed_population(tmp_path):
@@ -2644,14 +2674,11 @@ def test_srm_population_triggered_counts_the_narrowed_population(tmp_path):
     even when enrollment itself is balanced."""
     from increment.results import SRMResult
     from increment.workflows import srm
-    from tests.analysis_factory import facade_binding
 
-    experiment, resolver = facade_binding(
-        _analysis(
-            tmp_path,
-            _events(trigger_rate=0.2, n_per_arm=500),
-            allocation_scheme="independent",
-        )
+    experiment, resolver = _analysis(
+        tmp_path,
+        _events(trigger_rate=0.2, n_per_arm=500),
+        allocation_scheme="independent",
     )
     expected = {"C": 0.5, "T": 0.5}
     assigned = srm(experiment, resolver, expected=expected)
@@ -2663,13 +2690,13 @@ def test_srm_population_triggered_counts_the_narrowed_population(tmp_path):
 
 
 def test_triggered_run_does_not_retest_assigned_law_on_selected_counts(tmp_path):
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         tmp_path,
         _events(n_per_arm=500, trigger_rate=0.1, treatment_trigger_rate=0.9),
         allocation_scheme="independent",
     )
 
-    results = analysis.run()
+    results = _both_populations(experiment, resolver)
     cells = [row.as_cells(metadata=results.metadata)[0] for row in results]
     digests_by_population = {
         population: {
@@ -2764,10 +2791,10 @@ def _registered_sequential_trigger_fixture(tmp_path, monkeypatch, *, store="auto
             monkeypatch.setattr(con, method, guard_query)
     certified = dt.datetime(2025, 1, 31, tzinfo=dt.UTC)
     analysis = registered_native(
-        Analysis.from_definitions(
-            "exp",
+        from_definitions(
             definitions_path,
             con,
+            experiment_name="exp",
             store=store,
             source_snapshot_evidence=SourceSnapshotEvidence(certified, {"events": certified}),
         )
@@ -2775,31 +2802,33 @@ def _registered_sequential_trigger_fixture(tmp_path, monkeypatch, *, store="auto
     return con, analysis, units, warehouse_calls, armed, definitions_path
 
 
-def _assert_live_assignment_counts_refuse(analysis):
-    from increment.readouts import run_scoped
-
+def _assert_live_assignment_counts_refuse(analysis: tuple[Any, Any]):
     with pytest.raises(InvalidRequestError) as count_refusal:
-        analysis.unit_counts()
+        workflows.unit_counts(*analysis)
     assert count_refusal.value.code == "query.integrity.mixed_assignment_units"
-    with pytest.raises(InvalidRequestError) as scoped_count_refusal:
-        run_scoped(analysis, analysis.unit_counts)
-    assert scoped_count_refusal.value.code == "query.integrity.mixed_assignment_units"
 
 
 @pytest.mark.parametrize("store", ["auto", "always"])
-def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, monkeypatch, store):
+def test_registered_sequential_trigger_checks_assigned_integrity_once_per_view(
+    tmp_path, monkeypatch, store
+):
     import datetime as dt
 
     from increment.readouts import _sequential_scope
     from tests.sequential_cases import registered_native
 
-    con, analysis, units, warehouse_calls, armed, definitions_path = (
+    con, native, units, warehouse_calls, armed, definitions_path = (
         _registered_sequential_trigger_fixture(tmp_path, monkeypatch, store=store)
     )
-    analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
-    snapshot = analysis.sequential_snapshot()
+    native_experiment, native_resolver = native
+    capture_sequential(
+        native_experiment, native_resolver, finalized=True, as_of=dt.date(2025, 1, 12)
+    )
+    snapshot = sequential_snapshot(native_experiment, native_resolver)
     assert snapshot.triggered is not None
-    triggered_history = analysis.run_asof_lift(population="triggered")
+    triggered_history = view_readout(
+        native_experiment, native_resolver, Scope(view="asof", grain="asof", population="triggered")
+    )
     assert triggered_history
     assert {row.analysis_population for row in triggered_history} == {"triggered"}
     assert {row.failure_code for row in triggered_history} == {None}
@@ -2825,13 +2854,13 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
 
     monkeypatch.setattr(_sequential_scope, "assignment_integrity", counted_integrity)
     armed[0] = True
-    results = analysis.run()
-    repeated_results = analysis.run()
+    results = _both_populations(native_experiment, native_resolver)
+    repeated_results = _both_populations(native_experiment, native_resolver)
 
     (scope,) = results.metadata.scope.by_source.values()
     (integrity,) = scope.integrity
     assert warehouse_calls == []
-    assert len(integrity_calls) == 2
+    assert integrity_calls == [snapshot.assignment_counts] * (2 * len(_POPULATION_SCOPES))
     # Triggered counts are not assignment-law evidence: integrity stays assigned.
     assert integrity.analysis_population == "assigned"
     assert integrity.observed == snapshot.assignment_counts
@@ -2861,36 +2890,37 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
             }
         ],
     )
-    _assert_live_assignment_counts_refuse(analysis)
+    _assert_live_assignment_counts_refuse(native)
     from increment.query.session import WarehouseArtifactStore
 
     store = WarehouseArtifactStore(con, schema_name="sequential_integrity")
     with pytest.raises(InvalidRequestError) as publication_refusal:
-        analysis.publish_unit_day_artifact(store)
+        publish_unit_day_artifact(native_experiment, native_resolver, store)
     assert publication_refusal.value.code == "query.integrity.mixed_assignment_units"
     with pytest.raises(InvalidRequestError) as recapture_refusal:
-        analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
+        capture_sequential(
+            native_experiment, native_resolver, finalized=True, as_of=dt.date(2025, 1, 12)
+        )
     assert recapture_refusal.value.code == "query.integrity.mixed_assignment_units"
-    changed_analysis = registered_native(
-        Analysis.from_definitions(
-            "exp",
+    experiment, resolver = registered_native(
+        from_definitions(
             definitions_path,
             con,
+            experiment_name="exp",
             source_snapshot_evidence=SourceSnapshotEvidence(changed_at, {"events": changed_at}),
         )
     )
     try:
         with pytest.raises(InvalidRequestError) as refusal:
-            changed_analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
+            capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2025, 1, 12))
         assert refusal.value.code == "query.integrity.mixed_assignment_units"
     finally:
-        changed_analysis.close()
+        resolver.close()
 
 
 def test_srm_population_triggered_refuses_on_a_seam_instance():
     import pandas as pd
 
-    from increment import from_frame
     from increment.errors import CapabilityError
     from increment.workflows import srm
 
@@ -2918,7 +2948,6 @@ def test_srm_population_triggered_refuses_on_a_seam_instance():
 def test_srm_rejects_unknown_population_before_assigned_readout():
     import pandas as pd
 
-    from increment import from_frame
     from increment.workflows import srm
 
     df = pd.DataFrame(
@@ -3053,10 +3082,10 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
     )
     path = tmp_path / "clustered.yml"
     path.write_text(_defs_yaml_clustered())
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
@@ -3064,7 +3093,7 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
     )
     try:
         with pytest.raises(CapabilityError) as raised:
-            getattr(analysis, method_name)(population="triggered")
+            view_readout(experiment, resolver, _day_axis_scope(method_name, population="triggered"))
         assert raised.value.code == "facade.analysis.clustered_day_axis"
         assert_refusal(
             "triggered_clustered_day_axis",
@@ -3073,7 +3102,7 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
             stage="read",
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -3090,16 +3119,16 @@ def test_clustered_experiment_with_trigger_narrows_to_the_triggered_population(t
     )
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml_clustered())
-    an = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         defs_path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
-    rows = _lift_rows(an.run())
+    rows = _lift_rows(_both_populations(experiment, resolver))
     assert_support(
         "triggered_clustered_day_axis",
         "clustered_triggered_population_supported",
@@ -3166,26 +3195,24 @@ def test_staggered_cluster_trigger_windows_censor_by_each_member_anchor(tmp_path
             )
     con = ibis.duckdb.connect()
     con.create_table("cluster_trigger_events", obj=pa.Table.from_pylist(rows))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 12, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 12, tzinfo=dt.UTC)},
         ),
     )
     try:
-        from tests.analysis_factory import _native_source
-
         with pytest.warns(IncrementWarning):
             frame = _unit_rows(
-                _native_source(analysis), analysis.metrics[0], population="triggered"
+                bound_source(resolver), metrics(experiment, resolver)[0], population="triggered"
             ).to_pylist()
         assert {row["unit_id"] for row in frame} == {"C-early", "T-early"}
         assert {row["cluster_id"] for row in frame} == {"C-store", "T-store"}
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -3237,9 +3264,13 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
                 },
             ]
         )
-    analysis = _analysis(tmp_path, pa.Table.from_pylist(rows))
+    experiment, resolver = _analysis(tmp_path, pa.Table.from_pylist(rows))
     try:
-        asof = analysis.run_asof(population="triggered")
+        asof = view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", values=True, population="triggered"),
+        )
         by_day_arm = {(row.ds.isoformat(), row.group_id): row for row in asof}
         assert by_day_arm[("2024-01-04", "C")].n == 1
         assert by_day_arm[("2024-01-04", "T")].n == 0
@@ -3248,9 +3279,16 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
         assert by_day_arm[("2024-01-08", "C")].n == 2
         assert by_day_arm[("2024-01-08", "T")].n == 2
 
-        completed = analysis.run_asof(
-            population="triggered",
-            completed_windows_only=True,
+        completed = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                values=True,
+                completion_policy=True,
+                population="triggered",
+            ),
         )
         mature = {(row.ds.isoformat(), row.group_id): row.n for row in completed}
         assert mature[("2024-01-14", "C")] == 1
@@ -3258,7 +3296,9 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
         assert mature[("2024-01-15", "C")] == 2
         assert mature[("2024-01-15", "T")] == 2
 
-        lift = analysis.run_asof_lift(population="triggered")
+        lift = view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof", population="triggered")
+        )
         early_treatment = [
             row for row in lift if row.ds.isoformat() == "2024-01-04" and row.group_id == "T"
         ]
@@ -3296,7 +3336,7 @@ def test_triggered_asof_uses_per_unit_entry_and_maturity_without_future_members(
         }
 
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize(
@@ -3308,9 +3348,11 @@ def test_triggered_day_axis_emits_typed_cells_without_eligible_trigger_rows(tmp_
     for row in events:
         if row["event"] == "saw_surface":
             row["ts"] = dt.datetime(2024, 1, 17)
-    analysis = _analysis(tmp_path, pa.Table.from_pylist(events))
+    experiment, resolver = _analysis(tmp_path, pa.Table.from_pylist(events))
     try:
-        rows = getattr(analysis, method_name)(population="triggered")
+        rows = view_readout(
+            experiment, resolver, _day_axis_scope(method_name, population="triggered")
+        )
         assert rows
         assert rows.metadata is not None
         assert rows.metadata.scope.populations == ("triggered",)
@@ -3329,7 +3371,7 @@ def test_triggered_day_axis_emits_typed_cells_without_eligible_trigger_rows(tmp_
             assert all(row.value is None and row.n == 0 for row in rows)
             assert all(row.decision_scope_complete is False for row in rows)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize("method_name", ("run_asof", "run_asof_lift"))
@@ -3338,9 +3380,13 @@ def test_completed_triggered_windows_emit_cells_when_no_units_are_mature(tmp_pat
     for row in events:
         if row["event"] == "saw_surface":
             row["ts"] = dt.datetime(2024, 1, 15)
-    analysis = _analysis(tmp_path, pa.Table.from_pylist(events))
+    experiment, resolver = _analysis(tmp_path, pa.Table.from_pylist(events))
     try:
-        rows = getattr(analysis, method_name)(population="triggered", completed_windows_only=True)
+        rows = view_readout(
+            experiment,
+            resolver,
+            _day_axis_scope(method_name, population="triggered", completed_windows_only=True),
+        )
         assert rows
         assert rows.metadata.scope.populations == ("triggered",)
         assert {row.analysis_population for row in rows} == {"triggered"}
@@ -3358,7 +3404,7 @@ def test_completed_triggered_windows_emit_cells_when_no_units_are_mature(tmp_pat
             assert all(row.value is None and row.n == 0 for row in rows)
             assert all(row.decision_scope_complete is False for row in rows)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_triggered_dimension_fills_missing_arm_within_each_segment(tmp_path):
@@ -3409,17 +3455,26 @@ def test_triggered_dimension_fills_missing_arm_within_each_segment(tmp_path):
             )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
     try:
-        estimates = analysis.run_asof_lift(dimension="country", population="triggered")
+        estimates = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         california_treatment = [
             row
             for row in estimates
@@ -3431,7 +3486,7 @@ def test_triggered_dimension_fills_missing_arm_within_each_segment(tmp_path):
             row.sampling_reason_code == "readout.cell.missing_arm" for row in california_treatment
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -3543,10 +3598,10 @@ def _country_analysis(
             )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows))
-    analysis = Analysis.from_definitions(
-        "exp",
+    analysis = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, cutoff_day, tzinfo=dt.UTC),
             {
@@ -3563,7 +3618,7 @@ def _country_analysis(
 
 
 def test_triggered_dimension_includes_assigned_segments_with_no_eligible_members(tmp_path):
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (
             ("C-US", "C", "US", 2),
@@ -3573,32 +3628,60 @@ def test_triggered_dimension_includes_assigned_segments_with_no_eligible_members
         ),
     )
     try:
-        values = analysis.run_daily(dimension="country", population="triggered")
+        values = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         california = [row for row in values if row.dimension_value == "CA"]
         assert california
         assert all(row.value is None and row.n == 0 for row in california)
-        lifts = analysis.run_daily_lift(dimension="country", population="triggered")
+        lifts = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         california_lifts = [row for row in lifts if row.dimension_value == "CA"]
         assert california_lifts
         assert all(row.failure_code == "readout.cell.missing_arm" for row in california_lifts)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_empty_triggered_segment_rows_are_scoped_to_each_breakout_source(tmp_path):
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (("C-US", "C", "US", 17), ("T-US", "T", "US", 17)),
         second_source=True,
     )
     try:
-        rows = analysis.run_asof_lift(dimension="country", population="triggered")
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         us_rows = [row for row in rows if row.dimension_value == "US"]
         assert us_rows
         assert {row.source for row in us_rows} == {"events", "events_secondary"}
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -3616,15 +3699,33 @@ def test_triggered_asof_empty_segment_keeps_bonferroni_family_size(tmp_path):
     one_path = tmp_path / "one-segment"
     two_path.mkdir()
     one_path.mkdir()
-    two, two_con = _country_analysis(
+    (two_experiment, two_resolver), two_con = _country_analysis(
         two_path, two_segment, view_correction="bonferroni", vary_outcome=True
     )
-    one, one_con = _country_analysis(
+    (one_experiment, one_resolver), one_con = _country_analysis(
         one_path, one_segment, view_correction="bonferroni", vary_outcome=True
     )
     try:
-        two_rows = two.run_asof_lift(dimension="country", population="triggered")
-        one_rows = one.run_asof_lift(dimension="country", population="triggered")
+        two_rows = view_readout(
+            two_experiment,
+            two_resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
+        one_rows = view_readout(
+            one_experiment,
+            one_resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         two_us = next(
             row
             for row in two_rows
@@ -3652,8 +3753,8 @@ def test_triggered_asof_empty_segment_keeps_bonferroni_family_size(tmp_path):
             one_us.policy_name,
         )
     finally:
-        two.close()
-        one.close()
+        two_resolver.close()
+        one_resolver.close()
         two_con.disconnect()
         one_con.disconnect()
 
@@ -3706,17 +3807,19 @@ def test_triggered_daily_primary_keeps_full_treatment_roster_alpha_when_arm_is_e
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(events))
     cutoff = dt.datetime(2024, 1, 5, tzinfo=dt.UTC)
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             cutoff,
             {"events": cutoff},
         ),
     )
     try:
-        rows = analysis.run_daily_lift(population="triggered")
+        rows = view_readout(
+            experiment, resolver, Scope(view="daily", grain="daily", population="triggered")
+        )
         treatment = next(
             row for row in rows if row.ds == dt.date(2024, 1, 3) and row.group_id == "T1"
         )
@@ -3731,7 +3834,7 @@ def test_triggered_daily_primary_keeps_full_treatment_roster_alpha_when_arm_is_e
         assert lift.alpha / 2.0 == pytest.approx(0.025)
         assert 0.025 < p_value < 0.05
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -3740,7 +3843,7 @@ def test_triggered_asof_empty_dimension_with_unbounded_retention_uses_asof_roste
 ):
     from increment.semantics.models import RetentionMetric
 
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (
             ("C-US", "C", "US", 17),
@@ -3754,19 +3857,30 @@ def test_triggered_asof_empty_dimension_with_unbounded_retention_uses_asof_roste
         name="retention", entity="user_id", fact="revenue", threshold_days=7
     )
     try:
-        rows = analysis.run_asof(metrics=[retention], dimension="country", population="triggered")
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+            metrics=[retention],
+        )
         assert rows
         assert {row.dimension_value for row in rows} == {"US", "CA"}
         assert all(row.value is None and row.n == 0 for row in rows)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_triggered_empty_retention_cohort_cell_keeps_cohort_basis(tmp_path):
     from increment.semantics.models import RetentionMetric
 
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (("C-US", "C", "US", 17), ("T-US", "T", "US", 17)),
         cutoff_day=4,
@@ -3776,14 +3890,22 @@ def test_triggered_empty_retention_cohort_cell_keeps_cohort_basis(tmp_path):
         name="retention", entity="user_id", fact="revenue", threshold_days=(0, 7)
     )
     try:
-        rows = analysis.run_daily_lift(
-            metrics=[retention], dimension="country", population="triggered"
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+            metrics=[retention],
         )
         assert rows
         assert all(row.ds_basis == "cohort" for row in rows)
         assert all(row.failure_code == "readout.cell.missing_arm" for row in rows)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -3817,24 +3939,34 @@ def test_triggered_roster_uses_only_the_evidence_breakout_source():
 
 
 def test_triggered_empty_dimension_respects_declared_observation_horizon(tmp_path):
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (("C-US", "C", "US", 17), ("T-US", "T", "US", 17)),
         observation_end='"2024-01-04"',
         end='"2024-01-04"',
     )
     try:
-        rows = analysis.run_daily(dimension="country", population="triggered")
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         assert {row.ds for row in rows} == {dt.date(2024, 1, day) for day in range(1, 5)}
         assert {row.dimension_value for row in rows} == {"US"}
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 @pytest.mark.slow
 def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_path):
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (
             ("C-US", "C", "US", 17),
@@ -3845,18 +3977,26 @@ def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_p
     )
     try:
         for method_name in ("run_daily", "run_daily_lift"):
-            rows = getattr(analysis, method_name)(dimension="country", population="triggered")
+            rows = view_readout(
+                experiment,
+                resolver,
+                _day_axis_scope(method_name, population="triggered", dimension="country"),
+            )
             assert rows
             assert {row.dimension_value for row in rows} == {"US", "CA"}
             assert {row.analysis_population for row in rows} == {"triggered"}
-        lifts = analysis.run_daily_lift(dimension="country", population="triggered")
+        lifts = view_readout(
+            experiment,
+            resolver,
+            _day_axis_scope("run_daily_lift", population="triggered", dimension="country"),
+        )
         assert not lifts.metadata.scope.families
         assert all(
             row.family_q is None and row.family_axes is None and row.family_guarantee is None
             for row in lifts
         )
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -3864,9 +4004,9 @@ def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_p
 def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_artifact(
     tmp_path,
 ):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
-    analysis, con = _country_analysis(
+    native, con = _country_analysis(
         tmp_path,
         (
             ("C-literal", "C", "__null__", 17),
@@ -3875,11 +4015,13 @@ def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_
             ("T-null", "T", None, 17),
         ),
     )
+    scope = _day_axis_scope("run_daily", population="triggered", dimension="country")
     adopted = None
     try:
+        native_rows = view_readout(native[0], native[1], scope)
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "breakout_dimension",
                 "trigger_population",
@@ -3888,20 +4030,19 @@ def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_
             ),
         )
         expected = {"__null__", "\\__null__"}
-        for source in (analysis, adopted):
-            rows = source.run_daily(dimension="country", population="triggered")
+        for rows in (native_rows, view_readout(*adopted, scope)):
             assert rows
             assert {row.dimension_value for row in rows} == expected
     finally:
         if adopted is not None:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
         else:
-            analysis.close()
+            native[1].close()
         con.disconnect()
 
 
 def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_path):
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (
             ("C-US", "C", "US", 2),
@@ -3912,7 +4053,16 @@ def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_
         ),
     )
     try:
-        estimates = analysis.run_daily_lift(dimension="country", population="triggered")
+        estimates = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         treatment = [
             row
             for row in estimates
@@ -3963,12 +4113,12 @@ def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_
         )
         assert "requested arm T" not in str(columns.get("failure_message"))
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_triggered_missing_lift_rows_use_each_groups_observed_count(tmp_path):
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (
             ("C-US", "C", "US", 2),
@@ -3978,7 +4128,16 @@ def test_triggered_missing_lift_rows_use_each_groups_observed_count(tmp_path):
         cutoff_day=4,
     )
     try:
-        estimates = analysis.run_daily_lift(dimension="country", population="triggered")
+        estimates = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+        )
         assert all(
             row.failure_code is None
             for row in estimates
@@ -3991,14 +4150,14 @@ def test_triggered_missing_lift_rows_use_each_groups_observed_count(tmp_path):
         ]
         assert all(cell.failure is None for cell in control_cells)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
 def test_triggered_empty_conversion_rows_are_typed_before_estimation(tmp_path):
     from increment.semantics.models import ConversionMetric
 
-    analysis, con = _country_analysis(
+    (experiment, resolver), con = _country_analysis(
         tmp_path,
         (
             ("C-US", "C", "US", 17),
@@ -4008,12 +4167,17 @@ def test_triggered_empty_conversion_rows_are_typed_before_estimation(tmp_path):
     )
     metric = ConversionMetric(name="conversion", entity="user_id", fact="revenue", window_days=7)
     try:
-        rows = analysis.run_daily_lift(metrics=[metric], population="triggered")
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", population="triggered"),
+            metrics=[metric],
+        )
         assert rows
         assert {row.failure_code for row in rows} == {"readout.cell.missing_arm"}
         assert all(row.sampling_available is False for row in rows)
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -4029,19 +4193,35 @@ def test_triggered_conversion_mixed_empty_days_and_segments_skip_empty_fits(tmp_
     mixed_path = tmp_path / "mixed"
     baseline_path.mkdir()
     mixed_path.mkdir()
-    baseline, baseline_con = _country_analysis(
+    (baseline_experiment, baseline_resolver), baseline_con = _country_analysis(
         baseline_path, populated, cutoff_day=4, vary_outcome=True, conversion=True
     )
-    mixed, mixed_con = _country_analysis(
+    (mixed_experiment, mixed_resolver), mixed_con = _country_analysis(
         mixed_path, with_empty, cutoff_day=4, vary_outcome=True, conversion=True
     )
     metric = ConversionMetric(name="conversion", entity="user_id", fact="revenue", window_days=7)
     try:
-        baseline_rows = baseline.run_daily_lift(
-            metrics=[metric], dimension="country", population="triggered"
+        baseline_rows = view_readout(
+            baseline_experiment,
+            baseline_resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+            metrics=[metric],
         )
-        mixed_rows = mixed.run_daily_lift(
-            metrics=[metric], dimension="country", population="triggered"
+        mixed_rows = view_readout(
+            mixed_experiment,
+            mixed_resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                segment=BreakoutIdentity("country", None),
+                population="triggered",
+            ),
+            metrics=[metric],
         )
         baseline_us = {
             (row.ds, row.group_id): row.lift.value
@@ -4061,8 +4241,8 @@ def test_triggered_conversion_mixed_empty_days_and_segments_skip_empty_fits(tmp_
         assert all(row.failure_code == "readout.cell.missing_arm" for row in empty_ca)
         assert all(row.sampling_available is False for row in empty_ca)
     finally:
-        baseline.close()
-        mixed.close()
+        baseline_resolver.close()
+        mixed_resolver.close()
         baseline_con.disconnect()
         mixed_con.disconnect()
 
@@ -4129,17 +4309,22 @@ def test_triggered_single_unit_exact_binomial_cells_keep_sampling_evidence(tmp_p
         )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
     try:
-        estimates = analysis.run_daily_lift(metrics=["converted"], population="triggered")
+        estimates = view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", population="triggered"),
+            metrics=["converted"],
+        )
         treatment = [row for row in estimates if row.group_id == "T"]
         assert treatment
         assert all(row.reference_kind == "binomial" for row in treatment)
@@ -4147,7 +4332,7 @@ def test_triggered_single_unit_exact_binomial_cells_keep_sampling_evidence(tmp_p
         assert all(row.sampling_available for row in treatment)
         assert all(row.failure_code is None for row in treatment)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -4233,16 +4418,16 @@ def test_quantile_experiment_with_trigger_narrows_to_the_triggered_population(tm
     con.create_table("quantile_trigger_events", obj=_quantile_trigger_events())
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml_quantile())
-    an = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         defs_path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
-    rows = _lift_rows(an.run())
+    rows = _lift_rows(_both_populations(experiment, resolver))
     by_pop = {r.analysis_population: r for r in rows if r.metric == "p90_latency"}
     assert set(by_pop) == {"assigned", "triggered"}
     assigned, triggered = by_pop["assigned"], by_pop["triggered"]
@@ -4260,19 +4445,19 @@ def test_quantile_experiment_with_trigger_narrows_to_the_triggered_population(tm
 )
 @pytest.mark.parametrize("operation", ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"))
 def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
-    from tests.analysis_factory import make_analysis
     from tests.capability_consumers_auxiliary import assert_refusal
 
     if ingress == "from_unit_summary":
-        source = Analysis.from_unit_summary(
+        source = from_frame(
             pa.table({"unit": [1, 2], "arm": ["control", "treatment"], "revenue": [1.0, 2.0]}),
+            shape="summary",
             unit="unit",
             group="arm",
             metrics={"revenue": "mean"},
             control="control",
         )
     elif ingress == "from_unit_panel":
-        source = Analysis.from_unit_panel(
+        source = from_frame(
             pa.table(
                 {
                     "unit": [1, 2],
@@ -4281,6 +4466,7 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
                     "revenue": [1.0, 2.0],
                 }
             ),
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -4290,11 +4476,12 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
     elif ingress == "from_switchback_panel":
         source = _switchback_panel_analysis()
     else:
-        source = make_analysis()
+        source = make_binding()
 
+    experiment, resolver = source
     try:
         with pytest.raises(CapabilityError) as refused:
-            getattr(source, operation)(population="triggered")
+            view_readout(experiment, resolver, _day_axis_scope(operation, population="triggered"))
         assert_refusal(
             "triggered_day_axis_boundary",
             f"day_axis_{ingress}_{operation}_refused",
@@ -4302,10 +4489,10 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
             stage="read",
         )
     finally:
-        source.close()
+        resolver.close()
 
 
-def _switchback_panel_analysis() -> Analysis:
+def _switchback_panel_analysis() -> Any:
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,
@@ -4314,7 +4501,7 @@ def _switchback_panel_analysis() -> Analysis:
     from increment.semantics.design import Randomized
     from increment.semantics.unit_cycle import UnitCycleTApproximation
 
-    return Analysis.from_switchback_panel(
+    return from_switchback_frame(
         pa.Table.from_pylist(
             [
                 {
@@ -4381,19 +4568,17 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
         "events",
         obj=_with_preassignment_region(_events(n_per_arm=100, trigger_rate=0.5)),
     )
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         defs_path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
     try:
-        from increment.estimation.results import LiftEstimate
-
-        rows = cast(list[LiftEstimate], analysis.run())
+        rows = _lift_rows(_both_populations(experiment, resolver))
         estimates = {
             row.analysis_population: row
             for row in rows
@@ -4404,11 +4589,9 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
             estimates["triggered"].require_lift().value
         )
 
-        from tests.analysis_factory import _native_source
-
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         metric = source.context.metrics[0]
-        covariates = cast(Any, source.context.configs[0].covariates)
+        covariates = source.context.configs[0].covariates
         triggered_frame = _unit_rows(
             source.moments_source(metrics=[metric], population="triggered"),
             metric,
@@ -4433,7 +4616,7 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
             expected_treatment.require_lift().value, rel=1e-10, abs=1e-10
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 

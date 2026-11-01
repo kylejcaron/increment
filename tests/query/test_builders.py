@@ -23,6 +23,7 @@ from increment.errors import (
     InvalidRequestError,
     UnsupportedRequestError,
 )
+from increment.query import panel_sql, summary_sql
 from increment.query.builders import (
     asof_group_summary,
     breakout_property_table,
@@ -68,8 +69,9 @@ from increment.semantics.models import (
     RetentionMetric,
     Winsorization,
 )
+from increment.workflows import breakout_summaries, experiment_definition
 from tests._evidence_requests import _moments
-from tests.analysis_factory import make_analysis
+from tests.analysis_factory import make_binding
 from tests.warning_codes import warning_codes, warning_context
 
 # Nearly every test here builds its own tiny scratch table directly on
@@ -2934,14 +2936,11 @@ def test_unit_day_panel_retention_fact_collision_no_phantom_day_zero(exposures, 
 
 
 def _analysis_with_cross_source_breakouts(con):
-    """Build an ``Analysis`` over two fact sources ('src_a',
+    """Build an experiment and resolver over two fact sources ('src_a',
     'src_b') that both declare a ``country`` property - the exact shape
     validated by ``test_breakout_same_property_different_sources_allowed``
     in ``tests/semantics/test_breakout_models.py`` - backed by real
-    DuckDB tables. Bypasses ``load()``'s YAML-file requirement the same
-    way ``tests/test_analysis.py``'s zero-metrics tests do (``__new__``
-    plus manual attribute assignment), since ``Analysis``'s
-    only file-reading step is ``load(definitions_path)``.
+    DuckDB tables, from in-memory definitions rather than a YAML file.
     """
     if "breakout_collision_src_a" not in con.list_tables():
         con.create_table(
@@ -3051,8 +3050,7 @@ def _analysis_with_cross_source_breakouts(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
-    return analysis
+    return make_binding(con, defs)
 
 
 @pytest.mark.integration
@@ -3062,10 +3060,10 @@ def test_panel_sql_keys_dont_collide_across_breakout_sources(con):
     Pre-fix, both breakouts' dict keys were plain
     ``f"{metric.name}:{breakout.property}"`` with no source qualifier,
     so the second breakout's SQL silently clobbered the first's entry."""
-    analysis = _analysis_with_cross_source_breakouts(con)
-    breakouts = analysis.experiment.breakouts
+    experiment, resolver = _analysis_with_cross_source_breakouts(con)
+    breakouts = list(experiment_definition(experiment, resolver).breakouts)
 
-    result = analysis.panel_sql(breakouts=breakouts)
+    result = panel_sql(experiment, resolver, breakouts=breakouts)
     assert "visit_rate:country:src_a" in result
     assert "visit_rate:country:src_b" in result
     assert result["visit_rate:country:src_a"] != result["visit_rate:country:src_b"]
@@ -3074,10 +3072,10 @@ def test_panel_sql_keys_dont_collide_across_breakout_sources(con):
 @pytest.mark.integration
 def test_summary_sql_keys_dont_collide_across_breakout_sources(con):
     """Same collision regression as above, for ``summary_sql``."""
-    analysis = _analysis_with_cross_source_breakouts(con)
-    breakouts = analysis.experiment.breakouts
+    experiment, resolver = _analysis_with_cross_source_breakouts(con)
+    breakouts = list(experiment_definition(experiment, resolver).breakouts)
 
-    result = analysis.summary_sql(breakouts=breakouts)
+    result = summary_sql(experiment, resolver, breakouts=breakouts)
     assert "checkout:country:src_a" in result
     assert "checkout:country:src_b" in result
     assert result["checkout:country:src_a"] != result["checkout:country:src_b"]
@@ -3089,9 +3087,9 @@ def test_breakout_summaries_keys_dont_collide_across_breakout_sources(con):
     all 2 metrics x 2 breakout-sources combinations must be present, not
     collapsed down to 2 entries by the second source's breakout
     overwriting the first's."""
-    analysis = _analysis_with_cross_source_breakouts(con)
+    experiment, resolver = _analysis_with_cross_source_breakouts(con)
 
-    result = analysis.breakout_summaries()
+    result = breakout_summaries(experiment, resolver)
     assert set(result) == {
         "visit_rate:country:src_a",
         "visit_rate:country:src_b",

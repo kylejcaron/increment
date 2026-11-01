@@ -9,20 +9,35 @@ the frame carries the same total as an explicit ``pre`` column.
 from __future__ import annotations
 
 import datetime as dt
+import shutil
 import tempfile
+import weakref
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, CupedCovariate, Definitions, Method, MetricSpec
+from increment import (
+    CupedCovariate,
+    Definitions,
+    Method,
+    MetricSpec,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.design import Randomized
 from increment.semantics.loader import load
 from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment.workflows import capture_sequential, experiment_definition, export_moments
+from tests.analysis_factory import view_readout
 
 CUPED = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous", missing="impute"))
 UNADJUSTED = Method(name="unadjusted")
@@ -134,20 +149,24 @@ def _spec(metric: str, *, cuped: bool) -> MetricSpec:
 
 def frame_fixed(units, metric: str):
     """``(unadjusted, cuped)`` fixed-horizon rows from the unit-summary frame."""
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(units),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[_spec(metric, cuped=True)],
         design=DESIGN,
     )
-    return analysis.run(decision_method=UNADJUSTED)[0], analysis.run()[0]
+    return view_readout(experiment, resolver, decision_method=UNADJUSTED)[0], view_readout(
+        experiment, resolver
+    )[0]
 
 
 def frame_sequential(units, metric: str, *, cuped: bool):
     """``(snapshot, row)`` from the unit-summary frame under asymptotic_mean."""
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist([{**u, "enrolled": _EXPOSURE.date()} for u in units]),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[_spec(metric, cuped=cuped)],
@@ -159,30 +178,38 @@ def frame_sequential(units, metric: str, *, cuped: bool):
         experiment_id="exp",
         exposure_date="enrolled",
     )
-    return analysis.capture_sequential(finalized=True), analysis.run()[0]
+    return capture_sequential(experiment, resolver, finalized=True), view_readout(
+        experiment, resolver
+    )[0]
 
 
-def _adopt(analysis: Analysis, definitions: Definitions, con) -> Analysis:
-    """Publish ``analysis``'s unit-day artifact and reopen it through the public reader."""
-    context = artifact_context(definitions, analysis.experiment, "error")
+def _adopt(native: tuple[Any, Any], definitions: Definitions, con) -> Any:
+    """Publish ``native``'s unit-day artifact and reopen it through the public reader."""
+    native_experiment, native_resolver = native
+    context = artifact_context(
+        definitions, experiment_definition(native_experiment, native_resolver), "error"
+    )
     requests = [
         entry.request
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind == "cuped_preperiod"
     ]
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = analysis.publish_unit_day_artifact(store, extensions=requests)
-    analysis.close()
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    native_resolver.close()
+    return from_unit_day_artifact(store, ref, expected_context=context)
 
 
-def _open(con, dialect: str, source: str, plan: str, *, artifact: bool) -> Analysis:
-    with tempfile.TemporaryDirectory() as td:
-        path = Path(td) / "defs.yaml"
-        path.write_text(definitions_yaml(dialect, source, n_pre_periods=7, plan=plan))
-        definitions = load(path)
-        analysis = Analysis.from_definitions("exp", path, con, store="none")
-    return _adopt(analysis, definitions, con) if artifact else analysis
+def _open(con, dialect: str, source: str, plan: str, *, artifact: bool) -> Any:
+    # The definitions builder rewrites its catalog beside the file after each run,
+    # so the file lives as long as the resolver.
+    directory = tempfile.mkdtemp()
+    path = Path(directory) / "defs.yaml"
+    path.write_text(definitions_yaml(dialect, source, n_pre_periods=7, plan=plan))
+    definitions = load(path)
+    native = from_definitions(path, con, experiment_name="exp", store="none")
+    weakref.finalize(native[1], shutil.rmtree, directory, True)
+    return _adopt(native, definitions, con) if artifact else native
 
 
 def warehouse_fixed(con, dialect: str, source: str, metric: str, *, artifact: bool = False):
@@ -192,9 +219,9 @@ def warehouse_fixed(con, dialect: str, source: str, metric: str, *, artifact: bo
         "          decision_method: {name: unadjusted}\n"
         "          sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
     )
-    analysis = _open(con, dialect, source, plan, artifact=artifact)
-    rows = {row.method: row for row in analysis.run()}
-    analysis.close()
+    experiment, resolver = _open(con, dialect, source, plan, artifact=artifact)
+    rows = {row.method: row for row in view_readout(experiment, resolver)}
+    resolver.close()
     return rows["unadjusted"], rows["cuped"]
 
 
@@ -211,10 +238,10 @@ def warehouse_sequential(
     plan = (
         binding + "      inference: {kind: asymptotic_mean, expected_decision_sample_size: 400}\n"
     )
-    analysis = _open(con, dialect, source, plan, artifact=artifact)
-    snapshot = analysis.capture_sequential(finalized=True, as_of=AS_OF)
-    row = analysis.run()[0]
-    analysis.close()
+    experiment, resolver = _open(con, dialect, source, plan, artifact=artifact)
+    snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=AS_OF)
+    row = view_readout(experiment, resolver)[0]
+    resolver.close()
     return snapshot, row
 
 
@@ -249,7 +276,7 @@ def portable_fixed(con, dialect: str, source: str, metric: str, tmp_path):
     """``(unadjusted, cuped)`` from an exported moments cube replayed through from_moments."""
     import pyarrow.parquet as pq
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.frame import MetricSpec
 
     plan = (
@@ -257,20 +284,26 @@ def portable_fixed(con, dialect: str, source: str, metric: str, tmp_path):
         "          decision_method: {name: unadjusted}\n"
         "          sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
     )
-    analysis = _open(con, dialect, source, plan, artifact=False)
+    analysis_experiment, analysis_resolver = _open(con, dialect, source, plan, artifact=False)
     path = tmp_path / "moments.parquet"
-    analysis.export(path)
-    analysis.close()
+    export_moments(analysis_experiment, analysis_resolver, path)
+    analysis_resolver.close()
     rows = pq.read_table(path).to_pylist()
-    replay = Analysis.from_moments(
+    replay_experiment, replay_resolver = from_moments(
         rows,
         metrics=[MetricSpec(name=metric, type="ratio", numerator="revenue", denominator="orders")],
         control="control",
     )
-    plain = [r for r in replay.run() if r.method == "unadjusted"][0]
+    plain = [
+        r for r in view_readout(replay_experiment, replay_resolver) if r.method == "unadjusted"
+    ][0]
     adjusted = [
         r
-        for r in replay.run(sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")])
+        for r in view_readout(
+            replay_experiment,
+            replay_resolver,
+            sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")],
+        )
         if r.method == "cuped"
     ][0]
     return plain, adjusted
@@ -303,7 +336,7 @@ def check_sequential_parity(con, dialect: str, source: str) -> dict[str, tuple]:
 
 def check_day_axis_parity(con, dialect: str, source: str) -> None:
     """Day-axis ratio CUPED: the final as-of equals the total, and both readers agree."""
-    from increment import Method
+    from increment import Method, Scope
     from increment.results import LiftEstimate
 
     cuped = Method(name="cuped", variance_reduction="cuped")
@@ -314,28 +347,33 @@ def check_day_axis_parity(con, dialect: str, source: str) -> None:
     )
     definitions = _open(con, dialect, source, plan, artifact=False)
     artifact = _open(con, dialect, source, plan, artifact=True)
+    asof_lift = Scope(view="asof", grain="asof")
+    daily_lift = Scope(view="daily", grain="daily")
     try:
-        total_row = [r for r in definitions.run() if r.method == "cuped"][0]
+        total_row = [r for r in view_readout(*definitions) if r.method == "cuped"][0]
         assert isinstance(total_row, LiftEstimate)
         total = total_row.require_lift()
 
-        def rows(analysis, fn):
+        def rows(pair, scope):
+            experiment, resolver = pair
             return {
                 (r.group_id, r.ds): r
-                for r in fn(metrics=["rpo"], sensitivity_methods=[cuped])
+                for r in view_readout(
+                    experiment, resolver, scope, metrics=["rpo"], sensitivity_methods=[cuped]
+                )
                 if r.method == "cuped"
             }
 
-        asof = rows(definitions, definitions.run_asof_lift)
+        asof = rows(definitions, asof_lift)
         last = max(ds for _, ds in asof)
         final = asof[("treatment", last)].require_lift()
         # Cumulative through the last day is the whole experiment.
         assert final.value == pytest.approx(total.value, abs=1e-12)
         assert final.lb == pytest.approx(total.lb, abs=1e-12)
         assert final.ub == pytest.approx(total.ub, abs=1e-12)
-        for fn_name in ("run_asof_lift", "run_daily_lift"):
-            left = rows(definitions, getattr(definitions, fn_name))
-            right = rows(artifact, getattr(artifact, fn_name))
+        for view_name, scope in (("asof_lift", asof_lift), ("daily_lift", daily_lift)):
+            left = rows(definitions, scope)
+            right = rows(artifact, scope)
             assert set(left) == set(right)
             available = 0
             for key in left:
@@ -347,10 +385,10 @@ def check_day_axis_parity(con, dialect: str, source: str) -> None:
                 assert a.value == pytest.approx(b.value, abs=1e-12), key
                 assert a.lb == pytest.approx(b.lb, abs=1e-12), key
                 assert a.ub == pytest.approx(b.ub, abs=1e-12), key
-            assert available >= 1, fn_name
+            assert available >= 1, view_name
     finally:
-        definitions.close()
-        artifact.close()
+        definitions[1].close()
+        artifact[1].close()
 
 
 def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
