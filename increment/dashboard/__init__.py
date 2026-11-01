@@ -3,9 +3,9 @@
 Bind your own experiment, prepare one snapshot, and render sections:
 
     con = ibis.duckdb.connect(...)
-    analysis = Analysis.from_definitions("my_experiment", "definitions/", con)
+    experiment, resolver = from_definitions("definitions/", con, experiment_name="my_experiment")
     config = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
-    snapshot = prepare_dashboard(analysis, config=config)
+    snapshot = prepare_dashboard(experiment, resolver, config=config)
     render_health(snapshot)
 
 Install with the ``dashboard`` extra. Core Increment never imports this

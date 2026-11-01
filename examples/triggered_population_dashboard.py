@@ -14,16 +14,16 @@ def _():
     import numpy as np
     import pyarrow as pa
 
-    from increment import Analysis
+    from increment import from_definitions
     from increment.artifacts import SourceSnapshotEvidence
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
 
     return (
-        Analysis,
         DashboardConfig,
         Path,
         SourceSnapshotEvidence,
         dt,
+        from_definitions,
         ibis,
         np,
         pa,
@@ -126,29 +126,29 @@ def _(ibis, np, pa):
 
 
 @app.cell
-def _(Analysis, SourceSnapshotEvidence, con, definitions, dt):
-    analysis = Analysis.from_definitions(
-        "checkout",
+def _(SourceSnapshotEvidence, con, definitions, dt, from_definitions):
+    experiment, resolver = from_definitions(
         definitions,
         con,
+        experiment_name="checkout",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
-    return (analysis,)
+    return experiment, resolver
 
 
 @app.cell
-def _(DashboardConfig, analysis, prepare_dashboard):
+def _(DashboardConfig, experiment, prepare_dashboard, resolver):
     config = DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}, title="Triggered checkout")
-    snapshot = prepare_dashboard(analysis, config=config)
+    snapshot = prepare_dashboard(experiment, resolver, config=config)
     return (snapshot,)
 
 
 @app.cell(hide_code=True)
-def _(analysis, render_dashboard, snapshot):
-    render_dashboard(analysis, snapshot=snapshot)
+def _(experiment, render_dashboard, snapshot):
+    render_dashboard(experiment, snapshot=snapshot)
     return
 
 

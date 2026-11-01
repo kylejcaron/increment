@@ -865,6 +865,25 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._dashboard_capture"
+layer = "core"
+depends_on = [
+  "increment._analysis_config",
+  "increment._binding",
+  "increment._breakout_readouts",
+  "increment._day_axis",
+  "increment._evidence_refusals",
+  "increment._evidence_types",
+  "increment._source_admission",
+  "increment._source_operations",
+  "increment._source_types",
+  "increment.decision",
+  "increment.errors",
+  "increment.evidence",
+  "increment.readouts",
+]
+
+[[modules]]
 path = "increment.workflows"
 layer = "core"
 depends_on = ["increment._source_diagnostics", "increment._source_sequential", "increment._source_workflows"]
@@ -875,14 +894,13 @@ layer = "core"
 depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
+  "increment._dashboard_capture",
   "increment._evidence_types",
-  "increment.evidence",
   "increment._execute", "increment._exploratory", "increment._source_resolver",
   "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_workflows",
+  "increment._source_operations", "increment._source_diagnostics", "increment._source_workflows",
   "increment.readouts._line2", "increment.readouts._execution_context",
-  "increment.decision", "increment.errors", "increment.estimation",
-  "increment._evidence_refusals",
+  "increment.decision", "increment.estimation",
   "increment._binding", "increment.kernel", "increment.kernel.ports",
   "increment.frame", "increment.query", "increment.query._workflows", "increment.readouts",
   "increment.semantics",
@@ -993,7 +1011,24 @@ depends_on = [
 [[modules]]
 path = "increment.dashboard"
 layer = "core"
-depends_on = ["increment._canonical", "increment._interpretation", "increment._source_operations", "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.tables"]
+depends_on = [
+  "increment._binding",
+  "increment._breakout_readouts",
+  "increment._canonical",
+  "increment._dashboard_capture",
+  "increment._day_axis",
+  "increment._evidence_refusals",
+  "increment._execute",
+  "increment._exploratory",
+  "increment._interpretation",
+  "increment._source_diagnostics",
+  "increment._source_operations",
+  "increment._source_workflows",
+  "increment.breakout.estimates",
+  "increment.errors",
+  "increment.estimation",
+  "increment.tables",
+]
 
 [[modules]]
 path = "increment.reporting"

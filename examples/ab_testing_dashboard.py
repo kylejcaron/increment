@@ -22,10 +22,10 @@ def _():
     import _dashboard_demo as demo
     import ibis
 
-    from increment import Analysis
+    from increment import from_definitions
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
 
-    return Analysis, DashboardConfig, Path, demo, ibis, prepare_dashboard, render_dashboard
+    return DashboardConfig, Path, demo, from_definitions, ibis, prepare_dashboard, render_dashboard
 
 
 @app.cell
@@ -42,11 +42,11 @@ def _(ibis):
 
 
 @app.cell
-def _(Analysis, con, demo_manifest):
-    analysis = Analysis.from_definitions(
-        "checkout_redesign", "examples/realistic_demo/definitions", con
+def _(con, demo_manifest, from_definitions):
+    experiment, resolver = from_definitions(
+        "examples/realistic_demo/definitions", con, experiment_name="checkout_redesign"
     )
-    return (analysis,)
+    return experiment, resolver
 
 
 @app.cell
@@ -66,14 +66,14 @@ def _(DashboardConfig, demo, demo_manifest):
 
 
 @app.cell
-def _(analysis, config, prepare_dashboard):
-    snapshot = prepare_dashboard(analysis, config=config)
+def _(config, experiment, prepare_dashboard, resolver):
+    snapshot = prepare_dashboard(experiment, resolver, config=config)
     return (snapshot,)
 
 
 @app.cell(hide_code=True)
-def _(analysis, render_dashboard, snapshot):
-    render_dashboard(analysis, snapshot=snapshot)
+def _(experiment, render_dashboard, snapshot):
+    render_dashboard(experiment, snapshot=snapshot)
     return
 
 

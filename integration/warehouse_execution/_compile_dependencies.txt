@@ -1,4 +1,4 @@
-# Traced on commit: cfdf7402276807fb9a42af3c9a011b3140250884
+# Traced on commit: 911b5f92db1bfead84d78ef6b68fb6341d60576f
 increment
 increment._analysis_config
 increment._analysis_execution
@@ -8,6 +8,7 @@ increment._binding
 increment._breakout_readouts
 increment._canonical
 increment._cuped_evidence
+increment._dashboard_capture
 increment._day_axis
 increment._day_axis_labels
 increment._display

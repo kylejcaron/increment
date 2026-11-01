@@ -1949,10 +1949,12 @@ def test_breakout_override_preserves_sibling_daily_lift_configuration(tmp_path):
 
 @pytest.mark.integration
 def test_unsegmented_day_axis_reads_do_not_require_separate_breakout_sources(tmp_path):
+    from tests.analysis_factory import bound_analysis
     from tests.test_dashboard_capture import _workspace
 
-    with _workspace(tmp_path, units=6, breakout_sources=("profiles",)) as (con, analysis):
+    with _workspace(tmp_path, units=6, breakout_sources=("profiles",)) as (con, _, resolver):
         con.drop_table("profiles", database="analytics")
+        analysis = bound_analysis(resolver)
         for operation in ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"):
             rows = getattr(analysis, operation)(metrics=["revenue_per_user"])
             assert rows

@@ -77,9 +77,10 @@ def _saved_added_snapshot(tmp_path_factory):
     # then let that workspace close before presentation-only consumers share the snapshot.
     with _workspace(tmp_path_factory.mktemp("overview-snapshot"), metrics=_SAVED) as (
         _,
-        analysis,
+        experiment,
+        resolver,
     ):
-        return prepare_dashboard(analysis, config=_config(ADDED))
+        return prepare_dashboard(experiment, resolver, config=_config(ADDED))
 
 
 def _identity(row) -> tuple:
@@ -215,8 +216,8 @@ def _selected_family_snapshot(tmp_path_factory):
     # Enough units that the exploratory BH family selects at least one cell.
     with _workspace(
         tmp_path_factory.mktemp("overview-selected-snapshot"), units=1000, metrics=_SAVED
-    ) as (_, analysis):
-        return prepare_dashboard(analysis, config=_config(ADDED))
+    ) as (_, experiment, resolver):
+        return prepare_dashboard(experiment, resolver, config=_config(ADDED))
 
 
 @pytest.mark.integration
@@ -321,9 +322,9 @@ def test_only_a_discovery_is_coloured_as_a_finding():
 def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
     from increment.dashboard._app import build_payload
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
-        explore = build_payload(analysis, snapshot=snapshot)["explore"]["overall"][ADDED]
+    with _workspace(tmp_path, metrics=_SAVED) as (_, experiment, resolver):
+        snapshot = prepare_dashboard(experiment, resolver, config=_config(ADDED))
+        explore = build_payload(experiment, snapshot=snapshot)["explore"]["overall"][ADDED]
         for view in ("cumulative_values", "daily_values", "cumulative_lift"):
             assert explore[view]["pointCount"] > 0
 
@@ -331,9 +332,9 @@ def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_path):
-    with _workspace(tmp_path, metrics=_WITH_QUANTILE) as (_, analysis):
+    with _workspace(tmp_path, metrics=_WITH_QUANTILE) as (_, experiment, resolver):
         # The quantile metric is offered but not shown; its refusal is still reported.
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
+        snapshot = prepare_dashboard(experiment, resolver, config=_config(ADDED))
         overview = snapshot.overview
         assert overview is not None and overview.family_refusal is None
         shown = {cell.metric for cell in overview.segments[COUNTRY]}
@@ -349,8 +350,12 @@ def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_pa
 @pytest.mark.slow
 def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
     sources = ("event_log", "profiles")
-    with _workspace(tmp_path, metrics=_SAVED, breakout_sources=sources) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
+    with _workspace(tmp_path, metrics=_SAVED, breakout_sources=sources) as (
+        _,
+        experiment,
+        resolver,
+    ):
+        snapshot = prepare_dashboard(experiment, resolver, config=_config(ADDED))
         overview = snapshot.overview
         assert overview is not None and overview.family_refusal is None
         by_source = {source: overview.segments[(source, "country")] for source in sources}
@@ -367,9 +372,9 @@ def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_choosing_what_to_show_never_changes_the_family(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        hidden = prepare_dashboard(analysis, config=_config())
-        shown = prepare_dashboard(analysis, config=_config(ADDED))
+    with _workspace(tmp_path, metrics=_SAVED) as (_, experiment, resolver):
+        hidden = prepare_dashboard(experiment, resolver, config=_config())
+        shown = prepare_dashboard(experiment, resolver, config=_config(ADDED))
         assert shown.readout_rows == hidden.readout_rows
         assert [model.name for model in hidden.offered_metrics] == [ADDED]
         assert hidden.exploratory_metrics == () and hidden.overview is not None
@@ -385,11 +390,11 @@ def test_choosing_what_to_show_never_changes_the_family(tmp_path):
 
 @pytest.mark.integration
 def test_an_undeclared_exploratory_metric_is_refused_before_preparation(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (con, analysis):
+    with _workspace(tmp_path, metrics=_SAVED) as (con, experiment, resolver):
         con.disconnect()
         for name in ("not_a_saved_metric", "checkout_conversion"):
             with pytest.raises(InvalidRequestError) as caught:
-                prepare_dashboard(analysis, config=_config(name))
+                prepare_dashboard(experiment, resolver, config=_config(name))
             assert caught.value.code == "dashboard.invalid_config"
             assert caught.value.context["available"] == (ADDED,)
 
@@ -397,13 +402,13 @@ def test_an_undeclared_exploratory_metric_is_refused_before_preparation(tmp_path
 @pytest.mark.slow
 @pytest.mark.integration
 def test_added_metrics_come_from_the_pinned_read(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (con, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
+    with _workspace(tmp_path, metrics=_SAVED) as (con, experiment, resolver):
+        snapshot = prepare_dashboard(experiment, resolver, config=_config(ADDED))
         assert snapshot.overview is not None
         before = snapshot.overview.exploratory
         _double_the_treatment_arm(con)
         assert snapshot.overview.exploratory == before
-        fresh = prepare_dashboard(analysis, config=_config(ADDED))
+        fresh = prepare_dashboard(experiment, resolver, config=_config(ADDED))
         assert fresh.overview is not None
         dumped = [row.model_dump(mode="json") for row in fresh.overview.exploratory]
         assert dumped != [row.model_dump(mode="json") for row in before]
@@ -423,9 +428,9 @@ def _page_payload(page: str) -> dict:
 def test_the_dashboard_widget_shows_added_metrics_without_reading_again(tmp_path):
     from increment.dashboard._app import DashboardWidget
 
-    with _workspace(tmp_path, metrics=_SAVED) as (con, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config())
-        widget = DashboardWidget(analysis, snapshot=snapshot)
+    with _workspace(tmp_path, metrics=_SAVED) as (con, experiment, resolver):
+        snapshot = prepare_dashboard(experiment, resolver, config=_config())
+        widget = DashboardWidget(experiment, snapshot=snapshot)
         offered = _page_payload(widget.document)["exploratory"]
         assert [item["key"] for item in offered["available"]] == [ADDED]
         assert offered["selected"] == []
@@ -457,9 +462,9 @@ def test_the_dashboard_widget_shows_added_metrics_without_reading_again(tmp_path
 def test_an_unexpected_update_failure_rolls_the_widget_back(tmp_path, monkeypatch):
     from increment.dashboard import _app
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
+    with _workspace(tmp_path, metrics=_SAVED) as (_, experiment, resolver):
         widget = _app.DashboardWidget(
-            analysis, snapshot=prepare_dashboard(analysis, config=_config())
+            experiment, snapshot=prepare_dashboard(experiment, resolver, config=_config())
         )
         page = widget.document
         failure = RuntimeError("render failed")
@@ -493,11 +498,13 @@ _REPORT_ONLY = (
 
 @pytest.mark.integration
 def test_only_estimable_saved_metrics_are_offered(tmp_path):
-    with _workspace(tmp_path, metrics=_REPORT_ONLY) as (con, analysis):
-        assert [metric.name for metric in analysis.available_metrics] == [ADDED]
+    from increment.workflows import available_metrics
+
+    with _workspace(tmp_path, metrics=_REPORT_ONLY) as (con, experiment, resolver):
+        assert [metric.name for metric in available_metrics(experiment, resolver)] == [ADDED]
         con.disconnect()
         with pytest.raises(InvalidRequestError) as caught:
-            prepare_dashboard(analysis, config=_config("total_revenue"))
+            prepare_dashboard(experiment, resolver, config=_config("total_revenue"))
         assert caught.value.code == "dashboard.invalid_config"
 
 
@@ -506,9 +513,11 @@ def test_only_estimable_saved_metrics_are_offered(tmp_path):
 def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added(tmp_path):
     from increment.dashboard._app import DashboardWidget
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
+    with _workspace(tmp_path, metrics=_SAVED) as (_, experiment, resolver):
         config = dataclasses.replace(_config(ADDED), metric_units={ADDED: "orders"})
-        widget = DashboardWidget(analysis, snapshot=prepare_dashboard(analysis, config=config))
+        widget = DashboardWidget(
+            experiment, snapshot=prepare_dashboard(experiment, resolver, config=config)
+        )
         widget.exploratory_metrics = []
         assert widget.status == ""
         assert widget.exploratory_metrics == []
@@ -532,10 +541,10 @@ def test_a_non_randomized_design_is_refused_before_any_read(tmp_path, monkeypatc
     monkeypatch.setattr(
         capture, "_experiments", lambda **options: declared(**options) + _OBSERVATIONAL
     )
-    with _workspace(tmp_path) as (con, analysis):
+    with _workspace(tmp_path) as (con, experiment, resolver):
         con.disconnect()
         with pytest.raises(CapabilityError) as caught:
-            prepare_dashboard(analysis, config=_config())
+            prepare_dashboard(experiment, resolver, config=_config())
         assert caught.value.code == "dashboard.unsupported_experiment"
         assert caught.value.context["mechanism"] == "observational"
 
@@ -568,6 +577,8 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
     import tests.test_dashboard_capture as capture
     from increment.dashboard import load_explore
     from increment.dashboard._data import ExploreView
+    from increment.workflows import experiment_definition
+    from tests.analysis_factory import bound_analysis
 
     monkeypatch.setattr(
         capture,
@@ -575,9 +586,10 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
         capture._PLAN.replace("correction: bonferroni", f"correction: {correction}"),
     )
     # Enough units that a segment is a BH discovery, so a joint family would move its threshold.
-    with _workspace(tmp_path, metrics=_TWO_SAVED, units=2000) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED, SECOND))
-        (declared,) = analysis.experiment.breakouts
+    with _workspace(tmp_path, metrics=_TWO_SAVED, units=2000) as (_, experiment, resolver):
+        snapshot = prepare_dashboard(experiment, resolver, config=_config(ADDED, SECOND))
+        analysis = bound_analysis(resolver)
+        (declared,) = experiment_definition(experiment, resolver).breakouts
         segments = analysis.dashboard_breakout_reads(declared)
         discoveries = 0
         for name in (ADDED, SECOND):
@@ -595,7 +607,7 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
             }
             for (view, breakout), expected in alone.items():
                 captured = load_explore(
-                    analysis, snapshot=snapshot, metric=name, view=view, breakout=breakout
+                    experiment, snapshot=snapshot, metric=name, view=view, breakout=breakout
                 )
                 want, got = _rows(expected), _rows(captured)
                 assert len(got) == len(want) > 0

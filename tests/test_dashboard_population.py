@@ -9,7 +9,7 @@ from pathlib import Path
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, run
 from increment.artifacts import SourceSnapshotEvidence
 from increment.dashboard import (
     DashboardConfig,
@@ -22,6 +22,7 @@ from increment.dashboard import (
 from increment.dashboard._app import build_payload, document
 from increment.dashboard._data import decision_rows, estimate_for_metric, row_for_metric
 from increment.errors import InvalidRequestError
+from increment.workflows import capture_sequential
 from tests.test_analysis_trigger import _events, _write_defs
 from tests.test_compatibility_js import _node_gate, _resolve_node, _running_in_ci
 
@@ -61,10 +62,10 @@ def _triggered_dashboard(
         ]
         events = events.take(pa.array(retained))
     con.create_table("events", obj=events)
-    return Analysis.from_definitions(
-        "exp",
+    return from_definitions(
         definitions,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
@@ -81,7 +82,7 @@ def _assigned_dashboard(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=40, trigger_rate=0.5, effect=0.8))
-    return Analysis.from_definitions("exp", definitions, con)
+    return from_definitions(definitions, con, experiment_name="exp")
 
 
 def _assert_dashboard_population_dom_behavior(tmp_path, payload):
@@ -114,10 +115,11 @@ def _assert_dashboard_population_dom_behavior(tmp_path, payload):
 
 @pytest.mark.slow
 def test_dashboard_snapshot_retains_population_specific_headline_and_group_evidence(tmp_path):
-    analysis = _triggered_dashboard(tmp_path)
+    experiment, resolver = _triggered_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         assert {row.analysis_population for row in snapshot.estimates} == {"triggered"}
@@ -159,7 +161,7 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
                 for family in json.loads(row["retained_family"])
             }
         assert retained_family_names["assigned"] == retained_family_names["triggered"]
-        payload = build_payload(analysis, snapshot=snapshot)
+        payload = build_payload(experiment, snapshot=snapshot)
         assert payload["defaultPopulation"] == "triggered"
         assert payload["populationOptions"] == ["assigned", "triggered"]
         assert payload["populationViews"]["triggered"]["population"] == "triggered"
@@ -171,7 +173,7 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
         _assert_dashboard_population_dom_behavior(tmp_path, payload)
         for population in ("assigned", "triggered"):
             trajectory = load_explore(
-                analysis,
+                experiment,
                 snapshot=snapshot,
                 metric="revenue",
                 view="cumulative_lift",
@@ -180,36 +182,38 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
             assert trajectory
             assert {row.analysis_population for row in trajectory} == {population}
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_dashboard_without_trigger_is_assigned_only(tmp_path):
-    analysis = _assigned_dashboard(tmp_path)
+    experiment, resolver = _assigned_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
-        payload = build_payload(analysis, snapshot=snapshot)
+        payload = build_payload(experiment, snapshot=snapshot)
         assert {row.analysis_population for row in snapshot.estimates} == {"assigned"}
         assert set(snapshot.population_estimates) == {"assigned"}
         assert payload["defaultPopulation"] == "assigned"
         assert payload["populationOptions"] == ["assigned"]
         assert set(payload["populationViews"]) == {"assigned"}
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
 def test_triggered_explore_retains_triggered_daily_series(tmp_path):
-    analysis = _triggered_dashboard(tmp_path)
+    experiment, resolver = _triggered_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
-        payload = build_payload(analysis, snapshot=snapshot)
+        payload = build_payload(experiment, snapshot=snapshot)
         triggered = payload["populationViews"]["triggered"]["explore"]["overall"]["revenue"][
             "daily_values"
         ]
@@ -223,16 +227,17 @@ def test_triggered_explore_retains_triggered_daily_series(tmp_path):
             "triggered"
         }
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 @pytest.mark.slow
 def test_overview_exploratory_rows_stay_in_their_population_family(tmp_path):
-    analysis = _triggered_dashboard(tmp_path, extra_metric=True)
+    experiment, resolver = _triggered_dashboard(tmp_path, extra_metric=True)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         assert any(metric.name == "trigger_conversion" for metric in snapshot.offered_metrics)
@@ -241,15 +246,16 @@ def test_overview_exploratory_rows_stay_in_their_population_family(tmp_path):
             assert overview.exploratory
             assert {row.analysis_population for row in overview.exploratory} == {population}
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
 def test_standalone_population_sections_use_one_population(tmp_path):
-    analysis = _triggered_dashboard(tmp_path)
+    experiment, resolver = _triggered_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         triggered_header = render_header(snapshot).text
@@ -272,7 +278,7 @@ def test_standalone_population_sections_use_one_population(tmp_path):
         assert ">18</td>" in health
         assert ">22</td>" in health
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -280,10 +286,11 @@ def test_triggered_health_uses_triggered_balance_result(tmp_path):
     import dataclasses
     import re
 
-    analysis = _triggered_dashboard(tmp_path)
+    experiment, resolver = _triggered_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         assert snapshot.allocation is not None and not snapshot.allocation.is_srm
@@ -319,7 +326,7 @@ def test_triggered_health_uses_triggered_balance_result(tmp_path):
         assert ">18</td>" in html
         assert ">22</td>" in html
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -327,10 +334,11 @@ def test_triggered_health_uses_triggered_balance_result(tmp_path):
 def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_path):
     import dataclasses
 
-    analysis = _triggered_dashboard(tmp_path)
+    experiment, resolver = _triggered_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         assert snapshot.triggered_allocation_history
@@ -346,18 +354,26 @@ def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_pa
             )
         assert caught.value.code == "dashboard.invalid_snapshot"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp_path):
-    from increment.estimation.readout_types import ReadoutResults
+    from dataclasses import replace
 
-    analysis = _triggered_dashboard(tmp_path, sequential=True)
+    from increment.breakout.estimates import LiftEstimates
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.kernel.contracts import Scope
+
+    experiment, resolver = _triggered_dashboard(tmp_path, sequential=True)
     try:
-        captured = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        captured = capture_sequential(
+            experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 15)
+        )
         assert captured.triggered is not None
-        results = analysis.run(population="triggered")
+        triggered = Scope(view="run", grain="total", population="triggered")
+        results = run(replace(experiment, scopes=(triggered,)), resolver).readout(triggered)
+        assert isinstance(results, LiftEstimates)
         assert results
         assert {result.analysis_population for result in results} == {"triggered"}
         assert {result.failure_code for result in results} == {None}
@@ -375,7 +391,8 @@ def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp
         assert restored.sequential_snapshot == captured
         assert {row.analysis_population for row in restored} == {"triggered"}
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         triggered_row = row_for_metric(snapshot, "revenue", population="triggered")
@@ -386,18 +403,19 @@ def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp
         assert "readout.cell.unsupported_request" not in details
         assert "triggered" in details
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
 def test_triggered_sequential_qualification_uses_selected_population(tmp_path):
     from increment.dashboard._format import allocation_evidence
 
-    analysis = _triggered_dashboard(tmp_path, sequential=True)
+    experiment, resolver = _triggered_dashboard(tmp_path, sequential=True)
     try:
-        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 15))
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         assert snapshot.allocation is not None
@@ -413,23 +431,26 @@ def test_triggered_sequential_qualification_uses_selected_population(tmp_path):
         assert triggered_evidence in triggered
         assert "Dashboard allocation check (assigned" not in triggered
 
-        payload = build_payload(analysis, snapshot=snapshot)
+        payload = build_payload(experiment, snapshot=snapshot)
         assigned_payload = payload["populationViews"]["assigned"]["qualifications"]
         triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
         assert assigned_evidence in assigned_payload
         assert triggered_evidence in triggered_payload
         assert "Dashboard allocation check (assigned" not in triggered_payload
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
 def test_triggered_sequential_view_retains_failed_assigned_integrity(tmp_path):
-    analysis = _triggered_dashboard(tmp_path, sequential=True, fail_assigned_integrity=True)
+    experiment, resolver = _triggered_dashboard(
+        tmp_path, sequential=True, fail_assigned_integrity=True
+    )
     try:
-        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 15))
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         assert snapshot.readout_collection is not None
@@ -446,22 +467,25 @@ def test_triggered_sequential_view_retains_failed_assigned_integrity(tmp_path):
         triggered_header = render_header(snapshot, population="triggered").text
         assert expected in triggered_header
         assert "Analysis assignment check (assigned population): unknown" not in triggered_header
-        payload = build_payload(analysis, snapshot=snapshot)
+        payload = build_payload(experiment, snapshot=snapshot)
         triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
         assert expected in triggered_payload
         assert expected in document(payload)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
 def test_triggered_sequential_group_data_decodes_the_triggered_checkpoint(tmp_path):
-    analysis = _triggered_dashboard(tmp_path, sequential=True)
+    experiment, resolver = _triggered_dashboard(tmp_path, sequential=True)
     try:
-        captured = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        captured = capture_sequential(
+            experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 15)
+        )
         assert captured.triggered is not None
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         by_population = {
@@ -481,4 +505,4 @@ def test_triggered_sequential_group_data_decodes_the_triggered_checkpoint(tmp_pa
         assert captured.triggered.prefix_id != captured.prefix_id
         assert captured.triggered.assignment_counts != captured.assignment_counts
     finally:
-        analysis.close()
+        resolver.close()

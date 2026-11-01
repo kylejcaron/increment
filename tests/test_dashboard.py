@@ -224,14 +224,13 @@ def _arm_rows(
     return rows
 
 
-def _shared_snapshot(request: pytest.FixtureRequest, key: str, experiment: str):
+def _shared_snapshot(request: pytest.FixtureRequest, key: str, experiment_name: str):
     """Build or load a source-versioned prepared snapshot from the repo cache."""
     from tests._shared_cache import fixture_cache_key, get_or_build
 
     def build():
         connection = request.getfixturevalue("dashboard_con")
         definitions = request.getfixturevalue("dashboard_definitions")
-        analysis = _analysis(connection, definitions, experiment)
         if key == "storefront":
             config = DashboardConfig(
                 expected_allocation={"control": 0.5, "treatment": 0.5},
@@ -243,7 +242,9 @@ def _shared_snapshot(request: pytest.FixtureRequest, key: str, experiment: str):
                 title="Pricing copy rewrite",
                 provenance={"Fixture": "in-memory"},
             )
-        return prepare_dashboard(analysis, config=config)
+        experiment, resolver = _bind(connection, definitions, experiment_name)
+        with resolver:
+            return prepare_dashboard(experiment, resolver, config=config)
 
     if os.environ.get("INCREMENT_DISABLE_FIXTURE_CACHE") == "1":
         return build()
@@ -344,10 +345,17 @@ def dashboard_con():
     return con
 
 
-def _analysis(con, definitions: str, experiment: str):
-    from increment import Analysis
+def _bind(con, definitions: str | Path, experiment: str):
+    from increment import from_definitions
 
-    return Analysis.from_definitions(experiment, definitions, con)
+    return from_definitions(definitions, con, experiment_name=experiment)
+
+
+def _experiment(con, definitions: str | Path, experiment: str):
+    """The declaration alone; snapshot consumers never read through a resolver."""
+    declared, resolver = _bind(con, definitions, experiment)
+    resolver.close()
+    return declared
 
 
 @pytest.fixture(scope="session")
@@ -362,33 +370,40 @@ def pricing(request: pytest.FixtureRequest) -> DashboardSnapshot:
 
 @pytest.mark.slow
 @pytest.mark.parametrize("law", ["bernoulli", "scalar_mean"])
-def test_preparation_preserves_registered_sequential_decisions(law):
-    from tests.test_sequential_public_sources import _native_fixture
+def test_preparation_preserves_registered_sequential_decisions(law, tmp_path):
+    from increment import run
+    from increment.estimation.results import LiftEstimate
+    from increment.workflows import capture_sequential
+    from tests.test_sequential_public_sources import _native_pair
 
-    connection, _, analysis = _native_fixture(law)
+    connection, _, experiment, resolver = _native_pair(tmp_path, law)
     try:
-        analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 16))
-        expected = analysis.run()[0]
+        capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2025, 1, 16))
+        expected = run(experiment, resolver).readout()[0]
+        assert isinstance(expected, LiftEstimate)
         snapshot = prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5}),
         )
         observed = snapshot.estimates[0]
         assert observed.stat_sig() is True
         assert observed.require_sequential_result() == expected.require_sequential_result()
     finally:
-        analysis.close()
+        resolver.close()
         connection.disconnect()
 
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_preparation_pins_allocation_history_and_estimates_without_rebinding_caller(
+def test_preparation_reads_every_section_from_one_pin_and_leaves_the_caller_live(
     dashboard_con, dashboard_definitions, pricing, monkeypatch
 ):
+    import contextlib
+
     import ibis
 
-    from increment import Analysis
-    from increment.estimation.diagnostics import SRMResult
+    from tests.analysis_factory import bound_source
 
     con = ibis.duckdb.connect()
     try:
@@ -398,68 +413,52 @@ def test_preparation_pins_allocation_history_and_estimates_without_rebinding_cal
             dashboard_con.table("event_log", database="analytics").to_pyarrow(),
             database="analytics",
         )
-        analysis = _analysis(con, dashboard_definitions, "pricing_copy")
-        original_srm = Analysis.srm
+        experiment, resolver = _bind(con, dashboard_definitions, "pricing_copy")
+        source = bound_source(resolver)
+        pin = source.readout_snapshot
 
-        def mutate_after_allocation(pinned, **kwargs):
-            allocation = original_srm(pinned, **kwargs)
-            con.raw_sql(
-                "INSERT INTO analytics.event_log "
-                "SELECT event_at, user_id || '_new', event, experiment_id, group_id, "
-                "revenue, duration_s, country_code FROM analytics.event_log "
-                "WHERE experiment_id = 'pricing_copy' AND group_id = 'candidate'"
-            )
-            live = original_srm(analysis, **kwargs)
-            assert isinstance(live, SRMResult)
-            assert live.observed == {"baseline": 700, "candidate": 600}
-            return allocation
+        @contextlib.contextmanager
+        def double_the_candidates_once_pinned(**options):
+            with pin(**options) as pinned:
+                con.raw_sql(
+                    "INSERT INTO analytics.event_log "
+                    "SELECT event_at, user_id || '_new', event, experiment_id, group_id, "
+                    "revenue, duration_s, country_code FROM analytics.event_log "
+                    "WHERE experiment_id = 'pricing_copy' AND group_id = 'candidate'"
+                )
+                yield pinned
 
         with monkeypatch.context() as patch:
-            patch.setattr(Analysis, "srm", mutate_after_allocation)
-            snapshot = prepare_dashboard(analysis, config=pricing.config)
+            patch.setattr(source, "readout_snapshot", double_the_candidates_once_pinned)
+            snapshot = prepare_dashboard(experiment, resolver, config=pricing.config)
 
+        pinned_counts = {"baseline": 700, "candidate": 300}
         assert snapshot.allocation is not None
-        assert snapshot.allocation.observed == {"baseline": 700, "candidate": 300}
+        assert snapshot.allocation.observed == pinned_counts
         final_counts = {row["group_id"]: row["n_cumulative"] for row in snapshot.allocation_history}
-        assert final_counts == snapshot.allocation.observed
+        assert final_counts == pinned_counts
+        assert snapshot.health is not None
+        (allocation_check,) = (
+            check for check in snapshot.health.checks if check.check == "assigned_allocation"
+        )
+        assert allocation_check.srm is not None
+        assert allocation_check.srm.observed == pinned_counts
+        assert {row.group_id: row.assigned_units for row in snapshot.group_data} == pinned_counts
         for field in ("lift", "lower", "higher"):
             assert snapshot.readout_rows[0][field] == pytest.approx(pricing.readout_rows[0][field])
-        fresh = prepare_dashboard(analysis, config=pricing.config)
+        fresh = prepare_dashboard(experiment, resolver, config=pricing.config)
         assert fresh.allocation is not None
         assert fresh.allocation.observed == {"baseline": 700, "candidate": 600}
         assert fresh.readout_rows[0]["lower"] != snapshot.readout_rows[0]["lower"]
+        resolver.close()
     finally:
         con.disconnect()
 
 
 @pytest.mark.slow
-def test_dashboard_preparation_calls_public_health_method(
-    dashboard_con, dashboard_definitions, pricing, monkeypatch
-):
-    from increment import Analysis
-
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
-    original_health_check = Analysis.health_check
-    observed_analyses = []
-
-    def record_health_check(pinned, **kwargs):
-        observed_analyses.append(pinned)
-        return original_health_check(pinned, **kwargs)
-
-    monkeypatch.setattr(Analysis, "health_check", record_health_check)
-    try:
-        prepare_dashboard(analysis, config=pricing.config)
-    finally:
-        analysis.close()
-
-    assert len(observed_analyses) == 1
-    assert observed_analyses[0] is not analysis
-
-
-@pytest.mark.slow
 @pytest.mark.parametrize("change", ["control", "window", "policy", "breakouts"])
 def test_explore_rejects_same_name_binding_changes_before_query(
-    dashboard_con, dashboard_definitions, pricing, tmp_path, monkeypatch, change
+    dashboard_con, dashboard_definitions, pricing, tmp_path, change
 ):
     import shutil
 
@@ -469,13 +468,13 @@ def test_explore_rejects_same_name_binding_changes_before_query(
     shutil.copytree(dashboard_definitions, definitions)
     experiments_path = definitions / "experiments.yaml"
     experiments = yaml.safe_load(experiments_path.read_text())
-    experiment = next(item for item in experiments["experiments"] if item["name"] == "pricing_copy")
+    declared = next(item for item in experiments["experiments"] if item["name"] == "pricing_copy")
     if change == "control":
-        experiment["control_group"] = "candidate"
+        declared["control_group"] = "candidate"
     elif change == "policy":
-        experiment["plan"]["alpha"] = 0.01
+        declared["plan"]["alpha"] = 0.01
     elif change == "breakouts":
-        experiment["breakouts"] = [{"property": "country", "source": "event_log"}]
+        declared["breakouts"] = [{"property": "country", "source": "event_log"}]
     else:
         metrics_path = definitions / "metrics.yaml"
         metrics = yaml.safe_load(metrics_path.read_text())
@@ -483,15 +482,30 @@ def test_explore_rejects_same_name_binding_changes_before_query(
         metric["window_days"] = 15
         metrics_path.write_text(yaml.safe_dump(metrics))
     experiments_path.write_text(yaml.safe_dump(experiments))
-    analysis = _analysis(dashboard_con, str(definitions), "pricing_copy")
-
-    def unexpected_query(**kwargs):
-        pytest.fail("queried a source with a different dashboard binding")
-
-    monkeypatch.setattr(analysis, "run_daily", unexpected_query)
+    experiment = _experiment(dashboard_con, definitions, "pricing_copy")
     with pytest.raises(InvalidRequestError) as error:
-        load_explore(analysis, snapshot=pricing, metric="purchase_rate", view="daily_values")
+        load_explore(experiment, snapshot=pricing, metric="purchase_rate", view="daily_values")
     assert error.value.code == "dashboard.invalid_view"
+
+
+@pytest.mark.slow
+def test_explore_accepts_an_edit_to_a_saved_metric_the_experiment_does_not_declare(
+    dashboard_con, dashboard_definitions, pricing, tmp_path
+):
+    import shutil
+
+    import yaml
+
+    definitions = tmp_path / "definitions"
+    shutil.copytree(dashboard_definitions, definitions)
+    metrics_path = definitions / "metrics.yaml"
+    metrics = yaml.safe_load(metrics_path.read_text())
+    other = next(item for item in metrics["metrics"] if item["name"] == "session_seconds")
+    other["window_days"] = 3
+    metrics_path.write_text(yaml.safe_dump(metrics))
+    experiment = _experiment(dashboard_con, definitions, "pricing_copy")
+    loaded = load_explore(experiment, snapshot=pricing, metric="purchase_rate", view="daily_values")
+    assert {row.metric for row in loaded} == {"purchase_rate"}
 
 
 # Binding: the same calls serve two differently shaped experiments.
@@ -534,21 +548,20 @@ def test_allocation_check_uses_configured_shares(pricing: DashboardSnapshot) -> 
 def test_dashboard_readout_normalizes_relative_allocation_weights(
     dashboard_con, dashboard_definitions
 ) -> None:
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
-    try:
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "pricing_copy")
+    with resolver:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1}),
         )
-        assert snapshot.allocation is not None
-        assert snapshot.allocation.expected == {"baseline": 0.5, "candidate": 0.5}
-        text = render_header(snapshot).text
-        assert "baseline 50%" in text
-        assert "candidate 50%" in text
-        assert "baseline 100%" not in text
-        assert "candidate 100%" not in text
-    finally:
-        analysis.close()
+    assert snapshot.allocation is not None
+    assert snapshot.allocation.expected == {"baseline": 0.5, "candidate": 0.5}
+    text = render_header(snapshot).text
+    assert "baseline 50%" in text
+    assert "candidate 50%" in text
+    assert "baseline 100%" not in text
+    assert "candidate 100%" not in text
 
 
 @pytest.mark.slow
@@ -651,25 +664,24 @@ def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_alloc
 def test_health_lists_every_triggered_check(tmp_path) -> None:
     from tests.test_dashboard_population import _triggered_dashboard
 
-    analysis = _triggered_dashboard(tmp_path)
-    try:
+    experiment, resolver = _triggered_dashboard(tmp_path)
+    with resolver:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
-        html = render_health(snapshot).text
-        health = snapshot.health
-        assert health is not None
-        triggered_checks = [
-            check
-            for check in health.checks
-            if check.analysis_population == "triggered" and check.availability != "not_applicable"
-        ]
-        assert triggered_checks
-        for check in triggered_checks:
-            assert check.check.replace("_", " ").title() in html
-    finally:
-        analysis.close()
+    html = render_health(snapshot).text
+    health = snapshot.health
+    assert health is not None
+    triggered_checks = [
+        check
+        for check in health.checks
+        if check.analysis_population == "triggered" and check.availability != "not_applicable"
+    ]
+    assert triggered_checks
+    for check in triggered_checks:
+        assert check.check.replace("_", " ").title() in html
 
 
 def test_health_renderer_consumes_restored_health_report(
@@ -991,9 +1003,10 @@ def test_mutating_caller_allocation_cannot_change_a_prepared_result(
     dashboard_con, dashboard_definitions
 ) -> None:
     allocation = {"baseline": 0.7, "candidate": 0.3}
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "pricing_copy")
     config = DashboardConfig(expected_allocation=allocation)
-    snapshot = prepare_dashboard(analysis, config=config)
+    with resolver:
+        snapshot = prepare_dashboard(experiment, resolver, config=config)
 
     allocation["baseline"] = 0.2
     allocation["candidate"] = 0.8
@@ -1034,10 +1047,10 @@ def test_configuration_refuses_a_blank_title() -> None:
 def test_preparation_refuses_allocation_without_the_control_arm(
     dashboard_con, dashboard_definitions
 ) -> None:
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "pricing_copy")
     config = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
-    with pytest.raises(InvalidRequestError) as caught:
-        prepare_dashboard(analysis, config=config)
+    with resolver, pytest.raises(InvalidRequestError) as caught:
+        prepare_dashboard(experiment, resolver, config=config)
     assert caught.value.code == "dashboard.invalid_config"
     assert caught.value.context["control"] == "baseline"
 
@@ -1046,10 +1059,10 @@ def test_preparation_surfaces_an_arm_label_absent_from_the_data(
     dashboard_con, dashboard_definitions
 ) -> None:
     """An unusable request keeps the source's own code, not a health badge."""
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "pricing_copy")
     config = DashboardConfig(expected_allocation={"baseline": 0.7, "challenger": 0.3})
-    with pytest.raises(InvalidRequestError) as caught:
-        prepare_dashboard(analysis, config=config)
+    with resolver, pytest.raises(InvalidRequestError) as caught:
+        prepare_dashboard(experiment, resolver, config=config)
     assert caught.value.code == "estimation.diagnostics.expected_keys_do"
     assert "candidate" in caught.value.context["counts_keys"]  # ty: ignore[unsupported-operator]
 
@@ -1057,10 +1070,10 @@ def test_preparation_surfaces_an_arm_label_absent_from_the_data(
 def test_preparation_refuses_more_than_one_declared_primary(
     dashboard_con, dashboard_definitions
 ) -> None:
-    analysis = _analysis(dashboard_con, dashboard_definitions, "dual_primary")
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "dual_primary")
     config = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
-    with pytest.raises(CapabilityError) as caught:
-        prepare_dashboard(analysis, config=config)
+    with resolver, pytest.raises(CapabilityError) as caught:
+        prepare_dashboard(experiment, resolver, config=config)
     assert caught.value.code == "dashboard.unsupported_experiment"
     assert caught.value.context["primaries"] == ("checkout_conversion", "revenue_per_user")
 
@@ -1295,32 +1308,32 @@ def test_the_second_experiment_uses_the_same_result_sections(
 
 
 @backend_fixture()
-def storefront_analysis(dashboard_con, dashboard_definitions):
-    return _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+def storefront_experiment(dashboard_con, dashboard_definitions):
+    return _experiment(dashboard_con, dashboard_definitions, "storefront_refresh")
 
 
 @backend_fixture()
-def pricing_analysis(dashboard_con, dashboard_definitions):
-    return _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+def pricing_experiment(dashboard_con, dashboard_definitions):
+    return _experiment(dashboard_con, dashboard_definitions, "pricing_copy")
 
 
 def test_load_explore_refuses_an_undeclared_metric(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis, snapshot=storefront, metric="not_a_metric", view="daily_values"
+            storefront_experiment, snapshot=storefront, metric="not_a_metric", view="daily_values"
         )
     assert caught.value.code == "dashboard.invalid_view"
     assert caught.value.context["metric"] == "not_a_metric"
 
 
 def test_load_explore_refuses_an_unknown_view(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis,
+            storefront_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="not_a_view",  # ty: ignore[invalid-argument-type]
@@ -1329,12 +1342,12 @@ def test_load_explore_refuses_an_unknown_view(
 
 
 def test_load_explore_refuses_daily_values_with_a_cumulative_maturity_flag(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     """Daily values are disjoint slices; a cumulative maturity flag cannot be honoured."""
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis,
+            storefront_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="daily_values",
@@ -1345,11 +1358,11 @@ def test_load_explore_refuses_daily_values_with_a_cumulative_maturity_flag(
 
 
 def test_segment_view_refuses_a_cumulative_maturity_flag(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis,
+            storefront_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="segments",
@@ -1362,9 +1375,9 @@ def test_segment_view_refuses_a_cumulative_maturity_flag(
 
 @pytest.mark.parametrize("view", ["cumulative_lift", "daily_values", "cumulative_values"])
 def test_all_temporal_views_render_every_declared_metric_in_one_table(
-    storefront_analysis, storefront: DashboardSnapshot, view: ExploreView
+    storefront_experiment, storefront: DashboardSnapshot, view: ExploreView
 ) -> None:
-    data = load_explore(storefront_analysis, snapshot=storefront, metric=None, view=view)
+    data = load_explore(storefront_experiment, snapshot=storefront, metric=None, view=view)
     expected = {metric.name for metric in storefront.metrics}
     assert {row.metric for row in data} == expected
     html = render_explore(storefront, data, metric=None, view=view).text
@@ -1373,12 +1386,14 @@ def test_all_temporal_views_render_every_declared_metric_in_one_table(
 
 
 def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
-    storefront_analysis,
+    storefront_experiment,
     storefront: DashboardSnapshot,
 ) -> None:
     from increment.breakout.estimates import DailyMetricValues
 
-    data = load_explore(storefront_analysis, snapshot=storefront, metric=None, view="daily_values")
+    data = load_explore(
+        storefront_experiment, snapshot=storefront, metric=None, view="daily_values"
+    )
     assert isinstance(data, DailyMetricValues)
     mixed = DailyMetricValues(
         row.model_copy(update={"ds_basis": "cohort"})
@@ -1392,12 +1407,12 @@ def test_all_metric_daily_table_keeps_cohort_and_calendar_rows_distinct(
 
 
 def test_load_explore_refuses_a_snapshot_and_source_describing_different_experiments(
-    pricing_analysis, storefront: DashboardSnapshot
+    pricing_experiment, storefront: DashboardSnapshot
 ) -> None:
     """A mismatched pair must not silently render the other binding's stale data."""
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            pricing_analysis,
+            pricing_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="daily_values",
@@ -1409,22 +1424,25 @@ def test_load_explore_refuses_a_snapshot_and_source_describing_different_experim
 
 
 def test_load_explore_segments_need_an_explicit_choice_when_breakouts_are_declared(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis, snapshot=storefront, metric="checkout_conversion", view="segments"
+            storefront_experiment,
+            snapshot=storefront,
+            metric="checkout_conversion",
+            view="segments",
         )
     assert caught.value.code == "dashboard.invalid_view"
     assert caught.value.context["declared"] == (("event_log", "country"),)
 
 
 def test_load_explore_segments_refuse_an_undeclared_breakout(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis,
+            storefront_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="segments",
@@ -1434,17 +1452,12 @@ def test_load_explore_segments_refuse_an_undeclared_breakout(
     assert caught.value.context["requested"] == ("event_log", "plan")
 
 
-def test_load_explore_segments_with_no_declared_breakouts_return_empty_and_issue_no_query(
-    pricing_analysis, pricing: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+def test_load_explore_segments_with_no_declared_breakouts_return_empty(
+    pricing_experiment, pricing: DashboardSnapshot
 ) -> None:
     """A truthful empty state, not a query the experiment never declared."""
-
-    def _fail(**_: Any) -> Any:
-        raise AssertionError("no-breakout experiments must not issue a breakout query")
-
-    monkeypatch.setattr(pricing_analysis, "run_breakout", _fail)
     result = load_explore(
-        pricing_analysis, snapshot=pricing, metric="purchase_rate", view="segments"
+        pricing_experiment, snapshot=pricing, metric="purchase_rate", view="segments"
     )
     assert list(result) == []
 
@@ -1560,20 +1573,27 @@ def test_dashboard_tables_neutralize_dangerous_label_links(
 
 
 def test_load_explore_segments_filter_by_dimension_source_and_method_without_leaking_rows(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     """A row from another dimension, source, or method role must never leak in."""
     from increment._source_operations import DashboardExploreCapture
     from increment.breakout.estimates import BreakoutEstimates
 
-    wanted = storefront_analysis.run_breakout(metrics=["checkout_conversion"])
+    choice = ("event_log", "country")
+    wanted = load_explore(
+        storefront_experiment,
+        snapshot=storefront,
+        metric="checkout_conversion",
+        view="segments",
+        breakout=choice,
+    )
     assert len(wanted) == 2
     decoys = [
         wanted[0].model_copy(update={"dimension": "plan", "dimension_value": "free"}),
         wanted[0].model_copy(update={"method_role": "component"}),
         wanted[0].model_copy(update={"source": "other_source"}),
     ]
-    key = ("assigned", "segments", "checkout_conversion", False, ("event_log", "country"))
+    key = ("assigned", "segments", "checkout_conversion", False, choice)
     captured = dataclasses.replace(
         storefront,
         explore={
@@ -1584,11 +1604,11 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
         },
     )
     filtered = load_explore(
-        storefront_analysis,
+        storefront_experiment,
         snapshot=captured,
         metric="checkout_conversion",
         view="segments",
-        breakout=("event_log", "country"),
+        breakout=choice,
     )
     assert isinstance(filtered, BreakoutEstimates)
     assert len(filtered) == 2
@@ -1598,13 +1618,13 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
 
 
 def test_load_explore_segments_with_no_metric_returns_every_declared_metric(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     """``metric=None`` covers every declared metric via one real breakout call."""
     from increment.breakout.estimates import BreakoutEstimates
 
     result = load_explore(
-        storefront_analysis,
+        storefront_experiment,
         snapshot=storefront,
         metric=None,
         view="segments",
@@ -1623,10 +1643,13 @@ def test_load_explore_segments_with_no_metric_returns_every_declared_metric(
 
 
 def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     data = load_explore(
-        storefront_analysis, snapshot=storefront, metric="checkout_conversion", view="daily_values"
+        storefront_experiment,
+        snapshot=storefront,
+        metric="checkout_conversion",
+        view="daily_values",
     )
     frame: Any = data.to_frame(backend="pandas")
     assert set(frame["ds_basis"].dropna()) == {"calendar"}
@@ -1833,18 +1856,28 @@ def _fingerprint(rows) -> list[tuple[Any, ...]]:
     ],
 )
 def test_declared_breakout_temporal_views_are_the_engine_segment_trajectories(
-    storefront_analysis, storefront: DashboardSnapshot, view: ExploreView, engine: str, kwargs: dict
+    dashboard_con,
+    dashboard_definitions,
+    storefront: DashboardSnapshot,
+    view: ExploreView,
+    engine: str,
+    kwargs: dict,
 ) -> None:
+    from tests.analysis_factory import bound_analysis
+
     metric = "checkout_conversion"
-    segmented = load_explore(
-        storefront_analysis,
-        snapshot=storefront,
-        metric=metric,
-        view=view,
-        breakout=COUNTRY,
-        **kwargs,
-    )
-    direct = getattr(storefront_analysis, engine)(metrics=[metric], dimension="country", **kwargs)
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "storefront_refresh")
+    with resolver:
+        segmented = load_explore(
+            experiment,
+            snapshot=storefront,
+            metric=metric,
+            view=view,
+            breakout=COUNTRY,
+            **kwargs,
+        )
+        live = bound_analysis(resolver)
+        direct = getattr(live, engine)(metrics=[metric], dimension="country", **kwargs)
     assert segmented, "a declared breakout must produce a segment trajectory"
     actual, expected = _fingerprint(segmented), _fingerprint(direct)
     assert len(actual) == len(expected)
@@ -1856,19 +1889,17 @@ def test_declared_breakout_temporal_views_are_the_engine_segment_trajectories(
             assert actual_row[3] == pytest.approx(expected_row[3])
     assert {row.dimension_value for row in segmented} == {"US", "CA"}
     assert {(row.dimension, row.source) for row in segmented} == {("country", "event_log")}
-    whole = load_explore(
-        storefront_analysis, snapshot=storefront, metric=metric, view=view, **kwargs
-    )
+    whole = load_explore(experiment, snapshot=storefront, metric=metric, view=view, **kwargs)
     assert {row.dimension for row in whole} == {None}
     assert _fingerprint(whole) != _fingerprint(segmented)
 
 
 def test_completed_windows_gate_changes_the_segment_absolute_series(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     def load(*, complete: bool):
         return load_explore(
-            storefront_analysis,
+            storefront_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="cumulative_values",
@@ -1881,16 +1912,12 @@ def test_completed_windows_gate_changes_the_segment_absolute_series(
     assert not any(row.value is None for row in mature)
 
 
-def test_temporal_breakouts_refuse_an_undeclared_dimension_before_any_query(
-    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+def test_temporal_breakouts_refuse_an_undeclared_dimension(
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
-    def _fail(**_: Any) -> Any:
-        raise AssertionError("an undeclared breakout must not reach the engine")
-
-    monkeypatch.setattr(storefront_analysis, "run_asof_lift", _fail)
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
-            storefront_analysis,
+            storefront_experiment,
             snapshot=storefront,
             metric="checkout_conversion",
             view="cumulative_lift",
@@ -1904,8 +1931,10 @@ def test_temporal_breakouts_refuse_an_undeclared_dimension_before_any_query(
 def storefront_payload(storefront: DashboardSnapshot, dashboard_con, dashboard_definitions):
     from increment.dashboard._app import build_payload
 
-    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
-    return build_payload(analysis, snapshot=storefront)
+    return build_payload(
+        _experiment(dashboard_con, dashboard_definitions, "storefront_refresh"),
+        snapshot=storefront,
+    )
 
 
 @pytest.mark.slow
@@ -1915,8 +1944,10 @@ def test_exploring_never_changes_the_confirmatory_snapshot(
     from increment.dashboard._app import build_payload
 
     before = (storefront.estimates, storefront.readout_rows, readout_csv(storefront))
-    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
-    build_payload(analysis, snapshot=storefront)
+    build_payload(
+        _experiment(dashboard_con, dashboard_definitions, "storefront_refresh"),
+        snapshot=storefront,
+    )
     after = (storefront.estimates, storefront.readout_rows, readout_csv(storefront))
     assert after == before
 
@@ -1947,33 +1978,45 @@ def test_health_status_is_qualified_and_never_a_ship_recommendation(
     assert healthy["kind"] == "healthy"
 
 
+def _copied_definitions(tmp_path: Path, definitions: str, name: str, change: Any) -> Path:
+    """The shared definitions with one experiment's declaration changed by ``change``."""
+    import shutil
+
+    import yaml
+
+    copied = tmp_path / "definitions"
+    shutil.copytree(definitions, copied)
+    path = copied / "experiments.yaml"
+    document = yaml.safe_load(path.read_text())
+    change(next(item for item in document["experiments"] if item["name"] == name))
+    path.write_text(yaml.safe_dump(document))
+    return copied
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_an_engine_refusal_is_visible_for_its_own_state_only(
-    dashboard_con, dashboard_definitions, monkeypatch
+    dashboard_con, dashboard_definitions, tmp_path
 ) -> None:
     from increment.dashboard._app import build_payload
 
-    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
-    real = type(analysis).run_asof_lift
+    def segmented_bh(declared: dict[str, Any]) -> None:
+        declared["plan"]["view_multiplicity"] = {"correction": "bh"}
 
-    def refuse_segments(self, **kwargs: Any) -> Any:
-        if kwargs.get("dimension") is not None:
-            raise CapabilityError(
-                "segmented history needs retained states",
-                code="test.segmented_history",
-                context={},
-            )
-        return real(self, **kwargs)
-
-    monkeypatch.setattr(type(analysis), "run_asof_lift", refuse_segments)
-    captured = prepare_dashboard(
-        analysis, config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+    definitions = _copied_definitions(
+        tmp_path, dashboard_definitions, "storefront_refresh", segmented_bh
     )
-    payload = build_payload(analysis, snapshot=captured)
+    experiment, resolver = _bind(dashboard_con, definitions, "storefront_refresh")
+    with resolver:
+        captured = prepare_dashboard(
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5}),
+        )
+    payload = build_payload(experiment, snapshot=captured)
     refused = payload["explore"]["country"]["checkout_conversion"]["cumulative_lift"]
     assert refused["pointCount"] == 0
-    assert "test.segmented_history" in refused["html"]
+    assert "facade.analysis.bh_segmented_asof" in refused["html"]
     assert payload["explore"]["overall"]["checkout_conversion"]["cumulative_lift"]["pointCount"] > 0
     assert (
         payload["explore"]["country"]["checkout_conversion"]["cumulative_values"]["pointCount"] > 0
@@ -1983,33 +2026,34 @@ def test_an_engine_refusal_is_visible_for_its_own_state_only(
 @pytest.mark.integration
 @pytest.mark.slow
 def test_health_renders_not_applicable_allocation_as_not_checked(
-    dashboard_con, dashboard_definitions, monkeypatch: pytest.MonkeyPatch
+    dashboard_con, dashboard_definitions, tmp_path
 ) -> None:
-    from increment import Analysis
-    from increment.estimation.diagnostics import NotApplicable
-
-    def not_applicable(_self, **_kwargs: Any) -> NotApplicable:
-        return NotApplicable(
-            check="srm",
-            reason="integrity.allocation_scheme_missing: independent assignment was not declared",
-        )
-
-    monkeypatch.setattr(Analysis, "srm", not_applicable)
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
-    snapshot = prepare_dashboard(
-        analysis, config=DashboardConfig(expected_allocation={"baseline": 0.7, "candidate": 0.3})
-    )
-
     from increment.dashboard._app import health_status
+
+    def undeclared_scheme(declared: dict[str, Any]) -> None:
+        del declared["allocation_scheme"]
+
+    definitions = _copied_definitions(
+        tmp_path, dashboard_definitions, "pricing_copy", undeclared_scheme
+    )
+    experiment, resolver = _bind(dashboard_con, definitions, "pricing_copy")
+    with resolver:
+        snapshot = prepare_dashboard(
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"baseline": 0.7, "candidate": 0.3}),
+        )
 
     assert health_status(snapshot)["kind"] == "not_checked"
     assert snapshot.allocation is None
     assert snapshot.allocation_refusal is not None
+    code, reason = snapshot.allocation_refusal
+    assert code == "dashboard.allocation_not_applicable"
     assert snapshot.allocation_history == ()
     assert snapshot.allocation_history_refusal == snapshot.allocation_refusal
     html = render_health(snapshot).text
     assert "not checked" in html.lower()
-    assert "independent assignment was not declared" in html
+    assert reason in html
     technical = re.search(
         r"<details[^>]*><summary>Technical details</summary>(.*?)</details>", html, re.DOTALL
     )
@@ -2022,16 +2066,23 @@ def test_health_renders_not_applicable_allocation_as_not_checked(
 def test_unexpected_engine_failures_are_not_swallowed(
     dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:
-    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    from increment.query import native_source
+
     failure = RuntimeError("warehouse connection lost")
+    moments = native_source._DaySource.moments
 
-    def broken(self, **_: Any) -> Any:
-        raise failure
+    def broken(self, metric, *, grain="daily", **kwargs: Any) -> Any:
+        if grain == "daily":
+            raise failure
+        return moments(self, metric, grain=grain, **kwargs)
 
-    monkeypatch.setattr(type(analysis), "run_daily", broken)
-    with pytest.raises(RuntimeError) as caught:
+    monkeypatch.setattr(native_source._DaySource, "moments", broken)
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "storefront_refresh")
+    with resolver, pytest.raises(RuntimeError) as caught:
         prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5}),
         )
     assert caught.value is failure
 
@@ -2204,14 +2255,14 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
 
 
 def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
-    storefront_analysis, storefront: DashboardSnapshot
+    storefront_experiment, storefront: DashboardSnapshot
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
     from increment.estimation.results import Estimate
 
     model = next(m for m in storefront.metrics if m.preferred_direction == "decrease")
     series = load_explore(
-        storefront_analysis, snapshot=storefront, metric=model.name, view="cumulative_lift"
+        storefront_experiment, snapshot=storefront, metric=model.name, view="cumulative_lift"
     )
     assert isinstance(series, DailyLiftEstimates)
     rising = DailyLiftEstimates(
@@ -2234,13 +2285,13 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
-    storefront_analysis,
+    storefront_experiment,
     storefront: DashboardSnapshot,
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
 
     data = load_explore(
-        storefront_analysis,
+        storefront_experiment,
         snapshot=storefront,
         metric=None,
         view="cumulative_lift",
@@ -2283,7 +2334,7 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
 @pytest.mark.parametrize("surface", ["readout", "report"])
 @pytest.mark.slow
 def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
-    storefront: DashboardSnapshot, storefront_analysis, surface: str
+    storefront: DashboardSnapshot, storefront_experiment, surface: str
 ) -> None:
     from increment.dashboard._app import build_payload
 
@@ -2292,7 +2343,7 @@ def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
     )
     guardrail = next(row for row in snapshot.readout_rows if row["role"] == "guardrail")
     assert guardrail["stat_sig"] is False
-    payload = build_payload(storefront_analysis, snapshot=snapshot)
+    payload = build_payload(storefront_experiment, snapshot=snapshot)
     markup = payload["results"] if surface == "readout" else payload["report"]["results"]
     warnings = re.findall(
         r'<p[^>]*class="[^"]*\binc-dashboard-status--bad\b[^"]*"[^>]*>(.*?)</p>',
@@ -2340,14 +2391,13 @@ def test_report_retains_directional_fieller_set_beside_central_interval(
 def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
     dashboard_con, dashboard_definitions
 ):
-    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
-    try:
+    experiment, resolver = _bind(dashboard_con, dashboard_definitions, "storefront_refresh")
+    with resolver:
         snapshot = prepare_dashboard(
-            analysis,
+            experiment,
+            resolver,
             config=DashboardConfig(expected_allocation={"control": 0.7, "treatment": 0.3}),
         )
-    finally:
-        analysis.close()
     assert snapshot.allocation is not None and snapshot.allocation.is_srm
 
     scoped = snapshot.readout_collection
@@ -2487,17 +2537,17 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
     ):
         (definitions / name).write_text(content)
 
-    from increment import Analysis
     from increment.dashboard._app import build_payload, document
 
-    analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
+    experiment, resolver = _bind(dashboard_con, definitions, "storefront_refresh")
     try:
         import warnings
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             snapshot = prepare_dashboard(
-                analysis,
+                experiment,
+                resolver,
                 config=DashboardConfig(
                     expected_allocation={"control": 0.9999, "treatment": 0.0001},
                     exploratory_metrics=("purchase_rate",),
@@ -2518,7 +2568,7 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
 
         summary_html = render_header(snapshot).text
         readout_html = render_results(snapshot).text
-        payload = build_payload(analysis, snapshot=snapshot)
+        payload = build_payload(experiment, snapshot=snapshot)
         report_text = payload["report"]["qualifications"]
         for surface in (summary_html, readout_html, report_text):
             assert reason["code"] in surface
@@ -2551,7 +2601,7 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
         )
         assert exported_advisory["message"] == advisory["message"]
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -2611,20 +2661,20 @@ def test_clustered_overview_fallback_preserves_each_metric_collection(
 
     from typing import cast
 
-    from increment import Analysis
     from increment.breakout.estimates import LiftEstimates
     from increment.dashboard import render_dashboard
     from increment.dashboard._app import build_payload
 
     added = ("added_revenue", "added_duration", "p90_revenue")
-    analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
+    experiment, resolver = _bind(dashboard_con, definitions, "storefront_refresh")
     try:
         import warnings
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             snapshot = prepare_dashboard(
-                analysis,
+                experiment,
+                resolver,
                 config=DashboardConfig(
                     expected_allocation={"control": 0.5, "treatment": 0.5},
                     exploratory_metrics=added,
@@ -2644,12 +2694,12 @@ def test_clustered_overview_fallback_preserves_each_metric_collection(
 
         details = render_metric_details(snapshot, metric="added_revenue").text
         assert "added_revenue" in details
-        assert render_dashboard(analysis, snapshot=snapshot) is not None
-        payload = build_payload(analysis, snapshot=snapshot)
+        assert render_dashboard(experiment, snapshot=snapshot) is not None
+        payload = build_payload(experiment, snapshot=snapshot)
         notes = payload["overview"]["overall"]["notes"]
         assert any("p90_revenue" in note and refusal[2].code in note for note in notes)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 pytestmark = pytest.mark.integration

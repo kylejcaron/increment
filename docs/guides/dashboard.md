@@ -2,8 +2,8 @@
 
 `increment.dashboard` renders one bound experiment's captured evidence as an
 interactive Readout, Explore, Health, and Report. Use it to present a
-supported two-arm randomized `Analysis.from_definitions` without changing its
-analysis plan; the [example notebook](../examples/ab_testing_dashboard.md)
+supported two-arm randomized experiment bound with `from_definitions` without
+changing its analysis plan; the [example notebook](../examples/ab_testing_dashboard.md)
 shows the full flow.
 
 All four tabs share the same evidence. They do not replace the plan or turn
@@ -26,15 +26,15 @@ pip install "increment[dashboard,demo]"
 
 ## Bind your own experiment
 
-Construct your own `Analysis`, supply a `DashboardConfig`, and reuse the same
-rendering calls. Changing experiments is a source-binding operation, not a
-renderer change; the package never assumes a 50/50 allocation.
+Bind your own experiment with `from_definitions`, supply a `DashboardConfig`,
+and reuse the same rendering calls. Changing experiments is a source-binding
+operation, not a renderer change; the package never assumes a 50/50 allocation.
 
 <!-- skip: next "requires increment[dashboard] and a configured warehouse" -->
 
 ```python
 import ibis
-from increment import Analysis
+from increment import from_definitions
 from increment.dashboard import (
     DashboardConfig,
     prepare_dashboard,
@@ -42,16 +42,16 @@ from increment.dashboard import (
 )
 
 con = ibis.snowflake.connect(...)
-analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
+experiment, resolver = from_definitions("definitions/", con, experiment_name="checkout_redesign")
 config = DashboardConfig(
     expected_allocation={"control": 0.5, "treatment": 0.5},
     source_label="Production warehouse",
     metric_units={"revenue_per_user": "USD", "checkout_latency_ms": "ms"},
 )
 
-snapshot = prepare_dashboard(analysis, config=config)
+snapshot = prepare_dashboard(experiment, resolver, config=config)
 
-render_dashboard(analysis, snapshot=snapshot)
+render_dashboard(experiment, snapshot=snapshot)
 ```
 
 Keep preparation and rendering in separate notebook cells, and install the
@@ -62,17 +62,17 @@ or Studio server; keep the example's host stylesheet beside the notebook.
 `prepare_dashboard` validates the experiment and config, then captures
 allocation, enrollment, headline estimates, group data, and supported Explore
 views from one pinned source snapshot into an immutable `DashboardSnapshot`.
-It does not rebind your `Analysis`. `render_dashboard` reads captured evidence only:
-browser controls select prepared data and never query the warehouse, change
-the plan, or recompute confirmatory results. To update data or policy, rebind
-and prepare again; you own `analysis` and its connection, so close the old
-connection when rebinding to a different experiment.
+The snapshot retains no resolver, source, or connection. `render_dashboard`
+reads captured evidence only: browser controls select prepared data and never
+query the warehouse, change the plan, or recompute confirmatory results. To
+update data or policy, bind and prepare again; you own `resolver` and its
+connection, so close them when binding a different experiment.
 
 `prepare_dashboard` is the computation boundary. It validates the experiment and
 config, then invokes one source-owned snapshot operation. Allocation, enrollment
 history, headline estimates, observed group data, and every supported Explore
 choice share its pinned inputs, including declared breakout property sources.
-The caller's `Analysis` is not rebound. Captured sequential decisions retain
+The caller's resolver is not rebound or closed. Captured sequential decisions retain
 each displayed metric's checkpoint, including earlier frozen secondaries.
 These results form an immutable `DashboardSnapshot`. Preparation computes the
 temporal and breakout views as well as the headline.
@@ -146,9 +146,9 @@ Explore: every offered metric is read with the headline, so changing which
 ones are shown re-renders the same snapshot. Section-level
 renderers also accept already-prepared data. Re-executing preparation
 intentionally creates a new snapshot that reflects subsequent source changes.
-You retain ownership of `analysis` and its connection; the package does not
-close or replace them. When deliberately rebinding to a different experiment,
-the caller must close the old connection.
+You retain ownership of `resolver` and its connection; the package does not
+close or replace them. When deliberately binding a different experiment,
+the caller must close the old resolver and connection.
 
 The standalone `render_header` and `render_metric_details` sections use the same
 selected-population default and accept `population="assigned"` or
@@ -167,7 +167,7 @@ the name is insufficient.
 ## Supported experiments
 
 Ordinary, definitions-backed, two-arm randomized experiments
-(`Analysis.from_definitions`) with a declared primary metric and
+(`from_definitions`) with a declared primary metric and
 fixed-horizon, registered Bernoulli, or registered asymptotic-mean inference.
 Capture finalized sequential observations before preparation; an unregistered
 `always_valid` declaration is not supported. Renamed arms, unequal
@@ -177,8 +177,8 @@ cases.
 
 Metric roles, decision methods, inference, population, direction, tested
 alternative, intervals, and the multiplicity policy are inherited from your
-`Analysis`; there is no confidence slider or method selector that silently
-changes the analysis contract.
+experiment's declarations; there is no confidence slider or method selector
+that silently changes the analysis contract.
 
 | Config | Rule |
 |---|---|
@@ -279,13 +279,13 @@ restyle the notebook canvas.
 
 | Call | Renders |
 |---|---|
-| `render_dashboard(analysis, snapshot=...)` | The complete four-tab dashboard as a marimo anywidget: native plots, scoped controls, metric inspectors, health, provenance, and a Report with the full captured metric family. Its Explore **Added metrics** control re-renders the same snapshot in a running notebook; it never reads the warehouse. |
+| `render_dashboard(experiment, snapshot=...)` | The complete four-tab dashboard as a marimo anywidget: native plots, scoped controls, metric inspectors, health, provenance, and a Report with the full captured metric family. Its Explore **Added metrics** control re-renders the same snapshot in a running notebook; it never reads the warehouse. |
 | `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block, read from packaged resources. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and the primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; for the experiment's own metrics, observed data by group with eligibility, exclusions, counts, units, and provenance. An added metric shows its Overview result instead. |
-| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Validates the experiment binding and options without warehouse queries or materialization; coded refusals stay specific to each state. |
+| `load_explore(experiment, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Validates that `experiment` is the one the snapshot was prepared from, and the options, without resolving a source, querying the warehouse, or materializing; coded refusals stay specific to each state. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section: a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, the actual date basis and range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load the data. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
 | `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
@@ -450,7 +450,7 @@ or not; it is never marked as a discovery and never blocks the other cells.
 ### Added exploratory metrics
 
 `DashboardConfig(exploratory_metrics=(...))` names metrics from
-`analysis.available_metrics` to show: saved per-unit metrics on the
+`workflows.available_metrics(experiment, resolver)` to show: saved per-unit metrics on the
 experiment's unit that the experiment does not declare. Report-only
 `total`/`active` metrics and other entities' metrics are not offered, and a
 name the definitions do not offer is refused with `dashboard.invalid_config`
