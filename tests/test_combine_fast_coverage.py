@@ -62,15 +62,15 @@ def _shard(
 
 
 def test_combine_fast_coverage_unions_overlapping_file_lines(tmp_path: Path):
-    _shard(tmp_path, shard=1)
-    _shard(tmp_path, shard=2)
+    for shard in (1, 2, 3):
+        _shard(tmp_path, shard=shard)
 
-    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2, splits=3)
 
     assert result.complete
     assert result.coverage is not None
     expected: set[int] = set()
-    for shard in (1, 2):
+    for shard in (1, 2, 3):
         report = json.loads((tmp_path / f"shard-{shard}" / "coverage.json").read_text())
         source_path = next(path for path in report["files"] if "/increment/" in path)
         expected.update(report["files"][source_path]["executed_lines"])
@@ -83,30 +83,33 @@ def test_combine_fast_coverage_unions_overlapping_file_lines(tmp_path: Path):
 
 def test_combine_fast_coverage_rejects_empty_increment_shard(tmp_path: Path):
     _shard(tmp_path, shard=1)
-    _shard(tmp_path, shard=2, has_increment_data=False)
+    _shard(tmp_path, shard=2)
+    _shard(tmp_path, shard=3, has_increment_data=False)
 
-    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2, splits=3)
 
     assert not result.complete
     assert result.coverage is None
-    assert "shard 2 has no executed increment/ source statements" in result.summary
+    assert "shard 3 has no executed increment/ source statements" in result.summary
 
 
 def test_combine_fast_coverage_reports_missing_shard_incomplete(tmp_path: Path):
     _shard(tmp_path, shard=1)
+    _shard(tmp_path, shard=2)
 
-    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2, splits=3)
 
     assert not result.complete
     assert result.coverage is None
-    assert "missing shard 2" in result.summary
+    assert "missing shard 3" in result.summary
 
 
 def test_combine_fast_coverage_rejects_wrong_sha(tmp_path: Path):
     _shard(tmp_path, shard=1)
-    _shard(tmp_path, shard=2, sha="different")
+    _shard(tmp_path, shard=2)
+    _shard(tmp_path, shard=3, sha="different")
 
-    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2, splits=3)
 
     assert not result.complete
     assert result.coverage is None
@@ -115,10 +118,11 @@ def test_combine_fast_coverage_rejects_wrong_sha(tmp_path: Path):
 
 def test_combine_fast_coverage_rejects_failed_shard(tmp_path: Path):
     _shard(tmp_path, shard=1)
-    _shard(tmp_path, shard=2, outcome="failure")
+    _shard(tmp_path, shard=2)
+    _shard(tmp_path, shard=3, outcome="failure")
 
-    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2, splits=3)
 
     assert not result.complete
     assert result.coverage is None
-    assert "shard 2 did not succeed" in result.summary
+    assert "shard 3 did not succeed" in result.summary
