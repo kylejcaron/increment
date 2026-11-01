@@ -185,6 +185,9 @@ change without notice.
   request no outcome metrics, so their `source_snapshot_id` differs from the
   removed `Analysis.run_asof_lift(estimands=("compliance",))`; the estimates
   are unchanged.
+- Release note (bug fix): a breakout view of an experiment that declares no
+  breakouts returns no rows when it runs beside other views, as it does alone,
+  instead of refusing a metric that only a breakout read could not serve.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
