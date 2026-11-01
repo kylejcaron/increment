@@ -24,7 +24,8 @@ from increment.sources import (
     DECISION_PLAN_FIELD,
     SOURCE_IDENTITY_FIELD,
 )
-from tests.analysis_factory import make_analysis
+from increment.workflows import breakout_summaries, export_moments, factor_summaries
+from tests.analysis_factory import make_binding
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "native_pipeline_parity.json"
 
@@ -143,7 +144,7 @@ def _encouragement_breakout_analysis():
             ],
         }
     )
-    return make_analysis(con, defs, experiment="native_late", _design=DESIGN)
+    return make_binding(con, defs, experiment="native_late", design=DESIGN)
 
 
 def _table_rows(tbl: pa.Table) -> list[dict[str, Any]]:
@@ -167,18 +168,18 @@ def _read_exported_moments(path: Path) -> pa.Table:
     return table.drop([name for name in _EXPORT_TRANSPORT_FIELDS if name in table.column_names])
 
 
-def _capture(analysis, tmp_path: Path) -> dict[str, Any]:
+def _capture(analysis: tuple[Any, Any], tmp_path: Path) -> dict[str, Any]:
     exported = tmp_path / "moments.parquet"
-    analysis.export(exported)
+    export_moments(*analysis, exported)
     moments = _table_rows(_read_exported_moments(exported))
     breakout = {
         key: {
             "group_summary": _table_rows(parts["group_summary"]),
             "daily_group_summary": _table_rows(parts["daily_group_summary"]),
         }
-        for key, parts in analysis.breakout_summaries().items()
+        for key, parts in breakout_summaries(*analysis).items()
     }
-    factor = {key: _table_rows(tbl) for key, tbl in analysis.factor_summaries().items()}
+    factor = {key: _table_rows(tbl) for key, tbl in factor_summaries(*analysis).items()}
     result = {"moments": moments, "breakout": breakout, "factor": factor}
     # JSON round-trip: some fields (e.g. daily_group_summary's `ds`) are
     # datetime.date objects here but strings in the loaded fixture.
@@ -203,7 +204,7 @@ def test_metric_summary_pipeline_matches_pinned_baseline(tmp_path):
     try:
         actual = _capture(analysis, tmp_path)
     finally:
-        analysis.close()
+        analysis[1].close()
     expected = json.loads(_FIXTURE.read_text())
     assert actual["moments"] == expected["moments"]
     assert actual["breakout"] == expected["breakout"]
@@ -216,12 +217,12 @@ def test_metric_summary_pipeline_matches_pinned_baseline(tmp_path):
 def test_factor_summaries_resolves_uptake_like_breakout_summaries():
     """factor_summaries must resolve and pass uptake_events/
     uptake_window_days exactly as breakout_summaries does."""
-    analysis = _encouragement_breakout_analysis()
+    experiment, resolver = _encouragement_breakout_analysis()
     try:
-        factor_out = analysis.factor_summaries()
-        breakout_out = analysis.breakout_summaries()
+        factor_out = factor_summaries(experiment, resolver)
+        breakout_out = breakout_summaries(experiment, resolver)
     finally:
-        analysis.close()
+        resolver.close()
     factor_sum_d = [row["sum_d"] for tbl in factor_out.values() for row in tbl.to_pylist()]
     assert any(value is not None for value in factor_sum_d), (
         f"factor_summaries sum_d is all-NULL: {factor_sum_d}"
@@ -338,7 +339,7 @@ def _clustered_encouragement_analysis():
             ],
         }
     )
-    return make_analysis(con, defs, experiment="native_late", _design=DESIGN)
+    return make_binding(con, defs, experiment="native_late", design=DESIGN)
 
 
 @pytest.mark.integration
@@ -350,12 +351,12 @@ def test_clustered_total_grain_summary_binds_uptake_not_cluster_size(tmp_path):
     and ``ref_x`` to the (wrong) mean cluster size of 3.0 for both arms,
     instead of the real uptake means: 0.0 for control (no uptake fact fires
     there) and 2.0 for treatment (2 of the 3 units per store take up)."""
-    analysis = _clustered_encouragement_analysis()
+    experiment, resolver = _clustered_encouragement_analysis()
     try:
         exported = tmp_path / "moments.parquet"
-        analysis.export(exported)
+        export_moments(experiment, resolver, exported)
     finally:
-        analysis.close()
+        resolver.close()
     rows = {row["group_id"]: row for row in _read_exported_moments(exported).to_pylist()}
     assert rows["control"]["x_role"] == "uptake_total"
     assert rows["treatment"]["x_role"] == "uptake_total"

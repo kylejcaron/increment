@@ -4,6 +4,9 @@ from typing import Any, cast
 
 import pytest
 
+from increment import Scope, from_definitions, from_frame, from_switchback_frame
+from tests.analysis_factory import view_readout
+
 
 def test_envelope_codec_has_versioned_row_kind_and_component_state_tags():
     from increment.result_envelope import ResultCell
@@ -155,18 +158,25 @@ def test_unavailable_breakout_reason_survives_cell_and_table_round_trip():
 def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seeded_defs):
     import gc
 
-    from increment import Analysis
     from increment.declarations import CellKey
     from increment.result_envelope import AnalysisEnvelope, ResultCell
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
         outputs = (
-            ("breakout", analysis.run_breakout()),
-            ("daily_metric", analysis.run_daily()),
-            ("daily_lift", analysis.run_daily_lift()),
-            ("asof_metric", analysis.run_asof()),
-            ("asof_lift", analysis.run_asof_lift()),
+            ("breakout", view_readout(experiment, resolver, Scope(view="breakout", grain="total"))),
+            (
+                "daily_metric",
+                view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True)),
+            ),
+            ("daily_lift", view_readout(experiment, resolver, Scope(view="daily", grain="daily"))),
+            (
+                "asof_metric",
+                view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True)),
+            ),
+            ("asof_lift", view_readout(experiment, resolver, Scope(view="asof", grain="asof"))),
         )
         for row_kind, rows in outputs:
             assert rows
@@ -220,18 +230,19 @@ def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seed
                 == envelope.cells
             )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
 def test_reopened_daily_cells_use_dates_as_table_identity(seeded_con, seeded_defs):
-    from increment import Analysis
     from increment.result_envelope import AnalysisEnvelope, ResultCell
     from increment.tables import readout_table
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
-        rows = analysis.run_daily()
+        rows = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
         cells = [
             cell
             for cell in rows.as_cells()
@@ -245,7 +256,7 @@ def test_reopened_daily_cells_use_dates_as_table_identity(seeded_con, seeded_def
         assert str(first.identity.key.ds) in html
         assert str(second.identity.key.ds) in html
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
@@ -253,14 +264,27 @@ def test_asof_lift_view_survives_collection_round_trips(seeded_con, seeded_defs)
     import copy
     import pickle
 
-    from increment import Analysis
     from increment.estimation.readout_types import ReadoutResults
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
         outputs = (
-            (analysis.run_asof(completed_windows_only=True), "asof_metric"),
-            (analysis.run_asof_lift(completed_windows_only=True), "asof_lift"),
+            (
+                view_readout(
+                    experiment,
+                    resolver,
+                    Scope(view="asof", grain="asof", values=True, completion_policy=True),
+                ),
+                "asof_metric",
+            ),
+            (
+                view_readout(
+                    experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+                ),
+                "asof_lift",
+            ),
         )
         for rows, row_kind in outputs:
             constructed = type(rows)(
@@ -280,21 +304,22 @@ def test_asof_lift_view_survives_collection_round_trips(seeded_con, seeded_defs)
                 ReadoutResults.model_validate_json(rows.model_dump_json()),
             )
             for item in transformed:
-                cell = cast(Any, item).as_cells()[0]
+                cell = item.as_cells()[0]
                 assert cell.row_kind == row_kind
                 assert cell.identity.scope.completion_policy is True
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
 def test_daily_lift_cells_preserve_collection_family(seeded_con, seeded_defs):
-    from increment import Analysis
     from increment.declarations import CellKey
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
-        rows = analysis.run_daily_lift()
+        rows = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
         assert rows and rows.metadata is not None
         row = next(
             row
@@ -307,7 +332,7 @@ def test_daily_lift_cells_preserve_collection_family(seeded_con, seeded_defs):
         )
         assert cell.family == expected
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_daily_collection_concat_refuses_incompatible_view_scope():
@@ -324,7 +349,6 @@ def test_daily_collection_concat_refuses_incompatible_view_scope():
 def test_restored_set_only_breakout_uses_public_confidence_projection():
     import pandas as pd
 
-    from increment import Analysis
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
 
     rows = pd.DataFrame(
@@ -334,8 +358,9 @@ def test_restored_set_only_breakout_uses_public_confidence_projection():
             for index, success in enumerate(outcomes)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         rows,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -343,7 +368,7 @@ def test_restored_set_only_breakout_uses_public_confidence_projection():
         breakouts=("segment",),
     )
     try:
-        results = analysis.run_breakout()
+        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
         (row,) = results
         assert row.lift is None and row.binomial_set is not None
         (cell,) = results.as_cells()
@@ -355,21 +380,23 @@ def test_restored_set_only_breakout_uses_public_confidence_projection():
         assert cell.summary.geometry == row.binomial_set.geometry
         assert "6.0016" in render(AnalysisEnvelope((cell,), None), "brief")
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
 def test_mixed_lift_and_report_cells_render_and_project_to_table(seeded_con, seeded_defs):
     import json
 
-    from increment import Analysis, Method
+    from increment import Method
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.tables import readout_table
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
-        lift_rows = analysis.run(decision_method=Method(name="unadjusted"))
-        breakout_rows = analysis.run_breakout()
+        lift_rows = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+        breakout_rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
         cells = (*lift_rows.as_cells(), *breakout_rows.as_cells())
         decoded = tuple(
             ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))) for cell in cells
@@ -392,18 +419,19 @@ def test_mixed_lift_and_report_cells_render_and_project_to_table(seeded_con, see
         html = readout_table(envelope, nest_by="segment")._repr_html_()
         assert "d7_retention" in html
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
 def test_filtered_breakout_cell_retains_full_family_scope(seeded_con, seeded_defs):
-    from increment import Analysis
     from increment.declarations import CellKey
     from increment.result_envelope import ResultCell
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     try:
-        rows = analysis.run_breakout()
+        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
         row = rows[0]
         assert rows.metadata is not None
         family = rows.metadata.family_of(row.source_snapshot_id, CellKey.from_row(row))
@@ -420,14 +448,13 @@ def test_filtered_breakout_cell_retains_full_family_scope(seeded_con, seeded_def
         restored = ResultCell.from_arrow(ResultCell.to_arrow(cells))
         assert restored[0].family == family
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
 def test_switchback_contrast_producer_round_trips_descriptive_state():
     import pandas as pd
 
-    from increment import Analysis
     from increment.result_envelope import ResultCell
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
@@ -450,7 +477,7 @@ def test_switchback_contrast_producer_round_trips_descriptive_state():
         for period, group in enumerate(order)
         for step in range(2)
     ]
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -467,7 +494,7 @@ def test_switchback_contrast_producer_round_trips_descriptive_state():
         ),
     )
     try:
-        results = analysis.run()
+        results = view_readout(experiment, resolver)
         cells = results.as_cells()
         assert cells
         for cell in cells:
@@ -483,4 +510,4 @@ def test_switchback_contrast_producer_round_trips_descriptive_state():
         restored = ResultCell.from_arrow(ResultCell.to_arrow(cells))
         assert [item.row_payload for item in restored] == [item.row_payload for item in cells]
     finally:
-        analysis.close()
+        resolver.close()

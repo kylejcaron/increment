@@ -4,11 +4,13 @@ import itertools
 import json
 import uuid
 from pathlib import Path
+from typing import Any, cast
 
 import ibis
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_definitions
+from increment.query import panel_sql, summary_sql
 from tests._unit_boundary import backend_fixture
 
 pytestmark = pytest.mark.integration
@@ -16,10 +18,10 @@ pytestmark = pytest.mark.integration
 GOLDENS = Path(__file__).parents[1] / "goldens" / "sql"
 
 
-def render_sql_goldens(analysis: Analysis) -> dict[str, dict[str, str]]:
+def render_sql_goldens(binding: tuple[Any, Any]) -> dict[str, dict[str, str]]:
     return {
-        "panel": {key: str(value) for key, value in sorted(analysis.panel_sql().items())},
-        "summary": {key: str(value) for key, value in sorted(analysis.summary_sql().items())},
+        "panel": {key: str(value) for key, value in sorted(panel_sql(*binding).items())},
+        "summary": {key: str(value) for key, value in sorted(summary_sql(*binding).items())},
     }
 
 
@@ -85,11 +87,13 @@ experiments:
 """,
         encoding="utf-8",
     )
-    analysis = Analysis.from_definitions("sql_golden", definitions, con, store="none")
+    experiment, resolver = from_definitions(
+        definitions, con, experiment_name="sql_golden", store="none"
+    )
     try:
-        yield analysis
+        yield experiment, resolver
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 

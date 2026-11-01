@@ -7,6 +7,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
+from increment import from_frame, from_moments
 from increment.errors import CapabilityError, IncrementRuntimeWarning, InvalidRequestError
 from increment.estimation.armstats import (
     ArmStats,
@@ -21,6 +22,8 @@ from increment.estimation.engine import _df_to_arms, estimate_lift
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.variance import se_log_mean
 from increment.semantics.models import MeanMetric
+from increment.workflows import export_moments
+from tests.analysis_factory import view_readout
 from tests.estimation._conversion_counts import producer_arm
 from tests.warning_codes import warning_codes
 
@@ -1786,7 +1789,6 @@ def test_a_unit_frame_and_its_exported_moments_decide_alike_beyond_the_former_ar
     import pyarrow.parquet as pq
 
     from increment import AnalysisPlan, MetricSpec
-    from increment.analysis import Analysis
     from tests.analysis_factory import lift_rows
 
     n_c, n_t, x_c, x_t = 4_000_100, 4_000, 4_000, 80
@@ -1803,19 +1805,27 @@ def test_a_unit_frame_and_its_exported_moments_decide_alike_beyond_the_former_ar
     )
     metric = MetricSpec(name="conversion", type="conversion")
     plan = AnalysisPlan(secondaries=["conversion"])
-    with Analysis.from_unit_summary(
-        frame, unit="user_id", group="group_id", control="control", metrics=[metric], plan=plan
-    ) as summary:
+    summary_experiment, summary_resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="group_id",
+        control="control",
+        metrics=[metric],
+        plan=plan,
+    )
+    with summary_resolver:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "moments.parquet"
-            summary.export(path)
+            export_moments(summary_experiment, summary_resolver, path)
             rows = pq.read_table(path).to_pylist()
-        from_frame = list(lift_rows(summary.run()))
-    with Analysis.from_moments(rows, control="control", metrics=[metric]) as replay:
-        from_cube = list(lift_rows(replay.run()))
-    for results in (from_frame, from_cube):
+        from_units = list(lift_rows(view_readout(summary_experiment, summary_resolver)))
+    replay_experiment, replay_resolver = from_moments(rows, control="control", metrics=[metric])
+    with replay_resolver:
+        from_cube = list(lift_rows(view_readout(replay_experiment, replay_resolver)))
+    for results in (from_units, from_cube):
         (row,) = results
         assert row.reference_kind == "binomial" and row.binomial_set is not None
         counts = (row.binomial_set.x_c, row.binomial_set.n_c, row.binomial_set.x_t)
         assert counts == (x_c, n_c, x_t) and row.binomial_set.n_t == n_t
-    assert from_frame[0].binomial_set == from_cube[0].binomial_set
+    assert from_units[0].binomial_set == from_cube[0].binomial_set

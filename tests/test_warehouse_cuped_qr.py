@@ -9,9 +9,19 @@ import ibis
 import numpy as np
 import pytest
 
-from increment import Analysis
+from increment import (
+    Analysis,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.estimation.results import LiftEstimate
 from increment.query.native_source import DefinitionsMomentSource
+from increment.workflows import export_moments
+from tests.analysis_factory import view_readout
 from tests.parity_harness import matrix_cases, matrix_data
 from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -1418,7 +1428,7 @@ def _assert_fitted_evidence_rejections(exported, metric_spec, method, design):
     from increment.errors import CodedError
 
     with pytest.raises(CodedError) as corrupted:
-        Analysis.from_moments(
+        from_moments(
             [
                 {**row, "cuped_evidence": "{"}
                 if row.get("record_kind") == "cuped_evidence"
@@ -1450,12 +1460,12 @@ def _assert_fitted_evidence_rejections(exported, metric_spec, method, design):
         lambda payload: payload["evidence"]["inference_summary"]["projection_specs"].pop(),
     ):
         with pytest.raises(CodedError) as malformed:
-            Analysis.from_moments(rewrite_payload(change), metrics=[metric_spec], design=design)
+            from_moments(rewrite_payload(change), metrics=[metric_spec], design=design)
         assert malformed.value.code == "moments.cuped_evidence.invalid"
 
     envelope = next(row for row in exported if row.get("record_kind") == "cuped_evidence")
     with pytest.raises(CodedError) as duplicate:
-        Analysis.from_moments([*exported, envelope], metrics=[metric_spec], design=design)
+        from_moments([*exported, envelope], metrics=[metric_spec], design=design)
     assert duplicate.value.code in {
         "moments.cuped_evidence.duplicate",
         "moments.cuped_evidence.invalid",
@@ -1470,7 +1480,7 @@ def _assert_fitted_evidence_rejections(exported, metric_spec, method, design):
         }
     )
     with pytest.raises(CodedError):
-        Analysis.from_moments(
+        from_moments(
             exported,
             metrics=[metric_spec.model_copy(update={"decision_method": changed_method})],
             design=design,
@@ -1478,16 +1488,16 @@ def _assert_fitted_evidence_rejections(exported, metric_spec, method, design):
 
     scoped_replay = None
     try:
-        scoped_replay = Analysis.from_moments(
+        scoped_replay = from_moments(
             exported,
             metrics=[metric_spec],
             design=design.model_copy(update={"control_group": "treatment"}),
         )
         with pytest.raises(CodedError):
-            scoped_replay.run(metrics=[metric_spec.name])
+            view_readout(*scoped_replay, metrics=[metric_spec.name])
     finally:
         if scoped_replay is not None:
-            scoped_replay.close()
+            scoped_replay[1].close()
 
 
 def _assert_fit_coordinates_equal(left_rows, right_rows):
@@ -1632,8 +1642,9 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
     local_method = Method.cuped_multicovariate(
         covariates=[CupedCovariate(name=name, kind="continuous") for name in covariate_names]
     )
-    local = Analysis.from_unit_summary(
+    local_experiment, local_resolver = from_frame(
         pa.Table.from_pylist(units),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -1650,10 +1661,17 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
     )
     connection = ibis.duckdb.connect()
     connection.create_table("qr_many_covariates", obj=events)
-    warehouse = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    warehouse_experiment, warehouse_resolver = from_definitions(
+        definitions_path, connection, experiment_name="mixed_cuped"
+    )
     try:
-        actual = cast(list[LiftEstimate], warehouse.run(metrics=["rpo"]))
-        expected = cast(list[LiftEstimate], local.run(metrics=["rpo"]))
+        actual = cast(
+            list[LiftEstimate],
+            view_readout(warehouse_experiment, warehouse_resolver, metrics=["rpo"]),
+        )
+        expected = cast(
+            list[LiftEstimate], view_readout(local_experiment, local_resolver, metrics=["rpo"])
+        )
         actual_rows = {(row.metric, row.group_id): row for row in actual}
         expected_rows = {(row.metric, row.group_id): row for row in expected}
         assert actual_rows.keys() == expected_rows.keys()
@@ -1666,8 +1684,8 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
             assert row.lift.log_se == pytest.approx(reference.lift.log_se, rel=1e-9, abs=1e-11)
             assert row.dof == pytest.approx(reference.dof, rel=1e-9, abs=1e-11)
     finally:
-        warehouse.close()
-        local.close()
+        cast(Any, warehouse_resolver).close()
+        local_resolver.close()
         connection.disconnect()
 
 
@@ -1730,7 +1748,7 @@ def test_categorical_export_guard_misses_replay_from_fitted_qr(  # noqa: PLR0915
     experiment_data["plan"] = {"primary": {"metric": "revenue", "decision_method": method_data}}
     definitions_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
 
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    native = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
     definition_set = load(definitions_path)
     experiment = definition_set.experiment("mixed_cuped")
     metric = definition_set.metric("revenue")
@@ -1774,8 +1792,8 @@ def test_categorical_export_guard_misses_replay_from_fitted_qr(  # noqa: PLR0915
         store = WarehouseArtifactStore(connection, schema_name=f"qr_{fixture}_artifact")
         context = artifact_context(definition_set, experiment, "error")
         extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-        reference = native.publish_unit_day_artifact(store, extensions=extensions)
-        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        reference = publish_unit_day_artifact(*native, store, extensions=extensions)
+        artifact = from_unit_day_artifact(store, reference, expected_context=context)
         source = artifact
     else:
         source = native
@@ -1786,9 +1804,9 @@ def test_categorical_export_guard_misses_replay_from_fitted_qr(  # noqa: PLR0915
     monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_transfer)
     _guard_no_unit_keyed_transfers(monkeypatch)
     try:
-        actual = cast(list[LiftEstimate], source.run(metrics=["revenue"]))
+        actual = cast(list[LiftEstimate], view_readout(*source, metrics=["revenue"]))
         destination = tmp_path / f"{ingress}-{fixture}.parquet"
-        source.export(destination)
+        export_moments(*source, destination)
         exported = pq.read_table(destination).to_pylist()
         envelopes = [
             json.loads(row["cuped_evidence"])
@@ -1804,14 +1822,17 @@ def test_categorical_export_guard_misses_replay_from_fitted_qr(  # noqa: PLR0915
             type="mean",
             decision_method=Method.model_validate(binding.decision_method.model_dump()),
         )
-        replay = Analysis.from_moments(
+        replay_experiment, replay_resolver = from_moments(
             exported,
             metrics=[metric_spec],
             design=experiment.resolved_design(),
             plan=AnalysisPlan(primary="revenue"),
         )
         try:
-            replay_rows = cast(list[LiftEstimate], replay.run(metrics=["revenue"]))
+            replay_rows = cast(
+                list[LiftEstimate],
+                view_readout(replay_experiment, replay_resolver, metrics=["revenue"]),
+            )
             actual_rows = {(row.metric, row.group_id): row for row in actual}
             replay_by_key = {(row.metric, row.group_id): row for row in replay_rows}
             assert replay_by_key.keys() == actual_rows.keys()
@@ -1827,11 +1848,11 @@ def test_categorical_export_guard_misses_replay_from_fitted_qr(  # noqa: PLR0915
                 )
                 assert row.dof == pytest.approx(reference.dof, rel=1e-10, abs=1e-11)
         finally:
-            replay.close()
+            replay_resolver.close()
     finally:
         if artifact is not None:
-            artifact.close()
-        native.close()
+            artifact[1].close()
+        cast(Any, native[1]).close()
         connection.disconnect()
 
 
@@ -1939,14 +1960,11 @@ def _assert_fit_replay(source, metric, binding, design, expected, destination):
     source.export(destination)
     exported = pq.read_table(destination).to_pylist()
     assert {row["moments_format"] for row in exported} == {13}
-    replay = Analysis.from_moments(
-        exported,
-        metrics=[metric_spec],
-        design=design,
-        plan=AnalysisPlan(alpha=0.2, primary=metric),
+    experiment, resolver = from_moments(
+        exported, metrics=[metric_spec], design=design, plan=AnalysisPlan(alpha=0.2, primary=metric)
     )
     try:
-        replay_rows = cast(list[LiftEstimate], replay.run(metrics=[metric]))
+        replay_rows = cast(list[LiftEstimate], view_readout(experiment, resolver, metrics=[metric]))
         assert {(row.metric, row.group_id) for row in replay_rows} == {
             (row.metric, row.group_id) for row in expected
         }
@@ -1958,7 +1976,7 @@ def _assert_fit_replay(source, metric, binding, design, expected, destination):
             )
             assert row.require_lift().lb != pytest.approx(original.require_lift().lb)
     finally:
-        replay.close()
+        resolver.close()
     return exported
 
 
@@ -2932,8 +2950,9 @@ def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
             ),
         )
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="group",
         metrics=(MetricSpec(name="outcome", decision_method=method),),
@@ -2945,7 +2964,7 @@ def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
         breakouts=("segment",),
     )
     with pytest.warns(IncrementWarning):
-        results = analysis.run_breakout()
+        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     by_segment = {row.dimension_value: row for row in results}
     assert set(by_segment) == {"empty-arm", "all-null"}
     assert by_segment["empty-arm"].excluded == "no_control_arm"
@@ -3022,8 +3041,9 @@ def test_withheld_ratio_arm_identity_matches_native_and_artifact(  # noqa: PLR09
         CupedCovariate(name="new_user", kind="categorical"),
     ]
     method = Method.cuped_multicovariate(covariates=covariates)
-    local = Analysis.from_unit_summary(
+    local = from_frame(
         pa.Table.from_pylist(units),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -3044,7 +3064,7 @@ def test_withheld_ratio_arm_identity_matches_native_and_artifact(  # noqa: PLR09
     )
     connection = ibis.duckdb.connect()
     connection.create_table("qr_ratio_withheld", obj=events)
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    native = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
     artifact = None
     try:
         definition_set = load(definitions_path)
@@ -3053,18 +3073,18 @@ def test_withheld_ratio_arm_identity_matches_native_and_artifact(  # noqa: PLR09
         store = WarehouseArtifactStore(connection, schema_name="qr_ratio_withheld_artifact")
         context = artifact_context(definition_set, experiment, "error")
         extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-        reference = native.publish_unit_day_artifact(store, extensions=extensions)
-        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        reference = publish_unit_day_artifact(*native, store, extensions=extensions)
+        artifact = from_unit_day_artifact(store, reference, expected_context=context)
         _guard_no_unit_keyed_transfers(monkeypatch)
 
         import warnings
 
         from increment.errors import IncrementWarning
 
-        def run_with_withheld_notice(analysis):
+        def run_with_withheld_notice(analysis: tuple[Any, Any]):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", IncrementWarning)
-                rows = cast(list[LiftEstimate], analysis.run(metrics=["rpo"]))
+                rows = cast(list[LiftEstimate], view_readout(*analysis, metrics=["rpo"]))
             assert any(
                 isinstance(warning.message, IncrementWarning)
                 and warning.message.code == "readouts.run.cell_refused"
@@ -3086,8 +3106,8 @@ def test_withheld_ratio_arm_identity_matches_native_and_artifact(  # noqa: PLR09
                     assert result.lift.log_se == pytest.approx(row.lift.log_se, rel=1e-9, abs=1e-11)
                     assert result.dof == pytest.approx(row.dof, rel=1e-9, abs=1e-11)
     finally:
-        local.close()
+        local[1].close()
         if artifact is not None:
-            artifact.close()
-        native.close()
+            artifact[1].close()
+        cast(Any, native[1]).close()
         connection.disconnect()

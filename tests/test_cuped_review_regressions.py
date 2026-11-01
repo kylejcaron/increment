@@ -5,7 +5,7 @@ from typing import Any, cast
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, Method, MetricSpec
+from increment import AnalysisPlan, Method, MetricSpec, Scope, from_frame
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import IncrementWarning
 from increment.estimation.decision_types import PValueEvidence
@@ -14,6 +14,7 @@ from increment.estimation.results import LiftEstimate
 from increment.evidence import EvidenceSource
 from increment.frame import CupedCovariate
 from increment.semantics.models import ExperimentMetric
+from tests.analysis_factory import view_readout
 
 
 def _rows(*, unsupported: bool = False, nonpositive: bool = False) -> pa.Table:
@@ -45,9 +46,10 @@ def _metric(method: Method) -> MetricSpec:
     )
 
 
-def _analysis(table: pa.Table, *, plan: AnalysisPlan | None = None) -> Analysis:
-    return Analysis.from_unit_summary(
+def _analysis(table: pa.Table, *, plan: AnalysisPlan | None = None) -> Any:
+    return from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -63,7 +65,7 @@ def _analysis(table: pa.Table, *, plan: AnalysisPlan | None = None) -> Analysis:
 
 
 def test_failed_linear_sensitivity_does_not_break_ordinary_secondary_fcr() -> None:
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         _rows(unsupported=True),
         plan=AnalysisPlan(q=0.2, secondaries=["outcome"]),
     )
@@ -71,7 +73,9 @@ def test_failed_linear_sensitivity_does_not_break_ordinary_secondary_fcr() -> No
         result = cast(
             list[LiftEstimate],
             list(
-                analysis.run(
+                view_readout(
+                    experiment,
+                    resolver,
                     decision_method=Method(name="plain"),
                     sensitivity_methods=[
                         Method.cuped_multicovariate(
@@ -92,11 +96,14 @@ def test_failed_linear_sensitivity_does_not_break_ordinary_secondary_fcr() -> No
 
 
 def test_fit_wide_failure_retains_direction_margin_and_posterior_reason() -> None:
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         _rows(unsupported=True),
         plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="outcome", margin_abs=0.2)]),
     )
-    (row,) = cast(list[LiftEstimate], list(analysis.run(prior=Normal(mu=0.0, sigma=0.1))))
+    (row,) = cast(
+        list[LiftEstimate],
+        list(view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.1))),
+    )
 
     assert row.failure_code == "estimation.cuped_linear.level_support"
     assert row.preferred_direction == "decrease"
@@ -119,7 +126,7 @@ def test_linear_methods_with_same_construction_share_one_fit(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(cuped_multicovariate, "fit_cuped_multicovariate", counted)
-    analysis = _analysis(_rows())
+    experiment, resolver = _analysis(_rows())
     methods = [
         Method.cuped_multicovariate(
             name="linear-decision", covariates=CupedCovariate(name="pre", kind="categorical")
@@ -132,7 +139,14 @@ def test_linear_methods_with_same_construction_share_one_fit(
     with pytest.warns(IncrementWarning) as caught:
         result = cast(
             list[LiftEstimate],
-            list(analysis.run(decision_method=methods[0], sensitivity_methods=[methods[1]])),
+            list(
+                view_readout(
+                    experiment,
+                    resolver,
+                    decision_method=methods[0],
+                    sensitivity_methods=[methods[1]],
+                )
+            ),
         )
     assert any(
         getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
@@ -144,11 +158,11 @@ def test_linear_methods_with_same_construction_share_one_fit(
 
 
 def test_relative_projection_failure_keeps_absolute_guardrail_inference() -> None:
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         _rows(nonpositive=True),
         plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="outcome", margin_abs=0.01)]),
     )
-    results = analysis.run(prior=Normal(mu=0.0, sigma=0.1))
+    results = view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.1))
     (row,) = cast(list[LiftEstimate], list(results))
 
     assert row.lift is None
@@ -210,18 +224,21 @@ def test_available_unadjusted_source_column_supports_mixed_cuped_override():
         for group in ("control", "treatment")
         for index in range(40)
     ]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
         metrics=[MetricSpec(name="revenue")],
     )
 
-    result = analysis.run(
+    result = view_readout(
+        experiment,
+        resolver,
         decision_method=Method.cuped_multicovariate(
             name="linear", covariates=CupedCovariate(name="prior", kind="continuous")
-        )
+        ),
     )[0]
 
     assert isinstance(result, LiftEstimate)
@@ -272,8 +289,9 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
             covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
         ),
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -281,9 +299,9 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
         metrics=[metric],
         breakouts=["segment"],
     )
-    headline = analysis.run()
+    headline = view_readout(experiment, resolver)
     with pytest.warns():
-        breakout = analysis.run_breakout()
+        breakout = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     for results in (headline, breakout):
         for restored in (
             results,
@@ -341,8 +359,8 @@ def _m1_rejected_frame() -> tuple[pa.Table, MetricSpec, Any]:
 @pytest.mark.parametrize("companion", ["plain", "linear-sensitivity"])
 def test_m1_decision_refusal_survives_companion_sensitivity_method(companion: str) -> None:
     frame, metric, expected = _m1_rejected_frame()
-    analysis = Analysis.from_unit_summary(
-        frame, unit="unit", group="arm", control="control", metrics=[metric]
+    experiment, resolver = from_frame(
+        frame, shape="summary", unit="unit", group="arm", control="control", metrics=[metric]
     )
     if companion == "plain":
         sensitivity = Method(name="plain")
@@ -353,7 +371,7 @@ def test_m1_decision_refusal_survives_companion_sensitivity_method(companion: st
         assert covariates is not None
         sensitivity = Method.cuped_multicovariate(name=companion, covariates=covariates)
 
-    results = analysis.run(sensitivity_methods=[sensitivity])
+    results = view_readout(experiment, resolver, sensitivity_methods=[sensitivity])
 
     by_method = {row.method: row for row in results}
     linear = by_method["linear"]
@@ -391,11 +409,16 @@ def test_nonfinite_support_observable_is_retained_canonically() -> None:
             name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
         ),
     )
-    analysis = Analysis.from_unit_summary(
-        pa.Table.from_pylist(rows), unit="unit", group="arm", control="control", metrics=[metric]
+    experiment, resolver = from_frame(
+        pa.Table.from_pylist(rows),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[metric],
     )
 
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
 
     (row,) = results
     assert isinstance(row, LiftEstimate)

@@ -27,7 +27,7 @@ Repetitions
     3000 per cell. Each replication reduces the two arms to the centered
     moments the dataframe entry emits and calls ``estimate_lift`` on them
     directly (under a millisecond); the first replication of every cell
-    also runs the full ``Analysis.from_unit_summary`` path on the same
+    also runs the full ``from_frame(..., shape="summary")`` path on the same
     units and must agree with the direct call, so the public entry stays
     under test without paying its frame validation 3000 times per cell.
 Statistic
@@ -56,6 +56,8 @@ import math
 import numpy as np
 import pytest
 
+from increment import from_frame
+from tests.analysis_factory import view_readout
 from tests.mc import CoverageSet, mcse
 
 MU_C = 10.0
@@ -166,8 +168,8 @@ def moment_row(group_id: str, y: np.ndarray, x: np.ndarray) -> dict[str, object]
 
 
 def _assert_public_entry_agrees(direct, y: np.ndarray, x: np.ndarray) -> None:
-    """``Analysis.from_unit_summary`` on the same units yields the same row."""
-    from increment import Analysis, CupedCovariate, Method, MetricSpec
+    """``from_frame(..., shape="summary")`` on the same units yields the same row."""
+    from increment import CupedCovariate, Method, MetricSpec
     from tests.analysis_factory import lift_rows
 
     spec = MetricSpec(
@@ -176,9 +178,16 @@ def _assert_public_entry_agrees(direct, y: np.ndarray, x: np.ndarray) -> None:
         decision_method=Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
     )
     (public,) = lift_rows(
-        Analysis.from_unit_summary(
-            unit_frame(y, x), unit="user_id", group="variant", control="control", metrics=[spec]
-        ).run()
+        view_readout(
+            *from_frame(
+                unit_frame(y, x),
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics=[spec],
+            )
+        )
     )
     assert (public.method, public.reference_kind) == (direct.method, direct.reference_kind)
     assert public.reference_df == pytest.approx(direct.reference_df, rel=1e-10)

@@ -10,7 +10,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from increment import Analysis
+from increment import Analysis, from_switchback_frame
+from increment.artifacts import artifact_context
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.contrast import ContrastStats
 from increment.estimation.contrast_results import ContrastResult, ContrastResults
@@ -27,6 +28,7 @@ from increment.semantics.assignment import (
 from increment.semantics.design import Randomized
 from increment.semantics.models import Winsorization
 from increment.semantics.unit_cycle import UnitCycleTApproximation
+from tests.analysis_factory import view_readout
 from tests.capability_consumers_scalar import (
     IMPUTE_POOLED_MEAN,
     UNBOUNDED_RETENTION_SEQUENTIAL,
@@ -143,7 +145,7 @@ def test_prospective_reference_binding_and_sufficient_state_are_preserved():
 def test_ordinary_panel_uses_independent_units_for_uncertainty():
     from scipy.stats import t
 
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pl.DataFrame(_rows()),
         unit="unit",
         cycle="cycle",
@@ -155,7 +157,7 @@ def test_ordinary_panel_uses_independent_units_for_uncertainty():
         assignment=_assignment(),
     )
 
-    result = analysis.run()[0]
+    result = view_readout(experiment, resolver)[0]
     assert isinstance(result, ContrastResult)
     # Cycle-weighted unit contrasts are 42 and -102, not eight independent periods.
     assert result.estimate.value == pytest.approx(-30)
@@ -196,7 +198,7 @@ def test_switchback_public_analysis_persists_and_round_trips(tmp_path):
 
 
 def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pl.DataFrame(_rows()),
         unit="unit",
         cycle="cycle",
@@ -208,7 +210,7 @@ def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
         assignment=_assignment(),
     )
 
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
 
     assert results.metadata is not None
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
@@ -218,7 +220,7 @@ def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
 
 def test_switchback_metric_names_match_explicit_specs() -> None:
     rows = _rows()
-    inferred = Analysis.from_switchback_panel(
+    inferred_experiment, inferred_resolver = from_switchback_frame(
         pl.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -229,7 +231,7 @@ def test_switchback_metric_names_match_explicit_specs() -> None:
         identification=_identification(),
         assignment=_assignment(),
     )
-    explicit = Analysis.from_switchback_panel(
+    explicit_experiment, explicit_resolver = from_switchback_frame(
         pl.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -244,8 +246,12 @@ def test_switchback_metric_names_match_explicit_specs() -> None:
         assignment=_assignment(),
     )
     try:
-        by_metric_inferred = {row.metric: row for row in inferred.run()}
-        by_metric_explicit = {row.metric: row for row in explicit.run()}
+        by_metric_inferred = {
+            row.metric: row for row in view_readout(inferred_experiment, inferred_resolver)
+        }
+        by_metric_explicit = {
+            row.metric: row for row in view_readout(explicit_experiment, explicit_resolver)
+        }
         assert by_metric_inferred.keys() == by_metric_explicit.keys()
         for metric, result in by_metric_inferred.items():
             expected = by_metric_explicit[metric]
@@ -256,14 +262,14 @@ def test_switchback_metric_names_match_explicit_specs() -> None:
                     getattr(expected.estimate, field)
                 )
     finally:
-        inferred.close()
-        explicit.close()
+        inferred_resolver.close()
+        explicit_resolver.close()
 
 
 def test_switchback_integer_metric_name_requires_explicit_type() -> None:
     rows = [dict(row, orders=int(cast(float, row["mean"]))) for row in _rows()]
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_switchback_panel(
+        from_switchback_frame(
             pl.DataFrame(rows),
             unit="unit",
             cycle="cycle",
@@ -283,7 +289,7 @@ def test_switchback_integer_metric_name_requires_explicit_type() -> None:
 
 
 def test_artifact_context_refuses_switchback_source_with_method_context():
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pl.DataFrame(_rows()),
         unit="unit",
         cycle="cycle",
@@ -295,7 +301,7 @@ def test_artifact_context_refuses_switchback_source_with_method_context():
         assignment=_assignment(),
     )
     with pytest.raises(CapabilityError) as raised:
-        _ = analysis.artifact_context
+        _ = artifact_context(experiment, resolver)
 
     assert raised.value.code == "facade.analysis.contrast_unavailable"
     assert raised.value.context["method"] == "artifact_context"
@@ -372,7 +378,7 @@ def test_same_order_zero_sample_se_has_finite_envelope_inference(n):
         for u in range(n)
         for period in range(2)
     ]
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pl.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -384,7 +390,7 @@ def test_same_order_zero_sample_se_has_finite_envelope_inference(n):
         assignment=reference.assignment,
         contrast_references={"mean": reference},
     )
-    result = analysis.run()[0]
+    result = view_readout(experiment, resolver)[0]
     assert isinstance(result, ContrastResult)
     assert result.estimate.value == pytest.approx(1 / 1.8)
     assert result.mean_slope == pytest.approx(1 / 1.8)
@@ -878,7 +884,7 @@ def test_source_stats_preserve_declared_and_retained_window_lengths(shared, carr
 
 def _shared_result(rows, *, assignment=None) -> ContrastResult:
     chosen_assignment = assignment or _shared_assignment()
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pl.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -894,7 +900,7 @@ def _shared_result(rows, *, assignment=None) -> ContrastResult:
             else None
         ),
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert isinstance(results, ContrastResults)
     return results[0]
 

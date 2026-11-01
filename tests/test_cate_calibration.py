@@ -96,6 +96,7 @@ from increment.semantics.design import (
     UptakeSpec,
 )
 from increment.sources import MomentsSource
+from tests.analysis_factory import bind_pair
 from tests.mc import Coverage, CoverageSet, mcse, nominal_band
 
 _ALPHA = 0.05
@@ -296,7 +297,6 @@ def test_validate_cate_estimates_confounded_source_via_dr_score():
 
 def test_validate_cate_refuses_source_without_design():
     """Builders always declare a design, so only a custom source reaches this."""
-    from increment.analysis import Analysis
 
     src = MomentsSource(
         [],
@@ -304,11 +304,7 @@ def test_validate_cate_refuses_source_without_design():
         study_id="designless",
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis._from_source(src).validate_cate(
-            "revenue",
-            control="control",
-            interact=["x"],
-        )
+        validate_cate(*bind_pair(src), "revenue", control="control", interact=["x"])
     assert exc_info.value.code == "cate.identification.unsupported_mechanism"
     assert exc_info.value.context["mechanism"] is None
 
@@ -2105,12 +2101,13 @@ def test_nested_selection_cannot_recover_rank_by_adding_cluster_members(
     from increment.errors import InvalidRequestError
     from increment.estimators import select_targeting_rule
 
-    _, experiment = _e6v0_original_cluster_experiment(
+    _, (experiment, resolver) = _e6v0_original_cluster_experiment(
         members_per_cluster, intervention_grain=intervention_grain, n_clusters=16
     )
     with pytest.raises(InvalidRequestError) as error:
         select_targeting_rule(
-            *experiment,
+            experiment,
+            resolver,
             "y",
             control="control",
             interact=["x"],

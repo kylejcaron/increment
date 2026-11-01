@@ -26,7 +26,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, run
+from increment import run, workflows
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.breakout.estimates import LiftEstimates
 from increment.builders import from_definitions, from_moments, from_unit_day_artifact
@@ -45,7 +45,13 @@ from increment.query.session import WarehouseArtifactStore
 from increment.semantics import load
 from increment.semantics.models import InferenceSpec
 from increment.sequential_state import SequentialSnapshot
-from increment.workflows import capture_sequential, sequential_snapshot
+from increment.workflows import (
+    capture_sequential,
+    experiment_definition,
+    export_moments,
+    sequential_snapshot,
+)
+from tests.analysis_factory import bound_source, make_binding, view_readout
 from tests.capability_consumers_auxiliary import assert_expected, assert_refusal
 
 _UTC_US = pa.timestamp("us", tz="UTC")
@@ -239,16 +245,6 @@ _AS_OF = dt.date(2024, 1, 10)
 _LATER = dt.date(2024, 1, 14)
 
 
-def _analysis(
-    tmp_path, table, *, plan=_PRIMARY_PLAN, evidence=_CERTIFIED, connection=None, **definitions
-):
-    path = tmp_path / "defs.yml"
-    path.write_text(_definitions(plan=plan, **definitions))
-    con = ibis.duckdb.connect() if connection is None else connection
-    con.create_table("events", obj=table)
-    return Analysis.from_definitions("exp", path, con, source_snapshot_evidence=evidence), path
-
-
 def _connected(path, connection, **options):
     """Bind definitions to a connection; the connected resolver owns a closeable source."""
     experiment, resolver = from_definitions(path, connection, experiment_name="exp", **options)
@@ -267,8 +263,27 @@ def _pair(
     return experiment, resolver, path
 
 
+def _analysis(tmp_path, table, **options):
+    """A definitions binding over *table*, and the definitions path it was read from."""
+    experiment, resolver, path = _pair(tmp_path, table, **options)
+    return (experiment, resolver), path
+
+
 def _by_population(rows):
     return {(row.analysis_population, row.metric): row for row in rows}
+
+
+_POPULATION_VIEWS = (
+    Scope(view="run", grain="total"),
+    Scope(view="run", grain="total", population="triggered"),
+)
+
+
+def _both_populations(experiment, resolver, **options) -> Any:
+    """The assigned and triggered whole-window rows of one run, as one collection."""
+    result = run(experiment.with_views(*_POPULATION_VIEWS), resolver, **options)
+    assigned, triggered = (result.readout(scope) for scope in _POPULATION_VIEWS)
+    return cast("LiftEstimates", assigned).concat(cast("LiftEstimates", triggered))
 
 
 def _sequential_rows(result):
@@ -383,7 +398,7 @@ def _assert_empty_sequential_compliance(tmp_path):
     compliance_path = tmp_path / "compliance"
     compliance_path.mkdir()
     connection = ibis.duckdb.connect()
-    analysis, _ = _analysis(
+    (experiment, resolver), _ = _analysis(
         compliance_path,
         _events(uptake=True),
         plan=_COMPLIANCE_PLAN,
@@ -391,13 +406,13 @@ def _assert_empty_sequential_compliance(tmp_path):
         encouragement=True,
     )
     try:
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         with pytest.raises(CodedError) as refused:
-            analysis.run(metrics=[], estimands=("late",))
+            _both_populations(experiment, resolver, metrics=[], estimands=("late",))
         assert refused.value.code == "sequential.route.unsupported"
-        default_rows = analysis.run(metrics=[])
+        default_rows = _both_populations(experiment, resolver, metrics=[])
         assert {row.estimand for row in default_rows} == {"compliance"}
-        rows = analysis.run(metrics=[], estimands=("compliance",))
+        rows = _both_populations(experiment, resolver, metrics=[], estimands=("compliance",))
         assert {row.estimand for row in rows} == {"compliance"}
         # Separate run calls may have distinct snapshot IDs; compare all readout data and state.
         assert [row.model_dump(exclude={"source_snapshot_id"}) for row in default_rows] == [
@@ -405,7 +420,7 @@ def _assert_empty_sequential_compliance(tmp_path):
         ]
         assert default_rows.sequential_snapshot == rows.sequential_snapshot
     finally:
-        analysis.close()
+        resolver.close()
         connection.disconnect()
 
 
@@ -550,18 +565,18 @@ def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path)
 
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
-    analysis, path = _analysis(tmp_path, _events(), connection=connection)
+    (experiment, resolver), path = _analysis(tmp_path, _events(), connection=connection)
     moments_closer = None
     try:
         _assert_empty_sequential_compliance(tmp_path)
         _assert_selected_registered_family_capture(tmp_path)
         _assert_combined_compliance_family_requests(tmp_path)
-        snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
+        snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
         assert snapshot.triggered.population == "triggered"
         assert 0 < len(snapshot.triggered.records) < len(snapshot.records)
         assert snapshot.triggered.registration_id != snapshot.registration_id
-        rows = analysis.run()
+        rows = _both_populations(experiment, resolver)
         by = _by_population(rows)
         assigned, triggered = by["assigned", "revenue"], by["triggered", "revenue"]
         for row in (assigned, triggered):
@@ -577,21 +592,24 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
             "assigned",
             "triggered",
         }
-        assert {row.analysis_population for row in analysis.run(population="triggered")} == {
-            "triggered"
-        }
+        assert {
+            row.analysis_population
+            for row in view_readout(experiment, resolver, population="triggered")
+        } == {"triggered"}
         restored = ReadoutResults.model_validate_json(rows.model_dump_json())
         assert restored.sequential_snapshot == snapshot
         assert [(row.analysis_population, row.require_sequential_result()) for row in restored] == [
             (row.analysis_population, row.require_sequential_result()) for row in rows
         ]
-        history = analysis.run_asof_lift(population="triggered")
+        history = view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof", population="triggered")
+        )
         assert [(row.analysis_population, row.ds) for row in history] == [("triggered", _LATER)]
         assert history[0].sequential_result == triggered.require_sequential_result()
 
         _assert_triggered_only_store_roundtrip(tmp_path, path, connection)
         moments_path = tmp_path / "triggered-sequential.parquet"
-        analysis.export(moments_path)
+        export_moments(experiment, resolver, moments_path)
         moments_experiment, moments_resolver = from_moments(
             pq.read_table(moments_path).to_pylist(),
             metrics={"revenue": "mean"},
@@ -619,7 +637,7 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
     finally:
         if moments_closer is not None:
             moments_closer.close()
-        analysis.close()
+        resolver.close()
         connection.disconnect()
 
 
@@ -688,10 +706,12 @@ def test_triggered_sequential_metadata_orders_mixed_direction_cells(tmp_path):
     path.write_text(definitions)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(secondaries=("guard",)))
-    analysis = Analysis.from_definitions("exp", path, con, source_snapshot_evidence=_CERTIFIED)
+    experiment, resolver = from_definitions(
+        path, con, experiment_name="exp", source_snapshot_evidence=_CERTIFIED
+    )
     try:
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
-        rows = analysis.run()
+        capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
+        rows = _both_populations(experiment, resolver)
         assert rows.metadata is not None
         legacy_metadata = rows.metadata
         assert legacy_metadata is not None
@@ -777,31 +797,31 @@ def test_triggered_sequential_metadata_orders_mixed_direction_cells(tmp_path):
         assert restored_arrow_metadata is not None
         assert restored_arrow_metadata.cells == legacy_metadata.cells
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_triggered_asof_replays_from_exported_moments(tmp_path):
     import pyarrow.parquet as pq
 
-    analysis, _ = _analysis(tmp_path, _events())
+    (analysis_experiment, analysis_resolver), _ = _analysis(tmp_path, _events())
     path = tmp_path / "triggered.parquet"
     try:
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
-        analysis.export(path)
-        replay = Analysis.from_moments(
-            pq.read_table(path).to_pylist(),
-            metrics={"revenue": "mean"},
-            control="C",
+        capture_sequential(analysis_experiment, analysis_resolver, finalized=True, as_of=_LATER)
+        export_moments(analysis_experiment, analysis_resolver, path)
+        replay_experiment, replay_resolver = from_moments(
+            pq.read_table(path).to_pylist(), metrics={"revenue": "mean"}, control="C"
         )
-        history = replay.run_asof_lift(population="triggered")
+        history = view_readout(
+            replay_experiment,
+            replay_resolver,
+            Scope(view="asof", grain="asof", population="triggered"),
+        )
         assert history
         assert {row.analysis_population for row in history} == {"triggered"}
         assert {row.ds for row in history} == {_LATER}
         from dataclasses import replace
 
         from increment import run, runnable
-        from increment.builders import from_moments
-        from increment.kernel.contracts import Scope
 
         experiment, resolver = from_moments(
             pq.read_table(path).to_pylist(),
@@ -819,13 +839,13 @@ def test_triggered_asof_replays_from_exported_moments(tmp_path):
         assert {cell.identity.key.ds for cell in resolved_history.cells} == {_LATER}
 
     finally:
-        analysis.close()
+        analysis_resolver.close()
 
 
 def test_triggered_registration_is_derived_before_data(tmp_path):
-    analysis, _ = _analysis(tmp_path, _events(n_per_arm=10))
+    (experiment, resolver), _ = _analysis(tmp_path, _events(n_per_arm=10))
     try:
-        spec = analysis.experiment.plan.inference
+        spec = experiment_definition(experiment, resolver).plan.inference
         assert spec is not None and spec.registration is not None
         triggered = spec.triggered_registration
         assert triggered is not None
@@ -834,7 +854,7 @@ def test_triggered_registration_is_derived_before_data(tmp_path):
         assert triggered.models == spec.registration.models
         assert triggered.roster == spec.registration.roster
         assert triggered.reveal.filtration_id != spec.registration.reveal.filtration_id
-        rhos = {model.rho for model in (*triggered.models, *spec.registration.models)}
+        rhos = {cast(Any, model).rho for model in (*triggered.models, *spec.registration.models)}
         assert len(rhos) == 1
         with pytest.raises(CodedError) as declared:
             InferenceSpec(kind="asymptotic_mean", triggered_registration=triggered)
@@ -848,7 +868,7 @@ def test_triggered_registration_is_derived_before_data(tmp_path):
             )
         assert mismatched.value.code == "sequential.registration.invalid"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -989,17 +1009,19 @@ def test_artifact_capture_refuses_an_uncertified_trigger_feed(tmp_path):
 
 @pytest.mark.slow
 def test_assigned_only_process_continues_assigned_only_and_refuses_backfill(tmp_path):
-    analysis, _ = _analysis(tmp_path, _events())
+    (experiment, resolver), _ = _analysis(tmp_path, _events())
     try:
-        committed = analysis.capture_sequential(finalized=True, as_of=_AS_OF)
+        committed = capture_sequential(experiment, resolver, finalized=True, as_of=_AS_OF)
         assert committed.triggered is not None
         legacy = SequentialSnapshot.model_validate(
             committed.model_copy(update={"triggered": None}).model_dump()
         )
-        continued = analysis.capture_sequential(finalized=True, as_of=_LATER, previous=legacy)
+        continued = capture_sequential(
+            experiment, resolver, finalized=True, as_of=_LATER, previous=legacy
+        )
         assert continued.triggered is None
         assert len(continued.records) >= len(legacy.records)
-        rows = analysis.run()
+        rows = _both_populations(experiment, resolver)
         by = _by_population(rows)
         assert by["assigned", "revenue"].sequential_result is not None
         placeholder = by["triggered", "revenue"]
@@ -1015,20 +1037,22 @@ def test_assigned_only_process_continues_assigned_only_and_refuses_backfill(tmp_
             ("assigned", None),
             ("triggered", "readout.cell.unsupported_request"),
         ]
-        history = analysis.run_asof_lift(population="triggered")
+        history = view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof", population="triggered")
+        )
         assert [(row.ds, row.failure_context["reason"]) for row in history] == [
             (_LATER, "triggered_chain_uncommitted")
         ]
         # A committed process cannot be linked onto the assigned-only one the
         # source retained, and an assigned-only parent never acquires the chain.
         with pytest.raises(CapabilityError) as dropped:
-            analysis.sequential_snapshot(previous=committed)
+            sequential_snapshot(experiment, resolver, previous=committed)
         assert dropped.value.code == "sequential.continuation.rewrite"
         with pytest.raises(CapabilityError) as backfill:
             committed.verify_parent(legacy)
         assert backfill.value.code == "sequential.continuation.legacy"
     finally:
-        analysis.close()
+        resolver.close()
     fresh_experiment, fresh, _ = _pair(tmp_path, _events())
     with fresh:
         capture_sequential(fresh_experiment, fresh, finalized=True, as_of=_AS_OF)
@@ -1047,27 +1071,27 @@ def test_assigned_only_process_continues_assigned_only_and_refuses_backfill(tmp_
 )
 def test_triggered_uptake_cells_stay_unavailable(tmp_path, ingress):
     connection = ibis.duckdb.connect()
-    native, path = _analysis(
+    native_experiment, native, path = _pair(
         tmp_path,
         _events(uptake=True),
         plan=_COMPLIANCE_PLAN,
         encouragement=True,
         connection=connection,
     )
-    analysis = native
+    experiment, resolver = native_experiment, native
     try:
-        spec = analysis.experiment.plan.inference
+        spec = experiment_definition(experiment, resolver).plan.inference
         assert spec is not None and spec.registration is not None
         assert any(model.observable == "uptake" for model in spec.registration.models)
         triggered = spec.triggered_registration
         assert triggered is not None
         assert all(model.observable == "outcome" for model in triggered.models)
         assert all(cell.estimand != "compliance" for cell in triggered.roster)
-        snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
+        snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
         if ingress == "from_unit_day_artifact":
             store, reference, context = _publish_with_trigger_evidence(
-                native,
+                (native_experiment, native),
                 path,
                 connection=connection,
                 schema="uptake_availability",
@@ -1078,17 +1102,22 @@ def test_triggered_uptake_cells_stay_unavailable(tmp_path, ingress):
                     "encouragement_uptake",
                 },
             )
-            analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-            analysis.capture_sequential(finalized=True, as_of=_LATER)
+            experiment, resolver = from_unit_day_artifact(
+                store, reference, expected_context=context
+            )
+            capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         elif ingress == "from_moments":
             destination = tmp_path / "uptake.parquet"
-            native.export(destination)
-            analysis = Analysis.from_moments(
+            export_moments(native_experiment, native, destination)
+            experiment, resolver = from_moments(
                 pq.read_table(destination).to_pylist(),
                 metrics={"revenue": "mean"},
-                design=native.experiment.resolved_design(),
+                design=experiment_definition(native_experiment, native).resolved_design(),
             )
-        rows = cast("LiftEstimates", analysis.run(estimands=("itt", "compliance")))
+        rows = cast(
+            "LiftEstimates",
+            _both_populations(experiment, resolver, estimands=("itt", "compliance")),
+        )
         cells = {
             (row.analysis_population, row.metric, row.estimand): row
             for row in rows
@@ -1111,8 +1140,8 @@ def test_triggered_uptake_cells_stay_unavailable(tmp_path, ingress):
         assert rows.metadata is not None
         assert rows.metadata.scope.decision_complete("triggered") is False
     finally:
-        analysis.close()
-        if analysis is not native:
+        cast(Any, resolver).close()
+        if resolver is not native:
             native.close()
 
 
@@ -1126,36 +1155,42 @@ def test_triggered_uptake_cells_stay_unavailable(tmp_path, ingress):
 )
 def test_assigned_only_state_retains_unavailable_triggered_rows_across_sources(tmp_path, ingress):
     connection = ibis.duckdb.connect()
-    native, path = _analysis(tmp_path, _events(), connection=connection)
-    analysis = native
+    native_experiment, native, path = _pair(tmp_path, _events(), connection=connection)
+    experiment, resolver = native_experiment, native
     try:
-        committed = native.capture_sequential(finalized=True, as_of=_AS_OF)
+        committed = capture_sequential(native_experiment, native, finalized=True, as_of=_AS_OF)
         legacy = SequentialSnapshot.model_validate(
             committed.model_copy(update={"triggered": None}).model_dump()
         )
-        continued = native.capture_sequential(finalized=True, as_of=_LATER, previous=legacy)
+        continued = capture_sequential(
+            native_experiment, native, finalized=True, as_of=_LATER, previous=legacy
+        )
         if ingress == "from_unit_day_artifact":
             store, reference, context = _publish_with_trigger_evidence(
-                native,
+                (native_experiment, native),
                 path,
                 connection=connection,
                 schema="assigned_only",
                 kinds={"trigger_population", "assignment_counts", "trigger_measure_stats"},
             )
-            analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-            analysis.capture_sequential(finalized=True, as_of=_LATER, previous=continued)
+            experiment, resolver = from_unit_day_artifact(
+                store, reference, expected_context=context
+            )
+            capture_sequential(
+                experiment, resolver, finalized=True, as_of=_LATER, previous=continued
+            )
         elif ingress == "from_moments":
             destination = tmp_path / "assigned-only.parquet"
-            native.export(destination)
-            analysis = Analysis.from_moments(
+            export_moments(native_experiment, native, destination)
+            experiment, resolver = from_moments(
                 pq.read_table(destination).to_pylist(),
                 metrics={"revenue": "mean"},
-                design=native.experiment.resolved_design(),
+                design=experiment_definition(native_experiment, native).resolved_design(),
             )
-        retained = analysis.sequential_snapshot()
+        retained = sequential_snapshot(experiment, resolver)
         assert retained.triggered is None
         assert retained.records == continued.records
-        rows = _by_population(analysis.run())
+        rows = _by_population(_both_populations(experiment, resolver))
         assert rows["assigned", "revenue"].sequential_result is not None
         unavailable = rows["triggered", "revenue"]
         assert unavailable.lift is None and unavailable.sampling_available is False
@@ -1177,8 +1212,8 @@ def test_assigned_only_state_retains_unavailable_triggered_rows_across_sources(t
             stage="verify_parent",
         )
     finally:
-        analysis.close()
-        if analysis is not native:
+        cast(Any, resolver).close()
+        if resolver is not native:
             native.close()
 
 
@@ -1189,7 +1224,9 @@ _COMPLIANCE_PLAN = (
 )
 
 
-def _publish_with_trigger_evidence(analysis, path, *, connection, schema: str, kinds: set[str]):
+def _publish_with_trigger_evidence(
+    analysis: tuple[Any, Any], path, *, connection, schema: str, kinds: set[str]
+):
     store = WarehouseArtifactStore(connection, schema_name=schema)
     defs = load(path)
     context = artifact_context(defs, defs.experiments[0], "error")
@@ -1198,7 +1235,7 @@ def _publish_with_trigger_evidence(analysis, path, *, connection, schema: str, k
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind in kinds
     ]
-    return store, analysis.publish_unit_day_artifact(store, extensions=requests), context
+    return store, publish_unit_day_artifact(*analysis, store, extensions=requests), context
 
 
 @pytest.mark.slow
@@ -1212,7 +1249,7 @@ def test_certified_encouragement_artifact_captures_both_chains(tmp_path):
         connection=connection,
     )
     try:
-        native = analysis.capture_sequential(finalized=True, as_of=_LATER)
+        native = capture_sequential(*analysis, finalized=True, as_of=_LATER)
         store, reference, context = _publish_with_trigger_evidence(
             analysis,
             path,
@@ -1225,12 +1262,16 @@ def test_certified_encouragement_artifact_captures_both_chains(tmp_path):
                 "encouragement_uptake",
             },
         )
-        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
-            artifact = adopted.capture_sequential(finalized=True, as_of=_LATER)
+        experiment, resolver = from_unit_day_artifact(store, reference, expected_context=context)
+        with resolver:
+            artifact = capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
             assert artifact == native
             cells = {
                 (row.analysis_population, row.metric, row.estimand): row
-                for row in cast("LiftEstimates", adopted.run(estimands=("itt", "compliance")))
+                for row in cast(
+                    "LiftEstimates",
+                    _both_populations(experiment, resolver, estimands=("itt", "compliance")),
+                )
                 if row.method_role == "decision"
             }
             assert cells["assigned", "uptake", "compliance"].sequential_result is not None
@@ -1239,7 +1280,7 @@ def test_certified_encouragement_artifact_captures_both_chains(tmp_path):
             assert unavailable.failure_context is not None
             assert unavailable.failure_context["reason"] == "triggered_uptake_unsupported"
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_uncertified_uptake_feed_refuses_on_both_routes(tmp_path):
@@ -1255,7 +1296,7 @@ def test_uncertified_uptake_feed_refuses_on_both_routes(tmp_path):
     )
     try:
         with pytest.raises(CapabilityError) as native:
-            analysis.capture_sequential(finalized=True, as_of=_LATER)
+            capture_sequential(*analysis, finalized=True, as_of=_LATER)
         assert native.value.code == "sequential.source.invalid"
         assert native.value.context["feed"] == "clicks"
         assert native.value.context["certified_day"] is None
@@ -1271,14 +1312,15 @@ def test_uncertified_uptake_feed_refuses_on_both_routes(tmp_path):
                 "encouragement_uptake",
             },
         )
-        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
+        experiment, resolver = from_unit_day_artifact(store, reference, expected_context=context)
+        with resolver:
             with pytest.raises(CapabilityError) as artifact:
-                adopted.capture_sequential(finalized=True, as_of=_LATER)
+                capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
             assert artifact.value.code == "sequential.source.invalid"
             assert artifact.value.context["feed"] == "encouragement_uptake:clicked"
             assert artifact.value.context["certified_day"] is None
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path):
@@ -1291,11 +1333,12 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path)
     """
     from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
     from increment.sequential_source import native_observation_mapping
-    from tests.analysis_factory import make_analysis
 
     table = _events()
     connection = ibis.duckdb.connect()
-    analysis, path = _analysis(tmp_path, table, connection=connection)
+    (analysis_experiment, analysis_resolver), path = _analysis(
+        tmp_path, table, connection=connection
+    )
     try:
         defs = load(path)
         experiment = defs.experiments[0]
@@ -1328,7 +1371,7 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path)
             design=design,
         )
         assert getattr(uncommitted.inference, "triggered_registration", None) is None
-        earlier = make_analysis(
+        earlier = make_binding(
             connection,
             earlier_defs,
             experiment=earlier_experiment,
@@ -1336,24 +1379,28 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path)
             source_snapshot_evidence=_CERTIFIED,
         )
         try:
-            legacy = earlier.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 6))
+            legacy = capture_sequential(*earlier, finalized=True, as_of=dt.date(2024, 1, 6))
         finally:
-            earlier.close()
+            earlier[1].close()
         assert legacy.triggered is None
-        committed = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 6))
+        committed = capture_sequential(
+            analysis_experiment, analysis_resolver, finalized=True, as_of=dt.date(2024, 1, 6)
+        )
         assert committed.triggered is not None
         assert committed.records == legacy.records
         assert committed.prefix_id == legacy.prefix_id
-        continued = analysis.capture_sequential(finalized=True, as_of=_LATER, previous=legacy)
+        continued = capture_sequential(
+            analysis_experiment, analysis_resolver, finalized=True, as_of=_LATER, previous=legacy
+        )
         assert continued.triggered is None
         assert continued.parent_id == legacy.prefix_id
         assert len(continued.records) > len(legacy.records)
-        rows = analysis.run()
+        rows = _both_populations(analysis_experiment, analysis_resolver)
         by = _by_population(rows)
         assert by["assigned", "revenue"].sequential_result is not None
         assert by["triggered", "revenue"].failure_context["reason"] == "triggered_chain_uncommitted"
     finally:
-        analysis.close()
+        analysis_resolver.close()
 
 
 @pytest.mark.integration
@@ -1439,12 +1486,16 @@ def test_metric_freeze_reaches_the_triggered_chain_once_it_is_ready(tmp_path):
 @pytest.mark.slow
 def test_native_and_artifact_capture_identical_chains(tmp_path):
     connection = ibis.duckdb.connect()
-    analysis, path = _analysis(tmp_path, _events(), connection=connection)
+    (analysis_experiment, analysis_resolver), path = _analysis(
+        tmp_path, _events(), connection=connection
+    )
     try:
-        native = analysis.capture_sequential(finalized=True, as_of=_LATER, freeze=["revenue"])
+        native = capture_sequential(
+            analysis_experiment, analysis_resolver, finalized=True, as_of=_LATER, freeze=["revenue"]
+        )
         assert native.triggered is not None
         assert len(native.frozen) == 1 and len(native.triggered.frozen) == 1
-        native_rows = analysis.run()
+        native_rows = _both_populations(analysis_experiment, analysis_resolver)
         store = WarehouseArtifactStore(connection, schema_name="parity")
         defs = load(path)
         context = artifact_context(defs, defs.experiments[0], "error")
@@ -1454,17 +1505,28 @@ def test_native_and_artifact_capture_identical_chains(tmp_path):
             if entry.request.kind
             in {"trigger_population", "assignment_counts", "trigger_measure_stats"}
         ]
-        reference = analysis.publish_unit_day_artifact(store, extensions=requests)
-        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
-            spec = adopted.experiment.plan.inference
-            assert spec is not None
-            assert (
-                spec.triggered_registration
-                == analysis.experiment.plan.inference.triggered_registration
+        reference = publish_unit_day_artifact(
+            analysis_experiment, analysis_resolver, store, extensions=requests
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, reference, expected_context=context
+        )
+        with adopted_resolver:
+            spec = experiment_definition(adopted_experiment, adopted_resolver).plan.inference
+            native_spec = experiment_definition(
+                analysis_experiment, analysis_resolver
+            ).plan.inference
+            assert spec is not None and native_spec is not None
+            assert spec.triggered_registration == native_spec.triggered_registration
+            artifact = capture_sequential(
+                adopted_experiment,
+                adopted_resolver,
+                finalized=True,
+                as_of=_LATER,
+                freeze=["revenue"],
             )
-            artifact = adopted.capture_sequential(finalized=True, as_of=_LATER, freeze=["revenue"])
             assert artifact == native
-            artifact_rows = adopted.run()
+            artifact_rows = _both_populations(adopted_experiment, adopted_resolver)
             compared = (
                 "analysis_population",
                 "lift",
@@ -1481,21 +1543,26 @@ def test_native_and_artifact_capture_identical_chains(tmp_path):
             replay = ReadoutResults.model_validate_json(artifact_rows.model_dump_json())
             assert replay.sequential_snapshot == native
     finally:
-        analysis.close()
+        analysis_resolver.close()
 
 
 @pytest.mark.slow
 def test_final_look_triggered_states_match_the_fixed_horizon_triggered_frame(tmp_path):
-    from tests.analysis_factory import _native_source
 
-    analysis, _ = _analysis(tmp_path, _events())
+    (experiment, resolver), _ = _analysis(tmp_path, _events())
     try:
-        snapshot = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 20))
+        snapshot = capture_sequential(
+            experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 20)
+        )
         assert snapshot.triggered is not None
         frame = request_evidence(
-            evidence_provider(_native_source(analysis).triggered_source()),
+            evidence_provider(bound_source(resolver).triggered_source()),
             UnitRowsRequest(
-                next(metric for metric in analysis.metrics if metric.name == "revenue"),
+                next(
+                    metric
+                    for metric in workflows.metrics(experiment, resolver)
+                    if metric.name == "revenue"
+                ),
                 population="triggered",
             ),
         )
@@ -1511,19 +1578,19 @@ def test_final_look_triggered_states_match_the_fixed_horizon_triggered_frame(tmp
             assert state.mean[0] == mean
             assert state.scatter[0][0] == scatter
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_secondary_family_is_selected_per_population_with_the_same_guarantee(tmp_path):
     secondaries = ("aux_a", "aux_b")
-    analysis, _ = _analysis(
+    (experiment, resolver), _ = _analysis(
         tmp_path, _events(secondaries=secondaries), plan=_FAMILY_PLAN, secondaries=secondaries
     )
     try:
-        spec = analysis.experiment.plan.inference
+        spec = experiment_definition(experiment, resolver).plan.inference
         assert spec is not None and spec.triggered_registration is not None
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
-        rows = analysis.run()
+        capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
+        rows = _both_populations(experiment, resolver)
         families = {
             (family.analysis_population, family.name): family
             for family in rows.metadata.scope.families
@@ -1561,7 +1628,7 @@ def test_secondary_family_is_selected_per_population_with_the_same_guarantee(tmp
             row.multiplicity_status for row in rows
         ]
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def _assert_triggered_selection_public_surfaces(rows, selected):
@@ -1607,15 +1674,15 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
 
 def test_triggered_selection_is_qualified_on_public_surfaces(tmp_path):
     secondaries = ("aux_a", "aux_b")
-    analysis, _ = _analysis(
+    (experiment, resolver), _ = _analysis(
         tmp_path,
         _events(secondaries=secondaries, secondary_effect=1.0),
         plan=_FAMILY_PLAN,
         secondaries=secondaries,
     )
     try:
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
-        rows = analysis.run()
+        capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
+        rows = _both_populations(experiment, resolver)
         selected = next(
             row
             for row in rows
@@ -1625,22 +1692,22 @@ def test_triggered_selection_is_qualified_on_public_surfaces(tmp_path):
         )
         _assert_triggered_selection_public_surfaces(rows, selected)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_filtered_readout_keeps_original_family_qualification(tmp_path):
     from increment.tables import estimates_to_readout, readout_table
 
     secondaries = ("aux_a", "aux_b")
-    analysis, _ = _analysis(
+    (experiment, resolver), _ = _analysis(
         tmp_path,
         _events(secondaries=secondaries, secondary_effect=1.0),
         plan=_FAMILY_PLAN,
         secondaries=secondaries,
     )
     try:
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
-        rows = analysis.run()
+        capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
+        rows = _both_populations(experiment, resolver)
         selected = next(
             row
             for row in rows
@@ -1665,7 +1732,7 @@ def test_filtered_readout_keeps_original_family_qualification(tmp_path):
         assert "Partial view" in html
         assert qualification in html
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_triggered_request_without_a_trigger_refuses_under_a_registered_plan(tmp_path):
@@ -1673,29 +1740,35 @@ def test_triggered_request_without_a_trigger_refuses_under_a_registered_plan(tmp
     path.write_text(_definitions(plan=_PRIMARY_PLAN).replace("    trigger: saw_surface\n", ""))
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=20))
-    analysis = Analysis.from_definitions("exp", path, con, source_snapshot_evidence=_CERTIFIED)
+    experiment, resolver = from_definitions(
+        path, con, experiment_name="exp", source_snapshot_evidence=_CERTIFIED
+    )
     try:
-        spec = analysis.experiment.plan.inference
+        spec = experiment_definition(experiment, resolver).plan.inference
         assert spec is not None and spec.triggered_registration is None
-        snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
+        snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         assert snapshot.triggered is None
-        assert {row.analysis_population for row in analysis.run()} == {"assigned"}
+        assert {row.analysis_population for row in view_readout(experiment, resolver)} == {
+            "assigned"
+        }
         with pytest.raises(CapabilityError) as raised:
-            analysis.run(population="triggered")
+            view_readout(experiment, resolver, population="triggered")
         assert raised.value.code == "facade.analysis.trigger_unsupported"
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_breakout_route_keeps_refusing_triggered_sequential_segments(tmp_path):
-    analysis, _ = _analysis(tmp_path, _events(n_per_arm=20), breakouts=True)
+    (experiment, resolver), _ = _analysis(tmp_path, _events(n_per_arm=20), breakouts=True)
     try:
-        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         with pytest.raises(CapabilityError) as raised:
-            analysis.run_breakout(population="triggered")
+            view_readout(
+                experiment, resolver, Scope(view="breakout", grain="total", population="triggered")
+            )
         assert raised.value.code == "sequential.route.unsupported"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 pytestmark = pytest.mark.integration

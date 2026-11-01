@@ -5,6 +5,7 @@ from typing import cast
 import numpy as np
 import pytest
 
+from increment import from_frame
 from increment.errors import (
     CapabilityError,
     InvalidRequestError,
@@ -17,6 +18,7 @@ from increment.estimation.inference import Normal
 from increment.estimators import IdentificationError
 from increment.semantics.design import Encouragement
 from increment.semantics.models import MeanMetric, RatioMetric, RetentionMetric
+from tests.analysis_factory import view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -1529,7 +1531,6 @@ def test_encouragement_itt_conversion_keeps_binomial_reference():
     import pandas as pd
 
     from increment._metric_specs import MetricSpec
-    from increment.analysis import Analysis
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import ExclusionRestriction, UptakeSpec
 
@@ -1544,9 +1545,16 @@ def test_encouragement_itt_conversion_keeps_binomial_reference():
         }
     )
     metrics = [MetricSpec(name="converted", type="conversion")]
-    [randomized] = Analysis.from_unit_summary(
-        df, unit="unit_id", group="group_id", control="control", metrics=metrics
-    ).run()
+    [randomized] = view_readout(
+        *from_frame(
+            df,
+            shape="summary",
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            metrics=metrics,
+        )
+    )
     design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
@@ -1554,9 +1562,18 @@ def test_encouragement_itt_conversion_keeps_binomial_reference():
             justification="uptake does not gate the conversion outcome"
         ),
     )
-    [encouragement] = Analysis.from_unit_summary(
-        df, unit="unit_id", group="group_id", metrics=metrics, design=design, uptake="uptake"
-    ).run(estimands=["itt"])
+    [encouragement] = view_readout(
+        *from_frame(
+            df,
+            shape="summary",
+            unit="unit_id",
+            group="group_id",
+            metrics=metrics,
+            design=design,
+            uptake="uptake",
+        ),
+        estimands=["itt"],
+    )
     assert isinstance(randomized, LiftEstimate)
     assert isinstance(encouragement, LiftEstimate)
     assert randomized.reference_kind == "binomial"
