@@ -354,7 +354,8 @@ def _execution_config_for_cell(binding: SourceBinding, cell: Any) -> tuple[Any, 
     from increment._analysis_config import effective_methods
 
     key = cell.identity.key
-    if key.metric == "uptake" and key.estimand == "compliance":
+    # A compliance cell estimates the declared uptake, whichever outcome row names it.
+    if key.estimand == "compliance":
         uptake = getattr(binding.design, "uptake", None)
         if uptake is not None:
             from increment.estimation.engine import Method

@@ -279,6 +279,46 @@ def test_native_encouragement_day_source_declares_working_compliance_axis(con, t
         analysis.close()
 
 
+def test_asof_compliance_cells_execute_the_design_uptake_configuration(con, tmp_path):
+    """With LATE requested an as-of compliance row is named after its outcome metric, yet it
+    estimates the declared uptake: it executes the whole-window compliance cell's
+    configuration."""
+    from dataclasses import replace
+
+    from increment import run
+    from increment.builders import from_definitions
+    from increment.kernel.contracts import Scope
+
+    _seed(con)
+    defs_path = _write_defs_yaml(_encouragement_defs(), tmp_path)
+    experiment, resolver = from_definitions(
+        defs_path, con, experiment_name="native_encouragement_exp", store="none"
+    )
+    scopes = (Scope(view="run", grain="total"), Scope(view="asof", grain="asof"))
+    try:
+        result = run(
+            replace(experiment, scopes=scopes), resolver, estimands=("itt", "compliance", "late")
+        )
+    finally:
+        cast("Any", resolver).close()
+
+    def configuration(cell):
+        return (
+            cell.identity.metric_hash,
+            cell.identity.estimator_id,
+            cell.identity.method_config_hash,
+        )
+
+    compliance = [cell for cell in result.cells if cell.identity.key.estimand == "compliance"]
+    views: dict[str, list[Any]] = {"run": [], "asof": []}
+    for cell in compliance:
+        assert cell.identity.scope is not None
+        views[cell.identity.scope.view].append(cell)
+    (expected,) = {configuration(cell) for cell in views["run"]}
+    assert views["asof"]
+    assert {configuration(cell) for cell in views["asof"]} == {expected}
+
+
 def test_line_two_encouragement_reads_separate_uptake_source(con, tmp_path):
     _seed(con)
     events = con.table("native_encouragement_events")
