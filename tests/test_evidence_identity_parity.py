@@ -817,10 +817,10 @@ def _assert_outcome_matches(
     return {}
 
 
-def _line1_read(analysis: Any, ingress: str, case: Any) -> Any:
+def _line1_read(bound: Any, ingress: str, case: Any) -> Any:
     from tests.parity_harness.runner import _read
 
-    return _read(analysis, ingress, case)
+    return _read(bound, ingress, case)
 
 
 def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
@@ -829,11 +829,11 @@ def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
     stack.enter_context(patch.object(target, name, replacement))
 
 
-def _run_with_read_counter(analysis: Any, ingress: str, case: Any) -> tuple[Any, Mapping[str, int]]:
+def _run_with_read_counter(bound: Any, ingress: str, case: Any) -> tuple[Any, Mapping[str, int]]:
     from collections import Counter
     from contextlib import ExitStack
 
-    source = held_source(analysis)
+    source = held_source(bound[1])
     source_type = type(source)
     names = (
         ("unit_frame",)
@@ -872,7 +872,7 @@ def _run_with_read_counter(analysis: Any, ingress: str, case: Any) -> tuple[Any,
                     depth -= 1
 
             _enter_patch(stack, source_type, name, counted)
-        return _line1_read(analysis, ingress, case), counts
+        return _line1_read(bound, ingress, case), counts
 
 
 def _line1_actual_outcome(
@@ -933,14 +933,14 @@ def _line1_outcome(  # noqa: PLR0915
     from contextlib import ExitStack
     from datetime import UTC, datetime
 
-    from increment import Analysis
+    from increment import builders, workflows
     from increment.errors import CodedError, InvalidRequestError
     from increment.result_envelope import AnalysisEnvelope
     from scripts.capture_evidence_identity import (
         _aggregate_evidence,
         _population_identity,
     )
-    from tests.parity_harness.cases import PARITY_CASES, _close_parity_analysis
+    from tests.parity_harness.cases import PARITY_CASES, _capture_kwargs, _close_parity_binding
 
     cases = {case.id: case for case in PARITY_CASES}
     case = cases[scenario_id]
@@ -951,21 +951,20 @@ def _line1_outcome(  # noqa: PLR0915
         }
 
     aggregate_rows: list[dict[str, object]] = []
-    execution_modes: dict[str, object] = {}
     payloads: dict[str, object] = {}
     try:
         if ingress == "from_moments":
-            original_from_moments = Analysis.from_moments
+            original_from_moments = builders.from_moments
 
-            def capture_moments(cls, rows, **kwargs):
+            def capture_moments(rows, **kwargs):
                 aggregate_rows.extend(copy.deepcopy(dict(row)) for row in rows)
                 return original_from_moments(rows, **kwargs)
 
             with ExitStack() as stack:
-                _enter_patch(stack, Analysis, "from_moments", classmethod(capture_moments))
-                analysis = case.build[ingress]()
+                _enter_patch(stack, builders, "from_moments", capture_moments)
+                bound = case.build[ingress]()
         else:
-            analysis = case.build[ingress]()
+            bound = case.build[ingress]()
     except CodedError as error:
         outcome = {
             "kind": "refusal",
@@ -984,40 +983,11 @@ def _line1_outcome(  # noqa: PLR0915
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-
-                def capture_execution_modes(context):
-                    execution_modes.update(
-                        coherence=context.coherence,
-                        effective_modes=dict(context.effective_modes),
-                    )
-
-                def operation():
-                    if (scoped or line4) and case.sequential:
-                        as_of = getattr(analysis, "_sequential_as_of", None)
-                        snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
-                        analysis.capture_sequential(finalized=True, **snapshot_kwargs)
-                    return _run_with_read_counter(analysis, ingress, case)
-
-                if line4:
-                    from increment.readouts import run_scoped
-
-                    readouts = ("run",) if case.view is None else (case.view,)
-                    results, read_count = run_scoped(
-                        analysis,
-                        operation,
-                        population=case.population,
-                        readouts=readouts,
-                        include_breakouts=bool(case.breakout_dimension),
-                        on_context=capture_execution_modes,
-                    )
-                elif scoped:
-                    from increment.readouts import run_scoped
-
-                    results, read_count = run_scoped(
-                        analysis, operation, on_context=capture_execution_modes
-                    )
-                else:
-                    results, read_count = operation()
+                # One run reads every declared view under one capture; a sequential case
+                # captures its checkpoint first, as the run's acquisition expects.
+                if (scoped or line4) and case.sequential:
+                    workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
+                results, read_count = _run_with_read_counter(bound, ingress, case)
             assert all(count == 1 for count in read_count.values()), (
                 f"{scenario_id}/{ingress} performed repeated captured reads: {read_count}"
             )
@@ -1036,7 +1006,7 @@ def _line1_outcome(  # noqa: PLR0915
                     daily_values.append(row.model_dump(mode="json"))
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                population_identity = _population_identity(analysis, case, cells)
+                population_identity = _population_identity(bound, case, cells)
         except CodedError as error:
             outcome: dict[str, object] = {
                 "kind": "refusal",
@@ -1084,8 +1054,6 @@ def _line1_outcome(  # noqa: PLR0915
             "metadata": AnalysisEnvelope(tuple(cells), metadata_value).to_payload()["metadata"],
             "population_identity": population_identity,
         }
-        if execution_modes:
-            outcome["_execution_modes"] = execution_modes
         source_metadata = getattr(results, "source", None)
         if isinstance(source_metadata, Mapping):
             outcome["source_components"] = source_metadata.get("components", ())
@@ -1096,7 +1064,7 @@ def _line1_outcome(  # noqa: PLR0915
             outcome["aggregate_evidence"] = aggregate
         return outcome
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)
 
 
 NEW_PATH_ADAPTERS = dict.fromkeys(_LINE1_PAIRS, _line1_actual_outcome)

@@ -79,11 +79,15 @@ def test_runnable_preserves_preflight_refusals(
 ):
     from dataclasses import replace
 
-    from increment import Experiment, runnable
+    from increment import Experiment, runnable, workflows
     from increment.evidence import BreakoutIdentity
     from increment.kernel.contracts import Scope
-    from tests.analysis_factory import facade_binding, held_source
-    from tests.parity_harness.cases import _close_parity_analysis
+    from tests.analysis_factory import held_source
+    from tests.parity_harness.cases import (
+        _capture_kwargs,
+        _close_parity_binding,
+        sequential_as_of,
+    )
     from tests.test_metric_evidence import _CountingSource
 
     outcomes = matrix.classify(cell).outcomes(method)
@@ -96,15 +100,13 @@ def test_runnable_preserves_preflight_refusals(
     from tests.parity_harness.runner import _read
 
     try:
-        analysis = case.build[ingress]()
+        bound = case.build[ingress]()
     except CodedError as error:
         assert error.code == code
         record_property("refusal_stage", "declaration")
         return
     try:
-        binding = facade_binding(analysis)
-        assert binding is not None, f"{ingress} did not use its public experiment builder"
-        experiment, _ = binding
+        experiment, resolver = bound
         scope = Scope(
             view=cell.view,
             grain=cell.view if cell.view in {"daily", "asof"} else "total",
@@ -118,7 +120,7 @@ def test_runnable_preserves_preflight_refusals(
             else "run"
         )
         if case.sequential:
-            capture_as_of = getattr(analysis, "_sequential_as_of", None)
+            capture_as_of = sequential_as_of(bound)
             capture = {
                 "finalized": True,
                 "as_of": capture_as_of.isoformat() if capture_as_of is not None else None,
@@ -137,7 +139,7 @@ def test_runnable_preserves_preflight_refusals(
             operations={scope.hash(): operation},
             request_options={},
         )
-        counted = _CountingSource(held_source(analysis))
+        counted = _CountingSource(held_source(resolver))
         counted.loader_reads.clear()
         for name in (
             "moments",
@@ -164,14 +166,12 @@ def test_runnable_preserves_preflight_refusals(
                     return _original(instance, *args, **kwargs)
 
                 monkeypatch.setattr(owner, name, track)
-        with pytest.raises(CodedError) as legacy:
+        with pytest.raises(CodedError) as executed:
             if case.sequential:
-                as_of = getattr(analysis, "_sequential_as_of", None)
-                options = {"as_of": as_of} if as_of is not None else {}
-                analysis.capture_sequential(finalized=True, **options)
-            _read(analysis, ingress, case)
-        assert legacy.value.code == code
-        legacy_reads = tuple(counted.loader_reads)
+                workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
+            _read(bound, ingress, case)
+        assert executed.value.code == code
+        executed_reads = tuple(counted.loader_reads)
         counted.loader_reads.clear()
         estimator = (
             "observational.iptw"
@@ -181,15 +181,15 @@ def test_runnable_preserves_preflight_refusals(
         status = runnable(Experiment.from_json(experiment.to_json()), "m")[estimator]
         if case.sequential:
             record_property("refusal_stage", "construction")
-        elif not legacy_reads:
+        elif not executed_reads:
             record_property("refusal_stage", "preflight")
-            _assert_preflight_refusal(status, legacy.value, scope)
+            _assert_preflight_refusal(status, executed.value, scope)
         else:
             record_property("refusal_stage", "data")
             assert status.deferred_checks
         assert counted.loader_reads == []
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)
 
 
 def _assert_preflight_refusal(status, expected, scope):
@@ -305,7 +305,7 @@ def test_sequential_quantile_is_refused_by_from_moments_over_an_exported_checkpo
 
     import pyarrow.parquet as pq
 
-    from increment import Analysis
+    from increment import builders, workflows
     from increment.errors import CodedError
 
     cell = _quantile_cell("sequential", missing)
@@ -315,13 +315,13 @@ def test_sequential_quantile_is_refused_by_from_moments_over_an_exported_checkpo
     try:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "moments.parquet"
-            producer.export(path)
+            workflows.export_moments(*producer, path)
             rows = pq.read_table(path).to_pylist()
     finally:
-        producer.close()
+        producer[1].close()
     assert rows[0]["record_kind"] == "sequential_checkpoint"
     with pytest.raises(CodedError) as refused:
-        Analysis.from_moments(rows, control="control", metrics=metrics)
+        builders.from_moments(rows, control="control", metrics=metrics)
     assert refused.value.code == "sequential.route.unsupported"
 
 

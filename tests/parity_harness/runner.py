@@ -39,10 +39,10 @@ Failure/refusal codes are covered by strict
 row-SET equality (a per-cell failure that silently drops a row on one path
 but not another IS a row-set mismatch) plus `waived_refusal_codes`'
 code-exact assertion for a whole-constructor refusal; there is no separate
-per-cell failure-code channel to inspect because `Analysis.run()` does not
-expose one (a per-cell `DecisionFailure` surfaces only as an omitted row
-and a warning, never a structured return value) -- row-set equality is the
-correct, and only available, proxy.
+per-cell failure-code channel to inspect because a run does not expose one (a
+per-cell `DecisionFailure` surfaces only as an omitted row and a warning, never a
+structured return value) -- row-set equality is the correct, and only available,
+proxy.
 
 Retained sequential state is compared as a PATH-INDEPENDENT fingerprint
 (`sequential_fingerprint`, below), never `SequentialSnapshot.prefix_id`
@@ -82,19 +82,20 @@ from __future__ import annotations
 import inspect
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, get_overloads
 
 import pytest
 from pydantic import ValidationError
 
-from increment import Analysis
+from increment import Experiment, builders, run, workflows
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
 from tests.warning_codes import warning_codes
 
-from .cases import UNSET, Absence, ParityCase, _close_parity_analysis
+from .cases import UNSET, Absence, ParityCase, _capture_kwargs, _close_parity_binding
 from .comparison import nested_close
+from .views import collect, view_scopes
 
 # Dropped from the compared payload only after source identity is checked against the retained
 # scope metadata; the other exclusions name the path rather than the result (see module docstring):
@@ -111,6 +112,29 @@ _PATH_SPECIFIC: dict[str, Any] = {
     },
     "confidence_set": {**_POOL_LABELS, "reference": _POOL_LABELS},
 }
+
+_BUILDERS = {
+    "from_definitions": builders.from_definitions,
+    "from_unit_day_artifact": builders.from_unit_day_artifact,
+    "from_unit_summary": builders.from_frame,
+    "from_unit_panel": builders.from_frame,
+    "from_moments": builders.from_moments,
+    "from_switchback_panel": builders.from_switchback_frame,
+}
+
+
+def _builder_signature(name: str) -> inspect.Signature:
+    """The keyword contract of the public builder behind ingress `name`; a frame shape
+    reads its own typed overload."""
+    builder = _BUILDERS[name]
+    if builder is not builders.from_frame:
+        return inspect.signature(builder)
+    shape = "summary" if name == "from_unit_summary" else "panel"
+    return next(
+        signature
+        for signature in map(inspect.signature, get_overloads(builders.from_frame))
+        if shape in str(signature.parameters["shape"].annotation)
+    )
 
 
 def _row_identity(row: Any) -> tuple:
@@ -378,129 +402,54 @@ class CaseResult:
 
 @allow_declared_overrides
 def _read(
-    analysis: Any,
+    bound: Any,
     name: str,
     case: ParityCase,
     *,
     coherence: Literal["captured", "live"] | None = None,
-    compare_kernel: bool = False,
 ) -> Any:
-    """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
-    (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and
-    its lift are separate cases, so one refusing never hides the other's rows."""
-    estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
-    prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
-    metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
-    method_kwargs = (
-        {"decision_method": case.decision_method} if case.decision_method is not None else {}
-    )
+    """Read the one view `case` names through `run`: the whole-window or breakout rows of
+    every captured population, or a single day-axis view (daily or as-of values or lift). A
+    day-axis value series and its lift are separate cases, so one refusing never hides the
+    other's rows. The declared experiment executes after a JSON round trip, so a declaration
+    that does not survive serialization fails here rather than in a saved run."""
+    del name
+    experiment, resolver = bound
+    estimands = {"estimands": case.estimands} if case.estimands else {}
+    prior = {"prior": case.prior} if case.prior is not UNSET else {}
+    metrics = {"metrics": list(case.metrics)} if case.metrics is not None else {}
     if case.view is None:
-        coherence_kwargs = {"coherence": coherence} if coherence is not None else {}
-        if case.breakout_dimension:
-            return analysis.run_breakout(
-                **estimand_kwargs,
-                **prior_kwargs,
-                **metric_kwargs,
-                **method_kwargs,
-                **coherence_kwargs,
-            )
-        if not compare_kernel:
-            return analysis.run(
-                **estimand_kwargs,
-                **prior_kwargs,
-                **metric_kwargs,
-                **method_kwargs,
-                **coherence_kwargs,
-            )
-        return _run_with_kernel_parity(
-            analysis,
-            name,
-            case,
-            {
-                **estimand_kwargs,
-                **prior_kwargs,
-                **metric_kwargs,
-                **method_kwargs,
-                **coherence_kwargs,
-            },
+        method = (
+            {"decision_method": case.decision_method} if case.decision_method is not None else {}
         )
-    dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
-
-    population = {"population": case.population}
-    match case.view:
-        case "daily":
-            return analysis.run_daily(**metric_kwargs, **dimension, **population)
-        case "daily_lift":
-            return analysis.run_daily_lift(
-                **prior_kwargs, **metric_kwargs, **dimension, **population
-            )
-        case "asof":
-            return analysis.run_asof(**metric_kwargs, **dimension, **population)
-        case _:
-            return analysis.run_asof_lift(
-                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension, **population
-            )
-
-
-def _run_with_kernel_parity(
-    analysis: Any,
-    name: str,
-    case: ParityCase,
-    options: dict[str, Any],
-) -> Any:
-    """Compare the public Analysis.run path with direct kernel execution."""
-    from increment._source_resolver import resolver_for
-    from increment.kernel.resolver import run as run_experiment
-
-    public_warnings = []
-    try:
-        with warnings.catch_warnings(record=True) as public_warnings:
-            warnings.simplefilter("always", IncrementWarning)
-            expected = analysis.run(**options)
-    except CodedError as expected_refusal:
-        experiment, resolver = resolver_for(analysis._open_binding(), run_options=options)
-        try:
-            run_experiment(experiment, resolver)
-        except CodedError as kernel_refusal:
-            if kernel_refusal.code != expected_refusal.code:
-                raise AssertionError(
-                    f"Analysis.run refused with {expected_refusal.code!r} but kernel run "
-                    f"refused with {kernel_refusal.code!r}"
-                ) from kernel_refusal
-        else:
-            raise AssertionError(
-                f"Analysis.run refused with {expected_refusal.code!r} but kernel run succeeded"
-            )
-        raise
-    finally:
-        for warning in public_warnings:
-            warnings.warn_explicit(
-                warning.message, warning.category, warning.filename, warning.lineno
-            )
-
-    experiment, resolver = resolver_for(analysis._open_binding(), run_options=options)
-    from increment.kernel.experiment import Experiment
-
-    restored = Experiment.from_json(experiment.to_json())
-    if restored.hash() != experiment.hash():
-        raise AssertionError("A parity-matrix experiment changed identity after JSON round-trip")
-    with warnings.catch_warnings(record=True) as kernel_warnings:
-        warnings.simplefilter("always", IncrementWarning)
-        (scoped,) = run_experiment(restored, resolver)
-    actual = scoped.collection
-    # This second execution has its own advisory channel, not another facade call.
-    assert sorted(warning_codes(kernel_warnings)) == sorted(warning_codes(public_warnings))
-    expected_payload = _normalize(
-        expected, family_for_row=_family_map_for_output(case, name, expected)
-    )
-    actual_payload = _normalize(actual, family_for_row=_family_map_for_output(case, name, actual))
-    if not nested_close(expected_payload, actual_payload):
-        raise AssertionError("Analysis.run and direct kernel run returned different rows")
-    return expected
+        options = {
+            **estimands,
+            **prior,
+            **metrics,
+            **method,
+            **({"coherence": coherence} if coherence is not None else {}),
+        }
+        view = "breakout" if case.breakout_dimension else "run"
+        scopes = view_scopes(experiment, view)
+    else:
+        options = {
+            "daily": metrics,
+            "daily_lift": {**prior, **metrics},
+            "asof": metrics,
+            "asof_lift": {**estimands, **prior, **metrics},
+        }[case.view]
+        scopes = view_scopes(
+            experiment, case.view, population=case.population, dimension=case.breakout_dimension
+        )
+    selected = experiment.with_views(*scopes)
+    restored = Experiment.from_json(selected.to_json())
+    if restored.hash() != selected.hash():
+        raise AssertionError("A parity experiment changed identity after JSON round-trip")
+    return collect(run(restored, resolver, **options), scopes)
 
 
 def _read_with_advisories(
-    analysis: Any,
+    bound: Any,
     name: str,
     case: ParityCase,
     *,
@@ -516,9 +465,9 @@ def _read_with_advisories(
         if expected:
             warnings.simplefilter("always", IncrementWarning)
         results = (
-            _read(analysis, name, case, compare_kernel=True)
+            _read(bound, name, case)
             if coherence is None
-            else _read(analysis, name, case, coherence=coherence, compare_kernel=True)
+            else _read(bound, name, case, coherence=coherence)
         )
     if case.readout_probe is not None or case.source_probe is not None:
         with warnings.catch_warnings(record=True) as probe_warnings:
@@ -526,7 +475,7 @@ def _read_with_advisories(
             if case.readout_probe is not None:
                 case.readout_probe(results)
             if case.source_probe is not None:
-                case.source_probe(name, analysis)
+                case.source_probe(name, bound)
         assert set(warning_codes(probe_warnings)) <= {
             *expected,
             "analysis.cuped.covariate_unused",
@@ -569,7 +518,7 @@ def _assert_names_absent_field(case_id: str, name: str, exc: Exception, absent: 
             f"as an unknown input: {[(e['loc'], e['type']) for e in exc.errors()]}"
         )
         return
-    parameters = inspect.signature(getattr(Analysis, name)).parameters.values()
+    parameters = _builder_signature(name).parameters.values()
     assert not any(
         p.name == absent.field or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters
     ), f"{case_id}: {name} accepts {absent.field!r}, so its absence is not structural"
@@ -589,15 +538,11 @@ def run_case(
     `CodedError` from a constructor that is neither waived nor expected to
     refuse -- a genuine parity break.
 
-    A registered sequential source refuses `.run()` until a checkpoint
-    has been captured -- confirmed live: calling `.run()` before
-    `capture_sequential` on a bound native source raised
-    `increment.errors.CapabilityError: source has no exact finalized
-    joint-unit checkpoint; capture or adopt a current sequential
-    snapshot` (`sequential.continuation.legacy`) the first time this
-    harness ran a native-path sequential case end to end. `capture_sequential`
-    therefore runs FIRST for a sequential case, and `.run()` reads off
-    that one adopted checkpoint -- not run-then-capture-then-run-again.
+    A registered sequential source refuses a run until a checkpoint has been
+    captured (`sequential.continuation.legacy`: "source has no exact finalized
+    joint-unit checkpoint; capture or adopt a current sequential snapshot").
+    `capture_sequential` therefore runs FIRST for a sequential case, and the run
+    reads off that one adopted checkpoint -- not run-then-capture-then-run-again.
     """
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]] = {}
     refusals: dict[str, str] = {}
@@ -606,10 +551,10 @@ def run_case(
     advisory_counts: dict[str, int] = {}
     source_content_digests: dict[str, tuple[str, ...]] = {}
     for name, build in case.build.items():
-        analysis = None
+        bound = None
         try:
             try:
-                analysis = build()
+                bound = build()
             except Exception as exc:
                 # Absence is the constructor refusing to express the request. An error of
                 # the same type raised later, once it accepted it, is a defect and propagates.
@@ -625,9 +570,8 @@ def run_case(
                 absences[name] = absent
                 continue
             if case.sequential:
-                as_of = getattr(analysis, "_sequential_as_of", None)
-                snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
-                snapshot = analysis.capture_sequential(finalized=True, **snapshot_kwargs)
+                snapshot_kwargs = _capture_kwargs(bound)
+                snapshot = workflows.capture_sequential(*bound, finalized=True, **snapshot_kwargs)
                 sequential_state[name] = SequentialCapture(
                     prefix_id=snapshot.prefix_id, fingerprint=sequential_fingerprint(snapshot)
                 )
@@ -639,14 +583,14 @@ def run_case(
                 assert replayed == snapshot, (
                     f"{case.id}: empty freeze changed retained state/rows for {name}"
                 )
-                continued = analysis.capture_sequential(
-                    finalized=True, previous=replayed, **snapshot_kwargs
+                continued = workflows.capture_sequential(
+                    *bound, finalized=True, previous=replayed, **snapshot_kwargs
                 )
                 assert sequential_fingerprint(continued) == sequential_fingerprint(snapshot), (
                     f"{case.id}: replayed empty-freeze snapshot could not continue on {name}"
                 )
             results, advisory_counts[name] = _read_with_advisories(
-                analysis, name, case, coherence=coherence
+                bound, name, case, coherence=coherence
             )
             metadata = getattr(results, "metadata", None)
             content_digest = getattr(metadata, "source_content_digest", None)
@@ -670,8 +614,8 @@ def run_case(
                 ) from exc
             refusals[name] = exc.code
         finally:
-            if analysis is not None:
-                _close_parity_analysis(analysis)
+            if bound is not None:
+                _close_parity_binding(bound)
     if case.sequential_probe is not None:
         case.sequential_probe()
     return CaseResult(

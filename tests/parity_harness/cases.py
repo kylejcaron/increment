@@ -17,6 +17,7 @@ import os
 import random
 import tempfile
 import warnings
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -29,18 +30,21 @@ from typing import Any, Literal, NamedTuple, cast
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
-from ibis.backends.sql import SQLBackend
 
+from increment import Experiment, builders, workflows
 from increment._analysis_config import UNSET, _Unset
-from increment.analysis import Analysis
-from increment.artifacts import SourceSnapshotEvidence
+from increment.artifacts import (
+    SourceSnapshotEvidence,
+    artifact_context,
+    publish_unit_day_artifact,
+)
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.conversion_delta import delta_interval
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal, Prior
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.estimators import SequentialCell
+from increment.estimators import SequentialCell, sitewide
 from increment.frame import CupedCovariate, MetricSpec
 from increment.plan import bind_automatic_sequential_plan
 from increment.query.artifact_contract import ArtifactStore, unit_day_artifact_extension_catalog
@@ -65,16 +69,17 @@ from increment.semantics.models import (
 from increment.semantics.sequential import SequentialCompliancePolicy
 from increment.sequential_source import native_observation_mapping
 from tests.analysis_factory import (
-    _moment_source,
-    _native_source,
-    make_analysis,
-    make_analysis_like,
+    bind_pair,
+    bound_source,
+    make_binding,
+    make_binding_like,
     native_connection,
 )
 from tests.estimation._binomial_endpoint_reference import assert_set_contains_finer_reference
 from tests.parity_harness.scalar_capability_cases import capability_cases
 
 from . import dataset as ds
+from .views import View, read
 
 _ARTIFACT_EXTENSION_KINDS = (
     "cuped_preperiod",
@@ -84,6 +89,10 @@ _ARTIFACT_EXTENSION_KINDS = (
     "trigger_population",
     "trigger_measure_stats",
 )
+
+# One ingress's public builder product: the declared experiment and the resolver that owns
+# its source. Every `ParityCase.build` entry returns one.
+Bound = tuple[Experiment, Any]
 
 
 @dataclass(frozen=True)
@@ -107,8 +116,8 @@ class Absence:
 class ParityCase:
     """One capability, driven through every applicable constructor.
 
-    ``build`` maps a constructor name (see ``CONSTRUCTORS``) to a zero-arg
-    builder returning an ``Analysis``. Every one of the six constructor
+    ``build`` maps a constructor name (see ``CONSTRUCTORS``) to a zero-arg builder
+    returning that ingress's public builder pair (``Bound``). Every one of the six constructor
     names MUST appear in ``build`` or in ``waive`` -- ``runner.assert_parity``
     enforces ``set(build) | set(waive) == set(CONSTRUCTORS)`` and fails a
     case that leaves any constructor unaccounted for. A name in ``waive``
@@ -122,9 +131,9 @@ class ParityCase:
     in ``build`` with a reason-only ``waive`` entry and no code or absence, is a
     contract error the runner also rejects.
 
-    ``view`` reads one day-axis method (``run_daily``, ``run_daily_lift``,
-    ``run_asof`` or ``run_asof_lift``) instead of ``run``/``run_breakout``;
-    ``breakout_dimension`` then names the day-axis ``dimension``. ``refusal_only`` lets a
+    ``view`` reads one day-axis view (``daily``, ``daily_lift``, ``asof`` or ``asof_lift``)
+    instead of the whole-window or breakout rows; ``breakout_dimension`` then names the
+    day-axis segment. ``refusal_only`` lets a
     case in which EVERY attempted ingress raises its recorded code, or is declared absent,
     pass (no ingress is compared). A name in ``expected_absence`` is attempted and MUST
     raise exactly that ``Absence.error`` type naming ``Absence.field``: the constructor
@@ -136,7 +145,7 @@ class ParityCase:
     """
 
     id: str
-    build: Mapping[str, Callable[[], Analysis]]
+    build: Mapping[str, Callable[[], Bound]]
     estimands: tuple[str, ...] | None = None
     metrics: tuple[str, ...] | None = None
     breakout_dimension: str | None = None
@@ -156,7 +165,7 @@ class ParityCase:
     decision_method: Any | None = None
     moment_input_rows: Callable[[], list[dict[str, Any]]] | None = None
     readout_probe: Callable[[Any], None] | None = None
-    source_probe: Callable[[str, Analysis], None] | None = None
+    source_probe: Callable[[str, Bound], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     view: Literal["daily", "daily_lift", "asof", "asof_lift"] | None = None
     population: Literal["assigned", "triggered"] = "assigned"
@@ -206,30 +215,70 @@ class _Warehouse(NamedTuple):
 _DUCKDB = _Warehouse(ds.duckdb_connection, "duckdb")
 
 
-def _track_connection(analysis: Analysis, con: Any) -> Analysis:
-    """Record `con` on `analysis` so `runner.run_case`'s `finally` block
-    disconnects it once this constructor's run is done. `Analysis.close()`
-    deliberately leaves caller-owned connections open (its own docstring:
-    "without closing caller connections"), and every builder in this
-    module owns the connection it opens -- the builder is the one place
-    that knows the connection is no longer needed once its Analysis's
-    lifetime ends, so it records that here rather than leaving it to leak
-    until the process exits. Multiple connections can stack (a case with
-    more than one still-open connection per Analysis is not expected
-    today, but nothing here assumes exactly one)."""
-    existing = getattr(analysis, "_parity_connections", ())
-    analysis._parity_connections = (*existing, con)  # ty: ignore[unresolved-attribute]
-    return analysis
+@dataclass
+class _Owned:
+    """What a builder opened for one ingress and the harness releases with it."""
+
+    connections: tuple[Any, ...] = ()
+    artifacts: tuple[tuple[Any, ArtifactStore, Any], ...] = ()
+    cleanups: tuple[Callable[[], object], ...] = ()
+    as_of: dt.date | None = None
 
 
-def _close_parity_analysis(analysis: Analysis) -> None:
-    """Close readers, erase owned generations and receipts, then disconnect."""
+# Keyed by resolver: the builder pair itself is a plain tuple, and its resolver lives exactly as
+# long as the ingress it serves.
+_OWNED: weakref.WeakKeyDictionary[Any, _Owned] = weakref.WeakKeyDictionary()
+
+
+def _owned(bound: Bound) -> _Owned:
+    return _OWNED.setdefault(bound[1], _Owned())
+
+
+def _track_connection(bound: Bound, con: Any) -> Bound:
+    """Record `con` so `_close_parity_binding` disconnects it once this ingress's run is
+    done. Closing a resolver deliberately leaves caller-owned connections open, and every
+    builder in this module owns the connection it opens -- the builder is the one place that
+    knows the connection is no longer needed once the ingress's lifetime ends, so it records
+    that here rather than leaving it to leak until the process exits. Multiple connections
+    can stack."""
+    owned = _owned(bound)
+    owned.connections = (*owned.connections, con)
+    return bound
+
+
+def _track_cleanup(bound: Bound, cleanup: Callable[[], object]) -> Bound:
+    """Release a builder-owned resource (a definitions directory) after the resolver closes."""
+    owned = _owned(bound)
+    owned.cleanups = (*owned.cleanups, cleanup)
+    return bound
+
+
+def _mark_as_of(bound: Bound, as_of: dt.date) -> Bound:
+    """Record the horizon a sequential case captures this ingress at."""
+    _owned(bound).as_of = as_of
+    return bound
+
+
+def sequential_as_of(bound: Bound) -> dt.date | None:
+    """The horizon a sequential case captures this ingress at, when it declares one."""
+    owned = _OWNED.get(bound[1])
+    return None if owned is None else owned.as_of
+
+
+def _capture_kwargs(bound: Bound) -> dict[str, Any]:
+    as_of = sequential_as_of(bound)
+    return {} if as_of is None else {"as_of": as_of}
+
+
+def _close_parity_binding(bound: Bound) -> None:
+    """Close the resolver, erase owned generations and receipts, then disconnect."""
     from integration.warehouse_execution._suite import _drop_probe_generation
 
+    owned = _OWNED.pop(bound[1], _Owned())
     with ExitStack() as cleanup:
-        for connection in getattr(analysis, "_parity_connections", ()):
+        for connection in owned.connections:
             cleanup.callback(connection.disconnect)
-        for connection, store, ref in getattr(analysis, "_parity_artifacts", ()):
+        for connection, store, ref in owned.artifacts:
             cleanup.callback(
                 _drop_probe_generation,
                 connection,
@@ -238,58 +287,78 @@ def _close_parity_analysis(analysis: Analysis) -> None:
                 connection.name,
                 schema_name="artifacts",
             )
-        cleanup.callback(analysis.close)
+        for release in owned.cleanups:
+            cleanup.callback(release)
+        cleanup.callback(bound[1].close)
 
 
 def _publish_and_adopt(
-    con: Any, native: Analysis, kinds: tuple[str, ...] = _ARTIFACT_EXTENSION_KINDS
-) -> Analysis:
-    """Publish `native`'s unit-day artifact and adopt it as a fresh
-    Analysis. `native` is a throwaway intermediate that exists only to
-    publish -- closed here, right after the adopted Analysis exists, so it
-    is never left dangling for the runner to notice. `con` is NOT
-    closeable yet: the adopted Analysis reads from `con`-backed tables for
-    the rest of its life (through every later `run()`/`run_breakout()`/
-    `capture_sequential()` call), so it is tracked via `_track_connection`
-    for `runner.run_case`'s `finally` block to disconnect once that
-    lifetime ends.
+    con: Any, native: Bound, kinds: tuple[str, ...] = _ARTIFACT_EXTENSION_KINDS
+) -> Bound:
+    """Publish `native`'s unit-day artifact and adopt it through `from_unit_day_artifact`.
+    `native` is a throwaway intermediate that exists only to publish -- closed here, right
+    after the adopted pair exists, so it is never left dangling for the runner to notice.
+    `con` is NOT closeable yet: the adopted resolver reads from `con`-backed tables for the
+    rest of its life (through every later run and sequential capture), so it is tracked via
+    `_track_connection` for `_close_parity_binding` to disconnect once that lifetime ends.
     """
-    context = native.artifact_context
-    store = WarehouseArtifactStore(con, schema_name="artifacts")
-    requests = [
-        entry.request
-        for entry in unit_day_artifact_extension_catalog(context)
-        if entry.request.kind in kinds
-    ]
     _track_connection(native, con)
     try:
-        ref = native.publish_unit_day_artifact(store, extensions=requests)
-        native._parity_artifacts = ((con, store, ref),)  # ty: ignore[unresolved-attribute]
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        adopted._parity_artifacts = ((con, store, ref),)  # ty: ignore[unresolved-attribute]
-        native.close()
-        return _track_connection(adopted, con)
+        context = artifact_context(*native)
+        store = WarehouseArtifactStore(con, schema_name="artifacts")
+        requests = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind in kinds
+        ]
+        ref = publish_unit_day_artifact(*native, store, extensions=requests)
+        _owned(native).artifacts = ((con, store, ref),)
+        adopted = builders.from_unit_day_artifact(store, ref, expected_context=context)
     except BaseException:
-        _close_parity_analysis(native)
+        _close_parity_binding(native)
         raise
+    _owned(adopted).artifacts = ((con, store, ref),)
+    # The adopted pair now owns `con` and the generation; the native pair's own resources are
+    # released with it.
+    released = _OWNED.pop(native[1])
+    with ExitStack() as release:
+        for cleanup in released.cleanups:
+            release.callback(cleanup)
+        release.callback(native[1].close)
+    return _track_connection(adopted, con)
 
 
 def _export_and_replay(
-    analysis: Analysis, metrics: list[MetricSpec], *, plan: AnalysisPlan | None = None
-) -> Analysis:
-    """Export `analysis`'s moments and replay them through `from_moments`.
-    `analysis` (the caller's already-built source, e.g. a from_unit_summary
-    Analysis) is a throwaway intermediate once its export completes --
-    closed here, right after the derived from_moments Analysis is built,
-    rather than left for the caller to remember."""
+    bound: Bound, metrics: list[MetricSpec], *, plan: AnalysisPlan | None = None
+) -> Bound:
+    """Export `bound`'s moments and replay them through `from_moments`. `bound` (the
+    caller's already-built source, e.g. a unit summary) is a throwaway intermediate once its
+    export completes -- closed here, right after the replayed pair is built, rather than left
+    for the caller to remember."""
     try:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            analysis.export(path)
+            workflows.export_moments(*bound, path)
             rows = pq.read_table(path).to_pylist()
-        return Analysis.from_moments(rows, control="control", metrics=metrics, plan=plan)
+        return builders.from_moments(rows, control="control", metrics=metrics, plan=plan)
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)
+
+
+def _definitions_file_binding(con: Any, filename: str, text: str, experiment_name: str) -> Bound:
+    """Build through the public definitions builder from `text` written to `filename`.
+
+    The builder records its catalog beside the definitions after each run, so the directory
+    lives as long as the resolver and is removed when the pair is closed."""
+    directory = tempfile.TemporaryDirectory(prefix="increment-parity-")
+    try:
+        path = Path(directory.name) / filename
+        path.write_text(text, encoding="utf-8")
+        bound = builders.from_definitions(path, con, experiment_name=experiment_name)
+    except BaseException:
+        directory.cleanup()
+        raise
+    return _track_cleanup(bound, directory.cleanup)
 
 
 def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
@@ -335,9 +404,9 @@ def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
         complete_through_by_feed={"events": cutoff},
     )
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(
+        native = make_binding(
             con,
             definitions,
             experiment="exp",
@@ -349,9 +418,9 @@ def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
             kinds=(*_ARTIFACT_EXTENSION_KINDS, "assignment_counts"),
         )
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(
+        native = make_binding(
             con,
             definitions,
             experiment="exp",
@@ -419,36 +488,31 @@ def _triggered_sequential_case() -> ParityCase:
     )
     as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(
-            con, definitions, experiment="exp", source_snapshot_evidence=evidence
-        )
-        native._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        native = make_binding(con, definitions, experiment="exp", source_snapshot_evidence=evidence)
+        _mark_as_of(native, as_of)
         return _track_connection(native, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(
-            con, definitions, experiment="exp", source_snapshot_evidence=evidence
-        )
+        native = make_binding(con, definitions, experiment="exp", source_snapshot_evidence=evidence)
         adopted = _publish_and_adopt(
             con, native, kinds=(*_ARTIFACT_EXTENSION_KINDS, "assignment_counts")
         )
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         native = build_definitions()
         try:
-            native.capture_sequential(finalized=True, as_of=as_of)
+            workflows.capture_sequential(*native, finalized=True, as_of=as_of)
             return _export_and_replay(native, [MetricSpec(name="revenue", type="mean")])
         finally:
-            for connection in getattr(native, "_parity_connections", ()):
-                connection.disconnect()
+            _close_parity_binding(native)
 
-    def probe_both_chains(name: str, analysis: Analysis) -> None:
-        snapshot = analysis.sequential_snapshot()
+    def probe_both_chains(name: str, bound: Bound) -> None:
+        snapshot = workflows.sequential_snapshot(*bound)
         assert snapshot.triggered is not None, f"{name}: the triggered chain was not captured"
         assert snapshot.triggered.registration.population == "triggered"
         assert snapshot.triggered.registration_id != snapshot.registration_id
@@ -486,20 +550,19 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
         complete_through_by_feed={"events": cutoff},
     )
 
-    def build_native(*, artifact: bool = False) -> Analysis:
+    def build_native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(
-            con, definitions, experiment="exp", source_snapshot_evidence=evidence
-        )
+        native = make_binding(con, definitions, experiment="exp", source_snapshot_evidence=evidence)
         return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
 
     design = definitions.experiments[0].resolved_design()
     metric = MetricSpec(name="revenue", type="mean", preferred_direction="increase")
     frame = _encouragement_oracle_frame_for_parity()
 
-    def build_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_summary() -> Bound:
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=[metric],
@@ -507,12 +570,13 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
             uptake="clicked",
         )
 
-    def build_panel() -> Analysis:
+    def build_panel() -> Bound:
         panel = frame.copy()
         panel["ds"] = dt.date(2025, 1, 10)
         panel["exposed"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="group",
             date="ds",
@@ -522,19 +586,19 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
             uptake="clicked",
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         source = build_summary()
         try:
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "encouragement.parquet"
-                source.export(path)
+                workflows.export_moments(*source, path)
                 rows = pq.read_table(path).to_pylist()
         finally:
-            source.close()
-        return Analysis.from_moments(rows, metrics=[metric], design=design)
+            source[1].close()
+        return builders.from_moments(rows, metrics=[metric], design=design)
 
-    def build_switchback() -> Analysis:
-        return _neighboring_integer_switchback_analysis()
+    def build_switchback() -> Bound:
+        return _neighboring_integer_switchback_binding()
 
     from .declarations import PARITY_DECLARATIONS
 
@@ -542,7 +606,7 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
         "from_unit_summary"
     ]
 
-    def probe_source(name: str, _analysis: Analysis) -> None:
+    def probe_source(name: str, _analysis: Bound) -> None:
         if name != "from_definitions":
             return
         for builder, supports_assigned in (
@@ -553,24 +617,20 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
         ):
             candidate = builder()
             try:
-                for method_name, kwargs in (
-                    ("run", {"population": "triggered"}),
-                    ("run_breakout", {"population": "triggered"}),
-                    ("run_daily_lift", {"population": "triggered", "estimands": ("compliance",)}),
-                    ("run_asof_lift", {"population": "triggered", "estimands": ("compliance",)}),
-                ):
+                views: tuple[tuple[View, dict[str, Any]], ...] = (
+                    ("run", {}),
+                    ("breakout", {}),
+                    ("daily_lift", {"estimands": ("compliance",)}),
+                    ("asof_lift", {"estimands": ("compliance",)}),
+                )
+                for view, options in views:
                     with pytest.raises(CodedError) as raised:
-                        getattr(candidate, method_name)(**kwargs)
-                    expected_code = code
-                    assert raised.value.code == expected_code, (
-                        builder,
-                        method_name,
-                        raised.value.code,
-                    )
+                        read(candidate, view, population="triggered", **options)
+                    assert raised.value.code == code, (builder, view, raised.value.code)
                 if supports_assigned:
-                    candidate.run(population="assigned")
+                    read(candidate, population="assigned")
             finally:
-                candidate.close()
+                candidate[1].close()
 
     return ParityCase(
         id="triggered_encouragement_compliance_asof",
@@ -695,12 +755,12 @@ def _ignoring_unwindowed_revenue(active: bool):
         yield
 
 
-def _publish_rounded_artifact(con: Any, native: Analysis) -> Analysis:
+def _publish_rounded_artifact(con: Any, native: Bound) -> Bound:
     from increment.estimation.sitewide import SitewideImpact
 
-    expected = native.sitewide("revenue")
+    expected = sitewide(*native, "revenue")
     adopted = _publish_and_adopt(con, native)
-    actual = adopted.sitewide("revenue")
+    actual = sitewide(*adopted, "revenue")
     assert isinstance(expected, SitewideImpact) and isinstance(actual, SitewideImpact)
     assert expected.site_total_volume > 0
     assert actual.site_total_volume == pytest.approx(expected.site_total_volume)
@@ -926,16 +986,16 @@ def _fixed_horizon_case(
     def route_defs(route: str) -> Definitions:
         return fixture.definitions(defs_dict, route)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse.connect(rows)
         with _ignoring_unwindowed_revenue(rounded_events):
-            analysis = make_analysis(con, route_defs("from_definitions"), experiment="exp")
+            analysis = make_binding(con, route_defs("from_definitions"), experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse.connect(rows)
         with _ignoring_unwindowed_revenue(rounded_events):
-            native = make_analysis(con, route_defs("from_unit_day_artifact"), experiment="exp")
+            native = make_binding(con, route_defs("from_unit_day_artifact"), experiment="exp")
         return (_publish_rounded_artifact if rounded_events else _publish_and_adopt)(con, native)
 
     summary_metrics = _fixed_horizon_frame_metrics(
@@ -945,12 +1005,13 @@ def _fixed_horizon_case(
         ratio_numerics=ratio_numerics,
     )
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.unit_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -966,15 +1027,16 @@ def _fixed_horizon_case(
         ratio_numerics=ratio_numerics,
     )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.unit_summary_frame(con)
         con.disconnect()  # `summary`/`panel` are already materialized below
         panel = ds.unit_panel_frame(summary)
         if fixture.boolean_store:
             panel["store"] = pd.array(panel["store"].tolist(), dtype="boolean")
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -984,7 +1046,7 @@ def _fixed_horizon_case(
             breakouts=("store",) if breakout else (),
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         replay_metrics = [
             MetricSpec(
                 name="revenue",
@@ -1009,18 +1071,13 @@ def _fixed_horizon_case(
         if unselected_winsorized_sibling:
             replay_metrics = [metric for metric in replay_metrics if metric.name == "revenue"]
         if clear_bound_prior:
-            native = build_definitions()
-            try:
-                return _export_and_replay(native, replay_metrics)
-            finally:
-                native.close()
-                for connection in getattr(native, "_parity_connections", ()):
-                    connection.disconnect()
+            return _export_and_replay(build_definitions(), replay_metrics)
         con = ds.duckdb_connection(rows)
         frame = ds.unit_summary_frame(con)
         con.disconnect()
-        summary = Analysis.from_unit_summary(
+        summary = builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -1062,11 +1119,11 @@ def _artifact_context_format_two_case() -> ParityCase:
         include_cuped=False,
     )
 
-    def probe(ingress: str, analysis: Analysis) -> None:
+    def probe(ingress: str, bound: Bound) -> None:
         if ingress == "from_definitions":
-            context = analysis.artifact_context
+            context = artifact_context(*bound)
         elif ingress == "from_unit_day_artifact":
-            spec = analysis._artifact_open_spec
+            spec = bound[1].binding.artifact_open
             assert spec is not None
             context = spec.expected_context
         else:
@@ -1090,10 +1147,10 @@ def _artifact_context_format_one_refusal_case() -> ParityCase:
         include_cuped=False,
     )
 
-    def probe(ingress: str, analysis: Analysis) -> None:
+    def probe(ingress: str, bound: Bound) -> None:
         if ingress != "from_unit_day_artifact":
             return
-        spec = analysis._artifact_open_spec
+        spec = bound[1].binding.artifact_open
         assert spec is not None
         old_context = spec.expected_context.model_copy(update={"context_format": 1})
 
@@ -1105,7 +1162,7 @@ def _artifact_context_format_one_refusal_case() -> ParityCase:
                 raise AssertionError("format validation accessed the artifact store")
 
         try:
-            Analysis.from_unit_day_artifact(
+            builders.from_unit_day_artifact(
                 cast(ArtifactStore, NoStoreAccess()),
                 spec.ref,
                 expected_context=old_context,
@@ -1123,23 +1180,52 @@ def _artifact_context_format_one_refusal_case() -> ParityCase:
     )
 
 
+def _dashboard_config() -> Any:
+    from increment.dashboard import DashboardConfig
+
+    return DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+
+
+def _dashboard_binding(bound: Bound) -> Bound:
+    """A definitions sibling of `bound` declaring revenue as its one primary metric, which the
+    dashboard requires; the cases' shared plans declare secondaries only."""
+    definition = workflows.experiment_definition(*bound)
+    plan = definition.plan
+    primary_plan = plan.model_copy(
+        update={
+            "primary": "revenue",
+            "secondaries": tuple(entry for entry in plan.secondaries or () if entry != "revenue"),
+        }
+    )
+    return make_binding_like(
+        bound[1], experiment=definition.model_copy(update={"plan": primary_plan})
+    )
+
+
 def _dashboard_group_data_case() -> ParityCase:
-    def probe(path: str, analysis: Analysis) -> None:
+    from increment.dashboard import prepare_dashboard
+
+    def probe(path: str, bound: Bound) -> None:
         if path != "from_definitions":
-            expected_code = "evidence.operation_unavailable"
+            # Frame and moments sources carry no experiment definition and an adopted artifact
+            # records no primary metric, so the dashboard refuses them before any read.
+            with pytest.raises(CodedError) as caught:
+                prepare_dashboard(*bound, config=_dashboard_config())
+            assert caught.value.code == "dashboard.unsupported_experiment"
             if path == "from_unit_day_artifact":
+                from increment._binding import binding_for
+                from increment._dashboard_capture import dashboard_group_data
                 from tests.capability_consumers_auxiliary import assert_expected
 
                 expected = assert_expected(
                     "triggered_auxiliary_reads",
                     "dashboard_artifact_refused",
                     kind="refused",
-                    code=expected_code,
+                    code="evidence.operation_unavailable",
                 )
-                expected_code = expected.expected.codes[0]
-            with pytest.raises(CodedError) as caught:
-                analysis.dashboard_group_data(metrics=analysis.metrics)
-            assert caught.value.code == expected_code
+                with pytest.raises(CodedError) as caught:
+                    dashboard_group_data(binding_for(*bound), metrics=workflows.metrics(*bound))
+                assert caught.value.code == expected.expected.codes[0]
             return
         connection = ds.duckdb_connection(ds.event_rows())
         try:
@@ -1159,7 +1245,12 @@ def _dashboard_group_data_case() -> ParityCase:
             expected.update(
                 ((metric, arm), (value, len(selected))) for metric, value in values.items()
             )
-        observed = analysis.dashboard_group_data(metrics=analysis.metrics)
+        dashboard = _dashboard_binding(bound)
+        try:
+            snapshot = prepare_dashboard(*dashboard, config=_dashboard_config())
+        finally:
+            dashboard[1].close()
+        observed = [row for row in snapshot.group_data if row.analysis_population == "assigned"]
         assert {(row.metric, row.group_id) for row in observed} == set(expected)
         for row in observed:
             value, count = expected[row.metric, row.group_id]
@@ -1217,53 +1308,82 @@ def _breakout_case(*, boolean: bool = False) -> ParityCase:
 
 
 def _dashboard_breakout_reads_case() -> ParityCase:
-    from increment.semantics.models import Breakout
+    from increment.dashboard import load_explore, prepare_dashboard
 
-    def outcome(read: Callable[[], Any]) -> Any:
+    def outcome(load: Callable[[], Any], *, decisions_only: bool = False) -> Any:
+        """A read's refusal code, or its rows keyed as parity compares them. Explore serves
+        segment rows of the decision method only."""
+        from .runner import _normalize
+
         try:
-            rows = read()
+            rows = load()
         except CodedError as exc:
             return exc.code
-        return sorted(row.model_dump_json() for row in rows)
+        return _normalize(
+            [row for row in rows if not decisions_only or row.method_role == "decision"]
+        )
 
-    def probe(path: str, analysis: Analysis) -> None:
-        # Summary breakouts work; the dashboard-scoped facade remains definitions-only.
+    def probe(path: str, bound: Bound) -> None:
+        # Frame and moments sources carry no experiment definition and an adopted artifact
+        # records no primary metric, so the dashboard refuses them before any read.
         if path != "from_definitions":
             with pytest.raises(CodedError) as caught:
-                analysis.dashboard_breakout_reads(Breakout(property="store"))
-            assert caught.value.code == "evidence.breakout_unavailable"
+                prepare_dashboard(*bound, config=_dashboard_config())
+            assert caught.value.code == "dashboard.unsupported_experiment"
             return
-        (declared,) = analysis.experiment.breakouts
+        dashboard = _dashboard_binding(bound)
+        try:
+            _assert_breakout_reads_match(dashboard)
+        finally:
+            dashboard[1].close()
+
+    def _assert_breakout_reads_match(dashboard: Bound) -> None:
+        experiment = dashboard[0]
+        snapshot = prepare_dashboard(*dashboard, config=_dashboard_config())
+        (declared,) = workflows.experiment_definition(*dashboard).breakouts
         with pytest.raises(CodedError) as caught:
-            analysis.dashboard_breakout_reads(declared.model_copy(update={"property": "nope"}))
-        assert caught.value.code == "facade.analysis.undeclared_breakout"
-        reads = analysis.dashboard_breakout_reads(declared)
-        names = [metric.name for metric in analysis.metrics]
+            load_explore(
+                experiment,
+                snapshot=snapshot,
+                metric=None,
+                view="segments",
+                breakout=(declared.source, "nope"),
+            )
+        # Explore validates against the prepared snapshot and reads nothing.
+        assert caught.value.code == "dashboard.invalid_view"
+        names = [metric.name for metric in workflows.metrics(*dashboard)]
         dimension = declared.property
-        observed = []
-        for scoped, whole in (
+        choice = (declared.source, dimension)
+
+        def explore(view: Any, **options: Any) -> Callable[[], Any]:
+            return lambda: load_explore(
+                experiment, snapshot=snapshot, metric=None, view=view, breakout=choice, **options
+            )
+
+        # The snapshot pins its capture, so values agree with a fresh read within tolerance.
+        from .comparison import nested_close
+
+        for view, scoped, whole in (
             (
-                lambda: reads.run_asof_lift(metrics=names),
-                lambda: analysis.run_asof_lift(metrics=names, dimension=dimension),
+                "cumulative_lift",
+                explore("cumulative_lift"),
+                lambda: read(dashboard, "asof_lift", metrics=names, dimension=dimension),
             ),
             (
-                lambda: reads.run_asof(metrics=names, completed_windows_only=True),
-                lambda: analysis.run_asof(
-                    metrics=names, completed_windows_only=True, dimension=dimension
-                ),
+                "cumulative_values",
+                explore("cumulative_values", completed_windows_only=True),
+                lambda: read(dashboard, "asof", metrics=names, completed=True, dimension=dimension),
             ),
             (
-                lambda: reads.run_daily(metrics=names),
-                lambda: analysis.run_daily(metrics=names, dimension=dimension),
+                "daily_values",
+                explore("daily_values"),
+                lambda: read(dashboard, "daily", metrics=names, dimension=dimension),
             ),
-            (
-                lambda: reads.run_breakout(metrics=names),
-                lambda: analysis.run_breakout(metrics=names),
-            ),
+            ("segments", explore("segments"), lambda: read(dashboard, "breakout", metrics=names)),
         ):
-            observed.append(outcome(scoped))
-            assert observed[-1] == outcome(whole)
-        assert all(isinstance(rows, list) and rows for rows in observed), observed
+            observed = outcome(scoped)
+            assert isinstance(observed, dict) and observed, (view, observed)
+            assert nested_close(observed, outcome(whole, decisions_only=view == "segments")), view
 
     return replace(_breakout_case(), id="dashboard-breakout-reads", source_probe=probe)
 
@@ -1343,12 +1463,12 @@ def _window_spelling_case(*, native_spelling: str) -> ParityCase:
     }
     edge_days = {"first": dt.date(2025, 1, 9), "last": dt.date(2025, 1, 19)}
 
-    def edges_admitted(name: str, analysis: Analysis) -> None:
+    def edges_admitted(name: str, analysis: Bound) -> None:
         """Two routes that both dropped an edge cohort would still match, so each
         attempted route must show the first- and last-local-day cohorts itself."""
         daily = {
             (row.ds, row.group_id): row.n
-            for row in analysis.run_daily(metrics=["revenue"])
+            for row in read(analysis, "daily", metrics=["revenue"])
             if row.dimension is None
         }
         for (edge, arm), units in edge_units.items():
@@ -1402,9 +1522,10 @@ def _sequential_structured_order_probe() -> None:
     panel = panel[(panel["date"] != "d10") | panel["user_id"].isin(late_units)].copy()
     panel["exposure_date"] = panel["user_id"].map(lambda uid: "d10" if uid in late_units else "d2")
 
-    def build(frame: pd.DataFrame) -> Analysis:
-        return Analysis.from_unit_panel(
+    def build(frame: pd.DataFrame) -> Bound:
+        return builders.from_frame(
             frame,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -1417,19 +1538,21 @@ def _sequential_structured_order_probe() -> None:
 
     analysis = build(panel)
     try:
-        first = analysis.capture_sequential(finalized=True, as_of="d2")
+        first = workflows.capture_sequential(*analysis, finalized=True, as_of="d2")
         empty = declare_sequential_freeze_cells(first, ())
         assert empty == first, "an empty requested-cell freeze must preserve the snapshot"
         replayed = snapshot_from_json(empty.model_dump_json())
         assert replayed == first, "empty-freeze JSON replay changed retained rows/state"
-        extended = analysis.capture_sequential(finalized=True, previous=replayed, as_of="d10")
+        extended = workflows.capture_sequential(
+            *analysis, finalized=True, previous=replayed, as_of="d10"
+        )
         independent = build(panel)
         try:
-            fresh = independent.capture_sequential(finalized=True, as_of="d10")
+            fresh = workflows.capture_sequential(*independent, finalized=True, as_of="d10")
             assert extended.records == fresh.records
             assert extended.states == fresh.states
         finally:
-            independent.close()
+            independent[1].close()
 
         mutated = panel.copy()
         target = (
@@ -1441,15 +1564,15 @@ def _sequential_structured_order_probe() -> None:
         mutated.loc[index, "revenue"] = float(mutated.loc[index, "revenue"]) + 1.0
         rewritten = build(mutated)
         try:
-            rewritten.capture_sequential(finalized=True, previous=replayed, as_of="d10")
+            workflows.capture_sequential(*rewritten, finalized=True, previous=replayed, as_of="d10")
         except CodedError as exc:
             assert exc.code == "sequential.continuation.rewrite"
         else:
             raise AssertionError("mutating a finalized d2 observation was accepted")
         finally:
-            rewritten.close()
+            rewritten[1].close()
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def _sequential_asymptotic_mean_case() -> ParityCase:
@@ -1497,25 +1620,26 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
         assert bound is not None
         return bound
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]  # consumed by the runner's capture_sequential call
+        analysis = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
+        _mark_as_of(analysis, as_of)  # consumed by the runner's capture_sequential call
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
+        native = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
         adopted = _publish_and_adopt(con, native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.unit_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -1525,12 +1649,13 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
             exposure_date="exposure_date",
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()  # `panel` is already materialized; nothing below needs `con` alive
-        analysis = Analysis.from_unit_panel(
+        analysis = builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -1540,10 +1665,10 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
             experiment_id="exp",
             exposure_date="exposure_date",
         )
-        analysis._sequential_as_of = dt.date(2025, 1, 11)  # ty: ignore[unresolved-attribute]  # matches _EXPOSURE_AT's day + window_days=1
+        _mark_as_of(analysis, dt.date(2025, 1, 11))  # matches _EXPOSURE_AT's day + window_days=1
         return analysis
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         return _export_and_replay(summary, [MetricSpec(name="revenue", type="mean")])
 
@@ -1626,32 +1751,33 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
     definitions = Definitions.model_validate(definition)
     spec = MetricSpec(name="revenue", preferred_direction="increase")
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(events)
         if pinned_dimension:
             con.create_table(
                 "users", pd.DataFrame({"user_id": [*units, "outside"], "country": ["UK"] * 7})
             )
-        analysis = make_analysis(con, definitions, experiment="exp")
+        bound = make_binding(con, definitions, experiment="exp")
         if artifact:
-            return _publish_and_adopt(con, analysis)
+            return _publish_and_adopt(con, bound)
         if pinned_dimension:
-            pinned = _native_source(analysis)._pinned_source()
-            analysis.close()
-            analysis = Analysis._from_source(
+            pinned = bound_source(bound[1])._pinned_source()
+            bound[1].close()
+            bound = bind_pair(
                 pinned,
                 defs=definitions,
                 experiment=definitions.experiments[0],
                 con=native_connection(pinned),
             )
-        return _track_connection(analysis, con)
+        return _track_connection(bound, con)
 
-    def summary() -> Analysis:
+    def summary() -> Bound:
         totals = (
             pd.DataFrame(records).groupby(["user_id", "group_id"], as_index=False)["revenue"].sum()
         )
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             totals,
+            shape="summary",
             unit="user_id",
             group="group_id",
             control="control",
@@ -1659,9 +1785,10 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
             plan=plan,
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records[::-1]),
+            shape="panel",
             unit="user_id",
             group="group_id",
             control="control",
@@ -1693,7 +1820,7 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
     )
 
 
-def _assert_horizon_export_warns_censoring(analysis: Analysis, path: Path) -> None:
+def _assert_horizon_export_warns_censoring(analysis: Bound, path: Path) -> None:
     from tests.warning_codes import warning_codes
 
     with warnings.catch_warnings():
@@ -1703,7 +1830,7 @@ def _assert_horizon_export_warns_censoring(analysis: Analysis, path: Path) -> No
             category=DeprecationWarning,
         )
         with pytest.warns(IncrementWarning) as captured:
-            analysis.export(path)
+            workflows.export_moments(*analysis, path)
     assert warning_codes(captured) == ["frame.censoring.dropped_units"]
 
 
@@ -1798,14 +1925,15 @@ def _ratio_component_horizon_case(
         preferred_direction="increase",
     )
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = warehouse_connection(events)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(totals),
+            shape="summary",
             unit="unit",
             group="group",
             control="control",
@@ -1813,9 +1941,10 @@ def _ratio_component_horizon_case(
             plan=plan,
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records[::-1]),
+            shape="panel",
             unit="unit",
             group="group",
             control="control",
@@ -1840,8 +1969,8 @@ def _ratio_component_horizon_case(
                 "cy2"
             ] == pytest.approx(multiplier**2 * (581.0 if complete else 77.0))
 
-    def moment_probe(constructor: str, analysis: Analysis) -> None:
-        source = _moment_source(analysis)
+    def moment_probe(constructor: str, analysis: Bound) -> None:
+        source = bound_source(analysis[1])
         if constructor == "from_moments":
             assert_moments(source.moments(source.context.metrics[0]))
         else:
@@ -1850,7 +1979,7 @@ def _ratio_component_horizon_case(
                 if not complete and constructor == "from_definitions":
                     _assert_horizon_export_warns_censoring(analysis, path)
                 else:
-                    analysis.export(path)
+                    workflows.export_moments(*analysis, path)
                 assert_moments(pq.read_table(path).to_pylist())
         if constructor in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
             rows = source.moments(
@@ -1967,18 +2096,19 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
     )
     as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(events)
-        analysis = make_analysis(con, definitions, experiment="exp", plan=bound)
+        analysis = make_binding(con, definitions, experiment="exp", plan=bound)
         analysis = (
             _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
         )
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(analysis, as_of)
         return analysis
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(units),
+            shape="summary",
             unit="unit",
             group="arm",
             exposure_date="exposure",
@@ -1988,9 +2118,10 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
             experiment_id="exp",
         )
 
-    def panel() -> Analysis:
-        analysis = Analysis.from_unit_panel(
+    def panel() -> Bound:
+        analysis = builders.from_frame(
             pd.DataFrame(units),
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -2000,7 +2131,7 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
             plan=frame_plan,
             experiment_id="exp",
         )
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(analysis, as_of)
         return analysis
 
     def check_availability(readout: Any) -> None:
@@ -2027,14 +2158,14 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
 
 
 def _m3_export_and_consume_checkpoint(
-    analysis: Analysis, path: Path, metrics: list[MetricSpec], design: Randomized, expected: Any
+    analysis: Bound, path: Path, metrics: list[MetricSpec], design: Randomized, expected: Any
 ) -> int:
-    analysis.export(path)
+    workflows.export_moments(*analysis, path)
     size = path.stat().st_size
     assert size > 0
-    replay = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=metrics, design=design)
-    assert replay.sequential_snapshot() == expected
-    assert replay.run()
+    replay = builders.from_moments(pq.read_table(path).to_pylist(), metrics=metrics, design=design)
+    assert workflows.sequential_snapshot(*replay) == expected
+    assert read(replay)
     return size
 
 
@@ -2046,7 +2177,7 @@ def _m3_assert_switchback_refusal(summary: pd.DataFrame, design: Randomized) -> 
     )
 
     with pytest.raises(CodedError) as refused:
-        Analysis.from_switchback_panel(
+        builders.from_switchback_frame(
             summary,
             unit="user_id",
             cycle="cycle",
@@ -2145,7 +2276,7 @@ def _m3_unit_summary(rows: list[dict[str, Any]], secondary: str, messy: bool) ->
     return frame
 
 
-def _m3_require_covariate_imputation(build: Callable[[], Analysis]) -> Analysis:
+def _m3_require_covariate_imputation(build: Callable[[], Bound]) -> Bound:
     from tests.warning_codes import warning_codes
 
     with pytest.warns(IncrementWarning) as caught:
@@ -2160,7 +2291,7 @@ def _m3_unit_panel(
     plan: AnalysisPlan,
     primary: MetricSpec,
     secondary: MetricSpec,
-) -> Analysis:
+) -> Bound:
     columns = ["user_id", "variant", "exposure_date", "revenue", "sessions"]
 
     primary_method = primary.decision_method
@@ -2170,8 +2301,9 @@ def _m3_unit_panel(
         columns.append(secondary.name)
     panel = summary[columns].copy()
     panel["date"] = ds._EXPOSURE_AT.date()
-    analysis = Analysis.from_unit_panel(
+    analysis = builders.from_frame(
         panel,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -2184,7 +2316,7 @@ def _m3_unit_panel(
         experiment_id="exp",
         exposure_date="exposure_date",
     )
-    analysis._sequential_as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)  # ty: ignore[unresolved-attribute]
+    _mark_as_of(analysis, ds._EXPOSURE_AT.date() + dt.timedelta(days=1))
     return analysis
 
 
@@ -2249,21 +2381,19 @@ def _sequential_missing_zero_mean_ratio_case(
     design = Randomized(control_group="control", allocation=allocation)
     as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(
+        analysis = make_binding(
             con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)
         )
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(analysis, as_of)
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(
-            con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)
-        )
+        native = make_binding(con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design))
         adopted = _publish_and_adopt(con, native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
     secondary_spec = (
@@ -2295,10 +2425,11 @@ def _sequential_missing_zero_mean_ratio_case(
     def _summary_frame() -> pd.DataFrame:
         return _m3_unit_summary(rows, secondary, messy)
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         build = partial(
-            Analysis.from_unit_summary,
+            builders.from_frame,
             _summary_frame(),
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -2309,13 +2440,13 @@ def _sequential_missing_zero_mean_ratio_case(
         )
         return _m3_require_covariate_imputation(build) if messy else build()
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         build = partial(
             _m3_unit_panel, _summary_frame(), design, sequential_plan, revenue_spec, secondary_spec
         )
         return _m3_require_covariate_imputation(build) if messy else build()
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         return _export_and_replay(
             build_unit_summary(),
             [
@@ -2332,15 +2463,15 @@ def _sequential_missing_zero_mean_ratio_case(
 
         query_log_enabled = enable_query_log(con)
         native = _track_connection(
-            make_analysis(con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)),
+            make_binding(con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)),
             con,
         )
         from increment.errors import CodedError
 
         with pytest.raises(CodedError) as immature:
-            native.capture_sequential(finalized=False, as_of=dt.date(2025, 1, 10))
+            workflows.capture_sequential(*native, finalized=False, as_of=dt.date(2025, 1, 10))
         assert immature.value.code == "sequential.source.invalid"
-        first = native.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 10))
+        first = workflows.capture_sequential(*native, finalized=True, as_of=dt.date(2025, 1, 10))
         with tempfile.TemporaryDirectory() as td:
             first_path = Path(td) / "first.parquet"
             first_bytes = _m3_export_and_consume_checkpoint(
@@ -2359,8 +2490,8 @@ def _sequential_missing_zero_mean_ratio_case(
                 first,
             )
             _m3_assert_switchback_refusal(_summary_frame(), design)
-            second = native.capture_sequential(
-                finalized=True, previous=first, as_of=dt.date(2025, 1, 11)
+            second = workflows.capture_sequential(
+                *native, finalized=True, previous=first, as_of=dt.date(2025, 1, 11)
             )
             second_path = Path(td) / "second.parquet"
             second_bytes = _m3_export_and_consume_checkpoint(
@@ -2382,7 +2513,7 @@ def _sequential_missing_zero_mean_ratio_case(
         assert all(cell.alpha > 0 for cell in second.registration.roster)
         if query_log_enabled:
             _m3_print_measurements(query_log(con), first, second, [first_bytes, second_bytes])
-        _close_parity_analysis(native)
+        _close_parity_binding(native)
 
     return ParityCase(
         id="audit-sequential-messy-mean-conversion" if messy else "audit-sequential-missing-zero",
@@ -2474,25 +2605,26 @@ def _sequential_composed_itt_and_uptake_case(
         assert bound is not None
         return bound
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]  # consumed by the runner's capture_sequential call
+        analysis = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
+        _mark_as_of(analysis, as_of)  # consumed by the runner's capture_sequential call
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
+        native = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
         adopted = _publish_and_adopt(con, native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.unit_summary_frame(con)
         con.disconnect()  # `summary` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             summary,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=frame_design,
@@ -2503,13 +2635,14 @@ def _sequential_composed_itt_and_uptake_case(
             exposure_date="exposure_date",
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()  # `panel` is already materialized; nothing below needs `con` alive
         panel["uptake"] = (panel["revenue"] > 0).astype(int)
-        analysis = Analysis.from_unit_panel(
+        analysis = builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -2520,18 +2653,18 @@ def _sequential_composed_itt_and_uptake_case(
             exposure_date="exposure_date",
             uptake="uptake",
         )
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]  # matches _EXPOSURE_AT's day + window_days=1
+        _mark_as_of(analysis, as_of)  # matches _EXPOSURE_AT's day + window_days=1
         return analysis
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
-        summary.capture_sequential(finalized=True)
+        workflows.capture_sequential(*summary, finalized=True)
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(replay_rows, metrics=summary_specs, design=frame_design)
-        summary.close()
+        replayed = builders.from_moments(replay_rows, metrics=summary_specs, design=frame_design)
+        summary[1].close()
         return replayed
 
     return ParityCase(
@@ -2558,20 +2691,18 @@ def _sequential_composed_itt_and_uptake_case(
     )
 
 
-def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callable[[], None]]:
+def _retained_catalog_probes() -> tuple[Callable[[str, Bound], None], Callable[[], None]]:
     """The per-constructor probe and the cross-constructor agreement check for
     `_sequential_unbounded_retention_catalog_case`."""
     checkpoints: dict[str, list[tuple[Any, ...]]] = {}
 
-    def probe_retained_catalog(constructor: str, analysis: Analysis) -> None:
+    def probe_retained_catalog(constructor: str, bound: Bound) -> None:
         from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
         # An empty catalog would make the exemption vacuous, so the retained
         # catalog is asserted, then the compliance-only checkpoint recorded.
-        assert [m.name for m in analysis.metrics] == ["returned"], constructor
-        checkpoint_rows = analysis.run_asof_lift(
-            estimands=("compliance",), completed_windows_only=True
-        )
+        assert [m.name for m in workflows.metrics(*bound)] == ["returned"], constructor
+        checkpoint_rows = read(bound, "asof_lift", estimands=("compliance",), completed=True)
         assert_support(
             "retained_retention_checkpoint_reads",
             f"{constructor}_compliance_asof_supported",
@@ -2593,11 +2724,9 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
                 )
             )
         assert len(checkpoints[constructor]) == 1, constructor
-        for completed_windows_only in (False, True):
+        for completed in (False, True):
             with pytest.raises(CodedError) as refused:
-                analysis.run_asof_lift(
-                    estimands=("itt",), completed_windows_only=completed_windows_only
-                )
+                read(bound, "asof_lift", estimands=("itt",), completed=completed)
             assert_refusal(
                 "retained_retention_checkpoint_reads",
                 f"{constructor}_itt_asof_refused",
@@ -2605,7 +2734,7 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
                 stage="read",
             )
         with pytest.raises(CodedError) as itt_run_refused:
-            analysis.run(estimands=("itt",))
+            read(bound, estimands=("itt",))
         assert_refusal(
             "retained_retention_checkpoint_reads",
             f"{constructor}_itt_run_refused",
@@ -2706,26 +2835,27 @@ def _sequential_unbounded_retention_catalog_case() -> ParityCase:
     )
     as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp", plan=registered)
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        analysis = make_binding(con, defs, experiment="exp", plan=registered)
+        _mark_as_of(analysis, as_of)
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
         adopted = _publish_and_adopt(
-            con, make_analysis(con, defs, experiment="exp", plan=registered)
+            con, make_binding(con, defs, experiment="exp", plan=registered)
         )
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.unit_summary_frame(con)
         con.disconnect()
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             summary,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=frame_design,
@@ -2736,13 +2866,14 @@ def _sequential_unbounded_retention_catalog_case() -> ParityCase:
             exposure_date="exposure_date",
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()
         panel["uptake"] = (panel["revenue"] > 0).astype(int)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -2754,17 +2885,17 @@ def _sequential_unbounded_retention_catalog_case() -> ParityCase:
             uptake="uptake",
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         source = build_definitions()
         try:
-            source.capture_sequential(finalized=True, as_of=as_of)
+            workflows.capture_sequential(*source, finalized=True, as_of=as_of)
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                source.export(path)
+                workflows.export_moments(*source, path)
                 replay_rows = pq.read_table(path).to_pylist()
-            return Analysis.from_moments(replay_rows, metrics=[returned], design=native_design)
+            return builders.from_moments(replay_rows, metrics=[returned], design=native_design)
         finally:
-            _close_parity_analysis(source)
+            _close_parity_binding(source)
 
     probe_retained_catalog, assert_checkpoints_agree = _retained_catalog_probes()
 
@@ -2892,17 +3023,17 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         assert bound is not None
         return bound
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]  # consumed by the runner's capture_sequential call
+        analysis = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
+        _mark_as_of(analysis, as_of)  # consumed by the runner's capture_sequential call
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
+        native = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
         adopted = _publish_and_adopt(con, native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
     summary_metrics = [
@@ -2915,12 +3046,13 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         ),
     ]
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.unit_summary_frame(con)
         con.disconnect()  # `summary` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             summary,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=frame_design,
@@ -2931,14 +3063,15 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
             exposure_date="exposure_date",
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()  # `panel` is already materialized; nothing below needs `con` alive
         panel["uptake"] = (panel["revenue"] > 0).astype(int)
         panel["purchase_rate"] = (panel["revenue"] > 0).astype(int)
-        analysis = Analysis.from_unit_panel(
+        analysis = builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -2960,17 +3093,17 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
             exposure_date="exposure_date",
             uptake="uptake",
         )
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]  # matches _EXPOSURE_AT's day + window_days=1
+        _mark_as_of(analysis, as_of)  # matches _EXPOSURE_AT's day + window_days=1
         return analysis
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
-        summary.capture_sequential(finalized=True)
+        workflows.capture_sequential(*summary, finalized=True)
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(
+        replayed = builders.from_moments(
             replay_rows,
             metrics=[
                 MetricSpec(name="revenue", type="mean"),
@@ -2979,7 +3112,7 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
             ],
             design=frame_design,
         )
-        summary.close()
+        summary[1].close()
         return replayed
 
     return ParityCase(
@@ -3142,23 +3275,23 @@ def _segmented_panel(
 def _assert_typed_summaries_match_oracle(
     plan: AnalysisPlan,
     summary_frame: Callable[..., Any],
-    summary_analysis: Callable[[Any, AnalysisPlan], Analysis],
+    summary_analysis: Callable[[Any, AnalysisPlan], Bound],
 ) -> None:
     """Typed Boolean/null summaries in every dataframe dtype retain the
     canonical-string oracle's state and read out its rows exactly."""
     oracle = summary_analysis(summary_frame(), plan)
     try:
-        expected = oracle.capture_sequential(finalized=True)
-        expected_rows = [row.model_dump() for row in oracle.run_breakout()]
+        expected = workflows.capture_sequential(*oracle, finalized=True)
+        expected_rows = [row.model_dump() for row in read(oracle, "breakout")]
         for typed in ("pandas", "polars", "arrow"):
             candidate = summary_analysis(summary_frame(typed), plan)
             try:
-                assert candidate.capture_sequential(finalized=True) == expected
-                assert [row.model_dump() for row in candidate.run_breakout()] == expected_rows
+                assert workflows.capture_sequential(*candidate, finalized=True) == expected
+                assert [row.model_dump() for row in read(candidate, "breakout")] == expected_rows
             finally:
-                candidate.close()
+                candidate[1].close()
     finally:
-        oracle.close()
+        oracle[1].close()
 
 
 def _registered_segmented_breakout_case(
@@ -3255,9 +3388,10 @@ def _registered_segmented_breakout_case(
         table = _unit_summary_from_rows(rows)
         return _relabel_summary_store(table, typed) if boolean_segments else table
 
-    def _summary_analysis(frame: Any, plan: AnalysisPlan) -> Analysis:
-        return Analysis.from_unit_summary(
+    def _summary_analysis(frame: Any, plan: AnalysisPlan) -> Bound:
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -3267,7 +3401,7 @@ def _registered_segmented_breakout_case(
             exposure_date="exposure_date",
         )
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         # Segmented registration, derived from this source's own automatic
         # native-bound plan (or bound from the predeclared family) -- see
         # docstring: a relational source refuses this roster outright at
@@ -3277,23 +3411,24 @@ def _registered_segmented_breakout_case(
         if not automatic:
             base_reg = bound.inference.registration  # ty: ignore[unresolved-attribute]
             bound = _segmented_plan_from(metric, kind, base_reg, stores)
-        analysis = make_analysis(con, defs, experiment="exp", plan=bound)
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        analysis = make_binding(con, defs, experiment="exp", plan=bound)
+        _mark_as_of(analysis, as_of)
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
+        native = make_binding(con, defs, experiment="exp", plan=_native_bound_plan())
         adopted = _publish_and_adopt(con, native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
     def _segmented_summary_plan() -> AnalysisPlan:
         if automatic:
             return automatic_plan
         summary = _unit_summary_from_rows(rows)
-        base = Analysis.from_unit_summary(
+        base = builders.from_frame(
             summary,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -3302,21 +3437,22 @@ def _registered_segmented_breakout_case(
             experiment_id="exp",
             exposure_date="exposure_date",
         )
-        base_reg = base.capture_sequential(finalized=True).registration
-        base.close()
+        base_reg = workflows.capture_sequential(*base, finalized=True).registration
+        base[1].close()
         return _segmented_plan_from(metric, kind, base_reg, stores)
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         return _summary_analysis(_summary_frame(), _segmented_summary_plan())
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         summary = _unit_summary_from_rows(rows)
         store_by_unit = {r["user_id"]: r["store"] for r in summary.to_pylist()}
         panel = _segmented_panel(rows, store_by_unit, metric, boolean_segments)
         segmented_plan = automatic_plan
         if not automatic:
-            base = Analysis.from_unit_panel(
+            base = builders.from_frame(
                 panel,
+                shape="panel",
                 unit="user_id",
                 group="variant",
                 date="date",
@@ -3326,11 +3462,14 @@ def _registered_segmented_breakout_case(
                 experiment_id="exp",
                 exposure_date="exposure_date",
             )
-            base_reg = base.capture_sequential(finalized=True, as_of=panel_as_of).registration
-            base.close()
+            base_reg = workflows.capture_sequential(
+                *base, finalized=True, as_of=panel_as_of
+            ).registration
+            base[1].close()
             segmented_plan = _segmented_plan_from(metric, kind, base_reg, stores)
-        analysis = Analysis.from_unit_panel(
+        analysis = builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -3340,15 +3479,15 @@ def _registered_segmented_breakout_case(
             experiment_id="exp",
             exposure_date="exposure_date",
         )
-        analysis._sequential_as_of = panel_as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(analysis, panel_as_of)
         return analysis
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         # The exported segmented registration keeps the roster, so replayed
         # moments reach run_breakout and refuse there: MomentsSource declares no
         # breakout catalog.
         base = build_unit_summary()
-        base.capture_sequential(finalized=True)
+        workflows.capture_sequential(*base, finalized=True)
         return _export_and_replay(base, [MetricSpec(name=metric, type=spec_summary.type)])
 
     def typed_summary_probe() -> None:
@@ -3521,20 +3660,20 @@ def _assert_shared_native_artifact_identity(
     """A fresh native capture and an adopted artifact's capture share registration,
     arm state and record count (prefix id and record order depend on accumulation
     order, not identity)."""
-    native = make_analysis(con, defs, experiment="exp", plan=plan)
+    native = make_binding(con, defs, experiment="exp", plan=plan)
     adopted = _publish_and_adopt(con, native)
     try:
-        fresh = make_analysis(con, defs, experiment="exp", plan=plan)
+        fresh = make_binding(con, defs, experiment="exp", plan=plan)
         try:
-            left = fresh.capture_sequential(finalized=True, as_of=as_of)
+            left = workflows.capture_sequential(*fresh, finalized=True, as_of=as_of)
         finally:
-            fresh.close()
-        right = adopted.capture_sequential(finalized=True, as_of=as_of)
+            fresh[1].close()
+        right = workflows.capture_sequential(*adopted, finalized=True, as_of=as_of)
         assert left.registration == right.registration
         assert left.states == right.states
         assert len(left.records) == len(right.records)
     finally:
-        _close_parity_analysis(adopted)
+        _close_parity_binding(adopted)
 
 
 def _sequential_automatic_multi_arm_exact_case(
@@ -3589,17 +3728,17 @@ def _sequential_automatic_multi_arm_exact_case(
         con = warehouse_connection(rows)
         _assert_shared_native_artifact_identity(con, native_defs, _native_bound_plan(), as_of)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, native_defs, experiment="exp", plan=_native_bound_plan())
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        analysis = make_binding(con, native_defs, experiment="exp", plan=_native_bound_plan())
+        _mark_as_of(analysis, as_of)
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(con, native_defs, experiment="exp", plan=_native_bound_plan())
+        native = make_binding(con, native_defs, experiment="exp", plan=_native_bound_plan())
         adopted = _publish_and_adopt(con, native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(adopted, as_of)
         return adopted
 
     def _summary() -> pd.DataFrame:
@@ -3609,9 +3748,10 @@ def _sequential_automatic_multi_arm_exact_case(
         frame["exposure_date"] = exposure_day
         return frame
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             _summary(),
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -3621,7 +3761,7 @@ def _sequential_automatic_multi_arm_exact_case(
             exposure_date="exposure_date",
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         # The conversion lands on the exposure day, inside window_days=1.
         summary = _summary()
         panel = pd.DataFrame(
@@ -3637,8 +3777,9 @@ def _sequential_automatic_multi_arm_exact_case(
                 for offset in (0, 1)
             ]
         )
-        analysis = Analysis.from_unit_panel(
+        analysis = builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -3648,10 +3789,10 @@ def _sequential_automatic_multi_arm_exact_case(
             experiment_id="exp",
             exposure_date="exposure_date",
         )
-        analysis._sequential_as_of = exposure_day + dt.timedelta(days=1)  # ty: ignore[unresolved-attribute]
+        _mark_as_of(analysis, exposure_day + dt.timedelta(days=1))
         return analysis
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         if declared_registration is None:
             return _export_and_replay(
                 build_unit_summary(), [MetricSpec(name="purchase_rate", type="conversion")]
@@ -3660,12 +3801,10 @@ def _sequential_automatic_multi_arm_exact_case(
         # is exported from that source and replayed independently of the frames.
         native = build_definitions()
         try:
-            native.capture_sequential(finalized=True, as_of=as_of)
+            workflows.capture_sequential(*native, finalized=True, as_of=as_of)
             return _export_and_replay(native, [MetricSpec(name="purchase_rate", type="conversion")])
         finally:
-            native.close()
-            for connection in getattr(native, "_parity_connections", ()):
-                connection.disconnect()
+            _close_parity_binding(native)
 
     return ParityCase(
         id=(
@@ -3847,14 +3986,15 @@ def _uptake_timestamp_boundaries_case(
     spec = MetricSpec(name="revenue", preferred_direction="increase")
     frame = _encouragement_oracle_frame_for_parity()
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = warehouse_connection(events)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=[spec],
@@ -3863,7 +4003,7 @@ def _uptake_timestamp_boundaries_case(
             plan=plan,
         )
 
-    def panel() -> Analysis:
+    def panel() -> Bound:
         records = []
         closing_units = {f"t{i}" for i in range(11, 16)}
         for row in frame.to_dict("records"):
@@ -3882,8 +4022,9 @@ def _uptake_timestamp_boundaries_case(
                         ),
                     }
                 )
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -3895,11 +4036,12 @@ def _uptake_timestamp_boundaries_case(
             plan=plan,
         )
 
-    def portable() -> Analysis:
-        with summary() as analysis, tempfile.TemporaryDirectory() as td:
+    def portable() -> Bound:
+        experiment, resolver = summary()
+        with resolver, tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            analysis.export(path)
-            return Analysis.from_moments(
+            workflows.export_moments(experiment, resolver, path)
+            return builders.from_moments(
                 pq.read_table(path).to_pylist(), metrics=[spec], design=design, plan=plan
             )
 
@@ -3912,10 +4054,10 @@ def _uptake_timestamp_boundaries_case(
             assert rows[estimand].lift.lb is not None
             assert rows[estimand].lift.ub is not None
 
-    def asof_probe(constructor: str, analysis: Analysis) -> None:
+    def asof_probe(constructor: str, analysis: Bound) -> None:
         if constructor not in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
             return
-        results = analysis.run_asof_lift(estimands=("itt", "compliance", "late"))
+        results = read(analysis, "asof_lift", estimands=("itt", "compliance", "late"))
         last = max(row.ds for row in results)
         probe([row for row in results if row.ds == last])
 
@@ -3935,7 +4077,7 @@ def _uptake_timestamp_boundaries_case(
     )
 
 
-def _assert_missing_exclusion_precedes_data(_constructor: str, analysis: Analysis) -> None:
+def _assert_missing_exclusion_precedes_data(_constructor: str, analysis: Bound) -> None:
     from unittest.mock import patch
 
     from increment.estimators import IdentificationError
@@ -3943,7 +4085,7 @@ def _assert_missing_exclusion_precedes_data(_constructor: str, analysis: Analysi
     def unread(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("A missing LATE assumption must refuse before reading data")
 
-    source_type = type(_moment_source(analysis))
+    source_type = type(bound_source(analysis[1]))
     with (
         patch.object(source_type, "moments", unread),
         patch.object(source_type, "compliance_summary", unread),
@@ -3951,9 +4093,9 @@ def _assert_missing_exclusion_precedes_data(_constructor: str, analysis: Analysi
         for estimands in (None, ("late",), ("itt", "late")):
             with pytest.raises(IdentificationError) as raised:
                 if estimands is None:
-                    analysis.run()
+                    read(analysis)
                 else:
-                    analysis.run(estimands=estimands)
+                    read(analysis, estimands=estimands)
             assert raised.value.code == "identification.encouragement.exclusion_required"
             assert raised.value.context["estimands"] == (estimands or ("itt", "compliance", "late"))
 
@@ -3999,16 +4141,16 @@ def _encouragement_declared_definitions_case(
     defs = Definitions.model_validate(defs_dict)
 
     def supplied() -> dict[str, Any]:
-        return {"_design": _design()} if supplied_design else {}
+        return {"design": _design()} if supplied_design else {}
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp", **supplied())
+        analysis = make_binding(con, defs, experiment="exp", **supplied())
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", **supplied())
+        native = make_binding(con, defs, experiment="exp", **supplied())
         return _publish_and_adopt(con, native)
 
     def _design() -> Encouragement:
@@ -4024,13 +4166,14 @@ def _encouragement_declared_definitions_case(
             allocation={"control": 0.5, "treatment": 0.5},
         )
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         needs_drop = missing_treatment_outcomes and not metric_free
         with pytest.warns(IncrementWarning) if needs_drop else nullcontext():
-            return Analysis.from_unit_summary(
+            return builders.from_frame(
                 _encouragement_oracle_frame_for_parity(
                     missing_treatment_outcomes=missing_treatment_outcomes
                 ),
+                shape="summary",
                 unit="user_id",
                 group="group",
                 metrics=specs,
@@ -4039,11 +4182,12 @@ def _encouragement_declared_definitions_case(
                 plan=plan,
             )
 
-    def build_unit_panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def build_unit_panel() -> Bound:
+        return builders.from_frame(
             _encouragement_oracle_panel_frame_for_parity(
                 missing_treatment_outcomes=missing_treatment_outcomes
             ),
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -4053,18 +4197,18 @@ def _encouragement_declared_definitions_case(
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         # `_export_and_replay` reimports with `control="control"` (a plain
         # Randomized design) -- wrong here, where the point is preserving
         # the declared Encouragement design through export/reimport.
         con = warehouse_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", **supplied())
+        native = make_binding(con, defs, experiment="exp", **supplied())
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            native.export(path)
+            workflows.export_moments(*native, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
-        native.close()
+        replayed = builders.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
+        native[1].close()
         con.disconnect()
         return replayed
 
@@ -4150,14 +4294,14 @@ def _encouragement_guardrail_case(
         panel["day"] = _ENCOURAGEMENT_PURCHASE_AT.date()
         return panel
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp")
+        analysis = make_binding(con, defs, experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp")
+        native = make_binding(con, defs, experiment="exp")
         return _publish_and_adopt(con, native)
 
     def _design() -> Encouragement:
@@ -4176,9 +4320,10 @@ def _encouragement_guardrail_case(
         MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
     ]
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             frame(),
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=specs,
@@ -4187,9 +4332,10 @@ def _encouragement_guardrail_case(
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def build_unit_panel() -> Bound:
+        return builders.from_frame(
             panel_frame(),
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -4199,15 +4345,15 @@ def _encouragement_guardrail_case(
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp")
+        native = make_binding(con, defs, experiment="exp")
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            native.export(path)
+            workflows.export_moments(*native, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
-        native.close()
+        replayed = builders.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
+        native[1].close()
         con.disconnect()
         return replayed
 
@@ -4360,14 +4506,15 @@ def _retention_breakout_cohorts_case(
         preferred_direction="increase",
     )
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(panel_rows),
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -4379,9 +4526,10 @@ def _retention_breakout_cohorts_case(
             control="control",
         )
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(summary_rows),
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=[metric],
@@ -4389,7 +4537,7 @@ def _retention_breakout_cohorts_case(
             control="control",
         )
 
-    def replay() -> Analysis:
+    def replay() -> Bound:
         return _export_and_replay(native(), [metric])
 
     def moment_input_rows() -> list[dict[str, Any]]:
@@ -4397,7 +4545,7 @@ def _retention_breakout_cohorts_case(
         try:
             return _export_rows(source)
         finally:
-            _close_parity_analysis(source)
+            _close_parity_binding(source)
 
     def probe(results: Any) -> None:
         assert {(row.metric, row.dimension_value) for row in results} == {
@@ -4408,10 +4556,10 @@ def _retention_breakout_cohorts_case(
             assert row.lift.value == pytest.approx(1.0)
             assert row.lift.lb is not None and row.lift.ub is not None
 
-    def source_probe(name: str, analysis: Analysis) -> None:
+    def source_probe(name: str, analysis: Bound) -> None:
         if name not in {"from_definitions", "from_unit_day_artifact"}:
             return
-        tables = analysis.breakout_summaries(metrics=["d7_retention"])
+        tables = workflows.breakout_summaries(*analysis, metrics=["d7_retention"])
         key = "d7_retention:store:events"
         assert set(tables) == {key}
         expected = {
@@ -4434,8 +4582,8 @@ def _retention_breakout_cohorts_case(
         if single_segment:
             from increment.estimation.results import LiftEstimate
 
-            pooled = analysis.run(metrics=["d7_retention"])
-            segmented = analysis.run_breakout()
+            pooled = read(analysis, metrics=["d7_retention"])
+            segmented = read(analysis, "breakout")
             for segment, total in zip(segmented, pooled, strict=True):
                 assert isinstance(total, LiftEstimate)
                 assert segment.group_id == total.group_id
@@ -4500,14 +4648,14 @@ def _encouragement_retention_case() -> ParityCase:
     )
     defs = Definitions.model_validate(defs_dict)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp")
+        analysis = make_binding(con, defs, experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp")
+        native = make_binding(con, defs, experiment="exp")
         return _publish_and_adopt(con, native)
 
     def _design() -> Encouragement:
@@ -4521,10 +4669,11 @@ def _encouragement_retention_case() -> ParityCase:
             allocation={"control": 0.5, "treatment": 0.5},
         )
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         summary = _encouragement_oracle_frame_for_parity()
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             summary,
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=[
@@ -4536,11 +4685,12 @@ def _encouragement_retention_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = _encouragement_oracle_panel_frame_for_parity()
         panel["returned"] = (panel["revenue"] > 0).astype(int)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -4553,14 +4703,14 @@ def _encouragement_retention_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp")
+        native = make_binding(con, defs, experiment="exp")
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            native.export(path)
+            workflows.export_moments(*native, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(
+        replayed = builders.from_moments(
             replay_rows,
             metrics=[
                 MetricSpec(name="revenue", type="mean"),
@@ -4569,7 +4719,7 @@ def _encouragement_retention_case() -> ParityCase:
             design=_design(),
             plan=plan,
         )
-        native.close()
+        native[1].close()
         con.disconnect()
         return replayed
 
@@ -4748,14 +4898,14 @@ def _encouragement_fcr_reestimation_case() -> ParityCase:
     defs_dict = _fcr_reestimation_defs_dict(plan)
     defs = Definitions.model_validate(defs_dict)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp")
+        analysis = make_binding(con, defs, experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp")
+        native = make_binding(con, defs, experiment="exp")
         return _publish_and_adopt(con, native)
 
     def _design() -> Encouragement:
@@ -4774,9 +4924,10 @@ def _encouragement_fcr_reestimation_case() -> ParityCase:
         MetricSpec(name="errors", type="mean", preferred_direction="decrease"),
     ]
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             _fcr_oracle_frame_for_parity(),
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=specs,
@@ -4785,11 +4936,12 @@ def _encouragement_fcr_reestimation_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = _fcr_oracle_frame_for_parity()
         panel["day"] = _ENCOURAGEMENT_PURCHASE_AT.date()
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -4799,15 +4951,15 @@ def _encouragement_fcr_reestimation_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, defs, experiment="exp")
+        native = make_binding(con, defs, experiment="exp")
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            native.export(path)
+            workflows.export_moments(*native, path)
             replay_rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
-        native.close()
+        replayed = builders.from_moments(replay_rows, metrics=specs, design=_design(), plan=plan)
+        native[1].close()
         con.disconnect()
         return replayed
 
@@ -4857,14 +5009,14 @@ def _multiplicity_roles_case() -> ParityCase:
     defs_dict = ds.multiplicity_definitions_dict(plan=_MULTIPLICITY_PLAN)
     design = Randomized(control_group="control", allocation=ds.multiplicity_allocation())
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="exp")
         return _publish_and_adopt(con, native)
 
     metrics = [
@@ -4886,12 +5038,13 @@ def _multiplicity_roles_case() -> ParityCase:
         MetricSpec(name="latency", type="mean", missing="zero", preferred_direction="decrease"),
     ]
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.multiplicity_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             design=design,
@@ -4899,13 +5052,14 @@ def _multiplicity_roles_case() -> ParityCase:
             plan=_MULTIPLICITY_PLAN,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.multiplicity_summary_frame(con)
         con.disconnect()  # `summary`/`panel` are already materialized below
         panel = ds.multiplicity_panel_frame(summary)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -4914,7 +5068,7 @@ def _multiplicity_roles_case() -> ParityCase:
             plan=_MULTIPLICITY_PLAN,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         return _export_and_replay(
             summary,
@@ -5151,19 +5305,20 @@ def _observational_covariate_case(
 
         return pd.DataFrame([{"user_id": uid, **unit} for uid, unit in units.items()])
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _publish_and_adopt(con, native, kinds=("unit_covariate",))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             frame(),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=specs,
@@ -5171,11 +5326,12 @@ def _observational_covariate_case(
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = frame()
         panel["date"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -5184,16 +5340,16 @@ def _observational_covariate_case(
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         # `_export_and_replay` reimports as Randomized; the observational
         # design must survive the replay to reach the covariate read.
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             replay_rows = pq.read_table(path).to_pylist()
-        summary.close()
-        return Analysis.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
+        summary[1].close()
+        return builders.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
 
     return ParityCase(
         id=(
@@ -5287,19 +5443,20 @@ def _observational_quantile_case() -> ParityCase:
     def frame() -> Any:
         return pd.DataFrame([{"user_id": uid, **unit} for uid, unit in units.items()])
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _publish_and_adopt(con, native, kinds=("unit_covariate",))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             frame(),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=specs,
@@ -5307,11 +5464,12 @@ def _observational_quantile_case() -> ParityCase:
             plan=_OBSERVATIONAL_QUANTILE_PLAN,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = frame()
         panel["date"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -5320,10 +5478,11 @@ def _observational_quantile_case() -> ParityCase:
             plan=_OBSERVATIONAL_QUANTILE_PLAN,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         # Export scalar moments, then ask for the unsupported observational quantile.
-        summary = Analysis.from_unit_summary(
+        summary = builders.from_frame(
             frame(),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=[MetricSpec(name="revenue", type="mean")],
@@ -5332,11 +5491,11 @@ def _observational_quantile_case() -> ParityCase:
         try:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                summary.export(path)
+                workflows.export_moments(*summary, path)
                 replay_rows = pq.read_table(path).to_pylist()
         finally:
-            summary.close()
-        return Analysis.from_moments(
+            summary[1].close()
+        return builders.from_moments(
             replay_rows, metrics=specs, design=design(), plan=_OBSERVATIONAL_QUANTILE_PLAN
         )
 
@@ -5450,19 +5609,20 @@ def _observational_multiplicity_case() -> ParityCase:
     def frame() -> Any:
         return pd.DataFrame([{"user_id": uid, **unit} for uid, unit in units.items()])
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _publish_and_adopt(con, native, kinds=("unit_covariate",))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             frame(),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=specs,
@@ -5470,11 +5630,12 @@ def _observational_multiplicity_case() -> ParityCase:
             plan=_OBSERVATIONAL_MULTIPLICITY_PLAN,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = frame()
         panel["date"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -5483,14 +5644,14 @@ def _observational_multiplicity_case() -> ParityCase:
             plan=_OBSERVATIONAL_MULTIPLICITY_PLAN,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             replay_rows = pq.read_table(path).to_pylist()
-        summary.close()
-        return Analysis.from_moments(
+        summary[1].close()
+        return builders.from_moments(
             replay_rows, metrics=specs, design=design(), plan=_OBSERVATIONAL_MULTIPLICITY_PLAN
         )
 
@@ -5595,26 +5756,33 @@ def _observational_aipw_dml_case(
     def frame() -> Any:
         return pd.DataFrame([{"user_id": uid, **unit} for uid, unit in units.items()])
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
         return _publish_and_adopt(con, native, kinds=("unit_covariate",))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
-            frame(), unit="user_id", group="variant", metrics=specs, design=design(), plan=plan
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
+            frame(),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics=specs,
+            design=design(),
+            plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = frame()
         panel["date"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -5623,14 +5791,14 @@ def _observational_aipw_dml_case(
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             replay_rows = pq.read_table(path).to_pylist()
-        summary.close()
-        return Analysis.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
+        summary[1].close()
+        return builders.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
 
     return ParityCase(
         id=(
@@ -5864,26 +6032,33 @@ def _observational_categorical_case(
     def frame() -> Any:
         return pd.DataFrame([{"user_id": uid, **unit} for uid, unit in units.items()])
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_cat")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_cat")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = warehouse_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_cat")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="obs_cat")
         return _publish_and_adopt(con, native, kinds=("unit_covariate", "unit_covariate_level"))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
-            frame(), unit="user_id", group="variant", metrics=specs, design=design(), plan=plan
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
+            frame(),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics=specs,
+            design=design(),
+            plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = frame()
         panel["date"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -5892,14 +6067,14 @@ def _observational_categorical_case(
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             replay_rows = pq.read_table(path).to_pylist()
-        summary.close()
-        return Analysis.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
+        summary[1].close()
+        return builders.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
 
     return ParityCase(
         id=(
@@ -5933,14 +6108,14 @@ def _nonpositive_mean_case() -> ParityCase:
     rows = ds.nonpositive_mean_event_rows()
     defs_dict = ds.nonpositive_mean_definitions_dict(plan=_NONPOSITIVE_MEAN_PLAN)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="exp")
         return _publish_and_adopt(con, native)
 
     summary_metrics = [
@@ -5953,12 +6128,13 @@ def _nonpositive_mean_case() -> ParityCase:
         ),
     ]
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.nonpositive_mean_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -5966,13 +6142,14 @@ def _nonpositive_mean_case() -> ParityCase:
             plan=_NONPOSITIVE_MEAN_PLAN,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.nonpositive_mean_summary_frame(con)
         con.disconnect()  # `summary`/`panel` are already materialized below
         panel = ds.nonpositive_mean_panel_frame(summary)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -5981,12 +6158,13 @@ def _nonpositive_mean_case() -> ParityCase:
             plan=_NONPOSITIVE_MEAN_PLAN,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.nonpositive_mean_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        summary = Analysis.from_unit_summary(
+        summary = builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -6047,14 +6225,14 @@ def _clustered_negative_mean_case(*, zero_treatment: bool = False) -> ParityCase
     )
     defs_dict = ds.clustered_negative_mean_definitions_dict(plan=plan)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        analysis = make_binding(con, Definitions.model_validate(defs_dict), experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        native = make_binding(con, Definitions.model_validate(defs_dict), experiment="exp")
         return _publish_and_adopt(con, native)
 
     summary_metrics = [
@@ -6067,12 +6245,13 @@ def _clustered_negative_mean_case(*, zero_treatment: bool = False) -> ParityCase
         ),
     ]
 
-    def build_unit_summary() -> Analysis:
+    def build_unit_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.clustered_negative_mean_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -6081,12 +6260,13 @@ def _clustered_negative_mean_case(*, zero_treatment: bool = False) -> ParityCase
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.clustered_negative_mean_summary_frame(con)
         con.disconnect()  # `frame` is already materialized; nothing below needs `con` alive
-        summary = Analysis.from_unit_summary(
+        summary = builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -6134,23 +6314,24 @@ def _clustered_assignment_integrity_case() -> ParityCase:
         ),
     ]
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
         return _track_connection(
-            make_analysis(con, Definitions.model_validate(definitions), experiment="exp"), con
+            make_binding(con, Definitions.model_validate(definitions), experiment="exp"), con
         )
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
+        native = make_binding(con, Definitions.model_validate(definitions), experiment="exp")
         return _publish_and_adopt(con, native)
 
-    def build_summary() -> Analysis:
+    def build_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         frame = ds.clustered_negative_mean_summary_frame(con)
         con.disconnect()
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -6215,8 +6396,8 @@ def _cluster_export_refusal_case() -> ParityCase:
         "from_unit_summary": "frame",
     }
 
-    def checked(build: Callable[[], Analysis], source: str) -> Callable[[], Analysis]:
-        def construct() -> Analysis:
+    def checked(build: Callable[[], Bound], source: str) -> Callable[[], Bound]:
+        def construct() -> Bound:
             analysis = build()
             try:
                 with tempfile.TemporaryDirectory() as directory:
@@ -6224,7 +6405,7 @@ def _cluster_export_refusal_case() -> ParityCase:
                     original = b"preserve the existing destination"
                     destination.write_bytes(original)
                     with pytest.raises(CodedError) as refused:
-                        analysis.export(destination)
+                        workflows.export_moments(*analysis, destination)
                     assert refused.value.code == "evidence.cluster_unavailable"
                     assert set(refused.value.context) == {
                         "constructor",
@@ -6234,9 +6415,7 @@ def _cluster_export_refusal_case() -> ParityCase:
                     }
                     assert destination.read_bytes() == original
             except BaseException:
-                analysis.close()
-                for connection in getattr(analysis, "_parity_connections", ()):
-                    connection.disconnect()
+                _close_parity_binding(analysis)
                 raise
             return analysis
 
@@ -6435,19 +6614,20 @@ def _encouragement_itt_case(*, dense: bool = False) -> ParityCase:
         assert row.reference_kind == expected_kind
         assert (row.binomial_set is None) == dense
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(_encouragement_itt_event_rows(n_per_arm))
-        analysis = make_analysis(con, itt_defs, experiment="exp")
+        analysis = make_binding(con, itt_defs, experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(_encouragement_itt_event_rows(n_per_arm))
-        native = make_analysis(con, itt_defs, experiment="exp")
+        native = make_binding(con, itt_defs, experiment="exp")
         return _publish_and_adopt(con, native)
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             _encouragement_itt_frame(n_per_arm),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             metrics=_encouragement_itt_metrics(),
@@ -6456,9 +6636,10 @@ def _encouragement_itt_case(*, dense: bool = False) -> ParityCase:
             plan=itt_plan,
         )
 
-    def build_unit_panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def build_unit_panel() -> Bound:
+        return builders.from_frame(
             _encouragement_itt_panel_frame(n_per_arm),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="date",
@@ -6468,19 +6649,19 @@ def _encouragement_itt_case(*, dense: bool = False) -> ParityCase:
             plan=itt_plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             rows = pq.read_table(path).to_pylist()
-        replayed = Analysis.from_moments(
+        replayed = builders.from_moments(
             rows,
             metrics=_encouragement_itt_metrics(),
             design=_ENCOURAGEMENT_ITT_DESIGN,
             plan=itt_plan,
         )
-        summary.close()
+        summary[1].close()
         return replayed
 
     return ParityCase(
@@ -6562,14 +6743,15 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
     plan = AnalysisPlan(primary="converted")
     specs = _encouragement_itt_metrics()
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(events)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             metrics=specs,
@@ -6579,9 +6761,10 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
             breakouts=["store"],
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="date",
@@ -6592,23 +6775,21 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
             breakouts=["store"],
         )
 
-    def replay() -> Analysis:
+    def replay() -> Bound:
         analysis = native()
         try:
             with tempfile.TemporaryDirectory() as directory:
                 destination = Path(directory) / "moments.parquet"
-                analysis.export(destination)
+                workflows.export_moments(*analysis, destination)
                 rows = pq.read_table(destination).to_pylist()
-            return Analysis.from_moments(
+            return builders.from_moments(
                 rows,
                 metrics=specs,
                 design=definitions.experiments[0].resolved_design(),
                 plan=plan,
             )
         finally:
-            analysis.close()
-            for con in getattr(analysis, "_parity_connections", ()):
-                con.disconnect()
+            _close_parity_binding(analysis)
 
     def probe(results: Any) -> None:
         by_segment = {row.dimension_value: row for row in results if row.estimand == "itt"}
@@ -6716,8 +6897,8 @@ def _quantile_ties_event_table(n_per_arm: int = 200, seed: int = 3, *, family: b
 def _mixed_quantile_checkpoint_probes(
     summary_specs: list[MetricSpec],
     design: Randomized,
-    checked_declaration: Callable[[Callable[[], Analysis]], Analysis],
-) -> tuple[Callable[[Any], None], Callable[[str, Analysis], None]]:
+    checked_declaration: Callable[[Callable[[], Bound]], Bound],
+) -> tuple[Callable[[Any], None], Callable[[str, Bound], None]]:
     def check_rows(readout: Any) -> None:
         (row,) = readout
         assert (row.metric, row.group_id, row.estimand) == ("purchase_rate", "treatment", "itt")
@@ -6728,21 +6909,22 @@ def _mixed_quantile_checkpoint_probes(
         assert lift.lb <= lift.value <= lift.ub
         assert row.sequential_result is not None
 
-    def probe_checkpoint(constructor: str, analysis: Analysis) -> None:
+    def probe_checkpoint(constructor: str, analysis: Bound) -> None:
         from .comparison import nested_close
 
-        def check_catalog(source: Analysis) -> None:
-            assert [(m.name, m.type) for m in source.metrics] == [
+        def check_catalog(source: Bound) -> None:
+            metrics = workflows.metrics(*source)
+            assert [(m.name, m.type) for m in metrics] == [
                 ("purchase_rate", "conversion"),
                 ("p90_revenue", "quantile"),
             ], constructor
-            assert getattr(source.metrics[1], "quantile", None) == 0.9
+            assert getattr(metrics[1], "quantile", None) == 0.9
             with pytest.raises(CodedError) as refused:
-                source.run(metrics=["p90_revenue"])
+                read(source, metrics=["p90_revenue"])
             assert refused.value.code == "sequential.route.unsupported", constructor
 
         check_catalog(analysis)
-        snapshot = analysis.sequential_snapshot()
+        snapshot = workflows.sequential_snapshot(*analysis)
         assert [(m.metric, m.law) for m in snapshot.registration.models] == [
             ("purchase_rate", "bernoulli")
         ]
@@ -6750,30 +6932,30 @@ def _mixed_quantile_checkpoint_probes(
             ("purchase_rate", "control", 60, 40),
             ("purchase_rate", "treatment", 60, 51),
         ], constructor
-        expected = analysis.run(metrics=["purchase_rate"])
+        expected = read(analysis, metrics=["purchase_rate"])
         check_rows(expected)
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "checkpoint.parquet"
             if constructor == "from_moments":
                 with pytest.raises(CodedError) as refused:
-                    analysis.export(path)
+                    workflows.export_moments(*analysis, path)
                 assert refused.value.code == "evidence.operation_unavailable"
                 assert refused.value.context["requested"] == "export_moments"
                 assert not path.exists()
                 return
-            analysis.export(path)
+            workflows.export_moments(*analysis, path)
             (envelope,) = pq.read_table(path).to_pylist()
         assert envelope["record_kind"] == "sequential_checkpoint"
         assert envelope["moments_format"] == 10
         assert not {"metric", "group_id", "n", "sum", "sum_sq", "ref", "ref_den"} & envelope.keys()
         replay = checked_declaration(
-            lambda: Analysis.from_moments([envelope], metrics=summary_specs, design=design)
+            lambda: builders.from_moments([envelope], metrics=summary_specs, design=design)
         )
         try:
             check_catalog(replay)
-            restored = replay.sequential_snapshot()
+            restored = workflows.sequential_snapshot(*replay)
             assert restored == snapshot, constructor
-            actual = replay.run(metrics=["purchase_rate"])
+            actual = read(replay, metrics=["purchase_rate"])
             check_rows(actual)
             identity_fields = {"source_snapshot_id", "family_id"}
             assert nested_close(
@@ -6787,12 +6969,12 @@ def _mixed_quantile_checkpoint_probes(
                 getattr(row, "family_id", None) for row in actual
             ], constructor
         finally:
-            _close_parity_analysis(replay)
+            _close_parity_binding(replay)
 
     return check_rows, probe_checkpoint
 
 
-def _mixed_quantile_declaration(build: Callable[[], Analysis]) -> Analysis:
+def _mixed_quantile_declaration(build: Callable[[], Bound]) -> Bound:
     import warnings
 
     from tests.warning_codes import warning_codes
@@ -6802,7 +6984,7 @@ def _mixed_quantile_declaration(build: Callable[[], Analysis]) -> Analysis:
         analysis = build()
     unexpected = set(warning_codes(caught)) - {"decision.family.quantile_always_valid_excluded"}
     if unexpected:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(analysis)
         pytest.fail(f"unexpected declaration warning codes: {unexpected}")
     return analysis
 
@@ -6896,23 +7078,23 @@ def _sequential_mixed_quantile_catalog_case() -> ParityCase:
         update={"experiments": (exp.model_copy(update={"plan": native_plan}),)}
     )
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
         try:
-            analysis = make_analysis(con, defs, experiment="exp", plan=native_plan)
+            analysis = make_binding(con, defs, experiment="exp", plan=native_plan)
         except BaseException:
             con.disconnect()
             raise
-        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        _mark_as_of(analysis, as_of)
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         native = build_definitions()
-        adopted = _publish_and_adopt(native_connection(_native_source(native)), native)
-        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        adopted = _publish_and_adopt(native_connection(bound_source(native[1])), native)
+        _mark_as_of(adopted, as_of)
         return adopted
 
-    def build_frame(*, panel: bool) -> Analysis:
+    def build_frame(*, panel: bool) -> Bound:
         con = ds.duckdb_connection(rows)
         try:
             frame: Any = (
@@ -6933,8 +7115,10 @@ def _sequential_mixed_quantile_catalog_case() -> ParityCase:
             ),
             specs=specs,
         )
-        builder = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
-        analysis = builder(
+        shape: dict[str, Any] = (
+            {"shape": "panel", "date": "date"} if panel else {"shape": "summary"}
+        )
+        analysis = builders.from_frame(
             frame,
             unit="user_id",
             group="variant",
@@ -6943,13 +7127,13 @@ def _sequential_mixed_quantile_catalog_case() -> ParityCase:
             plan=frame_plan,
             experiment_id="exp",
             exposure_date="exposure_date",
-            **({"date": "date"} if panel else {}),
+            **shape,
         )
         if panel:
-            analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+            _mark_as_of(analysis, as_of)
         return analysis
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_frame(panel=False)
         return _export_and_replay(summary, summary_specs)
 
@@ -7023,16 +7207,16 @@ def _quantile_ties_case(
     definition["experiments"][0]["plan"] = plan.model_dump(mode="json")
     definitions = Definitions.model_validate(definition)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ibis.duckdb.connect()
         con.create_table("events", table)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ibis.duckdb.connect()
         con.create_table("events", table)
-        native = make_analysis(con, definitions, experiment="exp")
+        native = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, native)
 
     def _per_unit_frame() -> Any:
@@ -7048,9 +7232,10 @@ def _quantile_ties_case(
             frame = frame.append_column("converted", pa.array([1] * len(frame)))
         return frame
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             _per_unit_frame(),
+            shape="summary",
             unit="user_id",
             group="group_id",
             control="C",
@@ -7058,7 +7243,7 @@ def _quantile_ties_case(
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         per_unit = _per_unit_frame().to_pylist()
         panel_rows: list[dict] = []
         for r in per_unit:
@@ -7090,8 +7275,9 @@ def _quantile_ties_case(
         panel["enrolled_on"] = dt.date(2024, 1, 2)
         if unselected_conversion_sibling:
             panel["converted"] = 1
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -7101,12 +7287,13 @@ def _quantile_ties_case(
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         # A quantile has no moments representation: `export()` itself
         # refuses before a from_moments cube could ever exist.
-        with build_unit_summary() as summary, tempfile.TemporaryDirectory() as td:
+        experiment, resolver = build_unit_summary()
+        with resolver, tempfile.TemporaryDirectory() as td:
             path = Path(td) / "m.parquet"
-            summary.export(path)
+            workflows.export_moments(experiment, resolver, path)
         raise AssertionError("export should have refused before reaching this line")
 
     def check_selected_rows(readout: Any) -> None:
@@ -7158,12 +7345,12 @@ def _inferred_null_metric_case() -> ParityCase:
         )
     ]
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(rows)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def frame(*, panel: bool = False) -> Analysis:
+    def frame(*, panel: bool = False) -> Bound:
         con = ds.duckdb_connection(rows)
         summary = ds.unit_summary_frame(con)
         con.disconnect()
@@ -7174,32 +7361,24 @@ def _inferred_null_metric_case() -> ParityCase:
         else:
             data = summary.select(["user_id", "variant"])
         data = data.append_column("converted", pa.nulls(len(data)))
-        constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
-        return constructor(
+        shape: dict[str, Any] = (
+            {"shape": "panel", "date": "date"} if panel else {"shape": "summary"}
+        )
+        return builders.from_frame(
             data,
             unit="user_id",
             group="variant",
             control="control",
             metrics=specs,
             plan=plan,
-            **({"date": "date"} if panel else {}),
+            **shape,
         )
 
-    def replay() -> Analysis:
-        analysis = native()
-        try:
-            return _export_and_replay(
-                analysis,
-                [
-                    MetricSpec(
-                        name="purchase_rate", type="conversion", preferred_direction="increase"
-                    )
-                ],
-            )
-        finally:
-            analysis.close()
-            for con in getattr(analysis, "_parity_connections", ()):
-                con.disconnect()
+    def replay() -> Bound:
+        return _export_and_replay(
+            native(),
+            [MetricSpec(name="purchase_rate", type="conversion", preferred_direction="increase")],
+        )
 
     def probe(results: Any) -> None:
         (row,) = results
@@ -7219,7 +7398,7 @@ def _inferred_null_metric_case() -> ParityCase:
     )
 
 
-def _neighboring_integer_switchback_analysis() -> Analysis:
+def _neighboring_integer_switchback_binding() -> Bound:
     import polars as pl
 
     from increment.semantics.assignment import (
@@ -7241,7 +7420,7 @@ def _neighboring_integer_switchback_analysis() -> Analysis:
         for unit, delta in (("a", 1), ("b", 2))
         for period in (0, 1)
     ]
-    return Analysis.from_switchback_panel(
+    return builders.from_switchback_frame(
         pl.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -7273,18 +7452,18 @@ def _switchback_neighboring_integer_case() -> ParityCase:
 
     return ParityCase(
         id="audit-switchback-neighboring-integers",
-        build={"from_switchback_panel": _neighboring_integer_switchback_analysis},
+        build={"from_switchback_panel": _neighboring_integer_switchback_binding},
         readout_probe=probe,
     )
 
 
 _EXPLORATORY_SOURCE_LIMITED = "facade.analysis.exploratory_metrics_source_limited"
 _EXPLORATORY_READS: dict[str, Callable[..., Any]] = {
-    "run": lambda analysis, names: analysis.run(exploratory_metrics=names),
-    "run_breakout": lambda analysis, names: analysis.run_breakout(exploratory_metrics=names),
-    "run_asof_lift": lambda analysis, names: analysis.run_asof_lift(exploratory_metrics=names),
-    "run_asof": lambda analysis, names: analysis.run_asof(exploratory_metrics=names),
-    "run_daily": lambda analysis, names: analysis.run_daily(exploratory_metrics=names),
+    "run": lambda analysis, names: read(analysis, exploratory_metrics=names),
+    "run_breakout": lambda analysis, names: read(analysis, "breakout", exploratory_metrics=names),
+    "run_asof_lift": lambda analysis, names: read(analysis, "asof_lift", exploratory_metrics=names),
+    "run_asof": lambda analysis, names: read(analysis, "asof", exploratory_metrics=names),
+    "run_daily": lambda analysis, names: read(analysis, "daily", exploratory_metrics=names),
 }
 
 
@@ -7294,48 +7473,52 @@ def _exploratory_metrics_case() -> ParityCase:
     switchback ingress builds no case-wide fixture, so its refusal is probed beside the
     native one."""
 
-    def refused(analysis: Analysis, *, switchback: bool = False) -> None:
-        for name, read in _EXPLORATORY_READS.items():
+    def refused(bound: Bound, *, switchback: bool = False) -> None:
+        for name, reader in _EXPLORATORY_READS.items():
             with pytest.raises(CodedError) as caught:
-                read(analysis, ["purchase_rate"])
+                reader(bound, ["purchase_rate"])
+            # A contrast source refuses every non-whole-window view before its options.
             expected_code = (
                 "facade.analysis.contrast_unavailable"
-                if switchback and name == "run_breakout"
+                if switchback and name != "run"
                 else _EXPLORATORY_SOURCE_LIMITED
             )
             assert caught.value.code == expected_code
         with pytest.raises(CodedError) as caught:
-            analysis.available_metrics  # noqa: B018
+            workflows.available_metrics(*bound)
         assert caught.value.code == _EXPLORATORY_SOURCE_LIMITED
 
-    def probe(path: str, analysis: Analysis) -> None:
+    def probe(path: str, bound: Bound) -> None:
         if path != "from_definitions":
-            refused(analysis)
+            refused(bound)
             return
-        refused(_neighboring_integer_switchback_analysis(), switchback=True)
-        revenue = [metric for metric in analysis.metrics if metric.name == "revenue"]
-        narrowed = make_analysis_like(
-            analysis,
+        refused(_neighboring_integer_switchback_binding(), switchback=True)
+        revenue = [metric for metric in workflows.metrics(*bound) if metric.name == "revenue"]
+        narrowed = make_binding_like(
+            bound[1],
             metrics=revenue,
-            experiment=analysis.experiment.model_copy(
+            experiment=workflows.experiment_definition(*bound).model_copy(
                 update={"plan": AnalysisPlan(secondaries=["revenue"])}
             ),
         )
-        assert [metric.name for metric in narrowed.available_metrics] == [
-            "purchase_rate",
-            "rps",
-            "revenue_cuped",
-        ]
-        rows = narrowed.run(metrics=[], exploratory_metrics=["purchase_rate", "rps"])
-        assert [row.metric for row in rows] == ["purchase_rate", "rps"]
-        assert {row.role for row in rows} == {"exploratory"}
-        assert [row.metric for row in narrowed.run(exploratory_metrics=["rps"])] == [
-            "revenue",
-            "rps",
-        ]
-        with pytest.raises(CodedError) as caught:
-            narrowed.run(exploratory_metrics=["revenue"])
-        assert caught.value.code == "facade.analysis_config.exploratory_metric_unavailable"
+        try:
+            assert [metric.name for metric in workflows.available_metrics(*narrowed)] == [
+                "purchase_rate",
+                "rps",
+                "revenue_cuped",
+            ]
+            rows = read(narrowed, metrics=[], exploratory_metrics=["purchase_rate", "rps"])
+            assert [row.metric for row in rows] == ["purchase_rate", "rps"]
+            assert {row.role for row in rows} == {"exploratory"}
+            assert [row.metric for row in read(narrowed, exploratory_metrics=["rps"])] == [
+                "revenue",
+                "rps",
+            ]
+            with pytest.raises(CodedError) as caught:
+                read(narrowed, exploratory_metrics=["revenue"])
+            assert caught.value.code == "facade.analysis_config.exploratory_metric_unavailable"
+        finally:
+            narrowed[1].close()
 
     return replace(
         _mean_ratio_conversion_cuped_case(), id="exploratory-metrics", source_probe=probe
@@ -7417,14 +7600,15 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
     design = experiment.resolved_design()
     specs = [MetricSpec(name=name, preferred_direction="increase") for name in ("revenue", "sales")]
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(events)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=specs,
@@ -7434,9 +7618,10 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
             breakouts=["store"],
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -7447,18 +7632,16 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
             breakouts=["store"],
         )
 
-    def replay() -> Analysis:
+    def replay() -> Bound:
         analysis = native()
         try:
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "moments.parquet"
-                analysis.export(path)
+                workflows.export_moments(*analysis, path)
                 rows = pq.read_table(path).to_pylist()
-            return Analysis.from_moments(rows, metrics=specs, design=design, plan=plan)
+            return builders.from_moments(rows, metrics=specs, design=design, plan=plan)
         finally:
-            analysis.close()
-            for con in getattr(analysis, "_parity_connections", ()):
-                con.disconnect()
+            _close_parity_binding(analysis)
 
     def probe(results: Any) -> None:
         assert {row.metric for row in results} == {"revenue", "sales"}
@@ -7593,17 +7776,18 @@ def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
     definition["experiments"][0]["plan"] = plan.model_dump(mode="json")
     definitions = Definitions.model_validate(definition)
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = _ceiling_scale_connection()
-        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+        return _track_connection(make_binding(con, definitions, experiment="exp"), con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = _ceiling_scale_connection()
-        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+        return _publish_and_adopt(con, make_binding(con, definitions, experiment="exp"))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             _ceiling_scale_frame(),
+            shape="summary",
             unit="user_id",
             group="group_id",
             control="control",
@@ -7611,13 +7795,14 @@ def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         frame = _ceiling_scale_frame()
         days = np.full(frame.num_rows, (dt.date(2024, 1, 3) - dt.date(1970, 1, 1)).days, np.int32)
         panel = frame.append_column("date", pa.array(days, pa.date32()))
         panel = panel.append_column("enrolled_on", pa.array(days - 1, pa.date32()))
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="group_id",
             date="date",
@@ -7627,7 +7812,7 @@ def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         return _export_and_replay(build_unit_summary(), [metric])
 
     def probe(results: Any) -> None:
@@ -7802,20 +7987,26 @@ def _conversion_route_case() -> ParityCase:
     frame = pd.DataFrame(_route_unit_rows())
     metrics = _route_metric_specs()
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(_route_event_rows())
-        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+        return _track_connection(make_binding(con, definitions, experiment="exp"), con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(_route_event_rows())
-        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+        return _publish_and_adopt(con, make_binding(con, definitions, experiment="exp"))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
-            frame, unit="unit_id", group="group_id", control="control", metrics=metrics, plan=plan
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
+            frame,
+            shape="summary",
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            metrics=metrics,
+            plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel_rows: list[dict[str, Any]] = []
         for record in frame.to_dict("records"):
             panel_rows.append(
@@ -7832,8 +8023,9 @@ def _conversion_route_case() -> ParityCase:
                     **{name: record[name] for name in _route_conversions()},
                 }
             )
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             pd.DataFrame(panel_rows),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="date",
@@ -7842,7 +8034,7 @@ def _conversion_route_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         return _export_and_replay(
             build_unit_summary(),
             [
@@ -7957,14 +8149,15 @@ def _conversion_route_breakout_case() -> ParityCase:
     plan = AnalysisPlan(primary="converted", alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA)
     specs = _encouragement_itt_metrics()
 
-    def native(*, artifact: bool = False) -> Analysis:
+    def native(*, artifact: bool = False) -> Bound:
         con = ds.duckdb_connection(events)
-        analysis = make_analysis(con, definitions, experiment="exp")
+        analysis = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -7973,9 +8166,10 @@ def _conversion_route_breakout_case() -> ParityCase:
             breakouts=["store"],
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(records),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="date",
@@ -8193,17 +8387,18 @@ def _conversion_route_encouragement_case() -> ParityCase:
         for name in _family_route_counts()
     ]
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(_family_route_events())
-        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+        return _track_connection(make_binding(con, definitions, experiment="exp"), con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(_family_route_events())
-        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+        return _publish_and_adopt(con, make_binding(con, definitions, experiment="exp"))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(_family_route_rows()),
+            shape="summary",
             unit="user_id",
             group="group_id",
             metrics=metrics,
@@ -8212,9 +8407,10 @@ def _conversion_route_encouragement_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def build_unit_panel() -> Bound:
+        return builders.from_frame(
             _family_route_panel(),
+            shape="panel",
             unit="user_id",
             group="group_id",
             date="date",
@@ -8224,14 +8420,14 @@ def _conversion_route_encouragement_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             rows = pq.read_table(path).to_pylist()
-        summary.close()
-        return Analysis.from_moments(
+        summary[1].close()
+        return builders.from_moments(
             rows, metrics=metrics, design=_ENCOURAGEMENT_ITT_DESIGN, plan=plan
         )
 
@@ -8291,25 +8487,32 @@ def _conversion_route_observational_case() -> ParityCase:
     def frame() -> pd.DataFrame:
         return pd.DataFrame(_family_route_rows())
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(_family_route_events())
-        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+        return _track_connection(make_binding(con, definitions, experiment="exp"), con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(_family_route_events())
-        native = make_analysis(con, definitions, experiment="exp")
+        native = make_binding(con, definitions, experiment="exp")
         return _publish_and_adopt(con, native, kinds=("unit_covariate",))
 
-    def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
-            frame(), unit="user_id", group="group_id", metrics=metrics, design=design(), plan=plan
+    def build_unit_summary() -> Bound:
+        return builders.from_frame(
+            frame(),
+            shape="summary",
+            unit="user_id",
+            group="group_id",
+            metrics=metrics,
+            design=design(),
+            plan=plan,
         )
 
-    def build_unit_panel() -> Analysis:
+    def build_unit_panel() -> Bound:
         panel = frame()
         panel["date"] = dt.date(2025, 1, 10)
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="group_id",
             date="date",
@@ -8318,14 +8521,14 @@ def _conversion_route_observational_case() -> ParityCase:
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         summary = build_unit_summary()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            summary.export(path)
+            workflows.export_moments(*summary, path)
             rows = pq.read_table(path).to_pylist()
-        summary.close()
-        return Analysis.from_moments(rows, metrics=metrics, design=design())
+        summary[1].close()
+        return builders.from_moments(rows, metrics=metrics, design=design())
 
     return ParityCase(
         id="conversion_route_observational_family",
@@ -8365,11 +8568,11 @@ def _assert_arm_counts(
         )
 
 
-def _source_count_probe(expected: _ExpectedCounts) -> Callable[[str, Analysis], None]:
+def _source_count_probe(expected: _ExpectedCounts) -> Callable[[str, Bound], None]:
     """Each constructor's own total-grain source rows carry the exact integer pair."""
 
-    def probe(path: str, analysis: Analysis) -> None:
-        src = _moment_source(analysis)
+    def probe(path: str, analysis: Bound) -> None:
+        src = bound_source(analysis[1])
         metrics = {metric.name: metric for metric in src.context.metrics}
         for name, arms in expected.items():
             _assert_arm_counts(f"{path}/{name}", src.moments(metrics[name], grain="total"), arms)
@@ -8394,30 +8597,30 @@ def _binomial_counts_probe(expected: _ExpectedCounts) -> Callable[[Any], None]:
     return probe
 
 
-def _export_rows(analysis: Analysis) -> list[dict[str, Any]]:
+def _export_rows(analysis: Bound) -> list[dict[str, Any]]:
     """The rows of a real ``Analysis.export`` parquet file, read back as stored."""
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "moments.parquet"
-        analysis.export(path)
+        workflows.export_moments(*analysis, path)
         return pq.read_table(path).to_pylist()
 
 
-def _export_rows_and_close(analysis: Analysis) -> list[dict[str, Any]]:
+def _export_rows_and_close(analysis: Bound) -> list[dict[str, Any]]:
     try:
         return _export_rows(analysis)
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(analysis)
 
 
 def _export_factory_rows_and_close(
-    factory: Callable[[], Analysis],
+    factory: Callable[[], Bound],
 ) -> list[dict[str, Any]]:
     return _export_rows_and_close(factory())
 
 
 def _export_counts_and_replay(
-    analysis: Analysis, metrics: list[MetricSpec], expected: _ExpectedCounts
-) -> Analysis:
+    analysis: Bound, metrics: list[MetricSpec], expected: _ExpectedCounts
+) -> Bound:
     """Export *analysis* for real, check the exported cube's own counts, replay it.
 
     The cube is checked at the file seam: the format stamp the exporter wrote (never one
@@ -8431,9 +8634,9 @@ def _export_counts_and_replay(
             _assert_arm_counts(
                 f"export/{name}", [row for row in rows if row["metric"] == name], arms
             )
-        return Analysis.from_moments(rows, control="control", metrics=metrics)
+        return builders.from_moments(rows, control="control", metrics=metrics)
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(analysis)
 
 
 def _chunked_table(rows: list[dict[str, Any]], chunk_rows: int = 37) -> Any:
@@ -8614,17 +8817,18 @@ def _exact_conversion_case(
         for name in names
     ]
 
-    def native() -> Analysis:
+    def native() -> Bound:
         con = ds.duckdb_connection(events)
-        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+        return _track_connection(make_binding(con, definitions, experiment="exp"), con)
 
-    def artifact() -> Analysis:
+    def artifact() -> Bound:
         con = ds.duckdb_connection(events)
-        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+        return _publish_and_adopt(con, make_binding(con, definitions, experiment="exp"))
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             _chunked_table(summary_rows),
+            shape="summary",
             unit="user_id",
             group="group_id",
             control="control",
@@ -8632,9 +8836,10 @@ def _exact_conversion_case(
             plan=plan,
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             _chunked_table(panel_rows),
+            shape="panel",
             unit="user_id",
             group="group_id",
             date="date",
@@ -8644,7 +8849,7 @@ def _exact_conversion_case(
             plan=plan,
         )
 
-    def moments() -> Analysis:
+    def moments() -> Bound:
         replay = [
             MetricSpec(name=name, type="conversion", preferred_direction="increase")
             for name in names
@@ -8702,17 +8907,18 @@ def _exact_retention_case(
         preferred_direction="increase",
     )
 
-    def native() -> Analysis:
+    def native() -> Bound:
         con = ds.duckdb_connection(rows)
-        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+        return _track_connection(make_binding(con, definitions, experiment="exp"), con)
 
-    def artifact() -> Analysis:
+    def artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+        return _publish_and_adopt(con, make_binding(con, definitions, experiment="exp"))
 
-    def summary() -> Analysis:
-        return Analysis.from_unit_summary(
+    def summary() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(summary_rows),
+            shape="summary",
             unit="user_id",
             group="group",
             metrics=[metric],
@@ -8720,9 +8926,10 @@ def _exact_retention_case(
             control="control",
         )
 
-    def panel() -> Analysis:
-        return Analysis.from_unit_panel(
+    def panel() -> Bound:
+        return builders.from_frame(
             pd.DataFrame(panel_rows),
+            shape="panel",
             unit="user_id",
             group="group",
             date="day",
@@ -8733,7 +8940,7 @@ def _exact_retention_case(
             control="control",
         )
 
-    def moments() -> Analysis:
+    def moments() -> Bound:
         origin = native() if export_from == "from_definitions" else panel()
         return _export_counts_and_replay(origin, [metric], expected)
 
@@ -8837,10 +9044,10 @@ def _winsor_ingress_case(  # noqa: PLR0915
         }
     ]
 
-    def native() -> Analysis:
+    def native() -> Bound:
         con = ds.duckdb_connection(rows)
         try:
-            analysis = make_analysis(
+            analysis = make_binding(
                 con, Definitions.model_validate(copy.deepcopy(definitions)), experiment="exp"
             )
         except BaseException:
@@ -8848,10 +9055,10 @@ def _winsor_ingress_case(  # noqa: PLR0915
             raise
         return _track_connection(analysis, con)
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
         try:
-            source = make_analysis(
+            source = make_binding(
                 con, Definitions.model_validate(copy.deepcopy(definitions)), experiment="exp"
             )
         except BaseException:
@@ -8867,24 +9074,31 @@ def _winsor_ingress_case(  # noqa: PLR0915
             preferred_direction="increase",
         )
 
-    def build_summary() -> Analysis:
+    def build_summary() -> Bound:
         con = ds.duckdb_connection(rows)
         try:
             frame = ds.unit_summary_frame(con)
         finally:
             con.disconnect()
-        return Analysis.from_unit_summary(
-            frame, unit="user_id", group="variant", control="control", metrics=[metric()], plan=plan
+        return builders.from_frame(
+            frame,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[metric()],
+            plan=plan,
         )
 
-    def build_panel() -> Analysis:
+    def build_panel() -> Bound:
         con = ds.duckdb_connection(rows)
         try:
             summary = ds.unit_summary_frame(con)
         finally:
             con.disconnect()
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             ds.unit_panel_frame(summary),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -8893,12 +9107,12 @@ def _winsor_ingress_case(  # noqa: PLR0915
             plan=plan,
         )
 
-    def build_moments() -> Analysis:
+    def build_moments() -> Bound:
         source = build_summary()
         try:
             return _export_and_replay(source, [metric()])
         finally:
-            _close_parity_analysis(source)
+            _close_parity_binding(source)
 
     def inspect_retained(results: Any) -> None:
         found = {row.group_id: row for row in results}
@@ -9014,18 +9228,16 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
         complete_through_by_feed={"events": dt.datetime(2025, 1, 21, tzinfo=dt.UTC)},
     )
 
-    def build_definitions() -> Analysis:
+    def build_definitions() -> Bound:
         con = ds.duckdb_connection(rows)
         return _track_connection(
-            make_analysis(con, definitions, experiment="exp", source_snapshot_evidence=snapshot),
+            make_binding(con, definitions, experiment="exp", source_snapshot_evidence=snapshot),
             con,
         )
 
-    def build_artifact() -> Analysis:
+    def build_artifact() -> Bound:
         con = ds.duckdb_connection(rows)
-        native = make_analysis(
-            con, definitions, experiment="exp", source_snapshot_evidence=snapshot
-        )
+        native = make_binding(con, definitions, experiment="exp", source_snapshot_evidence=snapshot)
         _track_connection(native, con)
         return _publish_and_adopt(
             con,
@@ -9033,12 +9245,12 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
             kinds=(*_ARTIFACT_EXTENSION_KINDS, "assignment_counts"),
         )
 
-    def source_probe(name: str, analysis: Analysis) -> None:
+    def source_probe(name: str, analysis: Bound) -> None:
         if name not in {"from_definitions", "from_unit_day_artifact"}:
             return
-        result = analysis.sitewide("revenue")
-        result_triggered = analysis.sitewide("revenue", population="triggered")
-        ratio_triggered = analysis.sitewide("rps", population="triggered")
+        result = sitewide(*analysis, "revenue")
+        result_triggered = sitewide(*analysis, "revenue", population="triggered")
+        ratio_triggered = sitewide(*analysis, "rps", population="triggered")
         assert result_triggered.analysis_population == "triggered"
         assert result_triggered.window == result.window
         assert result_triggered.snapshot_id == result.snapshot_id
@@ -9049,16 +9261,16 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
         assert ratio_triggered.snapshot_id == result.snapshot_id
         assert ratio_triggered.membership_cutoff is not None
         con = ds.duckdb_connection(rows)
-        reference = make_analysis(
+        reference = make_binding(
             con, untriggered, experiment="exp", source_snapshot_evidence=snapshot
         )
-        trigger_reference = make_analysis(
+        trigger_reference = make_binding(
             con, definitions, experiment="exp", source_snapshot_evidence=snapshot
         )
         try:
-            expected = reference.sitewide("revenue")
-            expected_triggered = trigger_reference.sitewide("revenue", population="triggered")
-            expected_triggered_ratio = trigger_reference.sitewide("rps", population="triggered")
+            expected = sitewide(*reference, "revenue")
+            expected_triggered = sitewide(*trigger_reference, "revenue", population="triggered")
+            expected_triggered_ratio = sitewide(*trigger_reference, "rps", population="triggered")
             for actual, reference_result in (
                 (result, expected),
                 (result_triggered, expected_triggered),
@@ -9075,8 +9287,8 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
                     else:
                         assert actual_value == expected_value
         finally:
-            reference.close()
-            trigger_reference.close()
+            reference[1].close()
+            trigger_reference[1].close()
             con.disconnect()
 
     return ParityCase(
@@ -9146,22 +9358,22 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
     plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
     design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 
-    def definition_analysis(*, artifact: bool) -> Analysis:
+    def definition_analysis(*, artifact: bool) -> Bound:
         con = ds.duckdb_connection(events)
         try:
-            with tempfile.TemporaryDirectory(prefix="increment-linear-cuped-") as directory:
-                path = Path(directory) / "mixed_cuped.yaml"
-                path.write_text(
-                    mixed_cuped_definitions_yaml("mixed_events", fixed_winsorization=True)
-                )
-                con.create_table("mixed_events", obj=events)
-                native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
+            con.create_table("mixed_events", obj=events)
+            native = _definitions_file_binding(
+                con,
+                "mixed_cuped.yaml",
+                mixed_cuped_definitions_yaml("mixed_events", fixed_winsorization=True),
+                "mixed_cuped",
+            )
             return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
         except BaseException:
             con.disconnect()
             raise
 
-    def moments_replay(*, alpha: float | None = None) -> Analysis:
+    def moments_replay(*, alpha: float | None = None) -> Bound:
         from increment.semantics.loader import load
 
         native = definition_analysis(artifact=False)
@@ -9183,7 +9395,7 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
 
                 replay_metrics = [replay_metric(spec) for spec in metrics]
                 moments_path = Path(directory) / "fitted.parquet"
-                native.export(moments_path)
+                workflows.export_moments(*native, moments_path)
                 payload = pq.read_table(moments_path).to_pylist()
                 envelopes = [
                     json.loads(row["cuped_evidence"])
@@ -9192,7 +9404,7 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
                 ]
                 assert {item["kind"] for item in envelopes} == {"fitted_multicovariate"}
                 replay_plan = plan if alpha is None else plan.model_copy(update={"alpha": alpha})
-                return Analysis.from_moments(
+                return builders.from_moments(
                     payload,
                     metrics=replay_metrics,
                     design=design,
@@ -9200,13 +9412,13 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
                     experiment_id="mixed_cuped",
                 )
         finally:
-            native.close()
+            _close_parity_binding(native)
 
-    def source_limited_switchback() -> Analysis:
+    def source_limited_switchback() -> Bound:
         from increment.semantics.assignment import SwitchbackAssignment, SwitchbackWindow
         from increment.semantics.design import Randomized as SwitchbackDesign
 
-        return Analysis.from_switchback_panel(
+        return builders.from_switchback_frame(
             pd.DataFrame(),
             unit="unit",
             cycle="cycle",
@@ -9224,24 +9436,24 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
             ),
         )
 
-    def fitted_alpha_probe(name: str, analysis: Analysis) -> None:
+    def fitted_alpha_probe(name: str, analysis: Bound) -> None:
         from increment.estimation.results import LiftEstimate
 
         if name != "from_moments":
             return
-        baseline_rows = analysis.run(metrics=("revenue",))
+        baseline_rows = read(analysis, metrics=("revenue",))
         assert len(baseline_rows) == 1 and isinstance(baseline_rows[0], LiftEstimate)
         baseline = baseline_rows[0].require_lift()
         changed = moments_replay(alpha=0.2)
         try:
-            replayed_rows = changed.run(metrics=("revenue",))
+            replayed_rows = read(changed, metrics=("revenue",))
             assert len(replayed_rows) == 1 and isinstance(replayed_rows[0], LiftEstimate)
             replayed = replayed_rows[0].require_lift()
             assert replayed.value == pytest.approx(baseline.value, rel=1e-10, abs=1e-12)
             assert replayed.log_se == pytest.approx(baseline.log_se, rel=1e-10, abs=1e-12)
             assert replayed.lb != baseline.lb or replayed.ub != baseline.ub
         finally:
-            changed.close()
+            changed[1].close()
 
     return ParityCase(
         id="mixed-cuped-multicovariate-fixed-horizon",
@@ -9320,7 +9532,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
         for row in rows
     )
 
-    def frame_analysis(*, panel: bool) -> Analysis:
+    def frame_analysis(*, panel: bool) -> Bound:
         if panel:
             panel_rows = []
             for row in rows:
@@ -9334,8 +9546,9 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                             "orders": row["orders"] / 2,
                         }
                     )
-            return Analysis.from_unit_panel(
+            return builders.from_frame(
                 pd.DataFrame(panel_rows),
+                shape="panel",
                 unit="user_id",
                 group="variant",
                 date="date",
@@ -9344,8 +9557,9 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                 design=design,
                 breakouts=("region",),
             )
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             pd.DataFrame(rows),
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=metrics,
@@ -9353,47 +9567,46 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
             design=design,
         )
 
-    def definition_analysis(*, artifact: bool = False, breakout: bool = False) -> Analysis:
+    def definition_analysis(*, artifact: bool = False, breakout: bool = False) -> Bound:
         con = ds.duckdb_connection(events)
         # Rewrite the current plan's mixed method to the categorical-only identity.
-        with tempfile.TemporaryDirectory(prefix="increment-categorical-cuped-") as directory:
-            path = Path(directory) / "categorical.yaml"
-            document = yaml.safe_load(mixed_cuped_definitions_yaml("events", breakout=breakout))
-            document["fact_sources"][0]["facts"].append({"name": "spend", "column": "value"})
-            document["metrics"].append(
-                {
-                    "name": "revenue_per_spend",
-                    "type": "ratio",
-                    "entity": "user_id",
-                    "numerator": {"fact": "revenue", "aggregation": "sum", "window_days": 2},
-                    "denominator": {"fact": "spend", "aggregation": "sum", "window_days": 2},
-                    "preferred_direction": "increase",
-                }
+        document = yaml.safe_load(mixed_cuped_definitions_yaml("events", breakout=breakout))
+        document["fact_sources"][0]["facts"].append({"name": "spend", "column": "value"})
+        document["metrics"].append(
+            {
+                "name": "revenue_per_spend",
+                "type": "ratio",
+                "entity": "user_id",
+                "numerator": {"fact": "revenue", "aggregation": "sum", "window_days": 2},
+                "denominator": {"fact": "spend", "aggregation": "sum", "window_days": 2},
+                "preferred_direction": "increase",
+            }
+        )
+        experiment = document["experiments"][0]
+        method_data = method.model_dump(mode="json", exclude_none=True)
+        configured_plan = experiment["plan"]
+        configured_plan["primary"]["decision_method"] = method_data
+        configured_plan["guardrails"] = [
+            {"metric": "revenue_per_spend", "decision_method": method_data}
+        ]
+        configured_plan.pop("secondaries")
+        try:
+            native = _definitions_file_binding(
+                con, "categorical.yaml", yaml.safe_dump(document), "mixed_cuped"
             )
-            experiment = document["experiments"][0]
-            method_data = method.model_dump(mode="json", exclude_none=True)
-            configured_plan = experiment["plan"]
-            configured_plan["primary"]["decision_method"] = method_data
-            configured_plan["guardrails"] = [
-                {"metric": "revenue_per_spend", "decision_method": method_data}
-            ]
-            configured_plan.pop("secondaries")
-            path.write_text(yaml.safe_dump(document))
-            try:
-                native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
-            except BaseException:
-                con.disconnect()
-                raise
+        except BaseException:
+            con.disconnect()
+            raise
         return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
 
-    def moments_analysis() -> Analysis:
+    def moments_analysis() -> Bound:
         import json
 
         with tempfile.TemporaryDirectory(prefix="increment-categorical-moments-") as directory:
             native = definition_analysis()
             try:
                 path = Path(directory) / "categorical.parquet"
-                native.export(path)
+                workflows.export_moments(*native, path)
                 table = pq.read_table(path)
                 payload = table.to_pylist()
                 assert {row["moments_format"] for row in payload} == {13}
@@ -9404,18 +9617,18 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                     if row.get("record_kind") == "cuped_evidence"
                 } == {"categorical_cells"}
             finally:
-                native.close()
-        return Analysis.from_moments(
+                _close_parity_binding(native)
+        return builders.from_moments(
             payload,
             metrics=metrics,
             design=design,
             experiment_id="mixed_cuped",
         )
 
-    def switchback_analysis() -> Analysis:
+    def switchback_analysis() -> Bound:
         from increment.semantics.design import Randomized as SwitchbackDesign
 
-        return Analysis.from_switchback_panel(
+        return builders.from_switchback_frame(
             pd.DataFrame(),
             unit="unit",
             cycle="cycle",
@@ -9434,13 +9647,13 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
 
     breakout_reference: dict[tuple[str, object], dict[str, object]] | None = None
 
-    def breakout_probe(name: str, analysis: Analysis) -> None:
+    def breakout_probe(name: str, analysis: Bound) -> None:
         nonlocal breakout_reference
         from increment.errors import CodedError
         from tests.parity_harness.comparison import nested_close
 
         if name in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
-            breakout_rows = analysis.run_breakout()
+            breakout_rows = read(analysis, "breakout")
             assert {(row.metric, row.dimension_value) for row in breakout_rows} == {
                 (metric, region)
                 for metric in ("revenue", "revenue_per_spend")
@@ -9476,7 +9689,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                 )
             return
         with pytest.raises(CodedError) as raised:
-            analysis.run_breakout()
+            read(analysis, "breakout")
         assert raised.value.code == "evidence.breakout_unavailable"
 
     return ParityCase(
@@ -9527,15 +9740,17 @@ def _bare_metric_name_frame_case() -> ParityCase:
         MetricSpec(name="converted", type="conversion"),
     ]
 
-    def build(frame: pd.DataFrame, metrics: Any, *, is_panel: bool = False) -> Analysis:
-        constructor = Analysis.from_unit_panel if is_panel else Analysis.from_unit_summary
-        return constructor(
+    def build(frame: pd.DataFrame, metrics: Any, *, is_panel: bool = False) -> Bound:
+        shape: dict[str, Any] = (
+            {"shape": "panel", "date": "day"} if is_panel else {"shape": "summary"}
+        )
+        return builders.from_frame(
             frame,
             unit="unit_id",
             group="group",
             design=design,
             metrics=metrics,
-            **({"date": "day"} if is_panel else {}),
+            **shape,
         )
 
     def estimate_values(rows: Any) -> dict[tuple[str, str], Any]:
@@ -9546,7 +9761,7 @@ def _bare_metric_name_frame_case() -> ParityCase:
         for frame, is_panel in ((summary, False), (panel, True)):
             source = build(frame, long_form, is_panel=is_panel)
             try:
-                actual = estimate_values(source.run())
+                actual = estimate_values(read(source))
                 assert actual.keys() == expected.keys()
                 for identity, lift in actual.items():
                     for field in ("value", "lb", "ub"):
@@ -9554,7 +9769,7 @@ def _bare_metric_name_frame_case() -> ParityCase:
                             getattr(expected[identity], field)
                         )
             finally:
-                source.close()
+                source[1].close()
 
     return ParityCase(
         id="bare_metric_name_summary_panel",
@@ -9591,15 +9806,17 @@ def _cuped_covariate_name_frame_case() -> ParityCase:
     )
     explicit = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"))
 
-    def build(frame: pd.DataFrame, method: Method, *, is_panel: bool = False) -> Analysis:
-        constructor = Analysis.from_unit_panel if is_panel else Analysis.from_unit_summary
-        return constructor(
+    def build(frame: pd.DataFrame, method: Method, *, is_panel: bool = False) -> Bound:
+        shape: dict[str, Any] = (
+            {"shape": "panel", "date": "day"} if is_panel else {"shape": "summary"}
+        )
+        return builders.from_frame(
             frame,
             unit="unit_id",
             group="group",
             design=design,
             metrics=[MetricSpec(name="revenue", type="mean", decision_method=method)],
-            **({"date": "day"} if is_panel else {}),
+            **shape,
         )
 
     def estimate_values(rows: Any) -> dict[tuple[str, str], Any]:
@@ -9610,7 +9827,7 @@ def _cuped_covariate_name_frame_case() -> ParityCase:
         for frame, is_panel in ((summary, False), (panel, True)):
             source = build(frame, explicit, is_panel=is_panel)
             try:
-                actual = estimate_values(source.run())
+                actual = estimate_values(read(source))
                 assert actual.keys() == expected.keys()
                 for identity, lift in actual.items():
                     for field in ("value", "lb", "ub"):
@@ -9618,7 +9835,7 @@ def _cuped_covariate_name_frame_case() -> ParityCase:
                             getattr(expected[identity], field)
                         )
             finally:
-                source.close()
+                source[1].close()
 
     named = Method.cuped(covariates="pre")
     return ParityCase(
@@ -9641,11 +9858,12 @@ def _cuped_covariate_name_frame_case() -> ParityCase:
 def _edge_unit_summary_case(
     *, id: str, rows: list[dict[str, Any]], metric: MetricSpec, refusal_only: bool = True
 ) -> ParityCase:
-    def build() -> Analysis:
+    def build() -> Bound:
         import pyarrow as pa
 
-        return Analysis.from_unit_summary(
+        return builders.from_frame(
             pa.Table.from_pylist(rows),
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",

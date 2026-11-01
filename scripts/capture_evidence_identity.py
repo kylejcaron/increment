@@ -24,7 +24,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from examples._seed import seed_event_log
-from increment import Analysis, Method, MetricSpec
+from increment import Method, MetricSpec, builders, workflows
+from increment._binding import binding_for
 from increment.semantics.models import AnalysisPlan
 from scripts.capture_parity_baseline import (
     DEFINITIONS,
@@ -36,10 +37,14 @@ from scripts.capture_parity_baseline import (
 )
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.cases import (
+    Bound,
     _categorical_cuped_moments_case,
+    _close_parity_binding,
     _mixed_cuped_multicovariate_case,
     _sequential_asymptotic_mean_case,
+    sequential_as_of,
 )
+from tests.parity_harness.views import read
 
 _DUCKDB_CONNECT = ibis.duckdb.connect
 
@@ -141,19 +146,21 @@ def load_operations_capture(path: Path) -> dict[str, Any]:
     return data
 
 
-def _population_identity(analysis: Analysis, case: Any, cells: Sequence[Any]) -> dict[str, Any]:
+def _population_identity(bound: Bound, case: Any, cells: Sequence[Any]) -> dict[str, Any]:
     import narwhals as nw
 
+    from increment._execute import readout_source
     from increment.cate import _cate_source
     from increment.errors import CodedError, InvalidRequestError
 
+    binding = binding_for(*bound)
     populations = {cell.identity.key.analysis_population for cell in cells} or {case.population}
     by_population: dict[str, dict[str, set[str]]] = {}
     for population in sorted(populations):
         try:
-            source = analysis._readout_source(population=population)
+            source = readout_source(binding, population=population)
             if population == "triggered":
-                source = cast(Any, _cate_source(analysis._binding, "capture population identity"))
+                source = cast(Any, _cate_source(binding, "capture population identity"))
         except (CodedError, InvalidRequestError):
             continue
         if not hasattr(source, "unit_frame"):
@@ -287,14 +294,15 @@ def _frame_rows(results) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
 
 
-def _views(analysis: Analysis) -> tuple[dict[str, Any], dict[str, Any]]:
+def _views(bound: Bound) -> tuple[dict[str, Any], dict[str, Any]]:
+    unadjusted = Method(name="unadjusted")
     results = {
-        "run": analysis.run(decision_method=Method(name="unadjusted")),
-        "run_daily": analysis.run_daily(),
-        "run_asof": analysis.run_asof(),
-        "run_breakout": analysis.run_breakout(decision_method=Method(name="unadjusted")),
-        "run_daily_lift": analysis.run_daily_lift(decision_method=Method(name="unadjusted")),
-        "run_asof_lift": analysis.run_asof_lift(decision_method=Method(name="unadjusted")),
+        "run": read(bound, decision_method=unadjusted),
+        "run_daily": read(bound, "daily"),
+        "run_asof": read(bound, "asof"),
+        "run_breakout": read(bound, "breakout", decision_method=unadjusted),
+        "run_daily_lift": read(bound, "daily_lift", decision_method=unadjusted),
+        "run_asof_lift": read(bound, "asof_lift", decision_method=unadjusted),
     }
     values = {
         "run": {
@@ -351,15 +359,15 @@ def _stable_export_value(value: Any) -> Any:
     return value
 
 
-def _export(analysis: Analysis, path: Path) -> list[dict[str, Any]]:
-    analysis.export(path)
+def _export(bound: Bound, path: Path) -> list[dict[str, Any]]:
+    workflows.export_moments(*bound, path)
     rows = pq.read_table(path).to_pylist()
     return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True, default=str))
 
 
-def _metric_specs(analysis: Analysis) -> list[MetricSpec]:
+def _metric_specs(bound: Bound) -> list[MetricSpec]:
     specs = []
-    for config in analysis._src.context.configs:
+    for config in binding_for(*bound).source.context.configs:
         metric = config.metric
         values = {
             "name": metric.name,
@@ -383,22 +391,22 @@ def _metric_specs(analysis: Analysis) -> list[MetricSpec]:
     return specs
 
 
-def replay_export(template: Analysis, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Replay a format-12/13 cube using the source analysis configuration."""
-    replay = Analysis.from_moments(
+def replay_export(template: Bound, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replay a format-12/13 cube using the source experiment's configuration."""
+    replay = builders.from_moments(
         payload,
         metrics=_metric_specs(template),
-        design=template._src.context.design,
+        design=binding_for(*template).source.context.design,
     )
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return _frame_rows(replay.run())
+            return _frame_rows(read(replay))
     finally:
-        replay.close()
+        replay[1].close()
 
 
-def _replay_rows(template: Analysis, cube_path: Path) -> list[dict[str, Any]]:
+def _replay_rows(template: Bound, cube_path: Path) -> list[dict[str, Any]]:
     return replay_export(template, pq.read_table(cube_path).to_pylist())
 
 
@@ -412,11 +420,25 @@ def _single_thread_duckdb():
         ibis.duckdb.connect = original
 
 
-def build_analyses() -> dict[str, Analysis]:
+def build_pairs() -> dict[str, Bound]:
+    import shutil
+
+    from tests.parity_harness.cases import _track_cleanup
+
+    # The definitions builder records its catalog beside the definitions, so it reads a copy
+    # that lives as long as the baseline pair rather than the checked-in examples.
+    directory = tempfile.TemporaryDirectory(prefix="increment-identity-")
+    definitions = Path(directory.name) / "definitions"
+    shutil.copytree(DEFINITIONS, definitions)
     with _single_thread_duckdb():
         con = ibis.duckdb.connect(threads=1)
         seed_event_log(con)
-        baseline = Analysis(EXPERIMENT, DEFINITIONS, con)
+        try:
+            baseline = builders.from_definitions(definitions, con, experiment_name=EXPERIMENT)
+        except BaseException:
+            directory.cleanup()
+            raise
+        _track_cleanup(baseline, directory.cleanup)
         mixed = _mixed_cuped_multicovariate_case()
         categorical = _categorical_cuped_moments_case()
         return {
@@ -472,7 +494,7 @@ def _aggregate_evidence(
 def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
     from increment.errors import CodedError, InvalidRequestError
     from increment.result_envelope import AnalysisEnvelope, relevel
-    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.cases import PARITY_CASES, _capture_kwargs
     from tests.parity_harness.refusal_cases import REFUSAL_SCENARIOS, Unreachable
     from tests.parity_harness.runner import _read
 
@@ -509,22 +531,21 @@ def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
         aggregate_rows: list[dict[str, object]] = []
         try:
             if ingress == "from_moments":
-                original_from_moments = Analysis.from_moments
+                original_from_moments = builders.from_moments
 
                 def capture_moments(
-                    cls,
                     rows: Sequence[Mapping[str, object]],
                     _aggregate_rows=aggregate_rows,
                     _original=original_from_moments,
                     **kwargs,
-                ) -> Analysis:
+                ) -> Bound:
                     _aggregate_rows.extend(copy.deepcopy(dict(row)) for row in rows)
                     return _original(rows, **kwargs)
 
-                with patch.object(Analysis, "from_moments", classmethod(capture_moments)):
-                    analysis = case.build[ingress]()
+                with patch.object(builders, "from_moments", capture_moments):
+                    bound = case.build[ingress]()
             else:
-                analysis = case.build[ingress]()
+                bound = case.build[ingress]()
         except CodedError as error:
             record[ingress] = {
                 "kind": "refusal",
@@ -539,12 +560,10 @@ def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
             continue
         try:
             if case.sequential:
-                as_of = getattr(analysis, "_sequential_as_of", None)
-                snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
-                analysis.capture_sequential(finalized=True, **snapshot_kwargs)
+                workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                results = _read(analysis, case)
+                results = _read(bound, ingress, case)
             metadata_value = getattr(results, "metadata", None)
             daily_values = []
             cells = []
@@ -560,7 +579,7 @@ def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
                     )
                 else:
                     daily_values.append(row.model_dump(mode="json"))
-            population_identity = _population_identity(analysis, case, cells)
+            population_identity = _population_identity(bound, case, cells)
         except CodedError as error:
             record[ingress] = {
                 "kind": "refusal",
@@ -574,9 +593,7 @@ def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
                 record[ingress]["aggregate_evidence"] = aggregate
             continue
         finally:
-            close = getattr(analysis, "close", None)
-            if close is not None:
-                close()
+            _close_parity_binding(bound)
         by_hash: dict[str, Any] = {}
         for cell in cells:
             key = cell.identity.hash()
@@ -696,28 +713,28 @@ def capture(out: Path, *, cutover: str | None = None) -> None:
     exports.mkdir(exist_ok=True)
     (exports / "mixed_fitted_replay.parquet").unlink(missing_ok=True)
     readouts: dict[str, Any] = {}
-    analyses = build_analyses()
+    pairs = build_pairs()
+    base = pairs.pop("parity_baseline")
     try:
-        base = analyses.pop("parity_baseline")
         views, identities = _views(base)
         readouts["parity_baseline"] = {"views": views, "rows": identities}
         _export(base, exports / "parity_baseline.parquet")
-        for name, analysis in analyses.items():
-            readouts[name] = {"rows": {"run": _rows(analysis.run())}}
+        for name, pair in pairs.items():
+            readouts[name] = {"rows": {"run": _rows(read(pair))}}
             if name == "mixed_warehouse":
-                _export(analysis, exports / f"{name}.parquet")
-        # The retained fitted replay uses the warehouse analysis's format-13 cube.
+                _export(pair, exports / f"{name}.parquet")
+        # The retained fitted replay uses the warehouse experiment's format-13 cube.
         with _single_thread_duckdb():
             categorical_export = _categorical_cuped_moments_case().build["from_definitions"]()
         try:
             _export(categorical_export, exports / "mixed_categorical_replay.parquet")
         finally:
-            categorical_export.close()
+            _close_parity_binding(categorical_export)
         replay_cases = {
             "parity_baseline": base,
-            "mixed_warehouse": analyses["mixed_warehouse"],
-            "mixed_fitted_replay": analyses["mixed_fitted_replay"],
-            "mixed_categorical_replay": analyses["mixed_categorical_replay"],
+            "mixed_warehouse": pairs["mixed_warehouse"],
+            "mixed_fitted_replay": pairs["mixed_fitted_replay"],
+            "mixed_categorical_replay": pairs["mixed_categorical_replay"],
         }
         for name, template in replay_cases.items():
             cube_name = "mixed_warehouse" if name == "mixed_fitted_replay" else name
@@ -725,22 +742,22 @@ def capture(out: Path, *, cutover: str | None = None) -> None:
         _write_checkpoint(out / "checkpoint.json")
         (out / "readouts.json").write_bytes(_json_bytes(readouts))
     finally:
-        for analysis in analyses.values():
-            close = getattr(analysis, "close", None)
-            if close is not None:
-                close()
-        base.close()
+        for pair in pairs.values():
+            _close_parity_binding(pair)
+        _close_parity_binding(base)
 
 
 def _write_checkpoint(path: Path) -> None:
     case = _sequential_asymptotic_mean_case()
-    analysis = case.build["from_unit_panel"]()
+    bound = case.build["from_unit_panel"]()
     try:
         with _single_thread_duckdb():
             con = ds.duckdb_connection()
         panel = ds.sequential_unit_panel_frame(con)
         con.disconnect()
-        as_of = analysis._sequential_as_of  # ty: ignore[unresolved-attribute]
+        as_of = sequential_as_of(bound)
+        assert as_of is not None
+        design = binding_for(*bound).source.context.design
         before = panel.loc[panel["date"] <= as_of]
         after = panel.loc[panel["date"] > as_of].to_dict(orient="records")
         later_date = max(row["date"] for row in after)
@@ -768,43 +785,45 @@ def _write_checkpoint(path: Path) -> None:
             primary="revenue",
             inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
         )
-        prefix = Analysis.from_unit_panel(
+        prefix = builders.from_frame(
             before,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
             metrics=[MetricSpec(name="revenue", type="mean", missing="zero", window_days=1)],
-            design=analysis._src.context.design,
+            design=design,
             plan=plan,
             experiment_id="exp",
             exposure_date="exposure_date",
         )
-        parent_snapshot = prefix.capture_sequential(finalized=True, as_of=as_of)
+        parent_snapshot = workflows.capture_sequential(*prefix, finalized=True, as_of=as_of)
         with tempfile.TemporaryDirectory() as directory:
             cube_path = Path(directory) / "checkpoint.parquet"
-            prefix.export(cube_path)
+            workflows.export_moments(*prefix, cube_path)
             checkpoint_rows = pq.read_table(cube_path).to_pylist()
         later_rows = sorted(after, key=lambda row: (str(row["user_id"]), str(row["date"])))
         continued_panel = pd.concat([before, pd.DataFrame(later_rows)], ignore_index=True)
-        continued = Analysis.from_unit_panel(
+        continued = builders.from_frame(
             continued_panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
             metrics=[MetricSpec(name="revenue", type="mean", missing="zero", window_days=1)],
-            design=analysis._src.context.design,
+            design=design,
             plan=plan,
             experiment_id="exp",
             exposure_date="exposure_date",
         )
         try:
             continued_as_of = max(row["date"] for row in later_rows)
-            continued_snapshot = continued.capture_sequential(
-                finalized=True, previous=parent_snapshot, as_of=continued_as_of
+            continued_snapshot = workflows.capture_sequential(
+                *continued, finalized=True, previous=parent_snapshot, as_of=continued_as_of
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                continuation_rows = _frame_rows(continued.run_asof())
+                continuation_rows = _frame_rows(read(continued, "asof"))
             continuation = {
                 "registration_id": continued_snapshot.registration_id,
                 "prefix_id": continued_snapshot.prefix_id,
@@ -818,7 +837,7 @@ def _write_checkpoint(path: Path) -> None:
                 "rows": continuation_rows,
             }
         finally:
-            continued.close()
+            continued[1].close()
         payload = {
             "checkpoint": sorted(
                 (_stable_export_value(row) for row in checkpoint_rows),
@@ -829,9 +848,9 @@ def _write_checkpoint(path: Path) -> None:
             "continuation": continuation,
         }
         path.write_bytes(_json_bytes(payload))
-        prefix.close()
+        prefix[1].close()
     finally:
-        analysis.close()
+        _close_parity_binding(bound)
 
 
 def main() -> None:

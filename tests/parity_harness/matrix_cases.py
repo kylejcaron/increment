@@ -17,7 +17,7 @@ from typing import Any, Literal, cast
 
 import pandas as pd
 
-from increment import Analysis
+from increment import builders, workflows
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
@@ -34,8 +34,12 @@ from tests.capability_contracts import CONSTRUCTORS
 from . import matrix_data as md
 from .cases import (
     Absence,
+    Bound,
     ParityCase,
+    _close_parity_binding,
+    _definitions_file_binding,
     _export_and_replay,
+    _mark_as_of,
     _publish_and_adopt,
     _track_connection,
 )
@@ -306,21 +310,17 @@ class _Ingress:
     def connection(self) -> Any:
         return md.duckdb_connection(self.rows)
 
-    def _native(self, con: Any, defs: Definitions) -> Analysis:
-        import tempfile
-        from pathlib import Path
-
+    def _native(self, con: Any, defs: Definitions) -> Bound:
         import yaml
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "definitions.yaml"
-            path.write_text(yaml.safe_dump(defs.model_dump(mode="json")), encoding="utf-8")
-            analysis = Analysis.from_definitions("exp", path, con)
+        bound = _definitions_file_binding(
+            con, "definitions.yaml", yaml.safe_dump(defs.model_dump(mode="json")), "exp"
+        )
         if self.cell.option == "sequential":
-            analysis._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
-        return analysis
+            _mark_as_of(bound, _SEQUENTIAL_AS_OF)
+        return bound
 
-    def definitions(self) -> Analysis:
+    def definitions(self) -> Bound:
         defs = self._definitions()
         con = self.connection()
         try:
@@ -330,7 +330,7 @@ class _Ingress:
             raise
         return _track_connection(analysis, con)
 
-    def artifact(self) -> Analysis:
+    def artifact(self) -> Bound:
         defs = self._definitions()
         con = self.connection()
         try:
@@ -340,7 +340,7 @@ class _Ingress:
             raise
         adopted = _publish_and_adopt(con, native, _extension_kinds(self.cell))
         if self.cell.option == "sequential":
-            adopted._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
+            _mark_as_of(adopted, _SEQUENTIAL_AS_OF)
         return adopted
 
     def _frame_kwargs(self) -> dict[str, Any]:
@@ -359,27 +359,28 @@ class _Ingress:
             kwargs["control"] = "control"
         return kwargs
 
-    def summary(self) -> Analysis:
+    def summary(self) -> Bound:
         kwargs = self._frame_kwargs()
         if self.cell.option == "cluster":
             kwargs["cluster"] = "cluster_id"
         if self.cell.option == "sequential":
             kwargs["exposure_date"] = "exposed_on"
-        analysis = Analysis.from_unit_summary(
+        analysis = builders.from_frame(
             md.frame(
                 md.summary_rows(self.cell.day_boundary, nulls=self.nulls, positive=self.positive)
             ),
+            shape="summary",
             **kwargs,
         )
         if self.cell.option == "sequential":
-            analysis._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
+            _mark_as_of(analysis, _SEQUENTIAL_AS_OF)
         return analysis
 
-    def panel(self) -> Analysis:
+    def panel(self) -> Bound:
         kwargs = self._frame_kwargs()
         if self.cell.option == "cluster":
             kwargs["cluster"] = "cluster_id"
-        analysis = Analysis.from_unit_panel(
+        analysis = builders.from_frame(
             md.frame(
                 md.panel_rows(
                     self.cell.day_boundary,
@@ -388,6 +389,7 @@ class _Ingress:
                     daily_conversion=self.cell.view == "daily",
                 )
             ),
+            shape="panel",
             date="date",
             exposure_date="exposed_on",
             observation_end=md.observation_end_day(self.cell.day_boundary),
@@ -395,10 +397,10 @@ class _Ingress:
             **kwargs,
         )
         if self.cell.option == "sequential":
-            analysis._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
+            _mark_as_of(analysis, _SEQUENTIAL_AS_OF)
         return analysis
 
-    def _moments_producer(self) -> Callable[[], Analysis]:
+    def _moments_producer(self) -> Callable[[], Bound]:
         """The route whose export the cube is replayed from.
 
         A windowed or retention metric reads dates, so the panel produces it. The panel
@@ -419,7 +421,7 @@ class _Ingress:
             return self.definitions
         return self.panel if needs_dates else self.summary
 
-    def _scalar_moments_producer(self) -> Analysis:
+    def _scalar_moments_producer(self) -> Bound:
         """A real scalar-moments source over the quantile's outcome column.
 
         A quantile has no moments representation, so no producer can export one. The
@@ -455,11 +457,13 @@ class _Ingress:
             kwargs["control"] = "control"
         if cell.option == "cluster":
             kwargs["cluster"] = "cluster_id"
-        return Analysis.from_unit_summary(
-            md.frame(md.summary_rows(cell.day_boundary, nulls=self.nulls)), **kwargs
+        return builders.from_frame(
+            md.frame(md.summary_rows(cell.day_boundary, nulls=self.nulls)),
+            shape="summary",
+            **kwargs,
         )
 
-    def _quantile_moments(self) -> Analysis:
+    def _quantile_moments(self) -> Bound:
         """Export a real scalar-moments cube, then declare the cell's quantile on replay.
 
         The quantile declaration is built first: a quantile that cannot be declared (a
@@ -475,22 +479,20 @@ class _Ingress:
             producer, metrics, plan=self.plan if cell.option == "ni_margin" else None
         )
 
-    def moments(self) -> Analysis:
+    def moments(self) -> Bound:
         cell = self.cell
         if cell.base == "quantile":
             return self._quantile_moments()
         exported = self._moments_producer()()
         if cell.option == "sequential":
             # A cube replays a captured checkpoint; it cannot start a sequential process.
-            exported.capture_sequential(finalized=True, as_of=_SEQUENTIAL_AS_OF)
+            workflows.capture_sequential(*exported, finalized=True, as_of=_SEQUENTIAL_AS_OF)
         if cell.option == "observational":
             return _export_and_replay_observational(exported, _replay_metrics(cell), self.plan)
         return _export_and_replay(exported, _replay_metrics(cell))
 
 
-def _export_and_replay_observational(
-    analysis: Analysis, metrics: Any, plan: AnalysisPlan
-) -> Analysis:
+def _export_and_replay_observational(bound: Bound, metrics: Any, plan: AnalysisPlan) -> Bound:
     """`_export_and_replay` reimports as Randomized; an observational design must
     survive the replay to reach the covariate read."""
     import tempfile
@@ -501,11 +503,11 @@ def _export_and_replay_observational(
     try:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "moments.parquet"
-            analysis.export(path)
+            workflows.export_moments(*bound, path)
             rows = pq.read_table(path).to_pylist()
-        return Analysis.from_moments(rows, metrics=metrics, design=_OBSERVATIONAL, plan=plan)
+        return builders.from_moments(rows, metrics=metrics, design=_OBSERVATIONAL, plan=plan)
     finally:
-        analysis.close()
+        _close_parity_binding(bound)
 
 
 def _replay_metrics(cell: Cell) -> Any:
@@ -544,14 +546,14 @@ def switchback_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _switchback_builder(cell: Cell) -> Callable[[], Analysis]:
+def _switchback_builder(cell: Cell) -> Callable[[], Bound]:
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,
         SwitchbackWindow,
     )
 
-    def build() -> Analysis:
+    def build() -> Bound:
         spec = metric_spec(cell)
         kwargs: dict[str, Any] = {
             "unit": "unit",
@@ -573,7 +575,7 @@ def _switchback_builder(cell: Cell) -> Callable[[], Analysis]:
         if cell.option == "cluster":
             # The signature has no cluster parameter: the unsupported keyword is the attempt.
             kwargs["cluster"] = "cluster_id"
-        return Analysis.from_switchback_panel(switchback_frame(), **kwargs)
+        return builders.from_switchback_frame(switchback_frame(), **kwargs)
 
     return build
 
@@ -628,7 +630,7 @@ def build_case(cell: Cell, method: str, outcomes: Mapping[str, Outcome]) -> Pari
     refusal code, a refusal that became a number or a number that became a refusal fails.
     """
     ingress = _Ingress(cell)
-    builders: dict[str, Callable[[], Analysis]] = {
+    builders: dict[str, Callable[[], Bound]] = {
         "from_definitions": ingress.definitions,
         "from_unit_day_artifact": ingress.artifact,
         "from_unit_summary": ingress.summary,
@@ -705,8 +707,9 @@ def linear_cuped_frame_case(
     )
     plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
     if panel:
-        return Analysis.from_unit_panel(
+        return builders.from_frame(
             md.frame(rows),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -715,8 +718,9 @@ def linear_cuped_frame_case(
             design=Randomized(control_group="control", allocation=_ALLOCATION),
             breakouts=("region",) if breakout else (),
         )
-    return Analysis.from_unit_summary(
+    return builders.from_frame(
         md.frame(rows),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=metrics,

@@ -35,8 +35,9 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
     from increment.errors import CodedError, InvalidRequestError
     from increment.result_envelope import AnalysisEnvelope
     from scripts.capture_evidence_identity import _aggregate_evidence, _population_identity
-    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
     from tests.parity_harness.runner import _read
+    from tests.parity_harness.views import read
 
     cases = {case.id: case for case in PARITY_CASES}
     asof_view = None
@@ -57,7 +58,7 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
     aggregate_rows: list[dict[str, object]] = []
     payloads: dict[str, object] = {}
     try:
-        analysis = case.build[ingress]()
+        bound = case.build[ingress]()
     except CodedError as error:
         return {
             "kind": "refusal",
@@ -81,20 +82,14 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
                         and ingress == "from_unit_summary"
                     )
                 ):
-                    results = _read(analysis, ingress, case)
-                elif case.decision_method is None:
-                    results = analysis.run_breakout(
-                        metrics=case.metrics,
-                        population="assigned",
-                    )
+                    results = _read(bound, ingress, case)
                 else:
-                    from increment.estimation.engine import Method
-
-                    results = analysis.run_breakout(
-                        metrics=case.metrics,
-                        decision_method=cast(Method, case.decision_method),
-                        population="assigned",
-                    )
+                    options: dict[str, Any] = {}
+                    if case.metrics is not None:
+                        options["metrics"] = case.metrics
+                    if case.decision_method is not None:
+                        options["decision_method"] = case.decision_method
+                    results = read(bound, "breakout", population="assigned", **options)
             metadata_value = getattr(results, "metadata", None)
             cells = []
             daily_values = []
@@ -109,8 +104,8 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
                         )
                     )
                 else:
-                    daily_values.append(cast(Any, row).model_dump(mode="json"))
-            population_identity = _population_identity(analysis, case, cells)
+                    daily_values.append(row.model_dump(mode="json"))
+            population_identity = _population_identity(bound, case, cells)
         except CodedError as error:
             outcome = {
                 "kind": "refusal",
@@ -158,6 +153,4 @@ def line2_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]
             outcome["aggregate_evidence"] = aggregate
         return outcome
     finally:
-        close = getattr(analysis, "close", None)
-        if close is not None:
-            close()
+        _close_parity_binding(bound)

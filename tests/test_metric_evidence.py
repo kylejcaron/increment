@@ -22,7 +22,7 @@ from scripts.capture_evidence_identity import (
     _frame_rows,
     _rows,
     _views,
-    build_analyses,
+    build_pairs,
     replay_export,
 )
 from tests.parity_harness import dataset as ds
@@ -216,22 +216,26 @@ def _warehouse_fit_payload(cube_path):
 @pytest.mark.slow
 @pytest.mark.integration
 def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
+    from increment import builders, workflows
+    from tests.parity_harness.cases import _close_parity_binding
+    from tests.parity_harness.views import read
+
     fixture = json.loads((_FIXTURES / "readouts.json").read_text())
-    analyses = build_analyses()
+    pairs = build_pairs()
+    baseline = pairs.pop("parity_baseline")
     try:
-        baseline = analyses.pop("parity_baseline")
         _, baseline_identity = _views(baseline)
         original_results = {}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            original_results["parity_baseline"] = baseline.run()
-            for name, analysis in analyses.items():
-                original_results[name] = analysis.run()
+            original_results["parity_baseline"] = read(baseline)
+            for name, pair in pairs.items():
+                original_results[name] = read(pair)
         _assert_identity_equal(baseline_identity, fixture["parity_baseline"]["rows"])
-        for name in analyses:
+        for name in pairs:
             _assert_identity_equal({"run": _rows(original_results[name])}, fixture[name]["rows"])
 
-        # Analysis.export stamps format 13 and `_cuped_evidence.py` emits this
+        # Moments export stamps format 13 and `_cuped_evidence.py` emits this
         # field with kind="fitted_multicovariate" for the retained fitted case.
         fitted_cube = pq.read_table(_FIXTURES / "exports" / "mixed_warehouse.parquet")
         assert fitted_cube.schema.metadata[b"increment.moments_format"] == b"13"
@@ -241,7 +245,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             if row.get("record_kind") == "cuped_evidence"
         )
         live_cube = tmp_path / "mixed_warehouse.parquet"
-        analyses["mixed_warehouse"].export(live_cube)
+        workflows.export_moments(*pairs["mixed_warehouse"], live_cube)
         # QR-derived fit floats can vary at machine epsilon across BLAS/LAPACK platforms.
         # Keep the BASE-captured numeric payload pinned within the replay tolerance.
         _assert_replay_rows_close(
@@ -250,9 +254,9 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         )
         replay_templates = {
             "parity_baseline": baseline,
-            "mixed_warehouse": analyses["mixed_warehouse"],
-            "mixed_fitted_replay": analyses["mixed_fitted_replay"],
-            "mixed_categorical_replay": analyses["mixed_categorical_replay"],
+            "mixed_warehouse": pairs["mixed_warehouse"],
+            "mixed_fitted_replay": pairs["mixed_fitted_replay"],
+            "mixed_categorical_replay": pairs["mixed_categorical_replay"],
         }
         cube_names = {
             name: ("mixed_warehouse" if name == "mixed_fitted_replay" else name)
@@ -271,7 +275,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             _assert_replay_rows_close(expected_rows, replay_rows)
 
         checkpoint_data = json.loads((_FIXTURES / "checkpoint.json").read_text())
-        parent = Analysis.from_moments(
+        parent = builders.from_moments(
             checkpoint_data["checkpoint"],
             metrics=[MetricSpec(name="revenue", type="mean", missing="zero", window_days=1)],
             design=Randomized(
@@ -280,7 +284,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             experiment_id="exp",
         )
         try:
-            parent_snapshot = parent.sequential_snapshot()
+            parent_snapshot = workflows.sequential_snapshot(*parent)
             con = ds.duckdb_connection()
             panel = ds.sequential_unit_panel_frame(con)
             con.disconnect()
@@ -290,8 +294,9 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             later["date"] = pd.to_datetime(later["date"]).dt.date
             later["exposure_date"] = pd.to_datetime(later["exposure_date"]).dt.date
             continued_panel = pd.concat([prefix, later], ignore_index=True)
-            continued = Analysis.from_unit_panel(
+            continued = builders.from_frame(
                 continued_panel,
+                shape="panel",
                 unit="user_id",
                 group="variant",
                 date="date",
@@ -308,8 +313,8 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             )
             try:
                 later_as_of = max(later["date"])
-                continuation = continued.capture_sequential(
-                    finalized=True, previous=parent_snapshot, as_of=later_as_of
+                continuation = workflows.capture_sequential(
+                    *continued, finalized=True, previous=parent_snapshot, as_of=later_as_of
                 )
                 expected_continuation = checkpoint_data["continuation"]
                 actual_snapshot = {
@@ -329,17 +334,17 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
                     key: expected_continuation[key] for key in actual_snapshot
                 }
                 _assert_replay_rows_close(
-                    expected_continuation["rows"], _frame_rows(continued.run_asof())
+                    expected_continuation["rows"], _frame_rows(read(continued, "asof"))
                 )
                 continuation.verify_parent(parent_snapshot)
             finally:
-                continued.close()
+                continued[1].close()
         finally:
-            parent.close()
+            parent[1].close()
     finally:
-        for analysis in analyses.values():
-            analysis.close()
-        baseline.close()
+        for pair in pairs.values():
+            _close_parity_binding(pair)
+        _close_parity_binding(baseline)
 
 
 class _CountingSource(EvidenceProvider):
