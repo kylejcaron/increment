@@ -1,5 +1,5 @@
-"""Analysis.planning_baseline for arm analyses: a power-solver Baseline
-derived from a pilot's own control arm and declared design.
+"""Planning baselines for arm experiments: a power-solver Baseline derived
+from a pilot's own control arm and declared design.
 
 The analyzed population is the one the solvers read ``Baseline.mean``/``var``
 as: under a declared trigger that is the triggered population, with
@@ -127,8 +127,8 @@ def planning_baseline(
     """The Baseline for *metric* from *source*'s control arm.
 
     *trigger* is the experiment's declared trigger (``None`` when it declares
-    none); *trigger_rates* is ``Analysis.trigger_rates``, read only under a
-    declared trigger.
+    none); *trigger_rates* reads the source's observed per-arm trigger rates
+    and is called only under a declared trigger.
     """
     context = source.context
     spec = select_metrics(

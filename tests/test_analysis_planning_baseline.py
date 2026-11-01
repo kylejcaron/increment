@@ -1,6 +1,6 @@
-"""Analysis.planning_baseline computes every derivable Baseline field
-from the analysis's own data and declared design, on every constructor
-that can supply it."""
+"""planning_baseline computes every derivable Baseline field from the
+experiment's own data and declared design, on every builder that can supply
+it."""
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -12,32 +12,46 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, CupedCovariate, Method
+from increment import (
+    Analysis,
+    CupedCovariate,
+    Method,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+    from_unit_day_artifact,
+    run,
+)
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
 from increment.semantics.models import CupedCovariateBinding, Measure, MethodSpec
+from increment.workflows import export_moments, planning_baseline, srm, trigger_rates
+from increment.workflows import metrics as workflow_metrics
 from tests._override_warnings import allow_declared_overrides
+from tests.analysis_factory import run_rows
 from tests.capability_consumers_scalar import PLANNING_BASELINE, completed, refused
 
 
-def _plan(analysis, metric, outcome_id=None):
-    """An arm analysis's planning Baseline (a switchback one returns a
-    SwitchbackBaseline instead). ``outcome_id`` holds the read to its declared
-    outcome in ``PLANNING_BASELINE``."""
+def _plan(pilot: tuple[Any, Any], metric, outcome_id=None):
+    """An arm pilot's planning Baseline (a switchback one returns a
+    SwitchbackBaseline instead). *pilot* is a builder's ``(experiment,
+    resolver)`` pair; ``outcome_id`` holds the read to its declared outcome in
+    ``PLANNING_BASELINE``."""
     if outcome_id is None:
-        baseline = analysis.planning_baseline(metric)
+        baseline = planning_baseline(*pilot, metric)
     else:
         baseline = completed(
-            PLANNING_BASELINE, outcome_id, lambda: analysis.planning_baseline(metric)
+            PLANNING_BASELINE, outcome_id, lambda: planning_baseline(*pilot, metric)
         )
     assert isinstance(baseline, Baseline)
     return baseline
 
 
-def _abs_se(analysis):
-    row = analysis.run()[0]
+def _abs_se(pilot: tuple[Any, Any]):
+    row = run_rows(pilot[1])[0]
     assert isinstance(row, LiftEstimate) and row.abs_se is not None
     return row.abs_se
 
@@ -57,14 +71,15 @@ def _unit_summary_frame(n=400, with_covariate=False, with_cluster=False):
 
 class TestPlanningBaselineOnDataframeRoutes:
     def test_mean_metric_from_control_arm_data(self):
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             _unit_summary_frame(),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[{"name": "revenue", "type": "mean"}],
         )
-        baseline = _plan(analysis, "revenue")
+        baseline = _plan(pilot, "revenue")
         assert isinstance(baseline, Baseline)
         assert baseline.mean == pytest.approx(13.0, rel=0.2)
         assert baseline.var > 0.0
@@ -73,10 +88,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         """An unrelated moments() failure -- injected here by routing the
         source's own moments() at an unsupported grain -- must never be
         coerced into covariate_source_unavailable or silently swallowed."""
-        from tests.analysis_factory import _native_source
-
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             _unit_summary_frame(with_covariate=True),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -90,7 +104,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        source = _native_source(analysis)
+        source = pilot[1].binding.source
         moments = source.moments
         monkeypatch.setattr(
             source,
@@ -98,19 +112,20 @@ class TestPlanningBaselineOnDataframeRoutes:
             lambda metric, **kwargs: moments(metric, grain="daily"),
         )
         with pytest.raises(CapabilityError) as raised:
-            analysis.planning_baseline("revenue")
+            planning_baseline(*pilot, "revenue")
         assert raised.value.code == "evidence.grain_unavailable"
 
     def test_quantile_metric_from_control_arm_values(self):
         frame = _unit_summary_frame()
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
         )
-        baseline = _plan(analysis, "revenue", "quantile-summary")
+        baseline = _plan(pilot, "revenue", "quantile-summary")
         control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
         assert baseline.mean == pytest.approx(float(np.quantile(control, 0.5)), rel=1e-12)
         assert baseline.var > 0.0
@@ -118,15 +133,16 @@ class TestPlanningBaselineOnDataframeRoutes:
     def test_quantile_metric_from_unit_panel_values(self):
         frame = _unit_summary_frame()
         frame["ds"] = datetime(2025, 1, 1)
-        analysis = Analysis.from_unit_panel(
+        pilot = from_frame(
             frame,
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
             control="control",
             metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
         )
-        baseline = _plan(analysis, "revenue", "quantile-panel")
+        baseline = _plan(pilot, "revenue", "quantile-panel")
         control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
         assert baseline.mean == pytest.approx(float(np.quantile(control, 0.5)), rel=1e-12)
         assert baseline.var > 0.0
@@ -137,16 +153,18 @@ class TestPlanningBaselineOnDataframeRoutes:
         per-unit trigger-evidence operation is absent by name."""
         frame = _unit_summary_frame()
         panel = frame.assign(ds=datetime(2025, 1, 1))
-        analyses = {
-            "summary": Analysis.from_unit_summary(
+        pilots = {
+            "summary": from_frame(
                 frame,
+                shape="summary",
                 unit="unit_id",
                 group="group_id",
                 control="control",
                 metrics=[{"name": "revenue", "type": "mean"}],
             ),
-            "panel": Analysis.from_unit_panel(
+            "panel": from_frame(
                 panel,
+                shape="panel",
                 unit="unit_id",
                 group="group_id",
                 date="ds",
@@ -155,12 +173,12 @@ class TestPlanningBaselineOnDataframeRoutes:
             ),
         }
         control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
-        for short, analysis in analyses.items():
-            baseline = _plan(analysis, "revenue", f"trigger-{short}-assigned-population")
+        for short, pilot in pilots.items():
+            baseline = _plan(pilot, "revenue", f"trigger-{short}-assigned-population")
             assert baseline.trigger_rate == 1.0
             assert baseline.mean == pytest.approx(float(control.mean()), rel=1e-12)
             with pytest.raises(CapabilityError) as raised:
-                analysis.trigger_rates()
+                trigger_rates(*pilot)
             assert raised.value.code == "evidence.operation_unavailable"
             assert raised.value.context["requested"] == "triggered_counts"
 
@@ -168,8 +186,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         """cuped_rho must be derived on the dataframe route the same way
         as every other route: from the resolved metric config's decision
         method, not a definitions-only field."""
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             _unit_summary_frame(with_covariate=True),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -183,15 +202,16 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        baseline = _plan(analysis, "revenue")
+        baseline = _plan(pilot, "revenue")
         assert -1.0 < baseline.cuped_rho < 1.0
         assert baseline.cuped_rho != 0.0
 
     def test_ratio_metric_uses_the_denominator_moments(self):
         frame = _unit_summary_frame()
         frame["revenue_den"] = [1.0 + (i % 3) for i in range(len(frame))]
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -204,7 +224,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        baseline = _plan(analysis, "revenue")
+        baseline = _plan(pilot, "revenue")
         # A ratio Baseline's mean is numerator/denominator, not the bare
         # numerator mean -- pins that the ratio branch, not the mean
         # branch, actually ran.
@@ -218,8 +238,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         frame = _unit_summary_frame()
         frame["revenue_pre"] = 2.0 * frame["revenue"] + 0.5  # genuinely correlated covariate
         frame["revenue_den"] = [1.0 + (i % 3) + i * 1e-6 for i in range(len(frame))]
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -235,7 +256,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        baseline = _plan(analysis, "revenue")
+        baseline = _plan(pilot, "revenue")
         assert -1.0 < baseline.cuped_rho < 1.0
         assert baseline.cuped_rho != 0.0
         assert baseline.effective_var < baseline.var
@@ -262,14 +283,15 @@ class TestPlanningBaselineOnDataframeRoutes:
                 covariates=CupedCovariate(name="revenue_pre", kind="continuous")
             ),
         }
-        direct = Analysis.from_unit_summary(
+        direct = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[metric],
         )
-        direct.export(tmp_path / "moments.parquet")
+        export_moments(*direct, tmp_path / "moments.parquet")
         # A raw-sum (format-1) moment file has no column for
         # Cov(covariate, denominator): the covariate is carried, its cross
         # moment with the denominator never materialises.
@@ -277,9 +299,9 @@ class TestPlanningBaselineOnDataframeRoutes:
             {key: value for key, value in row.items() if key != "cxden"}
             for row in pq.read_table(tmp_path / "moments.parquet").to_pylist()
         ]
-        adopted = Analysis.from_moments(rows, metrics=[metric], control="control")
+        adopted = from_moments(rows, metrics=[metric], control="control")
         with pytest.raises(InvalidRequestError) as raised:
-            adopted.planning_baseline("revenue")
+            planning_baseline(*adopted, "revenue")
         assert raised.value.code == "estimation.cuped.ratio_arm_no_denominator_cross"
 
     @pytest.mark.parametrize(
@@ -300,8 +322,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         frame = _unit_summary_frame()
         frame["revenue_den"] = [1.0 + (i % 3) for i in range(len(frame))]
         frame["revenue_pre"] = 5.0
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -315,10 +338,10 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CodedError) as planned:
-            analysis.planning_baseline("revenue")
+            planning_baseline(*pilot, "revenue")
         with pytest.warns(IncrementWarning) as runtime_warnings:
             with pytest.raises(UnsupportedRequestError) as runtime:
-                analysis.run()
+                run(*pilot)
         warning = runtime_warnings[0].message
         assert isinstance(warning, IncrementWarning)
         assert warning.code == "readouts.run.cell_refused"
@@ -363,8 +386,9 @@ class TestPlanningBaselineOnDataframeRoutes:
             if metric_type == "mean"
             else {"name": "m", "type": "ratio", "numerator": "num", "denominator": "den"}
         )
-        adjusted = Analysis.from_unit_summary(
+        adjusted = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -377,8 +401,13 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        unadjusted = Analysis.from_unit_summary(
-            frame, unit="unit_id", group="group_id", control="control", metrics=[spec]
+        unadjusted = from_frame(
+            frame,
+            shape="summary",
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            metrics=[spec],
         )
         baseline = _plan(adjusted, "m")
         runtime_reduction = (_abs_se(adjusted) / _abs_se(unadjusted)) ** 2
@@ -389,15 +418,16 @@ class TestPlanningBaselineOnDataframeRoutes:
         """avg_cluster_size/cluster_icc/cluster_size_cv must be derived
         from the source's own declared cluster, on the same route as
         cuped_rho above."""
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             _unit_summary_frame(with_cluster=True),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[{"name": "revenue", "type": "mean"}],
             cluster="household_id",
         )
-        baseline = _plan(analysis, "revenue")
+        baseline = _plan(pilot, "revenue")
         assert baseline.avg_cluster_size == pytest.approx(4.0, rel=0.2)
         assert 0.0 <= baseline.cluster_icc < 1.0
         assert baseline.cluster_size_cv >= 0.0
@@ -408,8 +438,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         rather than dividing by zero."""
         frame = _unit_summary_frame(with_cluster=True)
         frame["household_id"] = [f"h{i}" for i in range(len(frame))]
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -417,7 +448,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             cluster="household_id",
         )
         with pytest.raises(CapabilityError) as raised:
-            analysis.planning_baseline("revenue")
+            planning_baseline(*pilot, "revenue")
         assert raised.value.code == "analysis.planning_baseline.cluster_icc_not_estimable"
 
     def test_a_covariate_that_repeats_the_outcome_refuses_by_name(self):
@@ -433,8 +464,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                 "y_copy": y,
             }
         )
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -450,7 +482,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CapabilityError) as raised:
-            analysis.planning_baseline("m")
+            planning_baseline(*pilot, "m")
         assert raised.value.code == "analysis.planning_baseline.cuped_no_residual_variance"
 
     @pytest.mark.parametrize("scale, offset", [(1.0, 0.0), (3.0, 0.0), (0.1, 7.0)])
@@ -469,8 +501,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                 "x": scale * y + offset,
             }
         )
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -486,7 +519,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CapabilityError) as raised:
-            analysis.planning_baseline("m")
+            planning_baseline(*pilot, "m")
         assert raised.value.code == "analysis.planning_baseline.cuped_no_residual_variance"
 
     @pytest.mark.parametrize(
@@ -514,8 +547,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                 "x": x,
             }
         )
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -532,7 +566,7 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
         )
         with pytest.raises(CapabilityError) as raised:
-            analysis.planning_baseline("m")
+            planning_baseline(*pilot, "m")
         assert raised.value.code == "analysis.planning_baseline.cuped_no_residual_variance"
 
     def test_clustered_ratio_icc_is_the_icc_of_its_linearized_score(self):
@@ -560,8 +594,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         ratio = control["num"].sum() / control["den"].sum()
         # The linearized score, shifted positive (an ICC is shift-invariant).
         frame["score"] = frame["num"] - ratio * frame["den"] + 10.0
-        analysis = Analysis.from_unit_summary(
+        pilot = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -572,9 +607,9 @@ class TestPlanningBaselineOnDataframeRoutes:
             ],
             cluster="store",
         )
-        ratio_icc = _plan(analysis, "rps").cluster_icc
-        assert ratio_icc == pytest.approx(_plan(analysis, "score").cluster_icc, rel=1e-9)
-        assert 0.0 < ratio_icc < 0.5 < _plan(analysis, "num").cluster_icc
+        ratio_icc = _plan(pilot, "rps").cluster_icc
+        assert ratio_icc == pytest.approx(_plan(pilot, "score").cluster_icc, rel=1e-9)
+        assert 0.0 < ratio_icc < 0.5 < _plan(pilot, "num").cluster_icc
 
     def test_clustered_mean_and_var_are_per_unit_not_cluster_totals(self):
         """A clustered source's moments are cluster totals; the Baseline's
@@ -583,8 +618,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         frame = _unit_summary_frame(with_cluster=True)
 
         def build(cluster):
-            return Analysis.from_unit_summary(
+            return from_frame(
                 frame,
+                shape="summary",
                 unit="unit_id",
                 group="group_id",
                 control="control",
@@ -650,7 +686,7 @@ def _triggered_value(i):
     return 40.0 + (i % 7) if i % 5 == 0 else 10.0 + (i % 3)
 
 
-def _triggered_analysis(
+def _triggered_experiment(
     tmp_path,
     *,
     clustered=False,
@@ -659,7 +695,7 @@ def _triggered_analysis(
     metric_aggregation="sum",
     source_snapshot_evidence=None,
     staggered=False,
-):
+) -> tuple[Any, Any, tuple[Any, Any]]:
     """Selected pilot memberships, or every fifth unit in an IID experiment."""
     con = ibis.duckdb.connect()
     rows = {
@@ -740,25 +776,20 @@ def _triggered_analysis(
     return (
         con,
         path,
-        Analysis.from_definitions(
-            "exp",
-            str(path),
-            con,
-            source_snapshot_evidence=evidence,
-        ),
+        from_definitions(path, con, experiment_name="exp", source_snapshot_evidence=evidence),
     )
 
 
 @pytest.mark.integration
 def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_path):
-    con, _path, analysis = _triggered_analysis(tmp_path)
+    con, _path, pilot = _triggered_experiment(tmp_path)
     con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'control'")
     try:
         with pytest.raises(CodedError) as raised:
-            analysis.planning_baseline("revenue")
+            planning_baseline(*pilot, "revenue")
         assert raised.value.code == "query.integrity.trigger_arm_missing"
     finally:
-        analysis.close()
+        pilot[1].close()
         con.disconnect()
 
 
@@ -800,7 +831,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
     def run_with_small_cluster_advisories(source, n_clusters):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", IncrementRuntimeWarning)
-            results = source.run(metrics=["revenue"])
+            results = run_rows(source[1], metrics=["revenue"])
         assert [
             (warning.message.code, dict(warning.message.context))
             for warning in caught
@@ -859,16 +890,16 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
         cluster_icc=float(icc),
         cluster_size_cv=float(size_variance / analyzed_mean**2) ** 0.5,
     )
-    con, path, analysis = _triggered_analysis(
+    con, path, pilot = _triggered_experiment(
         tmp_path, clustered=True, assigned_sizes=assigned_sizes, analyzed_sizes=analyzed_sizes
     )
     reopened = None
     try:
-        native = _plan(analysis, "revenue")
+        native = _plan(pilot, "revenue")
         reopened = _republish(
             con,
             path,
-            analysis,
+            pilot,
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
@@ -882,7 +913,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
             assert baseline.design_effect == pytest.approx(
                 1 + ((1 + manual.cluster_size_cv**2) * float(analyzed_mean) - 1) * float(icc)
             )
-        for source in (analysis, reopened):
+        for source in (pilot, reopened):
             results = {
                 row.analysis_population: row
                 for row in run_with_small_cluster_advisories(source, 2 * len(assigned_sizes))
@@ -913,9 +944,9 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
             for observed, independent in zip(actual, expected, strict=True):
                 assert observed.model_dump() == pytest.approx(independent.model_dump(), rel=1e-12)
     finally:
-        analysis.close()
+        pilot[1].close()
         if reopened is not None:
-            reopened.close()
+            reopened[1].close()
         con.disconnect()
 
 
@@ -924,6 +955,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
 def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path):
     import warnings
 
+    from increment.estimation.diagnostics import SRMResult
     from increment.estimators import IncrementRuntimeWarning
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
@@ -934,7 +966,7 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
 
     assigned_sizes = [6, 6, 6, 6]
     analyzed_sizes = [2, 3, 1, 0]
-    con, path, analysis = _triggered_analysis(
+    con, path, pilot = _triggered_experiment(
         tmp_path,
         clustered=True,
         assigned_sizes=assigned_sizes,
@@ -943,11 +975,11 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
     )
     reopened = None
     try:
-        native = _plan(analysis, "revenue")
+        native = _plan(pilot, "revenue")
         reopened = _republish(
             con,
             path,
-            analysis,
+            pilot,
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
@@ -960,18 +992,20 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
         assert native.mean == pytest.approx(27.0)
         assert native.trigger_rate == pytest.approx(6 / 24)
         assert native.cluster_participation == pytest.approx(3 / 4)
-        for source in (analysis, reopened):
-            integrity = source.srm(
+        for source in (pilot, reopened):
+            integrity = srm(
+                *source,
                 expected={"control": 0.5, "treatment": 0.5},
                 inference="fixed",
                 population="triggered",
             )
+            assert isinstance(integrity, SRMResult)
             assert integrity.grain == "cluster"
             assert integrity.observed == {"control": 3, "treatment": 3}
             assert integrity.unit_counts == {"control": 6, "treatment": 6}
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", IncrementRuntimeWarning)
-                results = source.run(metrics=["revenue"])
+                results = run_rows(source[1], metrics=["revenue"])
             assert [
                 (warning.message.code, dict(warning.message.context))
                 for warning in caught
@@ -999,9 +1033,9 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
             result = next(row for row in results if row.analysis_population == "triggered")
             assert result.reference_df == 2
     finally:
-        analysis.close()
+        pilot[1].close()
         if reopened is not None:
-            reopened.close()
+            reopened[1].close()
         con.disconnect()
 
 
@@ -1029,7 +1063,7 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
     )
 
     certified_edge = datetime(2024, 1, 20, tzinfo=UTC)
-    con, path, analysis = _triggered_analysis(
+    con, path, pilot = _triggered_experiment(
         tmp_path,
         clustered=True,
         assigned_sizes=[10] * 10,
@@ -1038,7 +1072,7 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
         source_snapshot_evidence=SourceSnapshotEvidence(certified_edge, {"events": certified_edge}),
     )
     reopened = None
-    fully_certified = None
+    fully_certified: tuple[Any, Any] | None = None
     try:
         if late_condition is None:
             con.raw_sql(
@@ -1052,17 +1086,17 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
             )
         if late_condition is not None:
             later_edge = datetime(2030, 1, 1, tzinfo=UTC)
-            fully_certified = Analysis.from_definitions(
-                "exp",
-                str(path),
+            fully_certified = from_definitions(
+                path,
                 con,
+                experiment_name="exp",
                 source_snapshot_evidence=SourceSnapshotEvidence(later_edge, {"events": later_edge}),
             )
             _plan(fully_certified, "revenue")
         reopened = _republish(
             con,
             path,
-            analysis,
+            pilot,
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
@@ -1070,7 +1104,7 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
                 ClusterIdentityRequest(cluster_name="store_id"),
             ],
         )
-        for source in (analysis, reopened):
+        for source in (pilot, reopened):
             with pytest.raises(CapabilityError) as raised:
                 _plan(source, "revenue")
             for error in (
@@ -1085,15 +1119,16 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
                 assert error.context["eligible_units"] == 20
                 assert error.context["observed_units"] == observed_units
     finally:
-        analysis.close()
+        pilot[1].close()
         if reopened is not None:
-            reopened.close()
+            reopened[1].close()
         if fully_certified is not None:
-            fully_certified.close()
+            cast(Any, fully_certified[1]).close()
         con.disconnect()
 
 
-def _republish(con, path, analysis, extensions):
+def _republish(con, path, pilot: tuple[Any, Any], extensions) -> tuple[Any, Any]:
+    from increment.artifacts import publish_unit_day_artifact
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics.loader import load
@@ -1103,8 +1138,8 @@ def _republish(con, path, analysis, extensions):
     assert experiment is not None
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(*pilot, store, extensions=extensions)
+    return from_unit_day_artifact(store, ref, expected_context=context)
 
 
 class TestPlanningBaselineOnWarehouseRoutes:
@@ -1115,18 +1150,18 @@ class TestPlanningBaselineOnWarehouseRoutes:
         comes from the triggered control units -- quantiles included."""
         from increment.estimation.armstats import SummaryStats
 
-        con, _path, analysis = _triggered_analysis(tmp_path)
+        con, _path, pilot = _triggered_experiment(tmp_path)
         try:
             triggered = np.array([_triggered_value(i) for i in range(200) if i % 5 == 0])
             expected = Baseline.from_summary(
                 SummaryStats(n=triggered.size, mean=triggered.mean(), var=triggered.var(ddof=1))
             )
-            baseline = _plan(analysis, "revenue", "trigger-definitions-complete")
+            baseline = _plan(pilot, "revenue", "trigger-definitions-complete")
             assert (baseline.mean, baseline.var) == pytest.approx(
                 (expected.mean, expected.var), rel=1e-12
             )
             assert baseline.trigger_rate == pytest.approx(0.2, rel=1e-12)
-            quantile = _plan(analysis, "revenue_p50", "quantile-triggered-definitions")
+            quantile = _plan(pilot, "revenue_p50", "quantile-triggered-definitions")
             assert quantile.mean == pytest.approx(float(np.quantile(triggered, 0.5)), rel=1e-12)
             assert quantile.trigger_rate == pytest.approx(0.2, rel=1e-12)
         finally:
@@ -1141,13 +1176,13 @@ class TestPlanningBaselineOnWarehouseRoutes:
             TriggerPopulationRequest,
         )
 
-        con, path, analysis = _triggered_analysis(tmp_path)
+        con, path, pilot = _triggered_experiment(tmp_path)
         try:
-            native = _plan(analysis, "revenue")
+            native = _plan(pilot, "revenue")
             reopened = _republish(
                 con,
                 path,
-                analysis,
+                pilot,
                 [
                     TriggerPopulationRequest(trigger_name="exposure"),
                     AssignmentCountsRequest(populations=("assigned", "triggered")),
@@ -1294,10 +1329,10 @@ class TestPlanningBaselineOnWarehouseRoutes:
         path = tmp_path / "defs_triggered_cuped.yml"
         path.write_text(defs)
         evidence = datetime(2030, 1, 1, tzinfo=UTC)
-        analysis = Analysis.from_definitions(
-            "exp",
-            str(path),
+        pilot: tuple[Any, Any] = from_definitions(
+            path,
             con,
+            experiment_name="exp",
             source_snapshot_evidence=SourceSnapshotEvidence(evidence, {"events": evidence}),
         )
         reopened = None
@@ -1328,11 +1363,11 @@ class TestPlanningBaselineOnWarehouseRoutes:
             expected_ratio_rho = np.sqrt(1 - expected_ratio_adjusted_var / expected_ratio_var)
             expected_rho = 98.0 / np.sqrt(100.0 * 110.0)
             expected_quantile = float(np.quantile(triggered, 0.5))
-            native = _plan(analysis, "revenue")
+            native = _plan(pilot, "revenue")
             reopened = _republish(
                 con,
                 path,
-                analysis,
+                pilot,
                 [
                     CupedPreperiodRequest(metric_name="revenue"),
                     CupedPreperiodRequest(metric_name="rps"),
@@ -1353,7 +1388,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
             )
             artifact = _plan(reopened, "revenue")
             assert artifact.model_dump() == pytest.approx(native.model_dump(), rel=1e-12)
-            native_ratio = _plan(analysis, "rps")
+            native_ratio = _plan(pilot, "rps")
             artifact_ratio = _plan(reopened, "rps")
             assert artifact_ratio.model_dump() == pytest.approx(
                 native_ratio.model_dump(), rel=1e-12
@@ -1362,7 +1397,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 (expected_ratio, expected_ratio_var), rel=1e-12
             )
             assert native_ratio.trigger_rate == pytest.approx(0.5, rel=1e-12)
-            native_quantile = _plan(analysis, "revenue_p50")
+            native_quantile = _plan(pilot, "revenue_p50")
             artifact_quantile = _plan(reopened, "revenue_p50", "quantile-triggered-artifact")
             for baseline in (native_quantile, artifact_quantile):
                 assert baseline.mean == pytest.approx(expected_quantile, rel=1e-12)
@@ -1460,17 +1495,19 @@ class TestPlanningBaselineOnWarehouseRoutes:
             for prior in priors:
                 posterior_by_ingress = {}
                 expected = expected_posterior(prior)
-                for ingress, source in (("definitions", analysis), ("artifact", reopened)):
+                for ingress, source in (("definitions", pilot), ("artifact", reopened)):
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", DeprecationWarning)
-                        plain_rows = source.run(
+                        plain_rows = run_rows(
+                            source[1],
                             metrics=["revenue"],
                             decision_method=Method(name="unadjusted"),
                             prior=None,
                         )
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", DeprecationWarning)
-                        informed_rows = source.run(
+                        informed_rows = run_rows(
+                            source[1],
                             metrics=["revenue"],
                             decision_method=Method(name="unadjusted"),
                             prior=prior,
@@ -1500,8 +1537,6 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 assert posterior_by_ingress["definitions"] == pytest.approx(
                     posterior_by_ingress["artifact"], rel=1e-12
                 )
-            from typing import Any, cast
-
             from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
 
             def unit_rows(source, metric, outcome_stage):
@@ -1517,14 +1552,12 @@ class TestPlanningBaselineOnWarehouseRoutes:
                     ),
                 )
 
-            from tests.analysis_factory import _native_source
-
             expected_percentile_cutoff = float(
                 np.quantile(np.concatenate((triggered, triggered + 2.0)), 0.75)
             )
-            for source in (analysis, reopened):
-                triggered_source = cast(Any, _native_source(source).triggered_source())
-                metrics_by_name = {metric.name: metric for metric in source.metrics}
+            for source in (pilot, reopened):
+                triggered_source = source[1].binding.source.triggered_source()
+                metrics_by_name = {metric.name: metric for metric in workflow_metrics(*source)}
                 fixed_metric = metrics_by_name["fixed_revenue"]
                 raw_fixed = unit_rows(triggered_source, fixed_metric, "raw").to_pylist()
                 clipped_fixed = unit_rows(triggered_source, fixed_metric, "transformed").to_pylist()
@@ -1558,12 +1591,12 @@ class TestPlanningBaselineOnWarehouseRoutes:
                     expected_percentile_cutoff
                 )
                 with pytest.raises(CapabilityError) as raised:
-                    source.run(metrics=["percentile_revenue"])
+                    run_rows(source[1], metrics=["percentile_revenue"])
                 assert raised.value.code == "readout.metric.percentile_winsorization"
         finally:
-            analysis.close()
+            pilot[1].close()
             if reopened is not None:
-                reopened.close()
+                reopened[1].close()
             con.disconnect()
 
     @pytest.mark.integration
@@ -1571,13 +1604,13 @@ class TestPlanningBaselineOnWarehouseRoutes:
         """A declared trigger the artifact carries no evidence for refuses by
         SOURCE, naming the missing extensions, instead of planning the
         assigned population at trigger_rate=1.0."""
-        con, path, analysis = _triggered_analysis(tmp_path)
+        con, path, pilot = _triggered_experiment(tmp_path)
         try:
-            reopened = _republish(con, path, analysis, [])
+            reopened = _republish(con, path, pilot, [])
             raised = refused(
                 PLANNING_BASELINE,
                 "trigger-artifact-missing-evidence",
-                lambda: reopened.planning_baseline("revenue"),
+                lambda: planning_baseline(*reopened, "revenue"),
             )
             assert isinstance(raised, CapabilityError)
             assert raised.context["trigger"] == "exposure"
@@ -1654,8 +1687,7 @@ experiments:
 """
         p = tmp_path / "defs_untriggered.yml"
         p.write_text(defs)
-        analysis = Analysis.from_definitions("exp", str(p), con)
-        baseline = _plan(analysis, "revenue")
+        baseline = _plan(from_definitions(p, con, experiment_name="exp"), "revenue")
         assert baseline.trigger_rate == 1.0
 
 
@@ -1765,16 +1797,53 @@ def _parity_metrics(*, covariate):
     return metrics
 
 
-def _parity_analyses(*, clustered):
-    """One dataset through every arm constructor that can read it:
-    ``(analyses, connections)``. A clustered pilot has no unit-panel route
-    (``from_unit_panel`` takes no cluster) and no moments export (clustered
+def _definitions_pilot(path, con, definitions) -> tuple[Any, Any]:
+    """Write in-memory *definitions* to *path* and build experiment ``exp`` on *con*."""
+    import yaml
+
+    path.write_text(yaml.safe_dump(definitions), encoding="utf-8")
+    return from_definitions(path, con, experiment_name="exp")
+
+
+def _artifact_extensions(pilot):
+    """The parity harness's artifact extension requests for *pilot*'s context."""
+    from increment.artifacts import artifact_context
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from tests.parity_harness.cases import _ARTIFACT_EXTENSION_KINDS
+
+    return [
+        entry.request
+        for entry in unit_day_artifact_extension_catalog(artifact_context(*pilot))
+        if entry.request.kind in _ARTIFACT_EXTENSION_KINDS
+    ]
+
+
+def _adopted(con, path, published) -> tuple[Any, Any]:
+    """Publish *published* with the parity extensions and adopt the artifact."""
+    try:
+        return _republish(con, path, published, _artifact_extensions(published))
+    finally:
+        published[1].close()
+
+
+def _replayed(pilot: tuple[Any, Any], tmp_path, metrics, **options) -> tuple[Any, Any]:
+    """Export *pilot*'s moments and replay them through ``from_moments``."""
+    destination = tmp_path / "replayed-moments.parquet"
+    try:
+        export_moments(*pilot, destination)
+    finally:
+        pilot[1].close()
+    return from_moments(pq.read_table(destination).to_pylist(), metrics=metrics, **options)
+
+
+def _parity_pilots(tmp_path, *, clustered):
+    """One dataset through every arm builder that can read it:
+    ``(pilots, connections)``. A clustered pilot has no unit-panel route
+    (a panel frame takes no cluster) and no moments export (clustered
     moments transport refuses by SOURCE)."""
     from increment.frame import MetricSpec
-    from increment.semantics.models import AnalysisPlan, Definitions, ExperimentMetric
-    from tests.analysis_factory import make_analysis
+    from increment.semantics.models import AnalysisPlan, ExperimentMetric
     from tests.parity_harness import dataset as ds
-    from tests.parity_harness.cases import _export_and_replay, _publish_and_adopt
 
     rows = _parity_rows(clustered=clustered)
     secondaries: list[str | ExperimentMetric] = ["revenue", "purchase_rate", "rps"]
@@ -1789,17 +1858,16 @@ def _parity_analyses(*, clustered):
     if clustered:
         defs["experiments"][0]["cluster"] = "store"
     connections = [ds.duckdb_connection(rows), ds.duckdb_connection(rows)]
-    native, published = (
-        make_analysis(con, Definitions.model_validate(defs), experiment="exp")
-        for con in connections
-    )
+    path = tmp_path / "parity-definitions.yaml"
+    native, published = (_definitions_pilot(path, con, defs) for con in connections)
     frame = ds.unit_summary_frame(connections[0])
     metrics = _parity_metrics(covariate=not clustered)
     plan = AnalysisPlan(secondaries=tuple(m.name for m in metrics))
 
     def summary(cluster=None):
-        return Analysis.from_unit_summary(
+        return from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -1808,17 +1876,18 @@ def _parity_analyses(*, clustered):
             cluster=cluster,
         )
 
-    analyses = {
+    pilots = {
         "from_definitions": native,
-        "from_unit_day_artifact": _publish_and_adopt(connections[1], published),
+        "from_unit_day_artifact": _adopted(connections[1], path, published),
         "from_unit_summary": summary("store" if clustered else None),
     }
     if clustered:
         # The same rows without the cluster: the per-unit oracle for mean/var.
-        analyses["unclustered"] = summary()
-        return analyses, connections
-    analyses["from_unit_panel"] = Analysis.from_unit_panel(
+        pilots["unclustered"] = summary()
+        return pilots, connections
+    pilots["from_unit_panel"] = from_frame(
         ds.unit_panel_frame(frame),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -1826,8 +1895,9 @@ def _parity_analyses(*, clustered):
         metrics=metrics,
         plan=plan,
     )
-    analyses["from_moments"] = _export_and_replay(
+    pilots["from_moments"] = _replayed(
         summary(),
+        tmp_path,
         [
             MetricSpec(
                 name=m.name,
@@ -1838,17 +1908,90 @@ def _parity_analyses(*, clustered):
             )
             for m in metrics
         ],
+        control="control",
     )
-    return analyses, connections
+    return pilots, connections
+
+
+def _encouragement_design():
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    return Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked"),
+        exclusion_restriction=ExclusionRestriction(
+            justification="assignment moves revenue only via uptake"
+        ),
+        one_sided=True,
+        allocation={"control": 0.5, "treatment": 0.5},
+    )
+
+
+def _encouragement_frame_pilot(*, shape) -> tuple[Any, Any]:
+    """The parity harness's declared-encouragement unit frame on one builder."""
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan
+    from tests.parity_harness.cases import (
+        _encouragement_oracle_frame_for_parity,
+        _encouragement_oracle_panel_frame_for_parity,
+    )
+
+    options: dict[str, Any] = {
+        "unit": "user_id",
+        "group": "group",
+        "metrics": [MetricSpec(name="revenue", type="mean", preferred_direction="increase")],
+        "design": _encouragement_design(),
+        "uptake": "clicked",
+        "plan": AnalysisPlan(secondaries=["revenue"]),
+    }
+    if shape == "summary":
+        return from_frame(_encouragement_oracle_frame_for_parity(), shape="summary", **options)
+    return from_frame(
+        _encouragement_oracle_panel_frame_for_parity(), shape="panel", date="day", **options
+    )
+
+
+def _encouragement_pilots(tmp_path):
+    """The declared-encouragement dataset through every arm builder:
+    ``(pilots, connections)``."""
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan
+    from tests.parity_harness import dataset as ds
+    from tests.parity_harness.cases import (
+        _encouragement_defs_dict,
+        _encouragement_rows_for_parity,
+    )
+
+    rows = _encouragement_rows_for_parity()
+    plan = AnalysisPlan(secondaries=["revenue"])
+    connections = [ds.duckdb_connection(rows) for _ in range(3)]
+    path = tmp_path / "encouragement-definitions.yaml"
+    native, published, exported = (
+        _definitions_pilot(path, con, _encouragement_defs_dict(plan)) for con in connections
+    )
+    pilots = {
+        "from_definitions": native,
+        "from_unit_day_artifact": _adopted(connections[1], path, published),
+        "from_unit_summary": _encouragement_frame_pilot(shape="summary"),
+        "from_unit_panel": _encouragement_frame_pilot(shape="panel"),
+        "from_moments": _replayed(
+            exported,
+            tmp_path,
+            [MetricSpec(name="revenue", type="mean", preferred_direction="increase")],
+            design=_encouragement_design(),
+            plan=plan,
+        ),
+    }
+    return pilots, connections
 
 
 @pytest.mark.slow
 class TestPlanningBaselineParity:
-    """Identical per-unit data through every arm constructor yields the same
-    Baseline, field for field, as the from_unit_summary oracle."""
+    """Identical per-unit data through every arm builder yields the same
+    Baseline, field for field, as the unit-summary oracle."""
 
-    def test_every_arm_constructor_matches_the_unit_summary_oracle(self):
-        analyses, connections = _parity_analyses(clustered=False)
+    def test_every_arm_constructor_matches_the_unit_summary_oracle(self, tmp_path):
+        pilots, connections = _parity_pilots(tmp_path, clustered=False)
         mean_outcomes = {
             "from_unit_summary": "mean-summary",
             "from_unit_panel": "mean-panel",
@@ -1857,12 +2000,12 @@ class TestPlanningBaselineParity:
             "from_moments": "mean-moments",
         }
         try:
-            oracle = analyses["from_unit_summary"]
+            oracle = pilots["from_unit_summary"]
             for metric in ("revenue", "purchase_rate", "rps", "revenue_cuped", "rps_cuped"):
                 expected = _plan(oracle, metric).model_dump()
-                for name, analysis in analyses.items():
+                for name, pilot in pilots.items():
                     outcome_id = mean_outcomes[name] if metric == "revenue" else None
-                    actual = _plan(analysis, metric, outcome_id).model_dump()
+                    actual = _plan(pilot, metric, outcome_id).model_dump()
                     assert actual == pytest.approx(expected, rel=1e-9, abs=1e-12), (name, metric)
             assert _plan(oracle, "revenue_cuped").cuped_rho > 0.2
             assert _plan(oracle, "rps_cuped").cuped_rho > 0.05
@@ -1870,22 +2013,22 @@ class TestPlanningBaselineParity:
             for con in connections:
                 con.disconnect()
 
-    def test_clustered_constructors_match_the_unit_summary_oracle(self):
-        analyses, connections = _parity_analyses(clustered=True)
+    def test_clustered_constructors_match_the_unit_summary_oracle(self, tmp_path):
+        pilots, connections = _parity_pilots(tmp_path, clustered=True)
         cluster_outcomes = {
             "from_definitions": "cluster-definitions",
             "from_unit_day_artifact": "cluster-artifact",
         }
         try:
-            oracle = analyses["from_unit_summary"]
+            oracle = pilots["from_unit_summary"]
             for metric in ("revenue", "purchase_rate", "rps"):
                 expected = _plan(oracle, metric, "cluster-summary" if metric == "revenue" else None)
                 for name, outcome_id in cluster_outcomes.items():
                     actual = _plan(
-                        analyses[name], metric, outcome_id if metric == "revenue" else None
+                        pilots[name], metric, outcome_id if metric == "revenue" else None
                     ).model_dump()
                     assert actual == pytest.approx(expected.model_dump(), rel=1e-9), (name, metric)
-                unit_level = _plan(analyses["unclustered"], metric)
+                unit_level = _plan(pilots["unclustered"], metric)
                 assert (expected.mean, expected.var) == pytest.approx(
                     (unit_level.mean, unit_level.var), rel=1e-12
                 )
@@ -1901,8 +2044,9 @@ class TestPlanningBaselineParity:
         panel_refusal = refused(
             PLANNING_BASELINE,
             "cluster-panel-refusal",
-            lambda: Analysis.from_unit_panel(
+            lambda: from_frame(
                 frame,
+                shape="panel",
                 unit="unit_id",
                 group="group_id",
                 date="ds",
@@ -1917,8 +2061,9 @@ class TestPlanningBaselineParity:
         assert panel_refusal.context["requested"] == "household_id"
         assert panel_refusal.context["offered"] == ()
 
-        clustered = Analysis.from_unit_summary(
+        clustered = from_frame(
             _unit_summary_frame(with_cluster=True),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -1929,7 +2074,7 @@ class TestPlanningBaselineParity:
         moments_refusal = refused(
             PLANNING_BASELINE,
             "cluster-moments-refusal",
-            lambda: clustered.export(tmp_path / "clustered-moments.parquet"),
+            lambda: export_moments(*clustered, tmp_path / "clustered-moments.parquet"),
         )
         assert isinstance(moments_refusal, CapabilityError)
         assert moments_refusal.code == "evidence.cluster_unavailable"
@@ -1938,18 +2083,13 @@ class TestPlanningBaselineParity:
         assert moments_refusal.context["offered"] == ()
         assert not (tmp_path / "clustered-moments.parquet").exists()
 
-    def test_encouragement_compliance_matches_across_constructors(self):
-        from tests.parity_harness.cases import PARITY_CASES
-
-        case = next(c for c in PARITY_CASES if c.id == "encouragement_declared_definitions")
-        dumped = {}
-        for name, build in case.build.items():
-            analysis = build()
-            try:
-                dumped[name] = _plan(analysis, "revenue").model_dump()
-            finally:
-                for con in getattr(analysis, "_parity_connections", ()):
-                    con.disconnect()
+    def test_encouragement_compliance_matches_across_constructors(self, tmp_path):
+        pilots, connections = _encouragement_pilots(tmp_path)
+        try:
+            dumped = {name: _plan(pilot, "revenue").model_dump() for name, pilot in pilots.items()}
+        finally:
+            for con in connections:
+                con.disconnect()
         oracle = dumped["from_unit_summary"]
         assert 0.0 < oracle["compliance"] < 1.0
         for name, actual in dumped.items():
@@ -1987,10 +2127,10 @@ class TestPlanningBaselineOnSwitchback:
 
     @pytest.mark.integration
     def test_delegates_to_the_switchback_source_and_feeds_its_planner(self):
-        """Analysis.from_switchback_panel's planning_baseline is the source's
-        own pilot-fitted SwitchbackBaseline, which the switchback planner
-        consumes directly. The same constructor refuses a quantile metric at
-        its metric-type gate, has no cluster= keyword, and carries no trigger."""
+        """A switchback frame's planning_baseline is the source's own
+        pilot-fitted SwitchbackBaseline, which the switchback planner consumes
+        directly. The same builder refuses a quantile metric at its
+        metric-type gate, has no cluster= keyword, and carries no trigger."""
         from increment.frame import MetricSpec, from_switchback_panel
         from increment.power import switchback_required_blocks_or_units
         from increment.power.switchback import SwitchbackBaseline
@@ -2010,8 +2150,10 @@ class TestPlanningBaselineOnSwitchback:
         )
         panel = self._panel()
 
-        def construct(metrics: Mapping[str, str] | list[MetricSpec] | None = None) -> Analysis:
-            return Analysis.from_switchback_panel(
+        def construct(
+            metrics: Mapping[str, str] | list[MetricSpec] | None = None,
+        ) -> tuple[Any, Any]:
+            return from_switchback_frame(
                 panel,
                 unit="unit",
                 cycle="cycle",
@@ -2037,7 +2179,7 @@ class TestPlanningBaselineOnSwitchback:
         baseline = completed(
             PLANNING_BASELINE,
             "mean-switchback-planner",
-            lambda: construct().planning_baseline("orders"),
+            lambda: planning_baseline(*construct(), "orders"),
         )
         assert isinstance(baseline, SwitchbackBaseline)
         assert baseline == source.planning_baseline(source.metrics[0])
@@ -2058,7 +2200,7 @@ class TestPlanningBaselineOnSwitchback:
 
         # The request a clustered pilot would make has no spelling on this constructor:
         # the keyword is absent from the signature, so it is sent as an untyped call.
-        unexpressible = cast("Callable[..., Analysis]", Analysis.from_switchback_panel)
+        unexpressible = cast("Callable[..., object]", from_switchback_frame)
         absence = refused(
             PLANNING_BASELINE,
             "cluster-switchback-absence",
@@ -2081,7 +2223,7 @@ class TestPlanningBaselineOnSwitchback:
         no_trigger = completed(
             PLANNING_BASELINE,
             "trigger-switchback-no-trigger",
-            lambda: construct().planning_baseline("orders"),
+            lambda: planning_baseline(*construct(), "orders"),
         )
         assert no_trigger == baseline
         assert "trigger_rate" not in SwitchbackBaseline.model_fields
@@ -2102,15 +2244,16 @@ class TestPlanningBaselineOnMoments:
         metric = MetricSpec(name="revenue", decision_method=method)
         frame = _unit_summary_frame(with_covariate=True)
         frame["segment"] = [("west", "north", "south")[i % 3] for i in range(len(frame))]
-        direct = Analysis.from_unit_summary(
+        direct = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[metric],
         )
         destination = tmp_path / "triggered-format13.parquet"
-        direct.export(destination)
+        export_moments(*direct, destination)
         rows = pq.read_table(destination).to_pylist()
         assert {row["moments_format"] for row in rows} == {13}
         for row in rows:
@@ -2123,11 +2266,11 @@ class TestPlanningBaselineOnMoments:
                 row["cuped_evidence"] = payload
             else:
                 row["population"] = "triggered"
-        replayed = Analysis.from_moments(
+        replayed = from_moments(
             rows, metrics=[metric], control="control", experiment_id="triggered-replay"
         )
         with pytest.raises(CapabilityError) as raised:
-            replayed.planning_baseline("revenue")
+            planning_baseline(*replayed, "revenue")
         assert raised.value.code == "evidence.operation_unavailable"
         assert raised.value.context["requested"] == {"population": "assigned"}
 
@@ -2135,16 +2278,17 @@ class TestPlanningBaselineOnMoments:
         """A from_moments source declares no trigger, so trigger_rate stays at
         its Baseline default rather than raising or misreading one."""
         frame = _unit_summary_frame()
-        direct = Analysis.from_unit_summary(
+        direct = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[{"name": "revenue", "type": "mean"}],
         )
-        direct.export(tmp_path / "moments.parquet")
+        export_moments(*direct, tmp_path / "moments.parquet")
         rows = pq.read_table(tmp_path / "moments.parquet").to_pylist()
-        adopted = Analysis.from_moments(
+        adopted = from_moments(
             rows, metrics=[{"name": "revenue", "type": "mean"}], control="control"
         )
         baseline = _plan(adopted, "revenue", "trigger-moments-assigned-population")
@@ -2152,20 +2296,21 @@ class TestPlanningBaselineOnMoments:
         control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
         assert baseline.mean == pytest.approx(float(control.mean()), rel=1e-12)
         with pytest.raises(CapabilityError) as raised:
-            adopted.trigger_rates()
+            trigger_rates(*adopted)
         assert raised.value.code == "evidence.operation_unavailable"
 
     def test_from_moments_refuses_a_quantile_metric_by_source(self, tmp_path):
-        direct = Analysis.from_unit_summary(
+        direct = from_frame(
             _unit_summary_frame(),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[{"name": "revenue", "type": "mean"}],
         )
-        direct.export(tmp_path / "moments.parquet")
+        export_moments(*direct, tmp_path / "moments.parquet")
         rows = pq.read_table(tmp_path / "moments.parquet").to_pylist()
-        adopted = Analysis.from_moments(
+        adopted = from_moments(
             rows,
             metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
             control="control",
@@ -2173,7 +2318,7 @@ class TestPlanningBaselineOnMoments:
         raised = refused(
             PLANNING_BASELINE,
             "quantile-moments-refusal",
-            lambda: adopted.planning_baseline("revenue"),
+            lambda: planning_baseline(*adopted, "revenue"),
         )
         assert isinstance(raised, CapabilityError)
         assert raised.context["metric"] == "revenue"
@@ -2181,31 +2326,27 @@ class TestPlanningBaselineOnMoments:
 
 class TestLegacyPlanningSources:
     def test_method_only_encouragement_source_keeps_compliance(self):
-        from tests.parity_harness.cases import PARITY_CASES
-
-        case = next(c for c in PARITY_CASES if c.id == "encouragement_declared_definitions")
-        analysis = case.build["from_unit_summary"]()
-        expected = analysis.planning_baseline("revenue")
-        assert analysis.planning_baseline("revenue") == expected
+        pilot = _encouragement_frame_pilot(shape="summary")
+        expected = planning_baseline(*pilot, "revenue")
+        assert planning_baseline(*pilot, "revenue") == expected
 
     @pytest.mark.integration
     def test_method_only_clustered_source_keeps_cluster_counts(self, tmp_path):
 
-        con, _path, analysis = _triggered_analysis(tmp_path, clustered=True)
+        con, _path, pilot = _triggered_experiment(tmp_path, clustered=True)
         try:
-            expected = analysis.planning_baseline("revenue")
-            assert analysis.planning_baseline("revenue") == expected
+            expected = planning_baseline(*pilot, "revenue")
+            assert planning_baseline(*pilot, "revenue") == expected
         finally:
             con.disconnect()
 
     @pytest.mark.integration
     def test_legacy_triggered_wrapper_refuses_assigned_population(self, tmp_path, monkeypatch):
         from increment.sources import EvidenceSource
-        from tests.analysis_factory import held_source
 
-        con, _path, analysis = _triggered_analysis(tmp_path)
+        con, _path, pilot = _triggered_experiment(tmp_path)
         try:
-            source = cast("EvidenceSource", held_source(analysis))
+            source = cast("EvidenceSource", pilot[1].binding.source)
             monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
             triggered = cast("Any", source).triggered_source()
             replayed = Analysis._from_source(
@@ -2230,9 +2371,8 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
 
     from increment.errors import CodedError
     from increment.evidence import EvidenceScopeResult, evidence_provider, request_evidence
-    from tests.analysis_factory import held_source
 
-    con, _path, native = _triggered_analysis(
+    con, _path, native = _triggered_experiment(
         tmp_path,
         clustered=clustered,
         assigned_sizes=[2, 8] if clustered else None,
@@ -2240,7 +2380,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
     )
     if missing_treatment:
         con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'treatment'")
-    adapter = evidence_provider(held_source(native))
+    adapter = evidence_provider(native[1].binding.source)
     scope_requests = []
     count_requests = []
     moment_requests = []
@@ -2294,7 +2434,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
                 forwarded.planning_baseline("revenue")
             assert raised.value.code == "query.integrity.trigger_arm_missing"
         else:
-            expected = native.planning_baseline("revenue")
+            expected = planning_baseline(*native, "revenue")
             actual = forwarded.planning_baseline("revenue")
             assert actual == expected
             if clustered:
@@ -2315,7 +2455,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
         if moment_requests:
             assert all(request.population == "triggered" for request in moment_requests)
     finally:
-        native.close()
+        native[1].close()
         con.disconnect()
 
 
@@ -2329,10 +2469,9 @@ def test_forwarded_planning_baseline_ignores_mixed_assigned_unit_audit_bucket(tm
         evidence_provider,
         request_evidence,
     )
-    from tests.analysis_factory import held_source
 
-    con, _path, native = _triggered_analysis(tmp_path)
-    adapter = evidence_provider(held_source(native))
+    con, _path, native = _triggered_experiment(tmp_path)
+    adapter = evidence_provider(native[1].binding.source)
 
     class Provider:
         context = adapter.context
@@ -2379,7 +2518,7 @@ def test_forwarded_planning_baseline_ignores_mixed_assigned_unit_audit_bucket(tm
 
     forwarded = Analysis._from_source(Provider())
     try:
-        assert forwarded.planning_baseline("revenue") == native.planning_baseline("revenue")
+        assert forwarded.planning_baseline("revenue") == planning_baseline(*native, "revenue")
     finally:
-        native.close()
+        native[1].close()
         con.disconnect()

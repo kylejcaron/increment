@@ -1,23 +1,25 @@
-"""Test Analysis facade — integration with examples/definitions.
-
-TDD Step 1: this test should fail before analysis.py exists, then pass
-after the facade is implemented.
-"""
+"""Whole-site impact through ``increment.estimators.sitewide`` on the
+definitions route: site-volume semantics, arm selection and refusals."""
 
 from __future__ import annotations
 
+import warnings
+from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 import ibis
 import pytest
+import yaml
 
-from increment import Analysis
+from increment import from_definitions, from_frame
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
-from increment.plan import compile_decision_plan
-from increment.semantics.models import MeanMetric, Measure, QuantileMetric, RatioMetric
+from increment.estimators import sitewide
+from increment.semantics.loader import load
+from increment.semantics.models import MeanMetric, Measure, Metric, QuantileMetric, RatioMetric
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _make_event_log_table, make_analysis, make_analysis_like
+from tests.analysis_factory import _make_event_log_table
 
 _REVENUE_PER_USER = MeanMetric(
     name="revenue_per_user",
@@ -25,16 +27,36 @@ _REVENUE_PER_USER = MeanMetric(
     fact="purchase",
     aggregation="sum",
 )
-
-
-_REVENUE_PER_USER_PLAN = compile_decision_plan(None, [_REVENUE_PER_USER], path="warehouse")
 _REVENUE_PER_SESSION = RatioMetric(
     name="revenue_per_session",
     entity="user_id",
     numerator=Measure(fact="purchase", aggregation="sum"),
     denominator=Measure(fact="session_end", aggregation="count"),
 )
-_REVENUE_PER_SESSION_PLAN = compile_decision_plan(None, [_REVENUE_PER_SESSION], path="warehouse")
+
+
+def _pricing_experiment(tmp_path, con, metrics: Sequence[Metric] | None = None) -> tuple[Any, Any]:
+    """``pricing_tier_test`` from the example definitions on *con*. Given
+    *metrics* replace same-named catalog entries and become the plan."""
+    payload = load("examples/definitions/").model_dump(mode="json", exclude_unset=True)
+    if metrics is not None:
+        names = {metric.name for metric in metrics}
+        payload["metrics"] = [
+            *(metric for metric in payload["metrics"] if metric["name"] not in names),
+            *(
+                {"type": metric.type, **metric.model_dump(mode="json", exclude_unset=True)}
+                for metric in metrics
+            ),
+        ]
+        for experiment in payload["experiments"]:
+            if experiment["name"] == "pricing_tier_test":
+                experiment["plan"] = {"primary": [metric.name for metric in metrics]}
+    path = tmp_path / "pricing-definitions.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    with warnings.catch_warnings():
+        # Site-volume metrics are unwindowed by construction.
+        warnings.filterwarnings("ignore", message="metric .* has window_days=None")
+        return from_definitions(path, con, experiment_name="pricing_tier_test")
 
 
 def _site_noise_rows() -> list[dict]:
@@ -116,12 +138,10 @@ def _treatment_b_rows() -> list[dict]:
     return rows
 
 
-def _three_arm_analysis(con) -> Analysis:
+def _three_arm_experiment(tmp_path, con) -> tuple[Any, Any]:
     """``pricing_tier_test`` on a three-arm connection, scoped to the one
     sum-type metric these cases read."""
-    a = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
-    a = make_analysis_like(a, [_REVENUE_PER_USER], plan=_REVENUE_PER_USER_PLAN)
-    return a
+    return _pricing_experiment(tmp_path, con, [_REVENUE_PER_USER])
 
 
 @backend_fixture()
@@ -147,26 +167,20 @@ def pricing_three_arm_con():
 
 
 class TestSitewide:
-    """``Analysis.sitewide()`` - native-only whole-window ship-to-all
-    impact, one metric at a time."""
+    """``sitewide()`` - native-only whole-window ship-to-all impact, one
+    metric at a time."""
 
     @pytest.mark.integration
-    def test_sitewide_takes_metric_keyword(self, pricing_site_noise_con):
-        analysis = make_analysis_like(
-            Analysis(
-                "pricing_tier_test",
-                definitions_path="examples/definitions/",
-                con=pricing_site_noise_con,
-            ),
-            [_REVENUE_PER_USER],
-            plan=_REVENUE_PER_USER_PLAN,
+    def test_sitewide_takes_metric_keyword(self, tmp_path, pricing_site_noise_con):
+        experiment, resolver = _pricing_experiment(
+            tmp_path, pricing_site_noise_con, [_REVENUE_PER_USER]
         )
-        positional = analysis.sitewide("revenue_per_user")
-        keyword = analysis.sitewide(metric="revenue_per_user")
+        positional = sitewide(experiment, resolver, "revenue_per_user")
+        keyword = sitewide(experiment, resolver, metric="revenue_per_user")
         assert keyword == positional
 
     @pytest.mark.integration
-    def test_sum_metric_includes_non_exposed_site_noise(self, pricing_site_noise_con):
+    def test_sum_metric_includes_non_exposed_site_noise(self, tmp_path, pricing_site_noise_con):
         """A MeanMetric(aggregation='sum') sitewide() reads the WHOLE
         site's purchase revenue in the window, not just enrolled units'
         own totals - the noise purchase (a unit exposed to nothing)
@@ -179,16 +193,10 @@ class TestSitewide:
         the no-exposure-join behavior differs from a naive exposed-only
         sum.
         """
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
+        experiment, resolver = _pricing_experiment(
+            tmp_path, pricing_site_noise_con, [_REVENUE_PER_USER]
         )
-        # Pin _REVENUE_PER_USER_PLAN so the ad-hoc metric list below does not
-        # re-resolve pricing_tier_test's declared plan against unnamed metrics.
-
-        a = make_analysis_like(a, [_REVENUE_PER_USER], plan=_REVENUE_PER_USER_PLAN)
-        result = a.sitewide("revenue_per_user")
+        result = sitewide(experiment, resolver, "revenue_per_user")
         assert isinstance(result, SitewideImpact)
         assert result.analysis_population == "assigned"
         assert result.n_control == 20
@@ -201,37 +209,31 @@ class TestSitewide:
 
     @pytest.mark.integration
     def test_invalid_alpha_rejected_before_site_volume_query(
-        self, pricing_site_noise_con, monkeypatch
+        self, tmp_path, pricing_site_noise_con, monkeypatch
     ):
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
+        experiment, resolver = _pricing_experiment(
+            tmp_path, pricing_site_noise_con, [_REVENUE_PER_USER]
         )
-        a = make_analysis_like(a, [_REVENUE_PER_USER], plan=_REVENUE_PER_USER_PLAN)
         monkeypatch.setattr(
             pricing_site_noise_con,
             "to_pyarrow",
             lambda *_args, **_kwargs: pytest.fail("invalid alpha reached site-volume query"),
         )
         with pytest.raises(InvalidRequestError) as raised:
-            a.sitewide("revenue_per_user", alpha=0.0)
+            sitewide(experiment, resolver, "revenue_per_user", alpha=0.0)
         assert raised.value.code == "estimation.sitewide.alpha"
 
     @pytest.mark.integration
-    def test_ratio_metric_includes_non_exposed_site_noise(self, pricing_site_noise_con):
+    def test_ratio_metric_includes_non_exposed_site_noise(self, tmp_path, pricing_site_noise_con):
         """An unwindowed ``revenue_per_session`` (purchase-revenue sum /
         session_end count) sums BOTH parts over the whole site: the noise
         unit's purchase and session_end both count. Denominator: 40 exposed
         units' one session each, the noise unit's session_end, and the
         ``u_keepalive`` session_end inside the open-ended window = 42."""
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
+        experiment, resolver = _pricing_experiment(
+            tmp_path, pricing_site_noise_con, [_REVENUE_PER_SESSION]
         )
-        a = make_analysis_like(a, [_REVENUE_PER_SESSION], plan=_REVENUE_PER_SESSION_PLAN)
-        result = a.sitewide("revenue_per_session")
+        result = sitewide(experiment, resolver, "revenue_per_session")
         assert isinstance(result, SitewideRatioImpact)
         assert result.analysis_population == "assigned"
         assert result.n_control == 20
@@ -240,36 +242,36 @@ class TestSitewide:
         assert result.site_total_denominator == pytest.approx(42.0)
 
     @pytest.mark.integration
-    def test_windowed_ratio_refuses_before_evidence(self, pricing_site_noise_con):
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
-        )
+    def test_windowed_ratio_refuses_before_evidence(self, tmp_path, pricing_site_noise_con):
+        experiment, resolver = _pricing_experiment(tmp_path, pricing_site_noise_con)
         with pytest.raises(CapabilityError) as refused:
-            a.sitewide("revenue_per_session")
+            sitewide(experiment, resolver, "revenue_per_session")
         assert refused.value.code == "facade.analysis.sitewide_metric_unaligned"
         assert refused.value.context["window_days"] == (7, 7)
 
     def test_raises_capability_error_on_seam_family(self):
-        """``sitewide()`` needs a native ``Analysis.from_definitions``
-        instance - a MomentSource-backed (``from_unit_summary``)
-        analysis retains no raw event stream to sum site-wide over."""
+        """``sitewide()`` needs a definitions-backed experiment - a unit
+        summary retains no raw event stream to sum site-wide over."""
         import pandas as pd
 
         df = pd.DataFrame(
             {"user_id": ["u1", "u2"], "variant": ["treatment", "control"], "revenue": [1.0, 2.0]}
         )
-        a = Analysis.from_unit_summary(
-            df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+        experiment, resolver = from_frame(
+            df,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"revenue": "mean"},
         )
         with pytest.raises(CapabilityError) as raised:
-            a.sitewide("revenue")
+            sitewide(experiment, resolver, "revenue")
         assert raised.value.code == "evidence.operation_unavailable"
         assert raised.value.context["requested"] == "sitewide_evidence"
 
     @pytest.mark.integration
-    def test_winsorized_metric_refuses_with_its_own_code(self, pricing_site_noise_con):
+    def test_winsorized_metric_refuses_with_its_own_code(self, tmp_path, pricing_site_noise_con):
         winsorized = MeanMetric(
             name="revenue_per_user",
             entity="user_id",
@@ -278,34 +280,22 @@ class TestSitewide:
             window_days=14,
             winsorization={"upper_value": 100.0},
         )
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
-        )
-        a = make_analysis_like(
-            a, [winsorized], plan=compile_decision_plan(None, [winsorized], path="warehouse")
-        )
+        experiment, resolver = _pricing_experiment(tmp_path, pricing_site_noise_con, [winsorized])
         with pytest.raises(CapabilityError) as raised:
-            a.sitewide("revenue_per_user")
+            sitewide(experiment, resolver, "revenue_per_user")
         assert raised.value.code == "facade.analysis.sitewide_winsorized_metric"
         assert raised.value.context["metric"] == "revenue_per_user"
 
     @pytest.mark.integration
     def test_ratio_evidence_without_its_denominator_refuses(
-        self, pricing_site_noise_con, monkeypatch
+        self, tmp_path, pricing_site_noise_con, monkeypatch
     ):
         import dataclasses
 
-        from tests.analysis_factory import _native_source
-
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
+        experiment, resolver = _pricing_experiment(
+            tmp_path, pricing_site_noise_con, [_REVENUE_PER_SESSION]
         )
-        a = make_analysis_like(a, [_REVENUE_PER_SESSION], plan=_REVENUE_PER_SESSION_PLAN)
-        source = _native_source(a)
+        source = resolver.binding.source
         complete = source.sitewide_evidence
         monkeypatch.setattr(
             source,
@@ -315,33 +305,33 @@ class TestSitewide:
             ),
         )
         with pytest.raises(CapabilityError) as raised:
-            a.sitewide("revenue_per_session")
+            sitewide(experiment, resolver, "revenue_per_session")
         assert raised.value.code == "facade.analysis.sitewide_ratio_denominator_missing"
         assert raised.value.context["metric"] == "revenue_per_session"
 
     @pytest.mark.integration
-    def test_unknown_metric_name_raises_value_error(self, con):
+    def test_unknown_metric_name_raises_value_error(self, tmp_path, con):
         """A metric name never declared on this experiment gets a named
         ValueError, not a raw KeyError - mirrors the
         margins=/null_lifts= unknown-metric-key convention elsewhere in
         this file."""
-        a = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
+        experiment, resolver = _pricing_experiment(tmp_path, con)
         with pytest.raises(InvalidRequestError) as raised:
-            a.sitewide("not_a_real_metric")
+            sitewide(experiment, resolver, "not_a_real_metric")
         assert raised.value.code == "facade.analysis.unknown_metric"
 
     @pytest.mark.integration
-    def test_multi_arm_requires_an_explicit_arm(self, pricing_three_arm_con):
+    def test_multi_arm_requires_an_explicit_arm(self, tmp_path, pricing_three_arm_con):
         """With a third enrolled arm, ``sitewide()`` will not pick one for
         you - the refusal names both candidates."""
-        a = _three_arm_analysis(pricing_three_arm_con)
+        experiment, resolver = _three_arm_experiment(tmp_path, pricing_three_arm_con)
         with pytest.raises(InvalidRequestError) as raised:
-            a.sitewide("revenue_per_user")
+            sitewide(experiment, resolver, "revenue_per_user")
         assert raised.value.code == "facade.analysis.sitewide_arm_required"
         assert set(raised.value.context["arms"]) == {"treatment", "treatment_b"}  # ty: ignore[invalid-argument-type]
 
     @pytest.mark.integration
-    def test_multi_arm_baseline_nets_out_every_arm(self, pricing_three_arm_con):
+    def test_multi_arm_baseline_nets_out_every_arm(self, tmp_path, pricing_three_arm_con):
         """The counterfactual baseline must subtract BOTH treatment arms'
         contributions, and the ship-to-all population must count every
         enrolled unit.
@@ -354,8 +344,8 @@ class TestSitewide:
         target arm would leave 583.45, with treatment_b's $20 of lift still
         counted as baseline. N_exp = 20 + 20 + 4 = 44.
         """
-        a = _three_arm_analysis(pricing_three_arm_con)
-        result = a.sitewide("revenue_per_user", arm="treatment")
+        experiment, resolver = _three_arm_experiment(tmp_path, pricing_three_arm_con)
+        result = sitewide(experiment, resolver, "revenue_per_user", arm="treatment")
 
         assert isinstance(result, SitewideImpact)
         assert result.treatment_group == "treatment"
@@ -371,12 +361,12 @@ class TestSitewide:
         assert result.relative_impact == pytest.approx(792.0 / 563.45)
 
     @pytest.mark.integration
-    def test_multi_arm_second_arm_reuses_the_same_baseline(self, pricing_three_arm_con):
+    def test_multi_arm_second_arm_reuses_the_same_baseline(self, tmp_path, pricing_three_arm_con):
         """Scoring ``treatment_b`` answers the same question about a
         different arm: identical all-control baseline, its own lift scaled
         to the same enrolled population."""
-        a = _three_arm_analysis(pricing_three_arm_con)
-        result = a.sitewide("revenue_per_user", arm="treatment_b")
+        experiment, resolver = _three_arm_experiment(tmp_path, pricing_three_arm_con)
+        result = sitewide(experiment, resolver, "revenue_per_user", arm="treatment_b")
 
         assert isinstance(result, SitewideImpact)
         assert result.treatment_group == "treatment_b"
@@ -388,104 +378,98 @@ class TestSitewide:
         assert result.relative_impact == pytest.approx(220.0 / 563.45)
 
     @pytest.mark.integration
-    def test_unknown_arm_raises_value_error(self, pricing_three_arm_con):
+    def test_unknown_arm_raises_value_error(self, tmp_path, pricing_three_arm_con):
         """An arm that is not enrolled (here the control group itself) gets
         a named ValueError listing what is available."""
-        a = _three_arm_analysis(pricing_three_arm_con)
+        experiment, resolver = _three_arm_experiment(tmp_path, pricing_three_arm_con)
         with pytest.raises(InvalidRequestError) as raised:
-            a.sitewide("revenue_per_user", arm="control")
+            sitewide(experiment, resolver, "revenue_per_user", arm="control")
         assert raised.value.code == "facade.analysis.sitewide_arm_not_enrolled"
 
     @pytest.mark.integration
-    def test_naming_the_only_arm_matches_omitting_it(self, pricing_site_noise_con):
-        """Two-arm backward compatibility at the facade: ``arm=`` is
-        optional with one treatment arm, and naming it changes nothing."""
-        a = Analysis(
-            "pricing_tier_test",
-            definitions_path="examples/definitions/",
-            con=pricing_site_noise_con,
+    def test_naming_the_only_arm_matches_omitting_it(self, tmp_path, pricing_site_noise_con):
+        """Two-arm backward compatibility: ``arm=`` is optional with one
+        treatment arm, and naming it changes nothing."""
+        experiment, resolver = _pricing_experiment(
+            tmp_path, pricing_site_noise_con, [_REVENUE_PER_USER]
         )
-        a = make_analysis_like(a, [_REVENUE_PER_USER], plan=_REVENUE_PER_USER_PLAN)
 
-        implicit = a.sitewide("revenue_per_user")
-        explicit = a.sitewide("revenue_per_user", arm="treatment")
+        implicit = sitewide(experiment, resolver, "revenue_per_user")
+        explicit = sitewide(experiment, resolver, "revenue_per_user", arm="treatment")
 
         assert implicit.other_arm_ids == ()
         assert implicit.n_enrolled == 40
         assert explicit == implicit
 
     @pytest.mark.integration
-    def test_retention_metric_capability_error_propagates(self, con):
+    def test_retention_metric_capability_error_propagates(self, tmp_path, con):
         """``d7_retention`` (a declared guardrail on ``pricing_tier_test``)
-        raises ``site_volume``'s own ``CapabilityError`` through the
-        facade, unmodified - a retention outcome is anchored to each
-        unit's own exposure time, not a raw event stream."""
-        a = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
+        raises ``site_volume``'s own ``CapabilityError`` unmodified - a
+        retention outcome is anchored to each unit's own exposure time, not
+        a raw event stream."""
+        experiment, resolver = _pricing_experiment(tmp_path, con)
         with pytest.raises(CapabilityError) as raised:
-            a.sitewide("d7_retention")
+            sitewide(experiment, resolver, "d7_retention")
         assert raised.value.code == "query.builders.site_volume_metric_type"
 
     @pytest.mark.integration
-    def test_quantile_metric_capability_error_propagates(self, con):
+    def test_quantile_metric_capability_error_propagates(self, tmp_path, con):
         """A ``QuantileMetric`` also has no site-wide reading - a
         distributional statistic is not additive across events."""
-        a = Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=con)
         p50_revenue = QuantileMetric(
             name="p50_revenue", entity="user_id", fact="purchase", quantile=0.5
         )
-        a = make_analysis_like(a, [*a.metrics, p50_revenue])
+        experiment, resolver = _pricing_experiment(tmp_path, con, [p50_revenue])
         with pytest.raises(CapabilityError) as raised:
-            a.sitewide("p50_revenue")
+            sitewide(experiment, resolver, "p50_revenue")
         assert raised.value.code == "query.builders.site_volume_metric_type"
 
 
 @pytest.mark.integration
-def test_sitewide_refuses_clustered_retention_before_type_check(con):
+def test_sitewide_refuses_clustered_retention_before_type_check(tmp_path, con):
     """Clustered retention refuses at the cluster-decomposition boundary,
     before the retention type's own site-volume refusal can fire."""
-    from increment.semantics.models import Definitions
-
-    defs = Definitions.model_validate(
-        {
-            "dialect": "duckdb",
-            "fact_sources": [
-                {
-                    "name": "events",
-                    "sql": "SELECT * FROM clustered_retention_events",
-                    "timestamp_column": "ts",
-                    "entities": ["unit_id"],
-                    "facts": [
-                        {"name": "exposure", "column": None},
-                        {"name": "page_view", "column": None},
-                    ],
-                }
-            ],
-            "exposures": [{"name": "enrolled", "fact": "exposure"}],
-            "metrics": [
-                {
-                    "type": "retention",
-                    "name": "d7_retention",
-                    "entity": "unit_id",
-                    "fact": "page_view",
-                    "threshold_days": 7,
-                }
-            ],
-            "experiments": [
-                {
-                    "name": "clustered_retention",
-                    "exposure": "enrolled",
-                    "unit": "unit_id",
-                    "cluster": "site_id",
-                    "start": "2025-03-01",
-                    "end": "2025-03-14",
-                    "control_group": "control",
-                    "plan": {"secondaries": ["d7_retention"]},
-                }
-            ],
-        }
-    )
-    analysis = make_analysis(con, defs)
+    definitions = {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM clustered_retention_events",
+                "timestamp_column": "ts",
+                "entities": ["unit_id"],
+                "facts": [
+                    {"name": "exposure", "column": None},
+                    {"name": "page_view", "column": None},
+                ],
+            }
+        ],
+        "exposures": [{"name": "enrolled", "fact": "exposure"}],
+        "metrics": [
+            {
+                "type": "retention",
+                "name": "d7_retention",
+                "entity": "unit_id",
+                "fact": "page_view",
+                "threshold_days": 7,
+            }
+        ],
+        "experiments": [
+            {
+                "name": "clustered_retention",
+                "exposure": "enrolled",
+                "unit": "unit_id",
+                "cluster": "site_id",
+                "start": "2025-03-01",
+                "end": "2025-03-14",
+                "control_group": "control",
+                "plan": {"secondaries": ["d7_retention"]},
+            }
+        ],
+    }
+    path = tmp_path / "clustered-retention.yaml"
+    path.write_text(yaml.safe_dump(definitions), encoding="utf-8")
+    experiment, resolver = from_definitions(path, con, experiment_name="clustered_retention")
 
     with pytest.raises(CapabilityError) as raised:
-        analysis.sitewide("d7_retention", alpha=0.05)
+        sitewide(experiment, resolver, "d7_retention", alpha=0.05)
     assert raised.value.code == "facade.analysis.sitewide_cluster_metric_type"

@@ -1,12 +1,14 @@
-"""Analysis.sitewide behind one SitewideReadouts object."""
+"""Whole-site impact of an experiment metric, read from the experiment's source."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
+from increment._binding import SourceBinding, binding_for
+from increment._evidence_refusals import INVALID_POPULATION
 from increment._evidence_types import CountsRequest
-from increment._source_admission import _require_analysis_operation
+from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import SitewideEvidenceOperation
 from increment._source_types import declared_evidence
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
@@ -29,8 +31,10 @@ from increment.semantics.models import Metric, RatioMetric
 
 if TYPE_CHECKING:
     from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
+    from increment.kernel.experiment import Experiment
+    from increment.kernel.resolver import Resolver
     from increment.query.native_contract import SitewideEvidence
-    from increment.semantics.models import Experiment
+    from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.sources import _BuiltinMomentSource
 
 _SITEWIDE_WINSORIZED_METRIC = RefusalSpec(
@@ -128,7 +132,9 @@ class SitewideRequest:
 
 
 class SitewideReadouts:
-    def __init__(self, *, src: _BuiltinMomentSource, experiment: Experiment | None) -> None:
+    def __init__(
+        self, *, src: _BuiltinMomentSource, experiment: ExperimentDefinition | None
+    ) -> None:
         self._src = src
         self._experiment = experiment
 
@@ -372,4 +378,95 @@ class SitewideReadouts:
         return self._with_provenance(result, evidence, req.population)
 
 
-__all__ = ["SitewideReadouts", "SitewideRequest"]
+def _sitewide_binding(
+    binding: SourceBinding,
+    metric: str,
+    *,
+    arm: str | None,
+    alpha: float,
+    population: Literal["assigned", "triggered"],
+) -> SitewideImpact | SitewideRatioImpact:
+    if population not in ("assigned", "triggered"):
+        _refuse(INVALID_POPULATION, population=population)
+    definition = getattr(_require_arm_binding(binding, "experiment"), "experiment", None)
+    return SitewideReadouts(src=binding.source, experiment=definition).run(
+        SitewideRequest(metric_name=metric, arm=arm, alpha=alpha, population=population)
+    )
+
+
+def sitewide(
+    experiment: Experiment,
+    resolver: Resolver,
+    metric: str,
+    *,
+    arm: str | None = None,
+    alpha: float = 0.05,
+    population: Literal["assigned", "triggered"] = "assigned",
+) -> SitewideImpact | SitewideRatioImpact:
+    """Whole-site impact of *metric*'s lift to every unit.
+
+    Definitions-backed experiments and adopted artifacts with a published
+    site-volume extension combine enrolled-arm moments with whole-site volume
+    evidence. Both populations require an additive metric aligned with the
+    calendar-window site total: metrics must be unwindowed and use sum or count
+    aggregation. Conversion metrics are refused because their per-unit
+    indicator is not additive across event records; declare a count metric on
+    the conversion fact to read conversion events site-wide.
+    ``population="assigned"`` scales the assignment-window lift to all enrolled
+    units. For a triggered experiment, ``population="triggered"`` scales the
+    trigger-stratum lift to units in finalized trigger membership, while
+    outcomes remain aligned to the experiment's calendar window; it
+    additionally requires a declared experiment end and discloses the
+    conditional membership assumptions on the result.
+
+    One result per call, for one treatment arm - required when more than one
+    non-control arm is enrolled. Every other enrolled arm is netted out of the
+    counterfactual baseline and counted in the ship-to-all population: the
+    number answers "``arm`` shipped to every unit, versus no treatment shipped."
+
+    Parameters
+    ----------
+    experiment : Experiment
+        The experiment returned by a builder such as ``from_definitions``.
+    resolver : Resolver
+        The resolver returned with *experiment*.
+    metric : str
+        Name of a metric declared on this experiment.
+    arm : str | None
+        ``group_id`` of the treatment arm to score.
+    alpha : float
+        Two-sided significance level for both intervals. Default 0.05.
+    population : Literal["assigned", "triggered"]
+        selects assignment membership by default or finalized trigger
+        membership for a triggered experiment. Triggered sitewide impact uses
+        assignment-anchored calendar-window outcomes (not trigger-anchored
+        ``run()`` windows); it is conditional on membership independence from
+        treatment and never-triggered units being unaffected.
+
+    Returns
+    -------
+    SitewideImpact | SitewideRatioImpact
+        ``SitewideRatioImpact`` for a :class:`RatioMetric`, else ``SitewideImpact``.
+
+    Notes
+    -----
+    Raises :class:`CapabilityError` for sources without site volume, windowed
+    or non-additive metrics, triggered impact without a declared experiment
+    end, retention or quantile metrics, designs that are not randomized, and
+    clusters that do not decompose or whose mean cluster sizes differ by more
+    than 20%. Use an unwindowed sum or count metric. Unexposed units in a
+    treated cluster can bias relative impact downward.
+
+    Raises :class:`ValueError` for an undeclared metric, no enrolled arm, an
+    unknown requested arm, or alpha outside the open unit interval.
+    """
+    return _sitewide_binding(
+        binding_for(experiment, resolver),
+        metric,
+        arm=arm,
+        alpha=alpha,
+        population=population,
+    )
+
+
+__all__ = ["SitewideReadouts", "SitewideRequest", "sitewide"]

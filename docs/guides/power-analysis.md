@@ -115,7 +115,7 @@ size, including `power`, `mde_relative`, and `effective_var`.
 | `Baseline.from_summary(summary_stats)` | A pilot variance with its confidence-bound inflation. |
 | `Baseline.from_ratio(...)` | A ratio metric's linearized numerator, denominator, and covariance moments. |
 | `Baseline.from_absorption(mean, var, icc)` | A measured one-way factor absorption reduction. |
-| `analysis.planning_baseline(metric)` | An `Analysis` over a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly. |
+| `increment.workflows.planning_baseline(experiment, resolver, metric)` | The `(experiment, resolver)` pair a builder returns for a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly. |
 
 `Baseline.metric_type` defaults to `"mean"` and is omitted from dumps at that
 default, so existing mean baselines keep their serialized form. Conversion,
@@ -611,8 +611,8 @@ for interpreting the analysis the plan feeds.
 ## Switchback contrasts
 
 Switchback planning uses a `ContrastDecisionProcedure` and a frozen
-`SwitchbackBaseline`, usually `analysis.planning_baseline(metric)` on a pilot
-built by `Analysis.from_switchback_panel(...)`, or
+`SwitchbackBaseline`, usually `planning_baseline(experiment, resolver, metric)`
+on a pilot built by `from_switchback_frame(...)`, or
 `source.planning_baseline(source.metrics[0])` on a source built by
 `increment.frame.from_switchback_panel(...)`; both return the same baseline.
 These approximate functions are exported from both `increment` and

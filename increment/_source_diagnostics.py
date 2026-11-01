@@ -1,14 +1,16 @@
-"""Source-bound integrity and health diagnostics."""
+"""Source-bound integrity, health and planning-baseline reads."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal, cast
 
+from increment._analysis_config import select_metrics
 from increment._binding import SourceBinding, binding_for
 from increment._evidence_refusals import INVALID_POPULATION
 from increment._evidence_types import CountEvidence, CountsRequest
 from increment._health import SrmObservations, check_health, srm_observation_key
+from increment._planning_baseline import planning_baseline as _arm_planning_baseline
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import AllocationHistoryOperation
 from increment._source_types import declared_evidence, is_custom_source
@@ -21,10 +23,14 @@ from increment.readouts._srm import triggered_srm
 if TYPE_CHECKING:
     import pyarrow as pa
 
+    from increment.decision import ContrastContext, ContrastSource
     from increment.estimation.diagnostics import NotApplicable, SRMResult
     from increment.estimation.health import ExperimentHealth
     from increment.kernel.experiment import Experiment
     from increment.kernel.resolver import Resolver
+    from increment.power import Baseline
+    from increment.power.switchback import SwitchbackBaseline
+    from increment.sources import _BuiltinMomentSource
     from increment.switchback import SwitchbackAssignmentDiagnostic
 
 _SWITCHBACK_ONLY = RefusalSpec(
@@ -293,3 +299,59 @@ def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignme
     if binding.state.family != "contrast":
         refuse(_SWITCHBACK_ONLY, method="assignment_diagnostic")
     return binding.source.diagnostics
+
+
+def planning_baseline(
+    experiment: Experiment, resolver: Resolver, metric: str
+) -> Baseline | SwitchbackBaseline:
+    """The planning input a power solver needs, computed from this experiment's data.
+
+    The experiment is a prior or pilot experiment (or an in-flight experiment's
+    pre-treatment data), not the future test being planned. Without one, build
+    a ``Baseline`` directly (``Baseline(mean=, var=)``,
+    ``Baseline.from_proportion``, ``Baseline.from_absorption``,
+    ``Baseline.from_ratio``).
+
+    An arm experiment returns a :class:`~increment.power.Baseline` for
+    ``required_sample_size``/``achieved_power``/``minimum_detectable_effect``.
+    Outcome moments describe the analyzed population: under a declared trigger,
+    the triggered population, with ``trigger_rate`` its observed share of the
+    assigned control arm; with no trigger declared, the assigned population and
+    ``trigger_rate=1.0``. From that population's control arm: mean/var (a ratio
+    metric's linearized moments; a quantile metric returns a
+    ``QuantileBaseline`` over its per-unit control values); cuped_rho, when the
+    metric declares CUPED, as the control arm's variance reduction under the
+    runtime's own CUPED fit; compliance from the arms' uptake difference when
+    the design is Encouragement; and cluster_icc/cluster_size_cv from
+    contributing clusters, with ICC on the analyzed score. avg_cluster_size
+    retains assigned units per randomized cluster; cluster_participation is the
+    pilot fraction of assigned clusters contributing analyzed units.
+
+    A switchback experiment (``from_switchback_frame``) returns the pilot-fitted
+    :class:`~increment.power.switchback.SwitchbackBaseline` for the
+    ``switchback_*`` solvers.
+
+    Refuses by source, naming which, where the source cannot supply what the
+    metric type or declared design needs -- including a declared trigger whose
+    evidence the source does not carry.
+    """
+    return _planning_baseline_binding(binding_for(experiment, resolver), metric)
+
+
+def _planning_baseline_binding(
+    binding: SourceBinding, metric: str
+) -> Baseline | SwitchbackBaseline:
+    source = binding.source
+    if binding.state.family == "contrast":
+        context = cast("ContrastContext", binding.context)
+        spec = select_metrics(context.metrics, [metric], caller="planning_baseline")[0]
+        return cast("ContrastSource", source).planning_baseline(spec)
+    trigger = getattr(getattr(binding, "experiment", None), "trigger", None)
+    if trigger is None and is_custom_source(source):
+        trigger = getattr(binding.context, "trigger_name", None)
+    return _arm_planning_baseline(
+        cast("_BuiltinMomentSource", source),
+        metric,
+        trigger=trigger,
+        trigger_rates=lambda: _trigger_rates_binding(binding),
+    )

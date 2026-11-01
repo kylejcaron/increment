@@ -44,7 +44,6 @@ from increment._day_axis import (
 )
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
 from increment._evidence_refusals import CONTRAST_UNAVAILABLE as _CONTRAST_UNAVAILABLE
-from increment._evidence_refusals import INVALID_POPULATION as _INVALID_POPULATION
 from increment._evidence_types import (
     DayAxisRequest,
     EvidenceScope,
@@ -734,19 +733,10 @@ class Analysis:
         It raises :class:`ValueError` for an undeclared metric, no enrolled
         arm, an unknown requested arm, or alpha outside the open unit interval.
         """
-        if population not in ("assigned", "triggered"):
-            _refuse(_INVALID_POPULATION, population=population)
-        experiment = getattr(self, "_experiment", None)
-        from increment._sitewide import SitewideReadouts, SitewideRequest
+        from increment._sitewide import _sitewide_binding
 
-        return SitewideReadouts(src=self._src, experiment=experiment).run(
-            SitewideRequest(
-                metric_name=metric,
-                arm=arm,
-                alpha=alpha,
-                population=population,
-            )
-        )
+        _ = self._src
+        return _sitewide_binding(self._binding, metric, arm=arm, alpha=alpha, population=population)
 
     def export(self, path: str | Path) -> None:
         """Write this experiment's moments (per-metric ``group_summary``
@@ -931,25 +921,10 @@ class Analysis:
         Refuses by SOURCE, naming which, where the constructor cannot
         supply what the metric type or declared design needs -- including
         a declared trigger whose evidence the source does not carry."""
-        from increment._planning_baseline import planning_baseline
+        from increment._source_diagnostics import _planning_baseline_binding
 
-        if self._state.family == "contrast":
-            context = cast("ContrastContext", self._context)
-            spec = select_metrics(context.metrics, [metric], caller="planning_baseline")[0]
-            return cast("ContrastSource", self._src).planning_baseline(spec)
-        experiment = getattr(self, "_experiment", None)
-        trigger = getattr(experiment, "trigger", None)
-        if trigger is None:
-            from increment._source_types import is_custom_source
-
-            if is_custom_source(self._src):
-                trigger = getattr(self._context, "trigger_name", None)
-        return planning_baseline(
-            cast("_BuiltinMomentSource", self._src),
-            metric,
-            trigger=trigger,
-            trigger_rates=self.trigger_rates,
-        )
+        _ = self._src
+        return _planning_baseline_binding(self._binding, metric)
 
     def capture_sequential(
         self, *, finalized: bool, previous=None, as_of=None, freeze: Sequence[str] = ()

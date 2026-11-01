@@ -22,7 +22,7 @@ import pytest
 from scipy.stats import chi2 as scipy_chi2
 from scipy.stats import norm
 
-from increment import Analysis
+from increment import from_frame
 from increment.errors import CapabilityError, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.arm_contract import AbsoluteDecisionPolicy, ArmPlanningProcedure
 from increment.estimation.armstats import SummaryStats
@@ -4251,22 +4251,27 @@ class TestCodedRefusals:
         assert exc_info.value.context["alpha"] == 1.5
 
 
-def _fixture_analysis_with_control_values(
-    metric_name: str, values: np.ndarray, *, quantile: float
-) -> Analysis:
-    """A dataframe-route Analysis with real per-unit control values for
-    one quantile metric -- the route QuantileBaseline's factory reads."""
+def _pilot_baseline(metric_name: str, values: np.ndarray, *, quantile: float) -> QuantileBaseline:
+    """The planning baseline of a unit-summary pilot with real per-unit
+    control values for one quantile metric -- the route QuantileBaseline's
+    factory reads."""
+    from increment.workflows import planning_baseline
+
     n = values.size
     df = pd.DataFrame(
         {"unit_id": range(1, n + 1), "group_id": ["control"] * n, metric_name: values}
     )
-    return Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="unit_id",
         group="group_id",
         control="control",
         metrics=[{"name": metric_name, "type": "quantile", "quantile": quantile}],
     )
+    baseline = planning_baseline(experiment, resolver, metric_name)
+    assert isinstance(baseline, QuantileBaseline)
+    return baseline
 
 
 def _quantile_baseline(name: str, q: float, values: np.ndarray) -> QuantileBaseline:
@@ -4361,7 +4366,7 @@ class TestDeterministicPlanningSE:
     def test_matches_measured_runtime_se_at_the_candidate_n_through_planning_baseline(self):
         """Quantities computed twice (AGENTS.md): planning's SE at a
         candidate n, from pilots reached through the real
-        Analysis.planning_baseline route, is unbiased for the runtime's own
+        planning_baseline route, is unbiased for the runtime's own
         SE at that n on the same population. A projection from one pilot
         carries that pilot's sampling error, so the mean over K independent
         pilots is compared with the runtime's Monte Carlo mean, within three
@@ -4370,11 +4375,9 @@ class TestDeterministicPlanningSE:
         n_pilots = 12
         planned = np.empty(n_pilots)
         for i in range(n_pilots):
-            analysis = _fixture_analysis_with_control_values(
+            baseline = _pilot_baseline(
                 "checkout_latency_ms", np.round(rng.lognormal(5.0, 0.6, 5000)), quantile=0.5
             )
-            baseline = analysis.planning_baseline("checkout_latency_ms")
-            assert isinstance(baseline, QuantileBaseline)
             planned[i] = _deterministic_quantile_se(
                 np.asarray(baseline._pilot_sorted), q=0.5, alpha=0.05, n_candidate=100000
             )
@@ -4395,11 +4398,7 @@ class TestDeterministicPlanningSE:
         two refusals can never disagree."""
         rng = np.random.default_rng(6)
         pilot_values = np.round(rng.lognormal(5.0, 0.6, 2000))
-        analysis = _fixture_analysis_with_control_values(
-            "checkout_latency_p99_ms", pilot_values, quantile=0.99
-        )
-        baseline = analysis.planning_baseline("checkout_latency_p99_ms")
-        assert isinstance(baseline, QuantileBaseline)
+        _pilot_baseline("checkout_latency_p99_ms", pilot_values, quantile=0.99)
         n_min = _quantile_n_min(0.99, 0.05)
         assert n_min == 368
         with pytest.raises(InvalidRequestError) as exc_info:
@@ -4413,11 +4412,7 @@ class TestDeterministicPlanningSE:
         infeasible."""
         rng = np.random.default_rng(7)
         pilot_values = np.round(rng.lognormal(5.0, 0.6, 2000))
-        analysis = _fixture_analysis_with_control_values(
-            "checkout_latency_p99_ms", pilot_values, quantile=0.99
-        )
-        baseline = analysis.planning_baseline("checkout_latency_p99_ms")
-        assert isinstance(baseline, QuantileBaseline)
+        baseline = _pilot_baseline("checkout_latency_p99_ms", pilot_values, quantile=0.99)
         procedure = make_procedure(
             metric_type="quantile",
             identification="randomized",
