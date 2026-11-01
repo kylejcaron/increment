@@ -600,9 +600,7 @@ experiments:
                 live = Analysis.from_definitions("exp", path, con, store="none")
                 analyses.callback(live.close)
                 before = live.run()[0]
-                context = live._artifact_context(
-                    live._defs, live._experiment, live._on_mixed_assignment
-                )
+                context = live.artifact_context
                 requests = [
                     e.request
                     for e in unit_day_artifact_extension_catalog(context)
@@ -735,9 +733,7 @@ experiments:
             live = Analysis.from_definitions("exp", path, con, store="none")
             cleanup.callback(live.close)
             before = live.run()[0]
-            context = live._artifact_context(
-                live._defs, live._experiment, live._on_mixed_assignment
-            )
+            context = live.artifact_context
             requests = [
                 e.request
                 for e in unit_day_artifact_extension_catalog(context)

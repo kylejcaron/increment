@@ -147,9 +147,7 @@ experiments:
             source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
         )
         cleanup.callback(native.close)
-        context = native._artifact_context(
-            native._defs, native._experiment, native._on_mixed_assignment
-        )
+        context = native.artifact_context
         store = WarehouseArtifactStore(con, schema_name=schema)
         requests = [
             entry.request

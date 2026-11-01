@@ -7,6 +7,7 @@ after the facade is implemented.
 from __future__ import annotations
 
 import math
+import shutil
 import warnings
 from datetime import datetime
 
@@ -14,11 +15,13 @@ import ibis
 import pytest
 
 from increment import Analysis
+from increment.builders import from_definitions
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.plan import compile_decision_plan
+from increment.query import panel_sql, summary_sql
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.loader import load
 from increment.semantics.models import (
@@ -176,6 +179,26 @@ def _union_horizon_analysis(con, defs, *, store, metrics=None):
     return analysis
 
 
+def _sql_pair(
+    con,
+    tmp_path,
+    *,
+    definitions_path="examples/definitions/",
+    experiment_name="new_onboarding_v2",
+    backend=None,
+    store="auto",
+):
+    copied_definitions = tmp_path / f"sql-definitions-{len(list(tmp_path.iterdir()))}"
+    shutil.copytree(definitions_path, copied_definitions)
+    return from_definitions(
+        copied_definitions,
+        con,
+        experiment_name=experiment_name,
+        backend=backend,
+        store=store,
+    )
+
+
 def test_constructor_with_new_experiment_refreshes_the_declared_design_control_group():
     """Building from a new experiment refreshes the declared design control
     group while preserving explicitly pinned designs."""
@@ -239,7 +262,7 @@ def test_constructor_with_new_experiment_refreshes_the_declared_design_control_g
 
 
 @pytest.mark.slow
-def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs):
+def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs, tmp_path):
     """Analysis.run() returns one LiftEstimate per experiment metric.
 
     Validates the full pipeline from definitions through builders to
@@ -282,18 +305,20 @@ def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs):
         assert isinstance(r.require_lift().value, float)
         assert r.group_id in ("control", "treatment")
 
-    # Check SQL introspection
-    panel_sql = analysis.panel_sql()
-    assert isinstance(panel_sql, dict)
+    experiment, resolver = _sql_pair(seeded_pre_period_con, tmp_path, definitions_path=seeded_defs)
+    panel = panel_sql(experiment, resolver)
+    assert isinstance(panel, dict)
     for m in expected_metrics:
-        assert m in panel_sql, f"Missing metric '{m}' in panel_sql"
-        assert isinstance(panel_sql[m], str) and panel_sql[m], f"Empty SQL for {m}"
+        assert m in panel, f"Missing metric '{m}' in panel_sql"
+        assert isinstance(panel[m], str) and panel[m], f"Empty SQL for {m}"
 
-    summary_sql = analysis.summary_sql()
-    assert isinstance(summary_sql, dict)
+    summary = summary_sql(experiment, resolver)
+    assert isinstance(summary, dict)
     for m in expected_metrics:
-        assert m in summary_sql, f"Missing metric '{m}' in summary_sql"
-        assert isinstance(summary_sql[m], str) and summary_sql[m], f"Empty SQL for {m}"
+        assert m in summary, f"Missing metric '{m}' in summary_sql"
+        assert isinstance(summary[m], str) and summary[m], f"Empty SQL for {m}"
+    assert seeded_pre_period_con.sql(panel["purchase_rate"]).execute().shape[0] > 0
+    assert seeded_pre_period_con.sql(summary["purchase_rate"]).execute().shape[0] > 0
 
 
 @pytest.mark.slow
@@ -373,7 +398,7 @@ def test_run_itt_estimand_works_on_native_randomized_path(seeded_defs, seeded_co
 
 
 @pytest.mark.slow
-def test_experiment_analysis_with_ratio_metric(con):
+def test_experiment_analysis_with_ratio_metric(con, tmp_path):
     """Analysis.run() handles a RatioMetric through the facade.
 
     Regression test: RatioMetric has no top-level `.fact` (only
@@ -404,11 +429,11 @@ def test_experiment_analysis_with_ratio_metric(con):
         assert r.require_lift().value == pytest.approx(28.0 / 10.0 - 1.0, rel=1e-12)
         assert r.group_id == "treatment"
 
-    # SQL introspection must also work for the ratio metric
-    panel_sql = analysis.panel_sql()
-    assert "revenue_per_session" in panel_sql
-    summary_sql = analysis.summary_sql()
-    assert "revenue_per_session" in summary_sql
+    experiment, resolver = _sql_pair(con, tmp_path, experiment_name="pricing_tier_test")
+    panel = panel_sql(experiment, resolver)
+    assert "revenue_per_session" in panel
+    summary = summary_sql(experiment, resolver)
+    assert "revenue_per_session" in summary
 
 
 def _analysis_with_ratio_metric_material_censoring(con):
@@ -609,7 +634,9 @@ def test_run_ratio_metric_with_material_censoring_does_not_crash(con):
 
 
 @pytest.mark.slow
-def test_cuped_covariate_is_per_metric_not_metric_zero(con, seeded_pre_period_con, seeded_defs):
+def test_cuped_covariate_is_per_metric_not_metric_zero(
+    con, seeded_pre_period_con, seeded_defs, tmp_path
+):
     """CUPED's pre-period covariate for each metric comes from THAT metric's
     own fact, not the first metric's.
 
@@ -629,14 +656,9 @@ def test_cuped_covariate_is_per_metric_not_metric_zero(con, seeded_pre_period_co
     sum_x.
     """
 
-    analysis = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
-    )
-
-    summary_sql = analysis.summary_sql()
-    df = con.sql(summary_sql["avg_session_duration"]).execute()
+    experiment, resolver = _sql_pair(con, tmp_path)
+    sql = summary_sql(experiment, resolver)
+    df = con.sql(sql["avg_session_duration"]).execute()
     df = df.set_index("group_id")
 
     sum_x = _recovered_sum(df["n"], df["ref_x"], df["cx1"])
@@ -648,6 +670,7 @@ def test_cuped_covariate_is_per_metric_not_metric_zero(con, seeded_pre_period_co
         f"group treatment sum_x should be 450.0 (220+230 from session_end pre-period), "
         f"got {sum_x.loc['treatment']} -- covariate may be sourced from the wrong metric"
     )
+    assert con.sql("select 1").execute().shape == (1, 1)
 
     # The cuped method must be reachable via the public API on data that supports it: runs on the seeded warehouse (with a pre-period) rather than the hand-written fixture, scoped to the two metrics with a genuine nonzero-variance pre-period covariate (d7_retention shares its fact with the exposure definition, so has none).
     scoped = Analysis(
@@ -791,7 +814,7 @@ def test_enrollment_not_empty_when_fact_source_lacks_experiment_id():
 
 
 @pytest.mark.slow
-def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch):
+def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch, tmp_path):
     """With no explicit ``backend=``, the SQL surfaces take their dialect from
     the connection: a BigQuery-named connection gets BigQuery's backtick
     identifier quoting, not the DuckDB fixture connection's double quotes.
@@ -799,17 +822,13 @@ def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch)
     The connection itself stays DuckDB throughout; only its reported name
     changes, which is what the renderer boundary reads.
     """
-    analysis = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
-    )
+    experiment, resolver = _sql_pair(con, tmp_path)
     assert con.name == "duckdb"
 
     expected_keys = {"purchase_rate", "avg_session_duration", "d7_retention"}
 
-    panel_duckdb = analysis.panel_sql()
-    summary_duckdb = analysis.summary_sql()
+    panel_duckdb = panel_sql(experiment, resolver)
+    summary_duckdb = summary_sql(experiment, resolver)
     assert set(panel_duckdb) == expected_keys
     assert set(summary_duckdb) == expected_keys
     duckdb_sql = [*panel_duckdb.values(), *summary_duckdb.values()]
@@ -818,8 +837,8 @@ def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch)
 
     monkeypatch.setattr(con, "name", "bigquery")
 
-    panel_bigquery = analysis.panel_sql()
-    summary_bigquery = analysis.summary_sql()
+    panel_bigquery = panel_sql(experiment, resolver)
+    summary_bigquery = summary_sql(experiment, resolver)
     assert set(panel_bigquery) == expected_keys
     assert set(summary_bigquery) == expected_keys
     bigquery_sql = [*panel_bigquery.values(), *summary_bigquery.values()]
@@ -828,16 +847,10 @@ def test_panel_and_summary_sql_dialect_follows_connection_name(con, monkeypatch)
 
 
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery", "postgres"])
-def test_panel_and_summary_sql_compile_for_advertised_dialects(con, dialect):
-    with Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
-        backend=dialect,
-        store="none",
-    ) as analysis:
-        panel = analysis.panel_sql()
-        summary = analysis.summary_sql()
+def test_panel_and_summary_sql_compile_for_advertised_dialects(con, dialect, tmp_path):
+    experiment, resolver = _sql_pair(con, tmp_path, backend=dialect, store="none")
+    panel = panel_sql(experiment, resolver)
+    summary = summary_sql(experiment, resolver)
     expected = {"purchase_rate", "avg_session_duration", "d7_retention"}
     assert set(panel) == expected
     assert set(summary) == expected
@@ -845,33 +858,26 @@ def test_panel_and_summary_sql_compile_for_advertised_dialects(con, dialect):
 
 
 @pytest.mark.slow
-def test_explicit_backend_overrides_connection_name(con):
+def test_explicit_backend_overrides_connection_name(con, tmp_path):
     """An explicit ``backend=`` constructor argument reaches the SQL renderer:
     the emitted SQL is compiled for that dialect, not the connection's."""
-    analysis = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
-        backend="bigquery",
-    )
+    experiment, resolver = _sql_pair(con, tmp_path, backend="bigquery")
     assert con.name == "duckdb"  # the connection itself is still duckdb
-
-    panel_sql = analysis.panel_sql()
-    summary_sql = analysis.summary_sql()
+    panel = panel_sql(experiment, resolver)
+    summary = summary_sql(experiment, resolver)
 
     expected_keys = {"purchase_rate", "avg_session_duration", "d7_retention"}
-    assert set(panel_sql) == expected_keys
-    assert set(summary_sql) == expected_keys
-    emitted = [*panel_sql.values(), *summary_sql.values()]
+    assert set(panel) == expected_keys
+    assert set(summary) == expected_keys
+    emitted = [*panel.values(), *summary.values()]
     assert all(isinstance(sql, str) and sql for sql in emitted)
     assert all("`" in sql for sql in emitted)  # BigQuery identifier quoting
 
-    default = Analysis(
-        experiment_name="new_onboarding_v2",
-        definitions_path="examples/definitions/",
-        con=con,
-    )
-    duckdb_sql = [*default.panel_sql().values(), *default.summary_sql().values()]
+    default_experiment, default_resolver = _sql_pair(con, tmp_path)
+    duckdb_sql = [
+        *panel_sql(default_experiment, default_resolver).values(),
+        *summary_sql(default_experiment, default_resolver).values(),
+    ]
     assert not any("`" in sql for sql in duckdb_sql)
 
 

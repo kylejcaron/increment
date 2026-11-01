@@ -257,8 +257,23 @@ _shared_publication = pytest.mark.xdist_group("unit_day_artifact_parity")
 
 @pytest.fixture(scope="module")
 def publication():
+    import shutil
+    import tempfile
+
+    from increment import from_definitions
+    from increment.artifacts import publish_unit_day_artifact
+
     connection, definitions, context, store = _native()
-    reference = definitions.publish_unit_day_artifact(store)
+    with tempfile.TemporaryDirectory() as temporary:
+        copied = Path(temporary) / "definitions"
+        shutil.copytree("examples/definitions", copied)
+        experiment, resolver = from_definitions(
+            copied, connection, experiment_name="new_onboarding_v2"
+        )
+        try:
+            reference = publish_unit_day_artifact(experiment, resolver, store)
+        finally:
+            cast(Any, resolver).close()
     try:
         yield connection, definitions, context, store, reference
     finally:

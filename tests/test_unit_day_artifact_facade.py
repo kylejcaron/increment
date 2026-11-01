@@ -326,12 +326,34 @@ def _published(
     with_pre_period: bool = False,
     with_late_returns: bool = False,
 ):
+    import shutil
+    import tempfile
+
+    from increment import from_definitions
+    from increment.artifacts import artifact_context, publish_unit_day_artifact
+
     con, native, context, store = _native(
         definitions=definitions,
         with_pre_period=with_pre_period,
         with_late_returns=with_late_returns,
     )
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
+    source_path = Path(definitions)
+    with tempfile.TemporaryDirectory() as temporary:
+        copied = Path(temporary) / "definitions"
+        if source_path.is_dir():
+            shutil.copytree(source_path, copied)
+        else:
+            copied.mkdir()
+            shutil.copy2(source_path, copied / source_path.name)
+            copied = copied / source_path.name
+        experiment, resolver = from_definitions(copied, con, experiment_name="new_onboarding_v2")
+        try:
+            trusted_context = artifact_context(experiment, resolver)
+            assert trusted_context == context
+            context = trusted_context
+            ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        finally:
+            cast(Any, resolver).close()
     return con, native, context, store, ref
 
 
@@ -601,6 +623,9 @@ def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
     from increment.estimation.engine import Method
 
     _con, native, context, store, ref = _published()
+    with store.open_snapshot(ref) as snapshot:
+        manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+    assert manifest.context == context
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     unadjusted = Method(name="unadjusted")
     native_rows = lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))

@@ -34,8 +34,13 @@ import ibis
 import polars as pl
 import warnings
 
-from increment import Analysis
-from increment.artifacts import SourceSnapshotEvidence, unit_day_artifact_extension_catalog
+from increment import from_definitions, Analysis
+from increment.artifacts import (
+    SourceSnapshotEvidence,
+    artifact_context,
+    publish_unit_day_artifact,
+    unit_day_artifact_extension_catalog,
+)
 from increment.query.session import WarehouseArtifactStore
 from increment.estimators import IncrementWarning
 
@@ -137,27 +142,29 @@ triggered_con = ibis.duckdb.connect()
 triggered_con.create_table("events", triggered_events.to_arrow())
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", IncrementWarning)
-    triggered_analysis = Analysis.from_definitions(
-        "triggered_launch",
+    triggered_experiment, triggered_resolver = from_definitions(
         "triggered-definitions/",
         triggered_con,
+        experiment_name="triggered_launch",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2025, 3, 12, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2025, 3, 12, tzinfo=dt.UTC)},
         ),
     )
 triggered_store = WarehouseArtifactStore(triggered_con, schema_name="sitewide_artifacts")
-triggered_context = triggered_analysis.artifact_context
+triggered_context = artifact_context(triggered_experiment, triggered_resolver)
 triggered_catalog = unit_day_artifact_extension_catalog(triggered_context)
 triggered_requests = [
     entry.request
     for entry in triggered_catalog
     if entry.request.kind in {"site_volume", "trigger_population", "assignment_counts"}
 ]
-triggered_reference = triggered_analysis.publish_unit_day_artifact(
-    triggered_store, extensions=triggered_requests
+triggered_reference = publish_unit_day_artifact(
+    triggered_experiment, triggered_resolver, triggered_store, extensions=triggered_requests
 )
-incomplete_reference = triggered_analysis.publish_unit_day_artifact(
+incomplete_reference = publish_unit_day_artifact(
+    triggered_experiment,
+    triggered_resolver,
     triggered_store,
     extensions=[
         entry.request for entry in triggered_catalog if entry.request.kind == "site_volume"
@@ -456,8 +463,11 @@ try:
 except InvalidRequestError as err:
     print(err.code)
 
-recovered_reference = triggered_analysis.publish_unit_day_artifact(
-    triggered_store, extensions=triggered_requests
+recovered_reference = publish_unit_day_artifact(
+    triggered_experiment,
+    triggered_resolver,
+    triggered_store,
+    extensions=triggered_requests,
 )
 recovered_artifact = Analysis.from_unit_day_artifact(
     triggered_store, recovered_reference, expected_context=triggered_context
@@ -467,7 +477,7 @@ print(recovered.analysis_population, recovered.membership_cutoff)
 incomplete_artifact.close()
 recovered_artifact.close()
 analysis.close()
-triggered_analysis.close()
+triggered_resolver.close()
 ```
 
 ## Worked example

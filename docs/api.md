@@ -35,6 +35,18 @@ The policy covers:
   `increment.artifacts`, `increment.digest`, `increment.estimators`, and
   `increment.evidence`. Existing family namespaces such as `increment.power`
   remain available;
+- `increment.query` promises only `build_panel_for_metric`, `panel_sql`, and
+  `summary_sql`. Each operates on an `(experiment, resolver)` pair; SQL
+  previews preserve their optional-breakout defaults and use adopted SQL as
+  the summary fallback.
+- `increment.workflows` promises only `materialize`, `export_moments`,
+  `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
+  `compiled_decision_plan`, and `available_metrics`. These functions operate on
+  an `(experiment, resolver)` pair; the experiment definition inspection returns
+  the semantic source declaration, not the kernel execution request.
+- `increment.artifacts` promises only `artifact_context` and
+  `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
+  pair, and publication retains trusted extension selection and refresh semantics.
 - result fields and schemas, including row sets, null reasons, and interval
   reference/guarantee labels;
 - stable refusal codes and named context fields;
@@ -226,7 +238,7 @@ construction details and operation limits.
     or register a defensible new protocol.
 
 ??? info "Statistical and wire-format details"
-    **Moments cubes.** `Analysis.export` stamps each row with `moments_format`;
+    **Moments cubes.** `increment.workflows.export_moments(experiment, resolver, path)` stamps each row with `moments_format`;
     `Analysis.from_moments` reads it. Formats vary by writer:
 
     | Format | Written by | Read by `from_moments` |
@@ -442,9 +454,9 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 including excluded units as `"(unassigned)"`. The source must retain total-grain
 counts; day-axis views refuse.
 
-`Analysis.artifact_context` returns the trusted context for a
-definitions-backed analysis. Pass it as `expected_context` when opening an
-artifact published from that analysis.
+`increment.artifacts.artifact_context(experiment, resolver)` returns the trusted
+context for a definitions-backed experiment. Pass it as `expected_context` when
+opening an artifact published from that experiment.
 
 `Analysis.allocation_history(population=...)` returns a PyArrow table with
 `experiment_id`, `analysis_population`, `ds`, `group_id`, `n_daily`, and

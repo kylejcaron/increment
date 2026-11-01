@@ -86,12 +86,15 @@ analysis:
 
 ```python
 import ibis
-from increment import Analysis
+
+from increment import Analysis, from_definitions
+from increment.query import summary_sql
 
 con = ibis.snowflake.connect(...)
 analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
+experiment, resolver = from_definitions("definitions/", con, experiment_name="checkout_redesign")
 
-print(analysis.summary_sql()["revenue"])
+print(summary_sql(experiment, resolver)["revenue"])
 results = analysis.run()
 ```
 

@@ -418,54 +418,103 @@ def test_export_refuses_invalid_provider_counts_before_writing(field, value, mon
 
 @pytest.mark.slow
 def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_path):
-    """export -> parquet -> from_moments reproduces run() exactly.
+    """Source operations export and replay moments without changing numerical answers."""
+    import yaml
 
-    Scoped to purchase_rate (conversion) and avg_session_duration (mean).
-    """
+    from increment import from_definitions, from_moments, run
     from increment.estimation.engine import Method
+    from increment.workflows import export_moments
 
     definitions = load(seeded_defs)
-    experiment = definitions.experiment("new_onboarding_v2")
-    assert experiment is not None
-    design = experiment.resolved_design().model_copy(update={"allocation_scheme": "independent"})
-    a = make_analysis(seeded_con, definitions, experiment=experiment, _design=design, store="auto")
-    baseline = {
-        (e.metric, e.group_id): e.require_lift().value
-        for e in _lift_rows(a.run(decision_method=Method(name="unadjusted")))
-    }
-    assert {"purchase_rate", "avg_session_duration"} <= {m for m, _ in baseline}
-
-    p = tmp_path / "moments.parquet"
-    a.export(p)
-    import pyarrow.parquet as pq
-
-    table = pq.read_table(p)
-    assert table.schema.metadata[b"increment.moments_format"] == b"12"
-    rows = table.to_pylist()
-    assert {r["moments_format"] for r in rows} == {12}
-    assert {r["metric"] for r in rows} == {"purchase_rate", "avg_session_duration", "d7_retention"}
-
-    b = Analysis.from_moments(
-        rows,
-        metrics={"purchase_rate": "conversion", "avg_session_duration": "mean"},
-        design=design,
+    experiment_definition = definitions.experiment("new_onboarding_v2")
+    assert experiment_definition is not None
+    experiment_definition = experiment_definition.model_copy(
+        update={"allocation_scheme": "independent"}
     )
-    from increment.sources import ASSIGNMENT_COUNTS_FIELD
+    definitions = definitions.model_copy(
+        update={
+            "experiments": tuple(
+                experiment_definition if item.name == experiment_definition.name else item
+                for item in definitions.experiments
+            )
+        }
+    )
+    definitions_path = tmp_path / "definitions.yaml"
+    definitions_path.write_text(
+        yaml.safe_dump(definitions.model_dump(mode="json", exclude_unset=True)),
+        encoding="utf-8",
+    )
+    experiment, resolver = from_definitions(
+        definitions_path, seeded_con, experiment_name="new_onboarding_v2", store="auto"
+    )
+    a = make_analysis(
+        seeded_con,
+        definitions,
+        experiment=experiment_definition,
+        _design=experiment_definition.resolved_design(),
+        store="auto",
+    )
+    replay_resolver = None
+    try:
+        baseline = {
+            (row.metric, row.group_id): row.require_lift().value
+            for row in _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+        }
+        assert {"purchase_rate", "avg_session_duration"} <= {m for m, _ in baseline}
 
-    payloads = {r[ASSIGNMENT_COUNTS_FIELD] for r in rows}
-    assert len(payloads) == 1
-    native_srm = a.srm(expected={"control": 0.5, "treatment": 0.5})
-    restored_srm = b.srm(expected={"control": 0.5, "treatment": 0.5})
-    assert isinstance(restored_srm, SRMResult)
-    assert isinstance(native_srm, SRMResult)
-    assert restored_srm.observed == native_srm.observed
-    got = {
-        (e.metric, e.group_id): e.require_lift().value
-        for e in _lift_rows(b.run(decision_method=Method(name="unadjusted")))
-    }
+        path = tmp_path / "moments.parquet"
+        export_moments(experiment, resolver, path)
+        import pyarrow.parquet as pq
 
-    for key in (("purchase_rate", "treatment"), ("avg_session_duration", "treatment")):
-        assert got[key] == pytest.approx(baseline[key], rel=1e-12), key
+        table = pq.read_table(path)
+        assert table.schema.metadata[b"increment.moments_format"] == b"12"
+        rows = table.to_pylist()
+        assert {row["moments_format"] for row in rows} == {12}
+        assert {row["metric"] for row in rows} == {
+            "purchase_rate",
+            "avg_session_duration",
+            "d7_retention",
+        }
+
+        from increment.sources import ASSIGNMENT_COUNTS_FIELD
+
+        payloads = {row[ASSIGNMENT_COUNTS_FIELD] for row in rows}
+        assert len(payloads) == 1
+        legacy_replay = Analysis.from_moments(
+            rows,
+            metrics={"purchase_rate": "conversion", "avg_session_duration": "mean"},
+            design=experiment_definition.resolved_design(),
+        )
+        native_srm = a.srm(expected={"control": 0.5, "treatment": 0.5})
+        restored_srm = legacy_replay.srm(expected={"control": 0.5, "treatment": 0.5})
+        assert isinstance(restored_srm, SRMResult)
+        assert isinstance(native_srm, SRMResult)
+        assert restored_srm.observed == native_srm.observed
+
+        replayed, replay_resolver = from_moments(
+            rows,
+            metrics={"purchase_rate": "conversion", "avg_session_duration": "mean"},
+            design=experiment_definition.resolved_design(),
+        )
+        result = run(
+            replayed,
+            replay_resolver,
+            analysis_options={"decision_method": Method(name="unadjusted")},
+        )
+        got = {
+            (cell.identity.key.metric, cell.identity.key.group_id): effect.point
+            for cell, effect in zip(result.cells, result.effects, strict=True)
+            if effect is not None and effect.point is not None
+        }
+        for key in (("purchase_rate", "treatment"), ("avg_session_duration", "treatment")):
+            assert got[key] == pytest.approx(baseline[key], rel=1e-12), key
+    finally:
+        for active_resolver in (replay_resolver, resolver):
+            if active_resolver is not None:
+                close = getattr(active_resolver, "close", None)
+                if callable(close):
+                    close()
+        a.close()
 
 
 @pytest.mark.integration

@@ -13,7 +13,7 @@ import pytest
 from increment import Analysis
 from increment.errors import CapabilityError
 from increment.semantics.models import Definitions, Winsorization
-from tests.analysis_factory import _recovered_sum, make_analysis, make_analysis_like
+from tests.analysis_factory import _recovered_sum, make_analysis
 
 
 def _analysis_with_country_breakout(con):
@@ -129,13 +129,9 @@ def _analysis_with_country_breakout(con):
     return analysis
 
 
-def _analysis_with_country_factor(con, exposure_groups=None, suffix=""):
-    """Build an ``Analysis`` with one MeanMetric and a single ``country``
-    factor (US/CA, 2 control + 2 treatment units per country) - the
-    ``factor_summaries`` counterpart to ``_analysis_with_country_breakout``:
-    identical synthetic events/definitions shape, but ``factors`` instead
-    of ``breakouts`` on the experiment (same ``Analysis.__new__`` bypass;
-    see that function's docstring)."""
+def _analysis_with_country_factor(
+    con, exposure_groups=None, suffix="", *, return_definitions=False
+):
     table = f"factor_run_events{suffix}"
     experiment = f"factor_run_exp{suffix}"
     if table not in con.list_tables():
@@ -235,6 +231,8 @@ def _analysis_with_country_factor(con, exposure_groups=None, suffix=""):
         }
     )
 
+    if return_definitions:
+        return defs
     analysis = make_analysis(con, defs)
     return analysis
 
@@ -246,55 +244,82 @@ class TestFactorSummaries:
     """
 
     @pytest.mark.integration
-    def test_emits_one_row_per_level_and_arm(self, con):
-        """factor_summaries(con) materialises one ``group_summary`` row per
-        (factor level x arm) for every declared factor - the
-        ``factor_summaries`` counterpart to
-        ``test_run_breakout_returns_per_segment_estimates``, minus the
-        daily table (absorption only ever consumes whole-window moments).
+    def test_emits_one_row_per_level_and_arm(self, con, tmp_path):
+        """The source operation returns exact moments for each factor level and arm."""
+        import yaml
 
-        Pins the actual level set and each cell's ``n``/``sum_y`` against
-        the fixture's real values - a plain row-count check would also
-        pass if a join misfire dumped everything into one ``"__null__"``
-        bin, so this asserts the real per-cell content, not just the
-        shape."""
-        analysis = _analysis_with_country_factor(con)
+        from increment import from_definitions
+        from increment.errors import IncrementWarning
+        from increment.workflows import factor_summaries
 
-        out = analysis.factor_summaries()
+        definitions = _analysis_with_country_factor(con, return_definitions=True)
+        definitions_path = tmp_path / "factor-definitions.yaml"
+        definitions_path.write_text(
+            yaml.safe_dump(definitions.model_dump(mode="json", exclude_unset=True)),
+            encoding="utf-8",
+        )
+        with pytest.warns(IncrementWarning, match="revenue"):
+            experiment, resolver = from_definitions(
+                definitions_path, con, experiment_name="factor_run_exp"
+            )
+        try:
+            out = factor_summaries(experiment, resolver)
 
-        key = "revenue:country:events"
-        assert key in out
-        tbl = out[key].to_pylist()
-        levels = {r["country"] for r in tbl}
-        arms = {r["group_id"] for r in tbl}
-        assert levels == {"US", "CA"}
-        assert arms == {"control", "treatment"}
-        assert len(tbl) == len(levels) * len(arms)
+            key = "revenue:country:events"
+            assert key in out
+            tbl = out[key].to_pylist()
+            levels = {row["country"] for row in tbl}
+            arms = {row["group_id"] for row in tbl}
+            assert levels == {"US", "CA"}
+            assert arms == {"control", "treatment"}
+            assert len(tbl) == len(levels) * len(arms)
 
-        cells = {(r["country"], r["group_id"]): r for r in tbl}
-        expected = {
-            ("US", "control"): (2, 20.0),
-            ("US", "treatment"): (2, 30.0),
-            ("CA", "control"): (2, 40.0),
-            ("CA", "treatment"): (2, 30.0),
-        }
-        for cell_key, (n, sum_y) in expected.items():
-            cell = cells[cell_key]
-            assert cell["n"] == n
-            assert _recovered_sum(cell["n"], cell["ref_y"], cell["cy1"]) == pytest.approx(sum_y)
+            cells = {(row["country"], row["group_id"]): row for row in tbl}
+            expected = {
+                ("US", "control"): (2, 20.0),
+                ("US", "treatment"): (2, 30.0),
+                ("CA", "control"): (2, 40.0),
+                ("CA", "treatment"): (2, 30.0),
+            }
+            for cell_key, (n, sum_y) in expected.items():
+                cell = cells[cell_key]
+                assert cell["n"] == n
+                assert _recovered_sum(cell["n"], cell["ref_y"], cell["cy1"]) == pytest.approx(sum_y)
+        finally:
+            close = getattr(resolver, "close", None)
+            if callable(close):
+                close()
 
     @pytest.mark.integration
-    def test_rejects_percentile_winsorization(self, con):
-        analysis = _analysis_with_country_factor(con)
-        metric = analysis.metrics[0].model_copy(
+    def test_rejects_percentile_winsorization(self, con, tmp_path):
+        import yaml
+
+        from increment import from_definitions
+        from increment.errors import IncrementWarning
+        from increment.workflows import factor_summaries
+
+        definitions = _analysis_with_country_factor(con, return_definitions=True)
+        metric = definitions.metrics[0].model_copy(
             update={"winsorization": Winsorization(upper_percentile=0.9)}
         )
-        replacement = make_analysis_like(analysis, metrics=[metric])
-        analysis.close()
-
-        with pytest.raises(CapabilityError) as raised:
-            replacement.factor_summaries()
-        assert raised.value.code == "evidence.operation_unavailable"
+        definitions = definitions.model_copy(update={"metrics": (metric,)})
+        definitions_path = tmp_path / "factor-definitions.yaml"
+        definitions_path.write_text(
+            yaml.safe_dump(definitions.model_dump(mode="json", exclude_unset=True)),
+            encoding="utf-8",
+        )
+        with pytest.warns(IncrementWarning, match="revenue"):
+            experiment, resolver = from_definitions(
+                definitions_path, con, experiment_name="factor_run_exp"
+            )
+        try:
+            with pytest.raises(CapabilityError) as raised:
+                factor_summaries(experiment, resolver)
+            assert raised.value.code == "evidence.operation_unavailable"
+        finally:
+            close = getattr(resolver, "close", None)
+            if callable(close):
+                close()
 
     @pytest.mark.integration
     def test_returns_empty_dict_without_declared_factors(self, con):
@@ -473,3 +498,53 @@ class TestFactorSummaries:
         assert res.n_levels_used >= 3
         assert res.se > 0
         assert res.lb < res.effect < res.ub
+
+
+@pytest.mark.integration
+def test_workflow_inspection_preserves_source_declarations(seeded_con, seeded_defs):
+    from increment import from_definitions
+    from increment.decision import CompiledDecisionPlan
+    from increment.semantics.loader import load
+    from increment.semantics.models import Experiment as SemanticExperiment
+    from increment.workflows import (
+        available_metrics,
+        compiled_decision_plan,
+        experiment_definition,
+        metrics,
+    )
+
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    definitions = load(seeded_defs)
+    expected_definition = definitions.experiment("new_onboarding_v2")
+    assert expected_definition is not None
+    try:
+        semantic = experiment_definition(experiment, resolver)
+        assert isinstance(semantic, SemanticExperiment)
+        assert semantic == expected_definition
+        assert {metric.name for metric in metrics(experiment, resolver)} == {
+            "purchase_rate",
+            "avg_session_duration",
+            "d7_retention",
+        }
+        assert isinstance(compiled_decision_plan(experiment, resolver), CompiledDecisionPlan)
+
+        declared = {
+            *expected_definition.metric_names,
+            "purchase_rate",
+            "avg_session_duration",
+            "d7_retention",
+        }
+        expected_available = [
+            item.name
+            for item in definitions.metrics
+            if item.name not in declared
+            and item.type not in ("total", "active")
+            and getattr(item, "entity", None) == expected_definition.unit
+        ]
+        assert [item.name for item in available_metrics(experiment, resolver)] == expected_available
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()

@@ -53,19 +53,56 @@ def test_store_always_sees_an_in_place_metric_correction_on_the_next_run():
 
 @pytest.mark.slow
 @pytest.mark.parametrize("store", ["auto", "always"])
-def test_readout_observes_corrections_after_materialization(store):
+def test_readout_observes_corrections_after_materialization(store, tmp_path):
+    import yaml
+
+    from increment import from_definitions, run
+    from increment.errors import IncrementWarning
+    from increment.workflows import materialize
+
     con, defs = _union_horizon_defs()
     metric = defs.metrics[0]
-    try:
-        with _union_horizon_analysis(con, defs, store=store, metrics=[metric]) as analysis:
-            analysis.materialize()
-            con.raw_sql(
-                "UPDATE union_horizon_events SET value = value * 2 "
-                "WHERE event = 'early_event' AND user_id LIKE 't%'"
+    experiment_definition = defs.experiment("union_horizon_exp")
+    assert experiment_definition is not None
+    experiment_definition = experiment_definition.model_copy(
+        update={"plan": AnalysisPlan(secondaries=(metric.name,))}
+    )
+    defs = defs.model_copy(
+        update={
+            "experiments": tuple(
+                experiment_definition if item.name == experiment_definition.name else item
+                for item in defs.experiments
             )
-            after = lift_rows(analysis.run())[0].require_lift().value
-            assert after == pytest.approx(3.0)
+        }
+    )
+    definitions_path = tmp_path / "definitions.yaml"
+    definitions_path.write_text(
+        yaml.safe_dump(defs.model_dump(mode="json", exclude_unset=True)), encoding="utf-8"
+    )
+    with pytest.warns(IncrementWarning, match="early_avg"):
+        experiment, resolver = from_definitions(
+            definitions_path,
+            con,
+            experiment_name="union_horizon_exp",
+            store=store,
+        )
+    try:
+        materialize(experiment, resolver)
+        con.raw_sql(
+            "UPDATE union_horizon_events SET value = value * 2 "
+            "WHERE event = 'early_event' AND user_id LIKE 't%'"
+        )
+        result = run(experiment, resolver)
+        after = {
+            (cell.identity.key.metric, cell.identity.key.group_id): effect.point
+            for cell, effect in zip(result.cells, result.effects, strict=True)
+            if effect is not None and effect.point is not None
+        }
+        assert after[("early_avg", "treatment")] == pytest.approx(3.0)
     finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
         con.disconnect()
 
 
@@ -231,14 +268,42 @@ def test_metrics_sharing_a_measure_keep_their_numeric_answers(seeded_con, seeded
     assert shared_results == pytest.approx(unshared_results)
 
 
-def test_materialize_on_zero_metrics_does_not_crash(con):
-    """An empty metric selection stays empty after explicit materialization."""
-    analysis = Analysis(
-        "pricing_tier_test", definitions_path="examples/definitions/", con=con, store="auto"
-    )
-    analysis = make_analysis_like(analysis, [], plan=AnalysisPlan())
+def test_materialize_on_zero_metrics_does_not_crash(seeded_con, seeded_defs, tmp_path):
+    """An empty source metric selection remains empty after explicit materialization."""
+    import yaml
 
-    assert lift_rows(analysis.materialize().run()) == []
+    from increment import from_definitions, run
+    from increment.semantics.loader import load
+    from increment.workflows import materialize, metrics
+
+    definitions = load(seeded_defs)
+    experiment_definition = definitions.experiment("pricing_tier_test")
+    assert experiment_definition is not None
+    empty_experiment = experiment_definition.model_copy(update={"plan": AnalysisPlan()})
+    definitions = definitions.model_copy(
+        update={
+            "experiments": tuple(
+                empty_experiment if item.name == empty_experiment.name else item
+                for item in definitions.experiments
+            )
+        }
+    )
+    definitions_path = tmp_path / "definitions.yaml"
+    definitions_path.write_text(
+        yaml.safe_dump(definitions.model_dump(mode="json", exclude_unset=True)),
+        encoding="utf-8",
+    )
+    experiment, resolver = from_definitions(
+        definitions_path, seeded_con, experiment_name="pricing_tier_test"
+    )
+    try:
+        assert metrics(experiment, resolver) == []
+        assert materialize(experiment, resolver) is None
+        assert run(experiment, resolver).cells == ()
+    finally:
+        close = getattr(resolver, "close", None)
+        if callable(close):
+            close()
 
 
 def test_temp_name_caps_at_backend_identifier_limit(seeded_con, seeded_defs):
