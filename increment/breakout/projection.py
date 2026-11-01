@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import Any, Literal, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -14,6 +14,10 @@ from increment._literals import Backend, default_frame_backend
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.results import BinomialConfidenceSet, Estimate
 from increment.estimation.sequential_result import SequentialInferenceResult
+
+if TYPE_CHECKING:
+    from increment._interpretation import ReadoutInterpretation
+    from increment.estimation.readout_types import ReadoutMetadata
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -284,6 +288,59 @@ def _append_decision_frame_values(
             data["p_value_reason_code"].append(exc.code)
 
 
+def _estimate_field(model: type[BaseModel]) -> str | None:
+    return next(
+        (
+            name
+            for name, info in model.model_fields.items()
+            if _is_estimate_annotation(info.annotation)
+        ),
+        None,
+    )
+
+
+def _binomial_set_field(model: type[BaseModel]) -> str | None:
+    return next(
+        (
+            name
+            for name, info in model.model_fields.items()
+            if _is_optional_binomial_set(info.annotation)
+        ),
+        None,
+    )
+
+
+def _projection_columns(
+    model: type[BaseModel],
+    estimates: Sequence[BaseModel],
+    estimate_field: str | None,
+    binomial_set_field: str | None,
+) -> tuple[str, ...]:
+    columns = _frame_columns(model, estimate_field, binomial_set_field)
+    if "allocation_alpha" in columns and not any(
+        getattr(estimate, "allocation_alpha", None) is not None for estimate in estimates
+    ):
+        return tuple(name for name in columns if name != "allocation_alpha")
+    return tuple(columns)
+
+
+def projection_columns(model: type[BaseModel], estimates: Sequence[BaseModel]) -> tuple[str, ...]:
+    """Return the typed projection columns of ``estimates`` in canonical order."""
+    return _projection_columns(model, estimates, _estimate_field(model), _binomial_set_field(model))
+
+
+def select_columns(columns: Sequence[str], available: Sequence[str]) -> tuple[str, ...]:
+    """Return requested projection columns in canonical order, refusing unknown names."""
+    requested = tuple(columns)
+    unknown = tuple(name for name in requested if name not in available)
+    if unknown:
+        _refuse("results.frame.unknown_columns", unknown=unknown, available=tuple(available))
+    if not requested:
+        _refuse("results.frame.empty_columns")
+    requested_set = frozenset(requested)
+    return tuple(name for name in available if name in requested_set)
+
+
 def to_frame[M: BaseModel](
     estimates: Sequence[M],
     model: type[M] | None = None,
@@ -344,45 +401,11 @@ def to_frame[M: BaseModel](
     elif model is None:
         _refuse("breakout.to_frame_infer")
 
-    estimate_field = next(
-        (
-            name
-            for name, info in model.model_fields.items()
-            if _is_estimate_annotation(info.annotation)
-        ),
-        None,
-    )
-    binomial_set_field = next(
-        (
-            name
-            for name, info in model.model_fields.items()
-            if _is_optional_binomial_set(info.annotation)
-        ),
-        None,
-    )
-    projection_columns = _frame_columns(model, estimate_field, binomial_set_field)
-    if "allocation_alpha" in projection_columns and not any(
-        getattr(estimate, "allocation_alpha", None) is not None for estimate in estimates
-    ):
-        projection_columns = tuple(
-            name for name in projection_columns if name != "allocation_alpha"
-        )
-    if columns is None:
-        selected = tuple(projection_columns)
-    else:
-        requested = tuple(columns)
-        unknown = tuple(name for name in requested if name not in projection_columns)
-        if unknown:
-            _refuse(
-                "results.frame.unknown_columns",
-                unknown=unknown,
-                available=tuple(projection_columns),
-            )
-        if not requested:
-            _refuse("results.frame.empty_columns")
-        requested_set = frozenset(requested)
-        selected = tuple(name for name in projection_columns if name in requested_set)
-    columns = list(projection_columns)
+    estimate_field = _estimate_field(model)
+    binomial_set_field = _binomial_set_field(model)
+    available = _projection_columns(model, estimates, estimate_field, binomial_set_field)
+    selected = available if columns is None else select_columns(columns, available)
+    columns = list(available)
     data: dict[str, list[Any]] = {name: [] for name in columns}
     _append_estimates_frame_values(
         data,
@@ -511,3 +534,170 @@ def to_frame[M: BaseModel](
             frame[name] = pd.array(data[name], dtype="Float64")
 
     return nw.from_native(frame, eager_only=True).select(selected).to_native()
+
+
+_EVIDENCE_STRING_COLUMNS = frozenset(
+    {
+        "source_snapshot_id",
+        "analysis_population",
+        "integrity_status",
+        "integrity_code",
+        "integrity_context",
+        "roster_source",
+        "posterior_reason_code",
+        "posterior_reason_context",
+        "failure_code",
+        "failure_context",
+        "failure_message",
+        "unavailable_cells",
+        "hidden_cells",
+        "advisories",
+        "multiplicity_status",
+        "retained_family",
+    }
+)
+_EVIDENCE_BOOLEAN_COLUMNS = frozenset(
+    {
+        "decision_scope_complete",
+        "roster_complete",
+        "sampling_available",
+        "point_available",
+        "posterior_available",
+        "view_partial",
+    }
+)
+_EVIDENCE_COUNT_COLUMNS = frozenset(
+    {
+        "required_cell_count",
+        "available_cell_count",
+        "source_cell_count",
+        "unavailable_cell_count",
+        "hidden_cell_count",
+    }
+)
+
+
+def with_readout_evidence(
+    native: IntoDataFrame,
+    rows: Sequence[Any],
+    metadata: ReadoutMetadata | None,
+    *,
+    backend: Backend,
+    interpretation: ReadoutInterpretation | None = None,
+) -> IntoDataFrame:
+    """Append each row's portable qualification columns and the view's partial state.
+
+    ``interpretation`` defaults to the one of ``rows`` alone. A caller projecting part
+    of a larger result passes the whole result's, so the other rows are not hidden.
+    """
+    from increment._interpretation import interpret_readout, readout_evidence_columns
+
+    frame = nw.from_native(native, eager_only=True)
+    if interpretation is None:
+        interpretation = interpret_readout(rows, metadata)
+    evidence = [
+        readout_evidence_columns(
+            interpretation, row, source_snapshot_id=getattr(row, "source_snapshot_id", None)
+        )
+        for row in rows
+    ]
+    if metadata is None:
+        # Without scope metadata the row's own stored availability is the
+        # authority: an unknown value on a prior-bound row stays unknown
+        # rather than being inferred from the presence of a point.
+        for row, row_evidence in zip(rows, evidence, strict=True):
+            stored = getattr(row, "sampling_available", None)
+            if stored is not None or getattr(row, "prior_shrunk", False):
+                row_evidence["sampling_available"] = stored
+    if evidence:
+        evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
+    elif interpretation.groups and interpretation.groups[0].source_cells:
+        group = interpretation.groups[0]
+        empty_evidence = readout_evidence_columns(
+            interpretation,
+            group.source_cells[0].key,
+            source_snapshot_id=group.source_snapshot_id,
+        )
+        evidence_columns = {name: [] for name in empty_evidence}
+    else:
+        evidence_columns = {}
+    if evidence_columns:
+        frame = frame.with_columns(
+            *(
+                nw.new_series(
+                    name,
+                    values,
+                    dtype=(
+                        nw.String()
+                        if name in _EVIDENCE_STRING_COLUMNS
+                        else nw.Boolean()
+                        if name in _EVIDENCE_BOOLEAN_COLUMNS
+                        else nw.Int64()
+                        if name in _EVIDENCE_COUNT_COLUMNS
+                        else None
+                    ),
+                    backend=nw.get_native_namespace(frame),
+                )
+                for name, values in evidence_columns.items()
+            )
+        )
+    partial = None if metadata is None else metadata.partial
+    frame = frame.with_columns(nw.lit(partial).alias("view_partial"))
+    result = cast(Any, frame.to_native())
+    if backend == "pandas":
+        import pandas as pd
+
+        for name in _EVIDENCE_BOOLEAN_COLUMNS:
+            if name in evidence_columns:
+                result[name] = pd.array(evidence_columns[name], dtype="boolean")
+        result["view_partial"] = pd.array([partial] * len(result), dtype="boolean")
+    return result
+
+
+def result_frame(
+    groups: Sequence[tuple[type[BaseModel], Sequence[Any]]],
+    metadata: ReadoutMetadata | None,
+    *,
+    backend: Backend,
+    columns: Sequence[str] | None = None,
+) -> IntoDataFrame:
+    """Project one result's consecutive same-model row groups as one native frame.
+
+    Each group keeps its collection's typed projection; one interpretation of every
+    row supplies the qualification columns. Groups of different models share their
+    common columns, and a column one model lacks is null on the other's rows.
+    ``columns`` selects typed projection columns, as ``to_frame`` does.
+    """
+    from increment._interpretation import interpret_readout
+    from increment.estimation.contrast_results import (
+        CONTRAST_FRAME_COLUMNS,
+        ContrastResult,
+        ContrastResults,
+    )
+
+    interpretation = interpret_readout([row for _, rows in groups for row in rows], metadata)
+    frames = []
+    available: dict[str, None] = {}
+    for model, rows in groups:
+        if model is ContrastResult:
+            native = ContrastResults(rows, metadata=metadata).to_frame(backend=backend)
+            typed = CONTRAST_FRAME_COLUMNS
+        else:
+            typed = projection_columns(model, rows)
+            native = with_readout_evidence(
+                to_frame(rows, model=model, backend=backend),
+                rows,
+                metadata,
+                backend=backend,
+                interpretation=interpretation,
+            )
+        available.update(dict.fromkeys(typed))
+        frames.append(nw.from_native(native, eager_only=True))
+    frame = frames[0] if len(frames) == 1 else nw.concat(frames, how="diagonal")
+    if columns is None:
+        return frame.to_native()
+    selected = [*select_columns(columns, tuple(available)), "view_partial"]
+    native = cast(Any, frame.to_native())
+    if backend == "pandas":
+        return native.loc[:, selected]
+    return frame.select(selected).to_native()

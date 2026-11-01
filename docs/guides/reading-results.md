@@ -2,16 +2,29 @@
 
 `Analysis.run()` returns one of two legacy result families. The recommended
 `run(experiment, resolver)` builder route returns a `RunResult`: inspect its
-`cells`, `effects`, and `decisions`, or pass it to `render` to retain scope,
-integrity, and availability qualifications. The table and export examples below
-describe the legacy collection APIs; bridge a builder result to them with its
-cells and run metadata:
+`cells`, `effects`, and `decisions`, or pass it to `render` or `readout_table`
+to retain scope, integrity, and availability qualifications. Its other
+consumers each keep one format:
+
+| Need | Read | Format |
+|---|---|---|
+| The full result collection one view produced | `result.readout(scope)` | The `LiftEstimates`, `BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues` or `ContrastResults` described below, with every row field and live confidence set. `model_dump_json()` writes its full-row JSON. |
+| One frame of every result row | `result.to_frame()` | Each row's collection `to_frame` columns, with qualification columns that describe the whole run. |
+| Portable cells to exchange or archive | `result.envelope.to_payload()` or `.to_arrow()` | Versioned result cells and run metadata; no raw outcomes. |
+| A saved run to decide again | `results_store=` on `run`, then `RunResult.from_handle` | The stored run's cells and decision plan. |
+
+`readout()` without a scope is valid only when the run executed one view. With
+several views, pass one of the experiment's scopes; omitting it refuses with
+`results.readout.scope_required`, and a scope the run did not execute refuses
+with `results.readout.scope_unknown`. A result restored by
+`RunResult.from_handle` or a pickle keeps its portable cells only, so
+`readout()` refuses with `results.readout.not_retained`; its `to_frame()`,
+`render` and `readout_table` still read the saved cells.
 
 ```python
 import polars as pl
 
 from increment import AnalysisPlan, Randomized, from_frame, run
-from increment.result_envelope import AnalysisEnvelope
 from increment.tables import readout_table
 
 frame = pl.DataFrame(
@@ -35,9 +48,15 @@ experiment, resolver = from_frame(
     plan=AnalysisPlan(primary="value"),
 )
 result = run(experiment, resolver)
-envelope = AnalysisEnvelope(result.cells, result.run.metadata)
-table = readout_table(envelope)
+table = readout_table(result)
+summary = result.to_frame(backend="polars", columns=["metric", "group_id", "lift", "lb", "ub"])
+rows = result.readout()
+saved_rows = rows.model_dump_json()
 ```
+
+A table compares rows of one view, so table each view of a several-view run
+with `readout_table(result.readout(scope))`. A frame of several views shares
+their common columns; a column one row type lacks is null on the other rows.
 
 Only whole-window `run` scopes, including the switchback contrast view, are
 evaluated against the registered decision plan. Daily, as-of, breakout,
@@ -138,13 +157,16 @@ multiplicity family status. Nested disclosures are canonical JSON strings;
 numeric nulls remain numeric nulls. These fields retain source and population
 attribution across flattened and concatenated results.
 
-`readout_table(collection)` retains collection qualifications in its header.
-The zero-visible-row view is a deliberate exception to tables' usual reliance
-on displayed row qualifications: it still renders retained scope and integrity
-for a scoped collection, while row-only empty input reports that scope and
-integrity are unknown. Export the collection's JSON (`model_dump_json()`) when
-you need to preserve the empty view's complete scope evidence; a zero-row
-frame/table has no row on which to store attribution.
+`readout_table(collection)` and `readout_table(result)` retain collection or run
+qualifications in their header. The zero-visible-row view is a deliberate
+exception to tables' usual reliance on displayed row qualifications: it still
+renders retained scope and integrity for a scoped collection, and its
+`to_frame()` keeps the qualification columns with no rows. Row-only empty input
+reports that scope and integrity are unknown, as does a run whose metric
+selection was empty: that run has no retained scope, its `to_frame()` has only
+the row columns, and it cannot be saved. Export the collection's JSON
+(`model_dump_json()`) when you need to preserve the empty view's complete scope
+evidence; a zero-row frame/table has no row on which to store attribution.
 
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the
@@ -182,7 +204,8 @@ confidence-set geometry available for display, while its portable cells
 intentionally omit raw-outcome inference state. Sampling decisions remain
 unavailable for these experimental estimates. Saving or serializing such a
 live result refuses rather than dropping the set or exposing its raw outcomes;
-use `Analysis.run()` when a legacy full-row JSON result is required.
+`result.readout().model_dump_json()` writes the full-row JSON, including the
+confidence set and the raw outcomes it depends on, when that is required.
 
 When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
 assigned and triggered results as separate rows. Pass `population="assigned"` or

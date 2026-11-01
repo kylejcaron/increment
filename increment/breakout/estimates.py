@@ -1165,7 +1165,7 @@ class EstimateList[M: BaseModel](list[M]):
         """Convert this list to a native frame; defaulting to its input backend."""
         backend = default_frame_backend(backend or getattr(self, "_default_backend", None))
 
-        from increment.breakout.projection import to_frame
+        from increment.breakout.projection import to_frame, with_readout_evidence
 
         selected_columns: Sequence[str] | None
         if columns == "summary":
@@ -1193,103 +1193,7 @@ class EstimateList[M: BaseModel](list[M]):
                     dtype="boolean",
                 )
             return result
-        frame = nw.from_native(native, eager_only=True)
-        from increment._interpretation import interpret_readout, readout_evidence_columns
-
-        interpretation = interpret_readout(self, self.metadata)
-        evidence = [
-            readout_evidence_columns(
-                interpretation, row, source_snapshot_id=getattr(row, "source_snapshot_id", None)
-            )
-            for row in self
-        ]
-        if self.metadata is None:
-            # Without scope metadata the row's own stored availability is the
-            # authority: an unknown value on a prior-bound row stays unknown
-            # rather than being inferred from the presence of a point.
-            for row, row_evidence in zip(self, evidence, strict=True):
-                stored = getattr(row, "sampling_available", None)
-                if stored is not None or getattr(row, "prior_shrunk", False):
-                    row_evidence["sampling_available"] = stored
-        if evidence:
-            evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
-        elif interpretation.groups and interpretation.groups[0].source_cells:
-            group = interpretation.groups[0]
-            empty_evidence = readout_evidence_columns(
-                interpretation,
-                group.source_cells[0].key,
-                source_snapshot_id=group.source_snapshot_id,
-            )
-            evidence_columns = {name: [] for name in empty_evidence}
-        else:
-            evidence_columns = {}
-        string_columns = {
-            "source_snapshot_id",
-            "analysis_population",
-            "integrity_status",
-            "integrity_code",
-            "integrity_context",
-            "roster_source",
-            "posterior_reason_code",
-            "posterior_reason_context",
-            "failure_code",
-            "failure_context",
-            "failure_message",
-            "unavailable_cells",
-            "hidden_cells",
-            "advisories",
-            "multiplicity_status",
-            "retained_family",
-        }
-        boolean_columns = {
-            "decision_scope_complete",
-            "roster_complete",
-            "sampling_available",
-            "point_available",
-            "posterior_available",
-            "view_partial",
-        }
-        count_columns = {
-            "required_cell_count",
-            "available_cell_count",
-            "source_cell_count",
-            "unavailable_cell_count",
-            "hidden_cell_count",
-        }
-        if evidence_columns:
-            frame = frame.with_columns(
-                *(
-                    nw.new_series(
-                        name,
-                        values,
-                        dtype=(
-                            nw.String()
-                            if name in string_columns
-                            else nw.Boolean()
-                            if name in boolean_columns
-                            else nw.Int64()
-                            if name in count_columns
-                            else None
-                        ),
-                        backend=nw.get_native_namespace(frame),
-                    )
-                    for name, values in evidence_columns.items()
-                )
-            )
-        frame = frame.with_columns(
-            nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
-        )
-        native = cast(Any, frame.to_native())
-        if backend == "pandas":
-            import pandas as pd
-
-            for name in boolean_columns:
-                if name in evidence_columns:
-                    native[name] = pd.array(evidence_columns[name], dtype="boolean")
-            native["view_partial"] = pd.array(
-                [None if self.metadata is None else self.metadata.partial] * len(native),
-                dtype="boolean",
-            )
+        native = cast(Any, with_readout_evidence(native, self, self.metadata, backend=backend))
         if selected_columns is not None:
             selected = [*selected_columns, "view_partial"]
             if backend == "pandas":

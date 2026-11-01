@@ -206,8 +206,9 @@ checks the experiment's hash-only `Registration` and portable compiled plan
 before reading any data, then creates a validated `Run` from the resulting
 cells. Passing a `ResultsStore` persists and reopens that pinned run before
 final verdicts are computed; without a store, the same evaluator uses the
-validated in-memory run. `RunResult` exposes the cells, effect projections, and
-final decisions, and `RunResult.from_handle(handle, registration=...)` decides a
+validated in-memory run. `RunResult` exposes the cells, effect projections,
+final decisions and, through `readout(scope)`, each view's full result rows with
+their family fields; `RunResult.from_handle(handle, registration=...)` decides a
 saved run again from its pinned cells. The legacy
 `run(analysis, registration, compiled_plan, ...)` form validates the supplied
 plan before calling `Analysis.run()`. Existing `Analysis.run()` return types

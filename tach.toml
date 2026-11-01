@@ -675,7 +675,7 @@ depends_on = ["increment._literals", "increment.estimation"]
 [[modules]]
 path = "increment.breakout.projection"
 layer = "core"
-depends_on = ["increment._canonical", "increment._literals", "increment.errors", "increment.estimation", "increment.estimation.sequential_result"]
+depends_on = ["increment._canonical", "increment._interpretation", "increment._literals", "increment.errors", "increment.estimation", "increment.estimation.sequential_result"]
 
 [[modules]]
 path = "increment.breakout.estimates"
@@ -1175,7 +1175,7 @@ expose = ["ArrayPsiFn", "PsiFn", "ScoreDesign"]
 
 [[interfaces]]
 from = ["increment.breakout.projection"]
-expose = ["to_frame"]
+expose = ["to_frame", "with_readout_evidence", "result_frame"]
 
 [[interfaces]]
 from = ["increment._literals"]
@@ -1361,6 +1361,8 @@ depends_on = [
   "increment._analysis_config",
   "increment._binding",
   "increment._canonical",
+  "increment._literals",
+  "increment.breakout.projection",
   "increment._exploratory",
   "increment._interpretation",
   "increment._runnability",

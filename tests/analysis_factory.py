@@ -51,13 +51,6 @@ def facade_binding(analysis: Analysis) -> Any:
     return binding
 
 
-def run_rows(resolver: Any, **options: Any) -> Any:
-    """``Analysis.run`` row objects over a builder resolver's source binding."""
-    analysis = Analysis.__new__(Analysis)
-    analysis._binding = resolver.binding
-    return analysis.run(**options)
-
-
 def replace_analysis_source(analysis: Analysis, source: object) -> None:
     """Install a counting source in a fixture's immutable construction state."""
     object.__setattr__(analysis._state, "source", source)
