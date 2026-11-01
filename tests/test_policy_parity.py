@@ -245,7 +245,7 @@ def test_confirmatory_consumers_delegate_alpha_composition():
     offenders: list[str] = []
     sources = [
         *sorted((root / "increment" / "readouts").glob("*.py")),
-        root / "increment/analysis.py",
+        root / "increment/_run.py",
     ]
     for path in sources:
         relative = path.relative_to(root).as_posix()
