@@ -790,7 +790,6 @@ depends_on = [
   "increment._run",
   "increment._runnability",
   "increment._source_admission",
-  "increment._source_sequential",
   "increment._source_types",
   "increment.breakout.estimates",
   "increment.decision",
@@ -859,10 +858,8 @@ layer = "core"
 depends_on = [
   "increment._binding",
   "increment._evidence_types",
-  "increment._source_types",
   "increment.readouts",
   "increment.readouts._execution_context",
-  "increment.sequential_source",
 ]
 
 [[modules]]
@@ -880,7 +877,7 @@ depends_on = [
   "increment.evidence",
   "increment._execute", "increment._exploratory", "increment._source_resolver",
   "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_sequential", "increment._source_workflows",
+  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_workflows",
   "increment.readouts._line2", "increment.readouts._execution_context",
   "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",

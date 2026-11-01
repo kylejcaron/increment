@@ -38,7 +38,6 @@ increment._source_admission
 increment._source_identity
 increment._source_operations
 increment._source_resolver
-increment._source_sequential
 increment._source_types
 increment._source_workflows
 increment._study

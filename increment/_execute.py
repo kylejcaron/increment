@@ -31,12 +31,12 @@ from increment._source_admission import (
     _require_analysis_operation,
     _require_arm_binding,
 )
-from increment._source_sequential import _capture_sequential_binding
 from increment._source_types import is_custom_source
 from increment.decision import ContrastAnalysisState
 from increment.errors import refuse
 from increment.estimation.engine import Method
 from increment.estimation.readout_types import ScopedReadout
+from increment.readouts._evidence import retained_sequential_capture
 from increment.readouts._execution_context import (
     current_execution_context,
     execution_context_scope,
@@ -481,7 +481,7 @@ def _capture_sequential(
     request = SequentialCaptureRequest(
         finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
     )
-    _capture_sequential_binding(binding, request, current_execution_context())
+    retained_sequential_capture(binding.source, request, current_execution_context())
 
 
 def _contrast_request(operation: str, options: Mapping[str, Any]) -> None:

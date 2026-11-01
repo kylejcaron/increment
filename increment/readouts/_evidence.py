@@ -711,6 +711,46 @@ def loader_snapshot(
     return source_snapshot(src, previous=previous)
 
 
+def _read_retained(
+    src: Any,
+    execution_context: Any | None,
+    read: Callable[[Any], SequentialCapture],
+) -> SequentialCapture:
+    """Read the source directly, or through a run's borrowed scope and retain the result."""
+    if execution_context is None:
+        return read(src)
+    execution_context.validate_request(src, tuple(src.context.metrics), tuple(src.context.configs))
+    with execution_context.borrow() as scoped:
+        snapshot = read(scoped if is_custom_source(src) else _builtin_source(scoped))
+    if is_custom_source(src):
+        return snapshot
+    from increment.sequential_source import adopt_source_snapshot
+
+    return adopt_source_snapshot(src, snapshot)
+
+
+def retained_sequential_capture(
+    src: Any, request: SequentialCaptureRequest, execution_context: Any | None = None
+) -> SequentialCapture:
+    """Capture a finalized prefix, borrowing an active run's capture when one is given."""
+    return _read_retained(
+        src, execution_context, lambda source: load_sequential_capture(source, request)
+    )
+
+
+def retained_sequential_snapshot(
+    src: Any,
+    previous: SequentialCapture | None = None,
+    execution_context: Any | None = None,
+) -> SequentialCapture:
+    """The current exact checkpoint, borrowing an active run's capture when one is given."""
+    return _read_retained(
+        src,
+        execution_context,
+        lambda source: current_source_snapshot(source, previous=previous),
+    )
+
+
 def _scope_owner(src: Any) -> Any:
     """Return the provider whose entered scope yielded ``src``, following nested scopes."""
     owner = src._snapshot_provider if isinstance(src, _BreakoutScopedProvider) else src

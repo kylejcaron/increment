@@ -783,18 +783,22 @@ class Analysis:
         results can reveal future triggered outcomes, including the same
         metric, and must not inform those decisions.
         """
-        from increment._source_sequential import _capture_sequential_binding
+        from increment.readouts._evidence import retained_sequential_capture
 
         request = SequentialCaptureRequest(
             finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
         )
-        return _capture_sequential_binding(self._binding, request, _current_execution_context())
+        return retained_sequential_capture(
+            self._binding.source, request, _current_execution_context()
+        )
 
     def sequential_snapshot(self, *, previous=None):
         """Retrieve a current exact checkpoint, optionally proving its parent."""
-        from increment._source_sequential import _sequential_snapshot_binding
+        from increment.readouts._evidence import retained_sequential_snapshot
 
-        return _sequential_snapshot_binding(self._binding, previous, _current_execution_context())
+        return retained_sequential_snapshot(
+            self._binding.source, previous, _current_execution_context()
+        )
 
     def __repr__(self) -> str:
         study = getattr(self._state, "study", None)
