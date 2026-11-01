@@ -124,7 +124,7 @@ def main(*, core_only: bool = True) -> None:
 
     import pyarrow as pa
 
-    from increment import Analysis
+    from increment import from_frame, run
     from increment.tables import estimates_to_readout
 
     data = pa.table(
@@ -134,13 +134,15 @@ def main(*, core_only: bool = True) -> None:
             "converted": [0] * 100 + [1] * 40 + [0] * 60,
         }
     )
-    estimates = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics={"converted": "conversion"},
-    ).run()
+    )
+    estimates = run(experiment, resolver).readout()
     (row,) = estimates_to_readout(estimates)
     assert row["lift"] is None and row["lower"] > 0
     assert row["higher"] is None and row["stat_sig"] is True
@@ -158,7 +160,7 @@ def _check_readme_mean_example() -> None:
 
     import polars as pl
 
-    from increment import Analysis
+    from increment import from_frame, run
     from increment.estimation.results import LiftEstimate
 
     rng = Random(0)
@@ -169,13 +171,15 @@ def _check_readme_mean_example() -> None:
             "revenue": [rng.gauss(20 + (i >= 100), 5) for i in range(200)],
         }
     )
-    results = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
-    ).run()
+    )
+    results = run(experiment, resolver).readout()
     if len(results) != 1:
         raise SystemExit("README mean-analysis example did not produce one result")
     result = results[0]
