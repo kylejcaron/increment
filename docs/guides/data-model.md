@@ -808,7 +808,7 @@ publication time, and experiment end are not completeness proofs.
     bound to the same pinned cutoff.
 
     A percentile-winsorized metric's own snapshot, every artifact publish's
-    snapshot, and `dashboard_snapshot`/sequential capture's own pinned read
+    snapshot, and `prepare_dashboard`/sequential capture's own pinned read
     scope each captured fact/dimension source to the experiment's enrolled
     units and, for sources whose rows are bounded by the analysis window, to
     `start - (n_pre_periods + 1)` days onward. No upper time bound is pushed,

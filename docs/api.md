@@ -587,7 +587,7 @@ declared names refuse before querying with
 `facade.analysis_config.exploratory_metric_unavailable`. Other sources refuse
 with `facade.analysis.exploratory_metrics_source_limited`; registered
 sequential plans refuse with `facade.analysis.exploratory_metrics_sequential`.
-Pass added metrics in `metrics=` to pin them in `Analysis.dashboard_snapshot`.
+`prepare_dashboard` reads every offered added metric in the same pinned snapshot as the headline.
 
 ::: increment.Metric
 

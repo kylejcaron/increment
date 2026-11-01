@@ -4,8 +4,12 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any, cast
 
 import pytest
+
+from increment.workflows import capture_sequential
+from tests.analysis_factory import bound_analysis
 
 pytestmark = pytest.mark.slow
 
@@ -24,7 +28,7 @@ def _native_groups(
     import ibis
     import pyarrow as pa
 
-    from increment import Analysis
+    from increment import from_definitions
     from increment.semantics.models import Definitions
 
     common = {"entity": "unit_id", "preferred_direction": "increase"}
@@ -177,25 +181,24 @@ def _native_groups(
     with TemporaryDirectory() as directory:
         path = Path(directory) / "definitions.yaml"
         path.write_text(definitions.model_dump_json())
-        analysis = Analysis.from_definitions("groups", path, connection)
+        experiment, resolver = from_definitions(path, connection, experiment_name="groups")
         try:
-            yield connection, analysis
+            yield connection, experiment, resolver
         finally:
-            analysis.close()
+            cast(Any, resolver).close()
             connection.disconnect()
 
 
-def _capture(analysis, *names):
-    metrics = [metric for metric in analysis.metrics if not names or metric.name in names]
-    return {
-        (row.metric, row.group_id): row for row in analysis.dashboard_group_data(metrics=metrics)
-    }
+def _capture(resolver, *names):
+    live = bound_analysis(resolver)
+    metrics = [metric for metric in live.metrics if not names or metric.name in names]
+    return {(row.metric, row.group_id): row for row in live.dashboard_group_data(metrics=metrics)}
 
 
 def test_running_source_without_observations_explains_missing_cutoff():
-    with _native_groups(metric_names=("mean",)) as (connection, analysis):
+    with _native_groups(metric_names=("mean",)) as (connection, experiment, resolver):
         connection.raw_sql("DELETE FROM events")
-        rows = _capture(analysis, "mean")
+        rows = _capture(resolver, "mean")
     assert {
         (row.group_id, row.assigned_units, row.eligible_units, row.observation_end)
         for row in rows.values()
@@ -246,8 +249,8 @@ def test_group_quantiles_preserve_linear_interpolation_through_backend_compilers
 def test_native_group_values_match_independent_five_kind_oracle():
     import numpy as np
 
-    with _native_groups() as (_, analysis):
-        rows = _capture(analysis)
+    with _native_groups() as (_, experiment, resolver):
+        rows = _capture(resolver)
     for group, shift in (("baseline", 0), ("candidate", 2)):
         values = np.tile([0, 2, 6, 10], 4) + shift
         denominators = np.tile([1, 2, 3, 4], 4)
@@ -283,8 +286,8 @@ def test_native_group_values_match_independent_five_kind_oracle():
 
 
 def test_maturity_and_absent_observation_exclusions_are_disjoint():
-    with _native_groups(extra_exclusions=True) as (_, analysis):
-        row = _capture(analysis, "retention")["retention", "baseline"]
+    with _native_groups(extra_exclusions=True) as (_, experiment, resolver):
+        row = _capture(resolver, "retention")["retention", "baseline"]
     assert (row.assigned_units, row.eligible_units) == (18, 16)
     assert (row.excluded_not_mature, row.excluded_no_observed_day, row.excluded_other) == (1, 1, 0)
     assert row.retained_units == 8
@@ -292,8 +295,8 @@ def test_maturity_and_absent_observation_exclusions_are_disjoint():
 
 
 def test_fully_immature_arm_keeps_accounting_and_null_value():
-    with _native_groups(late_treatment=True) as (_, analysis):
-        row = _capture(analysis, "retention")["retention", "candidate"]
+    with _native_groups(late_treatment=True) as (_, experiment, resolver):
+        row = _capture(resolver, "retention")["retention", "candidate"]
     assert row.assigned_units == row.excluded_not_mature == 16
     assert row.eligible_units == row.retained_units == row.event_count == 0
     assert row.excluded_no_observed_day == row.excluded_other == 0
@@ -302,8 +305,8 @@ def test_fully_immature_arm_keeps_accounting_and_null_value():
 
 
 def test_ratio_events_follow_joint_denominator_eligibility():
-    with _native_groups(denominator_average=True) as (_, analysis):
-        row = _capture(analysis, "ratio")["ratio", "candidate"]
+    with _native_groups(denominator_average=True) as (_, experiment, resolver):
+        row = _capture(resolver, "ratio")["ratio", "candidate"]
     assert (row.assigned_units, row.eligible_units, row.excluded_other) == (16, 12, 4)
     assert row.event_count == 12
     assert row.numerator == 96
@@ -312,15 +315,15 @@ def test_ratio_events_follow_joint_denominator_eligibility():
 
 
 def test_raw_group_values_precede_winsorization():
-    with _native_groups(winsor=True) as (_, analysis):
-        row = _capture(analysis, "mean")["mean", "candidate"]
+    with _native_groups(winsor=True) as (_, experiment, resolver):
+        row = _capture(resolver, "mean")["mean", "candidate"]
     assert row.observed_value == 6.5
     assert row.sum_value == 104
 
 
 def test_finite_group_mean_survives_unrepresentable_display_total():
-    with _native_groups(large=True) as (_, analysis):
-        row = _capture(analysis, "mean")["mean", "baseline"]
+    with _native_groups(large=True) as (_, experiment, resolver):
+        row = _capture(resolver, "mean")["mean", "baseline"]
     assert row.observed_value == pytest.approx(1e308)
     assert row.sum_value is None
     assert "sum_value" in row.unavailable
@@ -330,7 +333,7 @@ def test_finite_group_mean_survives_unrepresentable_display_total():
 def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path):
     import pyarrow as pa
 
-    from increment import Analysis
+    from increment import from_definitions
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from tests.test_sequential_public_sources import _native_fixture
 
@@ -339,14 +342,14 @@ def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path)
     try:
         path = tmp_path / "definitions.yaml"
         path.write_text(definitions.model_dump_json())
-        analysis = Analysis.from_definitions("experiment", path, connection)
+        experiment, resolver = from_definitions(path, connection, experiment_name="experiment")
         connection.raw_sql(
             "INSERT INTO events (unit_id, event, value, ts) VALUES "
             "('freshness-only', 'outcome_event', 0, TIMESTAMPTZ '2025-01-20 00:00:00+00')"
         )
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
         config = DashboardConfig(expected_allocation={"control": 1, "treatment": 1})
-        snapshot = prepare_dashboard(analysis, config=config)
+        snapshot = prepare_dashboard(experiment, resolver, config=config)
         checkpoints = {
             estimate.metric: estimate.require_sequential_result().checkpoint
             for estimate in snapshot.estimates
@@ -356,7 +359,8 @@ def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path)
         connection.create_table(
             "events", pa.Table.from_pylist(ghost, schema=events.schema), overwrite=True
         )
-        rows = analysis.dashboard_group_data(metrics=analysis.metrics, checkpoints=checkpoints)
+        live = bound_analysis(resolver)
+        rows = live.dashboard_group_data(metrics=live.metrics, checkpoints=checkpoints)
         assert rows == snapshot.group_data
         expected = (
             {"control": 0.25, "treatment": 0.75}
@@ -372,7 +376,7 @@ def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path)
             assert row.event_count is None
             assert {"assigned_units", "event_count"} <= row.unavailable.keys()
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         connection.disconnect()
 
 
@@ -381,12 +385,12 @@ def test_frozen_secondary_keeps_its_earlier_displayed_prefix():
 
     from increment.dashboard import DashboardConfig, prepare_dashboard
 
-    with _native_groups(sequential=True) as (connection, analysis):
-        early = analysis.capture_sequential(
-            finalized=True, as_of=date(2025, 1, 10), freeze=["mean"]
+    with _native_groups(sequential=True) as (connection, experiment, resolver):
+        early = capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 1, 10), freeze=["mean"]
         )
         config = DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
-        before = prepare_dashboard(analysis, config=config)
+        before = prepare_dashboard(experiment, resolver, config=config)
         enrollment = connection.table("enrolled").to_pyarrow()
         events = connection.table("events").to_pyarrow()
         new_enrollment, new_events = enrollment.to_pylist(), events.to_pylist()
@@ -419,8 +423,10 @@ def test_frozen_secondary_keeps_its_earlier_displayed_prefix():
         connection.create_table(
             "events", pa.Table.from_pylist(new_events, schema=events.schema), overwrite=True
         )
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 20), previous=early)
-        after = prepare_dashboard(analysis, config=config)
+        capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 1, 20), previous=early
+        )
+        after = prepare_dashboard(experiment, resolver, config=config)
         old = {(row.metric, row.group_id): row for row in before.group_data}
         for row in after.group_data:
             if row.metric == "mean":
@@ -432,9 +438,9 @@ def test_frozen_secondary_keeps_its_earlier_displayed_prefix():
 
 
 def test_zero_ratio_denominator_preserves_other_available_evidence():
-    with _native_groups() as (connection, analysis):
+    with _native_groups() as (connection, experiment, resolver):
         connection.raw_sql("UPDATE events SET value = 0 WHERE event = 'denominator'")
-        row = _capture(analysis, "ratio")["ratio", "baseline"]
+        row = _capture(resolver, "ratio")["ratio", "baseline"]
     assert row.eligible_units == 16
     assert row.numerator == pytest.approx(72)
     assert row.denominator == 0
@@ -443,7 +449,7 @@ def test_zero_ratio_denominator_preserves_other_available_evidence():
 
 
 def test_group_capture_materializes_only_bounded_aggregate_rows(monkeypatch):
-    with _native_groups() as (connection, analysis):
+    with _native_groups() as (connection, experiment, resolver):
         original = connection.to_pyarrow
         row_counts = []
 
@@ -454,7 +460,7 @@ def test_group_capture_materializes_only_bounded_aggregate_rows(monkeypatch):
             return table
 
         monkeypatch.setattr(connection, "to_pyarrow", capture)
-        rows = _capture(analysis)
+        rows = _capture(resolver)
     assert len(rows) == 10
     assert max(row_counts) <= 2
 
@@ -465,9 +471,9 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
     from increment.errors import CapabilityError
 
     config = DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
-    with _native_groups(sequential=True) as (connection, analysis):
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
-        snapshot = prepare_dashboard(analysis, config=config)
+    with _native_groups(sequential=True) as (connection, experiment, resolver):
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
+        snapshot = prepare_dashboard(experiment, resolver, config=config)
         checkpoints = {
             row.metric: row.require_sequential_result().checkpoint for row in snapshot.estimates
         }
@@ -475,9 +481,13 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
             checkpoints = {"mean": checkpoints["conversion"], "conversion": checkpoints["mean"]}
             code = "evidence.operation_unavailable"
         else:
-            with _native_groups(sequential=True, extra_exclusions=True) as (_, other):
-                other.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
-                foreign = prepare_dashboard(other, config=config)
+            with _native_groups(sequential=True, extra_exclusions=True) as (
+                _,
+                other,
+                other_resolver,
+            ):
+                capture_sequential(other, other_resolver, finalized=True, as_of=date(2025, 1, 16))
+                foreign = prepare_dashboard(other, other_resolver, config=config)
                 checkpoints = {
                     row.metric: row.require_sequential_result().checkpoint
                     for row in foreign.estimates
@@ -487,9 +497,10 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
         def unexpected_read(*args, **kwargs):
             pytest.fail("checkpoint validation must precede warehouse reads")
 
+        live = bound_analysis(resolver)
         monkeypatch.setattr(connection, "to_pyarrow", unexpected_read)
         with pytest.raises(CapabilityError) as caught:
-            analysis.dashboard_group_data(metrics=analysis.metrics, checkpoints=checkpoints)
+            live.dashboard_group_data(metrics=live.metrics, checkpoints=checkpoints)
         assert caught.value.code == code
 
 
@@ -504,8 +515,9 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
 def test_group_metric_selection_is_validated_before_source_access(kind, code, monkeypatch):
     from increment.errors import InvalidRequestError
 
-    with _native_groups(metric_names=("mean",)) as (connection, analysis):
-        metric = analysis.metrics[0]
+    with _native_groups(metric_names=("mean",)) as (connection, experiment, resolver):
+        live = bound_analysis(resolver)
+        metric = live.metrics[0]
         requested = {
             "unknown": [metric.model_copy(update={"name": "undeclared"})],
             "changed": [metric.model_copy(update={"window_days": 1})],
@@ -517,5 +529,5 @@ def test_group_metric_selection_is_validated_before_source_access(kind, code, mo
 
         monkeypatch.setattr(connection, "to_pyarrow", unexpected_read)
         with pytest.raises(InvalidRequestError) as caught:
-            analysis.dashboard_group_data(metrics=requested)
+            live.dashboard_group_data(metrics=requested)
         assert caught.value.code == code

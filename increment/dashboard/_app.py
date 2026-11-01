@@ -1,4 +1,4 @@
-"""The production dashboard: one self-contained iframe from a snapshot and its analysis.
+"""The production dashboard: one self-contained iframe from a snapshot and its experiment.
 
 ``render_dashboard`` renders captured metric, scope and view choices with native CoefTable helpers
 and embeds them as JSON in a packaged HTML shell. The confirmatory snapshot is never touched:
@@ -78,8 +78,8 @@ from increment.errors import CodedError
 from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
-    from increment._analysis_execution import Analysis
     from increment.estimation.diagnostics import SRMResult
+    from increment.kernel.experiment import Experiment
 
 __all__ = ["build_payload", "document", "health_status", "render_dashboard"]
 
@@ -101,14 +101,15 @@ _VIEW_TITLES = {
 }
 
 
-def render_dashboard(analysis: Analysis, *, snapshot: DashboardSnapshot) -> Any:
+def render_dashboard(experiment: Experiment, *, snapshot: DashboardSnapshot) -> Any:
     """The complete interactive dashboard for one prepared snapshot.
 
-    ``analysis`` proves the experiment binding; every tab reads only captured evidence. In a
-    running notebook, adding or removing exploratory metrics in Explore re-renders the same
-    snapshot showing them; nothing is read again. A static export shows its captured selection.
+    ``experiment`` proves the snapshot belongs to the caller's experiment; every tab reads only
+    captured evidence. In a running notebook, adding or removing exploratory metrics in Explore
+    re-renders the same snapshot showing them; nothing is read again. A static export shows its
+    captured selection.
     """
-    return mo.ui.anywidget(DashboardWidget(analysis, snapshot=snapshot))
+    return mo.ui.anywidget(DashboardWidget(experiment, snapshot=snapshot))
 
 
 class DashboardWidget(anywidget.AnyWidget):
@@ -127,12 +128,12 @@ class DashboardWidget(anywidget.AnyWidget):
     exploratory_metrics = traitlets.List(traitlets.Unicode()).tag(sync=True)
     status = traitlets.Unicode("").tag(sync=True)
 
-    def __init__(self, analysis: Analysis, *, snapshot: DashboardSnapshot) -> None:
+    def __init__(self, experiment: Experiment, *, snapshot: DashboardSnapshot) -> None:
         super().__init__(
-            document=document(build_payload(analysis, snapshot=snapshot)),
+            document=document(build_payload(experiment, snapshot=snapshot)),
             exploratory_metrics=list(snapshot.config.exploratory_metrics),
         )
-        self._analysis = analysis
+        self._experiment = experiment
         self._snapshot = snapshot
         self.observe(self._show, names="exploratory_metrics")
 
@@ -144,7 +145,7 @@ class DashboardWidget(anywidget.AnyWidget):
         self.status = "updating"
         try:
             snapshot = show_exploratory_metrics(self._snapshot, requested)
-            page = document(build_payload(self._analysis, snapshot=snapshot))
+            page = document(build_payload(self._experiment, snapshot=snapshot))
         except CodedError as exc:
             self.status = f"{exc} ({exc.code})"
             self.exploratory_metrics = list(current)
@@ -189,7 +190,7 @@ def document(payload: Mapping[str, Any]) -> str:
     return template
 
 
-def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[str, Any]:
+def build_payload(experiment: Experiment, *, snapshot: DashboardSnapshot) -> dict[str, Any]:
     """Build a coherent dashboard payload for each captured population."""
     default = "triggered" if "triggered" in snapshot.population_estimates else "assigned"
     populations = tuple(snapshot.population_estimates) or ("assigned",)
@@ -221,7 +222,7 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
             },
             overview=snapshot.overviews.get(population, snapshot.overview),
         )
-        payload = _build_payload_for_population(analysis, snapshot=scoped)
+        payload = _build_payload_for_population(experiment, snapshot=scoped)
         payload["population"] = population
         payload["populationLabel"] = "Triggered" if population == "triggered" else "Assigned"
         payload["populationDisclaimer"] = (
@@ -238,11 +239,11 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
 
 
 def _build_payload_for_population(
-    analysis: Analysis, *, snapshot: DashboardSnapshot
+    experiment: Experiment, *, snapshot: DashboardSnapshot
 ) -> dict[str, Any]:
     # A mismatched pair is a caller error, not an engine refusal to display per state.
-    _require_same_experiment(analysis, snapshot, metric=None, view="dashboard")
-    correction = _segment_correction(analysis)
+    _require_same_experiment(experiment, snapshot, metric=None, view="dashboard")
+    correction = _segment_correction(snapshot)
     scopes: dict[str, dict[str, Any]] = {
         "overall": {"label": "Whole experiment", "dimension": None, "source": None}
     }
@@ -294,7 +295,7 @@ def _build_payload_for_population(
             "selected": [model.name for model in snapshot.exploratory_metrics],
         },
         "explore": {
-            key: _explore_scope(analysis, snapshot, breakout, correction)
+            key: _explore_scope(experiment, snapshot, breakout, correction)
             for key, breakout in breakouts.items()
         },
     }
@@ -628,13 +629,13 @@ def _declared_scopes(
     return scopes
 
 
-def _segment_correction(analysis: Analysis) -> str | None:
-    plan = getattr(analysis.experiment, "plan", None)
-    return getattr(getattr(plan, "view_multiplicity", None), "correction", None)
+def _segment_correction(snapshot: DashboardSnapshot) -> str | None:
+    multiplicity = snapshot.view_multiplicity
+    return None if multiplicity is None else multiplicity.correction
 
 
 def _explore_scope(
-    analysis: Analysis,
+    experiment: Experiment,
     snapshot: DashboardSnapshot,
     breakout: tuple[str | None, str] | None,
     correction: str | None,
@@ -650,7 +651,7 @@ def _explore_scope(
             # lift family is read per metric so each keeps its own declared multiplicity.
             batch = _attempt(
                 lambda complete=complete, view=view: load_explore(
-                    analysis,
+                    experiment,
                     snapshot=snapshot,
                     metric=None,
                     view=view,
@@ -667,7 +668,7 @@ def _explore_scope(
         for metric in names:
             # The metric=None batch covers declared metrics only; added metrics load their own.
             entries[metric][view_key] = _explore_entry(
-                analysis,
+                experiment,
                 snapshot,
                 metric=metric,
                 view_key=view_key,
@@ -687,7 +688,7 @@ def _attempt(load: Callable[[], Any]) -> Any:
 
 
 def _explore_entry(
-    analysis: Analysis,
+    experiment: Experiment,
     snapshot: DashboardSnapshot,
     *,
     metric: str,
@@ -703,7 +704,7 @@ def _explore_entry(
             data = batch
         else:
             data = load_explore(
-                analysis,
+                experiment,
                 snapshot=snapshot,
                 metric=metric,
                 view=view,

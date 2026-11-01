@@ -1,8 +1,8 @@
 """Local fixture readiness for the bundled dashboard example.
 
 Example-only infrastructure. The packaged `increment.dashboard` helpers never
-import this module: they take a caller-owned `Analysis` and never look at the
-working directory, a manifest, or a warehouse path.
+import this module: they take a caller-owned experiment and resolver and never
+look at the working directory, a manifest, or a warehouse path.
 """
 
 from __future__ import annotations

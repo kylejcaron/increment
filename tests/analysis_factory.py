@@ -51,6 +51,18 @@ def facade_binding(analysis: Analysis) -> Any:
     return binding
 
 
+def bound_analysis(resolver: Any) -> Analysis:
+    """A legacy readout facade over a builder resolver's binding, for live comparisons."""
+    analysis = Analysis.__new__(Analysis)
+    analysis._binding = resolver.binding
+    return analysis
+
+
+def bound_source(resolver: Any) -> Any:
+    """The source a builder resolver holds, for instance-level spies."""
+    return resolver.binding.source
+
+
 def replace_analysis_source(analysis: Analysis, source: object) -> None:
     """Install a counting source in a fixture's immutable construction state."""
     object.__setattr__(analysis._state, "source", source)

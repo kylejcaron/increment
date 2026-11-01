@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import date
 
 import pytest
 
+from increment.workflows import capture_sequential
 from tests._override_warnings import allow_declared_overrides
 
 pytestmark = pytest.mark.slow
@@ -17,7 +18,7 @@ def _cuped_native(tmp_path, *, sequential=False, predeclared=False):
     import ibis
     import pyarrow as pa
 
-    from increment import Analysis
+    from increment import from_definitions
     from tests.warehouse_cuped_cases import definitions_yaml, event_rows, unit_rows
 
     units = unit_rows(seed=19, n=12)
@@ -39,8 +40,12 @@ def _cuped_native(tmp_path, *, sequential=False, predeclared=False):
     connection = ibis.duckdb.connect()
     connection.create_table("events", pa.Table.from_pylist(event_rows(units)))
     try:
-        with Analysis.from_definitions("exp", path, connection, store="none") as analysis:
-            yield analysis, units
+        experiment, resolver = from_definitions(
+            path, connection, experiment_name="exp", store="none"
+        )
+        assert isinstance(resolver, AbstractContextManager)
+        with resolver:
+            yield experiment, resolver, units
     finally:
         connection.disconnect()
 
@@ -52,10 +57,11 @@ def test_preparation_preserves_cuped_configs_on_unpinned_definitions(tmp_path):
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from increment.errors import IncrementWarning
 
-    with _cuped_native(tmp_path) as (analysis, _):
+    with _cuped_native(tmp_path) as (experiment, resolver, _):
         with pytest.warns(IncrementWarning):
             snapshot = prepare_dashboard(
-                analysis,
+                experiment,
+                resolver,
                 config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
             )
         assert len(snapshot.estimates) == 1
@@ -70,9 +76,9 @@ def test_fixed_snapshot_keeps_old_rows_headline_and_csv_after_live_correction():
     from increment.dashboard._data import group_data_rows
     from tests.test_dashboard_group_source import _native_groups
 
-    with _native_groups(metric_names=("mean",)) as (connection, analysis):
+    with _native_groups(metric_names=("mean",)) as (connection, experiment, resolver):
         config = DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
-        old = prepare_dashboard(analysis, config=config)
+        old = prepare_dashboard(experiment, resolver, config=config)
         old_rows = group_data_rows(old, metric="mean")
         old_csv = group_data_csv(old, metric="mean")
         old_headline = next(row for row in old.estimates if row.metric == "mean")
@@ -84,7 +90,7 @@ def test_fixed_snapshot_keeps_old_rows_headline_and_csv_after_live_correction():
         connection.create_table(
             "events", pa.Table.from_pylist(corrected, schema=events.schema), overwrite=True
         )
-        fresh = prepare_dashboard(analysis, config=config)
+        fresh = prepare_dashboard(experiment, resolver, config=config)
         fresh_headline = next(row for row in fresh.estimates if row.metric == "mean")
 
         assert group_data_rows(old, metric="mean") == old_rows
@@ -107,10 +113,11 @@ def test_native_cuped_means_are_raw_and_adjusted_headline_matches_frame(tmp_path
     from tests.warehouse_cuped_cases import frame_fixed
     from tests.warning_codes import warning_codes
 
-    with _cuped_native(tmp_path) as (analysis, units):
+    with _cuped_native(tmp_path) as (experiment, resolver, units):
         with pytest.warns(IncrementWarning) as captured:
             snapshot = prepare_dashboard(
-                analysis,
+                experiment,
+                resolver,
                 config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
             )
         assert warning_codes(captured) == ["analysis.cuped.covariate_unused"]
@@ -130,10 +137,12 @@ def test_retained_winsorized_scalar_exposes_input_not_raw_outcomes():
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from tests.test_dashboard_group_source import _native_groups
 
-    with _native_groups(sequential=True, winsor=True) as (_, analysis):
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+    with _native_groups(sequential=True, winsor=True) as (_, experiment, resolver):
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
         snapshot = prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1}),
         )
         rows = {row.group_id: row for row in snapshot.group_data if row.metric == "mean"}
         for arm, expected in (("baseline", 3.0), ("candidate", 4.0)):
@@ -146,10 +155,12 @@ def test_retained_winsorized_scalar_exposes_input_not_raw_outcomes():
 def test_retained_joint_cuped_preserves_raw_y_not_residual(tmp_path):
     from increment.dashboard import DashboardConfig, prepare_dashboard
 
-    with _cuped_native(tmp_path, sequential=True) as (analysis, units):
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 14))
+    with _cuped_native(tmp_path, sequential=True) as (experiment, resolver, units):
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 14))
         snapshot = prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1})
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
         )
         assert (
             snapshot.estimates[0].require_sequential_result().checkpoint.model.law
@@ -166,10 +177,16 @@ def test_retained_joint_cuped_preserves_raw_y_not_residual(tmp_path):
 def test_predeclared_scalar_adjustment_does_not_invent_unretained_raw_values(tmp_path):
     from increment.dashboard import DashboardConfig, prepare_dashboard
 
-    with _cuped_native(tmp_path, sequential=True, predeclared=True) as (analysis, units):
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 14))
+    with _cuped_native(tmp_path, sequential=True, predeclared=True) as (
+        experiment,
+        resolver,
+        units,
+    ):
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 14))
         snapshot = prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1})
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
         )
         for row in snapshot.group_data:
             values = [
@@ -188,10 +205,12 @@ def test_empty_retained_checkpoint_is_unavailable_not_a_zero_mean():
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from tests.test_dashboard_group_source import _native_groups
 
-    with _native_groups(sequential=True, late_treatment=True) as (_, analysis):
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 5))
+    with _native_groups(sequential=True, late_treatment=True) as (_, experiment, resolver):
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 5))
         snapshot = prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
+            experiment,
+            resolver,
+            config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1}),
         )
         candidate = next(row for row in snapshot.group_data if row.group_id == "candidate")
         assert candidate.eligible_units == 0

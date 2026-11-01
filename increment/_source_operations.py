@@ -17,12 +17,6 @@ from increment.errors import CodedError, _freeze
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from increment._analysis_execution import Analysis
-    from increment.breakout.estimates import (
-        BreakoutEstimates,
-        DailyLiftEstimates,
-        DailyMetricValues,
-    )
     from increment.estimation.diagnostics import SRMResult
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Breakout, Metric
@@ -94,7 +88,7 @@ class DashboardExploreCapture:
     """One Explore request answered inside the pinned read.
 
     Holds the rows the source returned, or the coded refusal it raised, never both. The refusal
-    is a detached copy with no traceback, so no frame keeps the pinned analysis alive, and
+    is a detached copy with no traceback, so no frame keeps the pinned source alive, and
     every :meth:`load` yields a fresh collection or a fresh copy of that refusal.
     """
 
@@ -142,91 +136,6 @@ class DashboardExploreCapture:
 
 
 @dataclass(frozen=True, slots=True)
-class DashboardBreakoutReads:
-    """The Explore reads of one declared breakout, and nothing else.
-
-    Every read hands the source this breakout alone, so another source of the same property,
-    or its refusal, never enters it. Families are computed per breakout, so the rows equal
-    this breakout's rows from the dimension-wide reads.
-    """
-
-    breakout: Breakout
-    _scoped: Analysis = field(repr=False)
-
-    def run_asof_lift(
-        self,
-        *,
-        metrics: Sequence[str],
-        completed_windows_only: bool = False,
-        exploratory_metrics: Sequence[str] | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> DailyLiftEstimates:
-        return self._scoped.run_asof_lift(
-            metrics=metrics,
-            exploratory_metrics=exploratory_metrics,
-            completed_windows_only=completed_windows_only,
-            dimension=self.breakout.property,
-            population=population,
-        )
-
-    def run_asof(
-        self,
-        *,
-        metrics: Sequence[str],
-        completed_windows_only: bool = False,
-        exploratory_metrics: Sequence[str] | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> DailyMetricValues:
-        return self._scoped.run_asof(
-            metrics=metrics,
-            exploratory_metrics=exploratory_metrics,
-            completed_windows_only=completed_windows_only,
-            dimension=self.breakout.property,
-            population=population,
-        )
-
-    def run_daily(
-        self,
-        *,
-        metrics: Sequence[str],
-        exploratory_metrics: Sequence[str] | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> DailyMetricValues:
-        return self._scoped.run_daily(
-            metrics=metrics,
-            exploratory_metrics=exploratory_metrics,
-            dimension=self.breakout.property,
-            population=population,
-        )
-
-    def run_breakout(
-        self,
-        *,
-        metrics: Sequence[str],
-        exploratory_metrics: Sequence[str] | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> BreakoutEstimates:
-        return self._scoped.run_breakout(
-            metrics=metrics, exploratory_metrics=exploratory_metrics, population=population
-        )
-
-    def uncorrected_segments(
-        self,
-        *,
-        metrics: Sequence[str],
-        exploratory_metrics: Sequence[str] | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> BreakoutEstimates:
-        """This breakout's segment rows without the declared correction."""
-        return self._scoped._run_breakout(
-            metrics=metrics,
-            exploratory_metrics=exploratory_metrics,
-            correction="none",
-            population=population,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class DashboardSnapshotPayload:
     """Complete dashboard evidence from one pinned source read."""
 
@@ -249,10 +158,6 @@ class DashboardSnapshotPayload:
         object.__setattr__(self, "estimates", tuple(self.estimates))
         object.__setattr__(self, "group_data", tuple(self.group_data))
         object.__setattr__(self, "explore", tuple(self.explore))
-
-
-class DashboardSnapshotHandler(Protocol):
-    def __call__(self, analysis: Analysis, /) -> DashboardSnapshotPayload: ...
 
 
 @runtime_checkable
@@ -342,12 +247,10 @@ class ExploratorySourceOperation(Protocol):
 __all__ = [
     "BreakoutChoice",
     "ExploreKey",
-    "DashboardBreakoutReads",
     "DashboardExploreCapture",
     "DashboardGroupData",
     "DashboardGroupDataOperation",
     "AllocationHistoryOperation",
-    "DashboardSnapshotHandler",
     "DashboardSnapshotPayload",
     "ExploratorySourceOperation",
     "ExportMomentsOperation",

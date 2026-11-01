@@ -25,9 +25,16 @@ if TYPE_CHECKING:
     from increment.semantics.artifact import ArtifactExtensionRequest, UnitDayArtifactRef
 
 
-from increment._analysis_config import UNSET, _Unset, select_metrics
-from increment._binding import _UNDECLARED_BREAKOUT, SourceBinding, _ArtifactOpenSpec
+from increment._analysis_config import UNSET, _Unset
+from increment._binding import SourceBinding, _ArtifactOpenSpec
 from increment._breakout_readouts import run_breakout, run_breakout_rows
+from increment._dashboard_capture import (
+    DashboardBreakoutReads,
+    DashboardCapture,
+    capture_dashboard,
+    dashboard_breakout_reads,
+    dashboard_group_data,
+)
 from increment._day_axis import (
     DayAxisReadouts,
     day_axis_readouts,
@@ -38,32 +45,14 @@ from increment._day_axis import (
     run_daily,
     run_daily_lift,
 )
-from increment._evidence_types import (
-    EvidenceScope,
-    SequentialCaptureRequest,
-    SourceContext,
-)
+from increment._evidence_types import SequentialCaptureRequest, SourceContext
 from increment._execute import readout_source
 from increment._exploratory import exploratory_sibling, select_day_axis_metrics, select_exploratory
 from increment._literals import Backend, Correction, ValueScale
-from increment._source_admission import _require_analysis_operation
-from increment._source_operations import (
-    DashboardBreakoutReads,
-    DashboardGroupData,
-    DashboardGroupDataOperation,
-    DashboardSnapshotPayload,
-)
-from increment._source_types import declared_evidence
-from increment.decision import (
-    AnalysisState,
-    ArmAnalysisState,
-    ContrastContext,
-    DefinitionsArmAnalysisState,
-)
-from increment.errors import refuse as _refuse
+from increment._source_operations import DashboardGroupData, DashboardSnapshotPayload
+from increment.decision import AnalysisState, ArmAnalysisState, ContrastContext
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
-from increment.evidence import evidence_provider
 from increment.readouts._execution_context import (
     current_execution_context as _current_execution_context,
 )
@@ -335,33 +324,16 @@ class Analysis:
         :attr:`available_metrics` the operation will add through ``exploratory_metrics``:
         an added metric outside the pin is refused rather than read from a later state.
         """
-        self._require_arm_state("dashboard_snapshot")
-        _require_analysis_operation(
-            self._src,
-            "readout_snapshot",
-            message=(
-                "dashboard_snapshot() needs a native Analysis.from_definitions instance "
-                "with a warehouse-backed source."
-            ),
+        return capture_dashboard(
+            self._open_binding(),
+            lambda capture: self._with_pinned_source(capture, operation),
+            metrics=metrics,
         )
-        scoped = evidence_provider(self._src).scope(
-            EvidenceScope(
-                metrics=tuple(metrics),
-                snapshot=True,
-                include_breakouts=True,
-            )
-        )
-        with scoped.source as pinned:
-            from increment.readouts._evidence import _builtin_source
 
-            return self._with_pinned_source(_builtin_source(pinned), operation)
-
-    def _with_pinned_source(
-        self, pinned: _BuiltinMomentSource, operation: Callable[[Self], _T]
-    ) -> _T:
+    def _with_pinned_source(self, capture: DashboardCapture, operation: Callable[[Self], _T]) -> _T:
         isolated = copy.copy(self)
-        isolated._binding = self._binding.with_source(pinned)
-        isolated._readout_srm_observations = {}
+        isolated._binding = capture.binding
+        isolated._readout_srm_observations = capture.observations
         try:
             return operation(isolated)
         finally:
@@ -389,26 +361,7 @@ class Analysis:
         DashboardBreakoutReads
             The cumulative-lift, cumulative-value, daily-value and segment reads.
         """
-        state = self._require_arm_state("dashboard_breakout_reads")
-        if not isinstance(state, DefinitionsArmAnalysisState):
-            from increment._evidence_refusals import refuse_breakout
-
-            refuse_breakout(
-                self._src,
-                (breakout.property,),
-                tuple(declared_evidence(self._src).breakouts),
-                route="dashboard_breakout_reads() requires a definitions-backed breakout source",
-            )
-        declared = state.experiment.breakouts
-        if breakout not in declared:
-            _refuse(
-                _UNDECLARED_BREAKOUT,
-                requested=(breakout.source, breakout.property),
-                declared=tuple((item.source, item.property) for item in declared),
-            )
-        scoped = copy.copy(self)
-        scoped._binding = self._binding.with_breakouts((breakout,))
-        return DashboardBreakoutReads(breakout, scoped)
+        return dashboard_breakout_reads(self._open_binding(), breakout)
 
     def dashboard_group_data(
         self,
@@ -418,26 +371,8 @@ class Analysis:
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> tuple[DashboardGroupData, ...]:
         """Return group data for the requested assigned or triggered population."""
-        self._require_arm_state("dashboard_group_data")
-        selected = select_metrics(
-            self._metrics,
-            metrics,
-            caller="dashboard_group_data",
-            require_declared_definitions=True,
-        )
-        src = _require_analysis_operation(
-            self._src,
-            "dashboard_group_data",
-            DashboardGroupDataOperation,
-            message=(
-                "dashboard_group_data() needs a native Analysis.from_definitions "
-                "instance with a warehouse-backed source."
-            ),
-        )
-        return tuple(
-            src.dashboard_group_data(
-                metrics=selected, checkpoints=checkpoints, population=population
-            )
+        return dashboard_group_data(
+            self._open_binding(), metrics=metrics, checkpoints=checkpoints, population=population
         )
 
     def allocation_history(
