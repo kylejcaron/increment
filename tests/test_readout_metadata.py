@@ -5,8 +5,11 @@ from copy import deepcopy
 
 import pytest
 
+from increment import from_frame, from_moments
 from increment.estimation.decision_types import EValueEvidence
 from increment.estimation.readout_types import CellKey, IntegrityResult, StreamingDigest
+from increment.workflows import capture_sequential, export_moments, sequential_snapshot
+from tests.analysis_factory import view_readout
 
 
 def test_readout_metadata_repr_shows_snapshot_and_record_count():
@@ -221,7 +224,6 @@ def test_categorical_missing_digest_is_stable_for_unit_frame_cuped_runs():
 
     import pandas as pd
 
-    from increment import Analysis
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
     from increment.semantics.design import Randomized
@@ -249,15 +251,17 @@ def test_categorical_missing_digest_is_stable_for_unit_frame_cuped_runs():
     metrics = (MetricSpec(name="outcome", decision_method=method),)
     design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="group",
         metrics=metrics,
         design=design,
     )
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="date",
@@ -265,8 +269,8 @@ def test_categorical_missing_digest_is_stable_for_unit_frame_cuped_runs():
         design=design,
     )
 
-    summary_result = summary.run()
-    panel_result = panel.run()
+    summary_result = view_readout(summary_experiment, summary_resolver)
+    panel_result = view_readout(panel_experiment, panel_resolver)
     assert summary_result == panel_result
     assert summary_result
 
@@ -355,18 +359,22 @@ def test_triggered_sequential_scope_reports_and_replays_both_chains(tmp_path):
     import pyarrow.parquet as pq
     import pytest
 
-    from increment import Analysis
     from increment.errors import CapabilityError
     from increment.estimation.readout_types import ReadoutResults
     from increment.estimation.results import LiftEstimate
     from increment.frame import MetricSpec
     from increment.semantics.design import Randomized
+    from tests.test_analysis_trigger import _both_populations
     from tests.test_sequential_public_sources import _native_fixture
 
-    _connection, definitions, analysis = _native_fixture("bernoulli", triggered=True)
+    _connection, definitions, (analysis_experiment, analysis_resolver) = _native_fixture(
+        "bernoulli", triggered=True
+    )
     try:
-        snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
-        results = analysis.run()
+        snapshot = capture_sequential(
+            analysis_experiment, analysis_resolver, finalized=True, as_of=date(2025, 1, 16)
+        )
+        results = _both_populations(analysis_experiment, analysis_resolver)
         assert results.metadata is not None
         by_population = {}
         for row in results:
@@ -389,7 +397,7 @@ def test_triggered_sequential_scope_reports_and_replays_both_chains(tmp_path):
         assert restored.metadata == results.metadata
 
         path = tmp_path / "sequential-moments.parquet"
-        analysis.export(path)
+        export_moments(analysis_experiment, analysis_resolver, path)
         wire_rows = pq.read_table(path).to_pylist()
         assert wire_rows[0]["trigger_name"] == "triggered"
         specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
@@ -397,14 +405,14 @@ def test_triggered_sequential_scope_reports_and_replays_both_chains(tmp_path):
         # The stored plan carries the triggered commitment; a caller-supplied plan
         # without it cannot adopt a checkpoint that holds the triggered chain.
         with pytest.raises(CapabilityError) as uncommitted:
-            Analysis.from_moments(
+            from_moments(
                 wire_rows, metrics=specs, design=design, plan=definitions.experiments[0].plan
             )
         assert uncommitted.value.code == "sequential.source.invalid"
-        replay = Analysis.from_moments(wire_rows, metrics=specs, design=design)
+        replay_experiment, replay_resolver = from_moments(wire_rows, metrics=specs, design=design)
         try:
-            assert replay.sequential_snapshot() == snapshot
-            replayed = replay.run()
+            assert sequential_snapshot(replay_experiment, replay_resolver) == snapshot
+            replayed = _both_populations(replay_experiment, replay_resolver)
             replayed_by_population = {}
             for row in replayed:
                 assert isinstance(row, LiftEstimate)
@@ -416,10 +424,11 @@ def test_triggered_sequential_scope_reports_and_replays_both_chains(tmp_path):
                     replayed_by_population[population].require_sequential_result()
                     == row.require_sequential_result()
                 )
-            assert {row.analysis_population for row in replay.run(population="triggered")} == {
-                "triggered"
-            }
+            assert {
+                row.analysis_population
+                for row in view_readout(replay_experiment, replay_resolver, population="triggered")
+            } == {"triggered"}
         finally:
-            replay.close()
+            replay_resolver.close()
     finally:
-        analysis.close()
+        analysis_resolver.close()

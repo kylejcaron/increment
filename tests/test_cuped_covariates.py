@@ -5,7 +5,7 @@ import pickle
 
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_frame
 from increment.errors import DefinitionError, IncrementWarning, InvalidRequestError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
@@ -18,6 +18,7 @@ from increment.semantics.models import (
     Measure,
     MethodSpec,
 )
+from tests.analysis_factory import view_readout
 
 
 def test_semantic_cuped_covariate_types_and_method_are_constructible():
@@ -143,8 +144,9 @@ def test_frame_plan_method_overrides_and_explicit_empty_sensitivity() -> None:
         name="revenue",
         sensitivity_methods=(Method.unadjusted(name="inherited"),),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -152,7 +154,7 @@ def test_frame_plan_method_overrides_and_explicit_empty_sensitivity() -> None:
         plan=plan,
     )
 
-    rows = analysis.run()
+    rows = view_readout(experiment, resolver)
     assert [row.method for row in rows] == ["planned"]
 
 
@@ -224,11 +226,11 @@ def test_public_run_routes_mixed_covariate_fit():
             ),
         ),
     )
-    analysis = Analysis.from_unit_summary(
-        frame, unit="unit", group="arm", control="c", metrics=[metric]
+    experiment, resolver = from_frame(
+        frame, shape="summary", unit="unit", group="arm", control="c", metrics=[metric]
     )
 
-    (row,) = analysis.run()
+    (row,) = view_readout(experiment, resolver)
     assert isinstance(row, LiftEstimate)
     expected = (
         fit_cuped_multicovariate(
@@ -277,11 +279,11 @@ def test_public_run_routes_joint_ratio_cuped_projection():
             ),
         ),
     )
-    analysis = Analysis.from_unit_summary(
-        frame, unit="unit", group="arm", control="c", metrics=[metric]
+    experiment, resolver = from_frame(
+        frame, shape="summary", unit="unit", group="arm", control="c", metrics=[metric]
     )
 
-    result = analysis.run()
+    result = view_readout(experiment, resolver)
     (row,) = result
     assert isinstance(row, LiftEstimate)
     expected = (
@@ -330,20 +332,25 @@ def test_public_run_routes_joint_ratio_cuped_projection():
             ["south" if value == "north" else "north" for value in frame["region"].to_pylist()]
         ),
     )
-    shifted_result = Analysis.from_unit_summary(
-        shifted, unit="unit", group="arm", control="c", metrics=[metric]
-    ).run()
+    shifted_result = view_readout(
+        *from_frame(
+            shifted, shape="summary", unit="unit", group="arm", control="c", metrics=[metric]
+        )
+    )
     assert shifted_result.source != result.source
     assert shifted_result[0].source_snapshot_id != row.source_snapshot_id
 
     with_sibling = frame.append_column("sibling", pa.array([float(i) for i in range(32)]))
-    sibling_rows = Analysis.from_unit_summary(
-        with_sibling,
-        unit="unit",
-        group="arm",
-        control="c",
-        metrics=[metric, MetricSpec(name="sibling")],
-    ).run()
+    sibling_rows = view_readout(
+        *from_frame(
+            with_sibling,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="c",
+            metrics=[metric, MetricSpec(name="sibling")],
+        )
+    )
     revenue_row = next(item for item in sibling_rows if item.metric == "aov")
     assert isinstance(revenue_row, LiftEstimate)
     assert revenue_row.require_lift().value == pytest.approx(row.require_lift().value)
@@ -367,9 +374,9 @@ def test_cuped_linear_level_support_failure_remains_a_cell():
             covariates=CupedCovariate(name="region", kind="categorical"),
         ),
     )
-    result = Analysis.from_unit_summary(
-        frame, unit="unit", group="arm", control="c", metrics=[metric]
-    ).run()
+    result = view_readout(
+        *from_frame(frame, shape="summary", unit="unit", group="arm", control="c", metrics=[metric])
+    )
 
     assert len(result) == 1
     assert isinstance(result[0], LiftEstimate)
@@ -481,20 +488,21 @@ def test_scalar_cuped_can_share_a_declared_covariate_with_cuped_linear():
             ),
         ),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         rows,
+        shape="summary",
         unit="unit_id",
         group="group_id",
         control="control",
         metrics=(metric,),
     )
     try:
-        result = analysis.run()
+        result = view_readout(experiment, resolver)
         estimates = [row for row in result if isinstance(row, LiftEstimate)]
         assert {row.method for row in estimates} == {"cuped", "linear"}
         assert all(row.lift is not None and row.sampling_available for row in estimates)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_missing_sensitivity_covariate_does_not_change_decision_roster():
@@ -514,8 +522,9 @@ def test_missing_sensitivity_covariate_does_not_change_decision_roster():
             "sensitivity_covariate": [None] * (2 * n_per_arm),
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -539,7 +548,7 @@ def test_missing_sensitivity_covariate_does_not_change_decision_roster():
             )
         ],
     )
-    rows = analysis.run()
+    rows = view_readout(experiment, resolver)
 
     decision = [row for row in rows if row.method == "decision_cuped"]
     sensitivity = [row for row in rows if row.method == "sensitivity_mixed"]
@@ -597,8 +606,9 @@ def test_method_override_replaces_acquired_scalar_covariate_and_clears_sensitivi
         name="history_b",
         covariates=CupedCovariate(name="history_b", kind="continuous"),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -616,18 +626,23 @@ def test_method_override_replaces_acquired_scalar_covariate_and_clears_sensitivi
         ],
     )
     with pytest.warns(IncrementWarning) as caught:
-        overridden = analysis.run(decision_method=override, sensitivity_methods=())[0]
+        overridden = view_readout(
+            experiment, resolver, decision_method=override, sensitivity_methods=()
+        )[0]
     assert {getattr(record.message, "context", {})["setting"] for record in caught} == {
         "decision_method",
         "sensitivity_methods",
     }
-    reference = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="outcome", decision_method=override)],
-    ).run()[0]
+    reference = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="outcome", decision_method=override)],
+        )
+    )[0]
 
     assert isinstance(overridden, LiftEstimate) and isinstance(reference, LiftEstimate)
     assert overridden.method == "history_b"
@@ -652,9 +667,10 @@ def test_missing_effective_scalar_override_column_is_refused_for_adjusted_frames
     )
     if panel:
         frame["day"] = 1
-    analysis = (
-        Analysis.from_unit_panel(
+    experiment, resolver = (
+        from_frame(
             frame,
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -670,8 +686,9 @@ def test_missing_effective_scalar_override_column_is_refused_for_adjusted_frames
             ],
         )
         if panel
-        else Analysis.from_unit_summary(
+        else from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -688,7 +705,9 @@ def test_missing_effective_scalar_override_column_is_refused_for_adjusted_frames
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(
+        view_readout(
+            experiment,
+            resolver,
             decision_method=Method.cuped(
                 name="missing",
                 covariates=CupedCovariate(name="nope", kind="continuous"),
@@ -722,26 +741,32 @@ def test_scalar_method_subset_preserves_aliases_that_collide_with_scratch_column
         name="__covariate_y",
         covariates=CupedCovariate(name="__covariate_y", kind="continuous"),
     )
-    combined = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[
-            MetricSpec(
-                name="outcome",
-                decision_method=decision,
-                sensitivity_methods=(sensitivity,),
-            )
-        ],
-    ).run()
-    reference = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="outcome", decision_method=sensitivity)],
-    ).run()[0]
+    combined = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=decision,
+                    sensitivity_methods=(sensitivity,),
+                )
+            ],
+        )
+    )
+    reference = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="outcome", decision_method=sensitivity)],
+        )
+    )[0]
     selected = next(
         row for row in combined if isinstance(row, LiftEstimate) and row.method == sensitivity.name
     )
@@ -775,19 +800,22 @@ def test_two_mixed_methods_preserve_aliases_colliding_with_scratch_columns():
     )
 
     def run(methods):
-        return Analysis.from_unit_summary(
-            frame,
-            unit="unit",
-            group="arm",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="outcome",
-                    decision_method=methods[0],
-                    sensitivity_methods=tuple(methods[1:]),
-                )
-            ],
-        ).run()
+        return view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[
+                    MetricSpec(
+                        name="outcome",
+                        decision_method=methods[0],
+                        sensitivity_methods=tuple(methods[1:]),
+                    )
+                ],
+            )
+        )
 
     together = run((first, second))
     reference = run((first,))
@@ -829,19 +857,22 @@ def test_scalar_sensitivity_uses_its_own_covariate_when_mixed_cuped_is_present()
     )
 
     def run(methods):
-        return Analysis.from_unit_summary(
-            frame,
-            unit="unit",
-            group="arm",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="outcome",
-                    decision_method=methods[0],
-                    sensitivity_methods=tuple(methods[1:]),
-                )
-            ],
-        ).run()
+        return view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[
+                    MetricSpec(
+                        name="outcome",
+                        decision_method=methods[0],
+                        sensitivity_methods=tuple(methods[1:]),
+                    )
+                ],
+            )
+        )
 
     together = run((first, second, mixed))
     standalone = run((second,))
@@ -869,8 +900,9 @@ def test_each_scalar_family_matches_its_single_family_fit():
             "history_b": rng.normal(size=2 * n_per_arm),
         }
     )
-    analysis = Analysis.from_unit_summary(
+    analysis_experiment, analysis_resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -890,10 +922,15 @@ def test_each_scalar_family_matches_its_single_family_fit():
             )
         ],
     )
-    combined = {row.method: row for row in analysis.run() if isinstance(row, LiftEstimate)}
+    combined = {
+        row.method: row
+        for row in view_readout(analysis_experiment, analysis_resolver)
+        if isinstance(row, LiftEstimate)
+    }
     for name in ("history_a", "history_b"):
-        single = Analysis.from_unit_summary(
+        single_experiment, single_resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -908,9 +945,9 @@ def test_each_scalar_family_matches_its_single_family_fit():
             ],
         )
         try:
-            reference = single.run()[0]
+            reference = view_readout(single_experiment, single_resolver)[0]
         finally:
-            single.close()
+            single_resolver.close()
         assert isinstance(reference, LiftEstimate)
         assert combined[name].require_lift().value == pytest.approx(reference.require_lift().value)
         assert combined[name].require_lift().log_se == pytest.approx(

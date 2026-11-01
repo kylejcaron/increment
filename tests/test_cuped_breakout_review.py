@@ -5,10 +5,21 @@ from typing import Any, Literal, cast
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
+from increment import (
+    AnalysisPlan,
+    Method,
+    MetricSpec,
+    MultiplicitySpec,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_unit_day_artifact,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.estimation.results import LiftEstimate
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.frame import CupedCovariate
+from tests.analysis_factory import bound_source, view_readout
 
 
 def _linear_metric(
@@ -23,7 +34,7 @@ def _linear_metric(
     )
 
 
-def _breakout_analysis(*, unsupported: bool = False, null_segment: bool = False) -> Analysis:
+def _breakout_analysis(*, unsupported: bool = False, null_segment: bool = False) -> tuple[Any, Any]:
     rows: list[dict[str, Any]] = []
     segments: tuple[str | None, ...] = (
         ("north", "south", "unsupported")
@@ -53,8 +64,9 @@ def _breakout_analysis(*, unsupported: bool = False, null_segment: bool = False)
                         "revenue": float(index + (group == "treatment") * (3 + index % 3)),
                     }
                 )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -67,9 +79,9 @@ def _breakout_analysis(*, unsupported: bool = False, null_segment: bool = False)
 def test_public_breakout_localizes_failed_cuped_projection_and_keeps_siblings() -> None:
     from increment.errors import IncrementWarning
 
-    analysis = _breakout_analysis(unsupported=True)
+    experiment, resolver = _breakout_analysis(unsupported=True)
     with pytest.warns(IncrementWarning, match="estimation.cuped_linear.level_support"):
-        rows = analysis.run_breakout()
+        rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     by_segment = {row.dimension_value: row for row in rows}
     assert set(by_segment) == {"north", "south", "unsupported"}
@@ -93,8 +105,11 @@ def test_public_breakout_localizes_failed_cuped_projection_and_keeps_siblings() 
 
 
 def test_public_breakout_sensitivity_failure_does_not_enter_decision_family() -> None:
-    analysis = _breakout_analysis(unsupported=True)
-    rows = analysis.run_breakout(
+    experiment, resolver = _breakout_analysis(unsupported=True)
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="breakout", grain="total"),
         decision_method=Method(name="plain"),
         sensitivity_methods=[
             Method.cuped_multicovariate(
@@ -120,8 +135,8 @@ def test_public_breakout_sensitivity_failure_does_not_enter_decision_family() ->
 
 
 def test_public_breakout_null_segment_uses_its_unit_rows() -> None:
-    analysis = _breakout_analysis(null_segment=True)
-    rows = analysis.run_breakout()
+    experiment, resolver = _breakout_analysis(null_segment=True)
+    rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     null_rows = [row for row in rows if row.dimension_value == "__null__"]
     assert len(null_rows) == 1
@@ -163,8 +178,9 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
         decision_method=methods[0],
         sensitivity_methods=methods[1:],
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -173,7 +189,7 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
         breakouts=["segment"],
     )
 
-    result = analysis.run_breakout()
+    result = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert {(row.dimension_value, row.method) for row in result} == {
         (segment, method.name) for segment in ("north", "south") for method in methods
     }
@@ -200,18 +216,28 @@ def test_definitions_and_artifact_breakouts_supply_cuped_unit_evidence(tmp_path)
         "    breakouts: [{property: region, source: events}]",
     )
     defs_path.write_text(text.replace(_CATEGORICAL_DESIGN, ""))
-    native = Analysis.from_definitions("cat_test", defs_path, con)
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
     definitions = Definitions.model_validate(yaml.safe_load(defs_path.read_text()))
     experiment = definitions.experiment("cat_test")
     assert experiment is not None
     store = WarehouseArtifactStore(con, schema_name="breakout_review_artifacts")
     context = artifact_context(definitions, experiment, "error")
     extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    reference = native.publish_unit_day_artifact(store, extensions=extensions)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=extensions
+    )
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
 
-    native_rows = native.run_breakout()
-    artifact_rows = restored.run_breakout()
+    native_rows = view_readout(
+        native_experiment, native_resolver, Scope(view="breakout", grain="total")
+    )
+    artifact_rows = view_readout(
+        restored_experiment, restored_resolver, Scope(view="breakout", grain="total")
+    )
 
     def identity(rows):
         return [
@@ -257,8 +283,10 @@ def test_explicit_scalar_cuped_breakout_matches_frame_oracle(tmp_path) -> None:
             "",
         )
     )
-    native = Analysis.from_definitions("cat_test", defs_path, con)
-    frame = Analysis.from_unit_panel(
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
+    frame_experiment, frame_resolver = from_frame(
         pa.Table.from_pylist(
             [
                 {
@@ -272,6 +300,7 @@ def test_explicit_scalar_cuped_breakout_matches_frame_oracle(tmp_path) -> None:
                 for unit, values in units.items()
             ]
         ),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -287,8 +316,12 @@ def test_explicit_scalar_cuped_breakout_matches_frame_oracle(tmp_path) -> None:
         ],
         breakouts=["segment"],
     )
-    native_rows = native.run_breakout()
-    frame_rows = frame.run_breakout()
+    native_rows = view_readout(
+        native_experiment, native_resolver, Scope(view="breakout", grain="total")
+    )
+    frame_rows = view_readout(
+        frame_experiment, frame_resolver, Scope(view="breakout", grain="total")
+    )
     assert [(row.dimension_value, row.method) for row in native_rows] == [
         (row.dimension_value, row.method) for row in frame_rows
     ]
@@ -321,8 +354,9 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
             name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
         ),
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -331,7 +365,7 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
         breakouts=["segment"],
     )
 
-    (row,) = analysis.run_breakout()
+    (row,) = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     assert row.lift is not None
     assert row.abs_diff is None and row.abs_se is None
@@ -339,7 +373,7 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
     assert row.absolute_error_context is not None
     assert set(row.absolute_error_context) == {"value", "se", "dof"}
     assert row.discovery is True
-    (headline,) = analysis.run()
+    (headline,) = view_readout(experiment, resolver)
     assert isinstance(headline, LiftEstimate)
     assert headline.absolute_error_code == row.absolute_error_code
     assert headline.absolute_error_context == row.absolute_error_context
@@ -406,8 +440,9 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
             name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
         ),
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -418,7 +453,7 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
     )
 
     with pytest.warns():
-        result = analysis.run_breakout()
+        result = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     by_cell = {(row.dimension_value, row.group_id): row for row in result}
     assert by_cell[("north", "treatment")].lift is not None
@@ -452,7 +487,7 @@ def test_native_breakout_qr_never_uses_unit_frame(tmp_path, monkeypatch):
             "    breakouts: [{property: region, source: events}]",
         )
     )
-    analysis = Analysis.from_definitions("cat_test", path, con, store="none")
+    experiment, resolver = from_definitions(path, con, experiment_name="cat_test", store="none")
     methods: dict[str, Any] = {
         "sensitivity_methods": [
             Method.cuped_multicovariate(
@@ -461,14 +496,14 @@ def test_native_breakout_qr_never_uses_unit_frame(tmp_path, monkeypatch):
             )
         ],
     }
-    baseline = analysis.run_breakout(**methods)
+    baseline = view_readout(experiment, resolver, Scope(view="breakout", grain="total"), **methods)
 
     def forbidden_unit_frame(*args, **kwargs):
         pytest.fail("warehouse mixed-CUPED breakout fetched a per-unit frame")
 
     monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_frame)
     try:
-        after = analysis.run_breakout(**methods)
+        after = view_readout(experiment, resolver, Scope(view="breakout", grain="total"), **methods)
         assert [(r.dimension_value, r.method) for r in after] == [
             (r.dimension_value, r.method) for r in baseline
         ]
@@ -476,7 +511,7 @@ def test_native_breakout_qr_never_uses_unit_frame(tmp_path, monkeypatch):
             [r.require_lift().value for r in baseline], rel=1e-10, abs=1e-10
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -489,7 +524,6 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
 
     from increment.artifacts import SourceSnapshotEvidence
     from increment.estimation.engine import estimate_cuped_linear
-    from tests.analysis_factory import _native_source
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
     path = tmp_path / "breakout-trigger.yaml"
@@ -519,20 +553,24 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
     con.create_table(
         "events", obj=_with_preassignment_region(_events(n_per_arm=100, trigger_rate=0.5))
     )
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
     try:
-        (headline,) = analysis.run(metrics=["revenue"], population="triggered")
+        (headline,) = view_readout(
+            experiment, resolver, metrics=["revenue"], population="triggered"
+        )
         companion = next(
             row
-            for row in analysis.run(metrics=["revenue", "median"], population="triggered")
+            for row in view_readout(
+                experiment, resolver, metrics=["revenue", "median"], population="triggered"
+            )
             if row.metric == "revenue"
         )
         assert isinstance(headline, LiftEstimate) and isinstance(companion, LiftEstimate)
@@ -540,7 +578,7 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
             headline.require_lift().value, rel=1e-10
         )
         assert companion.analysis_population == "triggered"
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         metric = next(m for m in source.context.metrics if m.name == "revenue")
         declarations = cast(
             tuple[CupedCovariate, ...],
@@ -556,7 +594,12 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
             ),
             eager_only=True,
         )
-        actual = analysis.run_breakout(metrics=["revenue"], population="triggered")
+        actual = view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total", population="triggered"),
+            metrics=["revenue"],
+        )
         for row in actual:
             cell = frame.filter(nw.col("region") == row.dimension_value)
             expected = estimate_cuped_linear(
@@ -576,7 +619,7 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
             assert row.n_control is not None and row.n_treat is not None
             assert row.n_control + row.n_treat == cell.shape[0]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -617,8 +660,8 @@ def _triggered_linear_artifact(tmp_path):
         dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
         {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
     )
-    native = Analysis.from_definitions(
-        "exp", path, connection, source_snapshot_evidence=source_evidence
+    native = from_definitions(
+        path, connection, experiment_name="exp", source_snapshot_evidence=source_evidence
     )
     definitions = load(path)
     experiment = definitions.experiment("exp")
@@ -637,8 +680,8 @@ def _triggered_linear_artifact(tmp_path):
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind in required_kinds
     ]
-    reference = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(*native, store, extensions=extensions)
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
     return native, adopted, connection
 
 
@@ -646,7 +689,9 @@ def _triggered_linear_artifact(tmp_path):
 def test_triggered_cuped_definition_and_artifact_runs_match(tmp_path):
     from tests.parity_harness.comparison import nested_close
 
-    native, artifact, connection = _triggered_linear_artifact(tmp_path)
+    (native_experiment, native_resolver), (artifact_experiment, artifact_resolver), connection = (
+        _triggered_linear_artifact(tmp_path)
+    )
 
     def stats(rows):
         return {
@@ -667,16 +712,41 @@ def test_triggered_cuped_definition_and_artifact_runs_match(tmp_path):
 
     try:
         assert nested_close(
-            stats(native.run(metrics=["revenue"], population="triggered")),
-            stats(artifact.run(metrics=["revenue"], population="triggered")),
+            stats(
+                view_readout(
+                    native_experiment, native_resolver, metrics=["revenue"], population="triggered"
+                )
+            ),
+            stats(
+                view_readout(
+                    artifact_experiment,
+                    artifact_resolver,
+                    metrics=["revenue"],
+                    population="triggered",
+                )
+            ),
         )
         assert nested_close(
-            stats(native.run_breakout(metrics=["revenue"], population="triggered")),
-            stats(artifact.run_breakout(metrics=["revenue"], population="triggered")),
+            stats(
+                view_readout(
+                    native_experiment,
+                    native_resolver,
+                    Scope(view="breakout", grain="total", population="triggered"),
+                    metrics=["revenue"],
+                )
+            ),
+            stats(
+                view_readout(
+                    artifact_experiment,
+                    artifact_resolver,
+                    Scope(view="breakout", grain="total", population="triggered"),
+                    metrics=["revenue"],
+                )
+            ),
         )
     finally:
-        artifact.close()
-        native.close()
+        artifact_resolver.close()
+        native_resolver.close()
         connection.disconnect()
 
 
@@ -692,13 +762,15 @@ def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(cuped_multicovariate, "fit_cuped_multicovariate", counted)
-    rows = _breakout_analysis().run_breakout(
+    rows = view_readout(
+        *_breakout_analysis(),
+        Scope(view="breakout", grain="total"),
         sensitivity_methods=[
             Method.cuped_multicovariate(
                 name="other-linear",
                 covariates=CupedCovariate(name="pre", kind="categorical"),
             )
-        ]
+        ],
     )
     assert all(r.lift is not None for r in rows)
     assert {(r.dimension_value, r.method) for r in rows} == {
@@ -762,13 +834,15 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
         ],
     )
     path.write_text(yaml.safe_dump(definitions))
-    analysis = Analysis.from_definitions("cat_test", path, con)
+    analysis_experiment, analysis_resolver = from_definitions(path, con, experiment_name="cat_test")
     try:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            actual = analysis.run_breakout()
+            actual = view_readout(
+                analysis_experiment, analysis_resolver, Scope(view="breakout", grain="total")
+            )
         for source in ("events", "profiles"):
-            oracle = Analysis.from_unit_panel(
+            oracle_experiment, oracle_resolver = from_frame(
                 pa.Table.from_pylist(
                     [
                         {
@@ -782,6 +856,7 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
                         for unit, values in units.items()
                     ]
                 ),
+                shape="panel",
                 unit="unit",
                 group="group",
                 date="day",
@@ -799,7 +874,12 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
             )
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                expected = {row.dimension_value: row for row in oracle.run_breakout()}
+                expected = {
+                    row.dimension_value: row
+                    for row in view_readout(
+                        oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total")
+                    )
+                }
             qualified = [row for row in actual if row.source == source]
             assert {row.dimension_value for row in qualified} == set(expected)
             for row in qualified:
@@ -811,7 +891,7 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
                         reference.require_lift().value, rel=1e-10
                     )
     finally:
-        analysis.close()
+        cast(Any, analysis_resolver).close()
         con.disconnect()
 
 
@@ -829,7 +909,7 @@ def test_native_breakout_override_without_covariates_refuses_before_queries(tmp_
             "    plan: {primary: revenue}\n    breakouts: [{property: region, source: events}]",
         )
     )
-    analysis = Analysis.from_definitions("cat_test", path, con)
+    experiment, resolver = from_definitions(path, con, experiment_name="cat_test")
     materializations = 0
     original = con.to_pyarrow
 
@@ -845,7 +925,7 @@ def test_native_breakout_override_without_covariates_refuses_before_queries(tmp_
         assert raised.value.code == "estimation.engine.method_covariates"
         assert materializations == 0
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -876,8 +956,9 @@ def test_breakout_covariate_named_like_internal_dimension_keeps_its_values() -> 
                 name="linear", covariates=CupedCovariate(name=covariate, kind="categorical")
             ),
         )
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             frame,
+            shape="panel",
             unit="unit",
             group="group",
             date="day",
@@ -885,7 +966,10 @@ def test_breakout_covariate_named_like_internal_dimension_keeps_its_values() -> 
             metrics=[metric],
             breakouts=["segment"],
         )
-        return {row.dimension_value: row for row in analysis.run_breakout()}
+        return {
+            row.dimension_value: row
+            for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        }
 
     reference = run("pre")
     colliding = run("__breakout_dimension")
@@ -923,8 +1007,9 @@ def test_readout_rows_forward_projection_refusal_sidecars() -> None:
             name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
         ),
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -932,8 +1017,8 @@ def test_readout_rows_forward_projection_refusal_sidecars() -> None:
         metrics=[metric],
         breakouts=["segment"],
     )
-    (headline,) = analysis.run()
-    (segment,) = analysis.run_breakout()
+    (headline,) = view_readout(experiment, resolver)
+    (segment,) = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert isinstance(headline, LiftEstimate)
     for estimate in (headline, segment):
         (converted,) = estimates_to_readout([estimate])
@@ -976,7 +1061,7 @@ def _ratio_analysis(
     method: Method,
     *,
     include_linear_sensitivity: bool = False,
-) -> Analysis:
+) -> tuple[Any, Any]:
     metric = MetricSpec(
         name="rpo",
         type="ratio",
@@ -994,8 +1079,9 @@ def _ratio_analysis(
             else ()
         ),
     )
-    return Analysis.from_unit_panel(
+    return from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="group",
         date="day",
@@ -1014,9 +1100,9 @@ def test_zero_denominator_arm_is_withheld_like_the_unadjusted_path() -> None:
     )
     unadjusted = _ratio_analysis(_ratio_rows_with_dead_arm(), Method(name="unadjusted"))
 
-    def by_arm(analysis: Analysis) -> dict[str, LiftEstimate]:
+    def by_arm(analysis: tuple[Any, Any]) -> dict[str, LiftEstimate]:
         with pytest.warns():
-            rows = list(analysis.run())
+            rows = list(view_readout(*analysis))
         estimates = [row for row in rows if isinstance(row, LiftEstimate)]
         assert len(estimates) == len(rows)
         return {row.group_id: row for row in estimates}
@@ -1033,10 +1119,14 @@ def test_zero_denominator_arm_is_withheld_like_the_unadjusted_path() -> None:
     assert dead.sampling_available is False
 
     with pytest.warns():
-        linear_cells = {(row.dimension_value, row.group_id): row for row in linear.run_breakout()}
+        linear_cells = {
+            (row.dimension_value, row.group_id): row
+            for row in view_readout(*linear, Scope(view="breakout", grain="total"))
+        }
     with pytest.warns():
         unadjusted_cells = {
-            (row.dimension_value, row.group_id): row for row in unadjusted.run_breakout()
+            (row.dimension_value, row.group_id): row
+            for row in view_readout(*unadjusted, Scope(view="breakout", grain="total"))
         }
     assert set(linear_cells) == set(unadjusted_cells)
     for key, reference in unadjusted_cells.items():
@@ -1064,7 +1154,7 @@ def test_zero_denominator_control_fails_every_linear_contrast_without_abort() ->
     )
     for analysis in (linear, unadjusted):
         with pytest.raises(CodedError) as raised, pytest.warns():
-            analysis.run()
+            view_readout(*analysis)
         assert raised.value.code == "readout.estimate_lift_every"
         if analysis is linear:
             failures = cast(list[dict[str, Any]], raised.value.context["failures"])
@@ -1099,7 +1189,7 @@ def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
     outcomes: dict[str, list[dict[str, Any]]] = {}
     for label, analysis in (("linear", linear), ("unadjusted", unadjusted)):
         with pytest.raises(CodedError) as raised, pytest.warns():
-            analysis.run()
+            view_readout(*analysis)
         assert raised.value.code == "readout.estimate_lift_every"
         outcomes[label] = cast(list[dict[str, Any]], raised.value.context["failures"])
     assert {failure["group_id"] for failure in outcomes["linear"]} == set(zero_groups)
@@ -1110,11 +1200,13 @@ def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
         assert {failure["context"]["group_id"] for failure in outcomes[label]} == set(zero_groups)
     with pytest.warns():
         linear_cells = {
-            (row.dimension_value, row.group_id): row.excluded for row in linear.run_breakout()
+            (row.dimension_value, row.group_id): row.excluded
+            for row in view_readout(*linear, Scope(view="breakout", grain="total"))
         }
     with pytest.warns():
         unadjusted_cells = {
-            (row.dimension_value, row.group_id): row.excluded for row in unadjusted.run_breakout()
+            (row.dimension_value, row.group_id): row.excluded
+            for row in view_readout(*unadjusted, Scope(view="breakout", grain="total"))
         }
     assert linear_cells == unadjusted_cells
     assert set(linear_cells.values()) == {"nonpositive_mean"}
@@ -1141,9 +1233,11 @@ def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
     )
 
     # Every decision cell refused: the readout refuses as a whole, carrying each arm's own reason.
-    decision = _ratio_analysis(_dead_arm_rows_with_unsupported_sibling(), linear)
+    decision_experiment, decision_resolver = _ratio_analysis(
+        _dead_arm_rows_with_unsupported_sibling(), linear
+    )
     with pytest.raises(CodedError) as raised, pytest.warns():
-        decision.run()
+        view_readout(decision_experiment, decision_resolver)
     assert raised.value.code == "readout.estimate_lift_every"
     failures = {
         failure["group_id"]: failure
@@ -1157,13 +1251,15 @@ def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
     assert failures["treatment"]["context"]["level"] == "rare"
 
     # A valid decision alongside: the linear sensitivity rows each keep their own refusal.
-    sensitivity = _ratio_analysis(
+    sensitivity_experiment, sensitivity_resolver = _ratio_analysis(
         _dead_arm_rows_with_unsupported_sibling(),
         Method(name="unadjusted"),
         include_linear_sensitivity=True,
     )
     with pytest.warns():
-        results = sensitivity.run(sensitivity_methods=[linear])
+        results = view_readout(
+            sensitivity_experiment, sensitivity_resolver, sensitivity_methods=[linear]
+        )
     by_cell = {(row.group_id, row.method): row for row in results if isinstance(row, LiftEstimate)}
     assert by_cell[("treatment", "unadjusted")].lift is not None
     for arm, (code, context) in expected.items():
@@ -1178,7 +1274,7 @@ def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
 def test_withheld_arm_reports_requested_posterior_unavailable() -> None:
     from increment.estimation.inference import Normal
 
-    analysis = _ratio_analysis(
+    experiment, resolver = _ratio_analysis(
         _ratio_rows_with_dead_arm(),
         Method.cuped_multicovariate(
             name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
@@ -1186,7 +1282,7 @@ def test_withheld_arm_reports_requested_posterior_unavailable() -> None:
     )
 
     with pytest.warns():
-        results = analysis.run(prior=Normal(mu=0.0, sigma=0.1))
+        results = view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.1))
 
     by_arm = {row.group_id: row for row in results if isinstance(row, LiftEstimate)}
     for arm in ("dead", "treatment"):

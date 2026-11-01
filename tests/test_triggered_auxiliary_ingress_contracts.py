@@ -7,14 +7,17 @@ metadata describes actual boundaries rather than nearby native-source tests.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis
+from increment import from_frame, from_moments, from_switchback_frame
 from increment.errors import CapabilityError
+from increment.estimators import sitewide
+from increment.workflows import breakout_summaries, export_moments, factor_summaries
+from tests.analysis_factory import bound_analysis
 from tests.capability_consumers_auxiliary import assert_expected, assert_refusal
 from tests.test_frame_switchback import _assignment, _rows
 
@@ -47,14 +50,20 @@ def _panel_rows() -> pd.DataFrame:
     )
 
 
-def _analysis_for(ingress: str, tmp_path: Path) -> Analysis:
+def _analysis_for(ingress: str, tmp_path: Path) -> Any:
     if ingress == "summary":
-        return Analysis.from_unit_summary(
-            _unit_rows(), unit="unit", group="group", control="C", metrics={"revenue": "mean"}
+        return from_frame(
+            _unit_rows(),
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="C",
+            metrics={"revenue": "mean"},
         )
     if ingress == "panel":
-        return Analysis.from_unit_panel(
+        return from_frame(
             _panel_rows(),
+            shape="panel",
             unit="unit",
             group="group",
             date="date",
@@ -62,20 +71,25 @@ def _analysis_for(ingress: str, tmp_path: Path) -> Analysis:
             metrics={"revenue": "mean"},
         )
     if ingress == "moments":
-        source = Analysis.from_unit_summary(
-            _unit_rows(), unit="unit", group="group", control="C", metrics={"revenue": "mean"}
+        experiment, resolver = from_frame(
+            _unit_rows(),
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="C",
+            metrics={"revenue": "mean"},
         )
         try:
             path = tmp_path / "source-moments.parquet"
-            source.export(path)
+            export_moments(experiment, resolver, path)
             rows = pq.read_table(path).to_pylist()
         finally:
-            source.close()
-        return Analysis.from_moments(rows, control="C", metrics={"revenue": "mean"})
+            resolver.close()
+        return from_moments(rows, control="C", metrics={"revenue": "mean"})
     if ingress == "switchback":
         from tests.test_frame_switchback import _identification
 
-        return Analysis.from_switchback_panel(
+        return from_switchback_frame(
             pd.DataFrame(_rows()),
             unit="unit",
             cycle="cycle",
@@ -89,15 +103,16 @@ def _analysis_for(ingress: str, tmp_path: Path) -> Analysis:
     raise AssertionError(f"unexpected ingress {ingress}")
 
 
-def _attempt(analysis: Analysis, operation: str, metric: str) -> object:
+def _attempt(analysis: tuple[Any, Any], operation: str, metric: str) -> object:
+    experiment, resolver = analysis
     if operation == "breakout":
-        return analysis.breakout_summaries()
+        return breakout_summaries(experiment, resolver)
     if operation == "factor":
-        return analysis.factor_summaries()
+        return factor_summaries(experiment, resolver)
     if operation == "dashboard":
-        return analysis.dashboard_group_data(metrics=(), population="triggered")
+        return bound_analysis(resolver).dashboard_group_data(metrics=(), population="triggered")
     if operation == "sitewide":
-        return analysis.sitewide(metric)
+        return sitewide(experiment, resolver, metric)
     raise AssertionError(f"unexpected operation {operation}")
 
 
@@ -119,39 +134,41 @@ def test_triggered_auxiliary_operations_reach_real_ingress_boundaries(
                 stage="read",
             )
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
-def _constructor_with_trigger(ingress: str, tmp_path: Path) -> Analysis:
+def _constructor_with_trigger(ingress: str, tmp_path: Path) -> Any:
     """Attempt to express trigger membership at the actual public constructor."""
     if ingress == "summary":
-        return Analysis.from_unit_summary(
+        return from_frame(  # ty: ignore[no-matching-overload]
             _unit_rows(),
+            shape="summary",
             unit="unit",
             group="group",
             control="C",
             metrics={"revenue": "mean"},
-            trigger="surface",  # ty: ignore[unknown-argument]
+            trigger="surface",
         )
     if ingress == "panel":
-        return Analysis.from_unit_panel(
+        return from_frame(  # ty: ignore[no-matching-overload]
             _panel_rows(),
+            shape="panel",
             unit="unit",
             group="group",
             date="date",
             control="C",
             metrics={"revenue": "mean"},
-            trigger="surface",  # ty: ignore[unknown-argument]
+            trigger="surface",
         )
     if ingress == "moments":
-        source = _analysis_for("summary", tmp_path)
+        experiment, resolver = _analysis_for("summary", tmp_path)
         try:
             path = tmp_path / "cate-source-moments.parquet"
-            source.export(path)
+            export_moments(experiment, resolver, path)
             rows = pq.read_table(path).to_pylist()
         finally:
-            source.close()
-        return Analysis.from_moments(
+            resolver.close()
+        return from_moments(
             rows,
             control="C",
             metrics={"revenue": "mean"},
@@ -160,7 +177,7 @@ def _constructor_with_trigger(ingress: str, tmp_path: Path) -> Analysis:
     if ingress == "switchback":
         from tests.test_frame_switchback import _identification
 
-        return Analysis.from_switchback_panel(
+        return from_switchback_frame(
             pd.DataFrame(_rows()),
             unit="unit",
             cycle="cycle",
