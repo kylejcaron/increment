@@ -3,7 +3,7 @@
 Run with `uv run --extra demo --extra tables --extra dashboard python
 scripts/probe_capability_table.py`.
 
-This script drives real `Analysis` construction and never asserts a value
+This script drives real builder construction and never asserts a value
 from prose: it either transcribes `tests.parity_harness`'s own
 `PARITY_CASES` (report_harness_cells, below) through `run_case`/
 `assert_parity` -- so a printed "parity: ok" means every non-waived
@@ -13,8 +13,8 @@ not (yet) carry a row for, using the identical `ParityCase`/`run_case`/
 `assert_parity` machinery locally (report_additional_cells, below). Every
 row prints one of: "parity: ok" (agreement, or a coded, expected waiver on
 every non-attempted constructor), "parity: FAILED <reason>" (a real
-disagreement), or, for the two probes that call `Analysis.planning_baseline`
-directly rather than `.run()`, one line per constructor naming the value or
+disagreement), or, for the two probes that call `workflows.planning_baseline`
+directly rather than `run`, one line per builder naming the value or
 the coded refusal.
 
 The capability tables are projections of the case and matrix contracts; this
@@ -28,18 +28,27 @@ import datetime as dt
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import ibis
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+import yaml
+from ibis.backends.sql import SQLBackend
 
-from increment.analysis import Analysis
+from increment import (
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+    from_unit_day_artifact,
+)
 from increment.errors import CodedError
 from increment.frame import MetricSpec
 from increment.power import Baseline
-from increment.semantics.models import AnalysisPlan, Definitions
-from tests.analysis_factory import make_analysis
+from increment.semantics.models import AnalysisPlan
+from increment.workflows import export_moments, planning_baseline
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.cases import (
     _QUANTILE_TIES_DEFS_YAML,
@@ -78,8 +87,9 @@ def _report_case(case: ParityCase) -> bool:
 # ``source.moments()``, which panel and moments-only constructors do not have.
 
 
-def _arm_baseline(analysis: Analysis, metric: str) -> Baseline:
-    baseline = analysis.planning_baseline(metric)
+def _arm_baseline(binding: tuple[Any, Any], metric: str) -> Baseline:
+    experiment, resolver = binding
+    baseline = planning_baseline(experiment, resolver, metric)
     assert isinstance(baseline, Baseline)
     return baseline
 
@@ -87,16 +97,18 @@ def _arm_baseline(analysis: Analysis, metric: str) -> Baseline:
 def _row_planning_baseline_mean() -> None:
     plan = AnalysisPlan(secondaries=["revenue"])
     rows = ds.event_rows()
-    defs_dict = ds.definitions_dict(plan=plan)
+    defs_path = Path(tempfile.mkdtemp()) / "defs.yml"
+    defs_path.write_text(yaml.safe_dump(ds.definitions_dict(plan=plan)))
     con = ds.duckdb_connection(rows)
+    assert isinstance(con, SQLBackend)
     try:
-        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        native = from_definitions(defs_path, con, experiment_name="exp")
         baseline = _arm_baseline(native, "revenue")
         print(
             f"planning_baseline_mean: from_definitions: yes (mean={baseline.mean:.6g}, var={baseline.var:.6g})"
         )
 
-        native2 = make_analysis(con, Definitions.model_validate(defs_dict), experiment="exp")
+        native2 = from_definitions(defs_path, con, experiment_name="exp")
         adopted = _publish_and_adopt(con, native2)
         baseline2 = _arm_baseline(adopted, "revenue")
         print(
@@ -105,8 +117,9 @@ def _row_planning_baseline_mean() -> None:
         )
 
         frame = ds.unit_summary_frame(con)
-        summary = Analysis.from_unit_summary(
+        summary = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -115,13 +128,14 @@ def _row_planning_baseline_mean() -> None:
         )
         baseline3 = _arm_baseline(summary, "revenue")
         print(
-            f"planning_baseline_mean: from_unit_summary: yes "
+            f'planning_baseline_mean: from_frame(shape="summary"): yes '
             f"(mean={baseline3.mean:.6g}, var={baseline3.var:.6g})"
         )
 
         panel = ds.unit_panel_frame(frame)
-        panel_analysis = Analysis.from_unit_panel(
+        panel_binding = from_frame(
             panel,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -129,22 +143,22 @@ def _row_planning_baseline_mean() -> None:
             metrics=[MetricSpec(name="revenue", type="mean", missing="zero")],
             plan=plan,
         )
-        baseline4 = _arm_baseline(panel_analysis, "revenue")
+        baseline4 = _arm_baseline(panel_binding, "revenue")
         print(
-            f"planning_baseline_mean: from_unit_panel: yes "
+            f'planning_baseline_mean: from_frame(shape="panel"): yes '
             f"(mean={baseline4.mean:.6g}, var={baseline4.var:.6g})"
         )
 
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "m.parquet"
-            summary.export(path)
+            export_moments(*summary, path)
             import pyarrow.parquet as pq
 
             moments_rows = pq.read_table(path).to_pylist()
-        moments_analysis = Analysis.from_moments(
+        moments_binding = from_moments(
             moments_rows, control="control", metrics=[MetricSpec(name="revenue", type="mean")]
         )
-        baseline5 = _arm_baseline(moments_analysis, "revenue")
+        baseline5 = _arm_baseline(moments_binding, "revenue")
         print(
             f"planning_baseline_mean: from_moments: yes "
             f"(mean={baseline5.mean:.6g}, var={baseline5.var:.6g})"
@@ -163,7 +177,7 @@ def _row_planning_baseline_mean() -> None:
     from increment.semantics.design import Randomized
     from tests.test_analysis_planning_baseline import TestPlanningBaselineOnSwitchback
 
-    switchback = Analysis.from_switchback_panel(
+    switchback = from_switchback_frame(
         TestPlanningBaselineOnSwitchback._panel(),
         unit="unit",
         cycle="cycle",
@@ -179,8 +193,8 @@ def _row_planning_baseline_mean() -> None:
             window=SwitchbackWindow(washout_steps=1, observation_steps=4, carryover_order=1),
         ),
     )
-    pilot = switchback.planning_baseline("orders")
-    print(f"planning_baseline_mean: from_switchback_panel: yes ({type(pilot).__name__})")
+    pilot = planning_baseline(*switchback, "orders")
+    print(f"planning_baseline_mean: from_switchback_frame: yes ({type(pilot).__name__})")
 
 
 def _row_planning_baseline_quantile() -> None:
@@ -198,7 +212,7 @@ def _row_planning_baseline_quantile() -> None:
     defs_path = Path(td) / "defs.yml"
     defs_path.write_text(_QUANTILE_TIES_DEFS_YAML)
     try:
-        native = Analysis.from_definitions("exp", defs_path, con)
+        native = from_definitions(defs_path, con, experiment_name="exp")
         baseline = _arm_baseline(native, "p90_latency")
         print(f"planning_baseline_quantile: from_definitions: yes (mean={baseline.mean:.6g})")
     except CodedError as exc:
@@ -206,8 +220,9 @@ def _row_planning_baseline_quantile() -> None:
             f"planning_baseline_quantile from_definitions unexpectedly refused {exc.code!r}"
         ) from exc
 
-    summary = Analysis.from_unit_summary(
+    summary = from_frame(
         _per_unit_frame(),
+        shape="summary",
         unit="user_id",
         group="group_id",
         control="C",
@@ -216,10 +231,12 @@ def _row_planning_baseline_quantile() -> None:
     )
     try:
         baseline2 = _arm_baseline(summary, "p90_latency")
-        print(f"planning_baseline_quantile: from_unit_summary: yes (mean={baseline2.mean:.6g})")
+        print(
+            f'planning_baseline_quantile: from_frame(shape="summary"): yes (mean={baseline2.mean:.6g})'
+        )
     except CodedError as exc:
         raise AssertionError(
-            f"planning_baseline_quantile from_unit_summary unexpectedly refused {exc.code!r}"
+            f'planning_baseline_quantile from_frame(shape="summary") unexpectedly refused {exc.code!r}'
         ) from exc
 
     per_unit = _per_unit_frame().to_pylist()
@@ -241,8 +258,9 @@ def _row_planning_baseline_quantile() -> None:
                 "latency": r["latency"],
             }
         )
-    panel_analysis = Analysis.from_unit_panel(
+    panel_binding = from_frame(
         pd.DataFrame(panel_rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -251,15 +269,17 @@ def _row_planning_baseline_quantile() -> None:
         plan=AnalysisPlan(secondaries=["p90_latency"]),
     )
     try:
-        baseline3 = _arm_baseline(panel_analysis, "p90_latency")
-        print(f"planning_baseline_quantile: from_unit_panel: yes (mean={baseline3.mean:.6g})")
+        baseline3 = _arm_baseline(panel_binding, "p90_latency")
+        print(
+            f'planning_baseline_quantile: from_frame(shape="panel"): yes (mean={baseline3.mean:.6g})'
+        )
     except CodedError as exc:
         raise AssertionError(
-            f"planning_baseline_quantile from_unit_panel unexpectedly refused {exc.code!r}"
+            f'planning_baseline_quantile from_frame(shape="panel") unexpectedly refused {exc.code!r}'
         ) from exc
 
     try:
-        native2 = Analysis.from_definitions("exp", defs_path, con)
+        native2 = from_definitions(defs_path, con, experiment_name="exp")
         adopted = _publish_and_adopt(con, native2)
         baseline4 = _arm_baseline(adopted, "p90_latency")
         print(
@@ -273,7 +293,7 @@ def _row_planning_baseline_quantile() -> None:
     try:
         with tempfile.TemporaryDirectory() as td2:
             path = Path(td2) / "m.parquet"
-            summary.export(path)
+            export_moments(*summary, path)
         raise AssertionError("planning_baseline_quantile from_moments unexpectedly exported a cube")
     except CodedError as exc:
         if exc.code != "source.frame.quantile_no_moments":
@@ -286,49 +306,58 @@ def _row_planning_baseline_quantile() -> None:
         )
 
     print(
-        "planning_baseline_quantile: from_switchback_panel: not attempted "
+        "planning_baseline_quantile: from_switchback_frame: not attempted "
         "(switchback metrics must be type='mean' or type='conversion', "
         "source.frame.switchback.metric)"
     )
     con.disconnect()
 
 
-_CONSTRUCTORS = (
-    "from_unit_summary",
-    "from_unit_panel",
-    "from_switchback_panel",
-    "from_definitions",
-    "from_unit_day_artifact",
-    "from_moments",
-)
+_BUILDERS = {
+    'from_frame(shape="summary")': from_frame,
+    'from_frame(shape="panel")': from_frame,
+    "from_switchback_frame": from_switchback_frame,
+    "from_definitions": from_definitions,
+    "from_unit_day_artifact": from_unit_day_artifact,
+    "from_moments": from_moments,
+}
 
 
 def _row_logged_policy_contrast() -> None:
-    """The logged-policy family consumes a `LoggedTrace`, which no `Analysis`
-    surface produces or accepts: not expressible on every constructor (nothing to
-    call, no `.code`), checked against the live signatures rather than asserted
-    from prose."""
+    """The logged-policy family consumes a `LoggedTrace`, which no builder or
+    source-bound operation produces or accepts: not expressible on every builder
+    (nothing to call, no `.code`), checked against the live signatures rather than
+    asserted from prose."""
     import inspect
 
+    from increment import artifacts, query, run, workflows
     from increment.logged_policy import LoggedTrace, estimate_policy_contrast
 
     first = next(iter(inspect.signature(estimate_policy_contrast).parameters.values()))
     assert first.annotation in (LoggedTrace, "LoggedTrace"), first
+    surfaces = {
+        **_BUILDERS,
+        "run": run,
+        **{
+            f"{module.__name__}.{name}": member
+            for module in (workflows, query, artifacts)
+            for name, member in inspect.getmembers(module, inspect.isfunction)
+            if not name.startswith("_")
+        },
+    }
     producers = [
         name
-        for name, member in inspect.getmembers(Analysis)
-        if callable(member)
-        and not name.startswith("_")
-        and "LoggedTrace" in str(inspect.signature(member).return_annotation)
+        for name, member in surfaces.items()
+        if "LoggedTrace" in str(inspect.signature(member).return_annotation)
     ]
     assert not producers, producers
-    assert not hasattr(Analysis, "estimate_policy_contrast")
-    for constructor in _CONSTRUCTORS:
-        assert callable(getattr(Analysis, constructor))
+    assert all(not hasattr(module, "estimate_policy_contrast") for module in (workflows, query))
+    for builder, member in _BUILDERS.items():
+        assert callable(member)
         print(
-            f"logged_policy_contrast: {constructor}: not expressible (no Analysis "
-            "surface yields a LoggedTrace or takes a decision trace, so there is no call to "
-            "make and no .code; ingress is LoggedTrace.from_records / from_frame)"
+            f"logged_policy_contrast: {builder}: not expressible (no builder or "
+            "source-bound operation yields a LoggedTrace or takes a decision trace, so there "
+            "is no call to make and no .code; ingress is LoggedTrace.from_records / from_frame)"
         )
 
 
