@@ -213,7 +213,6 @@ tests/test_dashboard_overview.py 15
 tests/test_dashboard_population.py 6
 tests/test_dashboard_result_evidence.py 11
 tests/test_errors.py 1
-# Snapshot hash seams expose component kinds for evidence-driven QR parity.
 tests/test_evidence_identity_parity.py 2
 tests/test_experiment_health.py 3
 tests/test_exploratory_metrics.py 1

@@ -38,6 +38,22 @@ class Resolver(Protocol):
     def verify(self, source_refs: Sequence[SourceReference], provider: Any) -> list[CodedError]: ...
 
 
+@runtime_checkable
+class _DeclarationValidator(Protocol):
+    def validate_experiment(self, experiment: Experiment) -> None: ...
+
+
+def _resolve_verified(exp: Experiment, resolver: Resolver, *, ctx: object | None = None) -> object:
+    """Validate declarations and verify the resolved provider before use."""
+    if isinstance(resolver, _DeclarationValidator):
+        resolver.validate_experiment(exp)
+    provider = resolver.resolve(exp.source_refs, ctx)
+    failures = resolver.verify(exp.source_refs, provider)
+    if failures:
+        raise failures[0]
+    return provider
+
+
 class BoundResolver:
     """Verify a caller-owned EvidenceProvider without executing experiments."""
 
@@ -301,10 +317,7 @@ def run(
             scopes=selected,
             operations={key: value for key, value in exp.operations.items() if key in hashes},
         )
-    provider = resolver.resolve(exp.source_refs, ctx)
-    failures = resolver.verify(exp.source_refs, provider)
-    if failures:
-        raise failures[0]
+    provider = _resolve_verified(exp, resolver, ctx=ctx)
     execute = getattr(resolver, "run_experiment", None)
     if not callable(execute):
         _refuse("kernel.run.provider_execution_unavailable")

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic_core import PydanticSerializationError
 
+from increment._binding import ResolverBinding
 from increment._canonical import declaration_value
 from increment._runnability import (
     context_payload,
@@ -176,7 +177,7 @@ def experiment_for_analysis(
     )
 
 
-class AnalysisResolver:
+class AnalysisResolver(ResolverBinding):
     """Execute through the established Analysis implementation."""
 
     def __init__(
@@ -187,58 +188,18 @@ class AnalysisResolver:
         run_options: dict[str, object] | None = None,
         return_run_result: bool = False,
     ) -> None:
+        super().__init__(
+            analysis._binding,
+            experiment,
+            reopen_artifact=lambda _binding: analysis._ensure_artifact_source(),
+        )
         self._analysis = analysis
-        self._source = analysis._state.source
-        self._experiment = experiment
         self._run_options = dict(run_options or {})
         self._return_run_result = return_run_result
         self._run_result_factory: Callable[..., Any] | None = None
-        self.catalog_writer: Callable[[Experiment], None] | None = None
-
-    def resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> Any:
-        del source_refs, ctx
-        return self._source
 
     def set_run_result_factory(self, factory: Callable[..., Any]) -> None:
         self._run_result_factory = factory
-
-    def verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
-        failures = []
-        if provider is not self._source or tuple(
-            (reference.name, reference.uri) for reference in source_refs
-        ) != tuple((reference.name, reference.uri) for reference in self._experiment.source_refs):
-            return [
-                CodedError(
-                    "Source references do not identify the bound provider",
-                    code="kernel.resolver.digest_mismatch",
-                    context={"source_refs": tuple(reference.name for reference in source_refs)},
-                )
-            ]
-        actual_digest = _source_digest(provider)
-        for reference in source_refs:
-            if reference.expected_digest is not None and reference.expected_digest != actual_digest:
-                failures.append(
-                    CodedError(
-                        "Source declarations do not match the bound provider",
-                        code="kernel.resolver.digest_mismatch",
-                        context={
-                            "source_ref": reference.name,
-                            "expected": reference.expected_digest,
-                            "actual": actual_digest,
-                        },
-                    )
-                )
-        capabilities = getattr(provider, "evidence", None)
-        for reference in source_refs:
-            if reference.capabilities is not None and reference.capabilities != capabilities:
-                failures.append(
-                    CodedError(
-                        "Source declarations do not match the bound provider",
-                        code="kernel.resolver.capability_mismatch",
-                        context={"source_ref": reference.name},
-                    )
-                )
-        return failures
 
     def capture_sequential(
         self,
@@ -253,22 +214,15 @@ class AnalysisResolver:
             finalized=finalized, previous=previous, as_of=as_of, freeze=freeze
         )
 
+    def resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> Any:
+        provider = super().resolve(source_refs, ctx)
+        self._analysis._binding = self.binding
+        return provider
+
     def run_experiment(
         self, experiment: Experiment, provider: object, *, options: dict[str, object] | None = None
     ) -> object:
-        declared = self._experiment
-        invalid = (
-            provider is not self._source
-            or experiment.experiment_id != declared.experiment_id
-            or experiment.design != declared.design
-            or experiment.registration != declared.registration
-            or declaration_value(experiment.analysis_context)
-            != declaration_value(declared.analysis_context)
-            or any(
-                declared.metrics.get(name) != metric for name, metric in experiment.metrics.items()
-            )
-        )
-        if invalid:
+        if provider is not self._source:
             self._unavailable(experiment, "declarations")
         planned = []
         for scope in experiment.scopes:

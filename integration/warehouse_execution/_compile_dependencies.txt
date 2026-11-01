@@ -1,10 +1,11 @@
-# Traced on commit: b525c4cacc1353bf32d2ceb6499c2496c1d58dbc
+# Traced on commit: 6a920db7c9807ac75923c0ba0a4121b148ae6670
 increment
 increment._analysis_config
 increment._analysis_execution
 increment._analysis_kernel_adapter
 increment._artifact_identity
 increment._assignment_refusals
+increment._binding
 increment._breakout_readouts
 increment._canonical
 increment._cuped_evidence

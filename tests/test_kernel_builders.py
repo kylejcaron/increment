@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import warnings
 from dataclasses import replace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -147,8 +149,8 @@ def test_analysis_summary_facade_delegates_to_public_builder():
         control="control",
         metrics={"value": "mean"},
     )
-
     experiment, resolver = facade_binding(analysis)
+
     assert isinstance(experiment, Experiment)
     assert isinstance(run(experiment, resolver), RunResult)
 
@@ -184,6 +186,126 @@ def test_definition_exploratory_metric_runs_with_cell_identity(seeded_defs, seed
     assert {
         verdict.role for verdict in result.decisions.cells if verdict.identity_hash in exploratory
     } == {"exploratory"}
+
+
+@pytest.mark.integration
+def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_defs, seeded_con):
+    seeded_con.raw_sql("CREATE TEMP TABLE binding_close_sentinel(value INTEGER)")
+    seeded_con.raw_sql("INSERT INTO binding_close_sentinel VALUES (37)")
+
+    first_experiment, first = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    second_experiment, second = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    first_bound = cast(Any, first)
+    second_bound = cast(Any, second)
+
+    def materialized_names(resolver: Any) -> tuple[str, ...]:
+        resolver._analysis.materialize()
+        session = resolver.binding.session
+        names = tuple(item.name for item in session._materialized)
+        assert names
+        assert set(names) <= set(seeded_con.list_tables())
+        return names
+
+    first_names = materialized_names(first_bound)
+    second_names = materialized_names(second_bound)
+    assert set(first_names).isdisjoint(second_names)
+
+    first_bound.close()
+    first_bound.close()
+    assert not set(first_names) & set(seeded_con.list_tables())
+    assert set(second_names) <= set(seeded_con.list_tables())
+    assert seeded_con.raw_sql("SELECT value FROM binding_close_sentinel").fetchone()[0] == 37
+
+    with second_bound:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert run(second_experiment, second)
+    assert not set(second_names) & set(seeded_con.list_tables())
+    assert seeded_con.raw_sql("SELECT value FROM binding_close_sentinel").fetchone()[0] == 37
+
+
+@pytest.mark.integration
+def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_con):
+    experiment, resolver = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    bound_resolver = cast(Any, resolver)
+    analysis = bound_resolver._analysis
+    analysis.materialize()
+    parent_names = tuple(item.name for item in bound_resolver.binding.session._materialized)
+    assert parent_names
+
+    added = analysis._exploratory_metrics(["aov"], caller="run")
+    exploratory = analysis._exploratory_analysis(added, caller="run")
+
+    def resolver_with_binding(binding: Any) -> Any:
+        derived_resolver = copy.copy(bound_resolver)
+        derived_resolver.binding = binding
+        return derived_resolver
+
+    derived_resolver = resolver_with_binding(exploratory._binding)
+
+    try:
+        breakout_resolver = resolver_with_binding(bound_resolver.binding.with_breakouts(()))
+        breakout_resolver.close()
+        assert set(parent_names) <= set(seeded_con.list_tables())
+
+        derived_resolver.close()
+        assert set(parent_names) <= set(seeded_con.list_tables())
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert run(experiment, resolver)
+    finally:
+        bound_resolver.close()
+
+
+@pytest.mark.integration
+def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_con):
+    experiment, resolver = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    bound_resolver = cast(Any, resolver)
+    bound_resolver._analysis.materialize()
+    session = bound_resolver.binding.session
+    bound_resolver.close()
+    assert not session._materialized
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        assert run(experiment, resolver, analysis_options={"coherence": "live"})
+
+    live_names = tuple(item.name for item in session._materialized)
+    assert live_names
+    assert set(live_names) <= set(seeded_con.list_tables())
+    bound_resolver.close()
+    assert not set(live_names) & set(seeded_con.list_tables())
+
+
+@pytest.mark.integration
+def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, seeded_con):
+    experiment, resolver = from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="always"
+    )
+    bound_resolver = cast(Any, resolver)
+    try:
+        bound_resolver._analysis.materialize()
+        session = bound_resolver.binding.session
+        parent_names = tuple(item.name for item in session._materialized)
+        assert parent_names
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.warns(IncrementWarning):
+                run(experiment, resolver, analysis_options={"exploratory_metrics": ["aov"]})
+        assert set(parent_names) <= set(seeded_con.list_tables())
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert run(experiment, resolver)
+    finally:
+        bound_resolver.close()
 
 
 def test_offline_definitions_builder_refuses_missing_catalog(tmp_path):
@@ -251,9 +373,16 @@ def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_
     restored, resolver = from_definitions(definitions)
 
     assert restored.hash() == experiment.hash()
+    changed = replace(
+        restored,
+        registration=restored.registration.model_copy(update={"registration_hash": "changed"}),
+    )
+    assert changed.source_refs == restored.source_refs
+    with pytest.raises(CodedError) as invalid:
+        run(changed, resolver)
+    assert invalid.value.code == "kernel.run.execution_unavailable"
     with pytest.raises(CodedError) as raised:
         run(restored, resolver)
-
     assert raised.value.code == "kernel.run.resolver_missing"
 
 
@@ -468,4 +597,36 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
 
         assert run(saved_experiment, fresh_resolver).cells
     finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_artifact_resolver_reopens_owned_snapshot_after_close():
+    from increment.builders import from_unit_day_artifact
+    from tests.test_unit_day_artifact_facade import _published
+
+    con, _native, context, store, ref = _published()
+    con.raw_sql("CREATE TEMP TABLE artifact_binding_sentinel(value INTEGER)")
+    con.raw_sql("INSERT INTO artifact_binding_sentinel VALUES (53)")
+    resolver = None
+    try:
+        experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
+        first_source = resolver.binding.state.source
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert run(experiment, resolver).cells
+        resolver.close()
+        assert getattr(first_source, "closed", False)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert run(experiment, resolver).cells
+        second_source = resolver.binding.state.source
+        assert second_source is not first_source
+        resolver.close()
+        assert getattr(second_source, "closed", False)
+        assert con.raw_sql("SELECT value FROM artifact_binding_sentinel").fetchone()[0] == 53
+    finally:
+        if resolver is not None:
+            resolver.close()
         con.disconnect()
