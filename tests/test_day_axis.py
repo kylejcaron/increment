@@ -70,11 +70,18 @@ def test_run_asof_serves_activity_and_retention_metrics_together():
 
 
 def test_run_daily_refuses_unknown_dimension():
-    from tests.analysis_factory import bound_analysis
-
-    _, resolver = _panel()
+    experiment, resolver = _panel()
     with pytest.raises(InvalidRequestError) as raised:
-        bound_analysis(resolver).run_daily(dimension="missing")
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=(BreakoutIdentity("missing", None),),
+            ),
+        )
     assert raised.value.code == "facade.analysis.unknown_dimension"
     assert raised.value.context["dimension"] == "missing"
 
