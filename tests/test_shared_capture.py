@@ -680,6 +680,38 @@ def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
         con.disconnect()
 
 
+def test_two_population_run_advises_each_unused_covariate_once(tmp_path):
+    """The unused-covariate advisory names a metric's configuration, not a population, so
+    reading both populations in one run advises exactly what reading one does."""
+    import warnings
+
+    con = ds.duckdb_connection()
+    experiment, resolver = _builder(con, tmp_path, triggered=True)
+    scopes = (
+        Scope(view="run", grain="total", population="assigned"),
+        Scope(view="run", grain="total", population="triggered"),
+    )
+
+    def advisories(selected):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run(replace(experiment, scopes=selected), resolver)
+        return [
+            dict(item.message.context)
+            for item in caught
+            if isinstance(item.message, IncrementWarning)
+            and item.message.code == "analysis.cuped.covariate_unused"
+        ]
+
+    try:
+        single = advisories(scopes[:1])
+        assert len(single) == 1
+        assert advisories(scopes) == single
+    finally:
+        resolver.close()
+        con.disconnect()
+
+
 def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_variant(tmp_path):
     from increment.semantics.models import MeanMetric
 

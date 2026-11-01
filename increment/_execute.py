@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
+from contextvars import ContextVar
 from dataclasses import replace
 from functools import partial
 from inspect import Parameter, signature
@@ -199,6 +200,10 @@ def _run_contrast(
     )
 
 
+# Metrics the executing run has already advised about an unused CUPED covariate.
+_ADVISED_COVARIATES: ContextVar[set[str] | None] = ContextVar("_ADVISED_COVARIATES", default=None)
+
+
 def _warn_run_advisories(
     binding: SourceBinding,
     selected: Sequence[Metric],
@@ -310,6 +315,7 @@ def _warn_run_advisories(
                 sensitivity_methods=sensitivity_methods,
             )
         )
+    advised = _ADVISED_COVARIATES.get()
     unused: list[str] = []
     for config, config_source in config_sources:
         design = config_source.context.design
@@ -320,9 +326,12 @@ def _warn_run_advisories(
             or getattr(design, "mechanism", None) == "observational"
             or any(method.variance_reduction == "cuped" for method in config.sensitivity_methods)
             or not _cuped_recommendation_admitted(config_source, config)
+            or (advised is not None and config.metric.name in advised)
         ):
             continue
         unused.append(config.metric.name)
+    if advised is not None:
+        advised.update(unused)
     if unused:
         _warn(
             "analysis.cuped.covariate_unused",
@@ -695,16 +704,21 @@ def execute_views(
         acquisition = owned_execution_context(binding, scope_request, coherence=coherence)
     else:
         acquisition = nullcontext()
-    with acquisition:
-        if capture is not None:
-            retained_sequential_capture(binding.source, capture, current_execution_context())
-        scoped = []
-        for scope, operation, kwargs, scope_binding in planned:
-            single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
-            scope_hash, _ = _run_identity_hashes(single, kwargs)
-            scoped.append(
-                ScopedReadout(
-                    _VIEWS[operation](scope_binding, **kwargs), scope, dict(kwargs), scope_hash
+    # One run reading several views advises each metric's unused covariate once.
+    advised = _ADVISED_COVARIATES.set(set())
+    try:
+        with acquisition:
+            if capture is not None:
+                retained_sequential_capture(binding.source, capture, current_execution_context())
+            scoped = []
+            for scope, operation, kwargs, scope_binding in planned:
+                single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
+                scope_hash, _ = _run_identity_hashes(single, kwargs)
+                scoped.append(
+                    ScopedReadout(
+                        _VIEWS[operation](scope_binding, **kwargs), scope, dict(kwargs), scope_hash
+                    )
                 )
-            )
+    finally:
+        _ADVISED_COVARIATES.reset(advised)
     return tuple(scoped)
