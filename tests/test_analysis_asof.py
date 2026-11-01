@@ -21,7 +21,7 @@ import pytest
 from increment import Scope, from_definitions, from_frame, from_moments, run
 from increment._frame_moments import _asof_unit_rows
 from increment.breakout.estimates import DailyLiftEstimate, DailyMetricValue
-from increment.errors import CapabilityError, InvalidRequestError, UnsupportedRequestError
+from increment.errors import InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.encouragement import estimate_encouragement
 from increment.evidence import BreakoutIdentity
@@ -1756,11 +1756,11 @@ def _assert_undeclared_segment_refused_before_reads(monkeypatch, con, pair, requ
         Scope(view="asof", grain="asof", values=True, segment=segment),
         Scope(view="asof", grain="asof", segment=segment),
     ):
-        with pytest.raises(CapabilityError) as raised:
+        with pytest.raises(InvalidRequestError) as raised:
             run(experiment.with_views(scope), resolver)
-        assert raised.value.code == "evidence.breakout_unavailable"
-        assert raised.value.context["requested"] == (requested,)
-        assert raised.value.context["offered"] == declared
+        assert raised.value.code == "facade.analysis.unknown_dimension"
+        assert raised.value.context["dimension"] == requested
+        assert raised.value.context["declared"] == declared
 
 
 def test_run_asof_unknown_dimension_raises_naming_declared_properties(con, monkeypatch):
