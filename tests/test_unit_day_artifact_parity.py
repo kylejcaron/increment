@@ -12,9 +12,12 @@ from uuid import uuid4
 import ibis
 import pytest
 
-from increment.analysis import Analysis
-from increment.artifacts import SourceSnapshotEvidence
+from increment import Scope, from_definitions, from_moments, from_unit_day_artifact
+from increment._dashboard_capture import dashboard_group_data
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, IncrementWarning
+from increment.estimators import sitewide
+from increment.query import panel_sql, summary_sql
 from increment.query.artifact_contract import (
     ArtifactContractError,
     ArtifactStore,
@@ -27,12 +30,20 @@ from increment.query.schemas import (
 )
 from increment.query.source import open_artifact
 from increment.semantics.models import Breakout
+from increment.workflows import (
+    breakout_summaries,
+    experiment_definition,
+    export_moments,
+    factor_summaries,
+    materialize,
+    metrics,
+)
 from tests._evidence_requests import (
     _assignment_counts,
     _moments,
     _unit_counts,
 )
-from tests.analysis_factory import _native_source, lift_rows
+from tests.analysis_factory import bound_source, lift_rows, view_readout
 from tests.test_unit_day_artifact_facade import (
     _definitions,
     _extensions,
@@ -170,12 +181,20 @@ def _flatten_readout_row(row: Any) -> dict[str, Any]:
     return flattened
 
 
+# The whole-experiment readout and the daily and as-of value series.
+_READOUT_VIEWS: tuple[Scope | None, ...] = (
+    None,
+    Scope(view="daily", grain="daily", values=True),
+    Scope(view="asof", grain="asof", values=True),
+)
+
+
 def _metric(source: Any, name: str = "purchase_rate") -> Any:
     return next(metric for metric in source.context.metrics if metric.name == name)
 
 
 def _artifact_source(store: Any, reference: Any, context: Any) -> Any:
-    """Open the public artifact source an adopted facade reads through."""
+    """Open the public artifact source an adopted binding reads through."""
     return open_artifact(store, reference, expected_context=context)
 
 
@@ -251,7 +270,7 @@ def _replace_artifact_relation(
 
 
 # Tests that never write to the store share one publication; each opens its
-# own adopted facade from it. One worker owns the group so it is built once.
+# own adopted artifact binding from it. One worker owns the group so it is built once.
 _shared_publication = pytest.mark.xdist_group("unit_day_artifact_parity")
 
 
@@ -260,10 +279,7 @@ def publication():
     import shutil
     import tempfile
 
-    from increment import from_definitions
-    from increment.artifacts import publish_unit_day_artifact
-
-    connection, definitions, context, store = _native()
+    connection, native, context, store = _native()
     with tempfile.TemporaryDirectory() as temporary:
         copied = Path(temporary) / "definitions"
         shutil.copytree("examples/definitions", copied)
@@ -275,19 +291,19 @@ def publication():
         finally:
             cast(Any, resolver).close()
     try:
-        yield connection, definitions, context, store, reference
+        yield connection, native, context, store, reference
     finally:
-        definitions.close()
+        native[1].close()
 
 
 @pytest.fixture
 def published_pair(publication):
-    _connection, definitions, context, store, reference = publication
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    _connection, native, context, store, reference = publication
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
     try:
-        yield definitions, adopted, context, store, reference
+        yield native, adopted, context, store, reference
     finally:
-        adopted.close()
+        adopted[1].close()
 
 
 @pytest.mark.slow
@@ -304,7 +320,7 @@ def test_fixed_export_refuses_invalid_backend_counts(
     from increment.errors import WireFormatError
 
     connection, native, context, store, reference = publication
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
     to_pyarrow = connection.to_pyarrow
 
     def corrupted_counts(*args, **kwargs):
@@ -325,14 +341,14 @@ def test_fixed_export_refuses_invalid_backend_counts(
     monkeypatch.setattr(connection, "to_pyarrow", corrupted_counts)
     path = tmp_path / "invalid.parquet"
     try:
-        analysis = native if ingress == "definitions" else adopted
+        experiment, resolver = native if ingress == "definitions" else adopted
         with pytest.raises(WireFormatError) as exc:
-            analysis.export(path)
+            export_moments(experiment, resolver, path)
         assert exc.value.code == "moments.count_out_of_range"
         assert exc.value.context["field"] == field
         assert not path.exists()
     finally:
-        adopted.close()
+        adopted[1].close()
 
 
 @pytest.mark.slow
@@ -349,20 +365,24 @@ def test_nonbinary_native_and_artifact_exports_keep_nullable_integer_counts(tmp_
     experiment["plan"] = {"secondaries": ["avg_session_duration"]}
     definitions.write_text(yaml.safe_dump(payload))
     _connection, native, context, store = _native(definitions=definitions)
+    native_experiment, native_resolver = native
     adopted = None
     try:
-        reference = native.publish_unit_day_artifact(store)
-        adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-        for name, analysis in (("definitions", native), ("artifact", adopted)):
+        reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+        adopted = from_unit_day_artifact(store, reference, expected_context=context)
+        for name, (route_experiment, route_resolver) in (
+            ("definitions", native),
+            ("artifact", adopted),
+        ):
             path = tmp_path / f"{name}.parquet"
-            analysis.export(path)
+            export_moments(route_experiment, route_resolver, path)
             table = pq.read_table(path)
             assert table.schema.field("successes").type == pa.int64(), name
             assert table.column("successes").to_pylist() == [None, None], name
     finally:
         if adopted is not None:
-            adopted.close()
-        native.close()
+            adopted[1].close()
+        native_resolver.close()
 
 
 # One CUPED metric with breakout and factor evidence, published once for the
@@ -378,22 +398,25 @@ def covariate_publication(tmp_path_factory: pytest.TempPathFactory):
         cuped_metrics=("purchase_rate",),
     )
     _connection, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    native_experiment, native_resolver = native
     requests = _extensions(context, "breakout_dimension", "factor_dimension", "cuped_preperiod")
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
     try:
         yield native, context, store, reference
     finally:
-        native.close()
+        native_resolver.close()
 
 
 @pytest.fixture
 def covariate_pair(covariate_publication):
     native, context, store, reference = covariate_publication
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
     try:
         yield native, adopted
     finally:
-        adopted.close()
+        adopted[1].close()
 
 
 @pytest.mark.slow
@@ -403,12 +426,17 @@ def test_adopted_reduction_does_no_upstream_work(
     from increment.estimation.engine import Method
     from increment.query import session as session_module
 
-    _connection, native, context, store = _native()
-    reference = native.publish_unit_day_artifact(store)
+    _connection, (native_experiment, native_resolver), context, store = _native()
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
     baseline = (
-        lift_rows(native.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted")))[
-            0
-        ]
+        lift_rows(
+            view_readout(
+                native_experiment,
+                native_resolver,
+                metrics=["purchase_rate"],
+                decision_method=Method(name="unadjusted"),
+            )
+        )[0]
         .require_lift()
         .value
     )
@@ -419,11 +447,15 @@ def test_adopted_reduction_does_no_upstream_work(
     # Native fact tables are built through this module seam, so any callback
     # here after publication means adoption fell back to upstream work.
     monkeypatch.setattr(session_module, "_dim_joined_fact_table", upstream_work)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    adopted_rows = lift_rows(
+        view_readout(adopted_experiment, adopted_resolver, metrics=["purchase_rate"])
+    )
     assert adopted_rows[0].require_lift().value == pytest.approx(baseline)
-    adopted.close()
-    native.close()
+    adopted_resolver.close()
+    native_resolver.close()
 
 
 @pytest.mark.slow
@@ -432,8 +464,8 @@ def test_adopted_reduction_does_no_upstream_work(
 def test_definitions_and_adopted_reducers_match_staggered_denominators(
     published_pair: tuple[Any, ...], grain: str
 ) -> None:
-    native, _adopted, context, store, reference = published_pair
-    native_source = _native_source(native)
+    (_experiment, native_resolver), _adopted, context, store, reference = published_pair
+    native_source = bound_source(native_resolver)
     adopted_source = _artifact_source(store, reference, context)
     try:
         native_metric = _metric(native_source)
@@ -466,12 +498,16 @@ def test_calendar_day_boundary_is_preserved_across_adoption(tmp_path: Path) -> N
     )
     experiment["day_boundary"] = "UTC-05:00"
     definitions_path.write_text(__import__("yaml").safe_dump(payload, sort_keys=False))
-    _connection, native, context, store = _native(definitions=definitions_path)
-    reference = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    _connection, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions_path
+    )
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
         native_rows = _moments(
@@ -483,8 +519,8 @@ def test_calendar_day_boundary_is_preserved_across_adoption(tmp_path: Path) -> N
         _assert_rows_equal(native_rows, adopted_rows)
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 # Missing source capabilities must refuse rather than fabricate native evidence.
@@ -492,13 +528,14 @@ def test_calendar_day_boundary_is_preserved_across_adoption(tmp_path: Path) -> N
 def test_adopted_native_only_operations_refuse_with_exact_codes(
     published_pair: tuple[Any, ...],
 ) -> None:
-    _native_analysis, adopted, _context, _store, _reference = published_pair
+    _native_pair, (experiment, resolver), _context, _store, _reference = published_pair
+    binding = resolver.binding
     for call, code in (
-        (adopted.materialize, "evidence.operation_unavailable"),
-        (adopted.panel_sql, "evidence.operation_unavailable"),
-        (adopted.summary_sql, "evidence.operation_unavailable"),
+        (lambda: materialize(experiment, resolver), "evidence.operation_unavailable"),
+        (lambda: panel_sql(experiment, resolver), "evidence.operation_unavailable"),
+        (lambda: summary_sql(experiment, resolver), "evidence.operation_unavailable"),
         (
-            lambda: adopted.dashboard_group_data(metrics=adopted.metrics),
+            lambda: dashboard_group_data(binding, metrics=binding.metrics),
             "evidence.operation_unavailable",
         ),
     ):
@@ -513,7 +550,9 @@ def test_extension_operation_declarations_follow_selected_manifest_extensions(
     tmp_path: Path,
 ) -> None:
     definitions = _definitions(tmp_path, site_volume_only=True)
-    _connection, native, context, store = _native(definitions=definitions)
+    _connection, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions
+    )
     requested = _extensions(
         context,
         "breakout_dimension",
@@ -521,8 +560,12 @@ def test_extension_operation_declarations_follow_selected_manifest_extensions(
         "assignment_counts",
         "site_volume",
     )
-    reference = native.publish_unit_day_artifact(store, extensions=requested)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requested
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
         assert adopted_source.operations == ARTIFACT_OPERATIONS | {
@@ -535,8 +578,8 @@ def test_extension_operation_declarations_follow_selected_manifest_extensions(
         }
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.parametrize("kind", sorted(_EXPECTED_ARTIFACT_SCHEMAS))
@@ -549,7 +592,9 @@ def test_every_extension_schema_and_primary_key_is_exact(kind: str) -> None:
 @pytest.mark.slow
 def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
-    _connection, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    _connection, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
     requests = _extensions(
         context,
         "breakout_dimension",
@@ -557,11 +602,15 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
         "cuped_preperiod",
         "site_volume",
     )
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
         breakout = Breakout(property="country", source="event_log")
@@ -597,8 +646,12 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
             extra_keys=("country",),
         )
 
-        native_breakout_views = native.breakout_summaries(metrics=[native_metric])
-        adopted_breakout_views = adopted.breakout_summaries(metrics=[adopted_metric])
+        native_breakout_views = breakout_summaries(
+            native_experiment, native_resolver, metrics=[native_metric]
+        )
+        adopted_breakout_views = breakout_summaries(
+            adopted_experiment, adopted_resolver, metrics=[adopted_metric]
+        )
         assert set(native_breakout_views) == set(adopted_breakout_views)
         for key in native_breakout_views:
             _assert_rows_equal(
@@ -606,8 +659,8 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
                 adopted_breakout_views[key]["group_summary"].to_pylist(),
                 extra_keys=("country",),
             )
-        native_factor_views = native.factor_summaries()
-        adopted_factor_views = adopted.factor_summaries()
+        native_factor_views = factor_summaries(native_experiment, native_resolver)
+        adopted_factor_views = factor_summaries(adopted_experiment, adopted_resolver)
         assert set(native_factor_views) == set(adopted_factor_views)
         for key in native_factor_views:
             _assert_rows_equal(
@@ -620,23 +673,32 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
         adopted_site = adopted_source.sitewide_evidence(adopted_metric)
         assert adopted_site.site_total == pytest.approx(native_site.site_total)
         assert adopted_site.site_total_denominator == native_site.site_total_denominator
-        # Native materialize returns the same Analysis for chaining; the
-        # adopted facade refuses with the exact coded contract.
-        assert native.materialize() is native
+        # Native materialize succeeds; the adopted artifact refuses with the
+        # exact coded contract.
+        materialize(native_experiment, native_resolver)
         for call, code in (
-            (adopted.materialize, "evidence.operation_unavailable"),
-            (adopted.panel_sql, "evidence.operation_unavailable"),
-            (adopted.summary_sql, "evidence.operation_unavailable"),
+            (
+                lambda: materialize(adopted_experiment, adopted_resolver),
+                "evidence.operation_unavailable",
+            ),
+            (
+                lambda: panel_sql(adopted_experiment, adopted_resolver),
+                "evidence.operation_unavailable",
+            ),
+            (
+                lambda: summary_sql(adopted_experiment, adopted_resolver),
+                "evidence.operation_unavailable",
+            ),
         ):
             with pytest.raises(Exception) as raised:
                 call()
             assert raised.value.code == code  # ty: ignore[unresolved-attribute]
             assert raised.value.context  # ty: ignore[unresolved-attribute]
         with pytest.raises(Exception) as raised:
-            adopted.materialize()
+            materialize(adopted_experiment, adopted_resolver)
         assert raised.value.code == "evidence.operation_unavailable"  # ty: ignore[unresolved-attribute]
-        assert native.panel_sql()[native_metric.name]
-        assert native.summary_sql()[native_metric.name]
+        assert panel_sql(native_experiment, native_resolver)[native_metric.name]
+        assert summary_sql(native_experiment, native_resolver)[native_metric.name]
 
         import pyarrow.parquet as pq
 
@@ -653,8 +715,8 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
         )
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 # Guards clustered publication/adoption by comparing cluster-identity evidence values.
@@ -679,10 +741,10 @@ def test_cluster_identity_extension_matches_native_sitewide_evidence(tmp_path: P
         )
     )
     loaded = load(definitions)
-    native = Analysis.from_definitions(
-        "exp",
+    native_experiment, native_resolver = from_definitions(
         definitions,
         connection,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=datetime(2024, 1, 10, tzinfo=UTC),
             complete_through_by_feed={"events": datetime(2024, 1, 10, tzinfo=UTC)},
@@ -691,11 +753,15 @@ def test_cluster_identity_extension_matches_native_sitewide_evidence(tmp_path: P
     context = artifact_context(loaded, loaded.experiments[0], "error")
     store = WarehouseArtifactStore(connection, schema_name="artifacts")
     requests = _extensions(context, "cluster_identity", "site_volume")
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         native_metric = _metric(native_source, "revenue")
         adopted_metric = _metric(adopted_source, "revenue")
         native_site = native_source.sitewide_evidence(native_metric)
@@ -706,8 +772,8 @@ def test_cluster_identity_extension_matches_native_sitewide_evidence(tmp_path: P
         assert adopted_site.unit_counts == native_site.unit_counts
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        cast(Any, native_resolver).close()
 
 
 def _cluster_switchback_events() -> Any:
@@ -839,7 +905,7 @@ def test_cluster_extension_spine_parity_matches_native_for_late_enrolled_treatme
         assert adopted_rows["control"]["n"] == native_rows["control"]["n"] == 60
         assert adopted_rows["treatment"]["n"] == native_rows["treatment"]["n"] == 60, (
             "the late-enrolled treatment cohort must not vanish through the "
-            "cluster-extension facade"
+            "cluster-extension artifact"
         )
         native_lift = native_rows["treatment"]["ref_y"] / native_rows["control"]["ref_y"] - 1.0
         adopted_lift = adopted_rows["treatment"]["ref_y"] / adopted_rows["control"]["ref_y"] - 1.0
@@ -854,15 +920,21 @@ def test_cluster_extension_spine_parity_matches_native_for_late_enrolled_treatme
 @pytest.mark.slow
 def test_breakout_factor_and_sitewide_operations_match_adopted_values(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
-    _connection, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    _connection, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
     requests = _extensions(
         context, "breakout_dimension", "factor_dimension", "cuped_preperiod", "site_volume"
     )
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
         breakout = Breakout(property="country", source="event_log")
@@ -888,8 +960,8 @@ def test_breakout_factor_and_sitewide_operations_match_adopted_values(tmp_path: 
         assert adopted_site.site_total_denominator == native_site.site_total_denominator
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 _COVARIATE_FIELDS = frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"})
@@ -926,15 +998,21 @@ def test_boolean_dimension_labels_match_native_and_string_case_is_preserved(
         "UPDATE analytics.event_log SET is_vip = CASE hash(user_id) % 3 "
         "WHEN 0 THEN TRUE WHEN 1 THEN FALSE ELSE NULL END"
     )
-    native = Analysis.from_definitions("new_onboarding_v2", path, con)
+    native_experiment, native_resolver = from_definitions(
+        path, con, experiment_name="new_onboarding_v2"
+    )
     context = _expected_context(path)
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     requests = _extensions(context, "breakout_dimension", "factor_dimension")
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     try:
-        native_views = native.breakout_summaries()
-        adopted_views = adopted.breakout_summaries()
+        native_views = breakout_summaries(native_experiment, native_resolver)
+        adopted_views = breakout_summaries(adopted_experiment, adopted_resolver)
         assert set(native_views) == set(adopted_views)
         labels: dict[str, set[Any]] = {}
         for key, native_view in native_views.items():
@@ -948,8 +1026,8 @@ def test_boolean_dimension_labels_match_native_and_string_case_is_preserved(
         assert labels["is_vip"] == {"true", "false", "__null__"}
         assert "US" in labels["country"]
 
-        native_factor = native.factor_summaries()
-        adopted_factor = adopted.factor_summaries()
+        native_factor = factor_summaries(native_experiment, native_resolver)
+        adopted_factor = factor_summaries(adopted_experiment, adopted_resolver)
         assert set(native_factor) == set(adopted_factor)
         for key in native_factor:
             adopted_rows = adopted_factor[key].to_pylist()
@@ -961,8 +1039,8 @@ def test_boolean_dimension_labels_match_native_and_string_case_is_preserved(
             )
             assert {row["is_vip"] for row in adopted_rows} <= {"true", "false", "__null__"}
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        cast(Any, native_resolver).close()
 
 
 # Guards adopted factor summaries against dropping the CUPED covariate moments.
@@ -971,10 +1049,10 @@ def test_boolean_dimension_labels_match_native_and_string_case_is_preserved(
 def test_adopted_factor_summaries_carry_the_native_covariate_moments(
     covariate_pair: tuple[Any, ...],
 ) -> None:
-    native, adopted = covariate_pair
+    (native_experiment, native_resolver), (adopted_experiment, adopted_resolver) = covariate_pair
     key = "purchase_rate:country:event_log"
-    native_factor = native.factor_summaries()
-    adopted_factor = adopted.factor_summaries()
+    native_factor = factor_summaries(native_experiment, native_resolver)
+    adopted_factor = factor_summaries(adopted_experiment, adopted_resolver)
     assert set(native_factor) == set(adopted_factor) == {key}
     native_rows = native_factor[key].to_pylist()
     assert any(abs(float(row["ref_x"])) > 0 for row in native_rows)
@@ -987,10 +1065,12 @@ def test_adopted_factor_summaries_carry_the_native_covariate_moments(
 def test_adopted_daily_breakout_summaries_match_the_native_day_axis(
     covariate_pair: tuple[Any, ...],
 ) -> None:
-    native, adopted = covariate_pair
+    (native_experiment, native_resolver), (adopted_experiment, adopted_resolver) = covariate_pair
     key = "purchase_rate:country:event_log"
-    native_daily = native.breakout_summaries()[key]["daily_group_summary"].to_pylist()
-    adopted_daily = adopted.breakout_summaries()[key]["daily_group_summary"].to_pylist()
+    native_views = breakout_summaries(native_experiment, native_resolver)
+    adopted_views = breakout_summaries(adopted_experiment, adopted_resolver)
+    native_daily = native_views[key]["daily_group_summary"].to_pylist()
+    adopted_daily = adopted_views[key]["daily_group_summary"].to_pylist()
     assert len({row.get("ds") for row in adopted_daily}) > 1
     _assert_rows_equal(
         native_daily,
@@ -1006,17 +1086,21 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
     evidence = SourceSnapshotEvidence(
         datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
     )
-    _connection, native, context, store = _native(
+    _connection, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions, source_snapshot_evidence=evidence
     )
     requests = _extensions(
         context, "assignment_counts", "trigger_population", "trigger_measure_stats"
     )
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         assert "triggered_counts" in adopted_source.operations
         assert "triggered_source" in adopted_source.operations
         assert adopted_source.triggered_counts() == native_source.triggered_counts()
@@ -1035,8 +1119,8 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
         )
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1046,16 +1130,19 @@ def test_triggered_window_past_observation_end_matches_after_publish_reopen(
 ) -> None:
     definitions = _triggered_definitions(tmp_path, window_days=30, observation_end="2025-02-20")
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
-    connection, native, context, store = _native(
+    connection, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
     )
-    reference = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
+        store,
+        extensions=_extensions(context, "trigger_population", "trigger_measure_stats"),
     )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         native_triggered = native_source.triggered_source()
         adopted_triggered = adopted_source.triggered_source()
         metric = _metric(native_source)
@@ -1072,7 +1159,7 @@ def test_triggered_window_past_observation_end_matches_after_publish_reopen(
         )
     finally:
         adopted_source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1082,19 +1169,22 @@ def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: P
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
     watermark = datetime(2025, 1, 16, tzinfo=UTC)
     with pytest.warns(IncrementWarning):
-        connection, native, context, store = _native(
+        connection, (experiment, resolver), context, store = _native(
             definitions=definitions,
             source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
         )
     user_id = _insert_purchase_for_first_trigger_user(
         connection, datetime(2025, 1, 16, 12, tzinfo=UTC)
     )
-    reference = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
+        store,
+        extensions=_extensions(context, "trigger_population", "trigger_measure_stats"),
     )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
         native_day = native_source.day_source(metrics=(native_metric,), population="triggered")
@@ -1131,7 +1221,7 @@ def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: P
         )
     finally:
         adopted_source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -1139,12 +1229,15 @@ def test_v3_trigger_population_count_mismatch_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _connection, native, context, store = _native(
+    _connection, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(datetime(2030, 1, 1, tzinfo=UTC)),
     )
-    reference = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "assignment_counts", "trigger_population")
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
+        store,
+        extensions=_extensions(context, "assignment_counts", "trigger_population"),
     )
     original_open_snapshot = store.open_snapshot
 
@@ -1180,7 +1273,7 @@ def test_v3_trigger_population_count_mismatch_is_refused(
     finally:
         triggered.close()
         source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1191,13 +1284,15 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
     definitions = _definitions(
         tmp_path, trigger="session_start", site_volume_only=True, sitewide_count=True
     )
-    _connection, native, context, store = _native(
+    _connection, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
         ),
     )
-    reference = native.publish_unit_day_artifact(
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
         store,
         extensions=_extensions(
             context,
@@ -1233,7 +1328,9 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
     monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
     source = _artifact_source(store, reference, context)
     triggered = source.triggered_source()
-    metric = next(metric for metric in native.metrics if metric.name == "purchase_count")
+    metric = next(
+        metric for metric in metrics(experiment, resolver) if metric.name == "purchase_count"
+    )
     try:
         with pytest.raises(ArtifactContractError) as raised:
             triggered.sitewide_evidence(metric, population="triggered")
@@ -1242,7 +1339,7 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
     finally:
         triggered.close()
         source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1251,7 +1348,7 @@ def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> Non
     cutoff = datetime(2025, 1, 20, 12, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=None)
     with pytest.warns(IncrementWarning):
-        connection, native, context, store = _native(
+        connection, (experiment, resolver), context, store = _native(
             definitions=definitions,
             source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
         )
@@ -1262,7 +1359,9 @@ def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> Non
         _insert_purchase_for_first_trigger_user(connection, datetime(2025, 1, 20, 13, tzinfo=UTC))
         == user_id
     )
-    reference = native.publish_unit_day_artifact(
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
         store,
         extensions=_extensions(context, "trigger_population", "trigger_measure_stats"),
     )
@@ -1286,7 +1385,7 @@ def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> Non
         ]
         assert len(cutoff_day_rows) == 1
         assert cutoff_day_rows[0]["n_events"] == 1
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         with pytest.warns(IncrementWarning):
             native_rows = _moments(native_source.triggered_source(), _metric(native_source))
         adopted_rows = _moments(triggered, metric)
@@ -1297,7 +1396,7 @@ def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> Non
         )
     finally:
         source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1306,7 +1405,7 @@ def test_native_snapshot_asof_spine_excludes_partial_and_post_cutoff_days(
 ) -> None:
     cutoff = datetime(2025, 1, 19, 23, 59, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=5)
-    connection, native, _context, _store = _native(
+    connection, (_experiment, resolver), _context, _store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
     )
@@ -1318,7 +1417,7 @@ def test_native_snapshot_asof_spine_excludes_partial_and_post_cutoff_days(
         == user_id
     )
     try:
-        source = _native_source(native)
+        source = bound_source(resolver)
         metric = _metric(source)
 
         def latest_spine_day(population: Literal["assigned", "triggered"]) -> date | None:
@@ -1339,7 +1438,7 @@ def test_native_snapshot_asof_spine_excludes_partial_and_post_cutoff_days(
         assert latest_spine_day("assigned") == date(2025, 1, 18)
         assert latest_spine_day("triggered") == date(2025, 1, 18)
     finally:
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1350,7 +1449,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
     watermark = datetime(2025, 2, 15, 23, 59, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
-    connection, native, context, store = _native(
+    connection, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
     )
@@ -1361,7 +1460,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
         _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 16, 12, tzinfo=UTC))
         == user_id
     )
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(experiment, resolver, store)
     artifact_source = _artifact_source(store, reference, context)
     try:
         from increment.query.builders import (
@@ -1371,7 +1470,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
             window_bound_stats,
         )
 
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         native_metric = _metric(native_source)
         artifact_metric = _metric(artifact_source)
         assert artifact_source._declared_observation_end() == date(2031, 1, 1)
@@ -1393,7 +1492,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
             unit_day_panel(
                 exposures,
                 den_events,
-                native.experiment,
+                experiment_definition(experiment, resolver),
                 metric_name=native_metric.name,
                 end_date=native_spine.ds.max(),
             )
@@ -1424,7 +1523,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
             )
     finally:
         artifact_source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1434,18 +1533,21 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
 ) -> None:
     cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
-    connection, native, context, store = _native(
+    connection, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
     )
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 10, 10, tzinfo=UTC))
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
-    reference = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
+        store,
+        extensions=_extensions(context, "trigger_population", "trigger_measure_stats"),
     )
     artifact_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         native_metric = _metric(native_source)
         artifact_metric = _metric(artifact_source)
         native_day = native_source.day_source(metrics=(native_metric,), population="triggered")
@@ -1474,7 +1576,7 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
             native_spine,
             stats,
             native_metric,
-            native.experiment,
+            experiment_definition(experiment, resolver),
             den_stats=None,
             data_as_of=data_as_of,
             warn_on_censoring=False,
@@ -1511,7 +1613,7 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
             unit_day_panel(
                 exposures,
                 den_events,
-                native.experiment,
+                experiment_definition(experiment, resolver),
                 metric_name=native_metric.name,
                 end_date=native_edge,
             )
@@ -1538,7 +1640,7 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
             )
     finally:
         artifact_source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -1555,11 +1657,11 @@ def test_ratio_snapshot_spine_uses_only_its_minimum_measure_edge(tmp_path: Path)
     )
     experiment_def["plan"]["secondaries"].append("revenue_per_session")
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    connection, native, context, store = _native(
+    connection, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
     )
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
     source = _artifact_source(store, reference, context)
     try:
         from increment.semantics.models import AnalysisPlan, Experiment
@@ -1614,7 +1716,7 @@ def test_ratio_snapshot_spine_uses_only_its_minimum_measure_edge(tmp_path: Path)
         assert maturity_edge == date(2025, 1, 3)
     finally:
         source.close()
-        native.close()
+        native_resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1652,11 +1754,13 @@ def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -
         }
     )
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    _, native, context, store = _native(
+    _, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
     )
-    reference = native.publish_unit_day_artifact(
+    reference = publish_unit_day_artifact(
+        experiment,
+        resolver,
         store,
         extensions=_extensions(
             context, "trigger_population", "trigger_measure_stats", "breakout_dimension"
@@ -1665,7 +1769,7 @@ def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -
     source = _artifact_source(store, reference, context)
     try:
         ratio = _metric(source, "revenue_per_session")
-        native_root = _native_source(native)
+        native_root = bound_source(resolver)
         native_day = native_root.day_source(metrics=(ratio,), population="triggered")
         artifact_day = source.day_source(metrics=(ratio,), population="triggered")
         assert native_day.triggered_observation_edges(ratio) == (date(2025, 1, 15), None)
@@ -1691,7 +1795,7 @@ def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -
             )
     finally:
         source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -1737,14 +1841,16 @@ def test_triggered_sitewide_ratio_requires_certified_watermark_for_each_componen
         }
     )
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    _, native, context, store = _native(
+    _, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
     )
     try:
         with pytest.raises(CapabilityError) as native_refused:
-            native.sitewide("revenue_per_session", population="triggered")
-        reference = native.publish_unit_day_artifact(
+            sitewide(experiment, resolver, "revenue_per_session", population="triggered")
+        reference = publish_unit_day_artifact(
+            experiment,
+            resolver,
             store,
             extensions=_extensions(context, "trigger_population", "assignment_counts"),
         )
@@ -1765,7 +1871,7 @@ def test_triggered_sitewide_ratio_requires_certified_watermark_for_each_componen
         finally:
             source.close()
     finally:
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1790,16 +1896,16 @@ def test_unknown_completeness_caps_maturity_at_cutoff(tmp_path: Path) -> None:
         f"WHERE user_id = '{latest['user_id']}' AND event = 'page_view'"
     )
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
-    native = Analysis.from_definitions(
-        "new_onboarding_v2",
+    experiment, resolver = from_definitions(
         definitions,
         connection,
+        experiment_name="new_onboarding_v2",
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
     )
     try:
         from increment.query.builders import unit_totals
 
-        source = _native_source(native)
+        source = bound_source(resolver)
         metric = _metric(source)
         exposures = source._get_exposures()
         _, spine, stats, _, _, _, _, data_as_of = source._build_panel_for_metric(
@@ -1809,7 +1915,7 @@ def test_unknown_completeness_caps_maturity_at_cutoff(tmp_path: Path) -> None:
             spine,
             stats,
             metric,
-            native.experiment,
+            experiment_definition(experiment, resolver),
             data_as_of=data_as_of,
             warn_on_censoring=False,
         )
@@ -1831,7 +1937,7 @@ def test_unknown_completeness_caps_maturity_at_cutoff(tmp_path: Path) -> None:
         }
         assert actual_mature == expected_mature
     finally:
-        native.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1840,12 +1946,12 @@ def test_cutoff_only_publication_bounds_eventless_measure(tmp_path: Path) -> Non
 
     cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
-    connection, native, context, store = _native(
+    connection, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
     )
     connection.raw_sql("DELETE FROM analytics.event_log WHERE event = 'purchase'")
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(experiment, resolver, store)
     source = _artifact_source(store, reference, context)
     try:
         binding = next(
@@ -1858,7 +1964,7 @@ def test_cutoff_only_publication_bounds_eventless_measure(tmp_path: Path) -> Non
         assert measure.observed_edge == date(2025, 2, 15)
     finally:
         source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1876,7 +1982,7 @@ def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
     metric_def["aggregation"] = "avg_calendar_day"
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
     with pytest.warns(IncrementWarning) as raised:
-        connection, native, context, store = _native(
+        connection, (experiment, resolver), context, store = _native(
             definitions=definitions,
             source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
         )
@@ -1887,10 +1993,10 @@ def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
     )
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 10, 10, tzinfo=UTC))
     _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(experiment, resolver, store)
     artifact_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         native_metric = _metric(native_source)
         artifact_metric = _metric(artifact_source)
         assert native_metric.aggregation == "avg_calendar_day"
@@ -1913,7 +2019,7 @@ def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
             )
     finally:
         artifact_source.close()
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
@@ -1931,11 +2037,11 @@ def test_unpinned_avg_calendar_day_asof_uses_declared_horizon(tmp_path: Path) ->
     metric_def["aggregation"] = "avg_calendar_day"
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
     with pytest.warns(IncrementWarning):
-        connection, native, context, store = _native(definitions=definitions)
-    reference = native.publish_unit_day_artifact(store)
+        connection, (experiment, resolver), context, store = _native(definitions=definitions)
+    reference = publish_unit_day_artifact(experiment, resolver, store)
     artifact_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(resolver)
         native_metric = _metric(native_source)
         artifact_metric = _metric(artifact_source)
         native_rows = _moments(native_source, native_metric, grain="asof")
@@ -1965,12 +2071,12 @@ def test_unpinned_avg_calendar_day_asof_uses_declared_horizon(tmp_path: Path) ->
             assert row["ref_y"] == pytest.approx(expected_ref_y)
     finally:
         artifact_source.close()
-        native.close()
+        resolver.close()
 
 
 @_shared_publication
 def test_absent_extension_is_identical_coded_refusal(published_pair: tuple[Any, ...]) -> None:
-    _native_analysis, _adopted, context, store, reference = published_pair
+    _native_pair, _adopted, context, store, reference = published_pair
     adopted_source = _artifact_source(store, reference, context)
     try:
         metric = _metric(adopted_source)
@@ -1983,10 +2089,10 @@ def test_absent_extension_is_identical_coded_refusal(published_pair: tuple[Any, 
 
 @_shared_publication
 def test_fixed_trusted_ref_tamper_is_rejected(publication: tuple[Any, ...]) -> None:
-    _connection, _native_analysis, context, store, reference = publication
+    _connection, _native_pair, context, store, reference = publication
     tampered = reference.model_copy(update={"manifest_sha256": "0" * 64})
     with pytest.raises(ArtifactContractError) as raised:
-        Analysis.from_unit_day_artifact(store, tampered, expected_context=context)
+        from_unit_day_artifact(store, tampered, expected_context=context)
     assert raised.value.code == "artifact.refresh.invalid_ref"
 
 
@@ -1997,7 +2103,7 @@ def test_fixed_trusted_ref_tamper_is_rejected(publication: tuple[Any, ...]) -> N
 def test_manifest_base_relation_mutations_refuse_exactly(
     published_pair: tuple[Any, ...], role: str, mutation: str
 ) -> None:
-    _native_analysis, _adopted, context, store, reference = published_pair
+    _native_pair, _adopted, context, store, reference = published_pair
     source = _artifact_source(store, reference, context)
     relation = getattr(source.manifest.base, role)
     if mutation == "artifact_id":
@@ -2030,8 +2136,8 @@ def test_manifest_base_relation_mutations_refuse_exactly(
 # Guards a verify-then-rebind race by mutating the physical relation after verification.
 @pytest.mark.slow
 def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
-    connection, native, context, store = _native()
-    reference = native.publish_unit_day_artifact(store)
+    connection, (native_experiment, native_resolver), context, store = _native()
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
     state: dict[str, Any] = {"rebound": False, "rebound_rows": [], "warehouse_rows": []}
 
     class RacingSnapshot:
@@ -2084,27 +2190,36 @@ def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
             with store.open_snapshot(fixed_ref) as snapshot:
                 yield RacingSnapshot(snapshot, self)
 
-    adopted = Analysis.from_unit_day_artifact(
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
         cast(ArtifactStore, RacingStore()), reference, expected_context=context
     )
     from increment.estimation.engine import Method
 
     unadjusted = Method(name="unadjusted")
     try:
-        rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        rows = lift_rows(
+            view_readout(adopted_experiment, adopted_resolver, metrics=["purchase_rate"])
+        )
         assert state["rebound"]
         assert state["rebound_rows"][0]["unit_id"] == "replacement"
         assert state["warehouse_rows"]
         assert state["warehouse_rows"][0]["sum_value"] == 999999.0
         assert rows[0].require_lift().value == pytest.approx(
-            lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))[0]
+            lift_rows(
+                view_readout(
+                    native_experiment,
+                    native_resolver,
+                    metrics=["purchase_rate"],
+                    decision_method=unadjusted,
+                )
+            )[0]
             .require_lift()
             .value
         )
         assert rows[0].require_lift().value != 999999.0
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.slow
@@ -2112,15 +2227,21 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
     tmp_path: Path,
 ) -> None:
     definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
-    _connection, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    _connection, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
     requests = _extensions(
         context, "breakout_dimension", "cuped_preperiod", "factor_dimension", "site_volume"
     )
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=requests
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
         native_views = native_source.breakout_summaries(metrics=(native_metric,))
@@ -2173,32 +2294,34 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
         assert {row["moments_format"] for row in adopted_rows} == {12}
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 # Guards caller-pinned context and generation values before any store access.
 @_shared_publication
 def test_caller_trusted_context_and_generation_are_not_replaceable(
-    publication: tuple[Any, ...],
+    publication: tuple[Any, ...], example_definitions: Path
 ) -> None:
-    connection, _native_analysis, context, store, reference = publication
+    connection, _native_pair, context, store, reference = publication
     from increment.query.artifact_publish import artifact_context
     from increment.semantics.loader import load
 
-    other_definitions = load("examples/definitions")
+    other_definitions = load(example_definitions)
     other_experiment = next(
         item for item in other_definitions.experiments if item.name == "pricing_tier_test"
     )
-    other = Analysis.from_definitions("pricing_tier_test", "examples/definitions", connection)
+    _other, other_resolver = from_definitions(
+        example_definitions, connection, experiment_name="pricing_tier_test"
+    )
     other_context = artifact_context(other_definitions, other_experiment, "error")
     try:
         with pytest.raises(ArtifactContractError) as context_error:
-            Analysis.from_unit_day_artifact(store, reference, expected_context=other_context)
+            from_unit_day_artifact(store, reference, expected_context=other_context)
         assert context_error.value.code == "artifact.refresh.context_mismatch"
         bad_generation = reference.model_copy(update={"generation_id": uuid4()})
         with pytest.raises(ArtifactContractError) as generation_error:
-            Analysis.from_unit_day_artifact(store, bad_generation, expected_context=context)
+            from_unit_day_artifact(store, bad_generation, expected_context=context)
         assert generation_error.value.code == "artifact.refresh.invalid_ref"
 
         class NoStoreAccess:
@@ -2210,19 +2333,19 @@ def test_caller_trusted_context_and_generation_are_not_replaceable(
 
         unsupported_context = context.model_copy(update={"context_format": 1})
         with pytest.raises(ArtifactContractError) as format_error:
-            Analysis.from_unit_day_artifact(
+            from_unit_day_artifact(
                 cast(ArtifactStore, NoStoreAccess()),
                 reference,
                 expected_context=unsupported_context,
             )
         assert format_error.value.code == "artifact.format.unsupported"
     finally:
-        other.close()
+        cast(Any, other_resolver).close()
 
 
 @_shared_publication
 def test_base_relation_generation_binding_is_coded(published_pair: tuple[Any, ...]) -> None:
-    _native_analysis, _adopted, context, store, reference = published_pair
+    _native_pair, _adopted, context, store, reference = published_pair
     source = _artifact_source(store, reference, context)
     base = source.manifest.base
     bad_exposures = base.exposures.model_copy(update={"generation_id": uuid4()})
@@ -2252,8 +2375,8 @@ def test_base_relation_generation_binding_is_coded(published_pair: tuple[Any, ..
     ],
 )
 def test_adopted_row_mutations_refuse_with_exact_codes(mutation: str, expected_code: str) -> None:
-    connection, native, context, store = _native()
-    reference = native.publish_unit_day_artifact(store)
+    connection, (experiment, resolver), context, store = _native()
+    reference = publish_unit_day_artifact(experiment, resolver, store)
     source = _artifact_source(store, reference, context)
     try:
         role = "exposures" if mutation.startswith("exposure") else "measure_stats"
@@ -2282,7 +2405,7 @@ def test_adopted_row_mutations_refuse_with_exact_codes(mutation: str, expected_c
         assert raised.value.code == expected_code  # ty: ignore[unresolved-attribute]
     finally:
         source.close()
-        native.close()
+        resolver.close()
 
 
 # Guards publication from exposing a manifest after impossible sufficient statistics.
@@ -2290,7 +2413,7 @@ def test_adopted_row_mutations_refuse_with_exact_codes(mutation: str, expected_c
 def test_publication_impossible_aggregate_refuses_and_leaves_no_manifest(
     mutation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    connection, native, _context, store = _native()
+    connection, (experiment, resolver), _context, store = _native()
     from increment.query import artifact_publish as artifact_publish_module
 
     original = artifact_publish_module.post_exposure_stats
@@ -2308,11 +2431,11 @@ def test_publication_impossible_aggregate_refuses_and_leaves_no_manifest(
     monkeypatch.setattr(artifact_publish_module, "post_exposure_stats", invalid_stats)
     try:
         with pytest.raises(Exception) as raised:
-            native.publish_unit_day_artifact(store)
+            publish_unit_day_artifact(experiment, resolver, store)
         assert raised.value.code == "artifact.aggregate.impossible"  # ty: ignore[unresolved-attribute]
         assert store.visible_manifests == ()
     finally:
-        native.close()
+        resolver.close()
 
 
 # Guards one frozen artifact.extension.missing refusal for every absent extension family.
@@ -2339,7 +2462,7 @@ def test_publication_impossible_aggregate_refuses_and_leaves_no_manifest(
 def test_every_absent_extension_family_has_the_same_coded_refusal(
     published_pair: tuple[Any, ...], kind: str, request_payload: dict[str, Any]
 ) -> None:
-    _native_analysis, _adopted, context, store, reference = published_pair
+    _native_pair, _adopted, context, store, reference = published_pair
     assert request_payload["kind"] == kind
     adopted_source = _artifact_source(store, reference, context)
     try:
@@ -2368,7 +2491,7 @@ def test_site_volume_zero_relation_and_incomplete_coverage_are_distinct(
 ) -> None:
     from increment.query.artifact_extensions import read_site_volume_extension
 
-    connection, native, context, store = _native(
+    connection, (native_experiment, native_resolver), context, store = _native(
         definitions=_definitions(tmp_path, site_volume_only=True),
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
@@ -2376,8 +2499,12 @@ def test_site_volume_zero_relation_and_incomplete_coverage_are_distinct(
     )
     connection.raw_sql("DELETE FROM analytics.event_log WHERE event = 'purchase'")
     request = _extensions(context, "site_volume")[0]
-    reference = native.publish_unit_day_artifact(store, extensions=(request,))
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=(request,)
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     adopted_source = _artifact_source(store, reference, context)
     try:
         metric = _metric(adopted_source)
@@ -2413,8 +2540,8 @@ def test_site_volume_zero_relation_and_incomplete_coverage_are_distinct(
         assert raised.value.code == "artifact.extension.invalid"
     finally:
         adopted_source.close()
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 def _publication_context() -> Any:
@@ -2593,7 +2720,7 @@ def test_publication_validates_statistics_with_bounded_sql_reduction(monkeypatch
     from increment.query import artifact_publish as module
     from increment.query.artifact_digest import digest_relation_sql_v2
 
-    con, native, _context, store = _native(
+    con, (experiment, resolver), _context, store = _native(
         definitions=Path(__file__).resolve().parents[1] / "examples" / "definitions"
     )
     arrow = con.to_pyarrow
@@ -2614,7 +2741,7 @@ def test_publication_validates_statistics_with_bounded_sql_reduction(monkeypatch
     monkeypatch.setattr(con, "to_pyarrow", guarded)
     monkeypatch.setattr(module.ArtifactPublisher, "_validate_stats_relation", checked)
     try:
-        ref = native.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         measure = manifest.base.measure_stats
@@ -2634,7 +2761,7 @@ def test_publication_validates_statistics_with_bounded_sql_reduction(monkeypatch
         assert recomputed.content_sha256 == measure.content_sha256
         assert manifest.last_ds == max(row["ds"] for row in rows)
     finally:
-        native.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2646,11 +2773,11 @@ def test_publication_keeps_validated_stats_when_source_changes(
     from examples._seed import seed_event_log
     from increment.query.artifact_publish import ArtifactPublisher
 
-    con, native, context, store = _native(
+    con, (experiment, resolver), context, store = _native(
         definitions=_definitions(tmp_path, open_ended=True, site_volume_only=single_metric)
     )
     seed_event_log(con, n_units=200)
-    baseline_ref = native.publish_unit_day_artifact(store)
+    baseline_ref = publish_unit_day_artifact(experiment, resolver, store)
     with store.open_snapshot(baseline_ref) as snapshot:
         baseline_manifest = snapshot.read_manifest(
             baseline_ref.manifest, expected_sha256=baseline_ref.manifest_sha256
@@ -2659,7 +2786,9 @@ def test_publication_keeps_validated_stats_when_source_changes(
             baseline_manifest.base.measure_stats, expected_role="measure_stats"
         )
         baseline_rows = con.to_pyarrow(baseline_stats).to_pylist()
-    baseline = Analysis.from_unit_day_artifact(store, baseline_ref, expected_context=context)
+    baseline_experiment, baseline_resolver = from_unit_day_artifact(
+        store, baseline_ref, expected_context=context
+    )
     validate = ArtifactPublisher._validate_stats_relation
     validated_rows = []
     columns = ["unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"]
@@ -2676,7 +2805,7 @@ def test_publication_keeps_validated_stats_when_source_changes(
     monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", validate_then_change)
     adopted = None
     try:
-        ref = native.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(experiment, resolver, store)
         assert validated_rows
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
@@ -2695,20 +2824,25 @@ def test_publication_keeps_validated_stats_when_source_changes(
         assert manifest.first_ds == baseline_manifest.first_ds
         assert manifest.last_ds == baseline_manifest.last_ds
         assert manifest.measures == baseline_manifest.measures
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        for metric in adopted.metrics:
-            for method in ("run", "run_daily", "run_asof"):
-                expected = getattr(baseline, method)(metrics=[metric.name])
-                actual = getattr(adopted, method)(metrics=[metric.name])
+        adopted = from_unit_day_artifact(store, ref, expected_context=context)
+        adopted_experiment, adopted_resolver = adopted
+        for metric in metrics(adopted_experiment, adopted_resolver):
+            for scope in _READOUT_VIEWS:
+                expected = view_readout(
+                    baseline_experiment, baseline_resolver, scope, metrics=[metric.name]
+                )
+                actual = view_readout(
+                    adopted_experiment, adopted_resolver, scope, metrics=[metric.name]
+                )
                 _assert_rows_equal(
                     [_flatten_readout_row(row) for row in expected],
                     [_flatten_readout_row(row) for row in actual],
                 )
     finally:
         if adopted is not None:
-            adopted.close()
-        baseline.close()
-        native.close()
+            adopted[1].close()
+        baseline_resolver.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2717,7 +2851,7 @@ def test_publication_keeps_validated_stats_when_source_changes(
 def test_publication_cleans_materialized_inputs_and_stats(monkeypatch, tmp_path, failure):
     from increment.query.artifact_publish import ArtifactPublisher
 
-    con, native, _context, store = _native(
+    con, (experiment, resolver), _context, store = _native(
         definitions=_definitions(tmp_path, site_volume_only=True)
     )
     create = con.create_table
@@ -2739,14 +2873,14 @@ def test_publication_cleans_materialized_inputs_and_stats(monkeypatch, tmp_path,
         monkeypatch.setattr(store, "_write_relation", broken)
     try:
         if failure is None:
-            native.publish_unit_day_artifact(store)
+            publish_unit_day_artifact(experiment, resolver, store)
         else:
             with pytest.raises(RuntimeError):
-                native.publish_unit_day_artifact(store)
+                publish_unit_day_artifact(experiment, resolver, store)
             assert store.visible_manifests == ()
         assert all(table.op().name not in con.list_tables() for table in materialized)
     finally:
-        native.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -2764,11 +2898,11 @@ def test_publication_pins_ratio_streams_before_inter_stream_mutation(monkeypatch
     experiment["plan"] = {"secondaries": ["aov"]}
     experiment["n_pre_periods"] = 0
     definitions.write_text(yaml.safe_dump(payload))
-    con, native, _context, store = _native(definitions=definitions)
+    con, (native_experiment, native_resolver), _context, store = _native(definitions=definitions)
     seed_event_log(con, n_units=200)
 
     def published():
-        ref = native.publish_unit_day_artifact(store)
+        ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
             stats = snapshot.verify_relation(
@@ -2803,7 +2937,7 @@ def test_publication_pins_ratio_streams_before_inter_stream_mutation(monkeypatch
         assert rows == baseline_rows
         assert manifest.measures == baseline_manifest.measures
     finally:
-        native.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -2815,63 +2949,83 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
     from examples._seed import seed_event_log
 
     con, native, context, store = _native(definitions=_definitions(tmp_path, open_ended=open_ended))
+    native_experiment, native_resolver = native
     seed_event_log(con, n_units=200)
     adopted = adopted_again = None
     try:
-        ref = native.publish_unit_day_artifact(store)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        second_ref = native.publish_unit_day_artifact(store)
-        adopted_again = Analysis.from_unit_day_artifact(store, second_ref, expected_context=context)
-        first_ids = {row.source_snapshot_id for row in adopted.run_asof_lift()}
-        second_ids = {row.source_snapshot_id for row in adopted_again.run_asof_lift()}
+        ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+        adopted = from_unit_day_artifact(store, ref, expected_context=context)
+        adopted_experiment, adopted_resolver = adopted
+        second_ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+        adopted_again = from_unit_day_artifact(store, second_ref, expected_context=context)
+        again_experiment, again_resolver = adopted_again
+        asof_lift = Scope(view="asof", grain="asof")
+        first_ids = {
+            row.source_snapshot_id
+            for row in view_readout(adopted_experiment, adopted_resolver, asof_lift)
+        }
+        second_ids = {
+            row.source_snapshot_id
+            for row in view_readout(again_experiment, again_resolver, asof_lift)
+        }
         assert first_ids and second_ids and first_ids.isdisjoint(second_ids)
 
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always", UserWarning)
-            for metric in adopted.metrics:
-                for method in ("run", "run_daily", "run_asof"):
-                    expected = getattr(native, method)(metrics=[metric.name])
-                    actual = getattr(adopted, method)(metrics=[metric.name])
+            for metric in metrics(adopted_experiment, adopted_resolver):
+                for scope in _READOUT_VIEWS:
+                    expected = view_readout(
+                        native_experiment, native_resolver, scope, metrics=[metric.name]
+                    )
+                    actual = view_readout(
+                        adopted_experiment, adopted_resolver, scope, metrics=[metric.name]
+                    )
                     _assert_rows_equal(
                         [_flatten_readout_row(row) for row in expected],
                         [_flatten_readout_row(row) for row in actual],
                     )
-            source: Any = _native_source(adopted)
+            source: Any = bound_source(adopted_resolver)
             for source_metric in source.context.metrics:
                 assert source._reduce(source_metric, "total", population_units=frozenset()) == []
         artifact_moments_path = tmp_path / "artifact-moments.parquet"
-        adopted.export(artifact_moments_path)
+        export_moments(adopted_experiment, adopted_resolver, artifact_moments_path)
         second_artifact_moments_path = tmp_path / "artifact-moments-again.parquet"
-        adopted_again.export(second_artifact_moments_path)
+        export_moments(again_experiment, again_resolver, second_artifact_moments_path)
         import pyarrow.parquet as pq
 
-        artifact_replay = Analysis.from_moments(
+        replay_experiment, replay_resolver = from_moments(
             pq.read_table(artifact_moments_path).to_pylist(),
             metrics={"purchase_rate": "conversion"},
             control="control",
         )
-        artifact_replay_again = None
+        replay_again = None
         try:
-            artifact_replay_again = Analysis.from_moments(
+            replay_again = from_moments(
                 pq.read_table(second_artifact_moments_path).to_pylist(),
                 metrics={"purchase_rate": "conversion"},
                 control="control",
             )
-            first_replay_ids = {row.source_snapshot_id for row in artifact_replay.run()}
-            second_replay_ids = {row.source_snapshot_id for row in artifact_replay_again.run()}
+            replay_again_experiment, replay_again_resolver = replay_again
+            first_replay_ids = {
+                row.source_snapshot_id for row in view_readout(replay_experiment, replay_resolver)
+            }
+            second_replay_ids = {
+                row.source_snapshot_id
+                for row in view_readout(replay_again_experiment, replay_again_resolver)
+            }
             assert first_replay_ids and second_replay_ids
             assert first_replay_ids.isdisjoint(second_replay_ids)
         finally:
-            if artifact_replay_again is not None:
-                artifact_replay_again.close()
-            artifact_replay.close()
+            if replay_again is not None:
+                replay_again[1].close()
+            replay_resolver.close()
         assert any(issubclass(item.category, UserWarning) for item in recorded)
     finally:
         if adopted_again is not None:
-            adopted_again.close()
+            adopted_again[1].close()
         if adopted is not None:
-            adopted.close()
-        native.close()
+            adopted[1].close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -2895,9 +3049,11 @@ def _windowed_definitions(
 
 def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, context: Any) -> dict:
     """Daily rows and the lift estimate each route reports for one publication."""
+    native_experiment, native_resolver = native
+    adopted_experiment, adopted_resolver = adopted
     adopted_source = _artifact_source(store, reference, context)
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
         from increment.estimation.engine import Method
@@ -2911,12 +3067,22 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
                 adopted_source.day_source(metrics=(adopted_metric,)), adopted_metric, grain="daily"
             ),
             "native_lift": lift_rows(
-                native.run(metrics=["purchase_rate"], decision_method=unadjusted)
+                view_readout(
+                    native_experiment,
+                    native_resolver,
+                    metrics=["purchase_rate"],
+                    decision_method=unadjusted,
+                )
             )[0]
             .require_lift()
             .value,
             "adopted_lift": lift_rows(
-                adopted.run(metrics=["purchase_rate"], decision_method=unadjusted)
+                view_readout(
+                    adopted_experiment,
+                    adopted_resolver,
+                    metrics=["purchase_rate"],
+                    decision_method=unadjusted,
+                )
             )[0]
             .require_lift()
             .value,
@@ -2951,13 +3117,14 @@ def test_aware_spellings_of_one_instant_agree_on_both_routes(
             name=label,
         )
         _connection, native, context, store = _native(definitions=definitions)
-        reference = native.publish_unit_day_artifact(store)
-        adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        native_experiment, native_resolver = native
+        reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+        adopted = from_unit_day_artifact(store, reference, expected_context=context)
         try:
             evidence[label] = _route_evidence(native, adopted, store, reference, context)
         finally:
-            adopted.close()
-            native.close()
+            adopted[1].close()
+            native_resolver.close()
     for label, routes in evidence.items():
         _assert_rows_equal(routes["native_rows"], routes["adopted_rows"])
         assert routes["adopted_lift"] == pytest.approx(routes["native_lift"], rel=1e-9), label
@@ -2989,8 +3156,10 @@ def test_a_naive_utc_minus_five_experiment_publishes_and_adopts_like_from_defini
         name="naive",
     )
     _connection, native, context, store = _native(definitions=definitions)
-    reference = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    native_experiment, native_resolver = native
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
+    adopted_experiment, adopted_resolver = adopted
     try:
         evidence = _route_evidence(native, adopted, store, reference, context)
         _assert_rows_equal(evidence["native_rows"], evidence["adopted_rows"])
@@ -3001,15 +3170,15 @@ def test_a_naive_utc_minus_five_experiment_publishes_and_adopts_like_from_defini
             "observation_horizon": date(2025, 3, 15).isoformat(),
         }
         stored = json.loads(context.canonical_json)["window_days"]
-        adopted_days = window_days(adopted.experiment)
+        adopted_days = window_days(experiment_definition(adopted_experiment, adopted_resolver))
         assert {edge: day and day.isoformat() for edge, day in adopted_days.items()} == stored
         defs = load(definitions)
         experiment = defs.experiment("new_onboarding_v2")
         assert experiment is not None
         assert artifact_source_mapping(context) == native_observation_mapping(defs, experiment)
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 def _insert_window_boundary_events(connection: Any, window_ns: int) -> list[dict[str, Any]]:
@@ -3116,7 +3285,9 @@ def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path)
         "exclusion_restriction": {"justification": "synthetic test data"},
     }
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    connection, native, context, store = _native(definitions=definitions)
+    connection, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions
+    )
     connection.raw_sql(
         """
         CREATE OR REPLACE TABLE analytics.event_log AS
@@ -3146,16 +3317,31 @@ def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path)
     )
     elapsed_window_ns = 14 * 24 * 60 * 60 * 1_000_000_000
     end_units = _insert_window_boundary_events(connection, elapsed_window_ns)
-    reference = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "encouragement_uptake")
+    reference = publish_unit_day_artifact(
+        native_experiment,
+        native_resolver,
+        store,
+        extensions=_extensions(context, "encouragement_uptake"),
     )
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     from increment import Method
 
     unadjusted = Method(name="unadjusted")
     try:
-        expected = native.run(estimands=["itt", "compliance"], decision_method=unadjusted)
-        actual = adopted.run(estimands=["itt", "compliance"], decision_method=unadjusted)
+        expected = view_readout(
+            native_experiment,
+            native_resolver,
+            estimands=["itt", "compliance"],
+            decision_method=unadjusted,
+        )
+        actual = view_readout(
+            adopted_experiment,
+            adopted_resolver,
+            estimands=["itt", "compliance"],
+            decision_method=unadjusted,
+        )
         assert len(actual) == len(expected)
         for expected_row, actual_row in zip(expected, actual, strict=True):
             expected_fields = _flatten_readout_row(expected_row)
@@ -3244,8 +3430,8 @@ def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path)
         )
         assert stored_count == strict_count
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 pytestmark = pytest.mark.integration
