@@ -1,8 +1,4 @@
-"""Test Analysis facade — integration with examples/definitions.
-
-TDD Step 1: this test should fail before analysis.py exists, then pass
-after the facade is implemented.
-"""
+"""Clustered definitions readouts read their declared analysis plan."""
 
 from __future__ import annotations
 
@@ -18,8 +14,14 @@ from increment import readouts as readout_functions
 from increment.frame import MetricSpec
 from increment.plan import compile_decision_plan
 from increment.semantics.models import AnalysisPlan, Definitions
+from increment.workflows import metrics
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import lift_rows, make_analysis, make_analysis_like
+from tests.analysis_factory import (
+    lift_rows,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 
 # The secondary-family fixtures declare these two policy values on their
 # plan, so the expected interval levels need no read-back of the plan.
@@ -170,26 +172,22 @@ def _execute_plan_cluster_con():
 
 @pytest.fixture(scope="module")
 def clustered_plan_analysis(_execute_plan_cluster_con):
-    return make_analysis(
-        _execute_plan_cluster_con,
-        _execute_plan_cluster_defs(),
-        experiment="execute_plan_cluster",
+    return make_binding(
+        _execute_plan_cluster_con, _execute_plan_cluster_defs(), experiment="execute_plan_cluster"
     )
 
 
 @pytest.fixture(scope="module")
 def clustered_noplan_analysis(_execute_plan_cluster_con):
-    analysis = make_analysis(
-        _execute_plan_cluster_con,
-        _execute_plan_cluster_defs(),
-        experiment="execute_plan_cluster",
+    experiment, resolver = make_binding(
+        _execute_plan_cluster_con, _execute_plan_cluster_defs(), experiment="execute_plan_cluster"
     )
     # Build an explicitly unassigned plan through the test constructor;
     # the source adapter receives it at construction time.
-    analysis = make_analysis_like(
-        analysis, plan=compile_decision_plan(None, analysis.metrics, path="warehouse")
+    return make_binding_like(
+        resolver,
+        plan=compile_decision_plan(None, metrics(experiment, resolver), path="warehouse"),
     )
-    return analysis
 
 
 class TestClusteredRunReadsDeclaredPlan:
@@ -197,8 +195,10 @@ class TestClusteredRunReadsDeclaredPlan:
     other non-Encouragement design: roles stamped, guardrail one-sided at
     its margin, call-time policy kwargs refused."""
 
-    def test_clustered_run_stamps_roles_and_guardrail_tail(self, clustered_plan_analysis):
-        results = lift_rows(clustered_plan_analysis.run())
+    def test_clustered_run_stamps_roles_and_guardrail_tail(
+        self, clustered_plan_analysis: tuple[Any, Any]
+    ):
+        results = lift_rows(view_readout(*clustered_plan_analysis))
         by_metric = {r.metric: r for r in results}
         assert by_metric["conversion"].role == "primary"
         # 2 primaries (alpha_share=0.05/2) x 2 treatment arms
@@ -210,19 +210,21 @@ class TestClusteredRunReadsDeclaredPlan:
         assert g.alternative == "less"
         assert g.null_lift == pytest.approx(0.02)
 
-    def test_clustered_run_refuses_call_time_policy(self, clustered_plan_analysis):
+    def test_clustered_run_refuses_call_time_policy(self, clustered_plan_analysis: tuple[Any, Any]):
         with pytest.raises(TypeError):
-            lift_rows(clustered_plan_analysis.run(alternative="greater"))
+            lift_rows(view_readout(*clustered_plan_analysis, alternative="greater"))
         with pytest.raises(TypeError):
-            lift_rows(clustered_plan_analysis.run(margins={"latency": 0.05}))
+            lift_rows(view_readout(*clustered_plan_analysis, margins={"latency": 0.05}))
 
-    def test_undeclared_plan_refuses_call_time_kwargs(self, clustered_noplan_analysis):
+    def test_undeclared_plan_refuses_call_time_kwargs(
+        self, clustered_noplan_analysis: tuple[Any, Any]
+    ):
         # Clustered readouts now route through the shared readout pipeline
         # (Task 3), which reads its epistemic policy exclusively from the
         # declared AnalysisPlan -- call-time alternative= is refused
         # unconditionally, declared plan or not.
         with pytest.raises(TypeError, match="unexpected keyword argument"):
-            lift_rows(clustered_noplan_analysis.run(alternative="greater"))
+            lift_rows(view_readout(*clustered_noplan_analysis, alternative="greater"))
 
 
 def _secondary_family_cluster_rows() -> list[dict[str, Any]]:
@@ -348,11 +350,11 @@ def test_clustered_secondary_family_selects_strict_subset_with_fcr_intervals():
     the plan's nominal alpha."""
     con = ibis.duckdb.connect()
     con.create_table("sec_fam_cluster_events", obj=_secondary_family_cluster_rows())
-    analysis = make_analysis(
+    analysis_experiment, analysis_resolver = make_binding(
         con, _secondary_family_cluster_defs(), experiment="sec_fam_cluster_exp"
     )
 
-    results = lift_rows(analysis.run())
+    results = lift_rows(view_readout(analysis_experiment, analysis_resolver))
     secondary = [r for r in results if r.role == "secondary"]
     by_cell = {(r.metric, r.group_id): r for r in secondary}
     assert len(by_cell) == 8  # 4 metrics x 2 treatment arms
@@ -471,8 +473,8 @@ def test_clustered_secondary_family_preserves_declaration_order(con):
         }
     )
     con.create_table("order_events", obj=rows)
-    analysis = make_analysis(con, defs, experiment="order_exp")
-    results = lift_rows(analysis.run())
+    analysis_experiment, analysis_resolver = make_binding(con, defs, experiment="order_exp")
+    results = lift_rows(view_readout(analysis_experiment, analysis_resolver))
     assert [r.metric for r in results] == ["primary_y", "sec_x", "guard_z"]
     assert {r.metric: r.role for r in results} == {
         "primary_y": "primary",
@@ -601,8 +603,10 @@ def test_clustered_secondary_discovery_parity_with_frame_path():
     )
     con = ibis.duckdb.connect()
     con.create_table("sec_fam_singleton_events", obj=rows)
-    analysis = make_analysis(con, defs, experiment="sec_fam_singleton_exp")
-    native_results = lift_rows(analysis.run())
+    analysis_experiment, analysis_resolver = make_binding(
+        con, defs, experiment="sec_fam_singleton_exp"
+    )
+    native_results = lift_rows(view_readout(analysis_experiment, analysis_resolver))
     native_by_metric = {r.metric: r for r in native_results}
 
     frame_p_values = [frame_by_metric[name].p_value() for name in metric_names]
@@ -730,9 +734,11 @@ def test_quantile_secondary_family_includes_prior_bound_sampling_member():
     """A declared prior does not exclude the quantile cell's sampling evidence."""
     con = ibis.duckdb.connect()
     con.create_table("quant_sec_fam_events", obj=_quantile_secondary_family_rows())
-    analysis = make_analysis(con, _quantile_secondary_family_defs(), experiment="quant_sec_fam_exp")
+    analysis_experiment, analysis_resolver = make_binding(
+        con, _quantile_secondary_family_defs(), experiment="quant_sec_fam_exp"
+    )
 
-    results = lift_rows(analysis.run())
+    results = lift_rows(view_readout(analysis_experiment, analysis_resolver))
     by_metric = {r.metric: r for r in results}
 
     assert by_metric["q_a"].discovery is True

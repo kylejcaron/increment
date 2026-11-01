@@ -24,7 +24,8 @@ import pyarrow as pa
 import pytest
 from scipy.stats import skew
 
-from increment import Analysis
+from increment import from_definitions, from_frame, from_moments, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import IncrementWarning, WireFormatError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.engine import Method, estimate_lift
@@ -35,7 +36,8 @@ from increment.estimation.variance import (
 )
 from increment.frame import MetricSpec
 from increment.semantics.models import Measure, RatioMetric
-from tests.analysis_factory import lift_rows
+from increment.workflows import export_moments
+from tests.analysis_factory import lift_rows, view_readout
 from tests.estimation.test_ratio_denominator_precision import _DEFS, _event_rows
 from tests.ratio_arms import array_arm, moment_arm, summary
 from tests.warning_codes import warning_codes, warning_context
@@ -307,13 +309,16 @@ def test_unit_summary_path_decides_from_the_per_unit_skewness():
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         (row,) = lift_rows(
-            Analysis.from_unit_summary(
-                pa.Table.from_pylist(unit_rows),
-                unit="unit_id",
-                group="group_id",
-                control="control",
-                metrics=[_SPEC],
-            ).run()
+            view_readout(
+                *from_frame(
+                    pa.Table.from_pylist(unit_rows),
+                    shape="summary",
+                    unit="unit_id",
+                    group="group_id",
+                    control="control",
+                    metrics=[_SPEC],
+                )
+            )
         )
     flagged = _flagged(record)
     assert row.note is not None and "ratio_denominator_skew:" in row.note
@@ -347,14 +352,17 @@ def test_clustered_ratio_rows_claim_no_coverage_check():
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         (row,) = lift_rows(
-            Analysis.from_unit_summary(
-                pa.Table.from_pylist(rows),
-                unit="unit_id",
-                group="group_id",
-                control="control",
-                metrics=[_SPEC],
-                cluster="store",
-            ).run()
+            view_readout(
+                *from_frame(
+                    pa.Table.from_pylist(rows),
+                    shape="summary",
+                    unit="unit_id",
+                    group="group_id",
+                    control="control",
+                    metrics=[_SPEC],
+                    cluster="store",
+                )
+            )
         )
     assert _CODE not in warning_codes(record)
     assert row.note is None or "ratio_denominator_skew" not in row.note
@@ -380,13 +388,14 @@ def test_decision_and_context_agree_across_every_ingress_path():
     def captured(build):
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
-            (row,) = lift_rows(build().run())
+            (row,) = lift_rows(view_readout(*build()))
         flagged = _flagged(record)
         return row, flagged
 
     summary_row, summary_flags = captured(
-        lambda: Analysis.from_unit_summary(
+        lambda: from_frame(
             pa.Table.from_pylist(unit_rows),
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -396,8 +405,9 @@ def test_decision_and_context_agree_across_every_ingress_path():
     assert summary_flags
     assert summary_row.note is not None and "ratio_denominator_skew:" in summary_row.note
     panel_row, panel_flags = captured(
-        lambda: Analysis.from_unit_panel(
+        lambda: from_frame(
             pa.Table.from_pylist([{**r, "ds": datetime(2025, 1, 2).date()} for r in unit_rows]),
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
@@ -410,22 +420,22 @@ def test_decision_and_context_agree_across_every_ingress_path():
     tmp = Path(tempfile.mkdtemp())
     defs_path = tmp / "defs.yaml"
     defs_path.write_text(_DEFS)
-    native = Analysis("rdp_test", defs_path, con)
+    native = from_definitions(defs_path, con, experiment_name="rdp_test")
     native_row, native_flags = captured(lambda: native)
     definitions = load(defs_path)
     experiment = next(item for item in definitions.experiments if item.name == "rdp_test")
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(*native, store)
     artifact_row, artifact_flags = captured(
-        lambda: Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        lambda: from_unit_day_artifact(store, reference, expected_context=context)
     )
     export_path = tmp / "moments.parquet"
-    native.export(export_path)
+    export_moments(*native, export_path)
     exported = pq.read_table(export_path).to_pylist()
     replay_spec = [MetricSpec(name="rps", type="ratio", numerator="n", denominator="d")]
     portable_row, portable_flags = captured(
-        lambda: Analysis.from_moments(exported, metrics=replay_spec, control="control")
+        lambda: from_moments(exported, metrics=replay_spec, control="control")
     )
 
     for row, flags in (
@@ -445,7 +455,7 @@ def test_decision_and_context_agree_across_every_ingress_path():
 
     previous = [{**r, "cden3": None, "moments_format": 11} for r in exported]
     previous_row, previous_flags = captured(
-        lambda: Analysis.from_moments(previous, metrics=replay_spec, control="control")
+        lambda: from_moments(previous, metrics=replay_spec, control="control")
     )
     assert previous_flags == {}
     assert previous_row.note is not None
@@ -456,7 +466,7 @@ def test_decision_and_context_agree_across_every_ingress_path():
 
     overflowed = [{**r, "cden3": None} for r in exported]
     overflowed_row, overflowed_flags = captured(
-        lambda: Analysis.from_moments(overflowed, metrics=replay_spec, control="control")
+        lambda: from_moments(overflowed, metrics=replay_spec, control="control")
     )
     assert overflowed_flags == {}
     assert overflowed_row.note is not None
@@ -466,7 +476,7 @@ def test_decision_and_context_agree_across_every_ingress_path():
     )
 
     with pytest.raises(WireFormatError) as refused:
-        Analysis.from_moments(
+        from_moments(
             [{key: value for key, value in row.items() if key != "cden3"} for row in exported],
             metrics=replay_spec,
             control="control",

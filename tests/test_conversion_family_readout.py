@@ -4,15 +4,17 @@ carry, and only a selected member's interval is reissued at the family's correct
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import polars as pl
 import pytest
 
-from increment import Analysis
+from increment import from_frame, from_moments
 from increment.estimation.engine import escalate_family_member
 from increment.frame import MetricSpec
 from increment.semantics.models import AnalysisPlan
-from tests.analysis_factory import lift_rows
+from tests.analysis_factory import lift_rows, view_readout
 
 UNITS_PER_ARM = 50_000
 ARMS = ("control", "T1", "T2")
@@ -50,9 +52,10 @@ def null_frame() -> pl.DataFrame:
     return _frame(_null_successes((*NULL_METRICS, "m10")))
 
 
-def _analysis(frame: pl.DataFrame, metrics: tuple[str, ...], plan: AnalysisPlan | None) -> Analysis:
-    return Analysis.from_unit_summary(
+def _analysis(frame: pl.DataFrame, metrics: tuple[str, ...], plan: AnalysisPlan | None) -> Any:
+    return from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -71,10 +74,12 @@ class TestTheAuditScenario:
     plan, and the readout runs without a single exact inversion."""
 
     def test_family_members_keep_their_no_plan_intervals(self, null_frame):
-        with_plan = _analysis(null_frame, NULL_METRICS, AnalysisPlan(secondaries=NULL_METRICS))
-        without = _analysis(null_frame, NULL_METRICS, None)
-        family = list(lift_rows(with_plan.run()))
-        plain = _by_cell(without.run())
+        with_plan_experiment, with_plan_resolver = _analysis(
+            null_frame, NULL_METRICS, AnalysisPlan(secondaries=NULL_METRICS)
+        )
+        without_experiment, without_resolver = _analysis(null_frame, NULL_METRICS, None)
+        family = list(lift_rows(view_readout(with_plan_experiment, with_plan_resolver)))
+        plain = _by_cell(view_readout(without_experiment, without_resolver))
         assert len(family) == 20
         for row in family:
             twin = plain[row.metric, row.group_id]
@@ -94,14 +99,18 @@ class TestTheAuditScenario:
         self, null_frame
     ):
         ten = _by_cell(
-            _analysis(null_frame, NULL_METRICS, AnalysisPlan(secondaries=NULL_METRICS)).run()
+            view_readout(
+                *_analysis(null_frame, NULL_METRICS, AnalysisPlan(secondaries=NULL_METRICS))
+            )
         )
         eleven = _by_cell(
-            _analysis(
-                null_frame,
-                (*NULL_METRICS, "m10"),
-                AnalysisPlan(secondaries=(*NULL_METRICS, "m10")),
-            ).run()
+            view_readout(
+                *_analysis(
+                    null_frame,
+                    (*NULL_METRICS, "m10"),
+                    AnalysisPlan(secondaries=(*NULL_METRICS, "m10")),
+                )
+            )
         )
         assert len(eleven) == 22
         for key, row in ten.items():
@@ -124,8 +133,10 @@ class TestASelectedMemberIsReissuedByItsCounts:
         successes["strong_a"] = {"control": 2_500, "T1": 2_800, "T2": 2_480}
         successes["strong_b"] = {"control": 2_500, "T1": 2_780, "T2": 2_510}
         frame = _frame(successes)
-        family = list(lift_rows(_analysis(frame, metrics, AnalysisPlan(secondaries=metrics)).run()))
-        plain = _by_cell(_analysis(frame, metrics, None).run())
+        family = list(
+            lift_rows(view_readout(*_analysis(frame, metrics, AnalysisPlan(secondaries=metrics))))
+        )
+        plain = _by_cell(view_readout(*_analysis(frame, metrics, None)))
         selected = [row for row in family if row.discovery]
         assert {(row.metric, row.group_id) for row in selected} == {
             ("strong_a", "T1"),
@@ -166,10 +177,10 @@ def test_fcr_reissues_only_selected_arms_without_invalidating_nominal_siblings()
     ]
     plan = AnalysisPlan(secondaries=["converted"], alpha=0.05, q=0.001, alternative="greater")
     cube = moments_from_summaries(summaries, metrics={"converted": "conversion"}, control="control")
-    analysis = Analysis.from_moments(
+    experiment, resolver = from_moments(
         cube, metrics={"converted": "conversion"}, control="control", plan=plan
     )
-    readout = analysis.run()
+    readout = view_readout(experiment, resolver)
     rows = {row.group_id: row for row in lift_rows(readout)}
     assert set(rows) == {"T1", "T2"}
     assert rows["T1"].discovery is True and rows["T1"].stat_sig() is True

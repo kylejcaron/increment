@@ -1,11 +1,11 @@
-"""End-to-end Analysis over declarative dim sources (in-memory DuckDB).
+"""End-to-end definitions readouts over declarative dim sources (in-memory DuckDB).
 
 Includes the collider guard: a unit whose versioned value changes AFTER
 exposure must resolve to the pre-exposure value in breakouts.
 
-`Analysis` loads definitions from a path (`Analysis(experiment_name,
-definitions_path, con)`), so each variant writes its YAML to tmp_path;
-the warehouse tables live on the shared in-memory DuckDB connection.
+`from_definitions` loads definitions from a path, so each variant writes its
+YAML to tmp_path; the warehouse tables live on the shared in-memory DuckDB
+connection.
 """
 
 import datetime as dt
@@ -16,11 +16,12 @@ import warnings
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_definitions
 from increment.estimators import MetricTrends
+from increment.query import summary_sql
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import make_analysis_like
+from tests.analysis_factory import make_binding_like, view_readout
 from tests.warning_codes import warning_codes
 
 pytestmark = pytest.mark.integration
@@ -203,13 +204,13 @@ def _analysis(tmp_path, con, yaml_text, subdir):
     d = tmp_path / subdir
     d.mkdir()
     (d / "definitions.yaml").write_text(yaml_text)
-    return Analysis("exp", d, con)
+    return from_definitions(d, con, experiment_name="exp")
 
 
 @pytest.mark.integration
 def test_declarative_dims_match_inline_sql(tmp_path, con):
-    inline = _analysis(tmp_path, con, INLINE_YAML, "inline").run()
-    declarative = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative").run()
+    inline = view_readout(*_analysis(tmp_path, con, INLINE_YAML, "inline"))
+    declarative = view_readout(*_analysis(tmp_path, con, DECLARATIVE_YAML, "declarative"))
     by_metric_inline = {e.metric: e for e in inline}
     by_metric_decl = {e.metric: e for e in declarative}
     assert by_metric_inline.keys() == by_metric_decl.keys()
@@ -223,10 +224,9 @@ def test_declarative_dims_match_inline_sql(tmp_path, con):
 
 @pytest.mark.integration
 def test_pre_exposure_breakout_never_sees_post_exposure_value(tmp_path, con):
-    a = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative")
-    a = make_analysis_like(
-        a,
-        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none")),
+    _, declared = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative")
+    experiment, resolver = make_binding_like(
+        declared, plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none"))
     )
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
@@ -237,7 +237,7 @@ def test_pre_exposure_breakout_never_sees_post_exposure_value(tmp_path, con):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = a.run_breakout()
+            estimates = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
     assert all(code.startswith("breakout.estimates.") for code in warning_codes(record))
     plan_values = {e.dimension_value for e in estimates if e.dimension == "plan"}
     assert "pro" not in plan_values  # every upgrade happened after exposure
@@ -246,8 +246,8 @@ def test_pre_exposure_breakout_never_sees_post_exposure_value(tmp_path, con):
 
 @pytest.mark.integration
 def test_summary_sql_contains_generated_joins(tmp_path, con):
-    a = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative")
-    sqls = a.summary_sql()  # dict keyed per metric
+    experiment, resolver = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative")
+    sqls = summary_sql(experiment, resolver)  # dict keyed per metric
     joined = " ".join(sqls.values()).lower()
     assert "dim_user" in joined
     assert "snap_user_plan" in joined

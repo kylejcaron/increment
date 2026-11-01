@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from increment import from_switchback_frame
 from increment.semantics.assignment import (
     IndependentBernoulliOrder,
     SwitchbackAssignment,
@@ -604,7 +605,7 @@ def test_supported_switchback_carryover_decays_during_washout_only():
     assert observed
 
 
-@pytest.mark.parametrize("entrypoint", ["source", "analysis"])
+@pytest.mark.parametrize("entrypoint", ["source", "builder"])
 @pytest.mark.parametrize(
     ("allocation", "expected_context", "metric_type"),
     [
@@ -643,7 +644,7 @@ def test_supported_switchback_carryover_decays_during_washout_only():
 def test_switchback_invalid_allocation_refuses_before_frame_access(
     monkeypatch, allocation, expected_context, metric_type, entrypoint
 ):
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.errors import InvalidRequestError
     from increment.switchback import from_switchback_panel
     from tests.capability_consumers_auxiliary import assert_refusal
@@ -652,9 +653,7 @@ def test_switchback_invalid_allocation_refuses_before_frame_access(
         raise AssertionError("frame access occurred before allocation validation")
 
     monkeypatch.setattr("increment.switchback.nw.from_native", fail)
-    constructor = (
-        Analysis.from_switchback_panel if entrypoint == "analysis" else from_switchback_panel
-    )
+    constructor = from_switchback_frame if entrypoint == "builder" else from_switchback_panel
     metric = MetricSpec(
         name="outcome", type=metric_type, threshold_days=1 if metric_type == "retention" else None
     )
@@ -677,7 +676,7 @@ def test_switchback_invalid_allocation_refuses_before_frame_access(
     assert {
         key: value for key, value in exc.value.context.items() if key != "message"
     } == expected_context
-    if entrypoint == "analysis" and len(allocation) == 3:
+    if entrypoint == "builder" and len(allocation) == 3:
         assert_refusal(
             "switchback_multi_arm_identification",
             f"{metric_type}_multi_arm_refused",

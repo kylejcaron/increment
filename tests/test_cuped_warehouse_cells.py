@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import AbstractContextManager
 from dataclasses import asdict
 from typing import cast
 
@@ -9,12 +10,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from increment import from_definitions, from_moments, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.cuped.cells import fit_categorical_cells
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.semantics.models import CupedCovariate, MeanMetric, Measure, RatioMetric
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import bound_source, view_readout
 
 pytestmark = pytest.mark.integration
 
@@ -640,14 +644,12 @@ def categorical_sources(tmp_path, request):
     import pyarrow as pa
     import yaml
 
-    from increment import Analysis
     from increment.estimation.engine import Method
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
     from increment.query.source import _ArtifactFacadeSource
     from increment.semantics.loader import load
     from increment.semantics.models import CupedCovariateBinding
-    from tests.analysis_factory import _moment_source, _native_source
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
     discrete = getattr(request, "param", False)
@@ -694,25 +696,25 @@ def categorical_sources(tmp_path, request):
     con.create_table("events", obj=pa.Table.from_pylist(events))
     if discrete:
         assert con.table("events").value.type().is_integer()
-    native = Analysis.from_definitions("mixed_cuped", path, con)
+    native_experiment, native_resolver = from_definitions(path, con, experiment_name="mixed_cuped")
+    assert isinstance(native_resolver, AbstractContextManager)
     definitions = load(path)
     experiment = definitions.experiment("mixed_cuped")
     assert experiment is not None
     store = WarehouseArtifactStore(con, schema_name="categorical_artifacts")
-    ref = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    _, adopted_resolver = from_unit_day_artifact(
         store, ref, expected_context=artifact_context(definitions, experiment, "error")
     )
     request = replace(
         _request(), method=method, control="control", arm_order=("control", "treatment")
     )
-    native_source = _native_source(native)
-    artifact_source = cast("_ArtifactFacadeSource", _moment_source(adopted))
+    native_source = bound_source(native_resolver)
+    artifact_source = cast("_ArtifactFacadeSource", bound_source(adopted_resolver))
     try:
-        yield native_source, artifact_source, request
+        with native_resolver, adopted_resolver:
+            yield native_source, artifact_source, request
     finally:
-        native.close()
-        adopted.close()
         con.disconnect()
 
 
@@ -856,7 +858,6 @@ def test_categorical_warehouse_export_replays_without_unit_transfer(
 ):
     import pyarrow.parquet as pq
 
-    from increment import Analysis
     from increment.estimation.results import LiftEstimate
     from increment.frame import MetricSpec
     from increment.readouts import run
@@ -878,16 +879,18 @@ def test_categorical_warehouse_export_replays_without_unit_transfer(
     assert [(item["kind"], item["metric"]) for item in envelopes] == [
         ("categorical_cells", "revenue")
     ]
-    restored = Analysis.from_moments(
+    experiment, resolver = from_moments(
         rows,
         metrics=[MetricSpec(name="revenue", decision_method=request.method)],
         design=source.context.design,
         experiment_id="mixed_cuped",
     )
     try:
-        (actual,) = (row for row in restored.run() if isinstance(row, LiftEstimate))
+        (actual,) = (
+            row for row in view_readout(experiment, resolver) if isinstance(row, LiftEstimate)
+        )
     finally:
-        restored.close()
+        resolver.close()
     assert (actual.method, actual.method_role) == (expected.method, expected.method_role)
     lift, reference = actual.require_lift(), expected.require_lift()
     for field in ("value", "log_se", "lb", "ub"):
