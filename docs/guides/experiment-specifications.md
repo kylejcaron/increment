@@ -93,9 +93,10 @@ its covariate configuration. Switchback scopes require a switchback experiment.
 Switchback requests reject arm-only arguments and role or prior overrides with
 the same checks as execution.
 `capture` is an execution step, not a saved request option. To capture or adopt
-a sequential checkpoint, call `analysis.capture_sequential(...)` or, for the
-built-in resolver returned by a module builder, `resolver.capture_sequential(...)`,
-then run the experiment. Pass an `as_of` horizon when required by the source.
+a sequential checkpoint, call
+`increment.workflows.capture_sequential(experiment, resolver, ...)` with the
+pair returned by a module builder, then run the experiment. Pass an `as_of`
+horizon when required by the source.
 Specifications containing `capture` refuse with
 `kernel.request.capture_not_supported`. Population is declared on `Scope` via
 `Scope(population=...)`; a request option named `population` refuses with
@@ -142,17 +143,18 @@ result = run(restored, resolver)
 print(render(result, "brief"))
 ```
 
-For a registered sequential definition, capture through the resolver returned by
-the builder before running. Supply an `as_of` horizon when required by the source:
+For a registered sequential definition, capture through the builder's pair
+before running. Supply an `as_of` horizon when required by the source:
 
 <!-- skip: next "requires a configured warehouse and a registered sequential definition" -->
 ```python
 from increment import from_definitions, run
+from increment.workflows import capture_sequential
 
 experiment, resolver = from_definitions(
     "definitions.yml", con, experiment_name="sequential_experiment"
 )
-resolver.capture_sequential(finalized=True, as_of=as_of)
+capture_sequential(experiment, resolver, finalized=True, as_of=as_of)
 result = run(experiment, resolver)
 ```
 

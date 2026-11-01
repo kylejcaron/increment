@@ -218,28 +218,67 @@ mismatch refuses initial capture, not only continuation.
 Bind the registration through `AnalysisPlan(inference=InferenceSpec(
 kind="always_valid", registration=registration))`. Unit-summary frames
 supply finalized outcomes. Panel, native, and artifact sources require
-`analysis.capture_sequential(finalized=True, as_of=...)` before a decision.
-The common window determines which units can enter. Native and artifact
-capture streams bounded Arrow batches through existing source relations.
+`increment.workflows.capture_sequential(experiment, resolver, finalized=True,
+as_of=...)` before a decision. The resolver's source keeps the capture, so a
+later `run(experiment, resolver)` reads it. The common window determines which
+units can enter. Native and artifact capture streams bounded Arrow batches
+through existing source relations.
 
-Use `analysis.sequential_snapshot()` to retain the exact prefix. Supply it
-as `previous=` when continuing from a new source object. The same snapshot
-is idempotent. An append must preserve every earlier unit identity,
-assignment, value, definition, transformation, and reveal position. A
-changed generation hash alone proves nothing about an append. Corrections
-refuse continuation; never treat them as a fresh continuation of the old
-process.
+Use `increment.workflows.sequential_snapshot(experiment, resolver)` to retain
+the exact prefix. Supply it as `previous=` when continuing from a new source
+object. The same snapshot is idempotent. An append must preserve every earlier
+unit identity, assignment, value, definition, transformation, and reveal
+position. A changed generation hash alone proves nothing about an append.
+Corrections refuse continuation; never treat them as a fresh continuation of
+the old process.
+
+```python
+from increment import from_frame, run
+from increment.estimators import snapshot_from_json
+from increment.workflows import capture_sequential, sequential_snapshot
+
+
+def bind(frame):
+    return from_frame(
+        frame,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        design=design,
+        metrics=[MetricSpec(name="purchase", type="conversion")],
+        experiment_id="checkout-experiment",
+        plan=plan,
+        exposure_date="enrolled_on",
+    )
+
+
+experiment, resolver = bind(finalized_frame.head(1000))
+with resolver:
+    saved = sequential_snapshot(experiment, resolver).model_dump_json()
+
+experiment, resolver = bind(finalized_frame)
+with resolver:
+    parent = snapshot_from_json(saved)
+    continued = capture_sequential(experiment, resolver, finalized=True, previous=parent)
+    result = run(experiment, resolver)
+print(continued.parent_id == parent.prefix_id)
+```
+
+```text
+True
+```
 
 Raw-record producers may use `capture_sequential_snapshot(...,
 previous=parent, append=True)` for a batch of new units. Existing unit
 identities cannot appear in that batch. Full-prefix capture checks every
 old record proof and reuses the parent's exact sufficient state.
 
-`analysis.export(path)` writes a format-10 sequential checkpoint envelope:
-the version-2 registration/snapshot/checkpoint, a version-3 compiled plan, and
-the originating source identity. Export through the same `Analysis` source that
-captured or adopted the finalized checkpoint; a fresh `from_definitions(...)`
-pair does not own that checkpoint. Reload its rows with `Analysis.from_moments`.
+`increment.workflows.export_moments(experiment, resolver, path)` writes a
+format-10 sequential checkpoint envelope: the version-2
+registration/snapshot/checkpoint, a version-3 compiled plan, and the
+originating source identity. Export with the same resolver that captured or
+adopted the finalized checkpoint; a fresh `from_definitions(...)` pair does not
+own that checkpoint. Reload its rows with `from_moments`.
 The preceding sequential format 9 remains readable; fixed-horizon format 12
 carries the same source identity, while the preceding fixed-horizon format 11
 remains readable.
@@ -276,17 +315,17 @@ remain members even when no units enroll. Missing cells contribute log
 evidence of minus infinity. Singular or zero-event prefixes retain their
 observations and may become informative later.
 
-`Analysis.capture_sequential(freeze=["metric_name"])` stops monitoring a
-metric at that capture. Every registered cell for that metric—each
-treatment arm and segment—keeps that capture's evidence at later looks.
-A cell with no observations on either arm has nothing to freeze and stays
-monitored; name the metric again at a later capture to freeze it.
+`capture_sequential(experiment, resolver, finalized=True, freeze=["metric_name"])`
+stops monitoring a metric at that capture. Every registered cell for that
+metric—each treatment arm and segment—keeps that capture's evidence at later
+looks. A cell with no observations on either arm has nothing to freeze and
+stays monitored; name the metric again at a later capture to freeze it.
 Freezing is recorded in the snapshot's hashed prefix identity and carries
 forward on later appends and parent proofs. A caller cannot retroactively
 apply an earlier look's evidence. Raw-record producers call
 `declare_sequential_freeze(snapshot, ["metric_name"])` on a captured
-snapshot for the same effect. `Analysis.run()` reads frozen cells from the
-snapshot; it has no run-time override.
+snapshot for the same effect. `run(experiment, resolver)` reads frozen cells
+from the snapshot; it has no run-time override.
 
 Freezing fixes a cell's evidence, not its family verdict. e-BH uses current
 or frozen evidence, never a running maximum, and recomputes it at every

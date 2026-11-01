@@ -15,7 +15,15 @@ from increment.estimators import (
 )
 from increment.frame import MetricSpec
 from tests.sequential_cases import UnreadFrame
-from tests.test_sequential_public_sources import _analysis, _frame, _native_fixture, _plan, _row
+from tests.test_sequential_public_sources import (
+    _analysis,
+    _frame,
+    _native_fixture,
+    _native_inputs,
+    _native_pair,
+    _plan,
+    _row,
+)
 
 
 def _uptake_design():
@@ -590,58 +598,79 @@ def test_automatic_family_allocation_preserves_subnormal_tails():
     assert sum(cell.alpha for cell in registration.roster) == Fraction(q)
 
 
-@pytest.mark.slow
-def test_native_and_artifact_capture_include_the_final_window_day():
-    from datetime import timedelta
+def _final_window_day(experiment, resolver):
+    """The last day of the registered reveal window for the native fixture."""
+    from increment.workflows import experiment_definition
 
+    inference = experiment_definition(experiment, resolver).plan.inference
+    assert inference is not None and inference.registration is not None
+    return date(2025, 1, 1) + timedelta(days=inference.registration.reveal.longest_window_days - 1)
+
+
+@pytest.mark.slow
+def test_native_and_artifact_capture_include_the_final_window_day(tmp_path):
+    from increment.artifacts import publish_unit_day_artifact
+    from increment.builders import from_unit_day_artifact
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from increment.workflows import capture_sequential
 
-    connection, definitions, native = _native_fixture("scalar_mean")
+    connection, definitions, experiment, resolver = _native_pair(tmp_path, "scalar_mean")
     try:
-        registration = native.experiment.plan.inference.registration
-        final_day = date(2025, 1, 1) + timedelta(days=registration.reveal.longest_window_days - 1)
-        before = native.capture_sequential(finalized=True, as_of=final_day - timedelta(days=1))
+        final_day = _final_window_day(experiment, resolver)
+        before = capture_sequential(
+            experiment, resolver, finalized=True, as_of=final_day - timedelta(days=1)
+        )
         assert len(before.records) == 0
-        completed = native.capture_sequential(finalized=True, as_of=final_day)
+        completed = capture_sequential(experiment, resolver, finalized=True, as_of=final_day)
         assert len(completed.records) == 192
         context = artifact_context(definitions, definitions.experiments[0], "error")
         store = WarehouseArtifactStore(connection, schema_name="final_day_artifacts")
-        reference = native.publish_unit_day_artifact(store)
-        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
-            restored = adopted.capture_sequential(finalized=True, as_of=final_day)
+        reference = publish_unit_day_artifact(experiment, resolver, store)
+        adopted_experiment, adopted = from_unit_day_artifact(
+            store, reference, expected_context=context
+        )
+        with adopted:
+            restored = capture_sequential(
+                adopted_experiment, adopted, finalized=True, as_of=final_day
+            )
             assert restored.records == completed.records
             assert restored.states == completed.states
             assert restored.prefix_id == completed.prefix_id
     finally:
-        native.close()
+        resolver.close()
         connection.disconnect()
 
 
 @pytest.mark.slow
-def test_native_registration_freeze_survives_artifact_publish_and_reopen():
-    from datetime import timedelta
-
+def test_native_registration_freeze_survives_artifact_publish_and_reopen(tmp_path):
+    from increment.artifacts import publish_unit_day_artifact
+    from increment.builders import from_unit_day_artifact
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from increment.workflows import capture_sequential
 
-    connection, definitions, native = _native_fixture("scalar_mean")
+    connection, definitions, experiment, resolver = _native_pair(tmp_path, "scalar_mean")
     try:
-        registration = native.experiment.plan.inference.registration
-        final_day = date(2025, 1, 1) + timedelta(days=registration.reveal.longest_window_days - 1)
-        completed = native.capture_sequential(finalized=True, as_of=final_day, freeze=["outcome"])
+        final_day = _final_window_day(experiment, resolver)
+        completed = capture_sequential(
+            experiment, resolver, finalized=True, as_of=final_day, freeze=["outcome"]
+        )
         assert completed.frozen[0].cell.metric == "outcome"
         context = artifact_context(definitions, definitions.experiments[0], "error")
         store = WarehouseArtifactStore(connection, schema_name="freeze_artifacts")
-        reference = native.publish_unit_day_artifact(store)
-        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
-            restored = adopted.capture_sequential(
-                finalized=True, as_of=final_day, previous=completed
+        reference = publish_unit_day_artifact(experiment, resolver, store)
+        adopted_experiment, adopted = from_unit_day_artifact(
+            store, reference, expected_context=context
+        )
+        with adopted:
+            restored = capture_sequential(
+                adopted_experiment, adopted, finalized=True, as_of=final_day, previous=completed
             )
             assert restored.frozen == completed.frozen
             assert restored.prefix_id == completed.prefix_id
     finally:
-        native.close()
+        resolver.close()
         connection.disconnect()
 
 
@@ -649,12 +678,20 @@ def test_native_registration_freeze_survives_artifact_publish_and_reopen():
 def test_automatic_native_registration_survives_artifact_reopen(tmp_path):
     import yaml
 
-    from increment import Definitions
-    from increment.breakout.estimates import LiftEstimate
+    from increment import Definitions, run
+    from increment.artifacts import publish_unit_day_artifact
+    from increment.builders import from_definitions, from_unit_day_artifact
+    from increment.declarations import thaw
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from increment.workflows import capture_sequential
 
-    connection, definitions, _ = _native_fixture("scalar_mean")
+    def retained_rows(result):
+        rows = [thaw(cell.components["sequential"][1].fields) for cell in result.cells]
+        assert rows
+        return rows
+
+    connection, definitions, _ = _native_inputs("scalar_mean")
     try:
         payload = definitions.model_dump(mode="json")
         payload["experiments"][0]["allocation"] = {"control": 0.5, "treatment": 0.5}
@@ -668,22 +705,32 @@ def test_automatic_native_registration_survives_artifact_reopen(tmp_path):
         path = tmp_path / "automatic.yaml"
         path.write_text(yaml.safe_dump(declared.model_dump(mode="json")))
         context = artifact_context(declared, declared.experiments[0], "error")
-        native = Analysis.from_definitions("experiment", path, con=connection)
-        first = native.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
-        expected = list(native.run())
-        assert isinstance(expected[0], LiftEstimate)
-        assert expected[0].stat_sig()
+        experiment, resolver = from_definitions(path, connection, experiment_name="experiment")
+        first = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
+        native = run(experiment, resolver)
+        assert all(verdict.status == "reject" for verdict in native.decisions.cells)
+        expected = retained_rows(native)
         store = WarehouseArtifactStore(connection, schema_name="automatic_artifacts")
-        reference = native.publish_unit_day_artifact(store)
-        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
-            restored = adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        reference = publish_unit_day_artifact(experiment, resolver, store)
+        adopted_experiment, adopted = from_unit_day_artifact(
+            store, reference, expected_context=context
+        )
+        with adopted:
+            restored = capture_sequential(
+                adopted_experiment, adopted, finalized=True, as_of=date(2025, 1, 16)
+            )
             assert restored == first
-            actual = list(adopted.run())
+            actual = retained_rows(run(adopted_experiment, adopted))
+            identity_fields = {"source_snapshot_id", "family_id"}
             assert [
-                row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual
-            ] == [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected]
-            assert {row.source_snapshot_id for row in actual}.isdisjoint(
-                row.source_snapshot_id for row in expected
+                {key: value for key, value in row.items() if key not in identity_fields}
+                for row in actual
+            ] == [
+                {key: value for key, value in row.items() if key not in identity_fields}
+                for row in expected
+            ]
+            assert {row["source_snapshot_id"] for row in actual}.isdisjoint(
+                row["source_snapshot_id"] for row in expected
             )
     finally:
         connection.disconnect()
