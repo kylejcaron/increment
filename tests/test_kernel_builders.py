@@ -19,11 +19,11 @@ from increment.errors import CodedError, IncrementWarning
 from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
+from increment.workflows import materialize
 from tests.analysis_factory import (
     definitions_inputs,
     facade_binding,
-    held_source,
-    replace_analysis_source,
+    replace_bound_source,
 )
 from tests.test_evidence_identity_parity import _capture
 from tests.warning_codes import warning_codes
@@ -57,8 +57,8 @@ def test_moments_builder_preserves_estimates_and_raw_outcome_refusals(tmp_path, 
     )
     from tests.test_metric_evidence import _CountingSource
 
-    counted = _CountingSource(held_source(resolver._analysis))
-    replace_analysis_source(resolver._analysis, counted)
+    counted = _CountingSource(resolver.binding.source)
+    replace_bound_source(resolver, counted)
 
     restored = Experiment.from_json(experiment.to_json())
     assert restored.hash() == experiment.hash()
@@ -207,9 +207,7 @@ def test_definition_exploratory_metric_runs_with_cell_identity(seeded_defs, seed
                     analysis_options={"exploratory_metrics": ["aov"]},
                 )
     finally:
-        analysis = getattr(resolver, "_analysis", None)
-        if analysis is not None:
-            analysis.close()
+        cast(Any, resolver).close()
 
     assert result.decisions.program == baseline.decisions.program
     assert isinstance(result, RunResult)
@@ -236,16 +234,16 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
     first_bound = cast(Any, first)
     second_bound = cast(Any, second)
 
-    def materialized_names(resolver: Any) -> tuple[str, ...]:
-        resolver._analysis.materialize()
+    def materialized_names(experiment: Experiment, resolver: Any) -> tuple[str, ...]:
+        materialize(experiment, resolver)
         session = resolver.binding.session
         names = tuple(item.name for item in session._materialized)
         assert names
         assert set(names) <= set(seeded_con.list_tables())
         return names
 
-    first_names = materialized_names(first_bound)
-    second_names = materialized_names(second_bound)
+    first_names = materialized_names(first_experiment, first_bound)
+    second_names = materialized_names(second_experiment, second_bound)
     assert set(first_names).isdisjoint(second_names)
 
     first_bound.close()
@@ -268,20 +266,21 @@ def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_c
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     bound_resolver = cast(Any, resolver)
-    analysis = bound_resolver._analysis
-    analysis.materialize()
+    materialize(experiment, resolver)
     parent_names = tuple(item.name for item in bound_resolver.binding.session._materialized)
     assert parent_names
 
+    analysis = cast(Any, Analysis.__new__(Analysis))
+    analysis._binding = bound_resolver.binding
     added = analysis._exploratory_metrics(["aov"], caller="run")
-    exploratory = analysis._exploratory_analysis(added, caller="run")
+    exploratory = analysis._exploratory_analysis(added, caller="run")._binding
 
     def resolver_with_binding(binding: Any) -> Any:
         derived_resolver = copy.copy(bound_resolver)
         derived_resolver.binding = binding
         return derived_resolver
 
-    derived_resolver = resolver_with_binding(exploratory._binding)
+    derived_resolver = resolver_with_binding(exploratory)
 
     try:
         breakout_resolver = resolver_with_binding(bound_resolver.binding.with_breakouts(()))
@@ -303,7 +302,7 @@ def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     bound_resolver = cast(Any, resolver)
-    bound_resolver._analysis.materialize()
+    materialize(experiment, resolver)
     session = bound_resolver.binding.session
     bound_resolver.close()
     assert not session._materialized
@@ -326,7 +325,7 @@ def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, s
     )
     bound_resolver = cast(Any, resolver)
     try:
-        bound_resolver._analysis.materialize()
+        materialize(experiment, resolver)
         session = bound_resolver.binding.session
         parent_names = tuple(item.name for item in session._materialized)
         assert parent_names

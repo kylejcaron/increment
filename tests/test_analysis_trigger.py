@@ -188,7 +188,7 @@ def test_kernel_run_preserves_triggered_population_identity(tmp_path):
     try:
         result = run(experiment, resolver, analysis_options={"population": "triggered"})
     finally:
-        cast(Any, resolver)._analysis.close()
+        cast(Any, resolver).close()
 
     assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
 

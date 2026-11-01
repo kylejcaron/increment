@@ -1,3 +1,5 @@
+"""The registered sequential family's shared evidence context over one binding."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -5,20 +7,21 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from increment._evidence_types import EvidenceScope
+from increment._source_admission import _arm_experiment
 from increment._source_types import declared_evidence, is_custom_source
 from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
 
 if TYPE_CHECKING:
-    from increment._analysis_execution import Analysis
+    from increment._binding import SourceBinding
 
 
-def sequential_scope(analysis: Analysis, *, include_breakouts: bool = False) -> EvidenceScope:
+def sequential_scope(binding: SourceBinding, *, include_breakouts: bool = False) -> EvidenceScope:
     """Declare the complete registered family and its covariate dependencies."""
     from dataclasses import replace
 
     from increment._analysis_config import union_covariates
 
-    source = analysis._src
+    source = binding.source
     design = source.context.design
     uptake = getattr(design, "uptake", None)
     declared_configs = list(source.context.configs)
@@ -32,7 +35,7 @@ def sequential_scope(analysis: Analysis, *, include_breakouts: bool = False) -> 
             expanded = replace(config, covariates=covariates)
             if expanded not in declared_configs:
                 declared_configs.append(expanded)
-    experiment = getattr(analysis, "_experiment", None)
+    experiment = _arm_experiment(binding)
     populations = (
         ("assigned", "triggered")
         if getattr(experiment, "trigger", None) is not None
@@ -52,7 +55,7 @@ def sequential_scope(analysis: Analysis, *, include_breakouts: bool = False) -> 
 
 
 def run_scoped_line3[T](
-    analysis: Analysis,
+    binding: SourceBinding,
     operation: Callable[[], T],
     *,
     coherence: ExecutionMode = "captured",
@@ -60,18 +63,17 @@ def run_scoped_line3[T](
     on_context: Callable[[EvidenceExecutionContext], None] | None = None,
 ) -> T:
     """Run sequential captures and readouts under one family-wide evidence owner."""
-
-    source = analysis._src
+    from increment.readouts._execution_context import execution_context_scope
     from increment.readouts._run_acquisition import RunAcquisitionOwner
 
-    provider = RunAcquisitionOwner.provider_for(source)
+    provider = RunAcquisitionOwner.provider_for(binding.source)
     context = EvidenceExecutionContext(
         provider,
-        sequential_scope(analysis, include_breakouts=include_breakouts),
+        sequential_scope(binding, include_breakouts=include_breakouts),
         run_id=uuid4().hex,
         coherence=coherence,
     )
-    with context.evidence_scope(), analysis._scoped_execution_context(context):
+    with context.evidence_scope(), execution_context_scope(context):
         result = operation()
         if on_context is not None:
             on_context(context)

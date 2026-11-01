@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from increment._binding import ResolverBinding, _run_identity_hashes
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
 from increment.estimation.readout_types import (
@@ -33,6 +34,7 @@ from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order
 
 if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
+    from increment._binding import SourceBinding
     from increment.decide.evaluator import Decisions
     from increment.decision import CompiledDecisionPlan
     from increment.kernel.experiment import Experiment
@@ -198,20 +200,157 @@ def _events(run: RunRecord, decisions: Decisions, binding: CompiledPlanBinding) 
     return tuple(output)
 
 
+def _execution_config_for_cell(binding: SourceBinding, cell: Any) -> tuple[Any, tuple[Any, ...]]:
+    from increment._analysis_config import effective_methods
+
+    key = cell.identity.key
+    if key.metric == "uptake" and key.estimand == "compliance":
+        uptake = getattr(binding.design, "uptake", None)
+        if uptake is not None:
+            from increment.estimation.engine import Method
+
+            return uptake, (Method(name="unadjusted"),)
+
+    configs = getattr(binding.context, "configs", None)
+    if configs is None:
+        raise CodedError(
+            "Execution method identity is unavailable",
+            code="store.run.identity_incomplete",
+            context={"field": "method_identity"},
+        )
+    config = next((item for item in configs if item.metric.name == key.metric), None)
+    if config is None:
+        raise CodedError(
+            "Cell metric has no execution configuration",
+            code="store.run.identity_incomplete",
+            context={"field": "metric_identity"},
+        )
+    return config.metric, tuple(effective_methods(config, design=binding.design))
+
+
+def _persistence_identity(
+    binding: SourceBinding,
+    results: Any,
+    decision_method: Any,
+    sensitivity_methods: Any,
+    extra_metrics: Sequence[Any] = (),
+    runtime_request: Mapping[str, object] | None = None,
+):
+    from increment._analysis_config import UNSET
+    from increment._canonical import declaration_value
+    from increment.decision import ContrastAnalysisState
+    from increment.estimation.engine import Method
+    from increment.kernel.contracts import contract_hash
+
+    persistence_identity = program_store_operations().PersistenceIdentity
+
+    design = binding.design
+    if isinstance(binding.state, ContrastAnalysisState):
+        procedures = binding.context.procedures
+        registration_hash = Registration(
+            registration_hash=contract_hash(
+                "registration",
+                {
+                    "design": design.model_dump(mode="json"),
+                    "procedures": {
+                        name: procedure.model_dump(mode="json")
+                        for name, procedure in sorted(procedures.items())
+                    },
+                },
+            )
+        ).hash()
+    else:
+        procedures = binding.plan.procedures
+        registration_hash = Registration.from_plan(binding.plan).hash()
+    cells = results.as_cells()
+    cell_metrics = {cell.identity.key.metric for cell in cells}
+    metrics = {metric.name: metric for metric in (*binding.metrics, *extra_metrics)}
+    if "uptake" in cell_metrics and "uptake" not in metrics:
+        from increment.semantics.models import MeanMetric
+
+        uptake = getattr(design, "uptake", None)
+        metrics["uptake"] = MeanMetric(
+            name="uptake",
+            entity="__uptake__",
+            fact="__uptake__",
+            aggregation="avg_event",
+            window_days=getattr(uptake, "window_days", None),
+        )
+    methods: dict[tuple[str, str, str], Method] = {}
+    source_refs: dict[tuple[str, str], str] = {}
+    method_overrides: list[Method] = []
+    if isinstance(decision_method, Method):
+        method_overrides.append(decision_method)
+    if sensitivity_methods is not UNSET:
+        method_overrides.extend(cast(Sequence[Method], sensitivity_methods))
+
+    source = binding.source
+    source_context = getattr(source, "context", None)
+    declaration_identity = getattr(source, "declaration_identity", None)
+    if callable(declaration_identity):
+        declaration = declaration_identity()
+        declaration_unavailable_reason = None
+    else:
+        declaration = {"context": declaration_value(source_context)}
+        declaration_unavailable_reason = "source_declaration_identity_unavailable"
+    source_declaration_hash = contract_hash("source_declaration_v1", declaration_value(declaration))
+    if runtime_request:
+        registration_hash = contract_hash(
+            "analysis_runtime_request_v1",
+            {
+                "registration_hash": registration_hash,
+                "request": declaration_value(runtime_request),
+            },
+        )
+    for cell in cells:
+        key = cell.identity.key
+        estimator = key.method or "unadjusted"
+        role = key.method_role or "decision"
+        procedure = procedures.get(key.metric)
+        declared_methods: tuple[Method | None, ...] = (
+            ()
+            if procedure is None
+            else (
+                getattr(procedure, "decision_method", None),
+                *getattr(procedure, "sensitivity_methods", ()),
+            )
+        )
+        selected = next(
+            (
+                method
+                for method in (*method_overrides, *declared_methods)
+                if isinstance(method, Method) and method.name == estimator
+            ),
+            None,
+        )
+        if selected is None:
+            selected = Method.cuped() if estimator == "cuped" else Method(name=estimator)
+        methods[(key.metric, estimator, role)] = selected
+        source_refs[(key.analysis_population, key.metric)] = source_declaration_hash
+    return persistence_identity(
+        design=design,
+        metrics=metrics,
+        registration_hash=registration_hash,
+        methods=methods,
+        source_refs=source_refs,
+        source_declaration_identity_unavailable_reason=declaration_unavailable_reason,
+    )
+
+
 def _execution_identity_fields(
-    analysis: Analysis,
+    binding: SourceBinding,
     cell: ResultCell,
     identity_methods: Mapping[tuple[str, str, str], Any] | None = None,
     identity_metrics: Mapping[str, Any] | None = None,
 ) -> dict[str, str | None]:
     key = cell.identity.key
     if key.metric == "uptake" and key.estimand == "compliance":
-        metric = analysis._execution_config_for_cell(cell)[0]
+        metric = _execution_config_for_cell(binding, cell)[0]
     else:
         metric = None if identity_metrics is None else identity_metrics.get(key.metric)
     if key.kind == "contrast":
         if metric is None:
-            metric = next((item for item in analysis._metrics if item.name == key.metric), None)
+            metric = next((item for item in binding.metrics if item.name == key.metric), None)
         if metric is None:
             raise CodedError(
                 "Contrast cell has no matching metric declaration",
@@ -226,7 +365,7 @@ def _execution_identity_fields(
         }
     if key.method is None and key.method_role is None:
         if metric is None:
-            metric = analysis._execution_config_for_cell(cell)[0]
+            metric = _execution_config_for_cell(binding, cell)[0]
         return {
             "metric_hash": metric_hash(metric),
             "estimator_id": None,
@@ -242,7 +381,7 @@ def _execution_identity_fields(
     )
     methods: Sequence[Any] = ()
     if metric is None or method is None:
-        configured_metric, methods = analysis._execution_config_for_cell(cell)
+        configured_metric, methods = _execution_config_for_cell(binding, cell)
         if metric is None:
             metric = configured_metric
     if method is None:
@@ -372,14 +511,14 @@ def _metadata_with_cell_scales(metadata: Any, cells: Sequence[ResultCell]) -> An
 
 
 def _execution_overrides(
-    analysis: Analysis,
+    binding: SourceBinding,
     rows: Any,
     options: Mapping[str, object] | None,
     *,
     contrast: bool,
 ) -> tuple[Mapping[tuple[str, str, str], Any] | None, Mapping[str, Any] | None, bool]:
     if contrast:
-        return None, {metric.name: metric for metric in analysis._metrics}, False
+        return None, {metric.name: metric for metric in binding.metrics}, False
     if not options or not any(
         name in options
         for name in ("decision_method", "sensitivity_methods", "metrics", "exploratory_metrics")
@@ -400,13 +539,13 @@ def _execution_overrides(
     )
     exploratory_names = options.get("exploratory_metrics")
     if exploratory_names:
+        from increment._exploratory import select_exploratory
+
         extra_metrics += tuple(
-            analysis._exploratory_metrics(
-                cast(Sequence[str], exploratory_names),
-                caller="run",
-            )
+            select_exploratory(binding, cast(Sequence[str], exploratory_names), caller="run")
         )
-    identity = analysis._persistence_identity(
+    identity = _persistence_identity(
+        binding,
         rows,
         cast(Any, options.get("decision_method")),
         cast(Any, options.get("sensitivity_methods", ())),
@@ -506,8 +645,10 @@ def _live_winsor_effect(row: Any) -> EffectEstimate:
     )
 
 
-def _selected_percentile_winsorization(analysis: Any, options: Mapping[str, object]) -> bool:
-    metrics = tuple(getattr(analysis, "_metrics", ()))
+def _selected_percentile_winsorization(
+    binding: SourceBinding, options: Mapping[str, object]
+) -> bool:
+    metrics = tuple(binding.metrics)
     selected = options.get("metrics")
     if selected is None:
         candidates = metrics
@@ -543,7 +684,7 @@ def _merge_scoped_readouts(parts: Sequence[ScopedReadout]) -> Any:
 
 
 def _run_rows(  # noqa: PLR0913
-    analysis: Analysis,
+    source_binding: SourceBinding,
     rows: Any,
     registration: Registration,
     compiled_plan: CompiledDecisionPlan | None,
@@ -558,7 +699,7 @@ def _run_rows(  # noqa: PLR0913
     identity_options: Mapping[str, object] | None = None,
     scoped_rows: Sequence[ScopedReadout] | None = None,
 ) -> RunResult:
-    context = analysis._state.source.context
+    context = source_binding.context
     operations = program_store_operations()
     contrast_context = (
         context if not hasattr(context, "plan") and hasattr(context, "procedures") else None
@@ -570,7 +711,7 @@ def _run_rows(  # noqa: PLR0913
     )
     overrides = [
         _execution_overrides(
-            analysis, part.collection, part.options, contrast=contrast_context is not None
+            source_binding, part.collection, part.options, contrast=contrast_context is not None
         )
         for part in parts
     ]
@@ -627,7 +768,7 @@ def _run_rows(  # noqa: PLR0913
             identity = cell.identity.model_copy(
                 update={
                     **_execution_identity_fields(
-                        analysis, cell, identity_methods, identity_metrics
+                        source_binding, cell, identity_methods, identity_metrics
                     ),
                     "experiment_id": experiment_id,
                     "analysis_spec_hash": part.analysis_spec_hash or analysis_spec_hash,
@@ -711,6 +852,34 @@ def _run_rows(  # noqa: PLR0913
     return result
 
 
+def _experiment_result(
+    binding: SourceBinding, experiment: Experiment, scoped: Sequence[ScopedReadout]
+) -> RunResult:
+    """Convert the executed scoped readouts into one identified, decided run."""
+    from uuid import uuid4
+
+    single = len(scoped) == 1
+    identity_options = (
+        scoped[0].options
+        if single
+        else {"views": tuple({"scope": item.scope, "options": item.options} for item in scoped)}
+    )
+    analysis_spec_hash, execution_identity_hash = _run_identity_hashes(experiment, identity_options)
+    return _run_rows(
+        binding,
+        scoped[0].collection,
+        experiment.registration,
+        binding.plan if hasattr(binding.context, "plan") else None,
+        experiment_id=experiment.experiment_id,
+        analysis_spec_hash=analysis_spec_hash,
+        execution_identity_hash=execution_identity_hash,
+        run_id=f"run-{uuid4().hex}",
+        declared_scope=scoped[0].scope,
+        identity_options=scoped[0].options,
+        scoped_rows=None if single else scoped,
+    )
+
+
 @overload
 def run(
     exp: Experiment,
@@ -780,6 +949,7 @@ def run(  # noqa: PLR0913
     from increment.kernel.experiment import Experiment
 
     if isinstance(exp, Experiment):
+        from increment.kernel.resolver import _select_views
         from increment.kernel.resolver import run as run_experiment
 
         unsupported = {
@@ -805,15 +975,15 @@ def run(  # noqa: PLR0913
                 code="kernel.run.resolver_missing",
                 context={},
             )
-        result_factory_setter = getattr(selected_resolver, "set_run_result_factory", None)
-        if callable(result_factory_setter):
-            result_factory_setter(_run_rows)
-        return run_experiment(
-            exp,
+        selected = _select_views(exp, views)
+        scoped = run_experiment(
+            selected,
             cast("Resolver", selected_resolver),
             options=dict(analysis_options or {}),
-            views=views,
         )
+        if not isinstance(selected_resolver, ResolverBinding):
+            return scoped
+        return _experiment_result(selected_resolver.binding, selected, scoped)
     if views is not None:
         raise CodedError(
             "View selection requires an Experiment",
@@ -843,7 +1013,7 @@ def run(  # noqa: PLR0913
         )
     _validate_analysis_binding(analysis, registration, compiled_plan, analysis_options)
     if results_store is not None and _selected_percentile_winsorization(
-        analysis, analysis_options or {}
+        analysis._binding, analysis_options or {}
     ):
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
     if results_store is not None or decision_log is not None:
@@ -852,7 +1022,7 @@ def run(  # noqa: PLR0913
     execute = cast(Callable[..., Any], analysis.run)
     rows = execute(**dict(analysis_options or {}))
     return _run_rows(
-        analysis,
+        analysis._binding,
         rows,
         registration,
         compiled_plan,

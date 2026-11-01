@@ -132,11 +132,11 @@ def test_bound_builder_refuses_other_source_identity(field):
 
 def test_builder_refuses_changed_registration_and_design_before_evidence_reads():
     experiment, resolver = _experiment()
-    from tests.analysis_factory import held_source, replace_analysis_source
+    from tests.analysis_factory import replace_bound_source
     from tests.test_metric_evidence import _CountingSource
 
-    counted = _CountingSource(held_source(resolver._analysis))
-    replace_analysis_source(resolver._analysis, counted)
+    counted = _CountingSource(resolver.binding.source)
+    replace_bound_source(resolver, counted)
     changed = replace(
         experiment,
         registration=experiment.registration.model_copy(update={"registration_hash": "changed"}),
@@ -216,11 +216,11 @@ def test_declared_all_breakouts_refuse_before_source_reads():
         experiment,
         scopes=(Scope(view="breakout", grain="total"),),
     )
-    from tests.analysis_factory import held_source, replace_analysis_source
+    from tests.analysis_factory import replace_bound_source
     from tests.test_metric_evidence import _CountingSource
 
-    counted = _CountingSource(held_source(resolver._analysis))
-    replace_analysis_source(resolver._analysis, counted)
+    counted = _CountingSource(resolver.binding.source)
+    replace_bound_source(resolver, counted)
 
     assert {
         error.code

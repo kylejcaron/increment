@@ -1,3 +1,5 @@
+"""The population/encouragement shared evidence context over one binding."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -10,21 +12,23 @@ from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
 
 if TYPE_CHECKING:
     from increment._analysis_execution import Analysis
+    from increment._binding import SourceBinding
 
 
 def line4_context(
-    analysis: Analysis,
+    binding: SourceBinding,
     *,
     coherence: ExecutionMode = "captured",
     population: Literal["assigned", "triggered"] = "triggered",
     include_breakouts: bool = False,
 ) -> EvidenceExecutionContext:
     """Declare the evidence scope shared by encouragement and triggered readers."""
-    source = analysis._src
-    design = analysis._design
-    experiment = getattr(analysis._state, "experiment", None)
-    if experiment is None and getattr(analysis._state, "family", None) == "arm_moments":
-        experiment = getattr(analysis._state.source, "artifact_experiment", None)
+    state = binding.state
+    source = binding.source
+    design = binding.design
+    experiment = getattr(state, "experiment", None)
+    if experiment is None and getattr(state, "family", None) == "arm_moments":
+        experiment = getattr(state.source, "artifact_experiment", None)
     uptake = getattr(design, "uptake", None)
     if not include_breakouts:
         breakouts = ()
@@ -44,7 +48,7 @@ def line4_context(
     return EvidenceExecutionContext(
         provider,
         EvidenceScope(
-            metrics=tuple(analysis._metrics),
+            metrics=tuple(binding.metrics),
             population=scope_population,
             populations=populations,
             configs=tuple(source.context.configs),
@@ -79,7 +83,7 @@ def run_scoped_line4(
     if operation is None:
         analysis._preflight_line4_views(population=population, readouts=readouts)
     context = line4_context(
-        analysis,
+        analysis._open_binding(),
         coherence=coherence,
         population=population,
         include_breakouts=include_breakouts,
@@ -91,7 +95,9 @@ def run_scoped_line4(
         "asof": lambda: analysis.run_asof(population=population),
         "asof_lift": lambda: analysis.run_asof_lift(population=population),
     }
-    with context.evidence_scope(), analysis._scoped_execution_context(context):
+    from increment.readouts._execution_context import execution_context_scope
+
+    with context.evidence_scope(), execution_context_scope(context):
         if on_context is not None:
             on_context(context)
         if operation is not None:

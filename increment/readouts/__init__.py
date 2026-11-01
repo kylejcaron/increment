@@ -50,7 +50,7 @@ def run_scoped(
     from increment.readouts._line3 import run_scoped_line3
 
     return run_scoped_line3(
-        analysis,
+        analysis._open_binding(),
         operation,
         coherence=coherence,
         include_breakouts=include_breakouts,

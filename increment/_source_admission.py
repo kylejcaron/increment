@@ -10,6 +10,7 @@ from increment.sources import require_operation
 
 if TYPE_CHECKING:
     from increment._binding import SourceBinding
+    from increment.semantics.models import Experiment
     from increment.sources import SourceOperation, _BuiltinMomentSource
 
 
@@ -19,6 +20,15 @@ def _require_arm_binding(binding: SourceBinding, method: str) -> SourceBinding:
 
         refuse(CONTRAST_UNAVAILABLE, method=method)
     return binding
+
+
+def _arm_experiment(binding: SourceBinding) -> Experiment | None:
+    """The arm binding's semantic experiment, or None when its source carries none."""
+    _require_arm_binding(binding, "experiment")
+    try:
+        return binding.experiment
+    except AttributeError:
+        return None
 
 
 def _require_analysis_operation[T](

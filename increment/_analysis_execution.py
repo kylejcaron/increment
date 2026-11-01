@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
@@ -24,32 +25,26 @@ if TYPE_CHECKING:
     from increment.semantics.artifact import ArtifactExtensionRequest, UnitDayArtifactRef
 
 
-from increment import readouts
-from increment._analysis_config import (
-    UNSET,
-    ResolvedMetricConfig,
-    _Unset,
-    effective_methods,
-    normalize_display_correction,
-    overlay_configs,
-    select_exploratory_metrics,
-    select_metrics,
-)
+from increment._analysis_config import UNSET, _Unset, select_metrics
 from increment._binding import _UNDECLARED_BREAKOUT, SourceBinding, _ArtifactOpenSpec
-from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
+from increment._breakout_readouts import run_breakout, run_breakout_rows
 from increment._day_axis import (
-    _CLUSTERED_DAY_AXIS,
-    _TRIGGER_UNSUPPORTED,
     DayAxisReadouts,
+    day_axis_readouts,
+    preflight_line4_views,
+    require_arm_state,
+    run_asof,
+    run_asof_lift,
+    run_daily,
+    run_daily_lift,
 )
-from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
-from increment._evidence_refusals import CONTRAST_UNAVAILABLE as _CONTRAST_UNAVAILABLE
 from increment._evidence_types import (
-    DayAxisRequest,
     EvidenceScope,
     SequentialCaptureRequest,
     SourceContext,
 )
+from increment._execute import readout_source
+from increment._exploratory import exploratory_sibling, select_day_axis_metrics, select_exploratory
 from increment._literals import Backend, Correction, ValueScale
 from increment._source_admission import _require_analysis_operation
 from increment._source_operations import (
@@ -57,62 +52,27 @@ from increment._source_operations import (
     DashboardGroupData,
     DashboardGroupDataOperation,
     DashboardSnapshotPayload,
-    ExploratorySourceOperation,
 )
-from increment._source_types import declared_evidence, is_custom_source
-from increment._source_workflows import EXPLORATORY_SOURCE_LIMITED as _EXPLORATORY_SOURCE_LIMITED
+from increment._source_types import declared_evidence
 from increment.decision import (
     AnalysisState,
     ArmAnalysisState,
-    ContrastAnalysisState,
     ContrastContext,
-    ContrastSource,
     DefinitionsArmAnalysisState,
-)
-from increment.errors import (
-    CodedError,
-    RefusalSpec,
-    UnsupportedRequestError,
 )
 from increment.errors import refuse as _refuse
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
 from increment.evidence import evidence_provider
-from increment.plan import with_unassigned_procedures
-from increment.readouts._evidence import (
-    NATIVE_ROUTE,
-    day_axis_route,
-    source_route,
-)
 from increment.readouts._execution_context import (
     current_execution_context as _current_execution_context,
 )
 from increment.readouts._execution_context import (
     execution_context_scope as _execution_context_scope,
 )
-from increment.readouts._whole_window import (
-    WholeWindowExploratoryRequest,
-    WholeWindowFamilyRequest,
-    WholeWindowReadouts,
-    WholeWindowRequest,
-    reject_role_overrides_under_contrast,
-    validate_contrast_request,
-)
 from increment.semantics.models import Breakout, Definitions, Experiment
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
-
-
-_EXPLORATORY_SEQUENTIAL = RefusalSpec(
-    "facade.analysis.exploratory_metrics_sequential",
-    UnsupportedRequestError,
-    template="{method}: exploratory_metrics {names!r} are chosen after data are visible, so no registered sequential model covers them under {inference}; read the declared metrics alone, or use a fixed-horizon plan.",
-)
-_UNCORRECTED_SEQUENTIAL = RefusalSpec(
-    "facade.analysis.uncorrected_segments_sequential",
-    UnsupportedRequestError,
-    template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with run_breakout() instead.",
-)
 
 
 def fit_predeclared_adjustment(
@@ -201,50 +161,6 @@ if TYPE_CHECKING:
     from increment.sequential_state import SequentialCheckpoint
     from increment.switchback import SwitchbackAssignmentDiagnostic
 
-
-# Public facade
-
-
-def _cuped_recommendation_admitted(
-    source: _BuiltinMomentSource, config: ResolvedMetricConfig
-) -> bool:
-    """Check the proposed CUPED method against the shared arm-support contract."""
-    from increment.estimation.arm_contract import (
-        MetricCapabilities,
-        Supported,
-        arm_cuped_advisory_support,
-    )
-    from increment.estimation.engine import is_open_ended
-    from increment.sequential_source import adjustment_kind
-
-    context = source.context
-    metric = config.metric
-    inference = context.plan.inference
-    registration = getattr(inference, "registration", None)
-    adjustment = adjustment_kind(registration, metric.name) if registration is not None else None
-    capabilities = MetricCapabilities(
-        metric_type=metric.type if metric.type not in ("total", "active") else "mean",
-        value_scale="relative",
-        winsorization=(
-            "percentile"
-            if getattr(getattr(metric, "winsorization", None), "has_percentile", False)
-            else "fixed"
-            if getattr(metric, "winsorization", None) is not None
-            else "none"
-        ),
-        outcome_window="unbounded" if is_open_ended(metric) else "bounded",
-        uptake_window="not_applicable",
-    )
-    support = arm_cuped_advisory_support(
-        dependence="cluster" if context.cluster is not None else "iid",
-        metric=capabilities,
-        inference=inference,
-        adjustment=adjustment,
-        prior_present=config.prior is not None,
-    )
-    return isinstance(support, Supported)
-
-
 _T = TypeVar("_T")
 
 
@@ -291,22 +207,10 @@ class Analysis:
     def _require_arm_state(
         self, method: str, *, population: Literal["assigned", "triggered"] = "assigned"
     ) -> ArmAnalysisState:
-        if self._state.family != "arm_moments":
-            if population == "triggered":
-                _refuse(
-                    _TRIGGER_UNSUPPORTED,
-                    method=method,
-                    experiment="<unknown>",
-                    trigger=None,
-                    route=(
-                        "switchback"
-                        if self._state.family == "contrast"
-                        else source_route(self._src)
-                    ),
-                    supported_sources=("from_definitions", "from_unit_day_artifact"),
-                )
-            _refuse(_CONTRAST_UNAVAILABLE, method=method)
-        return self._state
+        return cast(
+            "ArmAnalysisState",
+            require_arm_state(self._open_binding(), method, population=population).state,
+        )
 
     def _ensure_artifact_source(self) -> _BuiltinMomentSource:
         source = cast("_BuiltinMomentSource", self._binding.state.source)
@@ -322,6 +226,11 @@ class Analysis:
             )
             self._binding = self._binding.reopened(source)
         return source
+
+    def _open_binding(self) -> SourceBinding:
+        """This analysis's binding, reopening a closed artifact source first."""
+        self._ensure_artifact_source()
+        return self._binding
 
     @property
     def _src(self) -> Any:
@@ -362,29 +271,6 @@ class Analysis:
     @property
     def _metrics(self) -> list[Metric]:
         return self._binding.metrics
-
-    def _execution_config_for_cell(self, cell: Any) -> tuple[Any, tuple[Method, ...]]:
-        key = cell.identity.key
-        if key.metric == "uptake" and key.estimand == "compliance":
-            uptake = getattr(self._design, "uptake", None)
-            if uptake is not None:
-                return uptake, (Method(name="unadjusted"),)
-
-        configs = getattr(self._context, "configs", None)
-        if configs is None:
-            raise CodedError(
-                "Execution method identity is unavailable",
-                code="store.run.identity_incomplete",
-                context={"field": "method_identity"},
-            )
-        config = next((item for item in configs if item.metric.name == key.metric), None)
-        if config is None:
-            raise CodedError(
-                "Cell metric has no execution configuration",
-                code="store.run.identity_incomplete",
-                context={"field": "metric_identity"},
-            )
-        return config.metric, tuple(effective_methods(config, design=self._design))
 
     @property
     def _design(self) -> Randomized | Encouragement | Observational | None:
@@ -661,14 +547,6 @@ class Analysis:
         _ = self._src
         return _trigger_rates_binding(self._binding)
 
-    def _validate_trigger_fires_in_every_arm(self, source: object | None = None) -> None:
-        from increment.readouts._evidence import validate_trigger_fires_in_every_arm
-
-        validate_trigger_fires_in_every_arm(
-            cast(Any, self._src if source is None else source),
-            self._experiment.trigger,
-        )
-
     def sitewide(
         self,
         metric: str,
@@ -766,21 +644,7 @@ class Analysis:
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> _BuiltinMomentSource:
         """Validate a requested population; the evidence request selects it."""
-        if population == "triggered":
-            if is_custom_source(self._src):
-                from increment._evidence_refusals import require_population
-
-                require_population(self._src, population)
-            else:
-                _require_analysis_operation(
-                    self._src,
-                    "triggered_source",
-                    message=(
-                        "A triggered readout requires a source retaining the raw event stream "
-                        "and its declared trigger."
-                    ),
-                )
-        return self._src
+        return readout_source(self._open_binding(), population=population)
 
     # Properties
 
@@ -819,46 +683,18 @@ class Analysis:
     @property
     def available_metrics(self) -> list[Metric]:
         """Saved metrics not declared by the experiment, in definitions order."""
-        from increment._source_workflows import _available_metrics_binding
+        from increment._exploratory import available_metrics
 
-        return _available_metrics_binding(self._binding)
+        return available_metrics(self._binding)
 
     def _exploratory_metrics(self, names: Sequence[str] | None, *, caller: str) -> list[Metric]:
         """Resolve ``exploratory_metrics=`` before any query; ``[]`` when none were named."""
-        if not names:
-            return []
-        if not isinstance(self._state, DefinitionsArmAnalysisState):
-            _refuse(_EXPLORATORY_SOURCE_LIMITED, method=caller)
-        added = select_exploratory_metrics(
-            self.available_metrics,
-            {*self._experiment.metric_names, *(metric.name for metric in self._metrics)},
-            names,
-            caller=caller,
-        )
-        inference = self._plan.inference
-        if getattr(inference, "registration", None) is not None:
-            _refuse(
-                _EXPLORATORY_SEQUENTIAL,
-                method=caller,
-                names=[metric.name for metric in added],
-                inference=type(inference).__name__,
-            )
-        return added
+        return select_exploratory(self._open_binding(), names, caller=caller)
 
     def _exploratory_analysis(self, added: Sequence[Metric], *, caller: str) -> Self:
         """This analysis reading from a sibling source that also carries *added*."""
-        self._require_arm_state(caller)
-        src = _require_analysis_operation(
-            self._src,
-            "exploratory_source",
-            ExploratorySourceOperation,
-            message=f"{caller}(exploratory_metrics=...) needs a native Analysis.from_definitions instance.",
-        )
         derived = copy.copy(self)
-        derived._binding = self._binding.with_source(src.exploratory_source(metrics=added))
-        context = _current_execution_context()
-        if context is not None:
-            context.declare_source_alias(derived._src, parent=self._src)
+        derived._binding = exploratory_sibling(self._open_binding(), added, caller=caller)
         return derived
 
     # Caching and materialization
@@ -977,113 +813,6 @@ class Analysis:
             args.append(("design", type(study.identification).__name__))
         return args
 
-    def _persistence_identity(
-        self,
-        results: Any,
-        decision_method: Method | _Unset,
-        sensitivity_methods: Sequence[Method] | _Unset,
-        extra_metrics: Sequence[Metric] = (),
-        runtime_request: Mapping[str, object] | None = None,
-    ):
-        from increment.kernel.contracts import Registration, contract_hash
-        from increment.kernel.ports import program_store_operations
-
-        persistence_identity = program_store_operations().PersistenceIdentity
-
-        design = cast(Any, self._design)
-        if isinstance(self._state, ContrastAnalysisState):
-            procedures = cast("ContrastContext", self._context).procedures
-            registration_hash = Registration(
-                registration_hash=contract_hash(
-                    "registration",
-                    {
-                        "design": design.model_dump(mode="json"),
-                        "procedures": {
-                            name: procedure.model_dump(mode="json")
-                            for name, procedure in sorted(procedures.items())
-                        },
-                    },
-                )
-            ).hash()
-        else:
-            procedures = self._plan.procedures
-            registration_hash = Registration.from_plan(self._plan).hash()
-        cells = results.as_cells()
-        cell_metrics = {cell.identity.key.metric for cell in cells}
-        metrics = {metric.name: metric for metric in (*self._metrics, *extra_metrics)}
-        if "uptake" in cell_metrics and "uptake" not in metrics:
-            from increment.semantics.models import MeanMetric
-
-            uptake = getattr(design, "uptake", None)
-            metrics["uptake"] = MeanMetric(
-                name="uptake",
-                entity="__uptake__",
-                fact="__uptake__",
-                aggregation="avg_event",
-                window_days=getattr(uptake, "window_days", None),
-            )
-        methods: dict[tuple[str, str, str], Method] = {}
-        source_refs: dict[tuple[str, str], str] = {}
-        method_overrides: list[Method] = []
-        if isinstance(decision_method, Method):
-            method_overrides.append(decision_method)
-        if sensitivity_methods is not UNSET:
-            method_overrides.extend(cast(Sequence[Method], sensitivity_methods))
-        from increment._canonical import declaration_value
-
-        source_context = getattr(self._src, "context", None)
-        declaration_identity = getattr(self._src, "declaration_identity", None)
-        if callable(declaration_identity):
-            declaration = declaration_identity()
-            declaration_unavailable_reason = None
-        else:
-            declaration = {"context": declaration_value(source_context)}
-            declaration_unavailable_reason = "source_declaration_identity_unavailable"
-        source_declaration_hash = contract_hash(
-            "source_declaration_v1", declaration_value(declaration)
-        )
-        if runtime_request:
-            registration_hash = contract_hash(
-                "analysis_runtime_request_v1",
-                {
-                    "registration_hash": registration_hash,
-                    "request": declaration_value(runtime_request),
-                },
-            )
-        for cell in cells:
-            key = cell.identity.key
-            estimator = key.method or "unadjusted"
-            role = key.method_role or "decision"
-            procedure = procedures.get(key.metric)
-            declared_methods: tuple[Method | None, ...] = (
-                ()
-                if procedure is None
-                else (
-                    getattr(procedure, "decision_method", None),
-                    *getattr(procedure, "sensitivity_methods", ()),
-                )
-            )
-            selected = next(
-                (
-                    method
-                    for method in (*method_overrides, *declared_methods)
-                    if isinstance(method, Method) and method.name == estimator
-                ),
-                None,
-            )
-            if selected is None:
-                selected = Method.cuped() if estimator == "cuped" else Method(name=estimator)
-            methods[(key.metric, estimator, role)] = selected
-            source_refs[(key.analysis_population, key.metric)] = source_declaration_hash
-        return persistence_identity(
-            design=design,
-            metrics=metrics,
-            registration_hash=registration_hash,
-            methods=methods,
-            source_refs=source_refs,
-            source_declaration_identity_unavailable_reason=declaration_unavailable_reason,
-        )
-
     def run(
         self,
         *,
@@ -1100,7 +829,8 @@ class Analysis:
         _execution_context: EvidenceExecutionContext | None = None,
     ) -> LiftEstimates | ContrastResults:
         """Run the analysis through its immutable experiment and bound resolver."""
-        from increment._analysis_kernel_adapter import run_analysis
+        from increment._source_resolver import resolver_for
+        from increment.kernel.resolver import run as run_experiment
 
         options = {
             "decision_method": decision_method,
@@ -1115,393 +845,20 @@ class Analysis:
             "store": store,
             "_execution_context": _execution_context,
         }
-        if _execution_context is None:
-            return cast("LiftEstimates | ContrastResults", run_analysis(self, **options))
-        with _execution_context_scope(_execution_context):
-            return cast("LiftEstimates | ContrastResults", run_analysis(self, **options))
-
-    def _run_legacy(
-        self,
-        *,
-        decision_method: Method | _Unset = UNSET,
-        sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-        prior: Prior | None | _Unset = UNSET,
-        metrics: Sequence[str | Metric] | None = None,
-        estimands: Sequence[str] | None = None,
-        value_scale: Mapping[str, ValueScale] | None = None,
-        exploratory_metrics: Sequence[str] | None = None,
-        population: Literal["assigned", "triggered"] | None = None,
-        coherence: Literal["captured", "live"] = "captured",
-        store: Any | None = None,
-        _execution_context: EvidenceExecutionContext | None = None,
-    ) -> LiftEstimates | ContrastResults:
-        """Run the full A/B test analysis pipeline.
-
-        Epistemic policy defaults come from the source's `AnalysisPlan` and
-        per-metric `ExperimentMetric` bindings; the parameters below override
-        them for this call only.
-
-        Parameters
-        ----------
-        decision_method : Method | _Unset
-            Decision estimator override; UNSET inherits each metric's
-            declaration. An explicit override replaces a declared,
-            non-default value for that run.
-        sensitivity_methods : Sequence[Method] | _Unset
-            Additional estimator overrides; UNSET inherits each declaration.
-            An explicit override replaces a declared, non-default value for
-            that run.
-        prior : Prior | None | _Unset
-            Informative prior override; UNSET inherits each declaration, None
-            resets it. An explicit override replaces a declared, non-default
-            value for that run. A mixture prior is refused on
-            observational/encouragement rows - pass ``Normal``.
-        metrics : Sequence[str | Metric] | None
-            Narrow the estimated metrics. ``None`` (default) selects
-            every declared metric.
-        estimands : Sequence[str] | None
-            Under :class:`Encouragement` only: among ``"itt"``/
-            ``"compliance"``/``"late"``, default all three.
-        value_scale : Mapping[str, ValueScale] | None
-            Observational-only: report a metric's rows as additive ATE
-            instead of relative lift.
-        exploratory_metrics : Sequence[str] | None
-            Names from :attr:`available_metrics` to estimate in addition to the declared
-            ones (``from_definitions`` only). Their rows carry ``role="exploratory"``
-            under the default unassigned procedure (two-sided, at the plan's full
-            ``alpha``), join no plan family, and leave every declared row unchanged.
-            ``metrics=[]`` with ``exploratory_metrics`` returns only the added rows.
-        population : Literal["assigned", "triggered"] | None
-            Source population for the arm readout. When omitted, return each captured population
-            as separate result rows; an explicit value selects only that population. Triggered
-            reads require a declared trigger and sufficient source evidence.
-        coherence : Literal["captured", "live"]
-            Arm-readout source consistency. ``"captured"`` (default) requests one
-            source-owned snapshot; warehouse sources require TEMP materialization
-            and refuse if it is unavailable. ``"live"`` opts out of that guarantee
-            and marks results as live-qualified.
-        store : Any | None
-            Optional result store. When provided, persist the complete run
-            and expose its ``run_id`` and ``analysis_spec_hash`` in result metadata.
-        _execution_context : EvidenceExecutionContext | None
-            Internal run owner used when this readout is composed with other operations.
-
-        Returns
-        -------
-        LiftEstimates | ContrastResults
-            Arm evidence returns one estimate per (metric x method x
-            non-control arm). Switchback evidence returns one contrast per
-            selected metric. Switchback calls accept only UNSET role/prior overrides;
-            ``estimands`` and ``value_scale`` remain arm-only.
-            Each arm estimate carries an explicit ``analysis_population`` axis
-            (``assigned`` or ``triggered``); the two populations are distinct
-            result identities.
-        """
-
-        if _execution_context is None:
-            _execution_context = _current_execution_context()
-        from increment.breakout.estimates import LiftEstimates
-
-        if isinstance(self._state, ContrastAnalysisState) and population == "triggered":
-            _refuse(
-                _TRIGGER_UNSUPPORTED,
-                method="run",
-                experiment="<unknown>",
-                trigger=None,
-                route="switchback",
-                supported_sources=("from_definitions", "from_unit_day_artifact"),
-            )
-        added = self._exploratory_metrics(exploratory_metrics, caller="run")
-        runtime_request: dict[str, object] = {}
-        if prior is not UNSET:
-            runtime_request["prior"] = prior
-        if estimands is not None:
-            runtime_request["estimands"] = tuple(estimands)
-        if value_scale is not None:
-            runtime_request["value_scale"] = value_scale
-        if isinstance(self._state, ContrastAnalysisState):
-            rows = self._run_contrast(
-                decision_method,
-                sensitivity_methods,
-                prior,
-                metrics,
-                estimands,
-                value_scale,
-                execution_context=_execution_context,
-            )
-            rows._default_backend = self._input_backend
-            if store is not None:
-                from uuid import uuid4
-
-                store.persist_results(
-                    rows,
-                    self._state.experiment_name,
-                    uuid4().hex,
-                    self._persistence_identity(
-                        rows, decision_method, sensitivity_methods, runtime_request=runtime_request
-                    ),
-                )
-            return rows
-        selected = select_metrics(cast("Sequence[Metric]", self._metrics), metrics, caller="run")
-
-        def request(chosen: Sequence[Metric]) -> WholeWindowRequest:
-            return WholeWindowRequest(
-                metrics=tuple(chosen),
-                estimands=tuple(estimands) if estimands is not None else None,
-                value_scale=value_scale,
-                population=population,
-                coherence=coherence,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-            )
-
-        reader = self._whole_window()
-        if added:
-            exploratory = self._exploratory_analysis(added, caller="run")
-            rows = reader.run_family(
-                WholeWindowFamilyRequest(
-                    declared=request(selected),
-                    exploratory=WholeWindowExploratoryRequest(
-                        request=request(added),
-                        reader=exploratory._whole_window(),
-                    ),
-                ),
-                execution_context=_execution_context,
-            )
-        else:
-            rows = reader.run(request(selected), execution_context=_execution_context)
-        if not isinstance(rows, LiftEstimates):
-            rows = LiftEstimates(rows)
-        self._warn_run_advisories(
-            selected,
-            added,
-            estimands=estimands,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
+        experiment, resolver = resolver_for(self._open_binding(), run_options=options)
+        ambient = (
+            nullcontext()
+            if _execution_context is None
+            else _execution_context_scope(_execution_context)
         )
-        if not added and _execution_context is not None and rows.metadata is not None:
-            metadata = rows.metadata
-            rows._metadata = type(metadata).model_validate(
-                {
-                    **metadata.__dict__,
-                    "coherence": (
-                        None
-                        if "provider" in _execution_context.effective_modes.values()
-                        else _execution_context.coherence
-                    ),
-                    "effective_modes": dict(_execution_context.effective_modes),
-                }
-            )
-        rows._default_backend = getattr(self, "_input_backend", None)
-        if store is not None:
-            from uuid import uuid4
-
-            store.persist_results(
-                rows,
-                self._state.experiment_name,
-                uuid4().hex,
-                self._persistence_identity(
-                    rows,
-                    decision_method,
-                    sensitivity_methods,
-                    added,
-                    runtime_request=runtime_request,
-                ),
-            )
-        return rows
-
-    def _warn_run_advisories(
-        self,
-        selected: Sequence[Metric],
-        added: Sequence[Metric],
-        *,
-        estimands: Sequence[str] | None,
-        decision_method: Method | _Unset,
-        sensitivity_methods: Sequence[Method] | _Unset,
-        prior: Prior | None | _Unset,
-    ) -> None:
-        from increment._frame_validation import _warn
-
-        state = self._state
-        assert not isinstance(state, ContrastAnalysisState)
-        source = state.source
-
-        # A compliance-only encouragement read uses no outcome configuration.
-        if (
-            estimands is not None
-            and not {"itt", "late"}.intersection(estimands)
-            and getattr(source.context.design, "mechanism", None) == "encouragement"
-        ):
-            return
-        selected_names = {metric.name for metric in selected}
-        declared_configs = {
-            config.metric.name: config
-            for config in source.context.configs
-            if config.metric.name in selected_names
-        }
-        default_decision = (
-            Method(name="iptw")
-            if getattr(source.context.design, "mechanism", None) == "observational"
-            else Method(name="unadjusted")
-        )
-        conflicts: dict[str, list[tuple[str, object]]] = {
-            "decision_method": [],
-            "sensitivity_methods": [],
-            "prior": [],
-        }
-        for name, config in declared_configs.items():
-            if (
-                decision_method is not UNSET
-                and not config.decision_defaulted
-                and config.decision_method != default_decision
-                and config.decision_method != decision_method
-            ):
-                conflicts["decision_method"].append((name, config.decision_method))
-            if (
-                sensitivity_methods is not UNSET
-                and config.sensitivity_methods
-                and tuple(config.sensitivity_methods)
-                != tuple(cast(Sequence[Method], sensitivity_methods))
-            ):
-                conflicts["sensitivity_methods"].append((name, tuple(config.sensitivity_methods)))
-            if (
-                prior is not UNSET
-                and config.prior is not None
-                and not config.prior_is_global
-                and config.prior != prior
-            ):
-                conflicts["prior"].append((name, config.prior))
-
-        overrides = {
-            "decision_method": decision_method,
-            "sensitivity_methods": (
-                tuple(cast(Sequence[Method], sensitivity_methods))
-                if sensitivity_methods is not UNSET
-                else sensitivity_methods
-            ),
-            "prior": prior,
-        }
-        for setting, declarations in conflicts.items():
-            if declarations:
-                _warn(
-                    "analysis.run.override_replaces_declared",
-                    setting=setting,
-                    metrics=tuple(name for name, _ in declarations),
-                    declared=tuple(declarations),
-                    override=overrides[setting],
-                )
-
-        config_sources: list[tuple[Any, _BuiltinMomentSource]] = []
-        if selected:
-            config_sources.extend(
-                (config, state.source)
-                for config in overlay_configs(
-                    selected,
-                    state.source.context.configs,
-                    methods=None,
-                    prior=None,
-                    prior_override=prior,
-                    decision_method=decision_method,
-                    sensitivity_methods=sensitivity_methods,
-                )
-            )
-        if added:
-            exploratory = self._exploratory_analysis(added, caller="run")
-            exploratory_source = cast("_BuiltinMomentSource", exploratory._state.source)
-            config_sources.extend(
-                (config, exploratory_source)
-                for config in overlay_configs(
-                    added,
-                    exploratory_source.context.configs,
-                    methods=None,
-                    prior=None,
-                    prior_override=prior,
-                    decision_method=decision_method,
-                    sensitivity_methods=sensitivity_methods,
-                )
-            )
-        unused: list[str] = []
-        for config, source in config_sources:
-            covariate_available = config.covariate_available
-            design = source.context.design
-            if (
-                not covariate_available
-                or not config.decision_defaulted
-                or config.methods_explicitly_empty
-                or getattr(design, "mechanism", None) == "observational"
-                or any(
-                    method.variance_reduction == "cuped" for method in config.sensitivity_methods
-                )
-                or not _cuped_recommendation_admitted(source, config)
-            ):
-                continue
-            unused.append(config.metric.name)
-        if unused:
-            _warn(
-                "analysis.cuped.covariate_unused",
-                metric_names=tuple(unused),
-                route=(
-                    "Request Method(name='cuped', variance_reduction='cuped') "
-                    "as decision_method or a sensitivity method in run()."
-                ),
-            )
-
-    def _run_contrast(
-        self,
-        decision_method: Method | _Unset,
-        sensitivity_methods: Sequence[Method] | _Unset,
-        prior: Prior | None | _Unset,
-        metrics: Sequence[str | Metric] | None,
-        estimands: Sequence[str] | None,
-        value_scale: Mapping[str, ValueScale] | None,
-        *,
-        execution_context: EvidenceExecutionContext | None = None,
-    ) -> ContrastResults:
-        validate_contrast_request(
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-            estimands=estimands,
-            value_scale=value_scale,
-        )
-        context = cast("ContrastContext", self._context)
-        selected = select_metrics(cast("Sequence[Metric]", context.metrics), metrics, caller="run")
-        request = ContrastReadoutRequest(
-            metrics=tuple(selected),
-            procedures={
-                metric.name: context.procedures[metric.name]
-                for metric in selected
-                if metric.name in context.procedures
-            },
-        )
-        source = cast("ContrastSource", self._src)
-        return ContrastEvidenceOperation().run(
-            source,
-            request,
-            execution_context=execution_context,
-        )
+        with ambient:
+            (scoped,) = run_experiment(experiment, resolver, ctx=_execution_context)
+        return cast("LiftEstimates | ContrastResults", scoped.collection)
 
     def _run_scoped_readouts(self, *, coherence: Literal["captured", "live"], **options: Any):
         from increment.readouts._line2 import run_scoped_line2
 
         return run_scoped_line2(self, coherence=coherence, **options)
-
-    def _whole_window(self) -> WholeWindowReadouts:
-        self._require_arm_state("run")
-
-        return WholeWindowReadouts(
-            src=cast("_BuiltinMomentSource", self._src),
-            plan=self._plan,
-            design=self._design,
-            experiment=getattr(self, "_experiment", None),
-            readout_source=self._readout_source,
-            validate_trigger=self._validate_trigger_fires_in_every_arm,
-            arm_moments=readouts.arm_moments,
-            execution_context_scope=self._scoped_execution_context,
-            registered_run=readouts.run,
-        )
 
     def estimate_cate(
         self,
@@ -1713,13 +1070,8 @@ class Analysis:
             segments instead. ``source`` names the resolved
             :class:`FactSource`. Empty when no breakouts are declared.
         """
-        execution_context = _current_execution_context()
-        if execution_context is None:
-            self._require_arm_state(
-                "run_breakout", population=population if population is not None else "assigned"
-            )
-        rows = self._run_breakout(
-            _execution_context=execution_context,
+        return run_breakout(
+            self._open_binding(),
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
@@ -1727,8 +1079,6 @@ class Analysis:
             exploratory_metrics=exploratory_metrics,
             population=population,
         )
-        rows._default_backend = self._input_backend
-        return rows
 
     def _run_breakout(
         self,
@@ -1742,242 +1092,17 @@ class Analysis:
         population: Literal["assigned", "triggered"] | None = None,
         _execution_context=None,
     ) -> BreakoutEstimates:
-        from increment.breakout.estimates import BreakoutEstimates
-
-        state = self._state
-        experiment = (
-            state.experiment
-            if isinstance(state, DefinitionsArmAnalysisState)
-            else getattr(state.source, "artifact_experiment", None)
-            if state.family == "arm_moments"
-            else None
-        )
-        if population == "triggered" and experiment is not None and experiment.trigger is None:
-            _refuse(
-                _TRIGGER_UNSUPPORTED,
-                method="run_breakout",
-                experiment=experiment.name,
-                trigger=None,
-                route="native",
-                supported_sources=("from_definitions", "from_unit_day_artifact"),
-            )
-        if experiment is not None and not experiment.breakouts:
-            select_metrics(
-                cast("Sequence[Metric]", self._src.context.metrics),
-                metrics,
-                caller="run_breakout",
-            )
-            if exploratory_metrics:
-                self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
-            return BreakoutEstimates([])
-        populations = (
-            (population,)
-            if population is not None
-            else (
-                ("assigned", "triggered")
-                if experiment is not None and experiment.trigger is not None
-                else ("assigned",)
-            )
-        )
-        if "triggered" in populations:
-            if isinstance(self._state, ContrastAnalysisState):
-                _refuse(
-                    _TRIGGER_UNSUPPORTED,
-                    method="run_breakout",
-                    experiment="<unknown>",
-                    trigger=None,
-                    route="switchback",
-                    supported_sources=("from_definitions", "from_unit_day_artifact"),
-                )
-            reader = BreakoutReadouts(src=self._src, experiment=experiment)
-            registration = getattr(self._plan.inference, "registration", None)
-            if registration is None:
-
-                def validate_candidate(candidate, selected_metrics):
-                    if not selected_metrics:
-                        return
-                    breakout_policy = candidate._plan.view_policies.for_view(
-                        "breakout",
-                        mechanism=getattr(getattr(candidate, "_design", None), "mechanism", None),
-                        segmented=True,
-                    )
-                    candidate_reader = BreakoutReadouts(
-                        src=candidate._src,
-                        experiment=getattr(candidate, "_experiment", None),
-                    )
-                    candidate_reader.validate_request(
-                        BreakoutRequest(
-                            metrics=tuple(selected_metrics),
-                            decision_method=decision_method,
-                            sensitivity_methods=sensitivity_methods,
-                            prior=prior,
-                            correction=correction
-                            or normalize_display_correction(breakout_policy.correction),
-                            q=(
-                                breakout_policy.q
-                                if breakout_policy.q is not None
-                                else candidate._plan.q
-                            ),
-                            population="triggered",
-                        )
-                    )
-
-                selected = select_metrics(
-                    cast("Sequence[Metric]", self._src.context.metrics),
-                    metrics,
-                    caller="run_breakout",
-                )
-                validate_candidate(self, selected)
-                added = self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
-                if added:
-                    exploratory = self._exploratory_analysis(added, caller="run_breakout")
-                    validate_candidate(exploratory, added)
-            reader.validate_populations(populations)
-        combined: BreakoutEstimates | None = None
-        for population in populations:
-            rows = self._run_breakout_population(
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                metrics=metrics,
-                exploratory_metrics=exploratory_metrics,
-                correction=correction,
-                population=population,
-                _execution_context=_execution_context,
-            )
-            combined = rows if combined is None else combined.concat(rows)
-        return BreakoutEstimates([]) if combined is None else combined
-
-    def _run_breakout_population(
-        self,
-        *,
-        decision_method: Method | _Unset = UNSET,
-        sensitivity_methods: Sequence[Method] | _Unset = UNSET,
-        prior: Prior | None | _Unset = UNSET,
-        metrics: Sequence[str | Metric] | None = None,
-        exploratory_metrics: Sequence[str] | None = None,
-        correction: Correction | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-        _execution_context=None,
-    ) -> BreakoutEstimates:
-        """:meth:`run_breakout`, optionally under an explicit *correction* in place of the
-        plan's breakout multiplicity (``"none"`` leaves every cell standing alone)."""
-        from increment.breakout.estimates import BreakoutEstimates
-
-        added = self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
-        if isinstance(self._state, ContrastAnalysisState):
-            reject_role_overrides_under_contrast(
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-            )
-        self._require_arm_state("run_breakout")
-        inference = self._plan.inference
-        if correction is not None and getattr(inference, "registration", None) is not None:
-            _refuse(_UNCORRECTED_SEQUENTIAL, inference=type(inference).__name__)
-        breakout_policy = self._plan.view_policies.for_view(
-            "breakout",
-            mechanism=getattr(getattr(self, "_design", None), "mechanism", None),
-            segmented=True,
-        )
-        effective_correction = correction or normalize_display_correction(
-            breakout_policy.correction
-        )
-        selected = select_metrics(
-            cast("Sequence[Metric]", self._src.context.metrics), metrics, caller="run_breakout"
-        )
-        rows = (
-            self._breakout_rows(
-                selected,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                correction=correction,
-                population=population,
-                _execution_context=_execution_context,
-            )
-            if selected or not added
-            else BreakoutEstimates([])
-        )
-        if added:
-            exploratory = self._exploratory_analysis(added, caller="run_breakout")
-            exploratory_rows = exploratory._breakout_rows(
-                added,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                correction=correction,
-                population=population,
-                _execution_context=_execution_context,
-                _scope_source=self._src,
-                _scope_analysis=self,
-            )
-            rows = exploratory_rows if not rows else rows.concat(exploratory_rows)
-        from increment.estimation.multiplicity import row_multiplicity_status
-
-        return BreakoutEstimates(
-            [
-                row.model_copy(
-                    update={
-                        "multiplicity_status": row_multiplicity_status(
-                            row,
-                            correction=effective_correction if row.family_id is not None else None,
-                        )
-                    }
-                )
-                for row in rows
-            ],
-            metadata=rows.metadata,
-        )
-
-    def _breakout_rows(
-        self,
-        selected: Sequence[Metric],
-        *,
-        decision_method: Method | _Unset,
-        sensitivity_methods: Sequence[Method] | _Unset,
-        prior: Prior | None | _Unset,
-        correction: Correction | None,
-        population: Literal["assigned", "triggered"] = "assigned",
-        _execution_context=None,
-        _scope_source=None,
-        _scope_analysis=None,
-    ) -> BreakoutEstimates:
-        policy = self._plan.view_policies.for_view(
-            "breakout",
-            mechanism=getattr(getattr(self, "_design", None), "mechanism", None),
-            segmented=True,
-        )
-        request = BreakoutRequest(
-            metrics=tuple(selected),
+        return run_breakout_rows(
+            self._open_binding(),
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
-            correction=correction or normalize_display_correction(policy.correction),
-            q=policy.q if policy.q is not None else self._plan.q,
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+            correction=correction,
             population=population,
-        )
-        experiment = getattr(self, "_experiment", None)
-        source = getattr(self._src, "summary_breakout_source", None)
-        reader_source = source if source is not None else self._src
-        reader = BreakoutReadouts(
-            src=reader_source,
-            experiment=experiment,
             execution_context=_execution_context,
-            scope_source=self._src if _scope_source is None else _scope_source,
-            analysis=self if _scope_analysis is None else _scope_analysis,
         )
-        return reader.run(request)
-
-    def _refuse_clustered_day_axis(self, method: str) -> None:
-        """A declared cluster is total-grain only; see `_CLUSTERED_DAY_AXIS`."""
-        if self._experiment.cluster is not None:
-            _refuse(
-                _CLUSTERED_DAY_AXIS,
-                method=method,
-                experiment=self._experiment.name,
-                cluster=self._experiment.cluster,
-            )
 
     def run_daily(
         self,
@@ -2041,38 +1166,14 @@ class Analysis:
         undeclared metric. Use :meth:`run_asof` or :meth:`run_asof_lift`
         for unbounded retention monitoring.
         """
-
-        _execution_context = _current_execution_context()
-        added = self._exploratory_metrics(exploratory_metrics, caller="run_daily")
-        self._require_arm_state("run_daily")
-        selected = self._select_day_axis_metrics(metrics, caller="run_daily", added=added)
-        req = DayAxisRequest(
-            caller="run_daily",
-            grain="daily",
-            metrics=tuple(selected),
+        return run_daily(
+            self._open_binding(),
+            metrics=metrics,
             dimension=dimension,
+            exploratory_metrics=exploratory_metrics,
             population=population,
+            coherence=coherence,
         )
-        rows = self._run_day_axis_values(req, _execution_context, coherence=coherence)
-        rows._default_backend = self._input_backend
-        rows._envelope_view = "daily"
-        return rows
-
-    def _daily_lift(self, **kwargs: Any) -> DailyLiftEstimates:
-        """Internal day-axis boundary: always supply an effective compiled plan.
-
-        Call-time Metric objects absent from the analysis plan receive locally
-        compiled unassigned procedures at the plan's alpha, matching the method/prior
-        defaults the facade already resolves for them.
-        """
-        from increment.breakout.estimates import run_daily_lift as _run_daily_lift_estimates
-
-        plan = with_unassigned_procedures(
-            self._plan,
-            cast("Sequence[Metric]", kwargs["metrics"]),
-            design=getattr(self, "_design", None),
-        )
-        return _run_daily_lift_estimates(plan=plan, **kwargs)
 
     def _select_day_axis_metrics(
         self,
@@ -2081,83 +1182,10 @@ class Analysis:
         caller: str,
         added: Sequence[Metric] = (),
     ) -> list[Metric]:
-        # Only the native route accepts undeclared call-time Metric objects.
-        native = day_axis_route(self._src) == NATIVE_ROUTE
-        selected = select_metrics(
-            self._metrics, metrics, caller=caller, allow_undeclared_objects=native
-        )
-        if not added:
-            return selected
-        # Added metrics follow the declared ones; a shared name is a duplicate.
-        return select_metrics((), [*selected, *added], caller=caller, allow_undeclared_objects=True)
-
-    @staticmethod
-    def _stamp_exploratory(
-        rows: DailyLiftEstimates,
-        added: Sequence[Metric],
-        *,
-        correction: Correction | None = None,
-    ) -> DailyLiftEstimates:
-        """Mark added metrics exploratory under the effective view correction."""
-        from increment.breakout.estimates import DailyLiftEstimates
-
-        names = {metric.name for metric in added}
-        if not names:
-            return rows
-        from increment.estimation.multiplicity import stamp_multiplicity_status
-
-        return DailyLiftEstimates(
-            stamp_multiplicity_status(
-                [
-                    row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
-                    for row in rows
-                ],
-                correction=correction,
-            ),
-            metadata=rows.metadata,
-        )
-
-    @staticmethod
-    def _scoped_execution_context(context: Any):
-        return _execution_context_scope(context)
-
-    def _validate_day_axis_before_context(self, req: DayAxisRequest, execution_context=None):
-        if req.population == "triggered" or (
-            execution_context is None
-            and (req.dimension is not None or not is_custom_source(self._src))
-        ):
-            from increment._day_axis import validate_day_axis
-
-            validate_day_axis(
-                req,
-                src=self._src,
-                design=self._design,
-                plan=self._plan,
-                route=day_axis_route(self._src),
-                experiment=getattr(self, "_experiment", None),
-            )
-
-    def _run_day_axis_values(
-        self,
-        req: DayAxisRequest,
-        execution_context=None,
-        *,
-        coherence: Literal["captured", "live"] = "captured",
-    ):
-        self._validate_day_axis_before_context(req, execution_context)
-        from increment.readouts._line2 import run_standalone_day_axis_values
-
-        return run_standalone_day_axis_values(self, req, execution_context, coherence=coherence)
+        return select_day_axis_metrics(self._open_binding(), metrics, caller=caller, added=added)
 
     def _day_axis(self, execution_context=None) -> DayAxisReadouts:
-        return DayAxisReadouts(
-            src=self._src,
-            plan=self._plan,
-            design=self._design,
-            experiment=getattr(self, "_experiment", None),
-            daily_lift=self._daily_lift,
-            execution_context=execution_context,
-        )
+        return day_axis_readouts(self._open_binding(), execution_context)
 
     def _preflight_line4_views(
         self,
@@ -2165,31 +1193,7 @@ class Analysis:
         population: Literal["assigned", "triggered"],
         readouts: Sequence[Literal["run", "daily", "daily_lift", "asof", "asof_lift"]],
     ) -> None:
-        """Validate line-four day-axis requests before its scope opens."""
-        caller_by_name: dict[
-            str, Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
-        ] = {
-            "daily": "run_daily",
-            "daily_lift": "run_daily_lift",
-            "asof": "run_asof",
-            "asof_lift": "run_asof_lift",
-        }
-        day_axis = self._day_axis()
-        experiment = getattr(self._state, "experiment", None)
-        for name in readouts:
-            if name == "run":
-                continue
-            grain = "daily" if name.startswith("daily") else "asof"
-            request = DayAxisRequest(
-                caller=caller_by_name[name],
-                grain=grain,
-                metrics=tuple(self._metrics),
-                dimension=None,
-                estimands=None,
-                population=population,
-                experiment=experiment,
-            )
-            day_axis.validate_request(request, lift=name.endswith("_lift"))
+        preflight_line4_views(self._open_binding(), population=population, readouts=readouts)
 
     def run_daily_lift(
         self,
@@ -2261,49 +1265,17 @@ class Analysis:
         It raises :class:`UnsupportedRequestError` for sequential inference
         on disjoint daily or cohort slices, which cannot support monitoring.
         """
-
-        _execution_context = _current_execution_context()
-        self._require_arm_state("run_daily_lift", population=population)
-        selected = self._select_day_axis_metrics(metrics, caller="run_daily_lift")
-        req = DayAxisRequest(
-            caller="run_daily_lift",
-            grain="daily",
-            metrics=tuple(selected),
+        return run_daily_lift(
+            self._open_binding(),
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
+            estimands=estimands,
             dimension=dimension,
-            estimands=tuple(estimands) if estimands is not None else None,
             population=population,
+            coherence=coherence,
         )
-        self._validate_day_axis_before_context(req, _execution_context)
-        lift_options = None
-        if _execution_context is not None:
-            lift_options = self._day_axis(_execution_context).resolve_lift_options(
-                req.metrics,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-            )
-        if _execution_context is None:
-            from increment.readouts._line2 import run_standalone_day_axis_lift
-
-            rows = run_standalone_day_axis_lift(
-                self,
-                req,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                coherence=coherence,
-            )
-        else:
-            rows = self._day_axis(_execution_context).lift(
-                req,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                options=lift_options,
-            )
-        rows._default_backend = self._input_backend
-        rows._envelope_view = "daily"
-        return rows
 
     def run_asof(
         self,
@@ -2378,24 +1350,15 @@ class Analysis:
         The readout raises :class:`ValueError` for an unmatched dimension,
         or completed-window retention with an unbounded band.
         """
-
-        _execution_context = _current_execution_context()
-        added = self._exploratory_metrics(exploratory_metrics, caller="run_asof")
-        self._require_arm_state("run_asof")
-        selected = self._select_day_axis_metrics(metrics, caller="run_asof", added=added)
-        req = DayAxisRequest(
-            caller="run_asof",
-            grain="asof",
-            metrics=tuple(selected),
+        return run_asof(
+            self._open_binding(),
+            metrics=metrics,
             dimension=dimension,
             completed_windows_only=completed_windows_only,
+            exploratory_metrics=exploratory_metrics,
             population=population,
+            coherence=coherence,
         )
-        rows = self._run_day_axis_values(req, _execution_context, coherence=coherence)
-        rows._default_backend = self._input_backend
-        rows._envelope_completion_policy = completed_windows_only
-        rows._envelope_view = "asof"
-        return rows
 
     def run_asof_lift(
         self,
@@ -2501,58 +1464,16 @@ class Analysis:
             only the current checkpoint rows, all with its date label.
         """
 
-        _execution_context = _current_execution_context()
-        added = self._exploratory_metrics(exploratory_metrics, caller="run_asof_lift")
-        self._require_arm_state("run_asof_lift", population=population)
-        selected = self._select_day_axis_metrics(metrics, caller="run_asof_lift", added=added)
-        req = DayAxisRequest(
-            caller="run_asof_lift",
-            grain="asof",
-            metrics=tuple(selected),
+        return run_asof_lift(
+            self._open_binding(),
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
             dimension=dimension,
+            estimands=estimands,
             completed_windows_only=completed_windows_only,
-            estimands=tuple(estimands) if estimands is not None else None,
+            exploratory_metrics=exploratory_metrics,
             population=population,
+            coherence=coherence,
         )
-        self._validate_day_axis_before_context(req, _execution_context)
-        lift_options = None
-        if _execution_context is not None:
-            lift_options = self._day_axis(_execution_context).resolve_lift_options(
-                req.metrics,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-            )
-        asof_policy = self._plan.view_policies.for_view(
-            "asof",
-            mechanism=getattr(self._design, "mechanism", None),
-            segmented=dimension is not None,
-        )
-        if _execution_context is None:
-            from increment.readouts._line2 import run_standalone_day_axis_lift
-
-            lift_rows = run_standalone_day_axis_lift(
-                self,
-                req,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                coherence=coherence,
-            )
-        else:
-            lift_rows = self._day_axis(_execution_context).lift(
-                req,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
-                prior=prior,
-                options=lift_options,
-            )
-        rows = self._stamp_exploratory(
-            lift_rows,
-            added,
-            correction=normalize_display_correction(asof_policy.correction),
-        )
-        rows._default_backend = self._input_backend
-        rows._envelope_completion_policy = completed_windows_only
-        rows._envelope_view = "asof"
-        return rows

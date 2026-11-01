@@ -298,6 +298,25 @@ def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     }
 
 
+def _select_views(exp: Experiment, views: Sequence[Scope] | None) -> Experiment:
+    """Narrow to the selected declared views, keeping declaration order."""
+    if views is None:
+        return exp
+    hashes = tuple(scope.hash() for scope in views)
+    declared = {scope.hash() for scope in exp.scopes}
+    if not hashes or len(set(hashes)) != len(hashes) or not set(hashes) <= declared:
+        raise CodedError(
+            "The bound analysis cannot execute these experiment declarations",
+            code="kernel.run.execution_unavailable",
+            context={"experiment_id": exp.experiment_id, "field": "views"},
+        )
+    return replace(
+        exp,
+        scopes=tuple(scope for scope in exp.scopes if scope.hash() in hashes),
+        operations={key: value for key, value in exp.operations.items() if key in hashes},
+    )
+
+
 def run(
     exp: Experiment,
     resolver: Resolver,
@@ -307,21 +326,7 @@ def run(
     views: Sequence[Scope] | None = None,
 ) -> Any:
     """Resolve and verify the experiment's source before handing off execution."""
-    if views is not None:
-        hashes = tuple(scope.hash() for scope in views)
-        declared = {scope.hash() for scope in exp.scopes}
-        if not hashes or len(set(hashes)) != len(hashes) or not set(hashes) <= declared:
-            raise CodedError(
-                "The bound analysis cannot execute these experiment declarations",
-                code="kernel.run.execution_unavailable",
-                context={"experiment_id": exp.experiment_id, "field": "views"},
-            )
-        selected = tuple(scope for scope in exp.scopes if scope.hash() in hashes)
-        exp = replace(
-            exp,
-            scopes=selected,
-            operations={key: value for key, value in exp.operations.items() if key in hashes},
-        )
+    exp = _select_views(exp, views)
     provider = _resolve_verified(exp, resolver, ctx=ctx)
     execute = getattr(resolver, "run_experiment", None)
     if not callable(execute):

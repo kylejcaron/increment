@@ -1636,7 +1636,8 @@ def test_workflow_capture_in_a_shared_run_borrows_its_single_capture(tmp_path, m
     other_connection, _, other_experiment, other_resolver = _native_pair(
         tmp_path / "other", "bernoulli"
     )
-    analysis = cast(Any, resolver)._analysis
+    analysis = cast(Any, Analysis.__new__(Analysis))
+    analysis._binding = cast(Any, resolver).binding
     source = cast(Any, held_source(analysis))
     execute = source._pinned_source_execution
     pinned: list[object] = []

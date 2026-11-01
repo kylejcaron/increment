@@ -549,7 +549,7 @@ def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path)
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
     analysis, path = _analysis(tmp_path, _events(), connection=connection)
-    moments_analysis = None
+    moments_closer = None
     try:
         _assert_empty_sequential_compliance(tmp_path)
         _assert_selected_registered_family_capture(tmp_path)
@@ -595,7 +595,7 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
             metrics={"revenue": "mean"},
             control="C",
         )
-        moments_analysis = cast(Any, moments_resolver)._analysis
+        moments_closer = moments_resolver
         moments_scoped = replace(
             moments_experiment,
             scopes=(
@@ -612,8 +612,8 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
         assert {cell.identity.key.analysis_population for cell in combined.cells} == {"triggered"}
     finally:
-        if moments_analysis is not None:
-            moments_analysis.close()
+        if moments_closer is not None:
+            moments_closer.close()
         analysis.close()
         connection.disconnect()
 

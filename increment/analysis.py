@@ -38,7 +38,7 @@ def _facade_builder[**P](
             name = "_from_definitions"
         experiment, resolver = getattr(builders, name)(*args, **options)
         analysis = cls.__new__(cls)
-        analysis.__dict__.update(resolver._analysis.__dict__)
+        _Analysis.__init__(analysis, resolver.binding)
         analysis.__dict__["_kernel_binding"] = (experiment, resolver)
         return analysis
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from inspect import Parameter, signature
 from typing import Any, Literal, cast
 
 from pydantic import TypeAdapter
@@ -176,27 +175,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     except CodedError as refusal:
         return (refusal,)
     return ()
-
-
-def operation_parameters(analysis: Any) -> dict[str, Any]:
-    """Record the keyword contracts of the bound readout operations."""
-    declarations = {}
-    for operation in dict.fromkeys(name for names in _SCOPE_OPERATIONS.values() for name in names):
-        execute = analysis._run_legacy if operation == "run" else getattr(analysis, operation)
-        parameters = tuple(signature(execute).parameters.values())
-        keywords = tuple(
-            parameter
-            for parameter in parameters
-            if parameter.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
-        )
-        declarations[operation] = {
-            "accepted": (*tuple(parameter.name for parameter in keywords), "capture"),
-            "required": tuple(
-                parameter.name for parameter in keywords if parameter.default is Parameter.empty
-            ),
-            "variadic": any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters),
-        }
-    return declarations
 
 
 def operation_options(

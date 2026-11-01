@@ -31,11 +31,8 @@ if TYPE_CHECKING:
     from increment.switchback import SwitchbackAssignment
 
 
-from increment._analysis_kernel_adapter import AnalysisResolver as _AnalysisResolver
-from increment._analysis_kernel_adapter import (
-    experiment_for_analysis as _experiment_for_analysis,
-)
 from increment._binding import SourceBinding, _ArtifactOpenSpec
+from increment._source_resolver import SourceResolver, resolver_for
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.kernel.contracts import _refuse
 from increment.kernel.experiment import Experiment
@@ -683,7 +680,7 @@ def from_frame(
     intervention_grain: Literal["unit", "cluster"] = "unit",
     exposure_date: str | None = None,
     breakouts: Sequence[str] = (),
-) -> tuple[Experiment, _AnalysisResolver]: ...
+) -> tuple[Experiment, SourceResolver]: ...
 
 
 @overload
@@ -705,13 +702,7 @@ def from_frame(
     breakouts: Sequence[str] = (),
     on_unassigned: Literal["error", "exclude"] = "error",
     cluster: str | None = None,
-) -> tuple[Experiment, _AnalysisResolver]: ...
-
-
-def _analysis_from_binding(binding: SourceBinding) -> Any:
-    from increment._analysis_execution import Analysis
-
-    return Analysis._from_binding(binding)
+) -> tuple[Experiment, SourceResolver]: ...
 
 
 def from_frame(
@@ -719,7 +710,7 @@ def from_frame(
     *,
     shape: Literal["summary", "panel"],
     **kwargs: Any,
-) -> tuple[Experiment, _AnalysisResolver]:
+) -> tuple[Experiment, SourceResolver]:
     """Build an experiment from a unit-summary or unit-panel frame."""
     if shape == "summary":
         binding = _bind_summary(frame, **kwargs)
@@ -727,7 +718,7 @@ def from_frame(
         binding = _bind_panel(frame, **kwargs)
     else:
         _refuse("kernel.request.invalid", field="shape must be summary or panel")
-    return _experiment_for_analysis(_analysis_from_binding(binding), return_run_result=True)
+    return resolver_for(binding)
 
 
 def _accept_definitions_arguments[**P, R](builder: Callable[P, R]) -> Callable[P, R]:
@@ -766,7 +757,7 @@ def from_definitions(
     store: Literal["auto", "always", "none"] = "auto",
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-) -> tuple[Experiment, _AnalysisResolver | _OfflineResolver]:
+) -> tuple[Experiment, SourceResolver | _OfflineResolver]:
     """Build from definitions, using a bound versioned catalog when offline."""
     return _from_definitions(
         definitions_path,
@@ -790,7 +781,7 @@ def _from_definitions(
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     _record_schema: bool = True,
-) -> tuple[Experiment, _AnalysisResolver | _OfflineResolver]:
+) -> tuple[Experiment, SourceResolver | _OfflineResolver]:
     path = Path(definitions_path)
     if con is None:
         catalog_path = _catalog_path(path)
@@ -838,11 +829,7 @@ def _from_definitions(
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=source_snapshot_evidence,
     )
-    experiment, resolver = _experiment_for_analysis(
-        _analysis_from_binding(binding),
-        record_schema=_record_schema,
-        return_run_result=True,
-    )
+    experiment, resolver = resolver_for(binding, record_schema=_record_schema)
     if _record_schema:
         _write_catalog(path, experiment, definitions_digest)
         resolver.catalog_writer = lambda captured: _write_catalog(
@@ -857,12 +844,9 @@ def from_unit_day_artifact(
     *,
     expected_context: ArtifactContext,
     verification: Literal["lazy_digest"] = "lazy_digest",
-) -> tuple[Experiment, _AnalysisResolver]:
-    return _experiment_for_analysis(
-        _analysis_from_binding(
-            _bind_artifact(store, ref, expected_context=expected_context, verification=verification)
-        ),
-        return_run_result=True,
+) -> tuple[Experiment, SourceResolver]:
+    return resolver_for(
+        _bind_artifact(store, ref, expected_context=expected_context, verification=verification)
     )
 
 
@@ -880,7 +864,7 @@ def from_switchback_frame(
     experiment_id: str = "frame",
     plan: AnalysisPlan | None = None,
     contrast_references: Mapping[str, UnitCycleReference] | None = None,
-) -> tuple[Experiment, _AnalysisResolver]:
+) -> tuple[Experiment, SourceResolver]:
     binding = _bind_switchback(
         frame,
         unit=unit,
@@ -895,7 +879,7 @@ def from_switchback_frame(
         plan=plan,
         contrast_references=contrast_references,
     )
-    return _experiment_for_analysis(_analysis_from_binding(binding), return_run_result=True)
+    return resolver_for(binding)
 
 
 def from_moments(
@@ -906,7 +890,7 @@ def from_moments(
     experiment_id: str | None = None,
     design: Randomized | Encouragement | Observational | None = None,
     plan: AnalysisPlan | None = None,
-) -> tuple[Experiment, _AnalysisResolver]:
+) -> tuple[Experiment, SourceResolver]:
     binding = _bind_moments(
         rows,
         metrics=metrics,
@@ -915,12 +899,12 @@ def from_moments(
         design=design,
         plan=plan,
     )
-    return _experiment_for_analysis(_analysis_from_binding(binding), return_run_result=True)
+    return resolver_for(binding)
 
 
-def from_unit_summary(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
+def from_unit_summary(*args: Any, **kwargs: Any) -> tuple[Experiment, SourceResolver]:
     return from_frame(*args, shape="summary", **kwargs)
 
 
-def from_unit_panel(*args: Any, **kwargs: Any) -> tuple[Experiment, _AnalysisResolver]:
+def from_unit_panel(*args: Any, **kwargs: Any) -> tuple[Experiment, SourceResolver]:
     return from_frame(*args, shape="panel", **kwargs)

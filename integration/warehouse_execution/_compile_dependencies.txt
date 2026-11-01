@@ -2,7 +2,6 @@
 increment
 increment._analysis_config
 increment._analysis_execution
-increment._analysis_kernel_adapter
 increment._artifact_identity
 increment._assignment_refusals
 increment._binding
@@ -17,6 +16,8 @@ increment._evidence_loaders
 increment._evidence_refusals
 increment._evidence_scopes
 increment._evidence_types
+increment._execute
+increment._exploratory
 increment._finite_sample_refusals
 increment._frame_moments
 increment._frame_panel
@@ -36,6 +37,8 @@ increment._runnability
 increment._source_admission
 increment._source_identity
 increment._source_operations
+increment._source_resolver
+increment._source_sequential
 increment._source_types
 increment._source_workflows
 increment._study
@@ -152,6 +155,7 @@ increment.readouts._design_scope
 increment.readouts._encouragement
 increment.readouts._evidence
 increment.readouts._execution_context
+increment.readouts._line2
 increment.readouts._metric_rows
 increment.readouts._metric_type
 increment.readouts._multiplicity_scope

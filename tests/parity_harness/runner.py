@@ -449,7 +449,7 @@ def _run_with_kernel_parity(
     options: dict[str, Any],
 ) -> Any:
     """Compare the public Analysis.run path with direct kernel execution."""
-    from increment._analysis_kernel_adapter import experiment_for_analysis
+    from increment._source_resolver import resolver_for
     from increment.kernel.resolver import run as run_experiment
 
     public_warnings = []
@@ -458,7 +458,7 @@ def _run_with_kernel_parity(
             warnings.simplefilter("always", IncrementWarning)
             expected = analysis.run(**options)
     except CodedError as expected_refusal:
-        experiment, resolver = experiment_for_analysis(analysis, run_options=options)
+        experiment, resolver = resolver_for(analysis._open_binding(), run_options=options)
         try:
             run_experiment(experiment, resolver)
         except CodedError as kernel_refusal:
@@ -478,7 +478,7 @@ def _run_with_kernel_parity(
                 warning.message, warning.category, warning.filename, warning.lineno
             )
 
-    experiment, resolver = experiment_for_analysis(analysis, run_options=options)
+    experiment, resolver = resolver_for(analysis._open_binding(), run_options=options)
     from increment.kernel.experiment import Experiment
 
     restored = Experiment.from_json(experiment.to_json())
@@ -486,7 +486,8 @@ def _run_with_kernel_parity(
         raise AssertionError("A parity-matrix experiment changed identity after JSON round-trip")
     with warnings.catch_warnings(record=True) as kernel_warnings:
         warnings.simplefilter("always", IncrementWarning)
-        actual = run_experiment(restored, resolver)
+        (scoped,) = run_experiment(restored, resolver)
+    actual = scoped.collection
     # This second execution has its own advisory channel, not another facade call.
     assert sorted(warning_codes(kernel_warnings)) == sorted(warning_codes(public_warnings))
     expected_payload = _normalize(
