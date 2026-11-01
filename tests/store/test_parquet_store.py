@@ -1,6 +1,10 @@
+import copy
+import json
+import pickle
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
@@ -9,6 +13,7 @@ import pytest
 from increment import Analysis, from_frame
 from increment import run as run_views
 from increment.errors import CodedError
+from increment.estimation.readout_types import ReadoutResults
 from increment.kernel.contracts import Scope
 from increment.result_envelope import ResultCell
 from increment.store import HistorySelector, ParquetResultsStore, Run
@@ -18,6 +23,10 @@ _FRAME = {
     "unit": ["c1", "c2", "c3", "c4", "t1", "t2", "t3", "t4"],
     "value": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
 }
+# Readout JSON with persisted cells, written by the removed ``Analysis.run(store=)``.
+_PERSISTED_READOUT = (
+    Path(__file__).parents[1] / "fixtures" / "readout_persisted_cells_reference.json"
+)
 
 
 def _analysis(*, control="control", treatment="treatment", metrics=None):
@@ -226,34 +235,34 @@ def test_analysis_run_persists_public_cells_without_identity_rewrites(tmp_path):
             for cell in cells
         )
         assert store.open_run("exp", run.analysis_spec_hash, run.run_id).envelope().cells == cells
-        import copy
-        import json
-        import pickle
-
         public_identity = rows.as_cells()[0].identity
         handle = store.open_run("exp", run.analysis_spec_hash, run.run_id)
         assert handle.get(public_identity)
-        assert rows[:].as_cells()[0].identity == public_identity
-        assert rows.filter(lambda _row: True).as_cells()[0].identity == public_identity
-        assert copy.deepcopy(rows).as_cells()[0].identity == public_identity
-        assert pickle.loads(pickle.dumps(rows)).as_cells()[0].identity == public_identity
-        from increment.estimation.readout_types import ReadoutResults
-
-        restored_rows = ReadoutResults.model_validate_json(rows.model_dump_json())
-        assert restored_rows.as_cells()[0].identity == public_identity
-        tampered = json.loads(rows.model_dump_json())
-        tampered["persisted_cells"] = []
-        with pytest.raises(CodedError) as invalid_cache:
-            ReadoutResults.model_validate_json(json.dumps(tampered))
-        assert invalid_cache.value.code == "readout.serialization.identity_mismatch"
-        second_rows = analysis.run(store=store)
-        foreign_cache = json.loads(second_rows.model_dump_json())
-        foreign_cache["persisted_cells"] = [cell.to_payload() for cell in rows.as_cells()]
-        with pytest.raises(CodedError) as foreign_cells:
-            ReadoutResults.model_validate_json(json.dumps(foreign_cache))
-        assert foreign_cells.value.code == "readout.serialization.identity_mismatch"
     finally:
         analysis.close()
+
+
+def test_saved_readout_json_keeps_its_persisted_cell_identity():
+    saved = json.loads(_PERSISTED_READOUT.read_text())["readout"]
+    persisted = ResultCell.from_payload(saved["persisted_cells"][0]).identity
+    rows = ReadoutResults.model_validate_json(json.dumps(saved))
+    assert rows.as_cells()[0].identity == persisted
+    assert rows[:].as_cells()[0].identity == persisted
+    assert rows.filter(lambda _row: True).as_cells()[0].identity == persisted
+    assert copy.deepcopy(rows).as_cells()[0].identity == persisted
+    assert pickle.loads(pickle.dumps(rows)).as_cells()[0].identity == persisted
+    restored = ReadoutResults.model_validate_json(rows.model_dump_json())
+    assert restored.as_cells()[0].identity == persisted
+    tampered = copy.deepcopy(saved)
+    tampered["persisted_cells"] = []
+    with pytest.raises(CodedError) as invalid_cache:
+        ReadoutResults.model_validate_json(json.dumps(tampered))
+    assert invalid_cache.value.code == "readout.serialization.identity_mismatch"
+    foreign = copy.deepcopy(saved)
+    foreign["metadata"]["run_id"] = "another-run"
+    with pytest.raises(CodedError) as foreign_cells:
+        ReadoutResults.model_validate_json(json.dumps(foreign))
+    assert foreign_cells.value.code == "readout.serialization.identity_mismatch"
 
 
 def test_percentile_winsorized_persisted_results_round_trip_json(tmp_path):
