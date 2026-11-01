@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from increment import builders
 from increment._source_operations import PanelSQLOperation, SummarySqlOperation
-from increment.analysis import Analysis
 from increment.errors import CapabilityError
 from increment.evidence import EvidenceCapabilities
 from increment.query._native_triggered import TriggeredPopulationSource
@@ -117,7 +117,7 @@ class _OperationsDescriptorSource:
 
 def test_from_source_does_not_invoke_operations_descriptor() -> None:
     source = _OperationsDescriptorSource()
-    Analysis._from_source(cast(EvidenceSource, source))
+    builders.bind_source(cast(EvidenceSource, source))
 
     assert _OperationsDescriptorSource.descriptor_reads == 0
     # The descriptor is genuinely armed: touching it raises and counts.

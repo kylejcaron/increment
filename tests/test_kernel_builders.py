@@ -19,11 +19,12 @@ from increment.errors import CodedError, IncrementWarning
 from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
-from increment.workflows import materialize
+from increment.workflows import export_moments, materialize
 from tests.analysis_factory import (
     definitions_inputs,
     facade_binding,
     replace_bound_source,
+    view_readout,
 )
 from tests.test_evidence_identity_parity import _capture
 from tests.warning_codes import warning_codes
@@ -39,15 +40,16 @@ def test_moments_builder_preserves_estimates_and_raw_outcome_refusals(tmp_path, 
         winsorization=winsorization,
     )
     design = Randomized(control_group="control")
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         _frame().assign(value=[1.0, 3.0, 2.0, 4.0] * 10),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=[metric],
         design=design,
     )
     path = tmp_path / "moments.parquet"
-    summary.export(path)
+    export_moments(summary_experiment, summary_resolver, path)
     rows = pq.read_table(path).to_pylist()
 
     experiment, resolver = from_moments(
@@ -133,17 +135,19 @@ def test_from_frame_builder_estimates_survive_specification_round_trip(shape):
 
 
 def test_frame_run_matches_analysis_run():
-    from increment import Analysis
 
     frame = _frame()
     design = Randomized(control_group="control")
-    expected = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        design=design,
-        metrics={"value": "mean"},
-    ).run()
+    expected = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=design,
+            metrics={"value": "mean"},
+        )
+    )
     experiment, resolver = from_frame(
         frame,
         shape="summary",
@@ -166,16 +170,16 @@ def test_frame_run_matches_analysis_run():
 
 
 def test_analysis_summary_facade_delegates_to_public_builder():
-    from increment import Analysis
 
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         _frame(),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics={"value": "mean"},
     )
-    experiment, resolver = facade_binding(analysis)
+    experiment, resolver = analysis
 
     assert isinstance(experiment, Experiment)
     assert set(experiment.source_refs[0].canonical_payload()) == {
@@ -620,7 +624,7 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
     from increment.builders import from_unit_day_artifact
     from tests.test_unit_day_artifact_facade import _published
 
-    con, native, context, store, ref = _published()
+    con, (native_experiment, native_resolver), context, store, ref = _published()
     try:
         experiment, _initial_resolver = from_unit_day_artifact(store, ref, expected_context=context)
         assert experiment.analysis_context["source_name"] == "_ArtifactFacadeSource"
@@ -634,7 +638,7 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             with pytest.warns(IncrementWarning):
-                expected = native.run().as_cells()
+                expected = view_readout(native_experiment, native_resolver).as_cells()
         actual = run(saved_experiment, fresh_resolver).cells
         assert len(actual) == len(expected)
         for cell, reference in zip(actual, expected, strict=True):

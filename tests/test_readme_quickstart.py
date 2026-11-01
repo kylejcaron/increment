@@ -4,10 +4,11 @@ import re
 import warnings
 from pathlib import Path
 
-from increment import RunResult
+from increment import RunResult, from_frame
 from increment.kernel.experiment import Experiment
 from increment.kernel.resolver import Resolver
 from increment.result_envelope import ResultCell
+from tests.analysis_factory import view_readout
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_legacy_analysis_run_result_type_is_unchanged() -> None:
     import polars as pl
 
-    from increment import Analysis, AnalysisPlan, Randomized
+    from increment import AnalysisPlan, Randomized
     from increment.breakout.estimates import LiftEstimates
 
     frame = pl.DataFrame(
@@ -25,8 +26,9 @@ def test_legacy_analysis_run_result_type_is_unchanged() -> None:
             "value": [1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(
@@ -38,7 +40,7 @@ def test_legacy_analysis_run_result_type_is_unchanged() -> None:
         plan=AnalysisPlan(primary="value"),
     )
 
-    assert isinstance(analysis.run(), LiftEstimates)
+    assert isinstance(view_readout(experiment, resolver), LiftEstimates)
 
 
 def test_readme_quickstart_executes_recommended_run() -> None:

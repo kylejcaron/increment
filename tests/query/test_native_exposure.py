@@ -19,9 +19,11 @@ from typing import Any, cast
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, from_unit_day_artifact
+from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.errors import CapabilityError
-from tests.analysis_factory import _native_source, held_source
+from increment.workflows import allocation_history, metrics
+from tests.analysis_factory import bound_source, held_source, view_readout
 
 pytestmark = pytest.mark.integration
 
@@ -32,9 +34,9 @@ def _write_defs(tmp_path, yaml: str):
     return defs_path
 
 
-def _enrolled_by_arm(analysis) -> dict[str, int]:
+def _enrolled_by_arm(analysis: tuple[Any, Any]) -> dict[str, int]:
     """Per-arm enrolled unit counts from the public allocation history."""
-    history = analysis.allocation_history()
+    history = allocation_history(*analysis)
     return dict(
         zip(history["group_id"].to_pylist(), history["n_cumulative"].to_pylist(), strict=True)
     )
@@ -102,7 +104,7 @@ experiments:
         ],
     )
     defs_path = _write_defs(tmp_path, yaml)
-    analysis = Analysis.from_definitions("exp", defs_path, con)
+    analysis = from_definitions(defs_path, con, experiment_name="exp")
     assert _enrolled_by_arm(analysis) == {"control": 1}
 
 
@@ -153,7 +155,7 @@ experiments:
         ],
     )
     defs_path = _write_defs(tmp_path, yaml)
-    analysis = Analysis.from_definitions("exp", defs_path, con)
+    analysis = from_definitions(defs_path, con, experiment_name="exp")
     assert _enrolled_by_arm(analysis) == {"control": 1}
 
 
@@ -204,9 +206,9 @@ experiments:
         ],
     )
     defs_path = _write_defs(tmp_path, yaml)
-    analysis = Analysis.from_definitions("exp", defs_path, con)
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp")
     with pytest.raises(CapabilityError) as exc_info:
-        analysis.allocation_history()
+        allocation_history(experiment, resolver)
     assert exc_info.value.code == "evidence.operation_unavailable"
 
 
@@ -285,16 +287,16 @@ experiments:
             }
         ],
     )
-    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    experiment, resolver = from_definitions(_write_defs(tmp_path, yaml), con, experiment_name="exp")
     try:
-        captured = analysis.run()
-        live = analysis.run(coherence="live")
+        captured = view_readout(experiment, resolver)
+        live = view_readout(experiment, resolver, coherence="live")
         assert cast(Any, captured[0]).require_lift().value == pytest.approx(1.6)
         assert cast(Any, live[0]).require_lift().value == pytest.approx(1.6)
         assert captured.metadata is not None and captured.metadata.coherence == "captured"
         assert live.metadata is not None and live.metadata.coherence == "live"
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -369,9 +371,9 @@ experiments:
         ],
     )
     defs_path = _write_defs(tmp_path, yaml)
-    analysis = Analysis.from_definitions("exp", defs_path, con)
-    metric = analysis.metrics[0]
-    evidence = _native_source(analysis).sitewide_evidence(metric, include_ratio=True)
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp")
+    metric = metrics(experiment, resolver)[0]
+    evidence = bound_source(resolver).sitewide_evidence(metric, include_ratio=True)
     assert evidence.site_total == pytest.approx(3.0)
     assert evidence.site_total_denominator == pytest.approx(0.0)
 
@@ -424,7 +426,7 @@ experiments:
         ],
     )
     defs_path = _write_defs(tmp_path, yaml)
-    analysis = Analysis.from_definitions("exp", defs_path, con)
+    analysis = from_definitions(defs_path, con, experiment_name="exp")
 
     assert _enrolled_by_arm(analysis) == {"control": 1, "treatment": 1}
 
@@ -519,23 +521,25 @@ experiments:
             },
         ],
     )
-    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        _write_defs(tmp_path, yaml), con, experiment_name="exp"
+    )
     artifact = None
     try:
         from increment.query.session import WarehouseArtifactStore
 
         store = WarehouseArtifactStore(con, schema_name="assignment_identity")
-        context = analysis.artifact_context
-        reference = analysis.publish_unit_day_artifact(store)
-        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        context = artifact_context(analysis_experiment, analysis_resolver)
+        reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+        artifact = from_unit_day_artifact(store, reference, expected_context=context)
         assert {
             (row["group_id"], row["n_cumulative"])
-            for row in artifact.allocation_history().to_pylist()
+            for row in allocation_history(*artifact).to_pylist()
         } == {("control", 1), ("treatment", 1)}
         artifact_assignment = cast(
             AssignmentEvidence,
             request_evidence(
-                evidence_provider(held_source(artifact)),
+                evidence_provider(held_source(artifact[1])),
                 AssignmentRequest(experiment="exp", version=3, period="global"),
             ),
         )
@@ -559,10 +563,10 @@ experiments:
             "SET arm = 'mutated' WHERE unit_id = 'u1'"
         )
         with pytest.raises(CapabilityError) as digest_mismatch:
-            artifact.allocation_history()
+            allocation_history(*artifact)
         assert digest_mismatch.value.code == "artifact.relation.digest_mismatch"
         request = AssignmentRequest(experiment="exp", version=3, period="global")
-        provider = evidence_provider(_native_source(analysis))
+        provider = evidence_provider(bound_source(analysis_resolver))
         with pytest.raises(CapabilityError) as refused:
             request_evidence(
                 provider,
@@ -588,8 +592,8 @@ experiments:
         assert evidence.periods == ("global",)
     finally:
         if artifact is not None:
-            artifact.close()
-        analysis.close()
+            artifact[1].close()
+        cast(Any, analysis_resolver).close()
         con.disconnect()
 
 
@@ -635,20 +639,20 @@ experiments:
             },
         ],
     )
-    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, yaml), con)
+    experiment, resolver = from_definitions(_write_defs(tmp_path, yaml), con, experiment_name="exp")
     artifact = None
     try:
         from increment.query.session import WarehouseArtifactStore
 
         store = WarehouseArtifactStore(con, schema_name="assignment_identity_absent")
-        context = analysis.artifact_context
-        reference = analysis.publish_unit_day_artifact(store)
-        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        context = artifact_context(experiment, resolver)
+        reference = publish_unit_day_artifact(experiment, resolver, store)
+        artifact = from_unit_day_artifact(store, reference, expected_context=context)
         with pytest.raises(CapabilityError) as refused:
-            artifact.allocation_history()
+            allocation_history(*artifact)
         assert refused.value.code == "evidence.assignment.identity_unavailable"
     finally:
         if artifact is not None:
-            artifact.close()
-        analysis.close()
+            artifact[1].close()
+        cast(Any, resolver).close()
         con.disconnect()

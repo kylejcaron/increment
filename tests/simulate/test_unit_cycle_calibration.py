@@ -18,6 +18,7 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
+from increment import from_switchback_frame
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.contrast import estimate_contrast
 from increment.estimation.contrast_results import ContrastResult, ContrastResults
@@ -43,6 +44,7 @@ from tests._unit_cycle_design import (
     schedule,
     streams,
 )
+from tests.analysis_factory import view_readout
 from tests.simulate.unit_cycle_sizing import (
     Gate,
     allocate,
@@ -287,13 +289,12 @@ def test_representative_public_parity(cell_index, cell):
 
 @pytest.mark.parametrize("noise", ("normal", "centered_lognormal", "centered_gamma"))
 def test_source_reference_reaches_compiled_analysis(noise):
-    from increment.analysis import Analysis
 
     cell = Cell(4, 1, 0.9, noise, 0.9, "unequal", 0, "retained_total")
     periods, ct = draw_periods(cell, 1, streams(MANIFEST["smoke_seed"]))
     envelope = envelope_for(joint_law(cell))
     mapping = {"outcome": envelope}
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         frame(periods[0], ct[0]),
         unit="unit",
         cycle="cycle",
@@ -308,7 +309,7 @@ def test_source_reference_reaches_compiled_analysis(noise):
         contrast_references=mapping,
     )
     mapping.clear()
-    row = analysis.run()[0]
+    row = view_readout(experiment, resolver)[0]
     assert isinstance(row, ContrastResult)
     assert row.reference_spec == envelope
     assert row.method == "switchback_unit_variance_envelope"

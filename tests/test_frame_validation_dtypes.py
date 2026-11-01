@@ -15,7 +15,7 @@ import polars as pl
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts
+from increment import from_frame, readouts
 from increment.errors import InvalidRequestError
 from increment.evidence import (
     CountEvidence,
@@ -247,8 +247,9 @@ def _group_label_frame(labels):
 def test_canonical_collision_refuses_before_quantile_estimation(labels):
     frame = _group_label_frame(["control", *labels])
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
+        from_frame(
             frame,
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",

@@ -29,6 +29,7 @@ from increment.estimators import (
 from increment.frame import MetricSpec, from_unit_summary
 from increment.results import TargetingSelection
 from increment.semantics.design import Randomized
+from tests.analysis_factory import bind_pair
 from tests.test_sources import _plain_format_row
 
 _N = 600
@@ -217,7 +218,6 @@ def _moments_only_experiment() -> tuple[Any, Any]:
 
 class TestEstimate:
     def test_method_only_legacy_source_remains_supported(self):
-        from increment.analysis import Analysis
 
         experiment, resolver = _experiment()
 
@@ -228,8 +228,12 @@ class TestEstimate:
             def __getattr__(self, name):
                 return getattr(self._wrapped, name)
 
-        custom = Analysis._from_source(cast(Any, LegacySource(resolver.binding.source)))
-        result = custom.estimate_cate("revenue", control="control", interact=["spend"])
+        custom_experiment, custom_resolver = bind_pair(
+            cast(Any, LegacySource(resolver.binding.source))
+        )
+        result = estimate_cate(
+            custom_experiment, custom_resolver, "revenue", control="control", interact=["spend"]
+        )
         assert result == estimate_cate(
             experiment, resolver, "revenue", control="control", interact=["spend"]
         )
@@ -1137,7 +1141,6 @@ def test_unit_design_refuses_a_design_less_source_before_touching_unit_frame(mon
 
     Builders always declare a design, so only a custom source reaches this.
     """
-    from increment.analysis import Analysis
     from increment.errors import InvalidRequestError
     from increment.frame import synthesise_metric
     from increment.sources import MomentsSource
@@ -1154,7 +1157,7 @@ def test_unit_design_refuses_a_design_less_source_before_touching_unit_frame(mon
 
     monkeypatch.setattr(src, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis._from_source(src).validate_cate("revenue", control="control", interact=["spend"])
+        validate_cate(*bind_pair(src), "revenue", control="control", interact=["spend"])
     assert exc_info.value.code == "cate.identification.unsupported_mechanism"
     assert exc_info.value.context["mechanism"] is None
 

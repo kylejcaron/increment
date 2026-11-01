@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 from scipy.stats import norm
 
+from increment import from_frame
 from increment.decision import (
     ArmHypothesisKey,
     DecisionComputation,
@@ -28,6 +29,7 @@ from increment.estimation.family import (
 )
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.sequential import AlwaysValid
+from tests.analysis_factory import view_readout
 
 
 def _lift_estimate(
@@ -815,7 +817,7 @@ def test_family_absolute_margin_uses_absolute_axis():
 def test_zero_relative_variance_keeps_the_family_roster_and_usable_discoveries():
     import pyarrow as pa
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec
     from increment.semantics.models import AnalysisPlan
 
     records = [
@@ -832,8 +834,9 @@ def test_zero_relative_variance_keeps_the_family_roster_and_usable_discoveries()
         for member in range(3)
     ]
     names = ["zero", "borderline", "strong"]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(records),
+        shape="summary",
         unit="unit",
         group="arm",
         control="C",
@@ -842,7 +845,7 @@ def test_zero_relative_variance_keeps_the_family_roster_and_usable_discoveries()
         plan=AnalysisPlan(secondaries=names, q=0.05),
     )
     rows: dict[str, LiftEstimate] = {}
-    for row in analysis.run():
+    for row in view_readout(experiment, resolver):
         assert isinstance(row, LiftEstimate)
         rows[row.metric] = row
     assert rows["zero"].relative_unavailable_reason == "zero_relative_variance"
