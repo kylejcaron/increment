@@ -796,10 +796,12 @@ depends_on = [
   "increment.decision",
   "increment.errors",
   "increment.estimation",
+  "increment.kernel.contracts",
   "increment.readouts",
   "increment.readouts._execution_context",
   "increment.readouts._line2",
   "increment.readouts._whole_window",
+  "increment.semantics",
   "increment.sequential_source",
 ]
 
@@ -808,7 +810,6 @@ path = "increment._source_resolver"
 layer = "core"
 depends_on = [
   "increment._binding",
-  "increment._evidence_refusals",
   "increment._execute",
   "increment._runnability",
   "increment.errors",
