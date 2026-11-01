@@ -11,9 +11,19 @@ import datetime as dt
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from increment import (
+    Scope,
+    from_definitions,
+    from_frame,
+    from_switchback_frame,
+    from_unit_day_artifact,
+)
+from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.semantics.unit_cycle import UnitCycleTApproximation
+from increment.workflows import experiment_definition, export_moments
+from tests.analysis_factory import bound_source, view_readout
 
 
 @dataclass(frozen=True)
@@ -158,7 +168,6 @@ def _artifact_analysis(tmp_path: Path) -> Any:
     import ibis
 
     from examples._seed import seed_event_log
-    from increment import Analysis
     from increment.artifacts import SourceSnapshotEvidence
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
@@ -174,22 +183,22 @@ def _artifact_analysis(tmp_path: Path) -> Any:
     con = ibis.duckdb.connect()
     seed_event_log(con, with_pre_period=True)
     evidence = dt.datetime(2030, 1, 1, tzinfo=dt.UTC)
-    native = Analysis.from_definitions(
-        "new_onboarding_v2",
+    experiment, resolver = from_definitions(
         definitions,
         con,
+        experiment_name="new_onboarding_v2",
         source_snapshot_evidence=SourceSnapshotEvidence(evidence, {"event_log": evidence}),
     )
-    context = native.artifact_context
+    context = artifact_context(experiment, resolver)
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     requests = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    reference = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    native.close()
+    reference = publish_unit_day_artifact(experiment, resolver, store, extensions=requests)
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
+    cast(Any, resolver).close()
     return adopted
 
 
-def unit_day_artifact_analysis(tmp_path: Path) -> Any:
+def unit_day_artifact_analysis(tmp_path: Path) -> tuple[Any, Any]:
     """Publish the definitions arm and reopen it through the artifact store."""
     return _artifact_analysis(tmp_path)
 
@@ -222,11 +231,10 @@ def frame_panel_source() -> Any:
     )
 
 
-def frame_panel_analysis() -> Any:
-    from increment import Analysis
-
-    return Analysis.from_unit_panel(
+def frame_panel_analysis() -> tuple[Any, Any]:
+    return from_frame(
         unit_panel_table(),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -243,9 +251,7 @@ def _current_fixed11_rows() -> list[dict[str, Any]]:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from increment import Analysis
-
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.table(
             {
                 "unit": [1, 2, 3, 4],
@@ -253,6 +259,7 @@ def _current_fixed11_rows() -> list[dict[str, Any]]:
                 "revenue": [10.0, 12.0, 18.0, 20.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics={"revenue": "mean"},
@@ -261,7 +268,7 @@ def _current_fixed11_rows() -> list[dict[str, Any]]:
     )
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "current-fixed11.parquet"
-        analysis.export(path)
+        export_moments(experiment, resolver, path)
         return pq.read_table(path).to_pylist()
 
 
@@ -353,19 +360,19 @@ def definitions_source(
     partial_trigger: bool = False,
     cluster: bool = False,
     sql_exposures: bool = False,
-    return_analysis: bool = False,
+    return_binding: bool = False,
     window_days: int | None = 1,
     return_connection: bool = False,
 ) -> tuple[Any, Any]:
     """Build an in-memory definitions source with one breakout.
 
     The no-trigger context is intentional for refusal checks; the optional
-    trigger event exercises the complete triggered operation surface.
+    trigger event exercises the complete triggered operation surface. With
+    ``return_binding`` the subject is the ``(experiment, resolver)`` pair.
     """
     import ibis
     import yaml
 
-    from increment import Analysis
     from increment.artifacts import SourceSnapshotEvidence
 
     rows = []
@@ -482,24 +489,24 @@ def definitions_source(
     con = ibis.duckdb.connect()
     con.create_table("raw_events", obj=rows)
     evidence = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
-    analysis = Analysis.from_definitions(
-        "conformance",
+    experiment, resolver = from_definitions(
         defs_path,
         con,
+        experiment_name="conformance",
         store=store,
         source_snapshot_evidence=(
             SourceSnapshotEvidence(evidence, {"events": evidence}) if trigger else None
         ),
     )
-    experiment = analysis.experiment
-    subject = analysis if return_analysis else analysis._src
-    breakout = experiment.breakouts[0] if experiment.breakouts else None
+    declaration = experiment_definition(experiment, resolver)
+    subject = (experiment, resolver) if return_binding else bound_source(resolver)
+    breakout = declaration.breakouts[0] if declaration.breakouts else None
     return (subject, (breakout, con)) if return_connection else (subject, breakout)
 
 
 def unit_day_artifact_source(tmp_path: Path) -> Any:
     """Publish and adopt the canonical unit-day artifact fixture."""
-    return _artifact_analysis(tmp_path)._src
+    return bound_source(_artifact_analysis(tmp_path)[1])
 
 
 def native_day_source(tmp_path: Path) -> Any:
@@ -563,14 +570,13 @@ def encouragement_panel_source() -> Any:
     )
 
 
-def encouragement_panel_analysis() -> Any:
+def encouragement_panel_analysis() -> tuple[Any, Any]:
     from datetime import date
 
-    from increment import Analysis
-
     rows, design = _encouragement_panel_inputs()
-    return Analysis.from_unit_panel(
+    return from_frame(
         rows,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -588,7 +594,7 @@ def arm_adapters(tmp_path: Path) -> tuple[ArmAdapter, ...]:
         ArmAdapter(
             "definitions",
             lambda: definitions_source(tmp_path)[0],
-            analysis_factory=lambda: definitions_source(tmp_path, return_analysis=True)[0],
+            analysis_factory=lambda: definitions_source(tmp_path, return_binding=True)[0],
         ),
         ArmAdapter("frame_summary", frame_summary_source),
         ArmAdapter("frame_panel", frame_panel_source, analysis_factory=frame_panel_analysis),
@@ -673,22 +679,16 @@ def switchback_source() -> Any:
     return from_switchback_panel(switchback_frame(), **_switchback_options())
 
 
-def switchback_analysis() -> Any:
-    from increment import Analysis
-
-    return Analysis.from_switchback_panel(switchback_frame(), **_switchback_options())
-
-
-def switchback_experiment() -> tuple[Any, Any]:
-    from increment import from_switchback_frame
-
+def switchback_analysis() -> tuple[Any, Any]:
     return from_switchback_frame(switchback_frame(), **_switchback_options())
 
 
-def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any]], ...]:
-    """Public Analysis constructors returning each arm evidence family."""
+def switchback_experiment() -> tuple[Any, Any]:
+    return switchback_analysis()
 
-    from increment import Analysis
+
+def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any]], ...]:
+    """Public constructors returning each arm evidence family."""
 
     def definitions_result() -> Any:
         from increment import readouts
@@ -697,25 +697,27 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
         return readouts.run(source)
 
     def summary_result() -> Any:
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             unit_summary_table(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
             metrics={"revenue": "mean"},
         )
-        return analysis.run()
+        return view_readout(experiment, resolver)
 
     def panel_result() -> Any:
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             unit_panel_table(),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
             control="control",
             metrics={"revenue": "mean"},
         )
-        return analysis.run_daily_lift()
+        return view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
 
     def moments_result() -> Any:
         from increment import readouts
@@ -724,8 +726,9 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
         return readouts.run(source)
 
     def breakout_result() -> Any:
-        analysis = Analysis.from_unit_panel(
+        experiment, resolver = from_frame(
             unit_panel_table(),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
@@ -733,7 +736,7 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
             metrics={"revenue": "mean"},
             breakouts=["segment"],
         )
-        return analysis.run_breakout()
+        return view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     def sql_result() -> Any:
         from increment import readouts
@@ -745,11 +748,11 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
             source.close()
 
     def artifact_result() -> Any:
-        analysis = unit_day_artifact_analysis(tmp_path)
+        experiment, resolver = unit_day_artifact_analysis(tmp_path)
         try:
-            return analysis.run(metrics=["purchase_rate"])
+            return view_readout(experiment, resolver, metrics=["purchase_rate"])
         finally:
-            analysis.close()
+            resolver.close()
 
     return (
         ("definitions", definitions_result),
@@ -767,7 +770,7 @@ def _captured_source_session(source: Any) -> Any:
 
 
 def _analysis_connection(analysis: Any) -> Any:
-    return analysis._con
+    return analysis[1].binding.connection
 
 
 def _clear_captured_source_tables(provider: Any) -> None:

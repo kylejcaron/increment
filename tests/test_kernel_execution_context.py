@@ -230,8 +230,8 @@ def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
     from tests.analysis_factory import held_source, native_connection
     from tests.source_conformance import definitions_source
 
-    analysis, _ = definitions_source(tmp_path, store="always", return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), _ = definitions_source(tmp_path, store="always", return_binding=True)
+    source = cast(Any, held_source(resolver))
     provider = evidence_provider(source)
     metric = source.context.metrics[0]
     connection = native_connection(source)
@@ -308,7 +308,7 @@ def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
             "SELECT table_name FROM duckdb_tables() WHERE temporary ORDER BY table_name"
         ).fetchall()
         assert after == before
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -317,8 +317,8 @@ def test_captured_context_refuses_when_its_pinned_stream_disappears(tmp_path):
     from tests.analysis_factory import held_source
     from tests.source_conformance import _clear_captured_source_tables, definitions_source
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    (_, resolver), _ = definitions_source(tmp_path, return_binding=True)
+    source = cast(Any, held_source(resolver))
     context = EvidenceExecutionContext(
         evidence_provider(source),
         EvidenceScope(
@@ -340,7 +340,7 @@ def test_captured_context_refuses_when_its_pinned_stream_disappears(tmp_path):
         assert refused.value.context["snapshot_id"] == context.snapshot_manifest["events"]
     finally:
         context.close()
-        analysis.close()
+        resolver.close()
 
 
 def test_assignment_request_must_be_declared_and_uses_the_pinned_provider() -> None:
