@@ -72,9 +72,7 @@ experiment, resolver = from_frame(
         )
     ],
 )
-results = run(
-    experiment, resolver, decision_method=Method.unadjusted(name="unadjusted")
-).readout()
+results = run(experiment, resolver, decision_method=Method.unadjusted(name="unadjusted")).readout()
 
 for r in results:
     width = r.lift.ub - r.lift.lb

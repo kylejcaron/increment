@@ -65,9 +65,7 @@ experiments:
     control_group: control
     plan: {primary: revenue}
 """)
-    experiment, resolver = from_definitions(
-        definitions_directory, demo_con, experiment_name="demo"
-    )
+    experiment, resolver = from_definitions(definitions_directory, demo_con, experiment_name="demo")
     demo_results = run(experiment, resolver).readout()
 for row in demo_results:
     print(row.metric, row.group_id, row.lift)

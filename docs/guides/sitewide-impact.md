@@ -473,9 +473,7 @@ recovered_reference = publish_unit_day_artifact(
 recovered_experiment, recovered_resolver = from_unit_day_artifact(
     triggered_store, recovered_reference, expected_context=triggered_context
 )
-recovered = sitewide(
-    recovered_experiment, recovered_resolver, "revenue", population="triggered"
-)
+recovered = sitewide(recovered_experiment, recovered_resolver, "revenue", population="triggered")
 print(recovered.analysis_population, recovered.membership_cutoff)
 incomplete_resolver.close()
 recovered_resolver.close()
