@@ -798,6 +798,7 @@ depends_on = [
   "increment._evidence_types",
   "increment._source_types",
   "increment.readouts",
+  "increment.readouts._execution_context",
   "increment.sequential_source",
 ]
 
@@ -817,7 +818,7 @@ depends_on = [
   "increment.evidence",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
   "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_sequential", "increment._source_workflows", "increment.readouts._whole_window",
-  "increment.readouts._line2",
+  "increment.readouts._line2", "increment.readouts._execution_context",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",
   "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",

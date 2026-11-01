@@ -95,14 +95,22 @@ def capture_sequential(
     results can reveal future triggered outcomes, including the same
     metric, and must not inform those decisions.
     """
+    from increment.readouts._execution_context import current_execution_context
+
     request = SequentialCaptureRequest(
         finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
     )
-    return _capture_sequential_binding(binding_for(experiment, resolver), request)
+    return _capture_sequential_binding(
+        binding_for(experiment, resolver), request, current_execution_context()
+    )
 
 
 def sequential_snapshot(
     experiment: Experiment, resolver: Resolver, *, previous=None
 ) -> SequentialSnapshot:
     """Retrieve the source's current exact checkpoint, optionally proving its parent."""
-    return _sequential_snapshot_binding(binding_for(experiment, resolver), previous)
+    from increment.readouts._execution_context import current_execution_context
+
+    return _sequential_snapshot_binding(
+        binding_for(experiment, resolver), previous, current_execution_context()
+    )

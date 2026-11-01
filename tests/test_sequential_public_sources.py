@@ -1622,6 +1622,58 @@ def test_native_artifact_and_current_wire_replay_actual_likelihood(tmp_path, law
         resolver.close()
 
 
+@pytest.mark.integration
+def test_workflow_capture_in_a_shared_run_borrows_its_single_capture(tmp_path, monkeypatch):
+    """Inside a shared run, workflow capture reads the run's pinned view and validates the source."""
+    from typing import Any, cast
+
+    from increment.query.native_source import DefinitionsMomentSource
+    from increment.readouts import run_scoped
+    from increment.workflows import capture_sequential, sequential_snapshot
+    from tests.analysis_factory import held_source
+
+    pinned: list[object] = []
+    execute = DefinitionsMomentSource._pinned_source_execution
+
+    def counted(self, *args, **kwargs):
+        pinned.append(self)
+        return execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(DefinitionsMomentSource, "_pinned_source_execution", counted)
+    connection, _, experiment, resolver = _native_pair(tmp_path, "bernoulli")
+    (tmp_path / "other").mkdir()
+    other_connection, _, other_experiment, other_resolver = _native_pair(
+        tmp_path / "other", "bernoulli"
+    )
+    analysis = cast(Any, resolver)._analysis
+    try:
+        snapshot = run_scoped(
+            analysis,
+            lambda: capture_sequential(
+                experiment, resolver, finalized=True, as_of=date(2025, 1, 16)
+            ),
+        )
+        assert snapshot.records
+        assert [source for source in pinned if source is held_source(analysis)] == [
+            held_source(analysis)
+        ]
+        for operation in (
+            lambda: capture_sequential(
+                other_experiment, other_resolver, finalized=True, as_of=date(2025, 1, 16)
+            ),
+            lambda: sequential_snapshot(other_experiment, other_resolver),
+        ):
+            with pytest.raises(InvalidRequestError) as foreign:
+                run_scoped(analysis, operation)
+            assert foreign.value.code == "kernel.context.undeclared_stream"
+            assert foreign.value.context["stream"] == "source_ref"
+    finally:
+        resolver.close()
+        other_resolver.close()
+        connection.disconnect()
+        other_connection.disconnect()
+
+
 @pytest.mark.slow
 def test_native_gaussian_capture_refuses_before_public_replay():
     with pytest.raises(CapabilityError) as raised:

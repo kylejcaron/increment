@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
@@ -86,6 +84,12 @@ from increment.readouts._evidence import (
     NATIVE_ROUTE,
     day_axis_route,
     source_route,
+)
+from increment.readouts._execution_context import (
+    current_execution_context as _current_execution_context,
+)
+from increment.readouts._execution_context import (
+    execution_context_scope as _execution_context_scope,
 )
 from increment.readouts._whole_window import (
     WholeWindowExploratoryRequest,
@@ -243,24 +247,6 @@ def _cuped_recommendation_admitted(
 
 
 _T = TypeVar("_T")
-
-
-_ACTIVE_EXECUTION_CONTEXT: ContextVar[Any | None] = ContextVar(
-    "_ACTIVE_EXECUTION_CONTEXT", default=None
-)
-
-
-@contextmanager
-def _execution_context_scope(context: Any) -> Iterator[None]:
-    token = _ACTIVE_EXECUTION_CONTEXT.set(context)
-    try:
-        yield
-    finally:
-        _ACTIVE_EXECUTION_CONTEXT.reset(token)
-
-
-def _current_execution_context() -> Any | None:
-    return _ACTIVE_EXECUTION_CONTEXT.get()
 
 
 class Analysis:

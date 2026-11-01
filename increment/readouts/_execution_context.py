@@ -4,11 +4,31 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Protocol
+from contextvars import ContextVar
+from typing import Any, Protocol
+
+_ACTIVE_EXECUTION_CONTEXT: ContextVar[Any | None] = ContextVar(
+    "_ACTIVE_EXECUTION_CONTEXT", default=None
+)
 
 
 class _EvidenceContext(Protocol):
     def evidence_scope(self) -> AbstractContextManager[object]: ...
+
+
+@contextmanager
+def execution_context_scope(context: Any) -> Iterator[None]:
+    """Make ``context`` the ambient run context for operations entered inside it."""
+    token = _ACTIVE_EXECUTION_CONTEXT.set(context)
+    try:
+        yield
+    finally:
+        _ACTIVE_EXECUTION_CONTEXT.reset(token)
+
+
+def current_execution_context() -> Any | None:
+    """The run context an enclosing shared capture made ambient, if any."""
+    return _ACTIVE_EXECUTION_CONTEXT.get()
 
 
 @contextmanager
