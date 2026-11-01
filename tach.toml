@@ -914,7 +914,7 @@ depends_on = [
 [[modules]]
 path = "increment.cate"
 layer = "observational"
-depends_on = ["increment._evidence_refusals", "increment._evidence_types", "increment._identity", "increment._source_types", "increment.errors", "increment.estimation", "increment.readouts", "increment.sources"]
+depends_on = ["increment._binding", "increment._evidence_refusals", "increment._evidence_types", "increment._identity", "increment._source_admission", "increment._source_types", "increment.errors", "increment.estimation", "increment.readouts", "increment.sources"]
 
 [[modules]]
 path = "increment.absorption"

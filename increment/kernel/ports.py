@@ -14,12 +14,20 @@ from increment.result_envelope import AnalysisEnvelope, ResultCell
 
 
 class CateOperations(Protocol):
-    """CATE operations supplied by the observational implementation."""
+    """CATE operations supplied by the observational implementation.
+
+    The public operations take an experiment and its resolver; the
+    ``*_binding`` operations take a source binding that is already verified.
+    """
 
     estimate_cate: Callable[..., Any]
     validate_cate: Callable[..., Any]
     targeting_rule: Callable[..., Any]
     select_targeting_rule: Callable[..., Any]
+    estimate_cate_binding: Callable[..., Any]
+    validate_cate_binding: Callable[..., Any]
+    targeting_rule_binding: Callable[..., Any]
+    select_targeting_rule_binding: Callable[..., Any]
 
 
 class ProgramStoreOperations(Protocol):

@@ -52,6 +52,10 @@ The policy covers:
 - `increment.artifacts` promises only `artifact_context` and
   `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
   pair, and publication retains trusted extension selection and refresh semantics.
+- `increment.estimators` conditional-effect operations `estimate_cate`,
+  `validate_cate`, `targeting_rule`, and `select_targeting_rule` operate on an
+  `(experiment, resolver)` pair; their remaining parameters are unchanged. The
+  data-only array kernels in `increment.estimation.targeting` take no source.
 - result fields and schemas, including row sets, null reasons, and interval
   reference/guarantee labels;
 - stable refusal codes and named context fields;
@@ -100,6 +104,13 @@ change without notice.
   has a `capture_sequential` method. Call
   `increment.workflows.capture_sequential(experiment, resolver, ...)`, and read
   the retained checkpoint with `increment.workflows.sequential_snapshot`.
+- Release note (breaking API cutover): `increment.estimators.estimate_cate`,
+  `validate_cate`, `targeting_rule`, and `select_targeting_rule` take the
+  `(experiment, resolver)` pair returned by a builder such as `from_frame` or
+  `from_definitions` instead of a source. Their remaining parameters, defaults,
+  results, and refusal codes are unchanged; `estimate_cate`'s `control` defaults
+  to the declared control arm, and a declared trigger restricts every operation
+  to triggered units.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
@@ -968,6 +979,9 @@ for check in report.checks:
 `estimate_cate` estimates how treatment effects vary with user characteristics.
 Validation and targeting refit through honest or nested splits; their reports
 give evidence for those procedures, not for a separate `estimate_cate` fit.
+Each operation takes the `(experiment, resolver)` pair from a builder, reads
+the experiment's unit-grain rows (triggered units when a trigger is declared),
+and records the source identity on its report.
 
 !!! warning "Prediction is not permission to deploy"
     `TargetingRule.predict` scores a candidate; `recommendation` remains the
@@ -1043,9 +1057,8 @@ give evidence for those procedures, not for a separate `estimate_cate` fit.
     coefficients, so `TargetingRule.model_validate_json(rule.model_dump_json())`
     predicts without fitting again.
     CATE report dumps are report-only; serialize `score_state` for portable
-    point prediction. `Analysis.estimate_cate`, `validate_cate`,
-    `targeting_rule`, and `select_targeting_rule` delegate to the same source
-    APIs.
+    point prediction. The legacy `Analysis` methods of the same names delegate
+    to these operations.
 
 ::: increment.estimators.Covariate
 

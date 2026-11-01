@@ -1,8 +1,9 @@
-"""Tests for the public CATE adapters (``increment/cate.py``).
+"""Tests for the public CATE operations (``increment/cate.py``).
 
-The adapters resolve source-backed inputs and validate source-only contracts
-before passing arrays to the pure-math layer. The tests also assert that the
-``unit_id`` column reaches validation and targeting as the honest split key.
+The operations bind an experiment's resolver, read its unit-grain source and
+validate source-only contracts before passing arrays to the pure-math layer.
+The tests also assert that the ``unit_id`` column reaches validation and
+targeting as the honest split key.
 """
 
 from __future__ import annotations
@@ -15,16 +16,19 @@ import pyarrow as pa
 import pytest
 from scipy.stats import norm
 
-from increment import readouts
-from increment.cate import estimate_cate, targeting_rule, validate_cate
+from increment import from_frame, from_moments, readouts
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.cate import CateResult, Covariate, fit_cate
 from increment.estimation.targeting import CateValidation, TargetingRule
-from increment.estimators import select_targeting_rule
-from increment.frame import MetricSpec, from_unit_summary, synthesise_metric
+from increment.estimators import (
+    estimate_cate,
+    select_targeting_rule,
+    targeting_rule,
+    validate_cate,
+)
+from increment.frame import MetricSpec, from_unit_summary
 from increment.results import TargetingSelection
 from increment.semantics.design import Randomized
-from increment.sources import MomentsSource
 from tests.test_sources import _plain_format_row
 
 _N = 600
@@ -64,7 +68,7 @@ def _assert_policy_roundtrip(policy, cols, ids):
     np.testing.assert_array_equal(restored.predict(cols, cluster_ids=ids), actions)
 
 
-def _source_parity_reports(source, frame, *, cluster_weight, clustered):
+def _source_parity_reports(experiment, resolver, frame, *, cluster_weight, clustered):
     from increment.estimators import ClusterBootstrap
 
     options: dict = {
@@ -73,10 +77,11 @@ def _source_parity_reports(source, frame, *, cluster_weight, clustered):
         "cluster_weight": cluster_weight,
         "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
     }
-    validation = validate_cate(source, "revenue_per_user", n_groups=2, **options)
-    rule = targeting_rule(source, "revenue_per_user", fraction=0.5, **options)
+    validation = validate_cate(experiment, resolver, "revenue_per_user", n_groups=2, **options)
+    rule = targeting_rule(experiment, resolver, "revenue_per_user", fraction=0.5, **options)
     selection = select_targeting_rule(
-        source,
+        experiment,
+        resolver,
         "revenue_per_user",
         fractions=(0.0, 0.5, 1.0),
         n_folds=2,
@@ -141,29 +146,25 @@ def _frame(
     )
 
 
-def _source(*, design=None, control="control", **kwargs):
-    return from_unit_summary(
-        _frame(**kwargs),
-        unit="user_id",
-        group="variant",
-        control=control,
-        metrics=[MetricSpec(name="revenue")],
-        design=design,
-    )
+def _experiment(*, design=None, control="control", **kwargs) -> tuple[Any, Any]:
+    return _experiment_from_frame(_frame(**kwargs), design=design, control=control)
 
 
-def _source_from_frame(frame, *, design):
-    return from_unit_summary(
+def _experiment_from_frame(frame, *, design=None, control="control", **options) -> tuple[Any, Any]:
+    """Build from a frame; an explicit design names its own control arm."""
+    return from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
-        control="control",
+        control=control if design is None else None,
         metrics=[MetricSpec(name="revenue")],
         design=design,
+        **options,
     )
 
 
-# Ratio-metric source used to verify the CATE refusal and arm-level readout.
+# Ratio-metric data used to verify the CATE refusal and arm-level readout.
 _BASE_RATIO = 4.0
 
 
@@ -190,20 +191,35 @@ def _frame_ratio(*, arms: tuple[str, ...] = ("control", "treatment")) -> pa.Tabl
     )
 
 
-def _source_ratio(**kwargs):
-    return from_unit_summary(
-        _frame_ratio(**kwargs),
+_RATIO_METRIC = MetricSpec(name="aov", type="ratio", numerator="revenue", denominator="orders")
+
+
+def _ratio_experiment() -> tuple[Any, Any]:
+    return from_frame(
+        _frame_ratio(),
+        shape="summary",
         unit="user_id",
         group="variant",
-        control="control",
-        metrics=[MetricSpec(name="aov", type="ratio", numerator="revenue", denominator="orders")],
+        metrics=[_RATIO_METRIC],
+        design=Randomized(control_group="control"),
+    )
+
+
+def _moments_only_experiment() -> tuple[Any, Any]:
+    """Retained arm moments, which carry no unit-grain rows."""
+    return from_moments(
+        [_plain_format_row(metric="revenue", group_id="control", n=10, ref_y=0.1)],
+        metrics=[MetricSpec(name="revenue")],
+        experiment_id="cube",
         design=Randomized(control_group="control"),
     )
 
 
 class TestEstimate:
     def test_method_only_legacy_source_remains_supported(self):
-        source = _source()
+        from increment.analysis import Analysis
+
+        experiment, resolver = _experiment()
 
         class LegacySource:
             def __init__(self, wrapped):
@@ -212,23 +228,21 @@ class TestEstimate:
             def __getattr__(self, name):
                 return getattr(self._wrapped, name)
 
-        result = estimate_cate(
-            cast("MomentsSource", LegacySource(source)),
-            "revenue",
-            control="control",
-            interact=["spend"],
+        custom = Analysis._from_source(cast(Any, LegacySource(resolver.binding.source)))
+        result = custom.estimate_cate("revenue", control="control", interact=["spend"])
+        assert result == estimate_cate(
+            experiment, resolver, "revenue", control="control", interact=["spend"]
         )
-        assert result == estimate_cate(source, "revenue", control="control", interact=["spend"])
 
     def test_recovers_the_known_ate(self):
-        result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+        result = estimate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
         assert isinstance(result, CateResult)
         assert abs(result.ate - _TRUE_ATE) < 3.0 * result.se
         assert result.n == _N
         assert result.n_treated + result.n_control == _N
 
     def test_detects_the_planted_heterogeneity(self):
-        result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+        result = estimate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
         assert result.heterogeneity.df == 1
         assert result.heterogeneity.p_value < 0.01
         (effect,) = result.interactions
@@ -239,17 +253,19 @@ class TestEstimate:
         assert effect.lb < expected < effect.ub
 
     def test_string_and_covariate_spellings_agree(self):
-        src = _source()
-        as_string = estimate_cate(src, "revenue", control="control", interact=["spend"])
+        experiment, resolver = _experiment()
+        as_string = estimate_cate(
+            experiment, resolver, "revenue", control="control", interact=["spend"]
+        )
         as_typed = estimate_cate(
-            src, "revenue", control="control", interact=[Covariate(name="spend")]
+            experiment, resolver, "revenue", control="control", interact=[Covariate(name="spend")]
         )
         assert as_typed == as_string
 
     def test_categorical_adjustment_enters_as_a_main_effect(self):
         """An adjust-only covariate widens the main block, never the interactions."""
         result = estimate_cate(
-            _source(),
+            *_experiment(),
             "revenue",
             control="control",
             interact=["spend"],
@@ -268,10 +284,12 @@ class TestEstimate:
         for ARD to pull toward zero, without moving the ATE, its SE, or
         the joint heterogeneity test.
         """
-        src = _source()
+        experiment, resolver = _experiment()
         interact = ["spend", Covariate(name="platform", kind="categorical")]
-        plain = estimate_cate(src, "revenue", control="control", interact=interact)
-        shrunk = estimate_cate(src, "revenue", control="control", interact=interact, ard=True)
+        plain = estimate_cate(experiment, resolver, "revenue", control="control", interact=interact)
+        shrunk = estimate_cate(
+            experiment, resolver, "revenue", control="control", interact=interact, ard=True
+        )
 
         assert shrunk.ate == plain.ate
         assert shrunk.se == plain.se
@@ -297,7 +315,7 @@ def test_cate_envelope_captures_facade_identity_without_fit_state():
 
     from increment.result_envelope import ResultCell
 
-    result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+    result = estimate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
     cell = result.as_cell()
     payload = json.loads(json.dumps(cell.to_payload()))
     del result
@@ -323,10 +341,13 @@ def test_cate_and_targeting_cells_bind_distinct_study_and_source_identity():
 
     from increment.result_envelope import ResultCell
 
-    first = estimate_cate(_source(), "revenue", control="control", interact=["spend"]).as_cell()
+    first = estimate_cate(
+        *_experiment(), "revenue", control="control", interact=["spend"]
+    ).as_cell()
     assert first.identity.experiment_id == "frame"
-    second_source = from_unit_summary(
+    second_study = from_frame(
         _frame(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -334,12 +355,12 @@ def test_cate_and_targeting_cells_bind_distinct_study_and_source_identity():
         experiment_id="second-study",
     )
     second = estimate_cate(
-        second_source, "revenue", control="control", interact=["spend"]
+        *second_study, "revenue", control="control", interact=["spend"]
     ).as_cell()
     restored = ResultCell.from_payload(json.loads(json.dumps(second.to_payload())))
     assert first.identity.experiment_id != restored.identity.experiment_id
     assert first.identity.source_identity_hash != restored.identity.source_identity_hash
-    source_result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+    source_result = estimate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
     identity_context = cast(dict[str, Any], source_result.report_context).copy()
     identity_context["trigger_name"] = "onboarding-complete"
     triggered = source_result.model_copy(update={"report_context": identity_context}).as_cell()
@@ -347,7 +368,9 @@ def test_cate_and_targeting_cells_bind_distinct_study_and_source_identity():
 
 
 def test_trimmed_targeting_and_nested_validation_use_effective_estimand():
-    rule = targeting_rule(_source(), "revenue", control="control", interact=["spend"], fraction=0.5)
+    rule = targeting_rule(
+        *_experiment(), "revenue", control="control", interact=["spend"], fraction=0.5
+    )
     trimmed_validation = rule.validation.model_copy(update={"population": "overlap_trimmed"})
     trimmed_rule = rule.model_copy(
         update={"population": "overlap_trimmed", "validation": trimmed_validation}
@@ -358,7 +381,7 @@ def test_trimmed_targeting_and_nested_validation_use_effective_estimand():
 
 def test_nested_validation_population_does_not_override_targeting_rule_population():
     selection = select_targeting_rule(
-        _source(),
+        *_experiment(),
         "revenue",
         control="control",
         interact=["spend"],
@@ -374,7 +397,7 @@ def test_nested_validation_population_does_not_override_targeting_rule_populatio
 
 def test_inner_population_serializes_independently_from_the_outer_rule():
     selection = select_targeting_rule(
-        _source(),
+        *_experiment(),
         "revenue",
         control="control",
         interact=["spend"],
@@ -396,7 +419,7 @@ def test_empty_targeting_selection_reason_survives_cell_and_table_round_trip():
     from increment.tables import readout_table
 
     selection = select_targeting_rule(
-        _source(),
+        *_experiment(),
         "revenue",
         control="control",
         interact=["spend"],
@@ -417,10 +440,10 @@ def test_targeting_policy_fraction_changes_identity_and_summary_qualification():
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
 
     first = targeting_rule(
-        _source(), "revenue", control="control", interact=["spend"], fraction=0.25
+        *_experiment(), "revenue", control="control", interact=["spend"], fraction=0.25
     ).as_cell()
     second = targeting_rule(
-        _source(), "revenue", control="control", interact=["spend"], fraction=0.75
+        *_experiment(), "revenue", control="control", interact=["spend"], fraction=0.75
     ).as_cell()
     assert first.identity.method_config_hash != second.identity.method_config_hash
     first = ResultCell.from_payload(json.loads(json.dumps(first.to_payload())))
@@ -436,13 +459,13 @@ def test_cate_control_is_bound_to_identity_and_reopened_rendering():
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
 
     control_a = estimate_cate(
-        _source(arms=("control_A", "treatment"), control="control_A"),
+        *_experiment(arms=("control_A", "treatment"), control="control_A"),
         "revenue",
         control="control_A",
         interact=["spend"],
     ).as_cell()
     control_b = estimate_cate(
-        _source(arms=("control_B", "treatment"), control="control_B"),
+        *_experiment(arms=("control_B", "treatment"), control="control_B"),
         "revenue",
         control="control_B",
         interact=["spend"],
@@ -455,17 +478,19 @@ def test_cate_control_is_bound_to_identity_and_reopened_rendering():
 
 def test_cate_and_validation_settings_change_cell_identity():
     cate_spend = estimate_cate(
-        _source(), "revenue", control="control", interact=["spend"]
+        *_experiment(), "revenue", control="control", interact=["spend"]
     ).as_cell()
-    cate_unadjusted = estimate_cate(_source(), "revenue", control="control", interact=[]).as_cell()
+    cate_unadjusted = estimate_cate(
+        *_experiment(), "revenue", control="control", interact=[]
+    ).as_cell()
     validation_two = validate_cate(
-        _source(), "revenue", control="control", interact=["spend"], n_groups=2
+        *_experiment(), "revenue", control="control", interact=["spend"], n_groups=2
     ).as_cell()
     validation_three = validate_cate(
-        _source(), "revenue", control="control", interact=["spend"], n_groups=3
+        *_experiment(), "revenue", control="control", interact=["spend"], n_groups=3
     ).as_cell()
     validation_platform = validate_cate(
-        _source(),
+        *_experiment(),
         "revenue",
         control="control",
         interact=[Covariate(name="platform", kind="categorical")],
@@ -487,7 +512,7 @@ def test_full_width_bootstrap_seeds_give_distinct_validation_identities():
 
     def cell(seed: int):
         return validate_cate(
-            _source(),
+            *_experiment(),
             "revenue",
             control="control",
             interact=["spend"],
@@ -498,7 +523,7 @@ def test_full_width_bootstrap_seeds_give_distinct_validation_identities():
     standalone = (cell(2**53), cell(2**53 + 1))
     attached = tuple(
         targeting_rule(
-            _source(),
+            *_experiment(),
             "revenue",
             control="control",
             interact=["spend"],
@@ -518,7 +543,7 @@ def test_cate_validation_alpha_survives_json_and_arrow_reopening():
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
 
     validation = validate_cate(
-        _source(),
+        *_experiment(),
         "revenue",
         control="control",
         interact=["spend"],
@@ -540,7 +565,7 @@ def test_cate_validation_alpha_survives_json_and_arrow_reopening():
 
 def test_targeting_selection_cell_accepts_full_width_seed():
     selection = select_targeting_rule(
-        _source(),
+        *_experiment(),
         "revenue",
         control="control",
         interact=["spend"],
@@ -559,17 +584,21 @@ def test_honest_cate_and_targeting_reports_have_report_only_cells():
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
     from increment.tables import readout_table
 
-    source = _source()
-    validation = validate_cate(source, "revenue", control="control", interact=["spend"], n_groups=2)
+    experiment, resolver = _experiment()
+    validation = validate_cate(
+        experiment, resolver, "revenue", control="control", interact=["spend"], n_groups=2
+    )
     rule = targeting_rule(
-        source,
+        experiment,
+        resolver,
         "revenue",
         control="control",
         interact=["spend"],
         fraction=0.5,
     )
     selection = select_targeting_rule(
-        source,
+        experiment,
+        resolver,
         "revenue",
         control="control",
         interact=["spend"],
@@ -633,7 +662,7 @@ def test_restored_targeting_full_render_retains_decision_details():
     from increment.result_envelope import AnalysisEnvelope, ResultCell, render
 
     result = targeting_rule(
-        _source(), "revenue", control="control", interact=["spend"], fraction=0.5
+        *_experiment(), "revenue", control="control", interact=["spend"], fraction=0.5
     )
     cell = ResultCell.from_payload(json.loads(json.dumps(result.as_cell().to_payload())))
     text = render(AnalysisEnvelope((cell,), None), "full")
@@ -698,28 +727,23 @@ def test_cate_inference_is_invariant_to_representable_outcome_translation():
 
 class TestRefusals:
     def test_moments_only_source_cannot_serve_unit_grain(self):
-        src = MomentsSource(
-            [_plain_format_row(metric="revenue", group_id="control", n=10, ref_y=0.1)],
-            metrics=[synthesise_metric(MetricSpec(name="revenue"))],
-            study_id="cube",
-            design=Randomized(control_group="control"),
-        )
+        experiment, resolver = _moments_only_experiment()
         with pytest.raises(CapabilityError) as raised:
-            estimate_cate(src, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert raised.value.code == "evidence.covariate_unavailable"
 
     def test_unknown_metric_is_named(self):
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(_source(), "orders", control="control", interact=["spend"])
+            estimate_cate(*_experiment(), "orders", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.metric_declared_source"
         assert exc_info.value.context["metric"] == "orders"
 
     def test_null_covariate_is_refused_by_name(self):
         with pytest.raises(InvalidRequestError) as exc_info:
             estimate_cate(
-                _source(spend_nulls=True), "revenue", control="control", interact=["spend"]
+                *_experiment(spend_nulls=True), "revenue", control="control", interact=["spend"]
             )
         assert exc_info.value.code == "estimation.cate.covariate_nulls_non"
         assert exc_info.value.context["name"] == "spend"
@@ -727,9 +751,9 @@ class TestRefusals:
     def test_three_arms_refuse_rather_than_pool(self):
         from increment.errors import InvalidRequestError
 
-        src = _source(arms=("control", "treatment", "treatment_b"))
+        experiment, resolver = _experiment(arms=("control", "treatment", "treatment_b"))
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(src, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.contrasts_exactly_two"
         assert exc_info.value.context["others"] == ("treatment", "treatment_b")
 
@@ -737,7 +761,7 @@ class TestRefusals:
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(_source(), "revenue", control="holdout", interact=["spend"])
+            estimate_cate(*_experiment(), "revenue", control="holdout", interact=["spend"])
         assert exc_info.value.code == "cate.control_arm_present"
         assert exc_info.value.context["control"] == "holdout"
 
@@ -745,8 +769,9 @@ class TestRefusals:
         """unit_frame's y is the unit TOTAL, so a fit would be a
         conditional MEAN effect reported under a quantile metric's name -
         the only remaining metric-type refusal at this adapter seam."""
-        src = from_unit_summary(
+        experiment, resolver = from_frame(
             _frame(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -755,17 +780,20 @@ class TestRefusals:
         from increment.errors import UnsupportedRequestError
 
         with pytest.raises(UnsupportedRequestError) as exc_info:
-            estimate_cate(src, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cate_supported_quantile"
         with pytest.raises(UnsupportedRequestError) as exc_info:
-            validate_cate(src, "revenue", control="control", interact=["spend"])
+            validate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cate_supported_quantile"
         with pytest.raises(UnsupportedRequestError) as exc_info:
-            targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.2)
+            targeting_rule(
+                experiment, resolver, "revenue", control="control", interact=["spend"], fraction=0.2
+            )
         assert exc_info.value.code == "cate.cate_supported_quantile"
         with pytest.raises(UnsupportedRequestError) as exc_info:
             select_targeting_rule(
-                src,
+                experiment,
+                resolver,
                 "revenue",
                 control="control",
                 interact=["spend"],
@@ -807,21 +835,28 @@ class TestRefusals:
     def test_ratio_metric_refuses_before_unit_frame(self, caller, entry_point, kwargs, monkeypatch):
         from increment.errors import UnsupportedRequestError
 
-        src = _source_ratio()
+        experiment, resolver = _ratio_experiment()
 
         def fail_if_called(*args, **kwargs):
             raise AssertionError("ratio refusal must precede unit_frame")
 
-        monkeypatch.setattr(src, "unit_frame", fail_if_called)
+        monkeypatch.setattr(resolver.binding.source, "unit_frame", fail_if_called)
 
         with pytest.raises(UnsupportedRequestError) as exc_info:
-            entry_point(src, "aov", **kwargs)
+            entry_point(experiment, resolver, "aov", **kwargs)
         assert exc_info.value.code == "cate.does_support_ratio"
         assert exc_info.value.context["caller"] == caller
         assert exc_info.value.context["metric"] == "aov"
 
     def test_arm_level_ratio_readout_remains_supported(self):
-        (row,) = [row for row in readouts.run(_source_ratio()) if row.metric == "aov"]
+        source = from_unit_summary(
+            _frame_ratio(),
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[_RATIO_METRIC],
+        )
+        (row,) = [row for row in readouts.run(source) if row.metric == "aov"]
         assert row.abs_diff is not None
 
 
@@ -829,13 +864,13 @@ def test_estimate_cate_refuses_non_randomized_source():
     from increment.errors import InvalidRequestError
     from increment.semantics.design import AdjustmentSet, Observational
 
-    src = _source(
+    experiment, resolver = _experiment(
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
         )
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        estimate_cate(src, "revenue", control="control", interact=["spend"])
+        estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
     assert exc_info.value.code == "cate.identification.randomized_only"
 
 
@@ -843,14 +878,15 @@ def test_estimate_cate_refuses_non_randomized_source():
 def test_targeting_entry_points_accept_numeric_adjustment_only_with_categorical_cate(caller):
     from increment.semantics.design import AdjustmentSet, Observational
 
-    src = _source(
+    experiment, resolver = _experiment(
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
         )
     )
     result = _call_targeting_entry_point(
         caller,
-        src,
+        experiment,
+        resolver,
         interact=[Covariate(name="platform", kind="categorical")],
     )
 
@@ -861,14 +897,17 @@ def test_targeting_entry_points_accept_numeric_adjustment_only_with_categorical_
     assert population is None
 
 
-def _call_targeting_entry_point(caller, src, *, interact=None):
+def _call_targeting_entry_point(caller, experiment, resolver, *, interact=None):
     interact = interact or ["spend"]
     if caller == "validate_cate":
-        return validate_cate(src, "revenue", control="control", interact=interact)
+        return validate_cate(experiment, resolver, "revenue", control="control", interact=interact)
     if caller == "targeting_rule":
-        return targeting_rule(src, "revenue", control="control", interact=interact, fraction=0.2)
+        return targeting_rule(
+            experiment, resolver, "revenue", control="control", interact=interact, fraction=0.2
+        )
     return select_targeting_rule(
-        src,
+        experiment,
+        resolver,
         "revenue",
         control="control",
         interact=interact,
@@ -896,7 +935,7 @@ def test_targeting_facade_preserves_numeric_adjustment_dtype(caller, source_kind
 
         frame = frame.to_pandas()
         frame["spend"] = pd.array(np.arange(_N) % 17, dtype="Int64")
-    src = _source_from_frame(
+    experiment, resolver = _experiment_from_frame(
         frame,
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
@@ -916,7 +955,7 @@ def test_targeting_facade_preserves_numeric_adjustment_dtype(caller, source_kind
     }[caller]
     monkeypatch.setattr(f"increment.cate.{downstream}", capture)
 
-    assert _call_targeting_entry_point(caller, src) is sentinel
+    assert _call_targeting_entry_point(caller, experiment, resolver) is sentinel
     assert len(seen) == 1
     assert seen[0].dtype == np.float64
 
@@ -940,7 +979,7 @@ def test_targeting_facade_preserves_numeric_adjustment_null_refusal(source_kind)
         values = np.arange(_N) % 17
         frame["spend"] = pd.array(values, dtype="Int64")
         frame.loc[7, "spend"] = pd.NA
-    src = _source_from_frame(
+    experiment, resolver = _experiment_from_frame(
         frame,
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
@@ -948,7 +987,7 @@ def test_targeting_facade_preserves_numeric_adjustment_null_refusal(source_kind)
     )
 
     with pytest.raises(InvalidRequestError) as exc_info:
-        validate_cate(src, "revenue", control="control", interact=["spend"])
+        validate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
     assert exc_info.value.code == "estimation.cate.covariate_nulls_non"
     assert exc_info.value.context["name"] == "spend"
 
@@ -971,13 +1010,13 @@ def test_targeting_categorical_observational_adjustment_matches_dummies(caller):
         name = f"platform_{levels[i]}"
         dummy_names.append(name)
         dummies = dummies.append_column(name, pa.array((platform == levels[i]).astype(float)))
-    raw_src = _source_from_frame(
+    raw = _experiment_from_frame(
         frame,
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("spend", "platform"))
         ),
     )
-    oracle_src = _source_from_frame(
+    dummy_coded = _experiment_from_frame(
         dummies,
         design=Observational(
             control_group="control",
@@ -985,8 +1024,8 @@ def test_targeting_categorical_observational_adjustment_matches_dummies(caller):
         ),
     )
     interact = [Covariate(name="platform", kind="categorical"), "spend"]
-    oracle = _call_targeting_entry_point(caller, oracle_src, interact=interact).model_dump()
-    actual = _call_targeting_entry_point(caller, raw_src, interact=interact).model_dump()
+    oracle = _call_targeting_entry_point(caller, *dummy_coded, interact=interact).model_dump()
+    actual = _call_targeting_entry_point(caller, *raw, interact=interact).model_dump()
     # Fold-specific modal references span the same space; standardized ridge
     # regularization (1e-6) makes their predictions only approximately invariant.
     assert_rows_match(oracle, actual, rel=1e-6, skip=("required_columns",))
@@ -1007,7 +1046,7 @@ def test_targeting_categorical_observational_adjustment_null_refuses_before_fit(
     frame = frame.set_column(
         frame.schema.get_field_index("platform"), "platform", pa.array(platform)
     )
-    src = _source_from_frame(
+    experiment, resolver = _experiment_from_frame(
         frame,
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("platform",))
@@ -1019,7 +1058,7 @@ def test_targeting_categorical_observational_adjustment_null_refuses_before_fit(
 
     monkeypatch.setattr("increment.estimation.targeting.fit_cate", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        _call_targeting_entry_point(caller, src)
+        _call_targeting_entry_point(caller, experiment, resolver)
     assert exc_info.value.code == "estimation.cate.covariate_nulls"
     assert exc_info.value.context["name"] == "platform"
 
@@ -1032,7 +1071,7 @@ def test_targeting_refuses_unsupported_missing_policy_before_unit_frame(
     from increment.errors import InvalidRequestError
     from increment.semantics.design import AdjustmentSet, Observational
 
-    src = _source(
+    experiment, resolver = _experiment(
         design=Observational(
             control_group="control",
             adjustment=AdjustmentSet(covariates=("spend",), missing=missing),
@@ -1042,9 +1081,9 @@ def test_targeting_refuses_unsupported_missing_policy_before_unit_frame(
     def fail(*_args, **_kwargs):
         raise AssertionError("unit_frame accessed before the missing-policy refusal")
 
-    monkeypatch.setattr(src, "unit_frame", fail)
+    monkeypatch.setattr(resolver.binding.source, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        _call_targeting_entry_point(caller, src)
+        _call_targeting_entry_point(caller, experiment, resolver)
     assert exc_info.value.code == "cate.identification.unsupported_missing_policy"
     assert exc_info.value.context["caller"] == caller
     assert exc_info.value.context["missing"] == missing
@@ -1055,7 +1094,7 @@ def test_targeting_refuses_unsupported_max_smd_before_unit_frame(caller, monkeyp
     from increment.errors import InvalidRequestError
     from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
 
-    src = _source(
+    experiment, resolver = _experiment(
         design=Observational(
             control_group="control",
             adjustment=AdjustmentSet(covariates=("spend",)),
@@ -1066,9 +1105,9 @@ def test_targeting_refuses_unsupported_max_smd_before_unit_frame(caller, monkeyp
     def fail(*_args, **_kwargs):
         raise AssertionError("unit_frame accessed before the balance-policy refusal")
 
-    monkeypatch.setattr(src, "unit_frame", fail)
+    monkeypatch.setattr(resolver.binding.source, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        _call_targeting_entry_point(caller, src)
+        _call_targeting_entry_point(caller, experiment, resolver)
     assert exc_info.value.code == "cate.identification.unsupported_max_smd"
     assert exc_info.value.context["caller"] == caller
     assert exc_info.value.context["max_smd"] == 0.1
@@ -1078,7 +1117,7 @@ def test_estimate_refuses_non_randomized_before_touching_unit_frame(monkeypatch)
     from increment.errors import InvalidRequestError
     from increment.semantics.design import AdjustmentSet, Observational
 
-    src = _source(
+    experiment, resolver = _experiment(
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
         )
@@ -1087,15 +1126,21 @@ def test_estimate_refuses_non_randomized_before_touching_unit_frame(monkeypatch)
     def fail(*_args, **_kwargs):
         raise AssertionError("unit_frame accessed before the mechanism check")
 
-    monkeypatch.setattr(src, "unit_frame", fail)
+    monkeypatch.setattr(resolver.binding.source, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        estimate_cate(src, "revenue", control="control", interact=["spend"])
+        estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
     assert exc_info.value.code == "cate.identification.randomized_only"
 
 
 def test_unit_design_refuses_a_design_less_source_before_touching_unit_frame(monkeypatch):
-    """No design means no identification claim; refuse before any row is read."""
+    """No design means no identification claim; refuse before any row is read.
+
+    Builders always declare a design, so only a custom source reaches this.
+    """
+    from increment.analysis import Analysis
     from increment.errors import InvalidRequestError
+    from increment.frame import synthesise_metric
+    from increment.sources import MomentsSource
 
     src = MomentsSource(
         [_plain_format_row(metric="revenue", group_id="control", n=10, ref_y=0.1)],
@@ -1109,14 +1154,14 @@ def test_unit_design_refuses_a_design_less_source_before_touching_unit_frame(mon
 
     monkeypatch.setattr(src, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
-        validate_cate(src, "revenue", control="control", interact=["spend"])
+        Analysis._from_source(src).validate_cate("revenue", control="control", interact=["spend"])
     assert exc_info.value.code == "cate.identification.unsupported_mechanism"
     assert exc_info.value.context["mechanism"] is None
 
 
 class TestValidate:
     def test_reports_an_honest_split_of_every_unit(self):
-        result = validate_cate(_source(), "revenue", control="control", interact=["spend"])
+        result = validate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
         assert isinstance(result, CateValidation)
         assert result.n_train + result.n_holdout == _N
         # A crc32 split of these ids happens to come out even; the guarantee
@@ -1133,7 +1178,7 @@ class TestValidate:
         assert abs(ate.value - _TRUE_ATE) < 3.0 * ate_se
 
     def test_detects_the_planted_heterogeneity_out_of_sample(self):
-        result = validate_cate(_source(), "revenue", control="control", interact=["spend"])
+        result = validate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
         assert result.autoc.estimate is not None
         assert result.autoc.estimate > 0.0
         assert result.autoc.p_value is not None
@@ -1146,7 +1191,7 @@ class TestValidate:
 
     def test_n_groups_and_alpha_reach_the_estimation_layer(self):
         result = validate_cate(
-            _source(), "revenue", control="control", interact=["spend"], n_groups=3, alpha=0.01
+            *_experiment(), "revenue", control="control", interact=["spend"], n_groups=3, alpha=0.01
         )
         assert [g.group for g in result.groups] == [1, 2, 3]
         assert result.alpha == 0.01
@@ -1154,40 +1199,37 @@ class TestValidate:
         assert result.passed is (result.autoc.p_value < 0.01)
 
     def test_string_and_covariate_spellings_agree(self):
-        src = _source()
-        as_string = validate_cate(src, "revenue", control="control", interact=["spend"])
+        experiment, resolver = _experiment()
+        as_string = validate_cate(
+            experiment, resolver, "revenue", control="control", interact=["spend"]
+        )
         as_typed = validate_cate(
-            src, "revenue", control="control", interact=[Covariate(name="spend")]
+            experiment, resolver, "revenue", control="control", interact=[Covariate(name="spend")]
         )
         assert as_typed == as_string
 
 
 class TestValidateRefusals:
     def test_moments_only_source_cannot_serve_unit_grain(self):
-        src = MomentsSource(
-            [_plain_format_row(metric="revenue", group_id="control", n=10, ref_y=0.1)],
-            metrics=[synthesise_metric(MetricSpec(name="revenue"))],
-            study_id="cube",
-            design=Randomized(control_group="control"),
-        )
+        experiment, resolver = _moments_only_experiment()
         with pytest.raises(CapabilityError) as raised:
-            validate_cate(src, "revenue", control="control", interact=["spend"])
+            validate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert raised.value.code == "evidence.covariate_unavailable"
 
     def test_unknown_metric_is_named(self):
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            validate_cate(_source(), "orders", control="control", interact=["spend"])
+            validate_cate(*_experiment(), "orders", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.metric_declared_source"
         assert exc_info.value.context["metric"] == "orders"
 
     def test_three_arms_refuse_rather_than_pool(self):
         from increment.errors import InvalidRequestError
 
-        src = _source(arms=("control", "treatment", "treatment_b"))
+        experiment, resolver = _experiment(arms=("control", "treatment", "treatment_b"))
         with pytest.raises(InvalidRequestError) as exc_info:
-            validate_cate(src, "revenue", control="control", interact=["spend"])
+            validate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.contrasts_exactly_two"
         assert exc_info.value.context["caller"] == "validate_cate"
 
@@ -1195,7 +1237,7 @@ class TestValidateRefusals:
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            validate_cate(_source(), "revenue", control="holdout", interact=["spend"])
+            validate_cate(*_experiment(), "revenue", control="holdout", interact=["spend"])
         assert exc_info.value.code == "cate.control_arm_present"
         assert exc_info.value.context["control"] == "holdout"
 
@@ -1203,7 +1245,7 @@ class TestValidateRefusals:
 class TestTargetingRule:
     def test_the_gate_passes_and_the_rule_is_deployable(self):
         rule = targeting_rule(
-            _source(), "revenue", control="control", interact=["spend"], fraction=0.25
+            *_experiment(), "revenue", control="control", interact=["spend"], fraction=0.25
         )
         assert isinstance(rule, TargetingRule)
         assert rule.recommendation == "target"
@@ -1217,16 +1259,18 @@ class TestTargetingRule:
         assert rule.uplift_vs_average.value > 0.0
 
     def test_the_attached_validation_is_what_validate_cate_reports(self):
-        src = _source()
-        rule = targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.25)
+        experiment, resolver = _experiment()
+        rule = targeting_rule(
+            experiment, resolver, "revenue", control="control", interact=["spend"], fraction=0.25
+        )
         assert rule.validation == validate_cate(
-            src, "revenue", control="control", interact=["spend"]
+            experiment, resolver, "revenue", control="control", interact=["spend"]
         )
 
     def test_a_gate_that_cannot_be_cleared_returns_the_simple_policy(self):
         """A refusal is a value, not an exception - with the evidence attached."""
         rule = targeting_rule(
-            _source(),
+            *_experiment(),
             "revenue",
             control="control",
             interact=["spend"],
@@ -1242,12 +1286,13 @@ class TestTargetingRule:
         assert rule.validation.n_train + rule.validation.n_holdout == _N
 
     def test_string_and_covariate_spellings_agree(self):
-        src = _source()
+        experiment, resolver = _experiment()
         as_string = targeting_rule(
-            src, "revenue", control="control", interact=["spend"], fraction=0.25
+            experiment, resolver, "revenue", control="control", interact=["spend"], fraction=0.25
         )
         as_typed = targeting_rule(
-            src,
+            experiment,
+            resolver,
             "revenue",
             control="control",
             interact=[Covariate(name="spend")],
@@ -1257,35 +1302,46 @@ class TestTargetingRule:
 
     def test_fraction_is_required(self):
         with pytest.raises(TypeError):
-            targeting_rule(_source(), "revenue", control="control", interact=["spend"])  # ty: ignore
+            targeting_rule(*_experiment(), "revenue", control="control", interact=["spend"])  # ty: ignore
 
 
 class TestTargetingRuleRefusals:
     def test_moments_only_source_cannot_serve_unit_grain(self):
-        src = MomentsSource(
-            [_plain_format_row(metric="revenue", group_id="control", n=10, ref_y=0.1)],
-            metrics=[synthesise_metric(MetricSpec(name="revenue"))],
-            study_id="cube",
-            design=Randomized(control_group="control"),
-        )
+        experiment, resolver = _moments_only_experiment()
         with pytest.raises(CapabilityError) as raised:
-            targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.25)
+            targeting_rule(
+                experiment,
+                resolver,
+                "revenue",
+                control="control",
+                interact=["spend"],
+                fraction=0.25,
+            )
         assert raised.value.code == "evidence.covariate_unavailable"
 
     def test_unknown_metric_is_named(self):
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            targeting_rule(_source(), "orders", control="control", interact=["spend"], fraction=0.2)
+            targeting_rule(
+                *_experiment(), "orders", control="control", interact=["spend"], fraction=0.2
+            )
         assert exc_info.value.code == "cate.metric_declared_source"
         assert exc_info.value.context["metric"] == "orders"
 
     def test_three_arms_refuse_rather_than_pool(self):
         from increment.errors import InvalidRequestError
 
-        src = _source(arms=("control", "treatment", "treatment_b"))
+        experiment, resolver = _experiment(arms=("control", "treatment", "treatment_b"))
         with pytest.raises(InvalidRequestError) as exc_info:
-            targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.25)
+            targeting_rule(
+                experiment,
+                resolver,
+                "revenue",
+                control="control",
+                interact=["spend"],
+                fraction=0.25,
+            )
         assert exc_info.value.code == "cate.contrasts_exactly_two"
         assert exc_info.value.context["caller"] == "targeting_rule"
 
@@ -1294,7 +1350,7 @@ class TestTargetingRuleRefusals:
 
         with pytest.raises(InvalidRequestError) as exc_info:
             targeting_rule(
-                _source(), "revenue", control="holdout", interact=["spend"], fraction=0.2
+                *_experiment(), "revenue", control="holdout", interact=["spend"], fraction=0.2
             )
         assert exc_info.value.code == "cate.control_arm_present"
         assert exc_info.value.context["control"] == "holdout"
@@ -1304,7 +1360,7 @@ class TestTargetingRuleRefusals:
 
         with pytest.raises(InvalidRequestError) as exc_info:
             targeting_rule(
-                _source(), "revenue", control="control", interact=["spend"], fraction=-0.1
+                *_experiment(), "revenue", control="control", interact=["spend"], fraction=-0.1
             )
         assert exc_info.value.code == "estimation.targeting.fraction_share_units"
 
@@ -1312,7 +1368,7 @@ class TestTargetingRuleRefusals:
 class TestSelectTargetingRule:
     def test_returns_a_selection_with_a_deployable_rule(self):
         result = select_targeting_rule(
-            _source(),
+            *_experiment(),
             "revenue",
             control="control",
             interact=["spend"],
@@ -1326,25 +1382,21 @@ class TestSelectTargetingRule:
     def test_seed_is_required(self):
         with pytest.raises(TypeError):
             select_targeting_rule(  # ty: ignore
-                _source(), "revenue", control="control", interact=["spend"], fractions=(0.2,)
+                *_experiment(), "revenue", control="control", interact=["spend"], fractions=(0.2,)
             )
 
     def test_fractions_are_required(self):
         with pytest.raises(TypeError):
             select_targeting_rule(  # ty: ignore
-                _source(), "revenue", control="control", interact=["spend"], seed=11
+                *_experiment(), "revenue", control="control", interact=["spend"], seed=11
             )
 
     def test_moments_only_sources_are_refused(self):
-        src = MomentsSource(
-            [_plain_format_row(metric="revenue", group_id="control", n=10, ref_y=0.1)],
-            metrics=[synthesise_metric(MetricSpec(name="revenue"))],
-            study_id="cube",
-            design=Randomized(control_group="control"),
-        )
+        experiment, resolver = _moments_only_experiment()
         with pytest.raises(CapabilityError) as raised:
             select_targeting_rule(
-                src,
+                experiment,
+                resolver,
                 "revenue",
                 control="control",
                 interact=["spend"],
@@ -1406,22 +1458,18 @@ def _cluster_frame(*, pure_arms: bool = True, cluster_dtype: str = "str") -> pa.
     )
 
 
-def _cluster_source(
+def _cluster_experiment(
     *,
     pure_arms: bool = True,
     cluster_dtype: str = "str",
     design=None,
     intervention_grain: Literal["unit", "cluster"] = "unit",
     cluster: str | None = "store_id",
-):
-    return from_unit_summary(
+) -> tuple[Any, Any]:
+    return _experiment_from_frame(
         _cluster_frame(pure_arms=pure_arms, cluster_dtype=cluster_dtype),
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics=[MetricSpec(name="revenue")],
-        cluster=cluster,
         design=design,
+        cluster=cluster,
         intervention_grain=intervention_grain,
     )
 
@@ -1430,7 +1478,7 @@ class TestClusterTransport:
     """Cluster provenance and cluster-atomic validation through public adapters."""
 
     def test_unclustered_fit_reports_no_cluster_count(self):
-        result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
+        result = estimate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
         assert result.model_dump()["n_clusters"] is None
 
     @pytest.mark.parametrize("dtype", ["str", "uuid", "numeric_looking"])
@@ -1440,23 +1488,10 @@ class TestClusterTransport:
             from uuid import UUID
 
             frame["store_id"] = [UUID(value) for value in frame["store_id"]]
-        clustered = from_unit_summary(
-            frame,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[MetricSpec(name="revenue")],
-            cluster="store_id",
-        )
-        independent = from_unit_summary(
-            frame,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[MetricSpec(name="revenue")],
-        )
-        result = estimate_cate(clustered, "revenue", control="control", interact=["spend"])
-        reference = estimate_cate(independent, "revenue", control="control", interact=["spend"])
+        clustered = _experiment_from_frame(frame, cluster="store_id")
+        independent = _experiment_from_frame(frame)
+        result = estimate_cate(*clustered, "revenue", control="control", interact=["spend"])
+        reference = estimate_cate(*independent, "revenue", control="control", interact=["spend"])
         assert result.n_clusters == _N_CLUSTERS
         assert result.ate == pytest.approx(reference.ate)
 
@@ -1464,32 +1499,22 @@ class TestClusterTransport:
     def test_row_permutation_preserves_cluster_alignment_and_results(self):
         frame = _cluster_frame()
         shuffled = frame.take(np.random.default_rng(7).permutation(frame.num_rows))
-        ordered_src = from_unit_summary(
-            frame,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[MetricSpec(name="revenue")],
-            cluster="store_id",
+        ordered_experiment = _experiment_from_frame(frame, cluster="store_id")
+        shuffled_experiment = _experiment_from_frame(shuffled, cluster="store_id")
+        ordered = estimate_cate(
+            *ordered_experiment, "revenue", control="control", interact=["spend"]
         )
-        shuffled_src = from_unit_summary(
-            shuffled,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[MetricSpec(name="revenue")],
-            cluster="store_id",
+        permuted = estimate_cate(
+            *shuffled_experiment, "revenue", control="control", interact=["spend"]
         )
-        ordered = estimate_cate(ordered_src, "revenue", control="control", interact=["spend"])
-        permuted = estimate_cate(shuffled_src, "revenue", control="control", interact=["spend"])
         assert permuted.ate == pytest.approx(ordered.ate, rel=1e-9)
         assert permuted.se == pytest.approx(ordered.se, rel=1e-9)
 
         ordered_validation = validate_cate(
-            ordered_src, "revenue", control="control", interact=["spend"]
+            *ordered_experiment, "revenue", control="control", interact=["spend"]
         )
         permuted_validation = validate_cate(
-            shuffled_src, "revenue", control="control", interact=["spend"]
+            *shuffled_experiment, "revenue", control="control", interact=["spend"]
         )
         assert permuted_validation.n_holdout == ordered_validation.n_holdout
         assert permuted_validation.n_clusters == ordered_validation.n_clusters
@@ -1530,31 +1555,29 @@ class TestClusterTransport:
         # canonicalization can catch this.
         table.loc[0, "store_id"] = "1"
         table.loc[6, "store_id"] = 1
-        src = from_unit_summary(
-            table,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[MetricSpec(name="revenue")],
-            cluster="store_id",
-        )
+        experiment, resolver = _experiment_from_frame(table, cluster="store_id")
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(src, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "estimation.crossfit.identity_collision"
 
     def test_cluster_column_cannot_be_requested_as_interact_covariate(self):
-        src = _cluster_source()
+        experiment, resolver = _cluster_experiment()
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(src, "revenue", control="control", interact=["store_id"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["store_id"])
         assert exc_info.value.code == "cate.cluster.covariate_conflict"
         assert exc_info.value.context["caller"] == "estimate_cate"
         assert exc_info.value.context["column"] == "store_id"
 
     def test_cluster_column_cannot_be_requested_as_adjust_covariate(self):
-        src = _cluster_source()
+        experiment, resolver = _cluster_experiment()
         with pytest.raises(InvalidRequestError) as exc_info:
             estimate_cate(
-                src, "revenue", control="control", interact=["spend"], adjust=["store_id"]
+                experiment,
+                resolver,
+                "revenue",
+                control="control",
+                interact=["spend"],
+                adjust=["store_id"],
             )
         assert exc_info.value.code == "cate.cluster.covariate_conflict"
 
@@ -1563,7 +1586,7 @@ class TestClusterTransport:
         an impure cluster refuses at source construction -- the frame path's
         own data-quality gate, which fires before any estimator call."""
         with pytest.raises(InvalidRequestError) as exc_info:
-            _cluster_source(pure_arms=False)
+            _cluster_experiment(pure_arms=False)
         assert exc_info.value.code == "source.frame.cluster_labels"
 
     def test_unit_design_refuses_impure_clusters_under_a_randomized_mechanism(self, monkeypatch):
@@ -1576,21 +1599,26 @@ class TestClusterTransport:
 
         from increment.semantics.design import AdjustmentSet, Observational
 
-        src = _cluster_source(
+        experiment, resolver = _cluster_experiment(
             pure_arms=False,
             design=Observational(
                 control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
             ),
         )
         randomized = Randomized(control_group="control")
-        monkeypatch.setattr(src, "_context", dataclasses.replace(src.context, design=randomized))
+        source = resolver.binding.source
+        monkeypatch.setattr(
+            source, "_context", dataclasses.replace(source.context, design=randomized)
+        )
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(src, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cluster.randomization_arm_purity"
 
     def test_clustered_fit_reports_cluster_count_and_deployment_grain(self):
-        src = _cluster_source(pure_arms=True, intervention_grain="cluster")
-        result = estimate_cate(src, "revenue", control="control", interact=["spend"])
+        experiment, resolver = _cluster_experiment(pure_arms=True, intervention_grain="cluster")
+        result = estimate_cate(
+            experiment, resolver, "revenue", control="control", interact=["spend"]
+        )
         report = result.model_dump()
         assert report["n"] == _N_CLUSTERS * _PER_CLUSTER
         assert report["n_clusters"] == _N_CLUSTERS
@@ -1602,7 +1630,7 @@ class TestClusterTransport:
         from increment.estimators import ClusterBootstrap
         from increment.semantics.design import AdjustmentSet, Observational
 
-        src = _cluster_source(
+        experiment, resolver = _cluster_experiment(
             pure_arms=False,
             design=Observational(
                 control_group="control", adjustment=AdjustmentSet(covariates=("spend",))
@@ -1615,7 +1643,12 @@ class TestClusterTransport:
             "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
         }
         result = validate_cate(
-            src, "revenue", control="control", interact=["spend"], cluster_weight=weighting
+            experiment,
+            resolver,
+            "revenue",
+            control="control",
+            interact=["spend"],
+            cluster_weight=weighting,
         )
         assert isinstance(result, CateValidation)
         # The honest split stays cluster-atomic although this observational
@@ -1625,9 +1658,9 @@ class TestClusterTransport:
         assert 0 < result.n_clusters < _N_CLUSTERS
         assert result.cluster_weight == weighting
         assert result.holdout_ate_se is not None and result.holdout_ate_se > 0
-        rule = targeting_rule(src, "revenue", fraction=0.5, **options)
+        rule = targeting_rule(experiment, resolver, "revenue", fraction=0.5, **options)
         selected = select_targeting_rule(
-            src, "revenue", fractions=(0.5,), n_folds=2, seed=12, **options
+            experiment, resolver, "revenue", fractions=(0.5,), n_folds=2, seed=12, **options
         )
         table = _cluster_frame(pure_arms=False)
         cols = {"spend": np.asarray(table["spend"])}
@@ -1641,13 +1674,15 @@ class TestClusterTransport:
             _assert_policy_roundtrip(policy, cols, ids)
 
     def test_unclustered_validation_reports_no_cluster_count(self):
-        result = validate_cate(_source(), "revenue", control="control", interact=["spend"])
+        result = validate_cate(*_experiment(), "revenue", control="control", interact=["spend"])
         assert result.n_clusters is None
 
     @pytest.mark.slow
     def test_targeting_rule_carries_cluster_count_grain_and_required_columns(self):
-        src = _cluster_source(pure_arms=True, intervention_grain="cluster")
-        rule = targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.3)
+        experiment, resolver = _cluster_experiment(pure_arms=True, intervention_grain="cluster")
+        rule = targeting_rule(
+            experiment, resolver, "revenue", control="control", interact=["spend"], fraction=0.3
+        )
         assert rule.n_clusters == rule.validation.n_clusters
         assert rule.n_clusters == rule.validation.n_holdout // _PER_CLUSTER
         assert rule.intervention_grain == "cluster"
@@ -1655,7 +1690,7 @@ class TestClusterTransport:
 
     def test_unclustered_targeting_rule_reports_unit_grain_and_no_cluster_count(self):
         rule = targeting_rule(
-            _source(), "revenue", control="control", interact=["spend"], fraction=0.3
+            *_experiment(), "revenue", control="control", interact=["spend"], fraction=0.3
         )
         assert rule.n_clusters is None
         assert rule.intervention_grain == "unit"
@@ -1664,19 +1699,19 @@ class TestClusterTransport:
     def test_observational_adjustment_cannot_alias_the_cluster_column(self):
         from increment.semantics.design import AdjustmentSet, Observational
 
-        src = _cluster_source(
+        experiment, resolver = _cluster_experiment(
             pure_arms=False,
             design=Observational(
                 control_group="control", adjustment=AdjustmentSet(covariates=("store_id",))
             ),
         )
         with pytest.raises(InvalidRequestError) as exc_info:
-            validate_cate(src, "revenue", control="control", interact=["spend"])
+            validate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cluster.covariate_conflict"
 
     def test_intervention_grain_cluster_requires_a_declared_cluster_column(self):
         with pytest.raises(InvalidRequestError) as exc_info:
-            _cluster_source(cluster=None, intervention_grain="cluster")
+            _cluster_experiment(cluster=None, intervention_grain="cluster")
         assert exc_info.value.code == "source.frame.intervention_grain_without_cluster"
 
     def test_declared_cluster_with_no_served_cluster_id_column_always_refuses(self, monkeypatch):
@@ -1685,29 +1720,31 @@ class TestClusterTransport:
         treating this population as unclustered would make cluster-atomic
         splitting/fold assignment and honest validation silently wrong,
         regardless of the declared intervention grain."""
-        src = _cluster_source(pure_arms=True)
-        real_unit_frame = src.unit_frame
+        experiment, resolver = _cluster_experiment(pure_arms=True)
+        source = resolver.binding.source
+        real_unit_frame = source.unit_frame
 
         def dropped(metric, *, covariates=(), outcome_stage="transformed"):
             native = real_unit_frame(metric, covariates=covariates, outcome_stage=outcome_stage)
             table = native.to_pandas() if hasattr(native, "to_pandas") else native
             return table.drop(columns=["cluster_id"])
 
-        monkeypatch.setattr(src, "unit_frame", dropped)
+        monkeypatch.setattr(source, "unit_frame", dropped)
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(src, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cluster.identity_unavailable"
         assert exc_info.value.context["column"] == "store_id"
 
     def test_intervention_grain_unavailable_refuses_a_contradictory_raw_source(self, monkeypatch):
         from dataclasses import replace
 
-        source = _source()
+        experiment, resolver = _experiment()
+        source = resolver.binding.source
         monkeypatch.setattr(
             source, "_context", replace(source.context, intervention_grain="cluster")
         )
         with pytest.raises(InvalidRequestError) as exc_info:
-            estimate_cate(source, "revenue", control="control", interact=["spend"])
+            estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cluster.intervention_grain_unavailable"
 
     @pytest.mark.integration
@@ -1725,14 +1762,10 @@ class TestClusterTransport:
 
         import ibis
 
-        from increment.plan import compile_decision_plan
-        from increment.query.artifact_publish import artifact_context
-        from increment.query.native_source import DefinitionsMomentSource
-        from increment.query.session import WarehouseArtifactStore, WarehouseSession
-        from increment.query.source import open_artifact
+        from increment import from_definitions, from_unit_day_artifact
+        from increment.artifacts import artifact_context, publish_unit_day_artifact
+        from increment.query.session import WarehouseArtifactStore
         from increment.semantics.artifact import ClusterIdentityRequest
-        from increment.semantics.design import Randomized
-        from increment.semantics.loader import load
 
         frame = _cluster_frame()
         grain = "unit" if cluster_column is None else "cluster"
@@ -1803,41 +1836,27 @@ experiments:
         con.create_table("cl_events", obj=events)
         defs_path = tmp_path / "defs.yaml"
         defs_path.write_text(defs_template)
-        definitions = load(defs_path)
-        experiment = definitions.experiments[0]
-        design = Randomized(control_group="control")
-        native_src = DefinitionsMomentSource(
-            WarehouseSession(con, definitions),
-            experiment,
-            definitions.metrics,
-            store=store_mode,
-            on_mixed_assignment="error",
-            design=design,
-            plan=compile_decision_plan(
-                experiment.plan, definitions.metrics, path="warehouse", design=design
-            ),
-        )
-
-        frame_src = from_unit_summary(
+        native = from_definitions(defs_path, con, experiment_name="store_test", store=store_mode)
+        framed = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
-            control="control",
             metrics=[{"name": "revenue_per_user", "type": "mean", "value_column": "revenue"}],
             cluster=cluster_column,
-            design=design,
+            design=Randomized(control_group="control"),
             intervention_grain=grain,
         )
 
         native_result = estimate_cate(
-            native_src,
+            *native,
             "revenue_per_user",
             control="control",
             interact=[],
             cluster_weight=cluster_weight,
         )
         frame_result = estimate_cate(
-            frame_src,
+            *framed,
             "revenue_per_user",
             control="control",
             interact=[],
@@ -1847,18 +1866,19 @@ experiments:
         assert native_result.se == pytest.approx(frame_result.se, rel=1e-9)
         assert native_result.n_clusters == frame_result.n_clusters == expected_clusters
         assert native_result.intervention_grain == frame_result.intervention_grain == grain
-        context = artifact_context(definitions, experiment, "error")
+        context = artifact_context(*native)
         store = WarehouseArtifactStore(con, schema_name="cate_artifacts")
-        reference = native_src.publish_unit_day_artifact(
+        reference = publish_unit_day_artifact(
+            *native,
             store,
             extensions=[]
             if cluster_column is None
             else [ClusterIdentityRequest(cluster_name="store_id")],
         )
-        adopted = open_artifact(store, reference, expected_context=context)
+        adopted = from_unit_day_artifact(store, reference, expected_context=context)
         try:
             artifact_result = estimate_cate(
-                adopted,
+                *adopted,
                 "revenue_per_user",
                 control="control",
                 interact=[],
@@ -1879,27 +1899,27 @@ experiments:
             assert artifact_result.intervention_grain == grain
             reports = [
                 _source_parity_reports(
-                    source,
+                    *built,
                     frame,
                     cluster_weight=cluster_weight,
                     clustered=cluster_column is not None,
                 )
-                for source in (frame_src, native_src, adopted)
+                for built in (framed, native, adopted)
             ]
             for expected, actual in zip(reports[0], reports[1], strict=True):
                 _assert_cate_payload_close(expected.model_dump(), actual.model_dump())
             for expected, actual in zip(reports[0], reports[2], strict=True):
                 _assert_cate_payload_close(expected.model_dump(), actual.model_dump())
         finally:
-            adopted.close()
-            native_src.close()
+            for _, resolver in (adopted, native):
+                cast(Any, resolver).close()
             con.disconnect()
 
 
 @pytest.fixture(scope="module")
 def _cluster_policy_json():
     return targeting_rule(
-        _cluster_source(intervention_grain="cluster"),
+        *_cluster_experiment(intervention_grain="cluster"),
         "revenue",
         control="control",
         interact=["spend"],
@@ -2022,7 +2042,7 @@ def test_policy_cluster_metadata_round_trips_valid_boundaries(cluster_policy_pay
     assert rule.n_clusters == rule.validation.n_clusters == count
 
 
-def _cluster_oracle_source(*, intervention_grain="unit"):
+def _cluster_oracle_experiment(*, intervention_grain="unit") -> tuple[Any, Any]:
     sizes = np.array([2, 4, 2, 4, 2, 4, 4, 2])
     table = pa.table(
         {
@@ -2033,29 +2053,31 @@ def _cluster_oracle_source(*, intervention_grain="unit"):
             "store_id": np.repeat([f"cluster-{i}" for i in range(8)], sizes),
         }
     )
-    return from_unit_summary(
-        table,
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics=[MetricSpec(name="revenue")],
-        cluster="store_id",
-        intervention_grain=intervention_grain,
-    )
+    return _experiment_from_frame(table, cluster="store_id", intervention_grain=intervention_grain)
 
 
 @pytest.mark.parametrize("grain", ["unit", "cluster"])
 def test_public_cluster_weighting_is_explicit_and_uses_independent_oracle(grain):
     from scipy.stats import t
 
-    source = _cluster_oracle_source(intervention_grain=grain)
+    experiment, resolver = _cluster_oracle_experiment(intervention_grain=grain)
     interact = [Covariate(name="segment", kind="categorical")]
-    default = estimate_cate(source, "revenue", control="control", interact=interact)
+    default = estimate_cate(experiment, resolver, "revenue", control="control", interact=interact)
     member = estimate_cate(
-        source, "revenue", control="control", interact=interact, cluster_weight="member_count"
+        experiment,
+        resolver,
+        "revenue",
+        control="control",
+        interact=interact,
+        cluster_weight="member_count",
     )
     equal = estimate_cate(
-        source, "revenue", control="control", interact=interact, cluster_weight="equal"
+        experiment,
+        resolver,
+        "revenue",
+        control="control",
+        interact=interact,
+        cluster_weight="equal",
     )
     assert default.model_dump() == member.model_dump()
     assert member.ate == pytest.approx(23 / 6)
@@ -2082,14 +2104,16 @@ def test_public_cluster_weighting_is_explicit_and_uses_independent_oracle(grain)
 
 
 def test_public_equal_cluster_weighting_refuses_before_reading_unclustered_source(monkeypatch):
-    source = _source()
+    experiment, resolver = _experiment()
 
     def unavailable_frame(*args, **kwargs):
         raise AssertionError("invalid weighting must refuse before requesting rows")
 
-    monkeypatch.setattr(source, "unit_frame", unavailable_frame)
+    monkeypatch.setattr(resolver.binding.source, "unit_frame", unavailable_frame)
     with pytest.raises(InvalidRequestError) as caught:
-        estimate_cate(source, "revenue", control="control", interact=[], cluster_weight="equal")
+        estimate_cate(
+            experiment, resolver, "revenue", control="control", interact=[], cluster_weight="equal"
+        )
     assert caught.value.code == "estimation.cate.equal_weighting_without_cluster"
 
 
@@ -2097,21 +2121,27 @@ def test_public_equal_cluster_weighting_refuses_before_reading_unclustered_sourc
 def test_public_validation_rechecks_forged_bootstrap_before_loading_units(caller, monkeypatch):
     from increment.estimators import ClusterBootstrap
 
-    source = _source()
+    experiment, resolver = _experiment()
     options = ClusterBootstrap().model_copy(update={"seed": True})
 
     def reject_load(*args, **kwargs):
         pytest.fail("invalid bootstrap options must refuse before loading unit data")
 
-    monkeypatch.setattr(type(source), "unit_frame", reject_load)
+    monkeypatch.setattr(type(resolver.binding.source), "unit_frame", reject_load)
     with pytest.raises(InvalidRequestError) as error:
         if caller == "validate":
             validate_cate(
-                source, "revenue", control="control", interact=["spend"], bootstrap=options
+                experiment,
+                resolver,
+                "revenue",
+                control="control",
+                interact=["spend"],
+                bootstrap=options,
             )
         elif caller == "rule":
             targeting_rule(
-                source,
+                experiment,
+                resolver,
                 "revenue",
                 control="control",
                 interact=["spend"],
@@ -2120,7 +2150,8 @@ def test_public_validation_rechecks_forged_bootstrap_before_loading_units(caller
             )
         else:
             select_targeting_rule(
-                source,
+                experiment,
+                resolver,
                 "revenue",
                 control="control",
                 interact=["spend"],
@@ -2142,49 +2173,50 @@ def test_bootstrap_options_reject_invalid_integer_controls(options):
 
 @pytest.mark.parametrize("caller", [targeting_rule, select_targeting_rule])
 def test_public_incompatible_deployment_refuses_before_loading_units(caller, monkeypatch):
-    source = _cluster_source(intervention_grain="cluster")
+    experiment, resolver = _cluster_experiment(intervention_grain="cluster")
 
     def no_units(*args, **kwargs):
         pytest.fail("incompatible deployment must refuse before unit-frame loading")
 
-    monkeypatch.setattr(type(source), "unit_frame", no_units)
+    monkeypatch.setattr(type(resolver.binding.source), "unit_frame", no_units)
     options: dict = (
         {"fraction": 0.5} if caller is targeting_rule else {"fractions": (0.5,), "seed": 1}
     )
     with pytest.raises(InvalidRequestError) as caught:
         caller(
-            source, "revenue", control="control", interact=["spend"], deploy_grain="unit", **options
+            experiment,
+            resolver,
+            "revenue",
+            control="control",
+            interact=["spend"],
+            deploy_grain="unit",
+            **options,
         )
     assert caught.value.code == "estimation.targeting.unsupported_unit_deployment"
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("weighting", ["member_count", "equal"])
-def test_analysis_delegates_preserve_cluster_intervention_and_portable_prediction(weighting):
-    from increment import Analysis
+def test_public_operations_preserve_cluster_intervention_and_portable_prediction(weighting):
     from increment.estimators import ClusterBootstrap
     from increment.results import ClusterScore
 
     table = _cluster_frame()
-    analysis = Analysis.from_unit_summary(
-        table,
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics=[MetricSpec(name="revenue")],
-        cluster="store_id",
-        intervention_grain="cluster",
+    experiment, resolver = _experiment_from_frame(
+        table, cluster="store_id", intervention_grain="cluster"
     )
     ids = np.asarray(table["store_id"].to_numpy())
     cols = {"spend": np.asarray(table["spend"].to_numpy())}
-    fit = analysis.estimate_cate(
-        "revenue", control="control", interact=["spend"], cluster_weight=weighting
+    fit = estimate_cate(
+        experiment, resolver, "revenue", interact=["spend"], cluster_weight=weighting
     )
     assert fit.cluster_weight == weighting
     scores: tuple[ClusterScore, ...] = fit.score(cols, cluster_ids=ids, deploy_grain="cluster")
     assert len(scores) == _N_CLUSTERS
     bootstrap = ClusterBootstrap(seed=12, repetitions=9)
-    validation = analysis.validate_cate(
+    validation = validate_cate(
+        experiment,
+        resolver,
         "revenue",
         control="control",
         interact=["spend"],
@@ -2193,7 +2225,9 @@ def test_analysis_delegates_preserve_cluster_intervention_and_portable_predictio
     )
     assert validation.n_clusters is not None
     assert validation.cluster_weight == weighting
-    rule = analysis.targeting_rule(
+    rule = targeting_rule(
+        experiment,
+        resolver,
         "revenue",
         control="control",
         interact=["spend"],
@@ -2201,7 +2235,9 @@ def test_analysis_delegates_preserve_cluster_intervention_and_portable_predictio
         cluster_weight=weighting,
         bootstrap=bootstrap,
     )
-    selection = analysis.select_targeting_rule(
+    selection = select_targeting_rule(
+        experiment,
+        resolver,
         "revenue",
         control="control",
         interact=["spend"],
@@ -2222,7 +2258,7 @@ def test_analysis_delegates_preserve_cluster_intervention_and_portable_predictio
         np.testing.assert_array_equal(restored.predict(cols, cluster_ids=ids), actions)
 
 
-def _c01_pattern_source(replication):
+def _c01_pattern_experiment(replication) -> tuple[Any, tuple[Any, Any]]:
     from tests.estimation.test_targeting import _c01_five_row_pattern
 
     data = _c01_five_row_pattern(replication)
@@ -2236,17 +2272,17 @@ def _c01_pattern_source(replication):
             **data["cols"],
         }
     )
-    source = from_unit_summary(
+    experiment = from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="arm",
-        control="control",
         metrics={"y": "mean"},
         cluster="cluster",
         intervention_grain="cluster",
         design=Randomized(control_group="control"),
     )
-    return data, source
+    return data, experiment
 
 
 def _assert_c01_public_fit_covariance(data, fit, weighting):
@@ -2278,11 +2314,11 @@ def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, repli
     from increment.estimation.crossfit import outer_split
     from increment.estimators import ClusterBootstrap
 
-    data, source = _c01_pattern_source(replication)
+    data, (experiment, resolver) = _c01_pattern_experiment(replication)
     d, ids = data["d"], data["cluster_ids"]
     options: dict = {"control": "control", "interact": ["spend"], "cluster_weight": weighting}
-    fit = estimate_cate(source, "y", **options)
-    shrunk = estimate_cate(source, "y", ard=True, **options)
+    fit = estimate_cate(experiment, resolver, "y", **options)
+    shrunk = estimate_cate(experiment, resolver, "y", ard=True, **options)
     _assert_c01_public_fit_covariance(data, fit, weighting)
     assert fit.n_clusters == shrunk.n_clusters == 40
     assert fit.reference_df == shrunk.reference_df == 39
@@ -2295,7 +2331,8 @@ def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, repli
     # Each fit relearns its continuous basis; no equality of refitted p-values is asserted.
     bootstrap = ClusterBootstrap(seed=57, repetitions=99)
     validation = validate_cate(
-        source,
+        experiment,
+        resolver,
         "y",
         n_groups=2,
         bootstrap=bootstrap,
@@ -2312,9 +2349,10 @@ def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, repli
     assert validation.holdout_ate_se is not None and validation.holdout_ate_se > 0
     assert validation.autoc.se is not None and validation.autoc.se > 0
     assert validation.qini.se is not None and validation.qini.se > 0
-    rule = targeting_rule(source, "y", fraction=0.5, bootstrap=bootstrap, **options)
+    rule = targeting_rule(experiment, resolver, "y", fraction=0.5, bootstrap=bootstrap, **options)
     selection = select_targeting_rule(
-        source,
+        experiment,
+        resolver,
         "y",
         fractions=(0.0, 0.5, 1.0),
         n_folds=2,
@@ -2338,16 +2376,16 @@ def test_cluster_complete_five_row_pattern_full_public_pipeline(weighting, repli
 @pytest.mark.parametrize("replication", [1, 5, 20, 100])
 def test_public_cluster_complete_pattern_ard_precision(weighting, replication):
     """A fixed categorical basis isolates ARD precision from relearned scaling."""
-    base, original_source = _c01_pattern_source(1)
-    _, repeated_source = _c01_pattern_source(replication)
+    base, original_experiment = _c01_pattern_experiment(1)
+    _, repeated_experiment = _c01_pattern_experiment(replication)
     options: dict = {
         "control": "control",
         "interact": [Covariate(name="segment", kind="categorical")],
         "ard": True,
         "cluster_weight": weighting,
     }
-    original = estimate_cate(original_source, "y", **options)
-    repeated = estimate_cate(repeated_source, "y", **options)
+    original = estimate_cate(*original_experiment, "y", **options)
+    repeated = estimate_cate(*repeated_experiment, "y", **options)
     assert original.n_clusters == repeated.n_clusters == 40
     assert original.reference_df == repeated.reference_df == 39
     assert original.beta_ard is not None and repeated.beta_ard is not None

@@ -670,21 +670,6 @@ class Analysis:
             self._experiment.trigger,
         )
 
-    def _cate_source(self, method: str) -> _BuiltinMomentSource:
-        self._require_arm_state(method)
-        experiment = getattr(self, "_experiment", None)
-        if experiment is None or experiment.trigger is None:
-            return cast("_BuiltinMomentSource", self._src)
-        triggered = _require_analysis_operation(
-            self._src,
-            "triggered_source",
-            message=(
-                f"{method}() needs a source-owned triggered unit view; this source "
-                "cannot reconstruct trigger membership."
-            ),
-        )
-        return triggered.triggered_source()
-
     def sitewide(
         self,
         metric: str,
@@ -1558,12 +1543,9 @@ class Analysis:
         from increment.kernel.ports import cate_operations
 
         operations = cate_operations()
-
-        if control is None:
-            assert self._design is not None
-            control = self._design.control_group
-        return operations.estimate_cate(
-            self._cate_source("estimate_cate"),
+        _ = self._src
+        return operations.estimate_cate_binding(
+            self._binding,
             metric,
             control=control,
             interact=interact,
@@ -1594,9 +1576,9 @@ class Analysis:
         from increment.kernel.ports import cate_operations
 
         operations = cate_operations()
-
-        return operations.validate_cate(
-            self._cate_source("validate_cate"),
+        _ = self._src
+        return operations.validate_cate_binding(
+            self._binding,
             metric,
             control=control,
             interact=interact,
@@ -1626,9 +1608,9 @@ class Analysis:
         from increment.kernel.ports import cate_operations
 
         operations = cate_operations()
-
-        return operations.targeting_rule(
-            self._cate_source("targeting_rule"),
+        _ = self._src
+        return operations.targeting_rule_binding(
+            self._binding,
             metric,
             control=control,
             interact=interact,
@@ -1662,9 +1644,9 @@ class Analysis:
         from increment.kernel.ports import cate_operations
 
         operations = cate_operations()
-
-        return operations.select_targeting_rule(
-            self._cate_source("select_targeting_rule"),
+        _ = self._src
+        return operations.select_targeting_rule_binding(
+            self._binding,
             metric,
             control=control,
             interact=interact,

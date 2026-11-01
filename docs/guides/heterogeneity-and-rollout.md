@@ -126,7 +126,8 @@ DerSimonian-Laird followed by an unmodified Hartung-Knapp-Sidik-Jonkman adjustme
 
 ## Categorical adjustment in individual targeting
 
-`validate_cate`, `targeting_rule` and `select_targeting_rule` accept
+`validate_cate`, `targeting_rule` and `select_targeting_rule` take the
+`(experiment, resolver)` pair from a builder and accept
 categorical string adjustment columns on observational designs. Their
 doubly robust nuisance fits learn modal-reference indicators within each
 training split; held-out outcomes never choose the encoding. These targeting

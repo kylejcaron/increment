@@ -66,6 +66,7 @@ import functools
 import math
 import warnings
 from functools import cache
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -73,7 +74,7 @@ import pytest
 from scipy.special import expit
 from scipy.stats import t
 
-from increment.cate import estimate_cate, validate_cate
+from increment import from_frame
 from increment.errors import InvalidRequestError
 from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutcome
 from increment.estimation.cate import Covariate, fit_cate
@@ -84,8 +85,8 @@ from increment.estimation.targeting import (
     targeting_rule_arrays,
     validate_cate_arrays,
 )
-from increment.estimators import IdentificationError
-from increment.frame import MetricSpec, from_unit_summary, synthesise_metric
+from increment.estimators import IdentificationError, estimate_cate, validate_cate
+from increment.frame import MetricSpec, synthesise_metric
 from increment.semantics.design import (
     AdjustmentSet,
     Encouragement,
@@ -252,7 +253,7 @@ def _null_rejection_rate(reps: int, n: int, p: int, seed: int) -> float:
     return rejects / reps
 
 
-def _confounded_source(*, design=None):
+def _confounded_experiment(*, design=None) -> tuple[Any, Any]:
     rng = np.random.default_rng(3)
     n = 400
     x = rng.normal(size=n)
@@ -277,31 +278,33 @@ def _confounded_source(*, design=None):
             gate=IdentificationGate(overlap="trim"),
         )
     )
-    return from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
-        control="control",
         metrics=[MetricSpec(name="revenue")],
         design=identification,
     )
 
 
 def test_validate_cate_estimates_confounded_source_via_dr_score():
-    result = validate_cate(_confounded_source(), "revenue", control="control", interact=["x"])
+    result = validate_cate(*_confounded_experiment(), "revenue", control="control", interact=["x"])
     assert isinstance(result.autoc.p_value, float)
     assert result.population in (None, "overlap_subpopulation")
 
 
 def test_validate_cate_refuses_source_without_design():
+    """Builders always declare a design, so only a custom source reaches this."""
+    from increment.analysis import Analysis
+
     src = MomentsSource(
         [],
         metrics=[synthesise_metric(MetricSpec(name="revenue"))],
         study_id="designless",
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        validate_cate(
-            src,
+        Analysis._from_source(src).validate_cate(
             "revenue",
             control="control",
             interact=["x"],
@@ -318,16 +321,16 @@ def test_validate_cate_refuses_encouragement_design():
             justification="assignment acts only through uptake"
         ),
     )
-    src = _confounded_source(design=encouragement)
+    experiment, resolver = _confounded_experiment(design=encouragement)
     with pytest.raises(InvalidRequestError) as exc_info:
-        validate_cate(src, "revenue", control="control", interact=["x"])
+        validate_cate(experiment, resolver, "revenue", control="control", interact=["x"])
     assert exc_info.value.code == "cate.identification.unsupported_mechanism"
     assert exc_info.value.context["mechanism"] == "encouragement"
 
 
 def test_estimate_cate_still_refuses_confounded_source():
     with pytest.raises(InvalidRequestError) as exc_info:
-        estimate_cate(_confounded_source(), "revenue", control="control", interact=["x"])
+        estimate_cate(*_confounded_experiment(), "revenue", control="control", interact=["x"])
     assert exc_info.value.code == "cate.identification.randomized_only"
 
 
@@ -494,9 +497,11 @@ def test_dr_score_under_confounding_smoke():
     assert np.abs(gates.mean(axis=0) - _EFFECT).max() <= 0.75, gates.mean(axis=0)
     assert naive.mean() - _EFFECT >= 0.5, f"naive contrast {naive.mean():.3f} is not confounded"
 
-    adjusted = validate_cate(_confounded_source(), "revenue", control="control", interact=["x"])
+    adjusted = validate_cate(
+        *_confounded_experiment(), "revenue", control="control", interact=["x"]
+    )
     as_randomized = validate_cate(
-        _confounded_source(design=Randomized(control_group="control")),
+        *_confounded_experiment(design=Randomized(control_group="control")),
         "revenue",
         control="control",
         interact=["x"],
@@ -1976,10 +1981,11 @@ def test_c07_cluster_null_rejection_and_coverage(
             assert counts["rejected"] <= max_misses, report
 
 
-def _e6v0_original_cluster_source(members_per_cluster, *, intervention_grain="unit", n_clusters=80):
+def _e6v0_original_cluster_experiment(
+    members_per_cluster, *, intervention_grain="unit", n_clusters=80
+) -> tuple[pa.Table, tuple[Any, Any]]:
     """Archived 80-cluster DGP, also checked on its first 16 clusters."""
     from increment import Randomized
-    from increment.frame import from_unit_summary
 
     rows = []
     for g in range(n_clusters):
@@ -1997,17 +2003,17 @@ def _e6v0_original_cluster_source(members_per_cluster, *, intervention_grain="un
                 }
             )
     table = pa.Table.from_pylist(rows)
-    source = from_unit_summary(
+    experiment = from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="arm",
-        control="control",
         metrics={"y": "mean"},
         cluster="cluster",
         intervention_grain=intervention_grain,
         design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
     )
-    return table, source
+    return table, experiment
 
 
 @pytest.mark.integration
@@ -2023,22 +2029,23 @@ def test_e6v0_original_varying_noise_cluster_public_replay(
 
     from increment.estimators import ClusterBootstrap, select_targeting_rule, targeting_rule
 
-    table, source = _e6v0_original_cluster_source(
+    table, (experiment, resolver) = _e6v0_original_cluster_experiment(
         members_per_cluster, intervention_grain=intervention_grain, n_clusters=n_clusters
     )
     ids = np.asarray(table["cluster"])
     units = np.asarray(table["unit"])
     options: dict = {"control": "control", "interact": ["x"]}
-    fit = estimate_cate(source, "y", **options)
+    fit = estimate_cate(experiment, resolver, "y", **options)
     assert fit.n_clusters == n_clusters and fit.reference_df == n_clusters - 1
     assert fit.se > 0 and np.isfinite(fit.vcov).all()
     bootstrap = ClusterBootstrap(seed=0, repetitions=999)
-    validation = validate_cate(source, "y", bootstrap=bootstrap, **options)
-    rule = targeting_rule(source, "y", fraction=0.5, bootstrap=bootstrap, **options)
+    validation = validate_cate(experiment, resolver, "y", bootstrap=bootstrap, **options)
+    rule = targeting_rule(experiment, resolver, "y", fraction=0.5, bootstrap=bootstrap, **options)
     # Four inner folds retain six training clusters for four fitted directions.
     selection_folds = 4 if n_clusters == 16 else 2
     selection = select_targeting_rule(
-        source,
+        experiment,
+        resolver,
         "y",
         fractions=(0.0, 0.5, 1.0),
         seed=0,
@@ -2098,12 +2105,12 @@ def test_nested_selection_cannot_recover_rank_by_adding_cluster_members(
     from increment.errors import InvalidRequestError
     from increment.estimators import select_targeting_rule
 
-    _, source = _e6v0_original_cluster_source(
+    _, experiment = _e6v0_original_cluster_experiment(
         members_per_cluster, intervention_grain=intervention_grain, n_clusters=16
     )
     with pytest.raises(InvalidRequestError) as error:
         select_targeting_rule(
-            source,
+            *experiment,
             "y",
             control="control",
             interact=["x"],

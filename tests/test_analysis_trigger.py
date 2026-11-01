@@ -1791,8 +1791,50 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
             _close_parity_analysis(adopted)
 
 
+def _triggered_cate_experiment(path, con) -> tuple[Any, Any]:
+    return from_definitions(
+        path,
+        con,
+        experiment_name="exp",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+
+
+def _adopted_cate_experiment(con, native: tuple[Any, Any], kinds) -> tuple[Any, Any]:
+    """Publish *native* with the named extensions and reopen the trusted artifact."""
+    from increment import from_unit_day_artifact
+    from increment.artifacts import artifact_context, publish_unit_day_artifact
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.session import WarehouseArtifactStore
+
+    context = artifact_context(*native)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    requests = [
+        entry.request
+        for entry in unit_day_artifact_extension_catalog(context)
+        if entry.request.kind in kinds
+    ]
+    reference = publish_unit_day_artifact(*native, store, extensions=requests)
+    return from_unit_day_artifact(store, reference, expected_context=context)
+
+
+def _close_experiments(con, *experiments):
+    for _, resolver in experiments:
+        cast(Any, resolver).close()
+    con.disconnect()
+
+
 @pytest.mark.slow
 def test_triggered_cate_uses_native_unit_population(tmp_path):
+    from increment.estimators import (
+        estimate_cate,
+        select_targeting_rule,
+        targeting_rule,
+        validate_cate,
+    )
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
@@ -1811,31 +1853,23 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
-    adopted = None
+    native = _triggered_cate_experiment(path, con)
+    experiments = [native]
     try:
         from increment.estimation.cate import Covariate
         from increment.query.artifact_contract import ArtifactContractError
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
         interact = [Covariate(name="region", kind="categorical")]
-        estimate = analysis.estimate_cate("revenue", control="C", interact=interact)
+        estimate = estimate_cate(*native, "revenue", control="C", interact=interact)
         assert_support(
             "triggered_auxiliary_reads",
             "cate_definitions_triggered_population",
             estimate,
         )
-        validation = analysis.validate_cate("revenue", control="C", interact=interact, n_groups=3)
-        targeting = analysis.targeting_rule("revenue", control="C", interact=interact, fraction=0.5)
-        selection = analysis.select_targeting_rule(
+        validation = validate_cate(*native, "revenue", control="C", interact=interact, n_groups=3)
+        targeting = targeting_rule(*native, "revenue", control="C", interact=interact, fraction=0.5)
+        selection = select_targeting_rule(
+            *native,
             "revenue",
             control="C",
             interact=interact,
@@ -1857,11 +1891,12 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
         assert selection.selected_fraction == 0.5
         assert selection.rule.fraction == selection.selected_fraction
         assert selection.rule.validation.n_holdout > 0
-        adopted = _publish_and_adopt(
-            con, analysis, kinds=("trigger_population", "trigger_measure_stats")
+        adopted = _adopted_cate_experiment(
+            con, native, kinds=("trigger_population", "trigger_measure_stats")
         )
+        experiments.append(adopted)
         with pytest.raises(ArtifactContractError) as raised:
-            adopted.estimate_cate("revenue", control="C", interact=interact)
+            estimate_cate(*adopted, "revenue", control="C", interact=interact)
         assert raised.value.code == "artifact.extension.missing"
         assert_refusal(
             "triggered_auxiliary_reads",
@@ -1870,15 +1905,17 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
             stage="read",
         )
     finally:
-        if adopted is None:
-            analysis.close()
-            con.disconnect()
-        else:
-            _close_parity_analysis(adopted)
+        _close_experiments(con, *experiments)
 
 
 @pytest.mark.slow
 def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evidence(tmp_path):
+    from increment.estimators import (
+        estimate_cate,
+        select_targeting_rule,
+        targeting_rule,
+        validate_cate,
+    )
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
@@ -1909,28 +1946,23 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
-    adopted = None
+    native = _triggered_cate_experiment(path, con)
+    experiments = [native]
     try:
         from increment.estimation.cate import Covariate
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
-        adopted = _publish_and_adopt(
+        adopted = _adopted_cate_experiment(
             con,
-            analysis,
+            native,
             kinds=("trigger_population", "trigger_measure_stats", "unit_covariate_level"),
         )
+        experiments.append(adopted)
         with pytest.raises(InvalidRequestError) as native_refused:
-            analysis.estimate_cate(
-                "revenue", control="C", interact=[Covariate(name="region", kind="categorical")]
+            estimate_cate(
+                *native,
+                "revenue",
+                control="C",
+                interact=[Covariate(name="region", kind="categorical")],
             )
         assert_refusal(
             "triggered_auxiliary_reads",
@@ -1939,8 +1971,11 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
             stage="read",
         )
         with pytest.raises(InvalidRequestError) as raised:
-            adopted.estimate_cate(
-                "revenue", control="C", interact=[Covariate(name="region", kind="categorical")]
+            estimate_cate(
+                *adopted,
+                "revenue",
+                control="C",
+                interact=[Covariate(name="region", kind="categorical")],
             )
         assert_refusal(
             "triggered_auxiliary_reads",
@@ -1949,15 +1984,15 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
             stage="read",
         )
         interact = [Covariate(name="region", kind="categorical")]
-        native_validation = analysis.validate_cate(
-            "revenue", control="C", interact=interact, n_groups=3
+        native_validation = validate_cate(
+            *native, "revenue", control="C", interact=interact, n_groups=3
         )
         assert_support(
             "triggered_auxiliary_reads",
             "cate_definitions_observational_validation_supported",
             native_validation,
         )
-        validation = adopted.validate_cate("revenue", control="C", interact=interact, n_groups=3)
+        validation = validate_cate(*adopted, "revenue", control="C", interact=interact, n_groups=3)
         assert_support(
             "triggered_auxiliary_reads",
             "cate_artifact_observational_validation_supported",
@@ -1970,15 +2005,17 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
             assert getattr(validation.holdout_ate, field) == pytest.approx(
                 getattr(native_validation.holdout_ate, field)
             )
-        native_targeting = analysis.targeting_rule(
-            "revenue", control="C", interact=interact, fraction=0.5
+        native_targeting = targeting_rule(
+            *native, "revenue", control="C", interact=interact, fraction=0.5
         )
         assert_support(
             "triggered_auxiliary_reads",
             "cate_definitions_observational_targeting_supported",
             native_targeting,
         )
-        targeting = adopted.targeting_rule("revenue", control="C", interact=interact, fraction=0.5)
+        targeting = targeting_rule(
+            *adopted, "revenue", control="C", interact=interact, fraction=0.5
+        )
         assert_support(
             "triggered_auxiliary_reads",
             "cate_artifact_observational_targeting_supported",
@@ -1990,16 +2027,16 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
         np.testing.assert_array_equal(
             targeting.predict(covariates), native_targeting.predict(covariates)
         )
-        native_selection = analysis.select_targeting_rule(
-            "revenue", control="C", interact=interact, fractions=[0.5], seed=7, n_folds=3
+        native_selection = select_targeting_rule(
+            *native, "revenue", control="C", interact=interact, fractions=[0.5], seed=7, n_folds=3
         )
         assert_support(
             "triggered_auxiliary_reads",
             "cate_definitions_observational_selection_supported",
             native_selection,
         )
-        selection = adopted.select_targeting_rule(
-            "revenue", control="C", interact=interact, fractions=[0.5], seed=7, n_folds=3
+        selection = select_targeting_rule(
+            *adopted, "revenue", control="C", interact=interact, fractions=[0.5], seed=7, n_folds=3
         )
         assert_support(
             "triggered_auxiliary_reads",
@@ -2031,11 +2068,7 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
                 expected_triggered_ate, rel=0.4
             )
     finally:
-        if adopted is None:
-            analysis.close()
-            con.disconnect()
-        else:
-            _close_parity_analysis(adopted)
+        _close_experiments(con, *experiments)
 
 
 def _observational_triggered_analysis(tmp_path):
@@ -2125,45 +2158,34 @@ def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_pa
 def test_triggered_cate_randomized_artifact_without_covariates_preserves_population(tmp_path):
     from collections import Counter
 
+    from increment.estimators import estimate_cate
     from tests.capability_consumers_auxiliary import assert_support
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
     table = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6)
     counts = Counter(row["group_id"] for row in table.to_pylist() if row["event"] == "saw_surface")
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path),
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
-    adopted = None
+    native = _triggered_cate_experiment(_write_defs(tmp_path), con)
+    experiments = [native]
     try:
-        native = analysis.estimate_cate("revenue", control="C", interact=[])
-        adopted = _publish_and_adopt(
-            con, analysis, kinds=("trigger_population", "trigger_measure_stats")
+        native_result = estimate_cate(*native, "revenue", control="C", interact=[])
+        adopted = _adopted_cate_experiment(
+            con, native, kinds=("trigger_population", "trigger_measure_stats")
         )
-        result = adopted.estimate_cate("revenue", control="C", interact=[])
+        experiments.append(adopted)
+        result = estimate_cate(*adopted, "revenue", control="C", interact=[])
         assert result.n_control == counts["C"]
         assert result.n_treated == counts["T"]
         assert result.n == counts["C"] + counts["T"]
-        assert result.ate == pytest.approx(native.ate)
-        assert result.se == pytest.approx(native.se)
+        assert result.ate == pytest.approx(native_result.ate)
+        assert result.se == pytest.approx(native_result.se)
         assert_support(
             "triggered_auxiliary_reads",
             "cate_artifact_complete_trigger_evidence",
             result,
         )
     finally:
-        if adopted is None:
-            analysis.close()
-            con.disconnect()
-        else:
-            _close_parity_analysis(adopted)
+        _close_experiments(con, *experiments)
 
 
 @pytest.mark.integration

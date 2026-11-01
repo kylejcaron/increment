@@ -28,9 +28,10 @@ from increment.errors import CodedError, CodedModel, InvalidRequestError, Refusa
 
 if TYPE_CHECKING:
     from increment.estimation.targeting import CateValidation, TargetingRule
+    from increment.kernel.experiment import Experiment
+    from increment.kernel.resolver import Resolver
     from increment.power import PowerResult
     from increment.simulate.runner import _KeyOutcome, _KeyStats
-    from increment.sources import EvidenceSource
 
 Role = Literal["training", "holdout", "oracle"]
 Weight = Literal["member_count", "equal"]
@@ -445,9 +446,9 @@ def simulate_clustered_cate(
     )
 
 
-def clustered_source(population: ClusteredCATEResult):
-    """Public dataframe adapter with the DGP's actual identification contract."""
-    from increment.frame import from_unit_summary
+def clustered_experiment(population: ClusteredCATEResult) -> tuple[Experiment, Resolver]:
+    """Public dataframe experiment with the DGP's actual identification contract."""
+    from increment.builders import from_frame
     from increment.semantics.design import AdjustmentSet, Observational, Randomized
 
     s = population.scenario
@@ -459,11 +460,11 @@ def clustered_source(population: ClusteredCATEResult):
             allocation={"control": 1 - s.treatment_ratio, "treatment": s.treatment_ratio},
         )
     )
-    return from_unit_summary(
+    return from_frame(
         population.table,
+        shape="summary",
         unit="unit_id",
         group="group_id",
-        control="control",
         metrics={"y": "mean"},
         design=design,
         cluster="cluster_id" if s.declare_clusters else None,
@@ -2243,12 +2244,12 @@ def _validation_observations(
 
 
 def _fit_observation(
-    source: EvidenceSource, target: float, options: dict[str, Any]
+    experiment: Experiment, resolver: Resolver, target: float, options: dict[str, Any]
 ) -> tuple[ClusteredObservation, str | None]:
     from increment.kernel.ports import cate_operations
 
     try:
-        fit = cate_operations().estimate_cate(source, "y", **options)
+        fit = cate_operations().estimate_cate(experiment, resolver, "y", **options)
     except CodedError as exc:
         return _record("fit.ate", exc, target), None
     return _record("fit.ate", fit, target), fit.model_dump_json()
@@ -2279,7 +2280,7 @@ def evaluate_clustered_replication(
     oracles: list[tuple[str, PolicyTruth]] = []
     reconstructions: list[tuple[str, AffinePointReconstruction]] = []
     try:
-        source = clustered_source(population)
+        experiment, resolver = clustered_experiment(population)
     except CodedError as exc:
         return ClusteredReplication(
             registration.fingerprint,
@@ -2310,7 +2311,7 @@ def evaluate_clustered_replication(
         else population.truth.equal_cluster_ate
     )
     if s.assignment != "observational":
-        observation, report = _fit_observation(source, ate, options)
+        observation, report = _fit_observation(experiment, resolver, ate, options)
         observations.append(observation)
         if report is not None:
             reports.append(("fit", report))
@@ -2318,7 +2319,8 @@ def evaluate_clustered_replication(
     # Run validation even if the fit refused: each public operation owns its support.
     try:
         validation = operations.validate_cate(
-            source,
+            experiment,
+            resolver,
             "y",
             n_groups=2,
             include_evaluation_population=True,
@@ -2329,7 +2331,8 @@ def evaluate_clustered_replication(
         validation = exc
     try:
         rule = operations.targeting_rule(
-            source,
+            experiment,
+            resolver,
             "y",
             fraction=0.5,
             include_evaluation_population=True,
@@ -2344,7 +2347,8 @@ def evaluate_clustered_replication(
 
     try:
         selection = operations.select_targeting_rule(
-            source,
+            experiment,
+            resolver,
             "y",
             fractions=(0.0, 0.5, 1.0),
             seed=registration.selection_seed,
