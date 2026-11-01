@@ -10,10 +10,11 @@ from datetime import datetime
 
 import pytest
 
-from increment import Analysis
+from increment import from_frame
 from increment.errors import CapabilityError
 from increment.semantics.models import Definitions, Winsorization
-from tests.analysis_factory import _recovered_sum, make_analysis
+from increment.workflows import factor_summaries
+from tests.analysis_factory import _recovered_sum, make_binding
 
 
 def _analysis_with_country_breakout(con):
@@ -125,7 +126,7 @@ def _analysis_with_country_breakout(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -233,7 +234,7 @@ def _analysis_with_country_factor(
 
     if return_definitions:
         return defs
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -250,7 +251,6 @@ class TestFactorSummaries:
 
         from increment import from_definitions
         from increment.errors import IncrementWarning
-        from increment.workflows import factor_summaries
 
         definitions = _analysis_with_country_factor(con, return_definitions=True)
         definitions_path = tmp_path / "factor-definitions.yaml"
@@ -296,7 +296,6 @@ class TestFactorSummaries:
 
         from increment import from_definitions
         from increment.errors import IncrementWarning
-        from increment.workflows import factor_summaries
 
         definitions = _analysis_with_country_factor(con, return_definitions=True)
         metric = definitions.metrics[0].model_copy(
@@ -325,8 +324,8 @@ class TestFactorSummaries:
     def test_returns_empty_dict_without_declared_factors(self, con):
         """factor_summaries's early-return path: an experiment that
         declares no ``factors`` returns ``{}`` rather than raising."""
-        analysis = _analysis_with_country_breakout(con)
-        assert analysis.factor_summaries() == {}
+        experiment, resolver = _analysis_with_country_breakout(con)
+        assert factor_summaries(experiment, resolver) == {}
 
     def test_raises_capability_error_on_seam_family(self):
         """factor_summaries() needs a native Analysis.from_definitions
@@ -335,17 +334,18 @@ class TestFactorSummaries:
         summarise."""
         import pandas as pd
 
-        a = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pd.DataFrame(
                 {"unit": ["a", "b"], "group": ["control", "treatment"], "revenue": [1.0, 2.0]}
             ),
+            shape="summary",
             unit="unit",
             group="group",
             control="control",
             metrics={"revenue": "mean"},
         )
         with pytest.raises(CapabilityError) as raised:
-            a.factor_summaries()
+            factor_summaries(experiment, resolver)
         assert raised.value.code == "evidence.operation_unavailable"
 
     @pytest.mark.integration
@@ -451,9 +451,9 @@ class TestFactorSummaries:
                 ],
             }
         )
-        analysis = make_analysis(con, defs)
+        experiment, resolver = make_binding(con, defs)
 
-        out = analysis.factor_summaries()
+        out = factor_summaries(experiment, resolver)
         tbl = out["revenue:segment:props"].to_pylist()
         levels = {r["segment"] for r in tbl}
         # Only "loyal" (the pre-exposure value) surfaces; "churned" (pf1's post-exposure value) never does, proving the factor path dispatches to the pre-exposure-scoped builder.
@@ -482,7 +482,7 @@ class TestFactorSummaries:
 
         # Three levels: absorption refuses two, where the residual degrees of
         # freedom (K-2) would have to be fabricated.
-        analysis = _analysis_with_country_factor(
+        experiment, resolver = _analysis_with_country_factor(
             con,
             exposure_groups={
                 "US": {"control": ["fu1", "fu2"], "treatment": ["fu3", "fu4"]},
@@ -491,7 +491,7 @@ class TestFactorSummaries:
             },
             suffix="_abs",
         )
-        tbl = analysis.factor_summaries()["revenue:country:events"]
+        tbl = factor_summaries(experiment, resolver)["revenue:country:events"]
 
         res = absorb_factor(tbl, factor="country", control="control")
 

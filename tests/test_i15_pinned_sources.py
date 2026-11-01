@@ -4,6 +4,8 @@ from typing import cast
 
 import pytest
 
+from increment import from_definitions, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.evidence import (
     MomentRows,
     MomentsRequest,
@@ -12,6 +14,7 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
+from increment.workflows import breakout_summaries, experiment_definition
 
 pytestmark = pytest.mark.slow
 
@@ -594,7 +597,6 @@ def test_pinned_source_retains_pre_window_breakout_property_rows(tmp_path):
     import ibis
     import pyarrow as pa
 
-    from increment.analysis import Analysis
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -687,18 +689,26 @@ experiments:
 """
         )
         definitions = load(definitions_path)
-        native = Analysis.from_definitions("exp", definitions_path, con)
-        context = artifact_context(definitions, native.experiment, "error")
+        native_experiment, native_resolver = from_definitions(
+            definitions_path, con, experiment_name="exp"
+        )
+        context = artifact_context(
+            definitions, experiment_definition(native_experiment, native_resolver), "error"
+        )
         selected = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
             if entry.request.kind in ("breakout_dimension", "assignment_counts")
         ]
         store = WarehouseArtifactStore(con, schema_name="artifacts")
-        ref = native.publish_unit_day_artifact(store, extensions=selected)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        ref = publish_unit_day_artifact(
+            native_experiment, native_resolver, store, extensions=selected
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, ref, expected_context=context
+        )
         try:
-            summaries = adopted.breakout_summaries(metrics=["rev"])
+            summaries = breakout_summaries(adopted_experiment, adopted_resolver, metrics=["rev"])
             tiers = {
                 row["tier"]
                 for row in summaries["rev:tier:tier_events"]["group_summary"].to_pylist()
@@ -708,7 +718,7 @@ experiments:
                 "the pinned snapshot, matching what the unpinned path reads"
             )
         finally:
-            adopted.close()
+            adopted_resolver.close()
     finally:
         con.disconnect()
 
