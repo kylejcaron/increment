@@ -5,7 +5,6 @@ import pytest
 
 from increment import Scope, from_frame, from_switchback_frame
 from increment._evidence_dispatch import ContrastReadoutRequest
-from increment.analysis import Analysis
 from increment.artifacts import publish_unit_day_artifact
 from increment.decision import ContrastDecisionProcedure
 from increment.errors import CapabilityError, InvalidRequestError
@@ -199,12 +198,13 @@ def test_analysis_switchback_run_returns_one_result_per_metric_and_diagnostic():
 
 
 def test_switchback_store_projects_typed_uncertainty_into_history(tmp_path):
+    from increment import run
     from increment.estimation.contrast_results import ContrastResult
     from increment.store import HistorySelector, ParquetResultsStore
 
     frame = _frame()
     frame["value"] *= 72
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         frame,
         unit="unit",
         cycle="cycle",
@@ -219,20 +219,15 @@ def test_switchback_store_projects_typed_uncertainty_into_history(tmp_path):
         assignment=_assignment(),
     )
     store = ParquetResultsStore(tmp_path)
-    try:
-        results = analysis.run(store=store)
-        result = results[0]
+    with resolver:
+        saved = run(experiment, resolver, results_store=store)
+        result = saved.readout()[0]
         assert isinstance(result, ContrastResult)
         assert result.standard_error is not None
         assert result.dof == pytest.approx(1.0)
-        assert results.metadata is not None
-        assert results.metadata.analysis_spec_hash is not None
-        assert results.metadata.run_id is not None
-        handle = store.open_run(
-            "switchback", results.metadata.analysis_spec_hash, results.metadata.run_id
-        )
-        run = handle.run
-        cell = run.cells[0]
+        handle = store.open_run("switchback", saved.run.analysis_spec_hash, saved.run.run_id)
+        run_record = handle.run
+        cell = run_record.cells[0]
         assert cell.identity.metric_hash is not None
         identity = cell.identity
         assert identity.metric_hash is not None
@@ -257,8 +252,6 @@ def test_switchback_store_projects_typed_uncertainty_into_history(tmp_path):
         projected = handle.envelope().to_arrow().to_pylist()[0]
         assert projected["se"] == pytest.approx(72.0)
         assert projected["df"] == pytest.approx(1.0)
-    finally:
-        analysis.close()
 
 
 @pytest.mark.parametrize(

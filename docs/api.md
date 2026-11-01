@@ -188,6 +188,14 @@ change without notice.
 - Release note (bug fix): a breakout view of an experiment that declares no
   breakouts returns no rows when it runs beside other views, as it does alone,
   instead of refusing a metric that only a breakout read could not serve.
+- Release note (API addition): `run(..., results_store=)` saves switchback
+  contrast runs, replacing `Analysis.run(store=)`. A saved switchback run keeps
+  its cells, metadata and method identities for `store.query` and
+  `store.history`, but no decision plan: `RunResult.from_handle` refuses it
+  with `store.decision.reference_invalid`, and `decision_log=` refuses with
+  `wire.procedure.contrast_context`. Runs saved by `Analysis.run(store=)`
+  remain readable; history does not join them with new runs, because the
+  registration, scope and method identities differ.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

@@ -21,6 +21,7 @@ from increment.kernel.contracts import (
     Registration,
     Scope,
     _refuse,
+    contract_hash,
     method_config_hash,
     method_estimator_id,
     metric_hash,
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from increment._literals import Backend, ValueScale
     from increment.breakout.estimates import EstimateList
     from increment.decide.evaluator import Decisions
-    from increment.decision import CompiledDecisionPlan
+    from increment.decision import CompiledDecisionPlan, ContrastContext
     from increment.estimation.contrast_results import ContrastResults
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
@@ -104,7 +105,10 @@ class RunResult:
         """Restore a saved run's portable cells and decide them again under ``registration``.
 
         The saved decision plan must belong to ``registration``. Live readouts are
-        not stored, so every restored cell reports none and ``readout`` refuses.
+        not stored, so every restored cell reports none and ``readout`` refuses. A
+        saved switchback run keeps no decision plan and refuses with
+        ``store.decision.reference_invalid``; read its cells with
+        ``handle.envelope()``, ``store.query`` or ``store.history``.
         """
         from increment.decide import decide
 
@@ -228,7 +232,7 @@ class _InMemoryRunHandle:
 
 
 def _validate_registered_options(
-    compiled_plan: CompiledDecisionPlan, options: Mapping[str, object]
+    compiled_plan: CompiledDecisionPlan | ContrastContext, options: Mapping[str, object]
 ) -> None:
     values = dict(options)
     requested_metrics = values.pop("metrics", None)
@@ -255,6 +259,17 @@ def _require_registered_plan(registration: Registration, plan: CompiledDecisionP
     if not registration.matches(plan):
         raise CodedError(
             "Analysis execution plan differs from its pre-estimation registration",
+            code="store.decision.reference_invalid",
+            context={},
+        )
+
+
+def _require_registered_contrast(registration: Registration, contrast: ContrastContext) -> None:
+    if registration.registration_hash != contract_hash(
+        "registration", contrast.model_dump(mode="json")
+    ):
+        raise CodedError(
+            "Switchback contrast context differs from its pre-estimation registration",
             code="store.decision.reference_invalid",
             context={},
         )
@@ -508,11 +523,17 @@ def _execution_identity_fields(
                 code="store.run.identity_incomplete",
                 context={"field": "metric_identity"},
             )
+        contrast = _contrast_context(binding)
+        procedure = None if contrast is None else contrast.procedures.get(key.metric)
+        reference = None if procedure is None else procedure.reference
         return {
             "metric_hash": metric_hash(metric),
-            "estimator_id": None,
-            "method_config_hash": None,
-            "method_instance_id": None,
+            "estimator_id": key.method,
+            "method_config_hash": contract_hash(
+                "contrast_reference_config",
+                None if reference is None else reference.model_dump(mode="json"),
+            ),
+            "method_instance_id": f"{key.metric}:{key.method_role}:{key.method}",
         }
     if key.method is None and key.method_role is None:
         if metric is None:
@@ -858,13 +879,13 @@ def _run_rows(
     runtime_method_unavailable = any(item[2] for item in overrides)
     rows = _merge_scoped_readouts(parts)
     if contrast_context is not None:
-        if results_store is not None or decision_log is not None:
-            refuse(
-                _CONTRAST_CONTEXT_NOT_PORTABLE,
-                action="saving",
-            )
+        if decision_log is not None:
+            refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="logging")
         binding = None
-        binding_unavailable_reason = "wire.procedure.contrast_context"
+        # A saved switchback run keeps no decision plan; only an in-memory run names why.
+        binding_unavailable_reason = (
+            None if results_store is not None else "wire.procedure.contrast_context"
+        )
     else:
         try:
             if runtime_method_unavailable:
@@ -1055,23 +1076,27 @@ def _preflight_persistence(
     overrides: Mapping[str, object],
     *,
     saving: bool,
+    logging: bool,
 ) -> None:
     """Refuse a run that cannot be saved or logged under its registration, before any read."""
     from increment._runnability import operation_options, typed_request_options
 
     binding = resolver.binding
-    contrast = _contrast_context(binding) is not None
-    if not contrast:
+    contrast = _contrast_context(binding)
+    if contrast is None:
         _require_registered_plan(experiment.registration, binding.plan)
+    else:
+        _require_registered_contrast(experiment.registration, contrast)
     resolver.validate_experiment(experiment)
-    if contrast:
-        refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="saving")
-    CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
+    if contrast is None:
+        CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
+    elif logging:
+        refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="logging")
     registered = {**typed_request_options(experiment.request_options), **overrides}
     if not registered.get("metrics", True):
         # An empty selection is an empty run, which the store refuses itself.
         del registered["metrics"]
-    _validate_registered_options(binding.plan, registered)
+    _validate_registered_options(binding.plan if contrast is None else contrast, registered)
     if saving and any(
         _selected_percentile_winsorization(binding, operation_options(experiment, scope, overrides))
         for scope in experiment.scopes
@@ -1218,6 +1243,7 @@ def run(  # noqa: PLR0913
                 selected,
                 overrides,
                 saving=results_store is not None,
+                logging=decision_log is not None,
             )
         scoped = run_experiment(
             selected,

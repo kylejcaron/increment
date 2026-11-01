@@ -1955,11 +1955,18 @@ def test_switchback_builder_returns_in_memory_run_result_and_refuses_portable_st
         ParquetResultsStore(tmp_path).put(result.run)
     assert portability.value.code == "wire.procedure.contrast_context"
     log_path = tmp_path / "decisions.jsonl"
+    runs = tmp_path / "runs"
     with _frame_read_calls() as reads, pytest.raises(CodedError) as logged:
-        run(experiment, resolver, decision_log=DecisionLog(path=log_path))
+        run(
+            experiment,
+            resolver,
+            results_store=ParquetResultsStore(runs),
+            decision_log=DecisionLog(path=log_path),
+        )
     assert logged.value.code == "wire.procedure.contrast_context"
     assert reads == []
     assert not log_path.exists()
+    assert not tuple(runs.rglob("*.parquet"))
 
 
 def test_switchback_partial_run_selection_cannot_pass_omitted_guardrail():

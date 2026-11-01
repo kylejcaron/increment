@@ -1192,18 +1192,11 @@ def test_public_run_refuses_an_empty_run_id_before_reads():
     assert reads == []
 
 
-def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_path):
-    from dataclasses import replace
-
-    from increment.errors import CodedError
-    from increment.store import DecisionLog, ParquetResultsStore
-    from tests.test_kernel_review_regressions import _frame_read_calls
-
+def _arm_experiment_registered_elsewhere():
     analysis_plan = AnalysisPlan(primary="value", alpha=0.05)
     registered_plan = AnalysisPlan(primary="value", alpha=0.01)
     metric = synthesise_metric(MetricSpec(name="value", type="mean"))
     compiled = compile_decision_plan(registered_plan, [metric], path="frame")
-    registration = Registration.from_plan(compiled)
     experiment, resolver = from_frame(
         pd.DataFrame(
             {
@@ -1219,8 +1212,46 @@ def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_pat
         metrics={"value": "mean"},
         plan=analysis_plan,
     )
+    return experiment, resolver, Registration.from_plan(compiled)
+
+
+def _switchback_experiment_registered_elsewhere():
+    from increment import from_switchback_frame
+    from tests.test_frame_switchback import _assignment, _identification, _rows
+
+    def build(alpha: float):
+        return from_switchback_frame(
+            pd.DataFrame(_rows()),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"mean": "mean"},
+            identification=_identification(),
+            assignment=_assignment(),
+            plan=AnalysisPlan(primary="mean", alpha=alpha),
+        )
+
+    registered, other = build(0.01)
+    other.close()
+    experiment, resolver = build(0.05)
+    return experiment, resolver, registered.registration
+
+
+@pytest.mark.parametrize(
+    "build", [_arm_experiment_registered_elsewhere, _switchback_experiment_registered_elsewhere]
+)
+def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_path, build):
+    from dataclasses import replace
+
+    from increment.errors import CodedError
+    from increment.store import DecisionLog, ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
+
+    experiment, resolver, registration = build()
     log_path = tmp_path / "decisions.jsonl"
-    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+    with resolver, _frame_read_calls() as reads, pytest.raises(CodedError) as error:
         run(
             replace(experiment, registration=registration),
             resolver,

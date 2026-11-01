@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from increment import Analysis, from_switchback_frame
+from increment import from_switchback_frame
 from increment.artifacts import artifact_context
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.contrast import ContrastStats
@@ -169,9 +169,11 @@ def test_ordinary_panel_uses_independent_units_for_uncertainty():
 
 
 def test_switchback_public_analysis_persists_and_round_trips(tmp_path):
+    from increment import RunResult, run
+    from increment.errors import CodedError
     from increment.store import ParquetResultsStore
 
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pl.DataFrame(_rows()),
         unit="unit",
         cycle="cycle",
@@ -183,18 +185,17 @@ def test_switchback_public_analysis_persists_and_round_trips(tmp_path):
         assignment=_assignment(),
         experiment_id="switchback",
     )
-    try:
+    with resolver:
         store = ParquetResultsStore(tmp_path)
-        rows = analysis.run(store=store)
-        metadata = rows.metadata
-        assert metadata is not None
-        assert metadata.analysis_spec_hash is not None
-        assert metadata.run_id is not None
-        handle = store.open_run("switchback", metadata.analysis_spec_hash, metadata.run_id)
+        saved = run(experiment, resolver, results_store=store)
+        handle = store.open_run("switchback", saved.run.analysis_spec_hash, saved.run.run_id)
         (cell,) = handle.envelope().cells
         assert cell.identity.key.value_scale == "absolute"
-    finally:
-        analysis.close()
+        assert handle.envelope().cells == saved.cells
+        # A saved switchback run keeps no decision plan to decide it again from.
+        with pytest.raises(CodedError) as restored:
+            RunResult.from_handle(handle, registration=experiment.registration)
+        assert restored.value.code == "store.decision.reference_invalid"
 
 
 def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
