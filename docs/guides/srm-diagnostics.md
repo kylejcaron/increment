@@ -74,7 +74,8 @@ comparisons have no randomized allocation. Report these as unsupported or not
 applicable, not "no SRM."
 
 `sample_ratio_mismatch()` requires an explicit `expected` allocation. For
-`Analysis.srm()`, pass `expected` or declare `allocation` on the design.
+`increment.workflows.srm(experiment, resolver)`, pass `expected` or declare
+`allocation` on the design.
 Without either declaration, both fixed and always-valid inference refuse
 before producing an SRM result; observed arm proportions never define the
 null. For this example's declared 4:1 allocation the target is 80/20, not
@@ -85,7 +86,7 @@ constant `allocation` weights, and cumulative assigned counts at the
 randomization grain. Otherwise `health_check()` and `print(results)` record an
 unavailable status (for example, missing allocation is
 `not_checked_missing_declaration`). To request one predeclared fixed look,
-declare the target allocation and call `srm(inference="fixed")`.
+declare the target allocation and call `srm(experiment, resolver, inference="fixed")`.
 
 ??? info "How the always-valid SRM guarantee differs"
     That e-process is a distinct construction from the `AlwaysValid` guarantee
@@ -94,6 +95,61 @@ declare the target allocation and call `srm(inference="fixed")`.
     kind of time-uniform, peek-anytime validity. Its precondition is that
     cumulative assignment prefixes carry the same known conditional arm
     probabilities at every assignment.
+
+## Check a bound experiment
+
+`increment.workflows` runs the same checks against the source an experiment is
+bound to. `srm` returns one population's result; `health_check` reads one source
+snapshot and reports every assignment and trigger check with its population.
+
+```python
+import pyarrow as pa
+
+from increment import Randomized, from_frame
+from increment.workflows import health_check, srm
+
+units = pa.table(
+    {
+        "unit": [f"u{i}" for i in range(40)],
+        "arm": ["control", "treatment"] * 20,
+        "value": [float(i % 7) for i in range(40)],
+    }
+)
+experiment, resolver = from_frame(
+    units,
+    shape="summary",
+    unit="unit",
+    group="arm",
+    metrics={"value": "mean"},
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
+)
+fixed = srm(experiment, resolver, inference="fixed")
+print(f"fixed: is_srm={fixed.is_srm} grain={fixed.grain}")
+for check in health_check(experiment, resolver).checks:
+    print(check.check, check.analysis_population, check.availability, check.conclusion)
+```
+
+<!-- output -->
+```text
+fixed: is_srm=False grain=unit
+assigned_allocation assigned available not_rejected
+triggered_balance triggered not_applicable None
+trigger_rates triggered not_applicable None
+trigger_maturity triggered not_applicable None
+feed_completeness triggered not_applicable None
+trigger_assumptions triggered not_applicable None
+```
+
+Each check is `available`, `unavailable` (the source cannot answer; the check
+carries the refusal code), or `not_applicable` (the design does not call for
+it). Only an available check has a conclusion, and `not_rejected` does not
+prove valid assignment. A source that retains only portable moments reports
+its triggered checks as unavailable rather than reconstructing the trigger
+population.
 
 ## Assignment-protocol requirements
 

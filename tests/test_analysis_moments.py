@@ -1026,9 +1026,10 @@ def test_moments_from_summaries_refuses_n_one_mean_summary():
 def test_moments_from_summaries_preserves_optional_assignment_counts():
     import json
 
-    from increment import Analysis
+    from increment import from_moments
     from increment.estimators import moments_from_summaries
     from increment.sources import ASSIGNMENT_COUNTS_FIELD
+    from increment.workflows import srm, unit_counts
 
     rows = moments_from_summaries(
         [
@@ -1043,16 +1044,19 @@ def test_moments_from_summaries_preserves_optional_assignment_counts():
         payload = row[ASSIGNMENT_COUNTS_FIELD]
         assert isinstance(payload, str)
         assert json.loads(payload) == {"control": 5, "treatment": 7}
-    analysis = Analysis.from_moments(rows, metrics={"value": "mean"}, control="control")
-    assert analysis.unit_counts() == {"control": 5, "treatment": 7}
+    experiment, resolver = from_moments(rows, metrics={"value": "mean"}, control="control")
+    assert unit_counts(experiment, resolver) == {"control": 5, "treatment": 7}
     from increment.estimation.diagnostics import SRMResult
 
-    result = analysis.srm(
+    result = srm(
+        experiment,
+        resolver,
         expected={"control": 5 / 12, "treatment": 7 / 12},
         inference="fixed",
     )
     assert isinstance(result, SRMResult)
     assert result.observed == {"control": 5, "treatment": 7}
+    assert result.grain == "unit"
 
 
 @pytest.mark.parametrize(
@@ -1081,10 +1085,11 @@ def test_moments_from_summaries_rejects_invalid_assignment_counts(assignment_cou
 
 
 def test_moments_from_summaries_without_assignment_counts_refuses_count_operations():
-    from increment import Analysis
+    from increment import from_moments
     from increment.errors import CodedError
     from increment.estimators import moments_from_summaries
     from increment.semantics.design import Randomized
+    from increment.workflows import health_check, srm, unit_counts
 
     rows = moments_from_summaries(
         [
@@ -1094,7 +1099,7 @@ def test_moments_from_summaries_without_assignment_counts_refuses_count_operatio
         metrics={"value": "mean"},
         control="control",
     )
-    analysis = Analysis.from_moments(
+    experiment, resolver = from_moments(
         rows,
         metrics={"value": "mean"},
         design=Randomized(
@@ -1104,18 +1109,19 @@ def test_moments_from_summaries_without_assignment_counts_refuses_count_operatio
         ),
     )
     with pytest.raises(CodedError) as counts:
-        analysis.unit_counts()
+        unit_counts(experiment, resolver)
     assert counts.value.code == "source.moments.assignment_counts"
-    with pytest.raises(CodedError) as srm:
-        analysis.srm(expected={"control": 0.5, "treatment": 0.5})
-    assert srm.value.code == "source.moments.assignment_counts"
+    with pytest.raises(CodedError) as refused:
+        srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
+    assert refused.value.code == "source.moments.assignment_counts"
     allocation = next(
         check
-        for check in analysis.health_check(
-            expected_allocation={"control": 0.5, "treatment": 0.5}
+        for check in health_check(
+            experiment, resolver, expected_allocation={"control": 0.5, "treatment": 0.5}
         ).checks
         if check.check == "assigned_allocation"
     )
+    assert allocation.analysis_population == "assigned"
     assert allocation.availability == "unavailable"
     assert allocation.code == "source.moments.assignment_counts"
 

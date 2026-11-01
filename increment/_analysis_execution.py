@@ -46,9 +46,8 @@ from increment._day_axis import (
 )
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
 from increment._evidence_refusals import CONTRAST_UNAVAILABLE as _CONTRAST_UNAVAILABLE
+from increment._evidence_refusals import INVALID_POPULATION as _INVALID_POPULATION
 from increment._evidence_types import (
-    CountEvidence,
-    CountsRequest,
     DayAxisRequest,
     EvidenceScope,
     SequentialCaptureRequest,
@@ -57,13 +56,11 @@ from increment._evidence_types import (
 from increment._literals import Backend, Correction, ValueScale
 from increment._source_admission import _require_analysis_operation
 from increment._source_operations import (
-    AllocationHistoryOperation,
     DashboardBreakoutReads,
     DashboardGroupData,
     DashboardGroupDataOperation,
     DashboardSnapshotPayload,
     ExploratorySourceOperation,
-    TriggeredHealthEvidenceOperation,
 )
 from increment._source_types import declared_evidence, is_custom_source
 from increment._source_workflows import EXPLORATORY_SOURCE_LIMITED as _EXPLORATORY_SOURCE_LIMITED
@@ -76,27 +73,18 @@ from increment.decision import (
     DefinitionsArmAnalysisState,
 )
 from increment.errors import (
-    CapabilityError,
     CodedError,
-    InvalidRequestError,
     RefusalSpec,
     UnsupportedRequestError,
-    raiser,
-    refusals,
 )
 from increment.errors import refuse as _refuse
-from increment.estimation.assignment_integrity import (
-    ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
-    ALLOCATION_SCHEME_MISSING_REFUSAL,
-)
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
-from increment.evidence import evidence_provider, request_evidence
+from increment.evidence import evidence_provider
 from increment.plan import with_unassigned_procedures
 from increment.readouts._evidence import (
     NATIVE_ROUTE,
     day_axis_route,
-    is_artifact_route,
     source_route,
 )
 from increment.readouts._whole_window import (
@@ -108,22 +96,9 @@ from increment.readouts._whole_window import (
     validate_contrast_request,
 )
 from increment.semantics.models import Breakout, Definitions, Experiment
-from increment.sources import _health_snapshot_id
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
 
-
-_SWITCHBACK_ONLY = RefusalSpec(
-    "facade.analysis.switchback_only",
-    CapabilityError,
-    template="{method}() is only available for switchback evidence.",
-)
-
-_INVALID_POPULATION = RefusalSpec(
-    "facade.analysis.invalid_population",
-    InvalidRequestError,
-    template="population must be 'assigned' or 'triggered'; got {population!r}",
-)
 
 _EXPLORATORY_SEQUENTIAL = RefusalSpec(
     "facade.analysis.exploratory_metrics_sequential",
@@ -198,25 +173,15 @@ def fit_predeclared_adjustment(
     )
 
 
-_REFUSALS = refusals(
-    InvalidRequestError,
-    {
-        "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
-        "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
-    },
-)
-
-_raise = raiser(_REFUSALS)
-
-
 if TYPE_CHECKING:
     import pyarrow as pa
     from ibis.expr.types import Table
 
+    from increment._health import SrmObservations
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.cate import CateResult, Covariate
     from increment.estimation.diagnostics import NotApplicable, SRMResult
-    from increment.estimation.health import ExperimentHealth, HealthCheck
+    from increment.estimation.health import ExperimentHealth
     from increment.estimation.inference import Prior
     from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
     from increment.estimation.targeting import (
@@ -301,10 +266,7 @@ def _current_execution_context() -> Any | None:
 class Analysis:
     """Execute operations over one immutable source binding."""
 
-    _readout_snapshot_active: bool = False
-    _readout_srm_observations: (
-        dict[tuple[Any, ...], tuple[Any, tuple[str, Mapping[str, Any], str] | None]] | None
-    ) = None
+    _readout_srm_observations: SrmObservations | None = None
 
     def __init__(self, binding: SourceBinding) -> None:
         self._binding = binding
@@ -528,12 +490,10 @@ class Analysis:
     ) -> _T:
         isolated = copy.copy(self)
         isolated._binding = self._binding.with_source(pinned)
-        isolated._readout_snapshot_active = True
         isolated._readout_srm_observations = {}
         try:
             return operation(isolated)
         finally:
-            delattr(isolated, "_readout_snapshot_active")
             delattr(isolated, "_readout_srm_observations")
 
     def dashboard_breakout_reads(self, breakout: Breakout) -> DashboardBreakoutReads:
@@ -623,437 +583,22 @@ class Analysis:
         Sources without raw enrollment events and clustered experiments refuse
         this unit-grain timeline with a coded capability error.
         """
-        src = _require_analysis_operation(
-            self._src,
-            "allocation_history",
-            AllocationHistoryOperation,
-            message=(
-                "allocation_history() needs a native Analysis.from_definitions instance; "
-                "a frame/warehouse/moments-backed analysis retains no raw event stream "
-                "to build a daily enrollment timeline from."
-            ),
-        )
-        return src.allocation_history(population=population)
+        from increment._source_diagnostics import _allocation_history_binding
+
+        _ = self._src
+        return _allocation_history_binding(self._binding, population=population)
 
     def health_check(
         self, *, expected_allocation: Mapping[str, float] | None = None
     ) -> ExperimentHealth:
-        from increment._health import check_health
+        from increment._source_diagnostics import _health_check_binding
 
-        if getattr(self, "_readout_snapshot_active", False) or isinstance(
-            self._state, ContrastAnalysisState
-        ):
-            return self._collect_health(expected_allocation)
-
-        def collect(pinned: _BuiltinMomentSource) -> ExperimentHealth:
-            if pinned is self._src:
-                return self._collect_health(expected_allocation)
-            return self._with_pinned_source(
-                pinned,
-                lambda isolated: isolated._collect_health(expected_allocation),
-            )
-
-        return check_health(self._src, metrics=self._metrics, collect=collect)
-
-    def _collect_health(
-        self,
-        expected_allocation: Mapping[str, float] | None,
-        *,
-        allocation_observations: Mapping[
-            str,
-            tuple[SRMResult | NotApplicable | None, tuple[str, Mapping[str, Any], str] | None],
-        ]
-        | None = None,
-    ) -> ExperimentHealth:
-        from increment.estimation.assignment_integrity import assignment_integrity
-        from increment.estimation.diagnostics import NotApplicable
-        from increment.estimation.health import ExperimentHealth, HealthCheck
-
-        experiment = getattr(self._src, "artifact_experiment", None)
-        trigger_name = getattr(experiment, "trigger", None) or getattr(
-            self._context, "trigger_name", None
+        _ = self._src
+        return _health_check_binding(
+            self._binding,
+            expected_allocation=expected_allocation,
+            observations=self._readout_srm_observations,
         )
-        triggered = trigger_name is not None
-        checks: list[HealthCheck] = []
-        # Reuse SRM results already collected on this isolated pinned analysis.
-        if allocation_observations is None:
-            captured = getattr(self, "_readout_srm_observations", None)
-            if captured is not None:
-                expected_key = (
-                    None
-                    if expected_allocation is None
-                    else tuple(sorted(expected_allocation.items()))
-                )
-                allocation_observations = {
-                    population: captured[key]
-                    for population in ("assigned", "triggered")
-                    if (key := (population, expected_key, 0.001, "always_valid")) in captured
-                } or None
-
-        def srm_check(population: Literal["assigned", "triggered"]) -> HealthCheck:
-            check_name = "assigned_allocation" if population == "assigned" else "triggered_balance"
-            if population == "assigned" and isinstance(self._state, ContrastAnalysisState):
-                return HealthCheck(
-                    check=check_name,
-                    analysis_population=population,
-                    availability="unavailable",
-                    code="integrity.switchback_assignment_law",
-                    context={
-                        "reason": "Switchback order randomization is not a unit-arm allocation law."
-                    },
-                )
-            if population == "assigned":
-                admission_design = self._design
-                if (
-                    admission_design is not None
-                    and expected_allocation is not None
-                    and getattr(admission_design, "allocation_scheme", None) == "independent"
-                    and getattr(admission_design, "allocation", None) is None
-                ):
-                    admission_design = admission_design.model_copy(
-                        update={"allocation": dict(expected_allocation)}
-                    )
-                integrity = assignment_integrity(admission_design, None)
-                if integrity.status == "not_applicable":
-                    return HealthCheck(
-                        check=check_name,
-                        analysis_population=population,
-                        availability="not_applicable",
-                        context={
-                            "reason": "The declared design has no assignment allocation to test."
-                        },
-                    )
-                if integrity.status != "not_checked_missing_counts":
-                    return HealthCheck(
-                        check=check_name,
-                        analysis_population=population,
-                        availability="unavailable",
-                        code=integrity.code,
-                        context={
-                            **dict(integrity.context),
-                            "reason": f"Assignment-law admission is {integrity.status}.",
-                            **(
-                                {
-                                    "route": (
-                                        "Declare allocation_scheme='independent' on a design "
-                                        "that uses an independent constant-probability draw, or "
-                                        "pass the target shares as Analysis.srm(inference='fixed', "
-                                        "expected={...}) for one predeclared look."
-                                    )
-                                }
-                                if integrity.code == "integrity.allocation_scheme_missing"
-                                else {}
-                            ),
-                        },
-                    )
-            if allocation_observations is not None and population in allocation_observations:
-                result, refusal = allocation_observations[population]
-                if result is None:
-                    code, refusal_context, reason = refusal or (
-                        "",
-                        {},
-                        "No allocation result was captured.",
-                    )
-                    availability = (
-                        "not_applicable"
-                        if code == "dashboard.allocation_not_applicable"
-                        else "unavailable"
-                    )
-                    return HealthCheck(
-                        check=check_name,
-                        analysis_population=population,
-                        availability=availability,
-                        code=code or None,
-                        context={**dict(refusal_context), "reason": reason},
-                    )
-            else:
-                try:
-                    result = self.srm(
-                        expected=None if expected_allocation is None else dict(expected_allocation),
-                        population=population,
-                    )
-                except CapabilityError as refusal:
-                    return HealthCheck(
-                        check=check_name,
-                        analysis_population=population,
-                        availability="unavailable",
-                        code=refusal.code,
-                        context={**dict(refusal.context), "reason": str(refusal)},
-                    )
-                except InvalidRequestError as refusal:
-                    if refusal.code not in {
-                        "estimation.diagnostics.total_observed_count",
-                        "estimation.diagnostics.always_srm_predeclared",
-                    } or (
-                        refusal.code == "estimation.diagnostics.always_srm_predeclared"
-                        and population != "triggered"
-                    ):
-                        raise
-                    context = {**dict(refusal.context), "reason": str(refusal)}
-                    if refusal.code == "estimation.diagnostics.always_srm_predeclared":
-                        context["route"] = (
-                            "Declare allocation on the design or pass expected_allocation "
-                            "to health_check()."
-                        )
-                    return HealthCheck(
-                        check=check_name,
-                        analysis_population=population,
-                        availability="unavailable",
-                        code=refusal.code,
-                        context=context,
-                    )
-            if isinstance(result, NotApplicable):
-                return HealthCheck(
-                    check=check_name,
-                    analysis_population=population,
-                    availability="not_applicable",
-                    context={"reason": result.reason},
-                )
-            return HealthCheck(
-                check=check_name,
-                analysis_population=population,
-                availability="available",
-                conclusion=(
-                    "warning"
-                    if result.is_srm
-                    or result.low_expected_count
-                    or result.unassigned_units
-                    or result.mixed_assignment_units
-                    else "not_rejected"
-                ),
-                context={
-                    "grain": result.grain,
-                    "observed": dict(result.observed),
-                    "expected": dict(result.expected),
-                    "unassigned_units": result.unassigned_units,
-                    "mixed_assignment_units": result.mixed_assignment_units,
-                    "low_expected_count": result.low_expected_count,
-                },
-                srm=result,
-            )
-
-        checks.append(srm_check("assigned"))
-        if triggered:
-            checks.append(srm_check("triggered"))
-            try:
-                rates = self.trigger_rates()
-            except CapabilityError as refusal:
-                checks.append(
-                    HealthCheck(
-                        check="trigger_rates",
-                        analysis_population="triggered",
-                        availability="unavailable",
-                        code=refusal.code,
-                        context={**dict(refusal.context), "reason": str(refusal)},
-                    )
-                )
-            else:
-                checks.append(
-                    HealthCheck(
-                        check="trigger_rates",
-                        analysis_population="triggered",
-                        availability="available",
-                        conclusion="descriptive",
-                        context={"description": "Observed trigger share by assigned arm."},
-                        rates=rates,
-                    )
-                )
-            self._append_trigger_maturity(checks)
-            self._append_feed_completeness(checks)
-            checks.append(self._trigger_assumptions())
-        else:
-            for check_name in (
-                "triggered_balance",
-                "trigger_rates",
-                "trigger_maturity",
-                "feed_completeness",
-                "trigger_assumptions",
-            ):
-                checks.append(
-                    HealthCheck(
-                        check=check_name,
-                        analysis_population="triggered",
-                        availability="not_applicable",
-                        context={"reason": "This experiment does not declare a trigger."},
-                    )
-                )
-        check_order = (
-            "assigned_allocation",
-            "triggered_balance",
-            "trigger_rates",
-            "trigger_maturity",
-            "feed_completeness",
-            "trigger_assumptions",
-        )
-        checks.sort(
-            key=lambda check: (
-                check_order.index(check.check),
-                check.analysis_population,
-                check.metric or "",
-                check.feed or "",
-            )
-        )
-        return ExperimentHealth(
-            checks=tuple(checks),
-            source_snapshot_id=self._health_snapshot_id(checks),
-            source_cutoff=self._health_cutoff(),
-        )
-
-    def _append_trigger_maturity(self, checks: list[HealthCheck]) -> None:
-        from increment.estimation.health import HealthCheck
-        from increment.query.artifact_contract import ArtifactContractError
-
-        edges = getattr(self._src, "triggered_observation_edges", None)
-        for metric in sorted(self._metrics, key=lambda item: item.name):
-            if not callable(edges):
-                checks.append(
-                    HealthCheck(
-                        check="trigger_maturity",
-                        analysis_population="triggered",
-                        metric=metric.name,
-                        availability="unavailable",
-                        code="evidence.operation_unavailable",
-                        context={
-                            "constructor": type(self._src).__name__,
-                            "requested": "triggered_observation_edges",
-                            "offered": tuple(sorted(getattr(self._src, "operations", ()))),
-                            "route": "This source does not retain trigger maturity evidence.",
-                        },
-                    )
-                )
-                continue
-            try:
-                observed, finalized = edges(metric)
-            except (CapabilityError, ArtifactContractError) as refusal:
-                checks.append(
-                    HealthCheck(
-                        check="trigger_maturity",
-                        analysis_population="triggered",
-                        metric=metric.name,
-                        availability="unavailable",
-                        code=refusal.code,
-                        context={**dict(refusal.context), "reason": str(refusal)},
-                    )
-                )
-                continue
-            checks.append(
-                HealthCheck(
-                    check="trigger_maturity",
-                    analysis_population="triggered",
-                    metric=metric.name,
-                    availability="available",
-                    conclusion="warning" if finalized is None else "descriptive",
-                    context={
-                        "observed_edge": observed.isoformat(),
-                        "finalized_edge": None if finalized is None else finalized.isoformat(),
-                        "reason": "The metric window is not certified complete."
-                        if finalized is None
-                        else "The retained finalized prefix is shown; no later horizon is inferred.",
-                    },
-                )
-            )
-
-    def _append_feed_completeness(self, checks: list[HealthCheck]) -> None:
-        from increment.estimation.health import HealthCheck
-
-        if isinstance(self._src, TriggeredHealthEvidenceOperation):
-            evidence = self._src.triggered_health_evidence()
-            for item in evidence.feeds:
-                feed = item.feed or item.evidence_kind
-                if item.metric is not None:
-                    feed = f"{feed}:{item.metric}"
-                watermark = item.complete_through
-                checks.append(
-                    HealthCheck(
-                        check="feed_completeness",
-                        analysis_population="triggered",
-                        metric=item.metric,
-                        feed=feed,
-                        availability="unavailable" if watermark is None else "available",
-                        conclusion=None if watermark is None else "descriptive",
-                        context={
-                            "evidence_kind": item.evidence_kind,
-                            "watermark": None if watermark is None else watermark.isoformat(),
-                            "reason": (
-                                "A SQL-backed assignment exposure has no fact feed whose "
-                                "completeness can be certified."
-                                if item.evidence_kind == "native_sql_assignment"
-                                else "A SQL-backed trigger has no fact feed whose completeness "
-                                "can be certified."
-                                if item.evidence_kind == "native_sql_trigger"
-                                else "No certified completeness watermark is retained for this feed."
-                                if watermark is None
-                                else "Certified completeness watermark at the source cutoff."
-                            ),
-                        },
-                    )
-                )
-            if evidence.feeds:
-                return
-        checks.append(
-            HealthCheck(
-                check="feed_completeness",
-                analysis_population="triggered",
-                availability="unavailable",
-                context={
-                    "reason": "This source retains no per-feed completeness certificates.",
-                    "watermark": None,
-                },
-            )
-        )
-
-    def _trigger_assumptions(self) -> HealthCheck:
-        from increment.estimation.family import sequential_family_guarantee
-        from increment.estimation.health import HealthCheck
-
-        runtime_inference = self._plan.inference
-        declared_plan = getattr(getattr(self._src, "artifact_experiment", None), "plan", None)
-        if declared_plan is None and isinstance(self._state, DefinitionsArmAnalysisState):
-            declared_plan = self._state.experiment.plan
-        inference = getattr(declared_plan, "inference", runtime_inference)
-        registration = getattr(inference, "triggered_registration", None)
-        family_guarantee = (
-            sequential_family_guarantee(registration) if registration is not None else None
-        )
-        return HealthCheck(
-            check="trigger_assumptions",
-            analysis_population="triggered",
-            availability="available",
-            conclusion="descriptive",
-            context={
-                "counterfactual_trigger_invariance": "assumed, not established by balance or rates",
-                "trigger_order_stationarity": "assumed, not established by balance or rates",
-                "no_effect_before_trigger": "assumed, not established by balance or rates",
-                "triggered_look_predictability": (
-                    "assumed, not verified: looks, stops and freezes use only already-revealed "
-                    "triggered-chain information, not assigned results that reveal future "
-                    "triggered outcomes, including the same metric"
-                    if family_guarantee is not None
-                    else None
-                ),
-                "family_guarantee": family_guarantee,
-                "family_guarantee_status": (
-                    "assumed, not verified" if family_guarantee is not None else None
-                ),
-                "risk": (
-                    "Balanced trigger rates do not verify counterfactual trigger invariance.",
-                    "Trigger-order stationarity remains an assumption.",
-                    "Assigned results can reveal future triggered outcomes, including "
-                    "the same metric; they must not inform triggered family stops or freezes.",
-                ),
-            },
-        )
-
-    def _health_snapshot_id(self, checks: Sequence[HealthCheck]) -> str | None:
-        evidence = [check.model_dump(mode="json") for check in checks]
-        return _health_snapshot_id(self._src, self._health_cutoff(), evidence)
-
-    def _health_cutoff(self) -> str | None:
-        if isinstance(self._src, TriggeredHealthEvidenceOperation):
-            cutoff = self._src.triggered_health_evidence().observation_cutoff
-            return None if cutoff is None else cutoff.isoformat()
-        evidence = self._session.source_snapshot_evidence if self._session is not None else None
-        return None if evidence is None else evidence.observation_cutoff_ts.isoformat()
 
     def unit_counts(self) -> dict[str, int]:
         """Return enrolled unit counts by canonical group label.
@@ -1061,20 +606,10 @@ class Analysis:
         Excluded unassigned units appear under ``"(unassigned)"``. Sources
         without total-grain count evidence refuse with a coded capability error.
         """
-        source = self._src
-        if not is_custom_source(source):
-            source = _require_analysis_operation(
-                source,
-                "unit_counts",
-                message="unit_counts() requires a source with enrolled total-grain counts.",
-            )
-        request = CountsRequest(kind="unit", population=getattr(source, "population", "assigned"))
-        return dict(
-            cast(
-                CountEvidence,
-                request_evidence(evidence_provider(source), request),
-            ).counts
-        )
+        from increment._source_diagnostics import _unit_counts_binding
+
+        _ = self._src
+        return _unit_counts_binding(self._binding)
 
     def srm(
         self,
@@ -1093,7 +628,10 @@ class Analysis:
 
         ``expected`` supplies the target allocation for this call; otherwise
         the design must declare ``allocation``. SRM never assumes equal shares
-        or infers its null from observed counts.
+        or infers its null from observed counts. An unavailable population or a
+        missing target allocation refuses with a coded error; declare
+        ``Randomized(control_group=..., allocation={...}, allocation_scheme=...)``
+        to check the design allocation.
 
         Parameters
         ----------
@@ -1107,13 +645,6 @@ class Analysis:
             ``"assigned"`` (default) checks enrolled counts.
             ``"triggered"`` narrows to the declared trigger population first.
 
-        Raises
-        ------
-        CapabilityError
-            If the requested population is unavailable or no target allocation
-            is declared. Declare ``Randomized(control_group=..., allocation={...},
-            allocation_scheme=...)`` to check the design allocation.
-
         Returns
         -------
         SRMResult | NotApplicable
@@ -1121,86 +652,17 @@ class Analysis:
             have no target allocation to test against. Runs normally under
             :class:`Encouragement`.
         """
-        self._require_arm_state("srm")
-        if population not in ("assigned", "triggered"):
-            _refuse(_INVALID_POPULATION, population=population)
-        src = self._src
-        observations = getattr(self, "_readout_srm_observations", None)
-        key = None
-        if observations is not None:
-            key = (
-                population,
-                None if expected is None else tuple(sorted(expected.items())),
-                alpha,
-                inference,
-            )
-        try:
-            if population == "triggered":
-                src = _require_analysis_operation(
-                    src,
-                    "triggered_counts",
-                    message=(
-                        "srm(population='triggered') needs a native "
-                        "Analysis.from_definitions instance -- a frame/warehouse/"
-                        "moments-backed analysis retains no raw event stream to "
-                        "narrow to a triggered population."
-                    ),
-                )
-                if expected is None and getattr(self._design, "allocation", None) is None:
-                    # Match assignment_integrity: no scheme -> allocation_scheme_missing; independent with no allocation -> allocation_missing_or_nonconstant.
-                    _raise(
-                        (
-                            "integrity.allocation_scheme_missing"
-                            if getattr(self._design, "allocation_scheme", None) is None
-                            else "integrity.allocation_missing_or_nonconstant"
-                        ),
-                        population=population,
-                    )
-                from increment.estimation.diagnostics import (
-                    complete_srm_support,
-                    resolve_srm_expected,
-                    sample_ratio_mismatch,
-                )
+        from increment._source_diagnostics import _srm_binding
 
-                expected = resolve_srm_expected(
-                    expected,
-                    allocation=getattr(self._design, "allocation", None),
-                    inference=inference,
-                )
-                triggered = evidence_provider(src).counts(CountsRequest(kind="triggered"))
-                grain, counts, unit_counts = (
-                    cast("Literal['unit', 'cluster']", triggered.grain),
-                    dict(triggered.counts),
-                    dict(triggered.unit_counts),
-                )
-                counts = complete_srm_support(counts, expected=expected)
-                if unit_counts:
-                    unit_counts = complete_srm_support(unit_counts, expected=expected)
-                result = sample_ratio_mismatch(
-                    counts,
-                    expected=expected,
-                    alpha=alpha,
-                    inference=inference,
-                    grain=grain,
-                    unit_counts=unit_counts,
-                )
-            else:
-                result = readouts.srm(
-                    src,
-                    expected=expected,
-                    alpha=alpha,
-                    inference=inference,
-                )
-        except CapabilityError as refusal:
-            if observations is not None and key is not None:
-                observations[key] = (
-                    None,
-                    (refusal.code, dict(refusal.context), str(refusal)),
-                )
-            raise
-        if observations is not None and key is not None:
-            observations[key] = (result, None)
-        return result
+        _ = self._src
+        return _srm_binding(
+            self._binding,
+            expected=expected,
+            alpha=alpha,
+            inference=inference,
+            population=population,
+            observations=self._readout_srm_observations,
+        )
 
     def trigger_rates(self) -> dict[str, float]:
         """Observed triggered share per arm.
@@ -1209,30 +671,10 @@ class Analysis:
         ``Baseline(..., trigger_rate=...)``, then ``required_sample_size(...)``,
         to plan a follow-up at the right size.
         """
-        from increment.query.native_contract import NativeCoreSource
+        from increment._source_diagnostics import _trigger_rates_binding
 
-        source = self._src
-        if is_artifact_route(source):
-            if "triggered_counts" not in declared_evidence(source).operations:
-                from increment._evidence_refusals import refuse_operation
-
-                refuse_operation(
-                    source,
-                    "triggered_counts",
-                    tuple(sorted(declared_evidence(source).operations)),
-                    route="trigger_rates() requires complete trigger evidence",
-                )
-            return source.trigger_rates()
-        src = _require_analysis_operation(
-            source,
-            "triggered_counts",
-            NativeCoreSource,
-            message=(
-                "trigger_rates() needs a native Analysis.from_definitions "
-                "instance with a warehouse backend"
-            ),
-        )
-        return src.trigger_rates()
+        _ = self._src
+        return _trigger_rates_binding(self._binding)
 
     def _validate_trigger_fires_in_every_arm(self, source: object | None = None) -> None:
         from increment.readouts._evidence import validate_trigger_fires_in_every_arm
@@ -2290,10 +1732,9 @@ class Analysis:
 
     def assignment_diagnostic(self) -> SwitchbackAssignmentDiagnostic:
         """Return switchback assignment integrity evidence."""
-        if self._state.family != "contrast":
-            _refuse(_SWITCHBACK_ONLY, method="assignment_diagnostic")
-        source = self._src
-        return source.diagnostics
+        from increment._source_diagnostics import _assignment_diagnostic_binding
+
+        return _assignment_diagnostic_binding(self._binding)
 
     def breakout_summaries(
         self, *, metrics: Sequence[str | Metric] | None = None

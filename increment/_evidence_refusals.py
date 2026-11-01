@@ -15,7 +15,7 @@ from increment._assignment_refusals import (
     refuse_assignment_selection as _refuse_assignment_selection,
 )
 from increment._source_types import PROVIDER_UNAVAILABLE
-from increment.errors import CapabilityError, CodedError, RefusalSpec, refuse
+from increment.errors import CapabilityError, CodedError, InvalidRequestError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
     from increment._source_types import Grain
@@ -97,6 +97,12 @@ CONTRAST_UNAVAILABLE = RefusalSpec(
     "facade.analysis.contrast_unavailable",
     CapabilityError,
     template="{method}() is unavailable for switchback contrast evidence.",
+)
+
+INVALID_POPULATION = RefusalSpec(
+    "facade.analysis.invalid_population",
+    InvalidRequestError,
+    template="population must be 'assigned' or 'triggered'; got {population!r}",
 )
 
 

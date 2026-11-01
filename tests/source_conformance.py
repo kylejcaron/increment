@@ -641,8 +641,7 @@ def switchback_frame() -> Any:
     return pd.DataFrame(rows)
 
 
-def switchback_source() -> Any:
-    from increment.frame import from_switchback_panel
+def _switchback_options() -> dict[str, Any]:
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,
@@ -650,51 +649,40 @@ def switchback_source() -> Any:
     )
     from increment.semantics.design import Randomized
 
-    return from_switchback_panel(
-        switchback_frame(),
-        unit="unit",
-        cycle="cycle",
-        period="period",
-        step="step",
-        group="group",
-        metrics={"value": "mean"},
-        contrast_references={"value": UnitCycleTApproximation()},
-        identification=Randomized(
+    return {
+        "unit": "unit",
+        "cycle": "cycle",
+        "period": "period",
+        "step": "step",
+        "group": "group",
+        "metrics": {"value": "mean"},
+        "contrast_references": {"value": UnitCycleTApproximation()},
+        "identification": Randomized(
             control_group="control", allocation={"control": 0.5, "treatment": 0.5}
         ),
-        assignment=SwitchbackAssignment(
+        "assignment": SwitchbackAssignment(
             sequence=IndependentBernoulliOrder(probability_ct=0.5),
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
-    )
+    }
+
+
+def switchback_source() -> Any:
+    from increment.frame import from_switchback_panel
+
+    return from_switchback_panel(switchback_frame(), **_switchback_options())
 
 
 def switchback_analysis() -> Any:
     from increment import Analysis
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
-    from increment.semantics.design import Randomized
 
-    return Analysis.from_switchback_panel(
-        switchback_frame(),
-        unit="unit",
-        cycle="cycle",
-        period="period",
-        step="step",
-        group="group",
-        metrics={"value": "mean"},
-        contrast_references={"value": UnitCycleTApproximation()},
-        identification=Randomized(
-            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-        ),
-        assignment=SwitchbackAssignment(
-            sequence=IndependentBernoulliOrder(probability_ct=0.5),
-            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-        ),
-    )
+    return Analysis.from_switchback_panel(switchback_frame(), **_switchback_options())
+
+
+def switchback_experiment() -> tuple[Any, Any]:
+    from increment import from_switchback_frame
+
+    return from_switchback_frame(switchback_frame(), **_switchback_options())
 
 
 def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any]], ...]:

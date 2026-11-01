@@ -255,9 +255,9 @@ Choose how to handle them explicitly.
 ### Missing group labels
 
 Pass `on_unassigned="exclude"` to exclude rows with no assignment.
-`analysis.unit_counts()` reports the excluded units under `"(unassigned)"`, and
-the sample-ratio mismatch (SRM) check reports them separately. They never
-become a treatment group.
+`increment.workflows.unit_counts(experiment, resolver)` reports the excluded
+units under `"(unassigned)"`, and the sample-ratio mismatch (SRM) check reports
+them separately. They never become a treatment group.
 
 ### Missing metric values
 

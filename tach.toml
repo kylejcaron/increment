@@ -115,6 +115,7 @@ layer = "core"
 depends_on = [
   "increment._evidence_refusals",
   "increment._evidence_types",
+  "increment.errors",
   "increment.sources",
 ]
 
@@ -123,9 +124,14 @@ path = "increment._health"
 layer = "core"
 depends_on = [
   "increment._evidence_types",
+  "increment._source_operations",
+  "increment.decision",
+  "increment.errors",
   "increment.estimation",
   "increment.evidence",
+  "increment.query",
   "increment.readouts",
+  "increment.sources",
 ]
 [[modules]]
 path = "increment._plan_compatibility"
@@ -768,9 +774,26 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._source_diagnostics"
+layer = "core"
+depends_on = [
+  "increment._binding",
+  "increment._evidence_refusals",
+  "increment._evidence_types",
+  "increment._health",
+  "increment._source_admission",
+  "increment._source_operations",
+  "increment._source_types",
+  "increment.errors",
+  "increment.evidence",
+  "increment.query",
+  "increment.readouts",
+]
+
+[[modules]]
 path = "increment.workflows"
 layer = "core"
-depends_on = ["increment._source_workflows"]
+depends_on = ["increment._source_diagnostics", "increment._source_workflows"]
 
 [[modules]]
 path = "increment._analysis_execution"
@@ -782,7 +805,7 @@ depends_on = [
   "increment._evidence_types",
   "increment.evidence",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_workflows", "increment.readouts._whole_window",
+  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_workflows", "increment.readouts._whole_window",
   "increment.readouts._line2",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",
@@ -791,9 +814,8 @@ depends_on = [
   "increment.query", "increment.readouts", "increment.semantics",
 
   "increment.query._workflows",
-  "increment.sources",
   "increment.sequential_source",
-  "increment._health", "increment.kernel.ports", "increment._binding",
+  "increment.kernel.ports", "increment._binding",
 ]
 
 [[modules]]

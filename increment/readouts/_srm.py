@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from increment._evidence_types import CountsRequest
 from increment.estimation.diagnostics import (
@@ -13,6 +13,10 @@ from increment.estimation.diagnostics import (
 from increment.readouts._common import _raise
 from increment.readouts._evidence import load_counts
 from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL, EvidenceSource
+
+if TYPE_CHECKING:
+    from increment._source_types import EvidenceProvider
+    from increment.semantics.design import Encouragement, Observational, Randomized
 
 
 def srm(
@@ -123,4 +127,47 @@ def srm(
         inference=inference,
         grain="cluster",
         unit_counts=counts,
+    )
+
+
+def triggered_srm(
+    provider: EvidenceProvider,
+    *,
+    design: Randomized | Encouragement | Observational | None,
+    expected: dict[str, float] | None = None,
+    alpha: float = 0.001,
+    inference: Literal["always_valid", "fixed"] = "always_valid",
+) -> SRMResult:
+    """Sample-ratio-mismatch check on the declared trigger population's counts.
+
+    *provider* must already offer triggered counts. Without *expected*, the design
+    must declare ``allocation``; the refusal precedes any count read. A declared
+    arm in which no unit triggered is a zero count, not a missing arm.
+    """
+    if expected is None and getattr(design, "allocation", None) is None:
+        _raise(
+            (
+                "integrity.allocation_scheme_missing"
+                if getattr(design, "allocation_scheme", None) is None
+                else "integrity.allocation_missing_or_nonconstant"
+            ),
+            population="triggered",
+        )
+    expected = resolve_srm_expected(
+        expected,
+        allocation=getattr(design, "allocation", None),
+        inference=inference,
+    )
+    triggered = provider.counts(CountsRequest(kind="triggered"))
+    counts = complete_srm_support(dict(triggered.counts), expected=expected)
+    unit_counts = dict(triggered.unit_counts)
+    if unit_counts:
+        unit_counts = complete_srm_support(unit_counts, expected=expected)
+    return sample_ratio_mismatch(
+        counts,
+        expected=expected,
+        alpha=alpha,
+        inference=inference,
+        grain=cast("Literal['unit', 'cluster']", triggered.grain),
+        unit_counts=unit_counts,
     )

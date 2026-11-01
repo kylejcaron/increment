@@ -954,16 +954,23 @@ def test_switchback_dashboard_breakout_reads_refuses_with_contrast_code() -> Non
 
 
 def test_assignment_diagnostic_refuses_arm_evidence_with_its_own_code() -> None:
+    from increment import from_frame
     from increment.errors import CapabilityError
+    from increment.workflows import assignment_diagnostic
 
     frame = pd.DataFrame(
         {"unit": ["u1", "u2"], "group": ["control", "treatment"], "outcome": [1.0, 2.0]}
     )
-    analysis = Analysis.from_unit_summary(
-        frame, unit="unit", group="group", metrics={"outcome": "mean"}, control="control"
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="group",
+        metrics={"outcome": "mean"},
+        control="control",
     )
     with pytest.raises(CapabilityError) as refusal:
-        analysis.assignment_diagnostic()
+        assignment_diagnostic(experiment, resolver)
     assert refusal.value.code == "facade.analysis.switchback_only"
     assert refusal.value.context["method"] == "assignment_diagnostic"
 
