@@ -1,5 +1,5 @@
-"""`Analysis`'s day-axis quartet (run_daily/run_daily_lift/run_asof/run_asof_lift)
-extracted behind one evidence-acquisition seam and one options seam.
+"""Day-axis views (run_daily/run_daily_lift/run_asof/run_asof_lift) over one
+source binding, behind one evidence-acquisition seam and one options seam.
 
 Unsegmented encouragement compliance uses the source's declared uptake
 cohort; outcome rows retain their own matching first stages.
@@ -10,10 +10,11 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment import readouts
-from increment._analysis_config import _Unset, normalize_display_correction
+from increment._analysis_config import UNSET, _Unset, normalize_display_correction
 from increment._evidence_refusals import check_method_covariates
 from increment._evidence_types import (
     ComplianceSeriesRequest,
@@ -22,11 +23,17 @@ from increment._evidence_types import (
     DayAxisRequest,
     DayAxisRoute,
 )
+from increment._exploratory import (
+    select_day_axis_metrics,
+    select_exploratory,
+    stamp_exploratory,
+)
 from increment._frame_panel import _day_axis_label_order, _resolve_window_days
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
-from increment._source_types import declared_evidence
+from increment._source_admission import _arm_experiment, _require_arm_binding
+from increment._source_types import declared_evidence, is_custom_source
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     DailyLiftEstimate,
@@ -67,16 +74,24 @@ from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     MOMENTS_ROUTE,
     NATIVE_ROUTE,
+    artifact_provenance,
     assigned_breakout_values,
     day_axis_route,
     design_allocation,
     load_compliance_series,
     load_day_axis_rows,
+    source_route,
+)
+from increment.readouts._execution_context import current_execution_context
+from increment.readouts._line2 import (
+    run_standalone_day_axis_lift,
+    run_standalone_day_axis_values,
 )
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.sources import _BuiltinMomentSource
 
 if TYPE_CHECKING:
+    from increment._binding import SourceBinding
     from increment._evidence_types import SourceContext
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
@@ -1369,20 +1384,16 @@ def _scope_day_axis_rows(
         dimension=req.dimension,
         family_populations=family_populations,
         identity_rows=identity_rows,
+        artifact_provenance=artifact_provenance(source),
     )
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
         from increment.estimation.readout_types import ReadoutCapture
-        from increment.readouts._evidence import artifact_provenance
-
-        provenance = artifact_provenance(source)
 
         result._metadata = result.metadata.model_copy(
             update={
                 "coherence": coherence,
                 "effective_modes": _FrozenMapping(effective_modes),
-                "artifact_manifest_sha256": provenance.manifest_sha256,
-                "artifact_relation_digests": provenance.relation_digests,
                 "captures": ()
                 if execution_context is None or not execution_context.shared_capture
                 else (
@@ -1884,3 +1895,302 @@ class DayAxisReadouts:
             execution_context=self._metadata_context,
             identity_rows=identity_rows,
         )
+
+
+def require_arm_state(
+    binding: SourceBinding,
+    method: str,
+    *,
+    population: Literal["assigned", "triggered"] = "assigned",
+) -> SourceBinding:
+    """Refuse switchback evidence, naming the triggered route when one was requested."""
+    if binding.state.family != "arm_moments" and population == "triggered":
+        refuse(
+            _TRIGGER_UNSUPPORTED,
+            method=method,
+            experiment="<unknown>",
+            trigger=None,
+            route=(
+                "switchback" if binding.state.family == "contrast" else source_route(binding.source)
+            ),
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
+        )
+    return _require_arm_binding(binding, method)
+
+
+def _daily_lift(binding: SourceBinding, **kwargs: Any) -> DailyLiftEstimates:
+    """Day-axis lift boundary: always supply an effective compiled plan.
+
+    Call-time Metric objects absent from the analysis plan receive locally
+    compiled unassigned procedures at the plan's alpha, matching the method/prior
+    defaults already resolved for them.
+    """
+    from increment.breakout.estimates import run_daily_lift as _run_daily_lift_estimates
+    from increment.plan import with_unassigned_procedures
+
+    plan = with_unassigned_procedures(
+        binding.plan, cast("Sequence[Metric]", kwargs["metrics"]), design=binding.design
+    )
+    return _run_daily_lift_estimates(plan=plan, **kwargs)
+
+
+def day_axis_readouts(binding: SourceBinding, execution_context=None) -> DayAxisReadouts:
+    """The day-axis reader over this binding's source, plan and design."""
+    return DayAxisReadouts(
+        src=binding.source,
+        plan=binding.plan,
+        design=binding.design,
+        experiment=_arm_experiment(binding),
+        daily_lift=partial(_daily_lift, binding),
+        execution_context=execution_context,
+    )
+
+
+def _validate_day_axis_before_context(
+    binding: SourceBinding, req: DayAxisRequest, execution_context=None
+) -> None:
+    source = binding.source
+    if req.population == "triggered" or (
+        execution_context is None and (req.dimension is not None or not is_custom_source(source))
+    ):
+        validate_day_axis(
+            req,
+            src=source,
+            design=binding.design,
+            plan=binding.plan,
+            route=day_axis_route(source),
+            experiment=_arm_experiment(binding),
+        )
+
+
+def _run_day_axis_values(
+    binding: SourceBinding,
+    req: DayAxisRequest,
+    execution_context=None,
+    *,
+    coherence: Literal["captured", "live"] = "captured",
+) -> DailyMetricValues:
+    _validate_day_axis_before_context(binding, req, execution_context)
+    return run_standalone_day_axis_values(
+        binding,
+        req,
+        execution_context,
+        day_axis=partial(day_axis_readouts, binding),
+        coherence=coherence,
+    )
+
+
+def _day_axis_lift(
+    binding: SourceBinding,
+    req: DayAxisRequest,
+    execution_context,
+    *,
+    decision_method: Method | _Unset,
+    sensitivity_methods: Sequence[Method] | _Unset,
+    prior: Prior | None | _Unset,
+    coherence: Literal["captured", "live"],
+) -> DailyLiftEstimates:
+    _validate_day_axis_before_context(binding, req, execution_context)
+    if execution_context is None:
+        return run_standalone_day_axis_lift(
+            binding,
+            req,
+            day_axis=partial(day_axis_readouts, binding),
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            coherence=coherence,
+        )
+    reader = day_axis_readouts(binding, execution_context)
+    options = reader.resolve_lift_options(
+        req.metrics,
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+    )
+    return reader.lift(
+        req,
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+        options=options,
+    )
+
+
+def preflight_line4_views(
+    binding: SourceBinding,
+    *,
+    population: Literal["assigned", "triggered"],
+    readouts: Sequence[Literal["run", "daily", "daily_lift", "asof", "asof_lift"]],
+) -> None:
+    """Validate the population's day-axis requests before their shared scope opens."""
+    caller_by_name: dict[
+        str, Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
+    ] = {
+        "daily": "run_daily",
+        "daily_lift": "run_daily_lift",
+        "asof": "run_asof",
+        "asof_lift": "run_asof_lift",
+    }
+    day_axis = day_axis_readouts(binding)
+    experiment = getattr(binding.state, "experiment", None)
+    for name in readouts:
+        if name == "run":
+            continue
+        grain = "daily" if name.startswith("daily") else "asof"
+        request = DayAxisRequest(
+            caller=caller_by_name[name],
+            grain=grain,
+            metrics=tuple(binding.metrics),
+            dimension=None,
+            estimands=None,
+            population=population,
+            experiment=experiment,
+        )
+        day_axis.validate_request(request, lift=name.endswith("_lift"))
+
+
+def run_daily(
+    binding: SourceBinding,
+    *,
+    metrics: Sequence[str | Metric] | None = None,
+    dimension: str | None = None,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] = "assigned",
+    coherence: Literal["captured", "live"] = "captured",
+) -> DailyMetricValues:
+    """Per-day absolute metric values, optionally broken out by one declared dimension."""
+    execution_context = current_execution_context()
+    added = select_exploratory(binding, exploratory_metrics, caller="run_daily")
+    require_arm_state(binding, "run_daily")
+    selected = select_day_axis_metrics(binding, metrics, caller="run_daily", added=added)
+    req = DayAxisRequest(
+        caller="run_daily",
+        grain="daily",
+        metrics=tuple(selected),
+        dimension=dimension,
+        population=population,
+    )
+    rows = _run_day_axis_values(binding, req, execution_context, coherence=coherence)
+    rows._default_backend = binding.input_backend
+    rows._envelope_view = "daily"
+    return rows
+
+
+def run_daily_lift(
+    binding: SourceBinding,
+    *,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str | Metric] | None = None,
+    estimands: Sequence[str] | None = None,
+    dimension: str | None = None,
+    population: Literal["assigned", "triggered"] = "assigned",
+    coherence: Literal["captured", "live"] = "captured",
+) -> DailyLiftEstimates:
+    """Per-day relative lift estimates, optionally broken out by one declared dimension."""
+    execution_context = current_execution_context()
+    require_arm_state(binding, "run_daily_lift", population=population)
+    selected = select_day_axis_metrics(binding, metrics, caller="run_daily_lift")
+    req = DayAxisRequest(
+        caller="run_daily_lift",
+        grain="daily",
+        metrics=tuple(selected),
+        dimension=dimension,
+        estimands=tuple(estimands) if estimands is not None else None,
+        population=population,
+    )
+    rows = _day_axis_lift(
+        binding,
+        req,
+        execution_context,
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+        coherence=coherence,
+    )
+    rows._default_backend = binding.input_backend
+    rows._envelope_view = "daily"
+    return rows
+
+
+def run_asof(
+    binding: SourceBinding,
+    *,
+    metrics: Sequence[str | Metric] | None = None,
+    dimension: str | None = None,
+    completed_windows_only: bool = False,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] = "assigned",
+    coherence: Literal["captured", "live"] = "captured",
+) -> DailyMetricValues:
+    """Per-day absolute metric values as of each day, optionally by one dimension."""
+    execution_context = current_execution_context()
+    added = select_exploratory(binding, exploratory_metrics, caller="run_asof")
+    require_arm_state(binding, "run_asof")
+    selected = select_day_axis_metrics(binding, metrics, caller="run_asof", added=added)
+    req = DayAxisRequest(
+        caller="run_asof",
+        grain="asof",
+        metrics=tuple(selected),
+        dimension=dimension,
+        completed_windows_only=completed_windows_only,
+        population=population,
+    )
+    rows = _run_day_axis_values(binding, req, execution_context, coherence=coherence)
+    rows._default_backend = binding.input_backend
+    rows._envelope_completion_policy = completed_windows_only
+    rows._envelope_view = "asof"
+    return rows
+
+
+def run_asof_lift(
+    binding: SourceBinding,
+    *,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str | Metric] | None = None,
+    dimension: str | None = None,
+    estimands: Sequence[str] | None = None,
+    completed_windows_only: bool = False,
+    exploratory_metrics: Sequence[str] | None = None,
+    population: Literal["assigned", "triggered"] = "assigned",
+    coherence: Literal["captured", "live"] = "captured",
+) -> DailyLiftEstimates:
+    """As-of relative lift history, or a registered sequential checkpoint."""
+    execution_context = current_execution_context()
+    added = select_exploratory(binding, exploratory_metrics, caller="run_asof_lift")
+    require_arm_state(binding, "run_asof_lift", population=population)
+    selected = select_day_axis_metrics(binding, metrics, caller="run_asof_lift", added=added)
+    req = DayAxisRequest(
+        caller="run_asof_lift",
+        grain="asof",
+        metrics=tuple(selected),
+        dimension=dimension,
+        completed_windows_only=completed_windows_only,
+        estimands=tuple(estimands) if estimands is not None else None,
+        population=population,
+    )
+    asof_policy = binding.plan.view_policies.for_view(
+        "asof",
+        mechanism=getattr(binding.design, "mechanism", None),
+        segmented=dimension is not None,
+    )
+    lift_rows = _day_axis_lift(
+        binding,
+        req,
+        execution_context,
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+        coherence=coherence,
+    )
+    rows = stamp_exploratory(
+        lift_rows, added, correction=normalize_display_correction(asof_policy.correction)
+    )
+    rows._default_backend = binding.input_backend
+    rows._envelope_completion_policy = completed_windows_only
+    rows._envelope_view = "asof"
+    return rows

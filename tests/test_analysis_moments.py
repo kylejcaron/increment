@@ -499,7 +499,7 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
         result = run(
             replayed,
             replay_resolver,
-            analysis_options={"decision_method": Method(name="unadjusted")},
+            decision_method=Method(name="unadjusted"),
         )
         got = {
             (cell.identity.key.metric, cell.identity.key.group_id): effect.point

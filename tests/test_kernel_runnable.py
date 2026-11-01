@@ -136,47 +136,6 @@ def test_runnable_reports_unknown_without_recorded_capabilities_after_json_resto
     assert runnable(restored, "orders")["randomized.unadjusted"].static_refusals == ()
 
 
-def test_runnable_refuses_breakout_subset_of_a_multibreakout_source():
-    capabilities = EvidenceCapabilities(
-        kind="unit_summary",
-        grains=frozenset({"total"}),
-        breakouts=("country", "device"),
-        shape="unit_summary",
-        operations=frozenset(),
-        unit_rows=True,
-        raw_outcomes=True,
-        method_fit="none",
-        compliance_axis="none",
-        count_grains=frozenset({"unit"}),
-        populations=frozenset({"assigned"}),
-        sequential_capture="none",
-        scalar=None,
-        available_covariates=frozenset(),
-    )
-    experiment = Experiment(
-        experiment_id="checkout",
-        design={"mechanism": "randomized"},
-        metrics={"orders": {"kind": "mean"}},
-        registration=Registration(registration_hash="registration-hash"),
-        source_refs=(
-            SourceReference(name="events", uri="frame://events", capabilities=capabilities),
-        ),
-        scopes=(
-            Scope(
-                view="breakout",
-                grain="total",
-                segment=({"property": "country", "source": None},),
-            ),
-        ),
-    )
-
-    refusals = runnable(experiment, "orders")["randomized.unadjusted"].static_refusals
-
-    assert len(refusals) == 1
-    assert refusals[0].code == "kernel.run.execution_unavailable"
-    assert refusals[0].context == {"experiment_id": "checkout", "field": "segment"}
-
-
 def test_runnable_names_authored_source_and_selection_for_unavailable_breakouts():
     capabilities = EvidenceCapabilities(
         kind="unit_summary",

@@ -800,9 +800,12 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     combined = run(
         experiment,
         resolver,
-        analysis_options={"estimands": ("compliance",)},
+        estimands=("compliance",),
     )
-    assert {cell.identity.scope.view for cell in combined.cells} == {"run", "asof"}
+    assert {getattr(cell.identity.scope, "view", None) for cell in combined.cells} == {
+        "run",
+        "asof",
+    }
     assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
     assert len(combined.run.metadata.captures) == 1
 

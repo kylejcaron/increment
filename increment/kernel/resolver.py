@@ -6,7 +6,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from increment._source_types import EvidenceCapabilities, EvidenceProvider
 from increment.errors import CodedError
-from increment.kernel.contracts import Scope, _refuse
+from increment.kernel.contracts import Scope, _refuse, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
 
 
@@ -189,7 +189,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 metrics=(metric_spec,),
                 population=scope.population,
                 grain=None if checkpoint_projection else scope.grain,
-                breakouts=scope.segment,
+                breakouts=declared_breakouts(exp.source_refs, scope, exp.analysis_context),
             )
             try:
                 require_evidence_declaration(capabilities, constructor=constructor, request=request)
@@ -298,6 +298,25 @@ def runnable(exp: Experiment, metric: object) -> dict[str, Runnable]:
     }
 
 
+def _select_views(exp: Experiment, views: Sequence[Scope] | None) -> Experiment:
+    """Narrow to the selected declared views, keeping declaration order."""
+    if views is None:
+        return exp
+    hashes = tuple(scope.hash() for scope in views)
+    declared = {scope.hash() for scope in exp.scopes}
+    if not hashes or len(set(hashes)) != len(hashes) or not set(hashes) <= declared:
+        raise CodedError(
+            "The bound analysis cannot execute these experiment declarations",
+            code="kernel.run.execution_unavailable",
+            context={"experiment_id": exp.experiment_id, "field": "views"},
+        )
+    return replace(
+        exp,
+        scopes=tuple(scope for scope in exp.scopes if scope.hash() in hashes),
+        operations={key: value for key, value in exp.operations.items() if key in hashes},
+    )
+
+
 def run(
     exp: Experiment,
     resolver: Resolver,
@@ -305,25 +324,24 @@ def run(
     ctx: object | None = None,
     options: dict[str, object] | None = None,
     views: Sequence[Scope] | None = None,
+    capture: object | None = None,
+    execution_context: object | None = None,
 ) -> Any:
-    """Resolve and verify the experiment's source before handing off execution."""
-    if views is not None:
-        hashes = tuple(scope.hash() for scope in views)
-        declared = {scope.hash() for scope in exp.scopes}
-        if not hashes or len(set(hashes)) != len(hashes) or not set(hashes) <= declared:
-            raise CodedError(
-                "The bound analysis cannot execute these experiment declarations",
-                code="kernel.run.execution_unavailable",
-                context={"experiment_id": exp.experiment_id, "field": "views"},
-            )
-        selected = tuple(scope for scope in exp.scopes if scope.hash() in hashes)
-        exp = replace(
-            exp,
-            scopes=selected,
-            operations={key: value for key, value in exp.operations.items() if key in hashes},
-        )
+    """Resolve and verify the experiment's source before handing off execution.
+
+    Readout options, a sequential capture and a borrowed execution context reach
+    the resolver only when supplied, so an adapter that accepts none still runs.
+    """
+    exp = _select_views(exp, views)
     provider = _resolve_verified(exp, resolver, ctx=ctx)
     execute = getattr(resolver, "run_experiment", None)
     if not callable(execute):
         _refuse("kernel.run.provider_execution_unavailable")
-    return execute(exp, provider, options=options) if options else execute(exp, provider)
+    handoff: dict[str, object] = {}
+    if options:
+        handoff["options"] = options
+    if capture is not None:
+        handoff["capture"] = capture
+    if execution_context is not None:
+        handoff["execution_context"] = execution_context
+    return execute(exp, provider, **handoff)

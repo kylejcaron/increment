@@ -120,6 +120,28 @@ change without notice.
   trigger/CUPED/cluster/quantile/compliance handling, switchback baselines,
   calendar-window site volume, randomized-only restrictions, and refusal codes
   are unchanged. `increment.power` gains no source-reading function.
+- Release note (breaking API cutover): `run(experiment, resolver, ...)` no
+  longer accepts `analysis_options`. Pass the same readout options as keywords:
+  `decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
+  `value_scale`, `exploratory_metrics`, `population` and `coherence`; only the
+  options you pass apply, so `prior=None` still differs from an omitted prior.
+  Pass a sequential capture as `capture=SequentialCaptureRequest(...)` and an
+  open shared evidence capture as `execution_context=`. The `store` option is
+  not accepted. A `population` that differs from a selected scope refuses with
+  `kernel.request.population_scope_only`; declare it on `Scope(population=...)`.
+- Release note (API addition): `run(experiment, resolver, ...)` saves and logs
+  runs. `results_store=`, `decision_log=` and `run_id=` are checked against the
+  experiment's registration before any data is read, and a refused run writes
+  nothing; an ID is generated when `run_id` is omitted.
+  `RunResult.from_handle(handle, registration=...)` decides a saved run again
+  and refuses a registration the run was not saved under.
+- Release note (bug fix): `DecisionLog.replay` accepts the logged decisions of a
+  Bonferroni breakout family instead of refusing them with
+  `store.decision.reference_invalid`. Existing decision logs replay unchanged.
+- Release note (bug fix): a breakout read under a registered sequential plan
+  refuses with `sequential.route.unsupported` when the declared or selected
+  breakouts include a property other than the registered segment, instead of
+  returning only the registered segment's rows.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

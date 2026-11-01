@@ -63,6 +63,11 @@ def replace_analysis_source(analysis: Analysis, source: object) -> None:
     object.__setattr__(analysis._state, "source", source)
 
 
+def replace_bound_source(resolver: Any, source: object) -> None:
+    """Install a counting source in a builder resolver's immutable construction state."""
+    object.__setattr__(resolver.binding.state, "source", source)
+
+
 def definitions_inputs(analysis: Analysis) -> tuple[Any, ...]:
     """Return the original definitions inputs of an in-memory analysis fixture."""
     source = _native_source(analysis)

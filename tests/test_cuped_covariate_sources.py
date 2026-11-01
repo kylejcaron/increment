@@ -357,19 +357,14 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
         scopes=scopes,
         operations={scopes[0].hash(): "run_daily", scopes[1].hash(): "run_asof"},
     )
-    values = run(experiment, resolver, analysis_options={"metrics": ["revenue"]})
+    values = run(experiment, resolver, metrics=["revenue"])
+    payloads = [cast(Any, cell.row_payload)["data"] for cell in values.cells]
     actual = {
-        (
-            cell.row_payload["data"]["metric"],
-            cell.row_payload["data"]["ds"],
-            cell.row_payload["data"]["group_id"],
-        ): (
-            None
-            if cell.row_payload["data"]["value"] is None
-            else cell.row_payload["data"]["value"]["value"],
-            cell.row_payload["data"]["n"],
+        (data["metric"], data["ds"], data["group_id"]): (
+            None if data["value"] is None else data["value"]["value"],
+            data["n"],
         )
-        for cell in values.cells
+        for data in payloads
     }
     assert actual == expected
 

@@ -132,8 +132,10 @@ def declared_breakouts(
 ) -> tuple[BreakoutIdentity, ...]:
     """Expand selectors from recorded definition identities or source capabilities.
 
-    A selection the declarations cannot match stays unresolved; the evidence validators
-    refuse an unavailable breakout with the source's declared dimensions.
+    A capability-declared dimension names no fact source, so its identity is
+    ``(property, None)``, the identity its executed rows carry. A selection the
+    declarations cannot match stays unresolved; the evidence validators refuse an
+    unavailable breakout with the source's declared dimensions.
     """
     declarations: tuple[BreakoutIdentity, ...] | None = None
     recorded_experiment = None if analysis_context is None else analysis_context.get("experiment")
@@ -156,7 +158,7 @@ def declared_breakouts(
     if declarations is None:
         declarations = tuple(
             dict.fromkeys(
-                BreakoutIdentity(property=property, source=source.name)
+                BreakoutIdentity(property=property, source=None)
                 for source in source_refs
                 if source.capabilities is not None
                 for property in source.capabilities.breakouts

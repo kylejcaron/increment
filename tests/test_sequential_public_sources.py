@@ -1636,7 +1636,8 @@ def test_workflow_capture_in_a_shared_run_borrows_its_single_capture(tmp_path, m
     other_connection, _, other_experiment, other_resolver = _native_pair(
         tmp_path / "other", "bernoulli"
     )
-    analysis = cast(Any, resolver)._analysis
+    analysis = cast(Any, Analysis.__new__(Analysis))
+    analysis._binding = cast(Any, resolver).binding
     source = cast(Any, held_source(analysis))
     execute = source._pinned_source_execution
     pinned: list[object] = []
@@ -2038,7 +2039,7 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         combined = run(
             experiment,
             resolver,
-            analysis_options={"estimands": ("compliance",)},
+            estimands=("compliance",),
         )
         assert {cell.identity.key.metric for cell in combined.cells} == {"uptake"}
         assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}

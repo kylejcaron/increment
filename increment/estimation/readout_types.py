@@ -1299,12 +1299,18 @@ def merge_collection_metadata(left, right, *, scoped_assembly: bool = False):
         by_source=dict(sorted(sources.items())),
     )
     ordered_records = sorted(records.values(), key=_record_order)
+    same_artifact = (a.artifact_manifest_sha256, a.artifact_relation_digests) == (
+        b.artifact_manifest_sha256,
+        b.artifact_relation_digests,
+    )
     metadata = ReadoutMetadata(
         scope=scope,
         cells=tuple(ordered_records),
         source_content_digest_unavailable_reason=(
             a.source_content_digest_unavailable_reason or b.source_content_digest_unavailable_reason
         ),
+        artifact_manifest_sha256=a.artifact_manifest_sha256 if same_artifact else None,
+        artifact_relation_digests=a.artifact_relation_digests if same_artifact else (),
         coherence=coherence,
         effective_modes=dict(sorted(effective_modes.items())),
         captures=captures if a.captures or b.captures or len(captures) > 1 else (),

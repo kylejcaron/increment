@@ -59,8 +59,6 @@ expected: Expected counts or values used for comparison.
 expected_allocation: Expected assignment share for each arm.
 expected_context: Expected context to validate against.
 experiment_id: Stable identifier for the analyzed experiment.
-analysis: Analysis execution object used for a public run.
-analysis_options: Options passed to the analysis execution.
 analysis_spec_hash: Stable hash of the registered analysis specification.
 experiment_name: Name of the experiment definition.
 exploratory_metrics: Metrics included in an exploratory family.
@@ -169,3 +167,6 @@ kwargs: Named constructor arguments forwarded to the established Analysis builde
 shape: Unit-summary or unit-panel layout selected from a frame.
 estimator_id: Registered estimator whose declaration is checked.
 views: Declared experiment scopes selected for one shared execution.
+capture: Sequential checkpoint captured before a run reads its views.
+execution_context: Open shared evidence capture that a run reuses instead of reading its source again.
+experiment: Experiment declaration to execute.

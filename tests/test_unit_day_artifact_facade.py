@@ -1554,6 +1554,10 @@ def test_refused_open_releases_snapshot(monkeypatch: pytest.MonkeyPatch) -> None
 @pytest.mark.slow
 @pytest.mark.integration
 def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> None:
+    from increment import from_unit_day_artifact, run
+    from increment.evidence import BreakoutIdentity
+    from increment.kernel.contracts import Scope
+
     definitions = _definitions(
         tmp_path,
         breakouts=[
@@ -1562,30 +1566,46 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
         ],
         second_breakout_source=True,
     )
-    _con, native, context, store = _native(definitions=definitions)
-    requests = _extensions(context, "breakout_dimension")
+    requests = _extensions(_expected_context(definitions), "breakout_dimension")
     assert len(requests) == 2
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    daily = adopted.run_daily(dimension="country", metrics=["purchase_rate"])
-    assert daily and {row.source for row in daily} == {"event_log", "event_log_secondary"}
-    breakout = adopted.run_breakout(metrics=["purchase_rate"])
-    assert breakout and {row.source for row in breakout} == {
-        "event_log",
-        "event_log_secondary",
-    }
-    daily_lift = adopted.run_daily_lift(dimension="country", metrics=["purchase_rate"])
-    assert daily_lift and {row.source for row in daily_lift} == {
-        "event_log",
-        "event_log_secondary",
-    }
-    asof = adopted.run_asof(dimension="country", metrics=["purchase_rate"])
-    assert asof and {row.source for row in asof} == {"event_log", "event_log_secondary"}
-    asof_lift = adopted.run_asof_lift(dimension="country", metrics=["purchase_rate"])
-    assert asof_lift and {row.source for row in asof_lift} == {
-        "event_log",
-        "event_log_secondary",
-    }
+    _con, native, context, store, ref = _published(extensions=requests, definitions=definitions)
+    native.close()
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
+    country = (BreakoutIdentity("country", None),)
+    scopes = (
+        Scope(view="breakout", grain="total"),
+        *(
+            Scope(view=view, grain=view, values=values, segment=country)
+            for view in ("daily", "asof")
+            for values in (False, True)
+        ),
+    )
+    both = {("event_log", "country"), ("event_log_secondary", "country")}
+    with resolver:
+        result = run(
+            experiment.with_views(*scopes),
+            resolver,
+            metrics=["purchase_rate"],
+        )
+        by_view: dict[tuple[str, bool], set[tuple[str | None, str | None]]] = {}
+        for cell in result.cells:
+            scope = cell.identity.scope
+            assert scope is not None
+            by_view.setdefault((scope.view, scope.values), set()).add(
+                (cell.identity.key.source, cell.identity.key.dimension)
+            )
+        assert by_view == {(scope.view, scope.values): both for scope in scopes}
+        assert len(result.run.metadata.captures) == 1
+        secondary = (BreakoutIdentity("country", "event_log_secondary"),)
+        qualified = run(
+            experiment.with_views(Scope(view="breakout", grain="total", segment=secondary)),
+            resolver,
+            metrics=["purchase_rate"],
+        )
+    assert qualified.cells
+    assert {
+        (cell.identity.key.source, cell.identity.key.dimension) for cell in qualified.cells
+    } == {("event_log_secondary", "country")}
 
 
 @pytest.mark.slow

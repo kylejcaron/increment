@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from inspect import Parameter, signature
 from typing import Any, Literal, cast
 
 from pydantic import TypeAdapter
@@ -76,6 +75,41 @@ def scope_operation(experiment: Any, scope: Any) -> str:
     return experiment.operations.get(scope.hash(), _SCOPE_OPERATIONS[scope.view][0])
 
 
+def records_breakout_sources(experiment: Any) -> bool:
+    """Whether the experiment's recorded definitions name each breakout's fact source."""
+    recorded = experiment.analysis_context.get("experiment")
+    return isinstance(recorded, Mapping) and isinstance(recorded.get("breakouts"), (tuple, list))
+
+
+def require_breakout_sources(experiment: Any, scope: Any) -> None:
+    """Refuse a fact-source qualifier on breakouts declared by source capability alone.
+
+    A capability-declared breakout names no fact source, so no qualifier matches it.
+    """
+    if records_breakout_sources(experiment):
+        return
+    qualified = tuple(identity for identity in scope.segment if identity.source is not None)
+    if not qualified:
+        return
+    from increment._evidence_refusals import BREAKOUT_UNAVAILABLE
+
+    refuse(
+        BREAKOUT_UNAVAILABLE,
+        constructor=experiment.analysis_context.get("source_name")
+        or ", ".join(reference.name for reference in experiment.source_refs),
+        requested=tuple((identity.source, identity.property) for identity in qualified),
+        offered=tuple(
+            dict.fromkeys(
+                (None, name)
+                for reference in experiment.source_refs
+                if reference.capabilities is not None
+                for name in reference.capabilities.breakouts
+            )
+        ),
+        route="select the breakout by property alone; this source names no fact sources",
+    )
+
+
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     """Validate supported execution coordinates without acquiring evidence."""
     from increment.kernel.contracts import declared_breakouts
@@ -88,10 +122,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         or scope.time_basis != "calendar"
         or (scope.completion_policy and scope.view != "asof")
         or (scope.view == "switchback" and bool(scope.segment))
-        or (
-            scope.view in {"daily", "asof"}
-            and any(identity.source is not None for identity in scope.segment)
-        )
     ):
         return (
             CodedError(
@@ -119,49 +149,10 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         except CodedError as refusal:
             return (refusal,)
     try:
-        breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+        declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+        require_breakout_sources(experiment, scope)
     except CodedError as refusal:
         return (refusal,)
-    if (
-        (scope.view == "breakout" and len(breakouts) > 1)
-        or (scope.view in {"daily", "asof"} and len(breakouts) > 1)
-        or (
-            scope.view == "breakout"
-            and bool(breakouts)
-            and (len(scope.segment) != 1 or scope.segment[0].source is not None)
-        )
-        or (
-            scope.view == "breakout"
-            and not breakouts
-            and any(
-                source.capabilities is not None and source.capabilities.breakouts
-                for source in experiment.source_refs
-            )
-        )
-    ):
-        return (
-            CodedError(
-                "The bound analysis cannot execute these experiment declarations",
-                code="kernel.run.execution_unavailable",
-                context={"experiment_id": experiment.experiment_id, "field": "scope"},
-            ),
-        )
-    if scope.view == "breakout":
-        properties = tuple(identity.property for identity in scope.segment)
-        if any(
-            source.capabilities is not None
-            and len(source.capabilities.breakouts) > 1
-            and len(properties) == 1
-            and properties[0] in source.capabilities.breakouts
-            for source in experiment.source_refs
-        ):
-            return (
-                CodedError(
-                    "The bound analysis cannot execute these experiment declarations",
-                    code="kernel.run.execution_unavailable",
-                    context={"experiment_id": experiment.experiment_id, "field": "segment"},
-                ),
-            )
     if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
         try:
             refuse(
@@ -176,27 +167,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     except CodedError as refusal:
         return (refusal,)
     return ()
-
-
-def operation_parameters(analysis: Any) -> dict[str, Any]:
-    """Record the keyword contracts of the bound readout operations."""
-    declarations = {}
-    for operation in dict.fromkeys(name for names in _SCOPE_OPERATIONS.values() for name in names):
-        execute = analysis._run_legacy if operation == "run" else getattr(analysis, operation)
-        parameters = tuple(signature(execute).parameters.values())
-        keywords = tuple(
-            parameter
-            for parameter in parameters
-            if parameter.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
-        )
-        declarations[operation] = {
-            "accepted": (*tuple(parameter.name for parameter in keywords), "capture"),
-            "required": tuple(
-                parameter.name for parameter in keywords if parameter.default is Parameter.empty
-            ),
-            "variadic": any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters),
-        }
-    return declarations
 
 
 def operation_options(

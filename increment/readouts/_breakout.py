@@ -36,6 +36,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
 from increment.readouts._evidence import (
+    artifact_provenance,
     day_axis_route,
     evidence_scope,
     fits_uncovered_cells_locally,
@@ -305,6 +306,7 @@ def _scoped_breakout_results(
         source=source_name,
         sequential_snapshot=sequential_snapshot,
         source_components=source_components,
+        artifact_provenance=artifact_provenance(src),
     )
 
 

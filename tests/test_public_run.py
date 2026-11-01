@@ -979,9 +979,12 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
 def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
     import pickle
 
-    from increment import MetricSpec, Randomized
+    from increment import MetricSpec, Randomized, from_frame
     from increment.errors import WireFormatError
+    from increment.estimation.results import LiftEstimate
     from increment.result_envelope import render
+    from increment.store import DecisionLog, ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
 
     data = pd.DataFrame(
         [
@@ -990,16 +993,14 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
             for index in range(24)
         ]
     )
-    plan = AnalysisPlan(primary="value")
     metric = MetricSpec(
         name="value",
         type="mean",
         winsorization={"upper_percentile": 0.9},
     )
-    compiled = compile_decision_plan(plan, [synthesise_metric(metric)], path="frame")
-    registration = Registration.from_plan(compiled)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         data,
+        shape="summary",
         unit="unit",
         group="arm",
         design=Randomized(
@@ -1008,66 +1009,35 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
             allocation_scheme="independent",
         ),
         metrics=[metric],
-        plan=plan,
+        plan=AnalysisPlan(primary="value"),
         experiment_id="winsor-live",
     )
-    try:
-        legacy = analysis.run()[0]
-        from increment.estimation.results import LiftEstimate
+    result = run(experiment, resolver)
+    live = result.live_rows[0]
+    assert isinstance(live, LiftEstimate)
+    assert live.lift is not None
+    assert live.confidence_set is not None
+    assert result.effects[0] is not None
+    assert result.effects[0].point == pytest.approx(live.lift.value)
+    assert result.effects[0].lower == pytest.approx(live.confidence_set.relative.lower.value)
+    assert result.effects[0].upper == pytest.approx(live.confidence_set.relative.upper.value)
+    output = render(result, "full")
+    assert "confidence set" in output
+    brief = render(result)
+    assert f"{live.lift.value:.6g}" in brief
+    assert "status=unavailable" in brief
+    assert result.cells[0].summary is None
+    with pytest.raises(WireFormatError):
+        pickle.dumps(result)
 
-        assert isinstance(legacy, LiftEstimate)
-        assert legacy.lift is not None
-        assert legacy.confidence_set is not None
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="winsor-live",
-            analysis_spec_hash="sha256:" + "e" * 64,
-            execution_identity_hash="sha256:" + "f" * 64,
-            run_id="winsor-live-run",
-        )
-        assert result.effects[0] is not None
-        assert result.effects[0].point == pytest.approx(legacy.lift.value)
-        assert result.effects[0].lower == pytest.approx(legacy.confidence_set.relative.lower.value)
-        assert result.effects[0].upper == pytest.approx(legacy.confidence_set.relative.upper.value)
-        output = render(result, "full")
-        assert "confidence set" in output
-        brief = render(result)
-        assert f"{legacy.lift.value:.6g}" in brief
-        assert "status=unavailable" in brief
-        assert result.cells[0].summary is None
-        with pytest.raises(WireFormatError):
-            pickle.dumps(result)
-        from increment.store import DecisionLog
+    logged = run(experiment, resolver, decision_log=DecisionLog())
+    assert logged.decisions.cells[0].status == "not_evaluated"
 
-        logged = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="winsor-live",
-            analysis_spec_hash="sha256:" + "e" * 64,
-            execution_identity_hash="sha256:" + "f" * 64,
-            run_id="winsor-live-logged",
-            decision_log=DecisionLog(),
-        )
-        assert logged.decisions.cells[0].status == "not_evaluated"
-        from increment.store import ParquetResultsStore
-
-        with pytest.raises(WireFormatError) as error:
-            run(
-                analysis,
-                registration,
-                compiled,
-                experiment_id="winsor-live",
-                analysis_spec_hash="sha256:" + "e" * 64,
-                execution_identity_hash="sha256:" + "f" * 64,
-                run_id="winsor-live-saved",
-                results_store=ParquetResultsStore(tmp_path / "runs"),
-            )
-        assert error.value.code == "wire.result.raw_outcomes_unavailable"
-    finally:
-        analysis.close()
+    with _frame_read_calls() as reads, pytest.raises(WireFormatError) as error:
+        run(experiment, resolver, results_store=ParquetResultsStore(tmp_path / "runs"))
+    assert error.value.code == "wire.result.raw_outcomes_unavailable"
+    assert reads == []
+    assert not tuple((tmp_path / "runs").rglob("*.parquet"))
 
 
 def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
@@ -1139,17 +1109,49 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
             analysis.close()
 
 
-def test_public_run_rejects_registration_that_differs_from_analysis_plan():
-    import pytest
-
+def test_public_run_refuses_an_empty_run_id_before_reads():
+    from increment import from_frame
     from increment.errors import CodedError
+    from tests.test_kernel_review_regressions import _frame_read_calls
+
+    experiment, resolver = from_frame(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "value": [1.0, 2.0, 2.0, 3.0],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+        run(experiment, resolver, run_id="")
+
+    assert (error.value.code, error.value.context["field"]) == (
+        "store.run.identity_incomplete",
+        "run_id",
+    )
+    assert reads == []
+
+
+def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_path):
+    from dataclasses import replace
+
+    from increment import from_frame
+    from increment.errors import CodedError
+    from increment.store import DecisionLog, ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
 
     analysis_plan = AnalysisPlan(primary="value", alpha=0.05)
     registered_plan = AnalysisPlan(primary="value", alpha=0.01)
     metric = synthesise_metric(MetricSpec(name="value", type="mean"))
     compiled = compile_decision_plan(registered_plan, [metric], path="frame")
     registration = Registration.from_plan(compiled)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "c3", "c4", "t1", "t2", "t3", "t4"],
@@ -1157,31 +1159,35 @@ def test_public_run_rejects_registration_that_differs_from_analysis_plan():
                 "value": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics={"value": "mean"},
         plan=analysis_plan,
     )
-    try:
-        with pytest.raises(CodedError) as error:
-            run(
-                analysis,
-                registration,
-                compiled,
-                experiment_id="exp",
-                analysis_spec_hash="sha256:" + "e" * 64,
-                execution_identity_hash="sha256:" + "f" * 64,
-                run_id="run-mismatched-plan",
-            )
-    finally:
-        analysis.close()
+    log_path = tmp_path / "decisions.jsonl"
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+        run(
+            replace(experiment, registration=registration),
+            resolver,
+            results_store=ParquetResultsStore(tmp_path / "runs"),
+            decision_log=DecisionLog(path=log_path),
+        )
 
     assert error.value.code == "store.decision.reference_invalid"
+    assert reads == []
+    assert not tuple((tmp_path / "runs").rglob("*.parquet"))
+    assert not log_path.exists()
 
 
 def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
-    from increment.store import DecisionLog, ParquetResultsStore
+    from dataclasses import replace
+
+    from increment import from_frame
+    from increment.errors import CodedError
+    from increment.store import DecisionLog, HistorySelector, ParquetResultsStore
+    from tests.test_kernel_review_regressions import _frame_read_calls
 
     plan = AnalysisPlan(primary="value", secondaries=["secondary"], q=0.1)
     metrics = [
@@ -1198,8 +1204,9 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
             "secondary": [4.0, 3.0, 2.0, 1.0, 5.0, 4.0, 3.0, 2.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -1207,49 +1214,36 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
         plan=plan,
         experiment_id="exp",
     )
-    import pytest
-
-    from increment.errors import CodedError
-
-    with pytest.raises(CodedError) as omitted:
-        run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="exp",
-            analysis_spec_hash="sha256:" + "a" * 64,
-            execution_identity_hash="sha256:" + "b" * 64,
-            run_id="run-incomplete-roster",
-            analysis_options={"metrics": ["value"]},
-        )
-    assert omitted.value.code == "store.decision.reference_invalid"
     store = ParquetResultsStore(tmp_path / "runs")
     log_path = tmp_path / "decisions.jsonl"
     decision_log = DecisionLog(path=log_path)
-    try:
-        result = run(
-            analysis,
-            registration,
-            compiled,
-            experiment_id="exp",
-            analysis_spec_hash="sha256:" + "a" * 64,
-            execution_identity_hash="sha256:" + "b" * 64,
-            run_id="run-1",
+
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as omitted:
+        run(
+            experiment,
+            resolver,
+            run_id="run-incomplete-roster",
             results_store=store,
             decision_log=decision_log,
+            metrics=["value"],
         )
-    finally:
-        analysis.close()
+    assert omitted.value.code == "store.decision.reference_invalid"
+    assert reads == []
+    assert not tuple((tmp_path / "runs").rglob("*.parquet"))
+    assert not log_path.exists()
 
-    restored_log = DecisionLog(path=log_path)
-    replayed = restored_log.replay(
-        lambda experiment, run_id: store.open_run(experiment, "sha256:" + "a" * 64, run_id),
-        registration,
+    result = run(
+        experiment, resolver, run_id="run-1", results_store=store, decision_log=decision_log
     )
 
-    assert result.run.decision_plan is not None
+    def open_run(experiment_id, run_id):
+        return store.open_run(experiment_id, result.run.analysis_spec_hash, run_id)
 
-    from increment.store import HistorySelector
+    restored_log = DecisionLog(path=log_path)
+    replayed = restored_log.replay(open_run, registration)
+
+    assert result.run.run_id == "run-1"
+    assert result.run.decision_plan is not None
 
     identity = result.run.cells[0].identity
     assert identity.metric_hash
@@ -1272,19 +1266,24 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
     assert replayed[0] == result.decisions
     assert result.decisions.cells[0].membership == "member"
     assert result.decisions.cells[1].membership == "member"
-    from dataclasses import replace
 
-    import pytest
-
-    from increment.errors import CodedError
+    reopened = RunResult.from_handle(open_run("exp", "run-1"), registration=registration)
+    assert reopened.cells == result.cells
+    assert reopened.effects == result.effects
+    assert reopened.decisions == result.decisions
+    assert reopened.live_rows == (None,) * len(result.cells)
+    other_plan = AnalysisPlan(primary="value", secondaries=["secondary"], q=0.05)
+    wrong_registration = Registration.from_plan(
+        compile_decision_plan(other_plan, metrics, path="frame")
+    )
+    with pytest.raises(CodedError) as wrong:
+        RunResult.from_handle(open_run("exp", "run-1"), registration=wrong_registration)
+    assert wrong.value.code == "store.decision.reference_invalid"
 
     altered = DecisionLog()
     altered.append(replace(restored_log.events[0], evidence_digest="sha256:" + "0" * 64))
     with pytest.raises(CodedError) as error:
-        altered.replay(
-            lambda experiment, run_id: store.open_run(experiment, "sha256:" + "a" * 64, run_id),
-            registration,
-        )
+        altered.replay(open_run, registration)
     assert error.value.code == "store.decision.reference_invalid"
     changed_reference = replace(
         restored_log.events[0].references[0],
@@ -1298,11 +1297,55 @@ def test_optional_store_and_event_log_replay_same_decisions(tmp_path):
         )
     )
     with pytest.raises(CodedError) as roster_error:
-        altered_roster.replay(
-            lambda experiment, run_id: store.open_run(experiment, "sha256:" + "a" * 64, run_id),
-            registration,
-        )
+        altered_roster.replay(open_run, registration)
     assert roster_error.value.code == "store.decision.reference_invalid"
+
+
+def test_event_log_replays_bonferroni_breakout_families(tmp_path):
+    """A finite-sample Bonferroni family has no FDR level; its logged event still replays."""
+    from increment import MultiplicitySpec, from_frame
+    from increment.kernel.contracts import Scope
+    from increment.store import DecisionLog, ParquetResultsStore
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{index}" for index in range(16)],
+            "arm": ["control"] * 8 + ["treatment"] * 8,
+            "segment": ["north", "south"] * 8,
+            "value": [3.0, 4.0, 5.0, 6.0, 3.5, 4.5, 5.5, 6.5]
+            + [4.0, 5.0, 6.0, 7.0, 4.5, 5.5, 6.5, 7.5],
+        }
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+        plan=AnalysisPlan(
+            primary="value", view_multiplicity=MultiplicitySpec(correction="bonferroni")
+        ),
+        experiment_id="exp",
+    )
+    experiment = experiment.with_views(
+        Scope(view="run", grain="total"), Scope(view="breakout", grain="total")
+    )
+    store = ParquetResultsStore(tmp_path / "runs")
+    log_path = tmp_path / "decisions.jsonl"
+    result = run(experiment, resolver, results_store=store, decision_log=DecisionLog(path=log_path))
+
+    restored_log = DecisionLog(path=log_path)
+    replayed = restored_log.replay(
+        lambda experiment_id, run_id: store.open_run(
+            experiment_id, result.run.analysis_spec_hash, run_id
+        ),
+        experiment.registration,
+    )
+
+    assert [event.rule for event in restored_log.events] == ["bonferroni"]
+    assert replayed == (result.decisions,)
 
 
 def test_public_run_binds_design_level_encouragement_compliance_identity():

@@ -716,7 +716,9 @@ depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._evidence_types",
   "increment._source_types", "increment._day_axis",
-  "increment.breakout.estimates", "increment.errors", "increment.readouts",
+  "increment._exploratory", "increment._source_admission",
+  "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.readouts",
+  "increment.readouts._whole_window",
   "increment._metric_specs",
   "increment._evidence_refusals",
   "increment.sequential_state",
@@ -752,7 +754,66 @@ path = "increment._binding"
 layer = "core"
 depends_on = [
   "increment._canonical", "increment.errors", "increment.decision",
+  "increment._runnability", "increment._source_types", "increment._evidence_types",
+  "increment.semantics",
   "increment.kernel", "increment.kernel.contracts",
+]
+
+[[modules]]
+path = "increment._exploratory"
+layer = "core"
+depends_on = [
+  "increment._analysis_config",
+  "increment._source_admission",
+  "increment._source_operations",
+  "increment.breakout.estimates",
+  "increment.decision",
+  "increment.errors",
+  "increment.estimation",
+  "increment.readouts",
+  "increment.readouts._execution_context",
+]
+
+[[modules]]
+path = "increment._execute"
+layer = "core"
+depends_on = [
+  "increment._analysis_config",
+  "increment._binding",
+  "increment._breakout_readouts",
+  "increment._day_axis",
+  "increment._evidence_dispatch",
+  "increment._evidence_refusals",
+  "increment._evidence_scopes",
+  "increment._evidence_types",
+  "increment._exploratory",
+  "increment._frame_validation",
+  "increment._run",
+  "increment._runnability",
+  "increment._source_admission",
+  "increment._source_types",
+  "increment.breakout.estimates",
+  "increment.decision",
+  "increment.errors",
+  "increment.estimation",
+  "increment.kernel.contracts",
+  "increment.readouts",
+  "increment.readouts._execution_context",
+  "increment.readouts._line2",
+  "increment.readouts._whole_window",
+  "increment.semantics",
+  "increment.sequential_source",
+]
+
+[[modules]]
+path = "increment._source_resolver"
+layer = "core"
+depends_on = [
+  "increment._binding",
+  "increment._execute",
+  "increment._runnability",
+  "increment.errors",
+  "increment.query",
 ]
 
 [[modules]]
@@ -763,6 +824,7 @@ depends_on = [
   "increment._binding",
   "increment._canonical",
   "increment._evidence_refusals",
+  "increment._exploratory",
   "increment._source_operations",
   "increment._source_admission",
   "increment._source_types",
@@ -798,10 +860,8 @@ layer = "core"
 depends_on = [
   "increment._binding",
   "increment._evidence_types",
-  "increment._source_types",
   "increment.readouts",
   "increment.readouts._execution_context",
-  "increment.sequential_source",
 ]
 
 [[modules]]
@@ -814,22 +874,18 @@ path = "increment._analysis_execution"
 layer = "core"
 depends_on = [
   "increment._literals",
-  "increment._frame_validation",
   "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
   "increment._evidence_types",
   "increment.evidence",
-  "increment._evidence_dispatch", "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_sequential", "increment._source_workflows", "increment.readouts._whole_window",
+  "increment._execute", "increment._exploratory", "increment._source_resolver",
+  "increment._sitewide",
+  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_diagnostics", "increment._source_workflows",
   "increment.readouts._line2", "increment.readouts._execution_context",
-  "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
+  "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",
-  "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",
-  "increment.frame", "increment.plan",
-  "increment.query", "increment.readouts", "increment.semantics",
-
-  "increment.query._workflows",
-  "increment.sequential_source",
-  "increment.kernel.ports", "increment._binding",
+  "increment._binding", "increment.kernel", "increment.kernel.ports",
+  "increment.frame", "increment.query", "increment.query._workflows", "increment.readouts",
+  "increment.semantics",
 ]
 
 [[modules]]
@@ -860,7 +916,7 @@ depends_on = [
   "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders", "increment._evidence_scopes", "increment.kernel.context",
   "increment._sequential_readouts", "increment.estimation.sequential",
-  "increment.declarations",
+  "increment.declarations", "increment._source_admission", "increment.readouts._execution_context",
   "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result",
 ]
 
@@ -868,14 +924,14 @@ depends_on = [
 path = "increment.readouts._line2"
 layer = "core"
 depends_on = [
-  "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
+  "increment._analysis_config", "increment._exploratory", "increment._source_admission",
   "increment._evidence_dispatch", "increment._evidence_refusals", "increment._evidence_scopes",
   "increment._evidence_types", "increment._source_types", "increment._readout_request",
   "increment._literals",
   "increment.decision", "increment.declarations", "increment.errors", "increment.estimation",
   "increment.estimation.sequential",
   "increment.kernel.context", "increment.readouts._execution_context",
-  "increment.readouts", "increment.readouts._whole_window",
+  "increment.readouts",
   "increment.sequential_source", "increment.semantics",
 ]
 [[modules]]
@@ -889,12 +945,14 @@ depends_on = [
   "increment._frame_panel", "increment._immutable",
   "increment.kernel.contracts",
   "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
+  "increment._exploratory", "increment._source_admission",
   "increment.plan",
   "increment.breakout.estimates", "increment.errors", "increment.estimation",
   "increment._source_identity",
   "increment._evidence_types",
   "increment._evidence_refusals",
-  "increment.readouts", "increment.semantics", "increment.sources",
+  "increment.readouts", "increment.readouts._execution_context", "increment.readouts._line2",
+  "increment.semantics", "increment.sources",
   "increment.evidence",
   "increment.sequential_state",
 ]
@@ -1074,7 +1132,8 @@ expose = [
 from = ["increment._day_axis"]
 expose = [
   "DayAxisReadouts", "EvidenceSlice", "DayAxisRoute", "validate_day_axis", "validate_lift_request",
-  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED",
+  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "day_axis_readouts", "preflight_line4_views",
+  "require_arm_state", "run_asof", "run_asof_lift", "run_daily", "run_daily_lift",
 ]
 
 [[interfaces]]
@@ -1246,24 +1305,10 @@ depends_on = [
 ]
 
 [[modules]]
-path = "increment._analysis_kernel_adapter"
-layer = "core"
-depends_on = [
-  "increment._evidence_refusals", "increment._evidence_scopes",
-  "increment.estimation", "increment.readouts._line2",
-  "increment._source_types",
-  "increment.decision",
-  "increment._canonical", "increment._runnability",
-  "increment.errors",
-  "increment.kernel",
-  "increment.kernel.contracts", "increment._binding",
-]
-
-[[modules]]
 path = "increment.builders"
 layer = "core"
 depends_on = [
-  "increment._analysis_kernel_adapter", "increment._analysis_execution",
+  "increment._source_resolver",
   "increment._analysis_config", "increment._binding", "increment._cuped_evidence",
   "increment._frame_validation", "increment._study",
   "increment.decision", "increment.errors", "increment.frame",
@@ -1313,12 +1358,20 @@ depends_on = [
 path = "increment._run"
 layer = "core"
 depends_on = [
+  "increment._analysis_config",
+  "increment._binding",
+  "increment._canonical",
+  "increment._exploratory",
   "increment._interpretation",
+  "increment._runnability",
+  "increment.decision",
+  "increment.semantics",
   "increment.estimation",
   "increment.errors",
   "increment.kernel.contracts",
   "increment.kernel",
   "increment.result_envelope",
   "increment.kernel.ports",
+  "increment.kernel.program_refusals",
   "increment.decide",
 ]

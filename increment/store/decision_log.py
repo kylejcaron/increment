@@ -231,7 +231,8 @@ class DecisionLog:
                 "e_bh": "ebh",
                 "bonferroni": "bonferroni",
             }.get(family.procedure)
-            expected_alpha = 0.05 if scope_family.family is None else scope_family.family.q
+            family_q = None if scope_family.family is None else scope_family.family.q
+            expected_alpha = 0.05 if family_q is None else family_q
             source = scope.by_source.get(family.source_snapshot_id)
             expected_integrity = (
                 "unknown"

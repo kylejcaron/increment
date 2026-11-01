@@ -18,21 +18,17 @@ if TYPE_CHECKING:
 
 from increment._binding import SourceBinding, binding_for
 from increment._canonical import canonical_json_bytes
+from increment._exploratory import available_metrics as _available_metrics
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExportMomentsOperation, MaterializeOperation
 from increment._source_types import declared_evidence
 from increment.decision import DefinitionsArmAnalysisState
-from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, refuse
+from increment.errors import InvalidRequestError, RefusalSpec, refuse
 from increment.query.artifact_contract import (
     ArtifactContractError,
     unit_day_artifact_extension_catalog,
 )
 
-EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
-    "facade.analysis.exploratory_metrics_source_limited",
-    CapabilityError,
-    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- use Analysis.from_definitions.",
-)
 _PLAN_MISSING = RefusalSpec(
     "store.run.legacy_analysis_required",
     InvalidRequestError,
@@ -225,23 +221,9 @@ def compiled_decision_plan(
     return _compiled_decision_plan_binding(binding_for(experiment, resolver))
 
 
-def _available_metrics_binding(binding: SourceBinding) -> list[Metric]:
-    state = binding.state
-    if not isinstance(state, DefinitionsArmAnalysisState):
-        refuse(EXPLORATORY_SOURCE_LIMITED, method="available_metrics")
-    declared = {*state.experiment.metric_names, *(metric.name for metric in binding.metrics)}
-    return [
-        metric
-        for metric in state.definitions.metrics
-        if metric.name not in declared
-        and metric.type not in ("total", "active")
-        and getattr(metric, "entity", None) == state.experiment.unit
-    ]
-
-
 def available_metrics(experiment: KernelExperiment, resolver: Resolver) -> list[Metric]:
     """Return eligible saved metrics not declared by the experiment, in catalog order."""
-    return _available_metrics_binding(binding_for(experiment, resolver))
+    return _available_metrics(binding_for(experiment, resolver))
 
 
 def breakout_summaries(
