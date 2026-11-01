@@ -21,7 +21,31 @@ from increment.query.native_source import DefinitionsMomentSource
 from increment.query.session import SourceSnapshotEvidence, WarehouseSession
 
 if TYPE_CHECKING:
+    from increment import Scope
     from increment.semantics.models import Definitions, Experiment, Metric
+
+
+def view_readout(
+    experiment: Any,
+    resolver: Any,
+    scope: Scope | None = None,
+    *,
+    population: Literal["assigned", "triggered"] | None = None,
+    **options: Any,
+) -> Any:
+    """Run one view of *experiment* and return that view's result collection.
+
+    Without *scope* the experiment's declared view runs, in *population* when given.
+    """
+    from increment import run
+
+    if scope is None:
+        (scope,) = experiment.scopes
+        if population is not None:
+            scope = scope.model_copy(update={"population": population})
+    elif population is not None:
+        scope = scope.model_copy(update={"population": population})
+    return run(experiment.with_views(scope), resolver, **options).readout(scope)
 
 
 def _moment_source(analysis: Analysis) -> Any:
@@ -88,14 +112,14 @@ def definitions_inputs(analysis: Analysis) -> tuple[Any, ...]:
     )
 
 
-def lift_rows(results: LiftEstimates | ContrastResults) -> LiftEstimates:
-    """Narrow the arm-analysis result union for tests of lift rows."""
+def lift_rows(results: object) -> LiftEstimates:
+    """Narrow a run's result collection to lift rows."""
     assert isinstance(results, LiftEstimates)
     return results
 
 
-def contrast_rows(results: LiftEstimates | ContrastResults) -> ContrastResults:
-    """Narrow Analysis.run() to switchback contrast results in tests."""
+def contrast_rows(results: object) -> ContrastResults:
+    """Narrow a run's result collection to switchback contrast results."""
     assert isinstance(results, ContrastResults)
     return results
 
