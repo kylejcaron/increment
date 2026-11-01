@@ -14,6 +14,41 @@ factory; experiments containing one remain in-memory-only.
 scopes, sharing one physical evidence capture. `views=(scope, ...)` selects
 declared scopes by their hashes; execution follows declaration order, not
 selection order. Empty, duplicate or undeclared selections refuse before reads.
+
+Declare the result views on the experiment with `with_views`; it returns a new
+experiment and preserves the supplied view order:
+
+```python
+import pandas as pd
+from increment import Scope, from_frame
+
+frame = pd.DataFrame(
+    {
+        "unit": ["u1", "u2", "u3", "u4"],
+        "arm": ["control", "treatment", "control", "treatment"],
+        "day": ["2025-01-01"] * 4,
+        "value": [1.0, 2.0, 3.0, 4.0],
+    }
+)
+experiment, resolver = from_frame(
+    frame,
+    shape="panel",
+    unit="unit",
+    group="arm",
+    date="day",
+    control="control",
+    metrics={"value": "mean"},
+    observation_end="2025-01-02",
+)
+daily_lift = Scope(view="daily", grain="daily")
+daily_values = Scope(view="daily", grain="daily", values=True)
+experiment = experiment.with_views(daily_lift, daily_values)
+```
+
+`values=True` requests per-arm descriptive values for daily or as-of views.
+Without it, those views request lift. Values and lift at the same time
+coordinates are separate scopes; the default lift scope keeps its existing
+canonical identity. Run, breakout and switchback scopes do not support values.
 If an in-memory learner configuration cannot be serialized, `RunResult`
 remains usable in memory, while storing or serializing it refuses with
 `wire.procedure.runtime_method`.
@@ -30,9 +65,9 @@ identifies the supported contrast procedure; arm estimators refuse with
 
 Builder specifications retain the compiled plan, metric configurations,
 cluster and trigger declarations, and the bound operations' accepted arguments.
-Readout operations are request declarations, not additional scope coordinates: daily
-values and daily lift can share a scope while having different compatibility
-requirements. Preflight is conservative and sound rather than complete: it reports
+Readout operations are selected through the declared scopes: daily values and
+daily lift are separate scopes even when they share time coordinates, and have
+different compatibility requirements. Preflight is conservative and sound rather than complete: it reports
 known static refusals using the execution refusal code, but does not estimate
 data-dependent conditions or guarantee that an unrefused request will execute.
 
@@ -121,13 +156,57 @@ resolver.capture_sequential(finalized=True, as_of=as_of)
 result = run(experiment, resolver)
 ```
 
-`from_frame` requires `shape="summary"` or `shape="panel"`. The narrower
-builders are `from_definitions`, `from_unit_day_artifact`,
-`from_switchback_frame`, and `from_moments`. Binding definitions with a
-connection records a versioned catalog file; a no-connection call reads
-that catalog and refuses when it is missing or stale. An offline definitions
-specification can be inspected with `runnable`, but needs a connection-bound
-resolver to execute.
+`from_frame` requires `shape="summary"` or `shape="panel"`. Each shape has
+its own typed options. A summary accepts `intervention_grain="unit"` or
+`"cluster"`; a panel requires `date` and accepts `observation_end`. Both accept
+`unit`, `group`, `metrics`, `control` or `design`, `plan`, `uptake`,
+`exposure_date`, `breakouts`, `cluster`, and `on_unassigned`.
+`control` and `design` are alternative ways to declare the comparison.
+
+The definitions call is path-first:
+`from_definitions(definitions_path, con=None, *, experiment_name=None,
+backend=None, store="auto", on_mixed_assignment="error",
+source_snapshot_evidence=None)`. Omit `experiment_name` only when the definitions
+or offline catalog contain exactly one experiment. Binding with a connection
+records a versioned catalog file; a no-connection call reads that catalog and
+refuses when it is missing or stale. An offline specification can be inspected
+with `runnable`, but needs a connection-bound source to execute.
+
+The other source builders expose only the options their data support:
+
+<!-- skip: next "requires a published artifact, exported moments, and a switchback frame" -->
+```python
+from increment import from_unit_day_artifact, from_moments, from_switchback_frame
+
+artifact_experiment, artifact_resolver = from_unit_day_artifact(
+    artifact_store,
+    artifact_ref,
+    expected_context=artifact_context,
+    verification="lazy_digest",
+)
+moments_experiment, moments_resolver = from_moments(
+    moment_rows,
+    metrics={"revenue": "mean"},
+    control="control",
+    experiment_id="checkout_redesign",
+)
+switchback_experiment, switchback_resolver = from_switchback_frame(
+    switchback_rows,
+    unit="user_id",
+    cycle="cycle",
+    period="period",
+    step="step",
+    group="variant",
+    metrics={"revenue": "mean"},
+    identification=randomized_design,
+    assignment=switchback_assignment,
+    contrast_references=contrast_references,
+)
+```
+
+Every builder returns an experiment declaration and a resolver for reading its
+source. Saving and loading the declaration preserves
+its hash; it does not serialize the data or a warehouse connection.
 
 Use the resolver as a context manager when it owns temporary warehouse tables or
 an opened artifact snapshot. Exiting the block releases those resources; it
@@ -135,23 +214,61 @@ does not close the warehouse connection you supplied:
 
 ```python
 from pathlib import Path
-import shutil
+from tempfile import TemporaryDirectory
 
 import ibis
-import examples._seed as seed
-from increment import Method, from_definitions, run
+import pyarrow as pa
 
-definitions = Path("definitions")
-shutil.copytree(Path(seed.__file__).parent / "definitions", definitions)
+from increment import from_definitions, run
+
+rows = [
+    {
+        "user_id": f"u{index}",
+        "group_id": "control" if index < 4 else "treatment",
+        "experiment_id": "demo",
+        "ts": f"2025-01-01 12:{event:02}:00",
+        "event": kind,
+        "revenue": float(index + 1) if kind == "purchase" else None,
+    }
+    for index in range(8)
+    for event, kind in ((0, "page_view"), (1, "purchase"))
+]
 con = ibis.duckdb.connect()
-seed.seed_event_log(con, with_pre_period=True)
-experiment, resolver = from_definitions("new_onboarding_v2", definitions, con, store="always")
-with resolver:
-    result = run(
-        experiment,
-        resolver,
-        analysis_options={"decision_method": Method(name="cuped", variance_reduction="cuped")},
+con.create_table("demo_events", pa.Table.from_pylist(rows))
+
+with TemporaryDirectory() as definitions:
+    Path(definitions, "demo.yaml").write_text(
+        """\
+dialect: duckdb
+fact_sources:
+  - name: demo_events
+    sql: SELECT * FROM demo_events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: page_view, column: null}
+      - {name: purchase, column: revenue}
+exposures:
+  - {name: enrolled, fact: page_view}
+metrics:
+  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 1}
+experiments:
+  - name: demo
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01
+    end: 2025-01-01
+    observation_end: 2025-01-02
+    control_group: control
+    plan: {primary: revenue}
+""",
+        encoding="utf-8",
     )
+    experiment, resolver = from_definitions(
+        definitions, con, experiment_name="demo", store="always"
+    )
+    with resolver:
+        result = run(experiment, resolver)
 assert result
 assert con.raw_sql("SELECT 1").fetchone()[0] == 1
 con.disconnect()

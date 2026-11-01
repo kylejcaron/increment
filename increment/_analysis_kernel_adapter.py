@@ -12,6 +12,7 @@ from pydantic_core import PydanticSerializationError
 
 from increment._binding import ResolverBinding
 from increment._canonical import declaration_value
+from increment._evidence_refusals import require_evidence
 from increment._runnability import (
     context_payload,
     operation_options,
@@ -230,9 +231,11 @@ class AnalysisResolver(ResolverBinding):
             refusals = scope_refusals(experiment, scope)
             if refusals:
                 raise refusals[0]
-            if scope.view == "breakout" and tuple(
-                identity.property for identity in scope.segment
-            ) != tuple(getattr(self._source, "breakouts", ())):
+            selection = tuple(identity.property for identity in scope.segment)
+            if scope.view == "breakout" and selection != tuple(
+                getattr(self._source, "breakouts", ())
+            ):
+                require_evidence(self._source, by=selection)
                 self._unavailable(experiment, "segment")
             kwargs = operation_options(experiment, scope, {**self._run_options, **(options or {})})
             if self._return_run_result and kwargs.get("store") is not None:

@@ -30,6 +30,79 @@ from increment.kernel.contracts import (
 )
 
 
+def test_experiment_declares_distinct_values_and_lift_views_without_changing_lift_identity():
+    from increment import Experiment, SourceReference
+    from increment import Scope as PublicScope
+
+    lift = PublicScope(view="daily", grain="daily")
+    values = PublicScope(view="daily", grain="daily", values=True)
+    asof_lift = PublicScope(view="asof", grain="asof")
+    base = Experiment(
+        experiment_id="values-and-lift",
+        design={},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(SourceReference(name="source", uri="memory://source"),),
+        scopes=(lift,),
+    )
+
+    declared = base.with_views(lift, values, asof_lift)
+    assert declared.scopes == (lift, values, asof_lift)
+    assert lift.hash() == "ca8dd0beb151c78a6ca4bc73abbae0280268479e0f33cc03d3fab34fcbedd672"
+    assert asof_lift.hash() == "1b21975ed8e30ebfa525e7945cae98190e2449b9da3bfd2a68cd387d9fedfff0"
+    assert "values" not in lift.canonical_payload()
+    assert "values" not in asof_lift.canonical_payload()
+
+    assert declared.source_refs == base.source_refs
+    assert declared.operations == {}
+    assert json.loads(declared.to_json())["operations"] == {}
+    assert declared.scopes[0].hash() == lift.hash()
+    assert declared.scopes[1].canonical_payload()["values"] is True
+    assert declared.scopes[1].hash() != lift.hash()
+    assert base.scopes == (lift,)
+    assert Experiment.from_json(declared.to_json()) == declared
+
+    legacy = json.loads(base.with_views(lift, asof_lift).to_json())
+    legacy["operations"] = {
+        lift.hash(): "run_daily",
+        asof_lift.hash(): "run_asof",
+    }
+    migrated = Experiment.from_json(json.dumps(legacy))
+    assert tuple(scope.values for scope in migrated.scopes) == (True, True)
+    assert migrated.operations == {}
+
+    with pytest.raises(CodedError) as raised:
+        Experiment(
+            experiment_id="duplicate-values-scope",
+            design={},
+            metrics={},
+            registration=Registration(registration_hash="registration"),
+            source_refs=base.source_refs,
+            scopes=(lift, lift),
+            operations={lift.hash(): "run_daily"},
+        )
+    assert raised.value.code == "kernel.request.invalid"
+    for scope in (
+        PublicScope(view="run", grain="total"),
+        PublicScope(
+            view="breakout",
+            grain="total",
+            segment=({"property": "country", "source": None},),
+        ),
+        PublicScope(view="switchback", grain="total"),
+    ):
+        with pytest.raises(CodedError) as raised:
+            PublicScope.model_validate({**scope.canonical_payload(), "values": True})
+        assert raised.value.code == "kernel.scope.invalid"
+
+    with pytest.raises(CodedError) as raised:
+        base.with_views()
+    assert raised.value.code == "kernel.request.invalid"
+    with pytest.raises(CodedError) as raised:
+        base.with_views(lift, lift)
+    assert raised.value.code == "kernel.request.invalid"
+
+
 def test_daily_day_and_cumulative_through_day_have_different_scope_hashes():
     day = date(2026, 1, 5)
     daily = Scope(view="daily", grain="daily", through_day=day)
@@ -58,7 +131,6 @@ def test_inconsistent_scope_refuses_with_code():
     bad = (
         {"view": "run", "grain": "daily"},
         {"view": "run", "grain": "total", "through_day": date(2026, 1, 5)},
-        {"view": "breakout", "grain": "total"},
     )
     for fields in bad:
         with pytest.raises(CodedError) as raised:
@@ -66,6 +138,193 @@ def test_inconsistent_scope_refuses_with_code():
         assert raised.value.code == "kernel.scope.invalid"
         assert pickle.loads(pickle.dumps(raised.value)).code == raised.value.code
         assert copy.deepcopy(raised.value).code == raised.value.code
+
+
+def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
+    from increment import Experiment, SourceReference
+    from increment.evidence import EvidenceCapabilities
+
+    def source(name: str, breakouts: tuple[str, ...]) -> SourceReference:
+        return SourceReference(
+            name=name,
+            uri=f"frame://{name}",
+            capabilities=EvidenceCapabilities(
+                kind="unit_summary",
+                grains=frozenset({"total", "daily", "asof"}),
+                breakouts=breakouts,
+                shape="unit_summary",
+                operations=frozenset(),
+                unit_rows=True,
+                raw_outcomes=True,
+                method_fit="none",
+                compliance_axis="none",
+                count_grains=frozenset({"unit"}),
+                populations=frozenset({"assigned"}),
+                sequential_capture="none",
+                scalar=None,
+                available_covariates=frozenset(),
+            ),
+        )
+
+    all_breakouts = Scope(view="breakout", grain="total")
+    qualified = Scope(
+        view="breakout",
+        grain="total",
+        segment=({"property": "country", "source": "src_b"},),
+    )
+    same_property = Scope(
+        view="breakout",
+        grain="total",
+        segment=({"property": "country", "source": None},),
+    )
+    distinct_properties = Scope(
+        view="breakout",
+        grain="total",
+        segment=(
+            {"property": "device", "source": None},
+            {"property": "country", "source": None},
+        ),
+    )
+    experiment = Experiment(
+        experiment_id="breakout-selection",
+        design={},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(source("source", ("country", "device")),),
+        scopes=(all_breakouts, qualified, same_property, distinct_properties),
+        analysis_context={
+            "experiment": {
+                "breakouts": (
+                    {"property": "country", "source": "src_a"},
+                    {"property": "country", "source": "src_b"},
+                    {"property": "device", "source": "src_a"},
+                )
+            }
+        },
+    )
+    authored_hash = experiment.hash()
+
+    inventory, requests = experiment.compile()
+
+    expected = (
+        ("src_a", "country"),
+        ("src_b", "country"),
+        ("src_a", "device"),
+    )
+
+    def request_breakouts(index: int) -> tuple[tuple[str, str], ...]:
+        items = cast(
+            tuple[Mapping[str, object], ...],
+            requests[index].requests[0].fields["breakouts"],
+        )
+        return tuple((str(item["source"]), str(item["property"])) for item in items)
+
+    assert tuple((item.source, item.property) for item in inventory.breakouts) == expected
+    assert request_breakouts(0) == expected
+    assert request_breakouts(1) == (("src_b", "country"),)
+    assert request_breakouts(2) == (("src_a", "country"), ("src_b", "country"))
+    assert request_breakouts(3) == expected
+    assert experiment.hash() == authored_hash
+    assert all(
+        scope.hash() == request.scope.hash()
+        for scope, request in zip(experiment.scopes, requests, strict=True)
+    )
+
+    with pytest.raises(CodedError) as raised:
+        Experiment(
+            experiment_id="duplicate-breakout-selection",
+            design={},
+            metrics={},
+            registration=Registration(registration_hash="registration"),
+            source_refs=experiment.source_refs,
+            analysis_context=experiment.analysis_context,
+            scopes=(
+                Scope(
+                    view="breakout",
+                    grain="total",
+                    segment=(
+                        {"property": "country", "source": None},
+                        {"property": "country", "source": "src_a"},
+                    ),
+                ),
+            ),
+        ).compile()
+    assert raised.value.code == "kernel.request.invalid"
+    assert raised.value.context["field"] == "duplicate breakout selection 'country'"
+
+    _, (unknown,) = experiment.with_views(
+        Scope(
+            view="breakout",
+            grain="total",
+            segment=({"property": "unknown", "source": None},),
+        )
+    ).compile()
+    unknown_breakouts = cast(
+        tuple[Mapping[str, object], ...], unknown.requests[0].fields["breakouts"]
+    )
+    assert tuple((item["property"], item["source"]) for item in unknown_breakouts) == (
+        ("unknown", None),
+    )
+    with pytest.raises(CodedError) as raised:
+        experiment.with_views(
+            Scope(
+                view="breakout",
+                grain="total",
+                segment=(
+                    {"property": "unavailable", "source": None},
+                    {"property": "unavailable", "source": None},
+                ),
+            )
+        ).compile()
+    assert raised.value.code == "kernel.request.invalid"
+
+
+def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():
+    from increment import Experiment, SourceReference
+
+    selector = Scope(
+        view="breakout",
+        grain="total",
+        segment=({"property": "country", "source": None},),
+    )
+    experiment = Experiment(
+        experiment_id="unknown-breakout",
+        design={},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(SourceReference(name="events", uri="frame://events"),),
+        scopes=(selector,),
+    )
+
+    inventory, requests = experiment.compile()
+
+    expected = (("country", None),)
+    assert tuple((item.property, item.source) for item in inventory.breakouts) == expected
+    request_breakouts = cast(
+        tuple[Mapping[str, object], ...], requests[0].requests[0].fields["breakouts"]
+    )
+    assert tuple((item["property"], item["source"]) for item in request_breakouts) == expected
+
+
+def test_temporal_scopes_allow_multiple_sources_of_one_breakout_only():
+    Scope(
+        view="daily",
+        grain="daily",
+        segment=(
+            {"property": "country", "source": "source-a"},
+            {"property": "country", "source": "source-b"},
+        ),
+    )
+    with pytest.raises(CodedError) as raised:
+        Scope(
+            view="daily",
+            grain="daily",
+            segment=(
+                {"property": "country", "source": "source-a"},
+                {"property": "device", "source": "source-a"},
+            ),
+        )
+    assert raised.value.code == "kernel.scope.invalid"
 
 
 @pytest.mark.integration

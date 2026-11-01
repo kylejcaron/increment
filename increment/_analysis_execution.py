@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import datetime as dt
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,9 +22,8 @@ if TYPE_CHECKING:
     )
     from increment.kernel.context import EvidenceExecutionContext
     from increment.query.artifact_contract import ArtifactContext, ArtifactStore
-    from increment.query.session import SourceSnapshotEvidence, WarehouseSession
+    from increment.query.session import WarehouseSession
     from increment.semantics.artifact import ArtifactExtensionRequest, UnitDayArtifactRef
-    from increment.semantics.models import Experiment
 
 
 from increment import readouts
@@ -70,7 +68,6 @@ from increment._source_operations import (
     TriggeredHealthEvidenceOperation,
 )
 from increment._source_types import declared_evidence, is_custom_source
-from increment._study import ParallelStudyEnvelope
 from increment.decision import (
     AnalysisState,
     ArmAnalysisState,
@@ -78,7 +75,6 @@ from increment.decision import (
     ContrastContext,
     ContrastSource,
     DefinitionsArmAnalysisState,
-    SeamArmAnalysisState,
 )
 from increment.errors import (
     CapabilityError,
@@ -97,11 +93,7 @@ from increment.estimation.assignment_integrity import (
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
 from increment.evidence import evidence_provider, request_evidence
-from increment.plan import (
-    bind_automatic_sequential_plan,
-    compile_decision_plan,
-    with_unassigned_procedures,
-)
+from increment.plan import with_unassigned_procedures
 from increment.readouts._evidence import (
     NATIVE_ROUTE,
     day_axis_route,
@@ -118,34 +110,15 @@ from increment.readouts._whole_window import (
     validate_contrast_request,
 )
 from increment.semantics.models import Breakout, Definitions, Experiment
-from increment.semantics.unit_cycle import UnitCycleReference
-from increment.sequential_source import native_observation_mapping
-from increment.sources import EvidenceSource, _health_snapshot_id
+from increment.sources import _health_snapshot_id
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
-
-
-def _input_backend_of(frame: IntoDataFrame) -> Backend:
-    import narwhals as nw
-
-    return cast("Backend", nw.from_native(frame, eager_only=True).implementation.value)
 
 
 _SWITCHBACK_ONLY = RefusalSpec(
     "facade.analysis.switchback_only",
     CapabilityError,
     template="{method}() is only available for switchback evidence.",
-)
-_INVALID_MIXED_ASSIGNMENT_POLICY = RefusalSpec(
-    "facade.analysis.invalid_mixed_assignment_policy",
-    InvalidRequestError,
-    template="on_mixed_assignment must be 'error', 'warn', or 'exclude', got {on_mixed_assignment!r}",
-)
-
-_INVALID_STORE_POLICY = RefusalSpec(
-    "facade.analysis.invalid_store_policy",
-    InvalidRequestError,
-    template="store must be 'auto', 'always', or 'none'; got {store!r}",
 )
 
 _INVALID_POPULATION = RefusalSpec(
@@ -237,16 +210,6 @@ _REFUSALS = refusals(
     {
         "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
         "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
-        "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
-        "facade.analysis.unknown_experiment": RefusalSpec(
-            "facade.analysis.unknown_experiment",
-            InvalidRequestError,
-            lambda *, requested, available: (
-                f"experiment {requested!r} is not declared in these definitions "
-                f"(available: {list(available)!r})"
-            ),
-        ),
-        "facade.analysis.source_context_design_disagrees_arm": "source context design disagrees with Analysis construction",
         "store.run.legacy_analysis_required": RefusalSpec(
             "store.run.legacy_analysis_required",
             InvalidRequestError,
@@ -254,9 +217,6 @@ _REFUSALS = refusals(
         ),
     },
 )
-SOURCE_CONTEXT_DESIGN_DISAGREES_ARM = _REFUSALS[
-    "facade.analysis.source_context_design_disagrees_arm"
-]
 
 _raise = raiser(_REFUSALS)
 
@@ -264,7 +224,6 @@ _raise = raiser(_REFUSALS)
 if TYPE_CHECKING:
     import pyarrow as pa
     from ibis.expr.types import Table
-    from narwhals.typing import IntoDataFrame
 
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.cate import CateResult, Covariate
@@ -278,23 +237,13 @@ if TYPE_CHECKING:
         TargetingRule,
         TargetingSelection,
     )
-    from increment.frame import MetricsArg
     from increment.power import Baseline
     from increment.power.switchback import SwitchbackBaseline
     from increment.query.source import ArtifactMomentSource
-    from increment.semantics.assignment import SwitchbackAssignment
     from increment.semantics.design import Encouragement, Observational, Randomized
-    from increment.semantics.models import AnalysisPlan, Breakout, Metric
+    from increment.semantics.models import Breakout, Metric
     from increment.sequential_state import SequentialCheckpoint
     from increment.switchback import SwitchbackAssignmentDiagnostic
-
-
-# Internal helpers
-
-
-def _declared_design(experiment: Experiment) -> Randomized | Encouragement | Observational:
-    """Map a definitions-declared experiment to its `readouts.run` design."""
-    return experiment.resolved_design()
 
 
 # Public facade
@@ -362,171 +311,19 @@ def _current_execution_context() -> Any | None:
 
 
 class Analysis:
-    """Analyse one A/B experiment from declarative definitions.
-
-    Parameters
-    ----------
-    experiment_name : str
-        The ``name`` field of an experiment in the definitions YAML.
-    definitions_path : str | Path
-        Path to a definitions YAML file, or a directory of YAML files.
-    con : SQLBackend
-        Ibis backend connection holding the definitions' fact tables,
-        bound once at construction.
-    backend : str | None
-        Ibis dialect name for introspected SQL. Defaults to ``con``'s
-        own dialect.
-    store : Literal["auto", "always", "none"]
-        ``"auto"`` (default) materializes from the second top-level reduction;
-        ``"always"`` starts with the first. Each qualifying call rescans current
-        warehouse data; nested reductions reuse that call's materialization.
-        ``"none"`` keeps reductions unmaterialized.
-    on_mixed_assignment : Literal["error", "warn", "exclude"]
-        Policy for invalid warehouse assignments: units observed in more
-        than one arm or with no assignment label. ``"error"`` (default)
-        refuses; ``"warn"``/``"exclude"`` drop them, warning once or not at
-        all.
-    source_snapshot_evidence : SourceSnapshotEvidence | None
-        Caller-supplied event-time cutoff and optional certified per-feed
-        completeness watermarks; absent certification remains unknown.
-    """
+    """Execute operations over one immutable source binding."""
 
     _readout_snapshot_active: bool = False
     _readout_srm_observations: (
         dict[tuple[Any, ...], tuple[Any, tuple[str, Mapping[str, Any], str] | None]] | None
     ) = None
 
-    def __init__(
-        self,
-        experiment_name: str,
-        definitions_path: str | Path,
-        con: SQLBackend,
-        *,
-        backend: str | None = None,
-        store: Literal["auto", "always", "none"] = "auto",
-        on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    ) -> None:
-        from increment.query.native_source import DefinitionsMomentSource
-        from increment.query.session import WarehouseSession
-        from increment.semantics.loader import load, verify_sql_admission_matches_execution
-
-        if on_mixed_assignment not in ("error", "warn", "exclude"):
-            _refuse(_INVALID_MIXED_ASSIGNMENT_POLICY, on_mixed_assignment=on_mixed_assignment)
-        if store not in ("auto", "always", "none"):
-            _refuse(_INVALID_STORE_POLICY, store=store)
-        defs = load(definitions_path)
-        experiment = defs.experiment(experiment_name)
-        if experiment is None:
-            _raise(
-                "facade.analysis.unknown_experiment",
-                requested=experiment_name,
-                available=tuple(sorted(e.name for e in defs.experiments)),
-            )
-        metrics_by_name = {m.name: m for m in defs.metrics}
-        metrics = [
-            metrics_by_name[name] for name in experiment.metric_names if name in metrics_by_name
-        ]
-        design = _declared_design(experiment)
-        experiment_plan = bind_automatic_sequential_plan(
-            experiment.plan,
-            metrics,
-            design=design,
-            source_id=experiment.name,
-            source_mapping=native_observation_mapping(
-                defs, experiment, on_mixed_assignment=on_mixed_assignment
-            ),
-            pre_period_covariate=experiment.n_pre_periods > 0,
-            trigger=experiment.trigger,
-        )
-        if experiment_plan is not experiment.plan:
-            experiment = Experiment.model_validate(
-                experiment.model_copy(update={"plan": experiment_plan})
-            )
-            defs = defs.model_copy(
-                update={
-                    "experiments": tuple(
-                        experiment if item.name == experiment.name else item
-                        for item in defs.experiments
-                    )
-                }
-            )
-        compiled_plan = compile_decision_plan(
-            experiment_plan,
-            metrics,
-            path="warehouse",
-            design=design,
-        )
-        session = WarehouseSession(con, defs, source_snapshot_evidence=source_snapshot_evidence)
-        verify_sql_admission_matches_execution(defs, con)
-        session.drop_materialized()
-        src = DefinitionsMomentSource(
-            session,
-            experiment,
-            metrics,
-            store=store,
-            on_mixed_assignment=on_mixed_assignment,
-            backend=backend,
-            design=design,
-            plan=compiled_plan,
-        )
-        self._binding = SourceBinding(
-            self._build_state(
-                src=src,
-                defs=defs,
-                experiment=experiment,
-                con=con,
-                session=session,
-                experiment_name=experiment_name,
-                backend=backend,
-                store=store,
-                on_mixed_assignment=on_mixed_assignment,
-            )
-        )
+    def __init__(self, binding: SourceBinding) -> None:
+        self._binding = binding
 
     @classmethod
-    def _build_state(
-        cls,
-        *,
-        src: EvidenceSource | ContrastSource,
-        defs: Definitions | None,
-        experiment: Experiment | None,
-        con: SQLBackend | None,
-        session: WarehouseSession | None,
-        experiment_name: str,
-        backend: str | None,
-        store: Literal["auto", "always", "none"] = "auto",
-        on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-    ) -> AnalysisState:
-        context = src.context
-        if isinstance(context, ContrastContext):
-            return ContrastAnalysisState(
-                source=cast("ContrastSource", src),
-                experiment_name=experiment_name,
-            )
-        design = context.design
-        study = None if design is None else ParallelStudyEnvelope(identification=design)
-        if defs is None:
-            return SeamArmAnalysisState(
-                source=cast("_BuiltinMomentSource", src),
-                study=study,
-                experiment_name=experiment_name,
-            )
-        if study is None:
-            _raise("facade.analysis.definitions_state_requires_identification")
-        return DefinitionsArmAnalysisState(
-            source=cast("_BuiltinMomentSource", src),
-            study=study,
-            definitions=defs,
-            experiment=cast("Experiment", experiment),
-            connection=cast("SQLBackend", con),
-            session=cast("WarehouseSession", session),
-            experiment_name=experiment_name,
-            backend=backend or "",
-            store=store,
-            on_mixed_assignment=on_mixed_assignment,
-            exposure_lookup={e.name: e for e in defs.exposures},
-        )
+    def _from_binding(cls, binding: SourceBinding) -> Self:
+        return cls(binding)
 
     @property
     def _state(self) -> AnalysisState:
@@ -772,545 +569,6 @@ class Analysis:
             extensions=selected,
             refresh_of=refresh_of,
         )
-
-    @classmethod
-    def _from_unit_day_artifact(
-        cls,
-        store: ArtifactStore,
-        ref: UnitDayArtifactRef,
-        *,
-        expected_context: ArtifactContext,
-        verification: Literal["lazy_digest"] = "lazy_digest",
-    ) -> Self:
-        """Open one caller-trusted immutable artifact generation."""
-        from increment.query.source import open_artifact
-
-        source = open_artifact(
-            store,
-            ref,
-            expected_context=expected_context,
-            verification=verification,
-        )
-        return cls._from_source(
-            source,
-            source.context.design,
-            artifact_open_spec=_ArtifactOpenSpec(store, ref, expected_context, verification),
-        )
-
-    @classmethod
-    def _from_definitions(
-        cls,
-        experiment_name: str,
-        definitions_path: str | Path,
-        con: SQLBackend,
-        *,
-        backend: str | None = None,
-        store: Literal["auto", "always", "none"] = "auto",
-        on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    ) -> Self:
-        """Build an :class:`Analysis` from a definitions YAML path/directory.
-
-        Supply ``source_snapshot_evidence`` when the upstream source provides an
-        explicit event-time cutoff; optional per-feed watermarks record only
-        certified completeness, and absent certification stays unknown.
-        Triggered membership, outcomes, and trigger-evidence publication refuse
-        without this evidence; assigned-only operations do not require it.
-        Unknown experiment names raise ``InvalidRequestError`` before warehouse access.
-        """
-        return cls(
-            experiment_name,
-            definitions_path,
-            con,
-            backend=backend,
-            store=store,
-            on_mixed_assignment=on_mixed_assignment,
-            source_snapshot_evidence=source_snapshot_evidence,
-        )
-
-    @classmethod
-    def _from_source(
-        cls,
-        src: EvidenceSource | ContrastSource,
-        design: Randomized | Encouragement | Observational | None = None,
-        *,
-        defs: Definitions | None = None,
-        experiment: Experiment | None = None,
-        con: SQLBackend | None = None,
-        session: WarehouseSession | None = None,
-        experiment_name: str | None = None,
-        backend: str | None = None,
-        store: Literal["auto", "always", "none"] = "auto",
-        on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-        artifact_open_spec: _ArtifactOpenSpec | None = None,
-    ) -> Self:
-        """Build an instance from the source's immutable construction state."""
-        context = src.context
-        if isinstance(context, ContrastContext):
-            if design is not None and context.study.identification != design:
-                _raise("facade.analysis.source_context_design_disagrees_arm")
-        elif design is not None and context.design != design:
-            _raise("facade.analysis.source_context_design_disagrees_arm")
-        self = super().__new__(cls)
-        self._binding = SourceBinding(
-            cls._build_state(
-                src=src,
-                defs=defs,
-                experiment=experiment,
-                con=con,
-                session=session,
-                experiment_name=experiment_name or src.context.study_id,
-                backend=backend,
-                store=store,
-                on_mixed_assignment=on_mixed_assignment,
-            ),
-            artifact_open=artifact_open_spec,
-        )
-        return self
-
-    @classmethod
-    # Public factory signature is the API for summary-backed analysis.
-    def _from_unit_summary(  # noqa: PLR0913
-        cls,
-        frame: IntoDataFrame,
-        *,
-        unit: str,
-        group: str,
-        control: object | None = None,
-        metrics: MetricsArg,
-        experiment_id: str = "frame",
-        design: Randomized | Encouragement | Observational | None = None,
-        plan: AnalysisPlan | None = None,
-        uptake: str | None = None,
-        on_unassigned: Literal["error", "exclude"] = "error",
-        cluster: str | None = None,
-        intervention_grain: Literal["unit", "cluster"] = "unit",
-        exposure_date: str | None = None,
-        breakouts: Sequence[str] = (),
-    ) -> Self:
-        """Build an :class:`Analysis` from a one-row-per-unit dataframe.
-
-        No warehouse or YAML - pure narwhals over any supported frame
-        library. See :func:`increment.frame.from_unit_summary` for the
-        full parameter contract. Day-axis methods, ``panel_sql``/
-        ``summary_sql``, and ``materialize`` raise
-        :class:`CapabilityError`: this shape has no day axis or SQL
-        substrate.
-
-        Exactly one of *control*/*design* must be given: *control* is
-        sugar for ``Randomized(control_group=control)``; *design* also
-        accepts :class:`Observational` (routes :meth:`run` through
-        IPTW) or :class:`Encouragement` (ITT/compliance/LATE, reading
-        the uptake column named by *uptake*).
-
-        *plan* declares this analysis's epistemic policy up front
-        (run-wide ``alpha``/``alternative``/``inference``, plus
-        per-metric ``ExperimentMetric.margin``/``margin_abs``) --
-        required for :meth:`run` to apply role-based dispatch
-        (primary/guardrail/secondary alpha allocation, non-inferiority
-        margins) on this seam source instead of refusing the
-        equivalent call-time kwargs. Omitted (default): the plan is
-        undeclared; alpha is 0.05 and no sequential inference applies.
-
-        *on_unassigned* controls a null value in *group*: ``"error"``
-        (default) refuses; ``"exclude"`` drops those rows, with the
-        count surfaced in ``unit_counts()`` and :meth:`srm`.
-
-        *cluster* names the randomization-grain column when assignment
-        was coarser than *unit*. ``intervention_grain`` separately declares
-        whether deployment acts on units or whole clusters - see
-        :func:`increment.frame.from_unit_summary` for the full contract.
-
-        *exposure_date* names each unit's exposure date or day index.
-        Sequential inference requires it and reveals units in that order,
-        never in row order. With an ``on_unassigned="exclude"`` policy a
-        null exposure drops the unit, as on :meth:`from_unit_panel`.
-
-        *breakouts* names unit-stable columns used only for whole-window
-        ``run_breakout`` reads. This source remains total-only: it does not
-        expose daily or as-of methods, or a synthetic day axis.
-        """
-        from increment.query.fact_resolution import _require_design
-
-        _require_design(control, design, constructor="Analysis.from_unit_summary")
-
-        if control is None:
-            assert design is not None
-            control = str(design.control_group)
-        from increment.frame import from_unit_summary as _make_source
-
-        src = _make_source(
-            frame,
-            unit=unit,
-            group=group,
-            control=cast(str, control),
-            metrics=metrics,
-            experiment_id=experiment_id,
-            uptake=uptake,
-            design=design,
-            plan=plan,
-            on_unassigned=on_unassigned,
-            cluster=cluster,
-            intervention_grain=intervention_grain,
-            exposure_date=exposure_date,
-            breakouts=breakouts,
-        )
-        analysis = cls._from_source(src, src.context.design)
-        analysis._input_backend = _input_backend_of(frame)
-        return analysis
-
-    @classmethod
-    # Public factory signature is the API for panel-backed analysis.
-    def _from_unit_panel(  # noqa: PLR0913
-        cls,
-        frame: IntoDataFrame,
-        *,
-        unit: str,
-        group: str,
-        date: str,
-        control: object | None = None,
-        metrics: MetricsArg,
-        experiment_id: str = "frame",
-        design: Randomized | Encouragement | Observational | None = None,
-        plan: AnalysisPlan | None = None,
-        uptake: str | None = None,
-        exposure_date: str | None = None,
-        observation_end: dt.date | dt.datetime | str | int | float | None = None,
-        breakouts: Sequence[str] = (),
-        on_unassigned: Literal["error", "exclude"] = "error",
-        cluster: str | None = None,
-    ) -> Self:
-        """Build an :class:`Analysis` from a one-row-per-unit-per-day dataframe.
-
-        No warehouse or YAML - pure narwhals. See
-        :func:`increment.frame.from_unit_panel` for the full data model.
-        Supports :meth:`run`, :meth:`run_daily`, :meth:`run_daily_lift`,
-        :meth:`run_asof`, and :meth:`run_asof_lift`. ``metrics=`` may narrow
-        the constructor-declared metric set, but cannot add undeclared metrics.
-        Breakout declarations are fixed at construction; only a *dimension*
-        named in *breakouts* is accepted. Every result stamps
-        ``source=None``. ``panel_sql``/``summary_sql`` and
-        ``materialize`` still raise :class:`CapabilityError`.
-
-        Exactly one of *control*/*design* must be given - see
-        :meth:`from_unit_summary` for the contract.
-
-        *plan* declares this analysis's epistemic policy up front - see
-        :meth:`from_unit_summary` for the contract.
-
-        *exposure_date* names each unit's day-0 date column, required
-        whenever a metric declares ``window_days`` or
-        ``type="retention"``; it also gates unwindowed outcomes to
-        on-or-after-exposure rows. *observation_end* bounds late-
-        enrollee censoring for windowed/retention metrics.
-
-        *breakouts* declares stable per-unit reporting columns: values
-        must not vary within a unit, nulls form a ``"__null__"``
-        segment, and names cannot overlap roles or metric inputs.
-        An unwindowed mean, ratio or conversion metric may declare a CUPED
-        covariate that is constant within each unit; a covariate that
-        varies within a unit refuses. Windowed and retention metrics
-        refuse a panel covariate: for a windowed metric, compute each unit's
-        windowed value upstream and declare it as an unwindowed metric on
-        :meth:`from_unit_summary`; no frame source serves a per-unit retention
-        value, so remove the covariate to run retention without CUPED.
-        Sequential CUPED is not available from this constructor.
-
-        *on_unassigned* controls an unusable unit (null *group*, or a
-        null *exposure_date* when given): ``"error"`` (default)
-        refuses; ``"exclude"`` drops those units, with the count
-        surfaced in ``unit_counts()`` and :meth:`srm`.
-        """
-        from increment.query.fact_resolution import _require_design
-
-        _require_design(control, design, constructor="Analysis.from_unit_panel")
-
-        if control is None:
-            assert design is not None
-            control = str(design.control_group)
-        from increment.frame import from_unit_panel as _make_source
-
-        src = _make_source(
-            frame,
-            unit=unit,
-            group=group,
-            date=date,
-            control=cast(str, control),
-            metrics=metrics,
-            experiment_id=experiment_id,
-            uptake=uptake,
-            design=design,
-            plan=plan,
-            exposure_date=exposure_date,
-            observation_end=observation_end,
-            breakouts=breakouts,
-            on_unassigned=on_unassigned,
-            cluster=cluster,
-        )
-        analysis = cls._from_source(src, src.context.design)
-        analysis._input_backend = _input_backend_of(frame)
-        return analysis
-
-    @classmethod
-    def _from_moments(  # noqa: PLR0915
-        cls,
-        rows: Sequence[Mapping[str, object]],
-        *,
-        metrics: MetricsArg,
-        control: object | None = None,
-        experiment_id: str | None = None,
-        design: Randomized | Encouragement | Observational | None = None,
-        plan: AnalysisPlan | None = None,
-    ) -> Self:
-        """Build an :class:`Analysis` that rehydrates a moments cube
-        (e.g. exported via :meth:`export`, or a warehouse table of
-        pre-aggregated moments).
-
-        Per-arm ``n``/mean/variance or exact conversion-success summaries
-        are not wire rows; use :func:`increment.estimators.moments_from_summaries` to
-        build the supported fixed-horizon mean/conversion cube. That helper
-        does not synthesize ratio, covariate, clustered, or sequential state;
-        use :meth:`from_unit_summary` when those inputs are required.
-
-        At moment grain, ``run()`` works. ``unit_counts()``, ``srm()``, and
-        health allocation checks require source-level ``assignment_counts``;
-        without that field they are unavailable with
-        ``source.moments.assignment_counts``. The unit-frame method (needed
-        for IPTW/DML) raises :class:`CapabilityError`, as do ``sql()`` and
-        every method the other seam constructors already refuse (day axis,
-        ``panel_sql``, ``run_breakout``, ``materialize``).
-
-        *rows* must carry centered ``group_summary`` columns, a fixed-horizon
-        ``moments_format=12`` stamp, integer ``n``, nullable integer
-        ``successes``, the ratio denominator's third moment ``cden3`` on
-        every denominator row, a source identity record, and a complete
-        embedded ``decision_plan`` on every fixed-horizon row. Format 13 adds
-        method-scoped ``record_kind="cuped_evidence"`` envelopes for several
-        scalar families or categorical-only multicovariate requests; a request
-        the cube carries no evidence for is refused before estimation. The
-        earlier fixed formats 10 and 11 remain readable; their ratio rows
-        predate ``cden3``, so their lift rows report the denominator-skew
-        coverage check as unavailable. Declared binary outcomes require exact
-        success counts.
-        Sequential exports use ``moments_format=10`` checkpoint envelopes
-        and a version-3 sequential wire plan; the preceding sequential
-        format 9 remains readable.
-        Encouragement exports additionally carry cluster identity, member
-        counts, and full bivariate uptake/size moments on every row. Supply
-        the same Encouragement design when reloading; an omitted experiment_id
-        is recovered from the cube for this design. An explicit identity must
-        match the exported cohort. A
-        cube without that state cannot provide design-level compliance.
-        An empty-metric fixed-horizon Encouragement export carries one
-        complete format-12 ``design_summary`` envelope. Reload it with
-        ``metrics=[]``; both its embedded and effective plans must remain
-        fixed-horizon and metric-free, even when *plan* is supplied.
-
-        Exactly one of *control*/*design* must be given - see
-        :meth:`from_unit_summary` for the contract.
-
-        *plan* explicitly overrides the embedded compiled plan when supplied.
-        Without an override, the payload's complete roles, methods,
-        priors, inference, and view policies are used as exported.
-        """
-
-        from increment._frame_validation import (
-            _coerce_source_metrics,
-            canonical_control_for_moments,
-            canonical_design_for_moments,
-            validate_moments_control,
-        )
-        from increment.frame import synthesise_metric
-        from increment.semantics.design import Encouragement, Randomized
-        from increment.sources import MomentsSource
-
-        design = canonical_design_for_moments(design)
-        from increment.query.fact_resolution import _require_design
-
-        _require_design(control, design, constructor="Analysis.from_moments")
-
-        if control is None:
-            assert design is not None
-            control = canonical_control_for_moments(design.control_group)
-        else:
-            control = canonical_control_for_moments(control)
-        validate_moments_control(rows, control)
-        if design is None:
-            design = MomentsSource.design_summary_design(rows, control_group=control) or Randomized(
-                control_group=control
-            )
-        specs = _coerce_source_metrics(metrics, design=design)
-
-        from increment._analysis_config import (
-            refuse_cuped_linear_moments,
-            refuse_missing_scalar_evidence,
-        )
-        from increment._cuped_evidence import invalid_evidence, method_key
-        from increment.sources import cuped_evidence_items
-
-        evidence_items = cuped_evidence_items(rows, require_plan=plan is None)
-        evidence = {
-            metric: {key: item.kind for key, item in items.items()}
-            for metric, items in evidence_items.items()
-        }
-        portable_metrics: set[str] = set()
-        for spec in specs:
-            for item in evidence_items.get(spec.name, {}).values():
-                if item.kind == "categorical_cells":
-                    expected_components = 2 if spec.type == "ratio" else 1
-                    actual_components = (
-                        0 if item.cells is None else len(item.cells.outcome_references)
-                    )
-                elif item.kind == "fitted_multicovariate":
-                    expected_components = 2 if spec.type == "ratio" else 1
-                    actual_components = 0 if item.fit_state is None else len(item.fit_state.slopes)
-                else:
-                    continue
-                if actual_components != expected_components:
-                    invalid_evidence(
-                        f"{item.kind} evidence for metric {spec.name!r} has "
-                        f"{actual_components} components; expected {expected_components}"
-                    )
-            methods_for_metric = (
-                () if spec.decision_method is None else (spec.decision_method,)
-            ) + spec.sensitivity_methods
-            carried = evidence.get(spec.name, {})
-            for method in methods_for_metric:
-                carried_kind = carried.get(method_key(method))
-                if method.variance_reduction == "cuped_multicovariate":
-                    if carried_kind not in ("categorical_cells", "fitted_multicovariate"):
-                        refuse_cuped_linear_moments(spec.name)
-                    portable_metrics.add(spec.name)
-            if "scalar_moments" in carried.values():
-                # Method-scoped evidence identifies each scalar family exactly.
-                for method in methods_for_metric:
-                    if (
-                        method.variance_reduction == "cuped"
-                        and carried.get(method_key(method)) != "scalar_moments"
-                    ):
-                        refuse_missing_scalar_evidence("Analysis.from_moments", method.name)
-                portable_metrics.add(spec.name)
-                continue
-            requested_covariates = {
-                covariate.name
-                for method in methods_for_metric
-                if method.variance_reduction == "cuped"
-                for covariate in method.covariates or ()
-            }
-            provenance_names = {
-                str(row["covariate_name"])
-                for row in rows
-                if row.get("metric") == spec.name and row.get("covariate_name") is not None
-            }
-            if (
-                requested_covariates
-                and provenance_names
-                and provenance_names != requested_covariates
-            ):
-                from increment._analysis_config import refuse_unidentified_scalar_moments
-
-                refuse_unidentified_scalar_moments(spec.name)
-            if requested_covariates and any(
-                row.get("metric") == spec.name
-                and row.get("ref_x") is not None
-                and row.get("x_role") not in (None, "covariate")
-                for row in rows
-            ):
-                from increment._analysis_config import refuse_unidentified_scalar_moments
-
-                refuse_unidentified_scalar_moments(spec.name)
-        metric_catalog = [synthesise_metric(spec) for spec in specs]
-        from increment._analysis_config import resolve_configs
-
-        configs = resolve_configs(
-            metric_catalog,
-            bindings=None,
-            specs={spec.name: spec for spec in specs},
-            methods=None,
-            prior=None,
-        )
-        from increment._analysis_config import validate_scalar_route
-
-        validate_scalar_route(
-            tuple(config for config in configs if config.metric.name not in portable_metrics),
-            route="Analysis.from_moments",
-            representation="moments",
-            design=design,
-        )
-        if experiment_id is None:
-            experiment_id = (
-                str(rows[0].get("experiment_id", "moments"))
-                if rows
-                and (
-                    isinstance(design, Encouragement)
-                    or rows[0].get("record_kind") == "sequential_checkpoint"
-                )
-                else "moments"
-            )
-        src = MomentsSource(
-            rows,
-            metrics=metric_catalog,
-            study_id=experiment_id,
-            design=design,
-            plan=plan,
-            configs=configs,
-        )
-        return cls._from_source(src, design)
-
-    @classmethod
-    def _from_switchback_panel(
-        cls,
-        frame: IntoDataFrame,
-        *,
-        unit: str,
-        cycle: str,
-        period: str,
-        step: str,
-        group: str,
-        metrics: MetricsArg,
-        identification: Randomized,
-        assignment: SwitchbackAssignment,
-        experiment_id: str = "frame",
-        plan: AnalysisPlan | None = None,
-        contrast_references: Mapping[str, UnitCycleReference] | None = None,
-    ) -> Self:
-        """Build a fixed-horizon analysis under the declared switchback law.
-
-        ``assignment.sequence`` accepts ``IndependentBernoulliOrder`` for
-        independent unit-cycle draws (a declared envelope or explicit t approximation), or
-        ``SharedScheduleOrder`` for one Bernoulli CT/TC draw per complete
-        two-period block and fixed roster (block-t inference).
-
-        Both estimate the mean-unit retained-window additive effect. Retain
-        steps at or after ``washout_steps + carryover_order``; orders 0/1/2
-        work when ``observation_steps > carryover_order``. Absence of further
-        carryover is a declared assumption, not a diagnostic conclusion.
-        Results and diagnostics preserve the law, independent grain, window
-        lengths and unit/cycle/block counts.
-
-        Incomplete schedules and implausible CT/TC splits refuse with
-        ``source.frame.switchback.schedule`` before statistics are built.
-        Compatibility with the schedule checks cannot prove randomization.
-        """
-        from increment.switchback import from_switchback_panel as _make_source
-
-        src = _make_source(
-            frame,
-            unit=unit,
-            cycle=cycle,
-            period=period,
-            step=step,
-            group=group,
-            metrics=metrics,
-            identification=identification,
-            assignment=assignment,
-            experiment_id=experiment_id,
-            plan=plan,
-            contrast_references=contrast_references,
-        )
-        analysis = cls._from_source(cast("ContrastSource", src), identification)
-        analysis._input_backend = _input_backend_of(frame)
-        return analysis
 
     def materialize(self) -> Self:
         """Rebuild spine and per-metric stats from current warehouse data.

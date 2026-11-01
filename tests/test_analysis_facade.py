@@ -219,16 +219,33 @@ class TestAnalysisReturnsCollectionTypes:
             )
 
 
+def test_analysis_factory_signatures_preserve_inputs_and_return_type():
+    from inspect import signature
+
+    factories = {
+        "from_unit_day_artifact": "store",
+        "from_definitions": "experiment_name",
+        "from_unit_summary": "frame",
+        "from_unit_panel": "frame",
+        "from_moments": "rows",
+        "from_switchback_panel": "frame",
+    }
+    for name, first_input in factories.items():
+        factory_signature = signature(getattr(Analysis, name))
+        assert next(iter(factory_signature.parameters)) == first_input
+        assert factory_signature.return_annotation == "Analysis"
+
+
 def test_analysis_build_state_refuses_definitions_without_a_declared_design():
     from types import SimpleNamespace
 
-    from increment.analysis import Analysis
+    from increment import builders
 
     src = SimpleNamespace(context=SimpleNamespace(design=None))
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis._build_state(
-            src=src,  # ty: ignore[invalid-argument-type]
-            defs=object(),  # ty: ignore[invalid-argument-type]
+        builders._build_state(
+            src=src,
+            defs=object(),
             experiment=None,
             con=None,
             session=None,

@@ -22,6 +22,7 @@ from increment.kernel.contracts import (
     Scope,
     _refuse,
     contract_hash,
+    declared_breakouts,
 )
 
 
@@ -201,6 +202,23 @@ class Experiment:
     request_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        scopes = tuple(self.scopes)
+        operations = dict(self.operations)
+        migrated_operations: set[str] = set()
+        normalized_scopes = []
+        for scope in scopes:
+            legacy_hash = scope.hash()
+            operation = operations.get(legacy_hash)
+            expected = {"daily": "run_daily", "asof": "run_asof"}.get(scope.view)
+            if expected is not None and operation == expected:
+                scope = scope.model_copy(update={"values": True})
+                migrated_operations.add(legacy_hash)
+            normalized_scopes.append(scope)
+        for legacy_hash in migrated_operations:
+            operations.pop(legacy_hash)
+        scopes = tuple(normalized_scopes)
+        object.__setattr__(self, "scopes", scopes)
+        object.__setattr__(self, "operations", MappingProxyType(operations))
         if "capture" in self.request_options:
             _refuse("kernel.request.capture_not_supported")
         if "population" in self.request_options:
@@ -210,18 +228,16 @@ class Experiment:
         names = tuple(source.name for source in self.source_refs)
         if len(set(names)) != len(names):
             _refuse("kernel.request.invalid", field="duplicate source reference names")
-        scope_hashes = tuple(scope.hash() for scope in self.scopes)
+        scope_hashes = tuple(scope.hash() for scope in scopes)
         if len(set(scope_hashes)) != len(scope_hashes):
             _refuse("kernel.request.invalid", field="duplicate experiment scopes")
         object.__setattr__(self, "design", _freeze(self.design))
         object.__setattr__(self, "metrics", _freeze(self.metrics))
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
-        object.__setattr__(self, "scopes", tuple(self.scopes))
         object.__setattr__(
             self, "implementation_refs", MappingProxyType(dict(self.implementation_refs))
         )
         object.__setattr__(self, "analysis_context", _freeze(self.analysis_context))
-        object.__setattr__(self, "operations", MappingProxyType(dict(self.operations)))
         object.__setattr__(self, "request_options", _freeze(self.request_options))
 
     def canonical_payload(self) -> dict[str, object]:
@@ -271,6 +287,8 @@ class Experiment:
             ): ImplementationRef.from_payload(item["implementation"])
             for item in payload.get("implementation_refs", ())
         }
+        scopes = tuple(Scope.from_payload(item) for item in payload["scopes"])
+        operations = payload.get("operations", {})
         return cls(
             experiment_id=str(payload["experiment_id"]),
             design=payload["design"],
@@ -279,13 +297,19 @@ class Experiment:
             source_refs=tuple(
                 SourceReference.from_payload(item) for item in payload["source_refs"]
             ),
-            scopes=tuple(Scope.from_payload(item) for item in payload["scopes"]),
+            scopes=scopes,
             implementation_refs=implementations,
             package_version=str(payload["package_version"]),
             analysis_context=payload.get("analysis_context", {}),
-            operations=payload.get("operations", {}),
+            operations=operations,
             request_options=payload.get("request_options", {}),
         )
+
+    def with_views(self, *scopes: Scope) -> Experiment:
+        """Return this declaration with the selected scopes in declared order."""
+        if not scopes or len({scope.hash() for scope in scopes}) != len(scopes):
+            _refuse("kernel.request.invalid", field="empty or duplicate experiment scopes")
+        return dataclasses.replace(self, scopes=tuple(scopes), operations={})
 
     def hash(self) -> str:
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
@@ -305,6 +329,10 @@ class Experiment:
             thaw(tuple(self.metrics.values()))
         )
         selections = tuple(tuple(scope.metrics) or metrics for scope in self.scopes)
+        breakouts = tuple(
+            declared_breakouts(self.source_refs, scope, self.analysis_context)
+            for scope in self.scopes
+        )
         source = self.source_refs[0].name
         populations = tuple(dict.fromkeys(scope.population for scope in self.scopes))
         inventory = EvidenceScope(
@@ -314,7 +342,7 @@ class Experiment:
             population=populations[0],
             populations=populations,
             breakouts=tuple(
-                dict.fromkeys(identity for scope in self.scopes for identity in scope.segment)
+                dict.fromkeys(identity for selection in breakouts for identity in selection)
             ),
         )
         requests = tuple(
@@ -324,14 +352,16 @@ class Experiment:
                         metrics=selection,
                         population=scope.population,
                         grain=scope.grain,
-                        breakouts=scope.segment,
+                        breakouts=resolved_breakouts,
                     ),
                 ),
                 scope=scope,
                 registration_hash=self.registration.registration_hash,
                 source_ref=source,
             )
-            for scope, selection in zip(self.scopes, selections, strict=True)
+            for scope, selection, resolved_breakouts in zip(
+                self.scopes, selections, breakouts, strict=True
+            )
         )
         return inventory, requests
 

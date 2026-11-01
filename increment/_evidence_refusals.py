@@ -11,7 +11,6 @@ from increment._assignment_refusals import (
     ASSIGNMENT_SELECTION_UNAVAILABLE,
     ASSIGNMENT_UNAVAILABLE,
 )
-from increment._assignment_refusals import refuse_assignment as _refuse_assignment
 from increment._assignment_refusals import (
     refuse_assignment_selection as _refuse_assignment_selection,
 )
@@ -173,10 +172,14 @@ EVIDENCE_REFUSALS = {
 }
 
 
+def _constructor_name(src: object) -> str:
+    return src.constructor if isinstance(src, _DeclaredEvidence) else type(src).__name__
+
+
 def refuse_joint_grouping(src: object, requested: Sequence[str], offered: object) -> NoReturn:
     refuse(
         JOINT_GROUPING_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested=tuple(requested),
         offered=offered,
     )
@@ -187,7 +190,7 @@ def refuse_grain(
 ) -> NoReturn:
     refuse(
         GRAIN_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested=requested,
         offered=tuple(offered),
         route=route,
@@ -199,7 +202,7 @@ def refuse_breakout(
 ) -> NoReturn:
     refuse(
         BREAKOUT_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested=tuple(requested),
         offered=tuple(offered),
         route=route,
@@ -215,7 +218,7 @@ def refuse_operation(
     request: object | None = None,
 ) -> NoReturn:
     context: dict[str, object] = {
-        "constructor": type(src).__name__,
+        "constructor": _constructor_name(src),
         "requested": requested,
         "offered": tuple(offered),
         "route": route,
@@ -229,7 +232,7 @@ def refuse_assignment_identity(src: object, *, operation: str) -> NoReturn:
     """Refuse identity-only assignment operations when the source holds counts only."""
     refuse(
         ASSIGNMENT_IDENTITY_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         operation=operation,
         route=(
             "supply a row-level assignment ledger via Analysis.from_definitions "
@@ -241,7 +244,7 @@ def refuse_assignment_identity(src: object, *, operation: str) -> NoReturn:
 def refuse_unsupported_request(src: object, request: object, offered: Sequence[str]) -> NoReturn:
     refuse(
         UNSUPPORTED_REQUEST,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested=type(request).__name__,
         offered=tuple(sorted(offered)),
         route="use one of the supported evidence request types",
@@ -268,7 +271,7 @@ def require_population(src: object, population: str) -> None:
 def refuse_unit_rows(src: object, *, offered: object, route: str) -> NoReturn:
     refuse(
         UNIT_ROWS_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested=True,
         offered=offered,
         route=route,
@@ -278,7 +281,7 @@ def refuse_unit_rows(src: object, *, offered: object, route: str) -> NoReturn:
 def refuse_cluster(src: object, *, offered: Iterable[object], route: str) -> NoReturn:
     refuse(
         CLUSTER_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested="cluster",
         offered=tuple(offered),
         route=route,
@@ -288,7 +291,7 @@ def refuse_cluster(src: object, *, offered: Iterable[object], route: str) -> NoR
 def refuse_raw_outcomes(src: object, *, offered: object, route: str) -> NoReturn:
     refuse(
         RAW_OUTCOMES_UNAVAILABLE,
-        constructor=type(src).__name__,
+        constructor=_constructor_name(src),
         requested=True,
         offered=offered,
         route=route,
@@ -311,7 +314,12 @@ def refuse_assignment(src: object, *, offered: str) -> NoReturn:
         declared_evidence(src).kind,
         "declare assignment_relation and implement EvidenceProvider.assignment",
     )
-    _refuse_assignment(src, offered=offered, route=guidance)
+    refuse(
+        ASSIGNMENT_UNAVAILABLE,
+        constructor=_constructor_name(src),
+        offered=offered,
+        route=guidance,
+    )
 
 
 def refuse_assignment_selection(src: object, *, requested: object, offered: object) -> NoReturn:
@@ -589,7 +597,7 @@ def _require_evidence(
     if covariates and not evidence.unit_rows:
         refuse(
             COVARIATE_UNAVAILABLE,
-            constructor=type(src).__name__,
+            constructor=_constructor_name(src),
             requested=tuple(covariates),
             offered=tuple(sorted(evidence.available_covariates or ())),
             route="use a source that retains the requested covariates",
@@ -600,7 +608,7 @@ def _require_evidence(
         if missing:
             refuse(
                 COVARIATE_UNAVAILABLE,
-                constructor=type(src).__name__,
+                constructor=_constructor_name(src),
                 requested=missing,
                 offered=tuple(sorted(offered_covariates)),
                 route="use a source that retains the requested covariates",
@@ -684,11 +692,8 @@ def require_evidence(
     covariates: Sequence[str] = (),
     operation: str | None = None,
 ) -> None:
-    from increment._source_types import declared_evidence
-
-    require_evidence_declaration(
-        declared_evidence(src),
-        source=src,
+    _require_evidence(
+        src,
         request=request,
         grain=grain,
         by=by,
@@ -703,7 +708,7 @@ def require_evidence(
 def require_evidence_declaration(
     capabilities: object,
     *,
-    source: object | None = None,
+    constructor: str,
     request: object | None = None,
     grain: Grain | None = None,
     by: Sequence[str] = (),
@@ -713,14 +718,16 @@ def require_evidence_declaration(
     covariates: Sequence[str] = (),
     operation: str | None = None,
 ) -> None:
-    """Evaluate declared support without a source read or backend access."""
+    """Evaluate declared support without a source read or backend access.
+
+    ``constructor`` names the caller's source in any refusal.
+    """
     from increment._source_types import EvidenceCapabilities
 
     if not isinstance(capabilities, EvidenceCapabilities):
         refuse(PROVIDER_UNAVAILABLE, constructor=type(capabilities).__name__)
-    candidate = source if source is not None else _DeclaredEvidence(capabilities)
     _require_evidence(
-        candidate,
+        _DeclaredEvidence(capabilities, constructor),
         request=request,
         grain=grain,
         by=by,
@@ -735,6 +742,8 @@ def require_evidence_declaration(
 def require_any_evidence_route(
     capabilities: object,
     routes: Sequence[Sequence[object]],
+    *,
+    constructor: str,
 ) -> tuple[CodedError, ...]:
     """Return route refusals only when every declared alternative is unavailable."""
     failures: list[CodedError] = []
@@ -742,7 +751,7 @@ def require_any_evidence_route(
         route_failures: list[CodedError] = []
         for request in route:
             try:
-                require_evidence_declaration(capabilities, request=request)
+                require_evidence_declaration(capabilities, constructor=constructor, request=request)
             except CodedError as refusal:
                 route_failures.append(refusal)
         if not route_failures:
@@ -760,7 +769,8 @@ def require_any_evidence_route(
 
 
 class _DeclaredEvidence:
-    __slots__ = ("evidence",)
+    __slots__ = ("constructor", "evidence")
 
-    def __init__(self, evidence: object) -> None:
+    def __init__(self, evidence: object, constructor: str) -> None:
         self.evidence = evidence
+        self.constructor = constructor

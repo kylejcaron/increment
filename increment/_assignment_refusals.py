@@ -31,16 +31,6 @@ ASSIGNMENT_REPLAY_MISMATCH = RefusalSpec(
 )
 
 
-def refuse_assignment(src: object, *, offered: object, route: str) -> NoReturn:
-    """Refuse assignment evidence before source access."""
-    refuse(
-        ASSIGNMENT_UNAVAILABLE,
-        constructor=type(src).__name__,
-        offered=offered,
-        route=route,
-    )
-
-
 def refuse_assignment_selection(src: object, *, requested: object, offered: object) -> NoReturn:
     """Refuse a scope aggregate evidence cannot satisfy."""
     refuse(

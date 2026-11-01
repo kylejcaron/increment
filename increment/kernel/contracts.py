@@ -73,6 +73,7 @@ class _ContractModel(CodedModel, BaseModel):
 class Scope(_ContractModel):
     view: Literal["run", "daily", "asof", "breakout", "switchback"]
     grain: Literal["total", "daily", "asof"]
+    values: bool = Field(default=False, exclude_if=lambda value: not value)
     through_day: date | None = None
     day_domain: tuple[date, ...] = ()
     population: Literal["assigned", "triggered"] = "assigned"
@@ -98,15 +99,18 @@ class Scope(_ContractModel):
                 and (self.grain != "total" or self.through_day is not None or self.day_domain)
             )
             or (self.view == "run" and bool(self.segment))
-            or (self.view == "breakout" and not self.segment)
             or (self.view == "daily" and self.grain != "daily")
             or (self.view == "asof" and self.grain != "asof")
-            or (self.view == "breakout" and self.segment is None)
+            or (
+                self.view in {"daily", "asof"}
+                and len({identity.property for identity in self.segment}) > 1
+            )
             or (bool(self.day_domain) and tuple(sorted(set(self.day_domain))) != self.day_domain)
             or (self.view != "switchback" and bool(self.metrics))
+            or (self.values and self.view not in {"daily", "asof"})
         )
         if invalid:
-            _refuse("kernel.scope.invalid", field="view/grain/through_day/segment/metrics")
+            _refuse("kernel.scope.invalid", field="view/grain/through_day/segment/metrics/values")
         return self
 
     def canonical_payload(self) -> dict[str, object]:
@@ -118,6 +122,75 @@ class Scope(_ContractModel):
 
     def hash(self) -> str:
         return contract_hash("scope", self.canonical_payload())
+
+
+def declared_breakouts(
+    source_refs: Sequence[Any],
+    scope: Scope,
+    analysis_context: Mapping[str, Any] | None = None,
+) -> tuple[BreakoutIdentity, ...]:
+    """Expand selectors from recorded definition identities or source capabilities.
+
+    A selection the declarations cannot match stays unresolved; the evidence validators
+    refuse an unavailable breakout with the source's declared dimensions.
+    """
+    declarations: tuple[BreakoutIdentity, ...] | None = None
+    recorded_experiment = None if analysis_context is None else analysis_context.get("experiment")
+    if isinstance(recorded_experiment, Mapping):
+        raw = recorded_experiment.get("breakouts")
+        if isinstance(raw, (tuple, list)):
+            parsed = []
+            for item in raw:
+                if isinstance(item, Mapping):
+                    property_name = item.get("property")
+                    source_name = item.get("source")
+                else:
+                    property_name = getattr(item, "property", None)
+                    source_name = getattr(item, "source", None)
+                if isinstance(property_name, str) and (
+                    source_name is None or isinstance(source_name, str)
+                ):
+                    parsed.append(BreakoutIdentity(property_name, source_name))
+            declarations = tuple(dict.fromkeys(parsed))
+    if declarations is None:
+        declarations = tuple(
+            dict.fromkeys(
+                BreakoutIdentity(property=property, source=source.name)
+                for source in source_refs
+                if source.capabilities is not None
+                for property in source.capabilities.breakouts
+            )
+        )
+    if not scope.segment:
+        return declarations if scope.view == "breakout" else ()
+
+    seen: dict[str, list[str | None]] = {}
+    for selector in scope.segment:
+        sources = seen.setdefault(selector.property, [])
+        if sources and (
+            selector.source is None
+            or any(source is None or source == selector.source for source in sources)
+        ):
+            _refuse(
+                "kernel.request.invalid",
+                field=f"duplicate breakout selection {selector.property!r}",
+            )
+        sources.append(selector.source)
+
+    selected: set[BreakoutIdentity] = set()
+    unresolved: list[BreakoutIdentity] = []
+    for selector in scope.segment:
+        matches = tuple(
+            identity
+            for identity in declarations
+            if identity.property == selector.property
+            and (selector.source is None or selector.source == identity.source)
+        )
+        if not matches:
+            unresolved.append(selector)
+            continue
+        selected.update(matches)
+    return (*tuple(identity for identity in declarations if identity in selected), *unresolved)
 
 
 class ImplementationRef(_ContractModel):

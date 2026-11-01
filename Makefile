@@ -44,6 +44,7 @@ fmt:
 lint:
 	uv run ruff format --check .
 	uv run ruff check .
+	uv run ty check tests/typed_builder_calls.py --error-on-warning --warn unused-ignore-comment
 	uv run ruff check --select PLR0915 --ignore-noqa --config 'lint.pylint.max-statements=100' increment/
 	uv run tach check
 	uv run vulture increment vulture_whitelist.py --min-confidence 80

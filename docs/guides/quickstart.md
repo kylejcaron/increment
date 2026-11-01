@@ -172,7 +172,7 @@ for i, revenue in enumerate([1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0]):
                 "user_id": f"u{i}",
                 "group_id": "control" if i < 4 else "treatment",
                 "experiment_id": "demo",
-                "ts": dt.datetime(2025, 1, 1, 12),
+                "ts": dt.datetime(2025, 1, 1, 12 if event == "page_view" else 13),
                 "event": event,
                 "revenue": revenue if event == "purchase" else None,
             }
@@ -208,7 +208,7 @@ experiments:
 """,
         encoding="utf-8",
     )
-    exp, resolver = from_definitions("demo", definitions_directory, demo_con)
+    exp, resolver = from_definitions(definitions_directory, demo_con, experiment_name="demo")
     result = run(exp, resolver)
     print(render(result, "brief"))
 ```

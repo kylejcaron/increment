@@ -79,7 +79,7 @@ def test_runnable_preserves_preflight_refusals(
 ):
     from dataclasses import replace
 
-    from increment import runnable
+    from increment import Experiment, runnable
     from increment.evidence import BreakoutIdentity
     from increment.kernel.contracts import Scope
     from tests.analysis_factory import facade_binding, held_source
@@ -178,18 +178,27 @@ def test_runnable_preserves_preflight_refusals(
             if cell.option == "observational"
             else ("randomized.cuped" if cell.option == "cuped" else "randomized.unadjusted")
         )
-        status = runnable(experiment, "m")[estimator]
+        status = runnable(Experiment.from_json(experiment.to_json()), "m")[estimator]
         if case.sequential:
             record_property("refusal_stage", "construction")
         elif not legacy_reads:
             record_property("refusal_stage", "preflight")
-            assert code in {refusal.code for refusal in status.static_refusals}
+            _assert_preflight_refusal(status, legacy.value, scope)
         else:
             record_property("refusal_stage", "data")
             assert status.deferred_checks
         assert counted.loader_reads == []
     finally:
         _close_parity_analysis(analysis)
+
+
+def _assert_preflight_refusal(status, expected, scope):
+    refusal = next((item for item in status.static_refusals if item.code == expected.code), None)
+    assert refusal is not None, tuple(item.code for item in status.static_refusals)
+    if expected.code == "evidence.breakout_unavailable":
+        # Execution reads the implicit run_breakout(); preflight names the authored selection.
+        selection = tuple(identity.property for identity in scope.segment)
+        assert dict(refusal.context) == {**expected.context, "requested": selection}
 
 
 def _assert_runners_produced_rows(

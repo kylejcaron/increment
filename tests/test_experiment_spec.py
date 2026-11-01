@@ -210,17 +210,13 @@ def test_specification_identity_distinguishes_request_declarations(question):
     explicit_default = dataclasses.replace(experiment, operations={scope.hash(): "run_daily_lift"})
     assert explicit_default.analysis_spec_hash == experiment.analysis_spec_hash
     assert explicit_default.execution_identity_hash == experiment.execution_identity_hash
-    changed = dataclasses.replace(
-        experiment,
-        **(
-            {"operations": {scope.hash(): "run_daily"}}
-            if question == "operation"
-            else {
-                "request_options": {
-                    question: Normal(mu=0, sigma=1) if question == "prior" else ("itt",)
-                }
-            }
-        ),
+    changed = (
+        experiment.with_views(Scope(view="daily", grain="daily", values=True))
+        if question == "operation"
+        else dataclasses.replace(
+            experiment,
+            request_options={question: Normal(mu=0, sigma=1) if question == "prior" else ("itt",)},
+        )
     )
     restored = Experiment.from_json(changed.to_json())
 

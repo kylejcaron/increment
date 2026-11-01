@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from ibis.backends.sql import SQLBackend
 
 from increment import run
 from increment.builders import from_definitions
@@ -378,7 +379,7 @@ def test_selected_late_ad_hoc_metric_keeps_family_horizon_in_both_modes(tmp_path
         con = ds.duckdb_connection(rows)
         try:
             experiment, resolver = from_definitions(
-                definitions_path, con, experiment_name="exp", store="none"
+                definitions_path, cast(SQLBackend, con), experiment_name="exp", store="none"
             )
             experiment = replace(experiment, scopes=day_scopes)
             cast(Any, resolver.resolve(experiment.source_refs)).panel_sql()

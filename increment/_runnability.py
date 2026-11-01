@@ -55,7 +55,8 @@ _SCOPE_OPERATIONS = {
     "asof": ("run_asof_lift", "run_asof"),
     "breakout": ("run_breakout",),
 }
-_VALUE_OPERATIONS = frozenset({"run_daily", "run_asof"})
+_VALUE_OPERATION_BY_VIEW = {"daily": "run_daily", "asof": "run_asof"}
+_VALUE_OPERATIONS = frozenset(_VALUE_OPERATION_BY_VIEW.values())
 
 _SCOPE_FAMILY_MISMATCH = RefusalSpec(
     "kernel.scope.family_mismatch",
@@ -70,11 +71,15 @@ _SCOPE_FAMILY_MISMATCH = RefusalSpec(
 
 def scope_operation(experiment: Any, scope: Any) -> str:
     """Resolve a declared operation with the execution default for its scope."""
+    if scope.values:
+        return _VALUE_OPERATION_BY_VIEW[scope.view]
     return experiment.operations.get(scope.hash(), _SCOPE_OPERATIONS[scope.view][0])
 
 
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     """Validate supported execution coordinates without acquiring evidence."""
+    from increment.kernel.contracts import declared_breakouts
+
     operation = scope_operation(experiment, scope)
     if (
         operation not in _SCOPE_OPERATIONS[scope.view]
@@ -82,9 +87,11 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         or scope.day_domain
         or scope.time_basis != "calendar"
         or (scope.completion_policy and scope.view != "asof")
-        or len(scope.segment) > 1
-        or any(identity.source is not None for identity in scope.segment)
         or (scope.view == "switchback" and bool(scope.segment))
+        or (
+            scope.view in {"daily", "asof"}
+            and any(identity.source is not None for identity in scope.segment)
+        )
     ):
         return (
             CodedError(
@@ -93,31 +100,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                 context={"experiment_id": experiment.experiment_id, "field": "scope"},
             ),
         )
-    if scope.view == "breakout":
-        properties = tuple(identity.property for identity in scope.segment)
-        for source in experiment.source_refs:
-            if (
-                source.capabilities is not None
-                and len(source.capabilities.breakouts) > 1
-                and len(properties) == 1
-                and properties[0] in source.capabilities.breakouts
-            ):
-                return (
-                    CodedError(
-                        "The bound analysis cannot execute these experiment declarations",
-                        code="kernel.run.execution_unavailable",
-                        context={"experiment_id": experiment.experiment_id, "field": "segment"},
-                    ),
-                )
-    if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
-        try:
-            refuse(
-                _SCOPE_FAMILY_MISMATCH,
-                experiment_id=experiment.experiment_id,
-                view=scope.view,
-            )
-        except CodedError as refusal:
-            return (refusal,)
     if experiment.analysis_context.get("family") == "contrast":
         from increment._day_axis import _TRIGGER_UNSUPPORTED
         from increment._evidence_refusals import CONTRAST_UNAVAILABLE
@@ -134,6 +116,59 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
                     route="switchback",
                     supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
+        except CodedError as refusal:
+            return (refusal,)
+    try:
+        breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+    except CodedError as refusal:
+        return (refusal,)
+    if (
+        (scope.view == "breakout" and len(breakouts) > 1)
+        or (scope.view in {"daily", "asof"} and len(breakouts) > 1)
+        or (
+            scope.view == "breakout"
+            and bool(breakouts)
+            and (len(scope.segment) != 1 or scope.segment[0].source is not None)
+        )
+        or (
+            scope.view == "breakout"
+            and not breakouts
+            and any(
+                source.capabilities is not None and source.capabilities.breakouts
+                for source in experiment.source_refs
+            )
+        )
+    ):
+        return (
+            CodedError(
+                "The bound analysis cannot execute these experiment declarations",
+                code="kernel.run.execution_unavailable",
+                context={"experiment_id": experiment.experiment_id, "field": "scope"},
+            ),
+        )
+    if scope.view == "breakout":
+        properties = tuple(identity.property for identity in scope.segment)
+        if any(
+            source.capabilities is not None
+            and len(source.capabilities.breakouts) > 1
+            and len(properties) == 1
+            and properties[0] in source.capabilities.breakouts
+            for source in experiment.source_refs
+        ):
+            return (
+                CodedError(
+                    "The bound analysis cannot execute these experiment declarations",
+                    code="kernel.run.execution_unavailable",
+                    context={"experiment_id": experiment.experiment_id, "field": "segment"},
+                ),
+            )
+    if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
+        try:
+            refuse(
+                _SCOPE_FAMILY_MISMATCH,
+                experiment_id=experiment.experiment_id,
+                view=scope.view,
+            )
         except CodedError as refusal:
             return (refusal,)
     try:
@@ -509,6 +544,7 @@ def readout_refusals(
         check(
             require_evidence_declaration,
             capabilities,
+            constructor=declaration["source_name"],
             request=SequentialCaptureRequest(finalized=True),
         )
         capture = options.get("capture")

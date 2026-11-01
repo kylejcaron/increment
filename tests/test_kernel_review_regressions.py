@@ -199,6 +199,39 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
     } == {"decision.not_evaluated.monitoring_view"}
 
 
+def test_declared_all_breakouts_refuse_before_source_reads():
+    frame = _frame()
+    frame["country"] = ["US", "CA", "CA", "US"] * (len(frame) // 4)
+    frame["device"] = ["mobile", "desktop"] * (len(frame) // 2)
+    experiment, resolver = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("country", "device"),
+    )
+    all_breakouts = replace(
+        experiment,
+        scopes=(Scope(view="breakout", grain="total"),),
+    )
+    from tests.analysis_factory import held_source, replace_analysis_source
+    from tests.test_metric_evidence import _CountingSource
+
+    counted = _CountingSource(held_source(resolver._analysis))
+    replace_analysis_source(resolver._analysis, counted)
+
+    assert {
+        error.code
+        for error in runnable(all_breakouts, "value")["randomized.unadjusted"].static_refusals
+    } == {"kernel.run.execution_unavailable"}
+    with pytest.raises(CodedError) as raised:
+        run(all_breakouts, resolver)
+    assert raised.value.code == "kernel.run.execution_unavailable"
+    assert counted.unit_frame_reads == 0
+
+
 @pytest.mark.parametrize("clear_declared_prior", [False, True])
 def test_clustered_preflight_applies_saved_prior_override(clear_declared_prior):
     from increment.errors import IncrementWarning
@@ -919,11 +952,16 @@ def test_switchback_identity_and_estimator_compatibility():
             identification=_identification(),
             assignment=_assignment(),
             plan=AnalysisPlan(primary="mean", alpha=alpha),
-        )[0]
+        )
 
-    experiment = build(0.05)
+    experiment, resolver = build(0.05)
+    restored = Experiment.from_json(experiment.to_json())
+    assert restored.hash() == experiment.hash()
+    (cell,) = run(restored, resolver).cells
+    assert cell.summary is not None
+    assert cell.summary.point == pytest.approx(-30)
     assert experiment.design
-    assert experiment.registration != build(0.1).registration
+    assert experiment.registration != build(0.1)[0].registration
     statuses = runnable(experiment, "mean")
     assert not statuses["switchback.contrast"].static_refusals
     for estimator in ("randomized.cuped", "observational.aipw"):
@@ -958,7 +996,7 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
     definitions["fact_sources"].append(unused)
     source_path.write_text(yaml.safe_dump(definitions))
     forms = (
-        lambda: from_definitions("new_onboarding_v2", path, con=seeded_con),
+        lambda: from_definitions(path, con=seeded_con, experiment_name="new_onboarding_v2"),
         lambda: from_definitions(
             experiment_name="new_onboarding_v2", definitions_path=path, con=seeded_con
         ),
@@ -1269,6 +1307,26 @@ def test_arm_experiment_refuses_switchback_scope_before_reads():
     } == {error.value.code}
 
 
+def test_unavailable_breakout_selection_refuses_alike_before_reads():
+    from increment.evidence import BreakoutIdentity
+
+    experiment, resolver = _experiment()
+    selection = Scope(
+        view="breakout",
+        grain="total",
+        segment=(BreakoutIdentity(property="country", source=None),),
+    )
+    requested = replace(experiment, scopes=(selection,))
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+        run(requested, resolver)
+    assert reads == []
+    assert error.value.code == "evidence.breakout_unavailable"
+    assert [
+        (refusal.code, refusal.context)
+        for refusal in runnable(requested, "value")["randomized.unadjusted"].static_refusals
+    ] == [(error.value.code, error.value.context)]
+
+
 def test_unadjusted_preflight_preserves_declared_conversion_inference():
     frame = _frame().assign(value=[0, 0, 1, 1] * 10, store=lambda data: data["unit"])
     experiment, resolver = from_frame(
@@ -1345,19 +1403,26 @@ def _plain_builder(kind, *, conversion=False):
     frame["other"] = frame["value"] + 2
     frame["country"] = ["US", "CA", "CA", "US"] * 10
     frame["region"] = ["west", "east"] * 20
-    options = {}
     if kind == "panel":
         frame = pd.concat([frame.assign(day="2025-01-01"), frame.assign(day="2025-01-02")])
-        options["date"] = "day"
+        return from_frame(
+            frame,
+            shape="panel",
+            date="day",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=metrics,
+            breakouts=["country", "region"],
+        )
     return from_frame(
         frame,
-        shape="panel" if kind == "panel" else "summary",
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
         metrics=metrics,
         breakouts=["country", "region"],
-        **options,
     )
 
 
@@ -1601,7 +1666,9 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
         ("asof", "asof", "run_asof"),
     ],
 )
-def test_value_only_day_axis_builder_operations_return_run_results(view, grain, operation):
+def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scopes(
+    view, grain, operation
+):
     frame = pd.concat([_frame().assign(day="2025-01-01"), _frame().assign(day="2025-01-02")])
     experiment, resolver = from_frame(
         frame,
@@ -1618,15 +1685,65 @@ def test_value_only_day_axis_builder_operations_return_run_results(view, grain, 
         scopes=(scope,),
         operations={scope.hash(): operation},
     )
+    original_hashes = (
+        requested.hash(),
+        requested.analysis_spec_hash,
+        requested.execution_identity_hash,
+    )
+    requested_scope = requested.scopes[0]
+    restored = type(requested).from_json(requested.to_json())
 
-    result = run(requested, resolver)
+    assert requested_scope.values is True
+    assert (
+        restored.hash(),
+        restored.analysis_spec_hash,
+        restored.execution_identity_hash,
+    ) == original_hashes
+
+    result = run(restored, resolver, views=(requested_scope,))
 
     assert result.cells
     assert all(cell.identity.scope.view == view for cell in result.cells)
+    assert all(cell.identity.scope.values for cell in result.cells)
     assert all(cell.identity.key.ds is not None for cell in result.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in result.cells)
     assert all(cell.identity.estimator_id is None for cell in result.cells)
     assert result.decisions.run_id == result.run.run_id
+    returned_scope = result.cells[0].identity.scope.model_copy(
+        update={"through_day": None, "time_basis": "calendar"}
+    )
+    selected = run(restored.with_views(returned_scope), resolver)
+    assert selected.cells
+    assert all(cell.identity.scope.values for cell in selected.cells)
+    assert all(cell.identity.key.value_scale == "absolute" for cell in selected.cells)
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    direct_values = getattr(analysis, f"run_{view}")()
+    direct_cell = direct_values.as_cells()[0]
+    assert direct_cell.identity.scope.values is True
+    direct_scope = direct_cell.identity.scope.model_copy(
+        update={"through_day": None, "time_basis": "calendar"}
+    )
+    declarative = run(restored.with_views(direct_scope), resolver)
+    assert declarative.cells
+    assert all(cell.identity.scope.values for cell in declarative.cells)
+    assert all(cell.identity.key.value_scale == "absolute" for cell in declarative.cells)
+    direct_lifts = getattr(analysis, f"run_{view}_lift")()
+    lift_cell = direct_lifts.as_cells()[0]
+    assert lift_cell.identity.scope.values is False
+    lift_scope = lift_cell.identity.scope.model_copy(
+        update={"through_day": None, "time_basis": "calendar"}
+    )
+    declarative_lift = run(restored.with_views(lift_scope), resolver)
+    assert declarative_lift.cells
+    assert all(cell.identity.scope.values is False for cell in declarative_lift.cells)
+    assert all(cell.identity.key.value_scale == "relative" for cell in declarative_lift.cells)
 
 
 def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path):
