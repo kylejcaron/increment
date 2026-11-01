@@ -199,10 +199,12 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
     } == {"decision.not_evaluated.monitoring_view"}
 
 
-def test_declared_all_breakouts_refuse_before_source_reads():
+def test_multibreakout_frame_runs_every_declared_selection_and_refuses_unknown_before_reads():
+    from increment.evidence import BreakoutIdentity
+
     frame = _frame()
     frame["country"] = ["US", "CA", "CA", "US"] * (len(frame) // 4)
-    frame["device"] = ["mobile", "desktop"] * (len(frame) // 2)
+    frame["device"] = ["mobile", "mobile", "desktop", "desktop"] * (len(frame) // 4)
     experiment, resolver = from_frame(
         frame,
         shape="summary",
@@ -212,24 +214,41 @@ def test_declared_all_breakouts_refuse_before_source_reads():
         metrics={"value": "mean"},
         breakouts=("country", "device"),
     )
-    all_breakouts = replace(
-        experiment,
-        scopes=(Scope(view="breakout", grain="total"),),
+
+    def selected(*identities):
+        return replace(
+            experiment,
+            scopes=(Scope(view="breakout", grain="total", segment=identities),),
+        )
+
+    every = selected()
+    device = selected(BreakoutIdentity("device", None))
+    for requested in (every, device):
+        assert runnable(requested, "value")["randomized.unadjusted"].static_refusals == ()
+    all_cells = run(every, resolver).cells
+    assert tuple(dict.fromkeys(cell.identity.key.dimension for cell in all_cells)) == (
+        "country",
+        "device",
     )
-    from tests.analysis_factory import replace_bound_source
-    from tests.test_metric_evidence import _CountingSource
+    assert all(
+        cell.identity.scope.segment == (BreakoutIdentity(cell.identity.key.dimension, None),)
+        for cell in all_cells
+    )
+    by_key = {cell.identity.key: cell for cell in all_cells}
+    device_cells = run(device, resolver).cells
+    assert device_cells
+    assert {cell.identity.key.dimension for cell in device_cells} == {"device"}
+    for cell in device_cells:
+        expected = by_key[cell.identity.key]
+        assert (cell.summary, cell.family) == (expected.summary, expected.family)
 
-    counted = _CountingSource(resolver.binding.source)
-    replace_bound_source(resolver, counted)
-
-    assert {
-        error.code
-        for error in runnable(all_breakouts, "value")["randomized.unadjusted"].static_refusals
-    } == {"kernel.run.execution_unavailable"}
-    with pytest.raises(CodedError) as raised:
-        run(all_breakouts, resolver)
-    assert raised.value.code == "kernel.run.execution_unavailable"
-    assert counted.unit_frame_reads == 0
+    unknown = selected(BreakoutIdentity("browser", None))
+    (preflight,) = runnable(unknown, "value")["randomized.unadjusted"].static_refusals
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
+        run(unknown, resolver)
+    assert reads == []
+    assert (raised.value.code, raised.value.context) == (preflight.code, preflight.context)
+    assert raised.value.code == "evidence.breakout_unavailable"
 
 
 @pytest.mark.parametrize("clear_declared_prior", [False, True])
@@ -1541,6 +1560,9 @@ def test_builder_preflight_matches_execution_before_reads(
     breakout_dimension,
     descriptive_daily_conversion,
 ):
+    import warnings
+
+    from increment.errors import IncrementWarning
     from increment.estimators import Normal
     from increment.evidence import BreakoutIdentity
 
@@ -1577,7 +1599,8 @@ def test_builder_preflight_matches_execution_before_reads(
     with _frame_read_calls() as preflight_reads:
         status = runnable(requested, "value")[estimator]
     assert preflight_reads == []
-    with _frame_read_calls() as execution_reads:
+    with _frame_read_calls() as execution_reads, warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
         try:
             run(requested, resolver)
         except CodedError as error:

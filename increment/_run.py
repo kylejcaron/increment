@@ -610,7 +610,7 @@ def _scope_for_cell(cell: ResultCell, declared_scope: Scope | None) -> Scope:
         scope_update["time_basis"] = key.ds_basis
 
     row_scope = declared_scope.model_copy(update=scope_update)
-    if declared_scope.segment and key.dimension is not None:
+    if (declared_scope.segment or declared_scope.view == "breakout") and key.dimension is not None:
         row_scope = row_scope.model_copy(
             update={"segment": (BreakoutIdentity(property=key.dimension, source=key.source),)}
         )

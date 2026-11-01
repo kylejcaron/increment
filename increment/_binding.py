@@ -10,6 +10,7 @@ from increment.errors import CodedError, InvalidRequestError, RefusalSpec, refus
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from increment._evidence_types import BreakoutIdentity
     from increment._literals import Backend
     from increment.kernel.experiment import Experiment, SourceReference
     from increment.kernel.resolver import Resolver
@@ -39,6 +40,7 @@ class SourceBinding:
     artifact_open: _ArtifactOpenSpec | None = None
     input_backend: Backend | None = None
     owns_source: bool = True
+    selected_breakouts: tuple[Breakout, ...] | None = None
 
     @property
     def source(self) -> Any:
@@ -75,8 +77,45 @@ class SourceBinding:
             return self.state.experiment
         artifact_experiment = getattr(self.source, "artifact_experiment", None)
         if artifact_experiment is not None:
-            return artifact_experiment
+            if self.selected_breakouts is None:
+                return artifact_experiment
+            selected = tuple(
+                item for item in artifact_experiment.breakouts if item in self.selected_breakouts
+            )
+            return artifact_experiment.model_copy(update={"breakouts": selected})
         raise AttributeError("seam analysis has no Experiment definition")
+
+    @property
+    def declared_breakouts(self) -> tuple[Breakout, ...]:
+        """The breakouts this binding reads: declared definitions, else the source's dimensions."""
+        from increment._source_types import declared_evidence
+        from increment.semantics.models import Breakout
+
+        if isinstance(self.state, DefinitionsArmAnalysisState):
+            definitions = tuple(self.state.experiment.breakouts)
+        else:
+            artifact_experiment = getattr(self.source, "artifact_experiment", None)
+            definitions = (
+                () if artifact_experiment is None else tuple(artifact_experiment.breakouts)
+            )
+        if not definitions:
+            definitions = tuple(
+                Breakout(property=name) for name in declared_evidence(self.source).breakouts
+            )
+        if self.selected_breakouts is None:
+            return definitions
+        return tuple(item for item in definitions if item in self.selected_breakouts)
+
+    @property
+    def breakout_selection(self) -> tuple[BreakoutIdentity, ...] | None:
+        """Selected breakout identities, or None when every declared breakout is read."""
+        if self.selected_breakouts is None:
+            return None
+        from increment._evidence_types import BreakoutIdentity
+
+        return tuple(
+            BreakoutIdentity(item.property, item.source) for item in self.declared_breakouts
+        )
 
     @property
     def session(self) -> Any:
@@ -172,9 +211,7 @@ class SourceBinding:
         )
 
     def with_breakouts(self, breakouts: tuple[Breakout, ...]) -> SourceBinding:
-        if not isinstance(self.state, DefinitionsArmAnalysisState):
-            raise AttributeError("breakouts can only be narrowed on a definitions binding")
-        declared = self.state.experiment.breakouts
+        declared = self.declared_breakouts
         if any(item not in declared for item in breakouts):
             requested = tuple((item.source, item.property) for item in breakouts)
             refuse(
@@ -182,7 +219,10 @@ class SourceBinding:
                 requested=requested,
                 declared=tuple((item.source, item.property) for item in declared),
             )
-        experiment = self.state.experiment.model_copy(update={"breakouts": breakouts})
+        selected = tuple(item for item in declared if item in breakouts)
+        if not isinstance(self.state, DefinitionsArmAnalysisState):
+            return replace(self, selected_breakouts=selected, owns_source=False)
+        experiment = self.state.experiment.model_copy(update={"breakouts": selected})
         return replace(
             self,
             state=replace(self.state, experiment=experiment),

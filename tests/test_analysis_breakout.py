@@ -1629,13 +1629,12 @@ def _selected_breakout_sources(tmp_path):
     import ibis
     import pyarrow as pa
 
-    from increment import Analysis
+    from increment import from_definitions
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
-    events = _with_preassignment_region(_events(n_per_arm=4, trigger_rate=1.0))
+    events = _with_preassignment_region(_events(n_per_arm=8, trigger_rate=1.0))
     devices = [
-        "mobile" if user_id.startswith("T") else "desktop"
-        for user_id in events["user_id"].to_pylist()
+        "mobile" if int(user_id[1:]) % 2 else "desktop" for user_id in events["user_id"].to_pylist()
     ]
     events = events.append_column("device", pa.array(devices))
     definitions = (
@@ -1674,22 +1673,35 @@ def _selected_breakout_sources(tmp_path):
     path.write_text(definitions)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=events)
-    return Analysis.from_definitions("exp", path, con, store="none"), con
+    experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")
+    return experiment, cast(Any, resolver), con
+
+
+def _breakout_scope(*identities):
+    from increment.kernel.contracts import Scope
+
+    return Scope(view="breakout", grain="total", segment=identities)
+
+
+def _identity_order(cells):
+    return tuple(
+        dict.fromkeys((cell.identity.key.source, cell.identity.key.dimension) for cell in cells)
+    )
 
 
 @pytest.mark.integration
 def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp_path):
+    from increment import run
     from increment.evidence import (
         BreakoutIdentity,
         BreakoutSlicesRequest,
         evidence_provider,
         request_evidence,
     )
-    from increment.semantics.models import Breakout
-    from tests.analysis_factory import held_source
+    from increment.kernel.contracts import Scope
 
-    analysis, con = _selected_breakout_sources(tmp_path)
-    source = cast(Any, held_source(analysis))
+    experiment, resolver, con = _selected_breakout_sources(tmp_path)
+    source = resolver.binding.source
     identities = (
         BreakoutIdentity("device", "events"),
         BreakoutIdentity("region", "profiles"),
@@ -1703,34 +1715,86 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
                     breakouts=identities,
                     metrics=(source.context.metrics[0],),
                     configs=source.context.configs,
-                    breakout_definitions=analysis.experiment.breakouts,
+                    breakout_definitions=resolver.binding.experiment.breakouts,
                 ),
             ),
         )
         assert tuple(item.identity for item in slices.slices) == identities
         assert len(slices.slices) == len(identities)
 
-        selected = analysis.dashboard_breakout_reads(Breakout(property="region", source="profiles"))
-        daily = selected.run_daily(metrics=["revenue"])
-        assert daily
-        assert {row.dimension for row in daily} == {"region"}
-        assert {row.source for row in daily} == {"profiles"}
-        rows = selected.run_breakout(metrics=["revenue"])
-        assert rows
-        assert {row.dimension for row in rows} == {"region"}
-        assert {row.source for row in rows} == {"profiles"}
+        declared = (("events", "region"), ("events", "device"), ("profiles", "region"))
+        for scope, expected in (
+            (_breakout_scope(), declared),
+            (_breakout_scope(BreakoutIdentity("region", None)), (declared[0], declared[2])),
+        ):
+            requested = experiment.with_views(scope)
+            _, (compiled,) = requested.compile()
+            assert (
+                tuple(
+                    (item["source"], item["property"])
+                    for item in cast(Any, compiled.requests[0].fields["breakouts"])
+                )
+                == expected
+            )
+            assert _identity_order(run(requested, resolver).cells) == expected
+
+        for view in ("daily", "asof"):
+            qualified = Scope(
+                view=view, grain=view, segment=(BreakoutIdentity("region", "profiles"),)
+            )
+            assert _identity_order(run(experiment.with_views(qualified), resolver).cells) == (
+                ("profiles", "region"),
+            )
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
+
+
+@pytest.mark.integration
+def test_distinct_property_breakout_selection_keeps_declared_family_results(tmp_path):
+    from increment import run
+    from increment.evidence import BreakoutIdentity
+
+    experiment, resolver, con = _selected_breakout_sources(tmp_path)
+    try:
+        every = run(experiment.with_views(_breakout_scope()), resolver).cells
+        selected = run(
+            experiment.with_views(
+                _breakout_scope(
+                    BreakoutIdentity("region", "profiles"), BreakoutIdentity("device", None)
+                )
+            ),
+            resolver,
+        ).cells
+    finally:
+        resolver.close()
+        con.disconnect()
+
+    assert _identity_order(selected) == (("events", "device"), ("profiles", "region"))
+    by_key = {cell.identity.key: cell for cell in every}
+    assert {(cell.identity.key.source, cell.identity.key.dimension) for cell in every} - set(
+        _identity_order(selected)
+    ) == {("events", "region")}
+    assert [cell.identity.key for cell in selected] == [
+        cell.identity.key
+        for cell in every
+        if (cell.identity.key.source, cell.identity.key.dimension) != ("events", "region")
+    ]
+    for cell in selected:
+        expected = by_key[cell.identity.key]
+        assert cell.family == expected.family
+        assert cell.summary is not None and expected.summary is not None
+        assert cell.summary.point == pytest.approx(expected.summary.point, rel=1e-12)
+        assert cell.summary.lower == pytest.approx(expected.summary.lower, rel=1e-12)
+        assert cell.summary.upper == pytest.approx(expected.summary.upper, rel=1e-12)
 
 
 @pytest.mark.integration
 def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
     from increment.evidence import BreakoutIdentity, EvidenceScope, evidence_provider
-    from tests.analysis_factory import held_source
 
-    analysis, con = _selected_breakout_sources(tmp_path)
-    source = cast(Any, held_source(analysis))
+    experiment, resolver, con = _selected_breakout_sources(tmp_path)
+    source = resolver.binding.source
     provider = evidence_provider(source)
     selected = BreakoutIdentity("region", "profiles")
     try:
@@ -1746,10 +1810,11 @@ def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
             EvidenceScope(metrics=tuple(source.context.metrics), include_breakouts=True)
         )
         assert expanded.scope.breakouts == tuple(
-            BreakoutIdentity(item.property, item.source) for item in analysis.experiment.breakouts
+            BreakoutIdentity(item.property, item.source)
+            for item in resolver.binding.experiment.breakouts
         )
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 

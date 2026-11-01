@@ -82,11 +82,25 @@ class BreakoutReadouts:
         experiment: Experiment | None,
         execution_context=None,
         scope_source: _BuiltinMomentSource | None = None,
+        breakouts: tuple[BreakoutIdentity, ...] | None = None,
     ) -> None:
         self._src = src
         self._scope_source = src if scope_source is None else scope_source
         self._experiment = experiment
         self._execution_context = execution_context
+        self._breakouts = breakouts
+
+    def _identities(self, source: _BuiltinMomentSource) -> tuple[BreakoutIdentity, ...]:
+        """The selected identities, else every declared breakout in definition order."""
+        if self._breakouts is not None:
+            return self._breakouts
+        definitions = () if self._experiment is None else tuple(self._experiment.breakouts)
+        identities = tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+        if identities:
+            return identities
+        from increment._source_types import declared_evidence
+
+        return tuple(BreakoutIdentity(name, None) for name in declared_evidence(source).breakouts)
 
     def _configs(self, req: BreakoutRequest) -> tuple[ResolvedMetricConfig, ...]:
         return tuple(
@@ -103,13 +117,7 @@ class BreakoutReadouts:
 
     def _slices(self, req: BreakoutRequest) -> Iterator[BreakoutSlice]:
         definitions = () if self._experiment is None else tuple(self._experiment.breakouts)
-        identities = tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
-        if not identities:
-            from increment._source_types import declared_evidence
-
-            identities = tuple(
-                BreakoutIdentity(name, None) for name in declared_evidence(self._src).breakouts
-            )
+        identities = self._identities(self._src)
         request = BreakoutSlicesRequest(
             breakouts=identities,
             metrics=req.metrics,
@@ -171,7 +179,23 @@ class BreakoutReadouts:
             )
         validate_populations(self._src, populations, operation="run_breakout")
 
+    def _require_registered_selection(self, population: Literal["assigned", "triggered"]) -> None:
+        registration = getattr(self._src.context.plan.inference, "registration", None)
+        if registration is None or self._breakouts is None:
+            return
+        from increment.sequential_source import registered_breakout_dimension
+
+        dimension = registered_breakout_dimension(registration, population=population)
+        if {identity.property for identity in self._breakouts} != {dimension}:
+            from increment.sequential_state import sequential_refuse
+
+            sequential_refuse(
+                "route.unsupported",
+                "registered sequential inference reads only its registered breakout dimension",
+            )
+
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
+        self._require_registered_selection(req.population)
         route = breakout_route(self._src)
         if route == ARTIFACT_ROUTE and any(
             metric.type == "quantile" and metric.window_days is not None for metric in req.metrics
@@ -189,15 +213,10 @@ class BreakoutReadouts:
             return req
         if route not in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE) or not req.metrics:
             return req
-        if self._experiment is not None and self._experiment.breakouts:
-            dimension = self._experiment.breakouts[0].property
-        else:
-            from increment._source_types import declared_evidence
-
-            dimensions = declared_evidence(self._src).breakouts
-            if not dimensions:
-                return req
-            dimension = dimensions[0]
+        identities = self._identities(self._src)
+        if not identities:
+            return req
+        dimension = identities[0].property
         validated = _validate_breakout_request(
             self._src,
             metrics=[metric.name for metric in req.metrics],
@@ -230,7 +249,9 @@ class BreakoutReadouts:
         )
         from increment.readouts._provider import native_scope_provider
 
-        if self._experiment is not None:
+        if self._breakouts is not None:
+            identities = self._breakouts
+        elif self._experiment is not None:
             identities = tuple(
                 BreakoutIdentity(item.property, item.source) for item in self._experiment.breakouts
             )
@@ -276,6 +297,7 @@ class BreakoutReadouts:
                 experiment=self._experiment,
                 execution_context=context,
                 scope_source=self._scope_source,
+                breakouts=self._breakouts,
             ).run(req)
 
     def run(self, req: BreakoutRequest) -> BreakoutEstimates:
@@ -285,6 +307,7 @@ class BreakoutReadouts:
         if registration is not None:
             from increment.sequential_source import registered_breakout_dimension
 
+            self._require_registered_selection(req.population)
             dimension = registered_breakout_dimension(registration, population=req.population)
             return readout_breakout(
                 self._src,
@@ -304,7 +327,9 @@ class BreakoutReadouts:
 
             refusal = declared_evidence(self._src)
             requested = (
-                tuple(breakout.property for breakout in self._experiment.breakouts)
+                tuple(identity.property for identity in self._breakouts)
+                if self._breakouts is not None
+                else tuple(breakout.property for breakout in self._experiment.breakouts)
                 if self._experiment is not None
                 else tuple(refusal.breakouts)
             )
@@ -352,9 +377,9 @@ class BreakoutReadouts:
                     include_breakouts=True,
                 ),
             ) as pinned:
-                rows = BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
-                    req, route
-                )
+                rows = BreakoutReadouts(
+                    src=pinned, experiment=self._experiment, breakouts=self._breakouts
+                )._run_slices(req, route)
                 return self._stamp_execution_context(rows)
 
         return self._stamp_execution_context(self._run_slices(req, route))
@@ -398,7 +423,11 @@ def plan_breakout_request(
     policy = plan.view_policies.for_view(
         "breakout", mechanism=binding.design.mechanism, segmented=True
     )
-    reader = BreakoutReadouts(src=binding.source, experiment=_arm_experiment(binding))
+    reader = BreakoutReadouts(
+        src=binding.source,
+        experiment=_arm_experiment(binding),
+        breakouts=binding.breakout_selection,
+    )
     reader.validate_populations(populations)
     normalized = reader.validate_request(
         BreakoutRequest(
@@ -461,7 +490,7 @@ def run_breakout_rows(
     experiment = (
         state.experiment
         if isinstance(state, DefinitionsArmAnalysisState)
-        else getattr(state.source, "artifact_experiment", None)
+        else _arm_experiment(binding)
         if state.family == "arm_moments"
         else None
     )
@@ -498,7 +527,9 @@ def run_breakout_rows(
                 route="switchback",
                 supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
-        reader = BreakoutReadouts(src=binding.source, experiment=experiment)
+        reader = BreakoutReadouts(
+            src=binding.source, experiment=experiment, breakouts=binding.breakout_selection
+        )
         if getattr(binding.plan.inference, "registration", None) is None:
 
             def validate_candidate(candidate: SourceBinding, selected_metrics) -> None:
@@ -510,7 +541,9 @@ def run_breakout_rows(
                     segmented=True,
                 )
                 BreakoutReadouts(
-                    src=candidate.source, experiment=_arm_experiment(candidate)
+                    src=candidate.source,
+                    experiment=_arm_experiment(candidate),
+                    breakouts=candidate.breakout_selection,
                 ).validate_request(
                     BreakoutRequest(
                         metrics=tuple(selected_metrics),
@@ -647,6 +680,7 @@ def _breakout_rows(
         experiment=_arm_experiment(binding),
         execution_context=execution_context,
         scope_source=source if scope_source is None else scope_source,
+        breakouts=binding.breakout_selection,
     )
     return reader.run(request)
 

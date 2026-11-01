@@ -103,16 +103,11 @@ def _reject_percentile_breakout(metrics):
 
 
 def _selected_breakouts(binding: SourceBinding, dimension: str | None = None):
-    experiment = _arm_experiment(binding)
-    definitions = tuple(getattr(experiment, "breakouts", ()))
-    if definitions:
-        if dimension is not None:
-            definitions = tuple(item for item in definitions if item.property == dimension)
-        return tuple(BreakoutIdentity(item.property, item.source) for item in definitions)
+    _arm_experiment(binding)
     return tuple(
-        BreakoutIdentity(name, None)
-        for name in declared_evidence(binding.source).breakouts
-        if dimension is None or name == dimension
+        BreakoutIdentity(item.property, item.source)
+        for item in binding.declared_breakouts
+        if dimension is None or item.property == dimension
     )
 
 

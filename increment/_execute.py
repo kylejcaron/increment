@@ -588,6 +588,56 @@ def _borrowed(
     return execution_context_scope(execution_context)
 
 
+def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scope) -> SourceBinding:
+    """Narrow a binding to the breakout identities its scope selects, before any read.
+
+    Identities come from the same declaration-based expansion ``Experiment.compile()``
+    reports. A recorded definition matches by ``(property, source)``; a source without
+    recorded definitions matches by property. An unknown property refuses with the
+    source's declared dimensions; an undeclared source of a known property refuses as
+    an undeclared breakout.
+    """
+    if scope.view not in {"breakout", "daily", "asof"} or (
+        scope.view != "breakout" and not scope.segment
+    ):
+        return binding
+    from increment._evidence_refusals import require_evidence
+    from increment.kernel.contracts import declared_breakouts
+    from increment.semantics.models import Breakout
+
+    identities = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+    recorded = experiment.analysis_context.get("experiment")
+    by_source = isinstance(recorded, Mapping) and isinstance(
+        recorded.get("breakouts"), (tuple, list)
+    )
+    declared = binding.declared_breakouts
+    if not {identity.property for identity in identities} <= {item.property for item in declared}:
+        require_evidence(binding.source, by=tuple(identity.property for identity in identities))
+    selected = tuple(
+        dict.fromkeys(
+            item
+            for identity in identities
+            for item in (
+                tuple(
+                    candidate
+                    for candidate in declared
+                    if candidate.property == identity.property
+                    and (not by_source or candidate.source == identity.source)
+                )
+                or (Breakout(property=identity.property, source=identity.source),)
+            )
+        )
+    )
+    scope_declared = (
+        declared
+        if scope.view == "breakout"
+        else tuple(item for item in declared if item.property == scope.segment[0].property)
+    )
+    if set(selected) == set(scope_declared):
+        return binding
+    return binding.with_breakouts(selected)
+
+
 def execute_views(
     binding: SourceBinding,
     experiment: Experiment,
@@ -603,11 +653,16 @@ def execute_views(
     every selected request validates against it.
     """
     planned = [
-        (scope, scope_operation(experiment, scope), operation_options(experiment, scope, options))
+        (
+            scope,
+            scope_operation(experiment, scope),
+            operation_options(experiment, scope, options),
+            selected_binding(binding, experiment, scope),
+        )
         for scope in scopes
     ]
     if len(planned) == 1:
-        scope, operation, kwargs = planned[0]
+        scope, operation, kwargs, scope_binding = planned[0]
         capture = kwargs.pop("capture", None)
         ambient = (
             nullcontext()
@@ -617,12 +672,12 @@ def execute_views(
         with ambient:
             if capture is not None:
                 _capture_sequential(binding, **capture)
-            return (ScopedReadout(_VIEWS[operation](binding, **kwargs), scope, kwargs),)
+            return (ScopedReadout(_VIEWS[operation](scope_binding, **kwargs), scope, kwargs),)
     requests = [
-        operation_scope(binding, operation, kwargs, planner=_PLANNER)
-        for _, operation, kwargs in planned
+        operation_scope(scope_binding, operation, kwargs, planner=_PLANNER)
+        for _, operation, kwargs, scope_binding in planned
     ]
-    coherences = {kwargs.get("coherence", "captured") for _, _, kwargs in planned}
+    coherences = {kwargs.get("coherence", "captured") for _, _, kwargs, _ in planned}
     if len(coherences) != 1:
         _execution_unavailable(experiment, "coherence")
     coherence = cast(Literal["captured", "live"], coherences.pop())
@@ -630,7 +685,7 @@ def execute_views(
 
     scope_request = capture_requirements(binding.source, requests)
     capture = next(
-        (kwargs["capture"] for _, _, kwargs in planned if kwargs.get("capture") is not None),
+        (kwargs["capture"] for _, _, kwargs, _ in planned if kwargs.get("capture") is not None),
         None,
     )
     needs_evidence = bool(
@@ -652,11 +707,13 @@ def execute_views(
         if capture is not None:
             _capture_sequential(binding, **capture)
         scoped = []
-        for scope, operation, kwargs in planned:
+        for scope, operation, kwargs, scope_binding in planned:
             kwargs.pop("capture", None)
             single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
             scope_hash, _ = _run_identity_hashes(single, kwargs)
             scoped.append(
-                ScopedReadout(_VIEWS[operation](binding, **kwargs), scope, dict(kwargs), scope_hash)
+                ScopedReadout(
+                    _VIEWS[operation](scope_binding, **kwargs), scope, dict(kwargs), scope_hash
+                )
             )
     return tuple(scoped)

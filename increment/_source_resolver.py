@@ -13,7 +13,7 @@ from increment._binding import (
     _schema_for_source,
     experiment_for_binding,
 )
-from increment._execute import execute_views, operation_parameters
+from increment._execute import execute_views, operation_parameters, selected_binding
 from increment._runnability import operation_options, scope_refusals
 from increment.errors import CodedError
 
@@ -65,14 +65,7 @@ class SourceResolver(ResolverBinding):
             refusals = scope_refusals(experiment, scope)
             if refusals:
                 raise refusals[0]
-            selection = tuple(identity.property for identity in scope.segment)
-            if scope.view == "breakout" and selection != tuple(
-                getattr(self._source, "breakouts", ())
-            ):
-                from increment._evidence_refusals import require_evidence
-
-                require_evidence(self._source, by=selection)
-                _execution_unavailable(experiment, "segment")
+            selected_binding(self.binding, experiment, scope)
             kwargs = operation_options(experiment, scope, merged)
             if self._refuse_store and kwargs.get("store") is not None:
                 raise CodedError(

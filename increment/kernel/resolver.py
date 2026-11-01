@@ -6,7 +6,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from increment._source_types import EvidenceCapabilities, EvidenceProvider
 from increment.errors import CodedError
-from increment.kernel.contracts import Scope, _refuse
+from increment.kernel.contracts import Scope, _refuse, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
 
 
@@ -189,7 +189,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 metrics=(metric_spec,),
                 population=scope.population,
                 grain=None if checkpoint_projection else scope.grain,
-                breakouts=scope.segment,
+                breakouts=declared_breakouts(exp.source_refs, scope, exp.analysis_context),
             )
             try:
                 require_evidence_declaration(capabilities, constructor=constructor, request=request)

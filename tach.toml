@@ -754,7 +754,8 @@ path = "increment._binding"
 layer = "core"
 depends_on = [
   "increment._canonical", "increment.errors", "increment.decision",
-  "increment._runnability", "increment._source_types",
+  "increment._runnability", "increment._source_types", "increment._evidence_types",
+  "increment.semantics",
   "increment.kernel", "increment.kernel.contracts",
 ]
 

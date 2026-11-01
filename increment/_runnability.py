@@ -87,10 +87,6 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         or scope.time_basis != "calendar"
         or (scope.completion_policy and scope.view != "asof")
         or (scope.view == "switchback" and bool(scope.segment))
-        or (
-            scope.view in {"daily", "asof"}
-            and any(identity.source is not None for identity in scope.segment)
-        )
     ):
         return (
             CodedError(
@@ -118,49 +114,9 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         except CodedError as refusal:
             return (refusal,)
     try:
-        breakouts = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+        declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
     except CodedError as refusal:
         return (refusal,)
-    if (
-        (scope.view == "breakout" and len(breakouts) > 1)
-        or (scope.view in {"daily", "asof"} and len(breakouts) > 1)
-        or (
-            scope.view == "breakout"
-            and bool(breakouts)
-            and (len(scope.segment) != 1 or scope.segment[0].source is not None)
-        )
-        or (
-            scope.view == "breakout"
-            and not breakouts
-            and any(
-                source.capabilities is not None and source.capabilities.breakouts
-                for source in experiment.source_refs
-            )
-        )
-    ):
-        return (
-            CodedError(
-                "The bound analysis cannot execute these experiment declarations",
-                code="kernel.run.execution_unavailable",
-                context={"experiment_id": experiment.experiment_id, "field": "scope"},
-            ),
-        )
-    if scope.view == "breakout":
-        properties = tuple(identity.property for identity in scope.segment)
-        if any(
-            source.capabilities is not None
-            and len(source.capabilities.breakouts) > 1
-            and len(properties) == 1
-            and properties[0] in source.capabilities.breakouts
-            for source in experiment.source_refs
-        ):
-            return (
-                CodedError(
-                    "The bound analysis cannot execute these experiment declarations",
-                    code="kernel.run.execution_unavailable",
-                    context={"experiment_id": experiment.experiment_id, "field": "segment"},
-                ),
-            )
     if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
         try:
             refuse(
