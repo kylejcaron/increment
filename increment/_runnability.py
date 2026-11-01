@@ -135,17 +135,17 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 
         try:
-            if operation != "run":
-                refuse(CONTRAST_UNAVAILABLE, method=operation)
             if scope.population == "triggered":
                 refuse(
                     _TRIGGER_UNSUPPORTED,
-                    method="run",
+                    method=operation,
                     experiment="<unknown>",
                     trigger=None,
                     route="switchback",
                     supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
+            if operation != "run":
+                refuse(CONTRAST_UNAVAILABLE, method=operation)
         except CodedError as refusal:
             return (refusal,)
     try:

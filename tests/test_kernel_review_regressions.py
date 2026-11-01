@@ -1225,6 +1225,7 @@ def test_frozen_request_options_restore_typed_methods_metrics_and_priors():
         ("daily", "daily", "assigned", False, "facade.analysis.contrast_unavailable"),
         ("asof", "asof", "assigned", False, "facade.analysis.contrast_unavailable"),
         ("switchback", "total", "triggered", False, "facade.analysis.trigger_unsupported"),
+        ("asof", "asof", "triggered", False, "facade.analysis.trigger_unsupported"),
     ],
 )
 def test_switchback_scope_refusals_match_execution(view, grain, population, segmented, code):
