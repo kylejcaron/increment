@@ -235,11 +235,11 @@ previous=parent, append=True)` for a batch of new units. Existing unit
 identities cannot appear in that batch. Full-prefix capture checks every
 old record proof and reuses the parent's exact sufficient state.
 
-`increment.workflows.export_moments(experiment, resolver, path)` writes a
-format-10 sequential checkpoint envelope, containing the version-2
-registration/snapshot/checkpoint, a version-3 compiled plan, and the originating
-source identity. Build the pair with `from_definitions(...)` or another
-source-specific builder, then reload its rows with `Analysis.from_moments`.
+`analysis.export(path)` writes a format-10 sequential checkpoint envelope:
+the version-2 registration/snapshot/checkpoint, a version-3 compiled plan, and
+the originating source identity. Export through the same `Analysis` source that
+captured or adopted the finalized checkpoint; a fresh `from_definitions(...)`
+pair does not own that checkpoint. Reload its rows with `Analysis.from_moments`.
 The preceding sequential format 9 remains readable; fixed-horizon format 12
 carries the same source identity, while the preceding fixed-horizon format 11
 remains readable.
