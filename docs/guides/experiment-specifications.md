@@ -346,8 +346,9 @@ is generated when it is omitted). Both are checked against the experiment's
 registration before any data is read, and a refused run writes nothing:
 switchback contrasts refuse with `wire.procedure.contrast_context`, methods
 without a portable implementation reference with
-`wire.procedure.runtime_method`, and readout options that change registered
-decisions or omit registered metrics with `store.decision.reference_invalid`.
+`wire.procedure.runtime_method`, and a registration that differs from the
+analysis plan or readout options that change registered decisions or omit
+registered metrics with `store.decision.reference_invalid`.
 Saving a live raw-set confidence set refuses with
 `wire.result.raw_outcomes_unavailable`; it remains available in memory. A saved
 run reopens with its registration, which must match the one it was saved

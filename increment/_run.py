@@ -143,18 +143,22 @@ def _validate_registered_options(
         )
 
 
+def _require_registered_plan(registration: Registration, plan: CompiledDecisionPlan) -> None:
+    if not registration.matches(plan):
+        raise CodedError(
+            "Analysis execution plan differs from its pre-estimation registration",
+            code="store.decision.reference_invalid",
+            context={},
+        )
+
+
 def _validate_analysis_binding(
     analysis: Analysis,
     registration: Registration,
     compiled_plan: CompiledDecisionPlan,
     options: Mapping[str, object],
 ) -> None:
-    if not registration.matches(analysis.compiled_decision_plan):
-        raise CodedError(
-            "Analysis execution plan differs from its pre-estimation registration",
-            code="store.decision.reference_invalid",
-            context={},
-        )
+    _require_registered_plan(registration, analysis.compiled_decision_plan)
     _validate_registered_options(compiled_plan, options)
 
 
@@ -952,9 +956,12 @@ def _preflight_persistence(
     """Refuse a run that cannot be saved or logged under its registration, before any read."""
     from increment._runnability import operation_options, typed_request_options
 
-    resolver.validate_experiment(experiment)
     binding = resolver.binding
-    if _contrast_context(binding) is not None:
+    contrast = _contrast_context(binding) is not None
+    if not contrast:
+        _require_registered_plan(experiment.registration, binding.plan)
+    resolver.validate_experiment(experiment)
+    if contrast:
         refuse(_CONTRAST_CONTEXT_NOT_PORTABLE, action="saving")
     CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
     registered = {**typed_request_options(experiment.request_options), **overrides}

@@ -1146,7 +1146,7 @@ def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_pat
             decision_log=DecisionLog(path=log_path),
         )
 
-    assert error.value.code == "kernel.run.execution_unavailable"
+    assert error.value.code == "store.decision.reference_invalid"
     assert reads == []
     assert not tuple((tmp_path / "runs").rglob("*.parquet"))
     assert not log_path.exists()
