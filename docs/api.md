@@ -177,6 +177,10 @@ change without notice.
   refuses with `sequential.route.unsupported` when the declared or selected
   breakouts include a property other than the registered segment, instead of
   returning only the registered segment's rows.
+- Release note (bug fix): a one-view `run(..., capture=SequentialCaptureRequest(...))`
+  takes the capture inside the run's own shared evidence capture, as a
+  several-view run does, so a registered sequential breakout read reports the
+  run's `coherence` and `effective_modes` in its metadata.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

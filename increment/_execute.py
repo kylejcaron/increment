@@ -654,11 +654,11 @@ def execute_views(
     """Plan every selected scope before any read, then run each under one capture.
 
     Views run in declaration order. Without a supplied context, more than one
-    view shares one owned capture; a supplied context is borrowed only after
-    every selected request validates against it. A sequential capture is taken
-    inside that context before any view reads. The run's ``coherence`` applies to
-    every view: a view that takes none of its own reads under a shared capture
-    opened with it.
+    view, or any view with a sequential capture, shares one owned capture; a
+    supplied context is borrowed only after every selected request validates
+    against it. A sequential capture is taken inside that context before any
+    view reads. The run's ``coherence`` applies to every view: a view that takes
+    none of its own reads under a shared capture opened with it.
     """
     coherence = cast(Literal["captured", "live"], options.get("coherence", "captured"))
     planned = [
@@ -670,19 +670,18 @@ def execute_views(
         )
         for scope in scopes
     ]
-    if len(planned) == 1 and (coherence == "captured" or "coherence" in planned[0][2]):
+    if (
+        capture is None
+        and len(planned) == 1
+        and (coherence == "captured" or "coherence" in planned[0][2])
+    ):
         scope, operation, kwargs, scope_binding = planned[0]
-        if capture is not None:
-            # Validate the view's request before the capture reads and retains source state.
-            operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         ambient = (
             nullcontext()
             if execution_context is None
             else execution_context_scope(execution_context)
         )
         with ambient:
-            if capture is not None:
-                retained_sequential_capture(binding.source, capture, current_execution_context())
             return (ScopedReadout(_VIEWS[operation](scope_binding, **kwargs), scope, kwargs),)
     requests = [
         operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)

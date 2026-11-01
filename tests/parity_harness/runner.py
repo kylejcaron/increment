@@ -89,6 +89,7 @@ from pydantic import ValidationError
 
 from increment import Experiment, builders, run, workflows
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
+from increment.evidence import SequentialCaptureRequest
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
 from tests.warning_codes import warning_codes
@@ -407,12 +408,14 @@ def _read(
     case: ParityCase,
     *,
     coherence: Literal["captured", "live"] | None = None,
+    capture: SequentialCaptureRequest | None = None,
 ) -> Any:
     """Read the one view `case` names through `run`: the whole-window or breakout rows of
     every captured population, or a single day-axis view (daily or as-of values or lift). A
     day-axis value series and its lift are separate cases, so one refusing never hides the
     other's rows. The declared experiment executes after a JSON round trip, so a declaration
-    that does not survive serialization fails here rather than in a saved run."""
+    that does not survive serialization fails here rather than in a saved run. A `capture`
+    is taken inside the run's own shared capture, before any view reads."""
     del name
     experiment, resolver = bound
     estimands = {"estimands": case.estimands} if case.estimands else {}
@@ -445,7 +448,8 @@ def _read(
     restored = Experiment.from_json(selected.to_json())
     if restored.hash() != selected.hash():
         raise AssertionError("A parity experiment changed identity after JSON round-trip")
-    return collect(run(restored, resolver, **options), scopes)
+    captured = {"capture": capture} if capture is not None else {}
+    return collect(run(restored, resolver, **options, **captured), scopes)
 
 
 def _read_with_advisories(

@@ -817,10 +817,10 @@ def _assert_outcome_matches(
     return {}
 
 
-def _line1_read(bound: Any, ingress: str, case: Any) -> Any:
+def _line1_read(bound: Any, ingress: str, case: Any, capture: Any = None) -> Any:
     from tests.parity_harness.runner import _read
 
-    return _read(bound, ingress, case)
+    return _read(bound, ingress, case, capture=capture)
 
 
 def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
@@ -829,7 +829,9 @@ def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
     stack.enter_context(patch.object(target, name, replacement))
 
 
-def _run_with_read_counter(bound: Any, ingress: str, case: Any) -> tuple[Any, Mapping[str, int]]:
+def _run_with_read_counter(
+    bound: Any, ingress: str, case: Any, capture: Any = None
+) -> tuple[Any, Mapping[str, int]]:
     from collections import Counter
     from contextlib import ExitStack
 
@@ -872,7 +874,7 @@ def _run_with_read_counter(bound: Any, ingress: str, case: Any) -> tuple[Any, Ma
                     depth -= 1
 
             _enter_patch(stack, source_type, name, counted)
-        return _line1_read(bound, ingress, case), counts
+        return _line1_read(bound, ingress, case, capture), counts
 
 
 def _line1_actual_outcome(
@@ -933,8 +935,9 @@ def _line1_outcome(  # noqa: PLR0915
     from contextlib import ExitStack
     from datetime import UTC, datetime
 
-    from increment import builders, workflows
+    from increment import builders
     from increment.errors import CodedError, InvalidRequestError
+    from increment.evidence import SequentialCaptureRequest
     from increment.result_envelope import AnalysisEnvelope
     from scripts.capture_evidence_identity import (
         _aggregate_evidence,
@@ -984,10 +987,13 @@ def _line1_outcome(  # noqa: PLR0915
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 # One run reads every declared view under one capture; a sequential case
-                # captures its checkpoint first, as the run's acquisition expects.
-                if (scoped or line4) and case.sequential:
-                    workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
-                results, read_count = _run_with_read_counter(bound, ingress, case)
+                # takes its checkpoint inside that run, before any view reads.
+                capture = (
+                    SequentialCaptureRequest(finalized=True, **_capture_kwargs(bound))
+                    if (scoped or line4) and case.sequential
+                    else None
+                )
+                results, read_count = _run_with_read_counter(bound, ingress, case, capture)
             assert all(count == 1 for count in read_count.values()), (
                 f"{scenario_id}/{ingress} performed repeated captured reads: {read_count}"
             )

@@ -310,16 +310,22 @@ class BreakoutReadouts:
 
             self._require_registered_selection(req.population)
             dimension = registered_breakout_dimension(registration, population=req.population)
-            return readout_breakout(
-                self._src,
-                dimension,
-                metrics=[m.name for m in req.metrics],
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                correction=req.correction,
-                q=req.q,
-                analysis_population=req.population,
+            if self._execution_context is not None:
+                self._execution_context.validate_request(
+                    self._scope_source, req.metrics, self._configs(req)
+                )
+            return self._stamp_execution_context(
+                readout_breakout(
+                    self._src,
+                    dimension,
+                    metrics=[m.name for m in req.metrics],
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    correction=req.correction,
+                    q=req.q,
+                    analysis_population=req.population,
+                )
             )
         route = breakout_route(self._src)
         if route == UNSUPPORTED_ROUTE:
