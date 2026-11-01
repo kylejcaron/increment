@@ -164,6 +164,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
         capabilities = source.capabilities
         if capabilities is None:
             continue
+        constructor = exp.analysis_context.get("source_name") or source.name
         for scope in exp.scopes:
             inference = exp.analysis_context.get("plan", {}).get("inference") or {}
             checkpoint_projection = (
@@ -191,12 +192,14 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 breakouts=scope.segment,
             )
             try:
-                require_evidence_declaration(capabilities, request=request)
+                require_evidence_declaration(capabilities, constructor=constructor, request=request)
             except CodedError as refusal:
                 append_unique(refusal)
             if checkpoint_projection:
                 for refusal in require_any_evidence_route(
-                    capabilities, ((SequentialCaptureRequest(finalized=True),),)
+                    capabilities,
+                    ((SequentialCaptureRequest(finalized=True),),),
+                    constructor=constructor,
                 ):
                     append_unique(refusal)
                 continue
@@ -259,7 +262,9 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                     metric=metric_spec, outcome_stage="raw", population=scope.population
                 )
                 routes = [route + (raw_outcomes,) for route in routes] or [(raw_outcomes,)]
-            for refusal in require_any_evidence_route(capabilities, tuple(routes)):
+            for refusal in require_any_evidence_route(
+                capabilities, tuple(routes), constructor=constructor
+            ):
                 append_unique(refusal)
     return refusals
 

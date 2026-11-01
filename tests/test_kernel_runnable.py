@@ -177,6 +177,64 @@ def test_runnable_refuses_breakout_subset_of_a_multibreakout_source():
     assert refusals[0].context == {"experiment_id": "checkout", "field": "segment"}
 
 
+def test_runnable_names_authored_source_and_selection_for_unavailable_breakouts():
+    capabilities = EvidenceCapabilities(
+        kind="unit_summary",
+        grains=frozenset({"total"}),
+        breakouts=("country",),
+        shape="unit_summary",
+        operations=frozenset(),
+        unit_rows=True,
+        raw_outcomes=True,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset({"unit"}),
+        populations=frozenset({"assigned"}),
+        sequential_capture="none",
+        scalar=None,
+        available_covariates=frozenset(),
+    )
+    experiment = Experiment(
+        experiment_id="checkout",
+        design={"mechanism": "randomized"},
+        metrics={"orders": {"kind": "mean"}},
+        registration=Registration(registration_hash="registration-hash"),
+        source_refs=(
+            SourceReference(name="events", uri="frame://events", capabilities=capabilities),
+        ),
+        scopes=(
+            Scope(
+                view="breakout",
+                grain="total",
+                segment=({"property": "unknown", "source": None},),
+            ),
+        ),
+    )
+
+    for candidate in (experiment, Experiment.from_json(experiment.to_json())):
+        statuses = runnable(candidate, "orders")
+        assert [
+            (refusal.code, dict(refusal.context))
+            for refusal in statuses["randomized.unadjusted"].static_refusals
+        ] == [
+            (
+                "evidence.breakout_unavailable",
+                {
+                    "constructor": "events",
+                    "requested": ("unknown",),
+                    "offered": ("country",),
+                    "route": "use a source with the requested breakout dimensions",
+                },
+            )
+        ]
+        assert {
+            refusal.context["constructor"]
+            for status in statuses.values()
+            for refusal in status.static_refusals
+            if "constructor" in refusal.context
+        } == {"events"}
+
+
 def test_multicovariate_runnability_uses_alternative_evidence_routes():
     capabilities = EvidenceCapabilities(
         kind="unit_summary",

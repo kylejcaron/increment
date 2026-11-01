@@ -198,9 +198,7 @@ def _assert_preflight_refusal(status, expected, scope):
     if expected.code == "evidence.breakout_unavailable":
         # Execution reads the implicit run_breakout(); preflight names the authored selection.
         selection = tuple(identity.property for identity in scope.segment)
-        assert refusal.context["requested"] == selection
-        assert refusal.context["offered"] == expected.context["offered"]
-        assert refusal.context["route"] == expected.context["route"]
+        assert dict(refusal.context) == {**expected.context, "requested": selection}
 
 
 def _assert_runners_produced_rows(

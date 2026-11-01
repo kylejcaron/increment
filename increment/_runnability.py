@@ -544,6 +544,7 @@ def readout_refusals(
         check(
             require_evidence_declaration,
             capabilities,
+            constructor=declaration["source_name"],
             request=SequentialCaptureRequest(finalized=True),
         )
         capture = options.get("capture")
