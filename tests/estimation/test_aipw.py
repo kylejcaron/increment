@@ -20,7 +20,7 @@ import pytest
 from scipy import stats
 from scipy.special import expit
 
-from increment import Analysis
+from increment import from_frame
 from increment.errors import (
     IncrementRuntimeWarning,
     IncrementWarning,
@@ -37,7 +37,7 @@ from increment.estimation.engine import Method
 from increment.estimators import IdentificationError
 from increment.frame import from_unit_summary
 from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
-from tests.analysis_factory import lift_rows
+from tests.analysis_factory import lift_rows, view_readout
 from tests.warning_codes import warning_codes
 
 # Deterministic (oracle) learners: zero fitting noise, so an identity test
@@ -263,8 +263,9 @@ class TestAipwEstimate:
             }
         )
         design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             tbl,
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics=[
@@ -273,7 +274,7 @@ class TestAipwEstimate:
             design=design,
         )
         with pytest.raises(UnsupportedRequestError) as exc_info:
-            analysis.run(decision_method=Method(name="aipw", folds=2))
+            view_readout(experiment, resolver, decision_method=Method(name="aipw", folds=2))
         assert exc_info.value.code == "estimation.adjust_common.supported_ratio_metric"
 
     def test_control_absent_raises_and_lists_available_groups(self):
@@ -959,11 +960,21 @@ def _aipw_recovery_replications():
         src = from_unit_summary(
             tbl, unit="user_id", group="variant", control="C", metrics={"revenue": "mean"}
         )
-        an = Analysis.from_unit_summary(
-            tbl, unit="user_id", group="variant", metrics={"revenue": "mean"}, design=_HET_DESIGN
+        an_experiment, an_resolver = from_frame(
+            tbl,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=_HET_DESIGN,
         )
-        an_naive = Analysis.from_unit_summary(
-            tbl, unit="user_id", group="variant", control="C", metrics={"revenue": "mean"}
+        an_naive_experiment, an_naive_resolver = from_frame(
+            tbl,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="C",
+            metrics={"revenue": "mean"},
         )
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -971,7 +982,9 @@ def _aipw_recovery_replications():
                 message=r"(?:IPTW|DML|AIPW) covariate balance advisory",
                 category=UserWarning,
             )
-            (aipw_est,) = lift_rows(an.run(decision_method=Method(name="aipw")))
+            (aipw_est,) = lift_rows(
+                view_readout(an_experiment, an_resolver, decision_method=Method(name="aipw"))
+            )
             (wrong_m,) = aipw_estimate(
                 src,
                 _aipw_metric(src, "revenue"),
@@ -984,8 +997,10 @@ def _aipw_recovery_replications():
                 _HET_DESIGN,
                 propensity_learner=_HalfPropensity,
             )
-            (dml_est,) = lift_rows(an.run(decision_method=Method(name="dml")))
-            (naive_est,) = lift_rows(an_naive.run())
+            (dml_est,) = lift_rows(
+                view_readout(an_experiment, an_resolver, decision_method=Method(name="dml"))
+            )
+            (naive_est,) = lift_rows(view_readout(an_naive_experiment, an_naive_resolver))
         aipw_lift = aipw_est.require_lift()
         aipw_pts.append(aipw_lift.value)
         assert aipw_lift.lb is not None and aipw_lift.ub is not None
@@ -1026,8 +1041,13 @@ def _aipw_coverage_replications():
     hits = 0
     for i in range(_COVERAGE_REPS):
         tbl = _het_table(_RECOVERY_N, seed=9000 + i)
-        an = Analysis.from_unit_summary(
-            tbl, unit="user_id", group="variant", metrics={"revenue": "mean"}, design=_HET_DESIGN
+        experiment, resolver = from_frame(
+            tbl,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=_HET_DESIGN,
         )
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -1035,7 +1055,9 @@ def _aipw_coverage_replications():
                 message=r"(?:IPTW|DML|AIPW) covariate balance advisory",
                 category=UserWarning,
             )
-            (est,) = lift_rows(an.run(decision_method=Method(name="aipw")))
+            (est,) = lift_rows(
+                view_readout(experiment, resolver, decision_method=Method(name="aipw"))
+            )
         est_lift = est.require_lift()
         assert est_lift.lb is not None and est_lift.ub is not None
         hits += est_lift.lb < _TRUE_ATE_LIFT < est_lift.ub
@@ -1058,7 +1080,7 @@ class TestAipwParameterRecovery:
         the control mean, and on this heterogeneous DGP at n=1500 it covers
         at nominal within Monte Carlo error: 372/400 = 0.930 on this
         fixture's own seeds and 143/150 = 0.953 on an independent probe
-        through both ``aipw_estimate`` and ``Analysis.run`` (pooled 0.936,
+        through both ``aipw_estimate`` and the public ``run`` (pooled 0.936,
         1.5 Monte Carlo standard deviations under nominal). An earlier
         reading attributed a deficit to the first-order ratio-denominator
         skew documented on ``RatioVarianceModel``; that mechanism does not
@@ -1141,10 +1163,15 @@ def test_aipw_recovery_smoke_single_replication_is_a_real_interval():
     every run even though the full Monte Carlo suite above is excluded
     from it."""
     tbl = _het_table(300, seed=1)
-    an = Analysis.from_unit_summary(
-        tbl, unit="user_id", group="variant", metrics={"revenue": "mean"}, design=_HET_DESIGN
+    experiment, resolver = from_frame(
+        tbl,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=_HET_DESIGN,
     )
-    (aipw_est,) = lift_rows(an.run(decision_method=Method(name="aipw")))
+    (aipw_est,) = lift_rows(view_readout(experiment, resolver, decision_method=Method(name="aipw")))
     aipw_lift = aipw_est.require_lift()
     assert aipw_lift.lb is not None and aipw_lift.ub is not None
     assert aipw_lift.lb < aipw_lift.value < aipw_lift.ub

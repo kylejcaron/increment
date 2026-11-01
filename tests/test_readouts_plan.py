@@ -5,7 +5,7 @@ Every scenario is deterministic (seeded numpy data) and frame-backed via
 `FrameTotalsSource`, except tests that need a `MomentsSource` with
 `path="warehouse"` to exercise warehouse-only plan bindings/overrides or
 unnamed-metric role resolution. `MomentsSource` otherwise defaults to the
-frame path, matching `Analysis.from_moments`'s contract.
+frame path, matching `from_moments`'s contract.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts
+from increment import from_frame, readouts
 from increment.breakout.estimates import LiftEstimates
 from increment.compatibility import _conservative_ratio
 from increment.decision import ArmHypothesisKey, FixedInference
@@ -53,6 +53,7 @@ from increment.semantics.models import (
     NormalPriorSpec,
 )
 from increment.sources import MomentsSource
+from tests.analysis_factory import view_readout
 from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
 
@@ -1480,8 +1481,9 @@ def test_welch_mean_posterior_favorable_uses_declared_null():
             for i in range(n)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -1495,7 +1497,7 @@ def test_welch_mean_posterior_favorable_uses_declared_null():
         plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="revenue", margin=0.02)]),
     )
 
-    (row,) = analysis.run()
+    (row,) = view_readout(experiment, resolver)
     assert isinstance(row, LiftEstimate)
     assert row.reference_kind == "t"
     assert row.null_lift == pytest.approx(-0.02)
@@ -1513,8 +1515,9 @@ def test_dense_conversion_posterior_favorable_uses_declared_null():
             for i in range(n)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -1529,7 +1532,7 @@ def test_dense_conversion_posterior_favorable_uses_declared_null():
         plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="converted", margin=0.02)]),
     )
 
-    (row,) = analysis.run()
+    (row,) = view_readout(experiment, resolver)
     assert isinstance(row, LiftEstimate)
     assert row.binomial_set is None
     assert row.null_lift == pytest.approx(-0.02)
@@ -2656,16 +2659,18 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
             "y": [10 + i % 3 for i in range(20)] + [20 + i % 3 for i in range(20)],
         }
     )
-    prior_bound = Analysis.from_unit_summary(
+    prior_bound_experiment, prior_bound_resolver = from_frame(
         frame,
+        shape="summary",
         unit="u",
         group="g",
         control="control",
         metrics=[MetricSpec(name="y", prior=Normal(mu=0.0, sigma=0.1))],
         plan=AnalysisPlan(secondaries=["y"]),
     )
-    prior_free = Analysis.from_unit_summary(
+    prior_free_experiment, prior_free_resolver = from_frame(
         frame,
+        shape="summary",
         unit="u",
         group="g",
         control="control",
@@ -2675,7 +2680,7 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
 
     def clear_declared_prior():
         with pytest.warns(IncrementWarning) as caught:
-            rows = lift_rows(prior_bound.run(prior=None))
+            rows = lift_rows(view_readout(prior_bound_experiment, prior_bound_resolver, prior=None))
         assert any(
             getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
             for warning in caught
@@ -2683,11 +2688,11 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
         return rows[0]
 
     try:
-        inherited_before = lift_rows(prior_bound.run())[0]
+        inherited_before = lift_rows(view_readout(prior_bound_experiment, prior_bound_resolver))[0]
         reset_first = clear_declared_prior()
         reset_second = clear_declared_prior()
-        expected = lift_rows(prior_free.run())[0]
-        inherited_after = lift_rows(prior_bound.run())[0]
+        expected = lift_rows(view_readout(prior_free_experiment, prior_free_resolver))[0]
+        inherited_after = lift_rows(view_readout(prior_bound_experiment, prior_bound_resolver))[0]
 
         assert reset_first.require_lift().value == pytest.approx(0.9132420091324197)
         for actual in (reset_first, reset_second):
@@ -2711,8 +2716,8 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
                 getattr(inherited_before.require_lift(), field)
             )
     finally:
-        prior_bound.close()
-        prior_free.close()
+        prior_bound_resolver.close()
+        prior_free_resolver.close()
 
 
 def test_nonpositive_mean_secondary_is_selected_on_its_additive_evidence():
@@ -2728,14 +2733,17 @@ def test_nonpositive_mean_secondary_is_selected_on_its_additive_evidence():
     frame = frame.assign(null_a=noise[:, 0], null_b=noise[:, 1])
     q = 0.1
     results = lift_rows(
-        Analysis.from_unit_summary(
-            frame,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics={"delta": "mean", "null_a": "mean", "null_b": "mean"},
-            plan=AnalysisPlan(q=q, secondaries=["delta", "null_a", "null_b"]),
-        ).run()
+        view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics={"delta": "mean", "null_a": "mean", "null_b": "mean"},
+                plan=AnalysisPlan(q=q, secondaries=["delta", "null_a", "null_b"]),
+            )
+        )
     )
     by_metric = {row.metric: row for row in results}
     assert set(by_metric) == {"delta", "null_a", "null_b"}
@@ -2749,13 +2757,16 @@ def test_nonpositive_mean_secondary_is_selected_on_its_additive_evidence():
     # FCR reissue: the selected additive interval is cut at min(R*q/m, alpha).
     assert delta.abs_alpha == pytest.approx(min(q / 3, 0.05))
     (nominal,) = lift_rows(
-        Analysis.from_unit_summary(
-            frame,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics={"delta": "mean"},
-        ).run()
+        view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics={"delta": "mean"},
+            )
+        )
     )
     assert delta.abs_diff == nominal.abs_diff and delta.abs_se == nominal.abs_se
     assert delta.abs_lb is not None and nominal.abs_lb is not None

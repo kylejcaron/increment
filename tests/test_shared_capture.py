@@ -15,8 +15,9 @@ from increment.declarations import Method
 from increment.errors import CodedError, IncrementWarning
 from increment.evidence import BreakoutIdentity
 from increment.kernel.contracts import Scope
+from increment.query import panel_sql
 from increment.semantics.models import AnalysisPlan, Definitions
-from tests.analysis_factory import make_analysis
+from tests.analysis_factory import make_binding, view_readout
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.comparison import nested_close
 
@@ -36,7 +37,7 @@ def _analysis(con, *, running=False):
             aggregation="avg_calendar_day",
             window_days=None,
         )
-    return make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
+    return make_binding(con, Definitions.model_validate(definitions), experiment="exp")
 
 
 def _builder(
@@ -184,17 +185,28 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
         }
     )
     con = ds.duckdb_connection(rows)
-    analysis = _analysis(con, running=True)
+    analysis_experiment, analysis_resolver = _analysis(con, running=True)
     try:
-        declared = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
-        all_declared = analysis.run(decision_method=Method(name="unadjusted"))
+        declared = view_readout(
+            analysis_experiment,
+            analysis_resolver,
+            metrics=["revenue"],
+            decision_method=Method(name="unadjusted"),
+        )
+        all_declared = view_readout(
+            analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+        )
         full_revenue = next(row for row in all_declared if row.metric == "revenue")
         narrowed_revenue = next(row for row in declared if row.metric == "revenue")
         assert nested_close(
             narrowed_revenue.lift.model_dump(),
             full_revenue.lift.model_dump(),
         )
-        panel = cast(Any, con).sql(analysis.panel_sql()["revenue"]).execute()
+        panel = (
+            cast(Any, con)
+            .sql(panel_sql(analysis_experiment, analysis_resolver)["revenue"])
+            .execute()
+        )
         observed_day_counts = panel.groupby("unit_id").size().to_dict()
         expected_day_counts = {
             row["user_id"]: (datetime(2025, 1, 25).date() - row["event_at"].date()).days + 1
@@ -202,14 +214,18 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
             if row["event"] == "exposure"
         }
         assert observed_day_counts == expected_day_counts
-        live_analysis = _analysis(con, running=True)
+        live_experiment, live_resolver = _analysis(con, running=True)
         try:
-            live_narrowed = live_analysis.run(
+            live_narrowed = view_readout(
+                live_experiment,
+                live_resolver,
                 metrics=["revenue"],
                 coherence="live",
                 decision_method=Method(name="unadjusted"),
             )
-            live_all = live_analysis.run(
+            live_all = view_readout(
+                live_experiment,
+                live_resolver,
                 coherence="live",
                 decision_method=Method(name="unadjusted"),
             )
@@ -220,13 +236,17 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
                 live_all_revenue.lift.model_dump(),
             )
         finally:
-            live_analysis.close()
-        extra = analysis.run(
+            live_resolver.close()
+        extra = view_readout(
+            analysis_experiment,
+            analysis_resolver,
             metrics=[],
             exploratory_metrics=["rps", "revenue_cuped"],
             decision_method=Method(name="unadjusted"),
         )
-        actual = analysis.run(
+        actual = view_readout(
+            analysis_experiment,
+            analysis_resolver,
             metrics=["revenue"],
             exploratory_metrics=["rps", "revenue_cuped"],
             decision_method=Method(name="unadjusted"),
@@ -241,7 +261,7 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
             [row.model_dump(exclude={"source_snapshot_id"}) for row in (*declared, *extra)],
         )
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 

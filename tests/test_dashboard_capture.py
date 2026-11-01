@@ -20,12 +20,14 @@ import pytest
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
+from increment import Scope
 from increment.breakout.estimates import BreakoutEstimates, DailyLiftEstimates, DailyMetricValues
 from increment.dashboard import DashboardConfig, load_explore, prepare_dashboard
 from increment.dashboard._app import build_payload
 from increment.errors import CodedError
+from increment.evidence import BreakoutIdentity
 from increment.workflows import capture_sequential
-from tests.analysis_factory import bound_analysis
+from tests.analysis_factory import view_readout
 from tests.test_dashboard import STOREFRONT_WINDOW, _arm_rows
 
 # Small deterministic fixtures legitimately trip estimator reliability warnings; the subject
@@ -348,23 +350,27 @@ def _snapshot_ids(rows) -> set[tuple[tuple[Any, ...], str | None, str | None]]:
     return identities
 
 
-def _live(resolver, *, view, metric, complete, scope):
-    """The same call the snapshot is expected to have made, against the live warehouse now."""
-    live = bound_analysis(resolver)
+def _live(experiment, resolver, *, view, metric, complete, scope):
+    """The same view the snapshot is expected to have read, against the live warehouse now."""
     names = list(_NAMES) if metric is None else [metric]
-    dimension = None if scope is None else scope[1]
+    segment = None if scope is None else BreakoutIdentity(scope[1], None)
     if view == "cumulative_lift":
-        rows = live.run_asof_lift(
-            metrics=names, completed_windows_only=complete, dimension=dimension
-        )
+        live = Scope(view="asof", grain="asof", completion_policy=complete, segment=segment)
+        rows = view_readout(experiment, resolver, live, metrics=names)
     elif view == "cumulative_values":
-        rows = live.run_asof(metrics=names, completed_windows_only=complete, dimension=dimension)
+        live = Scope(
+            view="asof", grain="asof", values=True, completion_policy=complete, segment=segment
+        )
+        rows = view_readout(experiment, resolver, live, metrics=names)
     elif view == "daily_values":
-        rows = live.run_daily(metrics=names, dimension=dimension)
+        live = Scope(view="daily", grain="daily", values=True, segment=segment)
+        rows = view_readout(experiment, resolver, live, metrics=names)
     else:
         rows = [
             row
-            for row in live.run_breakout(metrics=names)
+            for row in view_readout(
+                experiment, resolver, Scope(view="breakout", grain="total"), metrics=names
+            )
             if row.dimension == "country" and row.method_role == "decision"
         ]
     if scope is not None:
@@ -411,7 +417,7 @@ def test_every_explore_state_is_the_pinned_read_even_after_the_warehouse_changes
         snapshot = prepare_dashboard(experiment, resolver, config=CONFIG)
         requests = list(_requests())
         expected = {
-            index: _outcome(lambda request=request: _live(resolver, **request))
+            index: _outcome(lambda request=request: _live(experiment, resolver, **request))
             for index, request in enumerate(requests)
         }
         before = {
@@ -430,7 +436,7 @@ def test_every_explore_state_is_the_pinned_read_even_after_the_warehouse_changes
         _double_the_treatment_arm(con)
 
         live_after = {
-            index: _outcome(lambda request=request: _live(resolver, **request))
+            index: _outcome(lambda request=request: _live(experiment, resolver, **request))
             for index, request in enumerate(requests)
         }
         assert live_after != expected, "the warehouse change must be visible to a live read"
@@ -577,7 +583,9 @@ def test_a_refused_breakout_never_hides_another_source_of_the_same_property(tmp_
         assert any(isinstance(value, list) and value for value in baseline)
         # One declared breakout per choice reads exactly what the whole dimension shows for it.
         for request, value in zip(requests, baseline, strict=True):
-            assert value == _outcome(lambda r=request: _live(resolver, **r, scope=event_log))
+            assert value == _outcome(
+                lambda r=request: _live(experiment, resolver, **r, scope=event_log)
+            )
 
         _refuse_the_profiles_breakout(monkeypatch)
         degraded = prepare_dashboard(experiment, resolver, config=CONFIG)
@@ -598,7 +606,7 @@ def test_an_omitted_breakout_source_shows_the_source_it_resolves_to(tmp_path):
             shown = _loaded(experiment, snapshot, **request, scope=(None, "country"), semantic=True)
             assert isinstance(shown, list) and shown
             assert {json.loads(row)["source"] for row in shown} == {"event_log"}
-            assert shown == _live(resolver, **request, scope=("event_log", "country"))
+            assert shown == _live(experiment, resolver, **request, scope=("event_log", "country"))
 
 
 @pytest.mark.slow
@@ -606,13 +614,22 @@ def test_each_state_keeps_its_own_original_refusal(tmp_path):
     retention = "ever_purchased_again"
     with _workspace(tmp_path) as (_, experiment, resolver):
         snapshot = prepare_dashboard(experiment, resolver, config=CONFIG)
-        oracle = bound_analysis(resolver)
         for view, complete in (("daily_values", False), ("cumulative_values", True)):
             with pytest.raises(CodedError) as live:
                 if view == "daily_values":
-                    oracle.run_daily(metrics=[retention])
+                    view_readout(
+                        experiment,
+                        resolver,
+                        Scope(view="daily", grain="daily", values=True),
+                        metrics=[retention],
+                    )
                 else:
-                    oracle.run_asof(metrics=[retention], completed_windows_only=True)
+                    view_readout(
+                        experiment,
+                        resolver,
+                        Scope(view="asof", grain="asof", values=True, completion_policy=True),
+                        metrics=[retention],
+                    )
             with pytest.raises(CodedError) as first:
                 load_explore(
                     experiment,
@@ -661,28 +678,33 @@ def test_each_state_keeps_its_own_original_refusal(tmp_path):
 def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
     with _workspace(tmp_path, breakout_sources=()) as (_, experiment, resolver):
         snapshot = prepare_dashboard(experiment, resolver, config=CONFIG)
-        live = bound_analysis(resolver)
-        first_run = live.run(metrics=["session_seconds"])
-        second_run = live.run(metrics=["session_seconds"])
+        first_run = view_readout(experiment, resolver, metrics=["session_seconds"])
+        second_run = view_readout(experiment, resolver, metrics=["session_seconds"])
         assert _snapshot_ids(first_run) == _snapshot_ids(second_run)
         everyone = load_explore(experiment, snapshot=snapshot, metric=None, view="cumulative_lift")
         assert isinstance(everyone, DailyLiftEstimates)
         one = load_explore(
             experiment, snapshot=snapshot, metric="session_seconds", view="cumulative_lift"
         )
-        expected = live.run_asof_lift(metrics=["session_seconds"])
+        asof_lift = Scope(view="asof", grain="asof")
+        expected = view_readout(experiment, resolver, asof_lift, metrics=["session_seconds"])
         assert _fingerprint(one, semantic=True) == _fingerprint(expected, semantic=True)
         assert _snapshot_ids(one) == _snapshot_ids(expected)
-        repeat = live.run_asof_lift(metrics=["session_seconds"])
+        repeat = view_readout(experiment, resolver, asof_lift, metrics=["session_seconds"])
         assert _snapshot_ids(expected) == _snapshot_ids(repeat)
-        full = live.run_asof_lift(metrics=list(_NAMES))
+        full = view_readout(experiment, resolver, asof_lift, metrics=list(_NAMES))
         assert _fingerprint(everyone, semantic=True) == _fingerprint(full, semantic=True)
         assert _snapshot_ids(everyone) == _snapshot_ids(full)
         values = load_explore(
             experiment, snapshot=snapshot, metric="session_seconds", view="daily_values"
         )
         assert isinstance(values, DailyMetricValues)
-        values_expected = live.run_daily(metrics=["session_seconds"])
+        values_expected = view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", values=True),
+            metrics=["session_seconds"],
+        )
         assert _fingerprint(values, semantic=True) == _fingerprint(values_expected, semantic=True)
         assert _snapshot_ids(values) == _snapshot_ids(values_expected)
         assert (
@@ -725,12 +747,22 @@ def test_registered_sequential_explore_is_captured_at_its_checkpoint():
         capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2025, 1, 16))
         config = DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
         snapshot = prepare_dashboard(experiment, resolver, config=config)
-        live = bound_analysis(resolver)
-        live_lift = _fingerprint(live.run_asof_lift(metrics=["conversion"]), semantic=True)
-        live_values = _fingerprint(live.run_asof(metrics=["mean"]), semantic=True)
+        asof_lift = Scope(view="asof", grain="asof")
+        asof_values = Scope(view="asof", grain="asof", values=True)
+        live_lift = _fingerprint(
+            view_readout(experiment, resolver, asof_lift, metrics=["conversion"]), semantic=True
+        )
+        live_values = _fingerprint(
+            view_readout(experiment, resolver, asof_values, metrics=["mean"]), semantic=True
+        )
         assert live_lift and live_values
         connection.raw_sql("UPDATE events SET value = value * 10 WHERE event = 'purchase'")
-        assert _fingerprint(live.run_asof(metrics=["mean"]), semantic=True) != live_values
+        assert (
+            _fingerprint(
+                view_readout(experiment, resolver, asof_values, metrics=["mean"]), semantic=True
+            )
+            != live_values
+        )
         lift = load_explore(
             experiment, snapshot=snapshot, metric="conversion", view="cumulative_lift"
         )

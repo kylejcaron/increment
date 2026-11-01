@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any
+from typing import Any, cast
 
 import ibis
 import numpy as np
@@ -14,11 +14,21 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from increment import Analysis, Method
+from increment import (
+    Method,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+)
+from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.errors import CodedError
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.semantics.models import CupedCovariateBinding
+from increment.workflows import export_moments
+from tests.analysis_factory import view_readout
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -162,15 +172,16 @@ def _specs():
     ]
 
 
-def _publish(con, native):
+def _publish(con, native: tuple[Any, Any]) -> tuple[tuple[Any, Any], list[Any]]:
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
 
+    experiment, resolver = native
     store = WarehouseArtifactStore(con, schema_name="portable")
-    context = native.artifact_context
+    context = artifact_context(experiment, resolver)
     requests = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    return Analysis.from_unit_day_artifact(store, ref, expected_context=context), requests
+    ref = publish_unit_day_artifact(experiment, resolver, store, extensions=requests)
+    return from_unit_day_artifact(store, ref, expected_context=context), requests
 
 
 def _guard_unit_transfers(monkeypatch, con, *, outcome_cells: bool) -> list[tuple[str, ...]]:
@@ -228,29 +239,33 @@ def test_categorical_covariate_named_n_exports_identically(tmp_path, ingress):
     try:
         for name in ("country", "n"):
             path = _definitions(tmp_path, fixed_caps=False, covariate_name=name)
-            native = Analysis.from_definitions("mixed_cuped", path, connection)
-            adopted = None
+            native_experiment, native_resolver = from_definitions(
+                path, connection, experiment_name="mixed_cuped"
+            )
+            adopted_resolver = None
             try:
-                source = native
+                source_experiment, source_resolver = native_experiment, native_resolver
                 if ingress == "artifact":
-                    adopted, _ = _publish(connection, native)
-                    source = adopted
-                expected = _cells(native.run())
+                    (source_experiment, adopted_resolver), _ = _publish(
+                        connection, (native_experiment, native_resolver)
+                    )
+                    source_resolver = adopted_resolver
+                expected = _cells(view_readout(native_experiment, native_resolver))
                 destination = tmp_path / f"{ingress}-{name}.parquet"
-                source.export(destination)
+                export_moments(source_experiment, source_resolver, destination)
                 rows = pq.read_table(destination).to_pylist()
                 design = _design(path)
-                restored = Analysis.from_moments(
+                experiment, resolver = from_moments(
                     rows, metrics=_specs(), design=design, experiment_id="mixed_cuped"
                 )
                 try:
-                    analyses.append((_cells(restored.run()), expected))
+                    analyses.append((_cells(view_readout(experiment, resolver)), expected))
                 finally:
-                    restored.close()
+                    resolver.close()
             finally:
-                if adopted is not None:
-                    adopted.close()
-                native.close()
+                if adopted_resolver is not None:
+                    adopted_resolver.close()
+                cast(Any, native_resolver).close()
     finally:
         connection.disconnect()
     reference = analyses[0][1]
@@ -279,10 +294,11 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
     path = _definitions(tmp_path, fixed_caps=False)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(_events(_units())))
-    native = Analysis.from_definitions("mixed_cuped", path, con)
-    adopted = None
+    native_experiment, native_resolver = from_definitions(path, con, experiment_name="mixed_cuped")
+    native = (native_experiment, native_resolver)
+    adopted_resolver = None
     try:
-        expected = _cells(native.run())
+        expected = _cells(view_readout(native_experiment, native_resolver))
         assert set(expected) == {
             ("revenue", "segments", "treatment"),
             ("revenue", "cuped", "treatment"),
@@ -290,14 +306,13 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
             ("revenue_per_spend", "segments", "treatment"),
         }
         transferred = _guard_unit_transfers(monkeypatch, con, outcome_cells=True)
+        source_experiment, source_resolver = native
         if ingress == "artifact":
-            adopted, requests = _publish(con, native)
+            (source_experiment, adopted_resolver), requests = _publish(con, native)
             assert {"cuped_preperiod", "breakout_dimension"} <= {item.kind for item in requests}
-            source = adopted
-        else:
-            source = native
+            source_resolver = adopted_resolver
         destination = tmp_path / "portable.parquet"
-        source.export(destination)
+        export_moments(source_experiment, source_resolver, destination)
         # Joint cells and both method-scoped scalar families cross only as aggregates.
         assert any(_OUTCOME_CELL.match(name) for names in transferred for name in names)
         assert all("unit_id" not in names for names in transferred)
@@ -318,20 +333,20 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
             ("scalar_moments", "revenue"),
         ]
         design = _design(path)
-        restored = Analysis.from_moments(
+        experiment, resolver = from_moments(
             rows, metrics=_specs(), design=design, experiment_id="mixed_cuped"
         )
         try:
-            actual = _cells(restored.run())
+            actual = _cells(view_readout(experiment, resolver))
             with pytest.raises(CodedError) as breakout:
-                restored.run_breakout()
+                view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
         finally:
-            restored.close()
+            resolver.close()
         assert breakout.value.code == "evidence.breakout_unavailable"
     finally:
-        if adopted is not None:
-            adopted.close()
-        native.close()
+        if adopted_resolver is not None:
+            adopted_resolver.close()
+        cast(Any, native_resolver).close()
         con.disconnect()
     assert actual.keys() == expected.keys()
     for key, row in expected.items():
@@ -354,19 +369,20 @@ def test_fixed_caps_export_fits_with_warehouse_qr_and_replays_without_unit_trans
     path = _definitions(tmp_path, fixed_caps=True)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(_events(_units())))
-    native = Analysis.from_definitions("mixed_cuped", path, con)
-    adopted = None
+    native_experiment, native_resolver = from_definitions(path, con, experiment_name="mixed_cuped")
+    native = (native_experiment, native_resolver)
+    adopted_resolver = None
     try:
-        expected = _cells(native.run())
+        expected = _cells(view_readout(native_experiment, native_resolver))
         capped = expected[("revenue", "segments", "treatment")]
         assert np.isfinite(capped.require_lift().value)
         _guard_unit_transfers(monkeypatch, con, outcome_cells=True)
-        source = native
+        source_experiment, source_resolver = native
         if ingress == "artifact":
-            adopted, _ = _publish(con, native)
-            source = adopted
+            (source_experiment, adopted_resolver), _ = _publish(con, native)
+            source_resolver = adopted_resolver
         destination = tmp_path / "capped.parquet"
-        source.export(destination)
+        export_moments(source_experiment, source_resolver, destination)
         rows = pq.read_table(destination).to_pylist()
         assert {row["moments_format"] for row in rows} == {13}
         envelopes = [
@@ -382,17 +398,17 @@ def test_fixed_caps_export_fits_with_warehouse_qr_and_replays_without_unit_trans
             name="revenue",
             winsorization=Winsorization(lower_value=7.0, upper_value=11.0),
         )
-        restored = Analysis.from_moments(
+        experiment, resolver = from_moments(
             rows, metrics=metrics, design=_design(path), experiment_id="mixed_cuped"
         )
         try:
-            actual = _cells(restored.run())
+            actual = _cells(view_readout(experiment, resolver))
         finally:
-            restored.close()
+            resolver.close()
     finally:
-        if adopted is not None:
-            adopted.close()
-        native.close()
+        if adopted_resolver is not None:
+            adopted_resolver.close()
+        cast(Any, native_resolver).close()
         con.disconnect()
     assert actual.keys() == expected.keys()
     for key, row in expected.items():
@@ -429,8 +445,9 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
         control_group="control", allocation={"control": 0.5, "treatment": 0.5}
     )
     frame_plan = AnalysisPlan(primary="revenue")
-    summary = Analysis.from_unit_summary(
+    summary = from_frame(
         pa.Table.from_pylist(units),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[frame_metric],
@@ -438,8 +455,9 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
         plan=frame_plan,
     )
     panel_rows = [{**row, "day": dt.date(2025, 1, 10)} for row in units]
-    panel = Analysis.from_unit_panel(
+    panel = from_frame(
         pa.Table.from_pylist(panel_rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -449,16 +467,20 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(_events(units)))
-    native = Analysis.from_definitions("mixed_cuped", path, con)
+    native_experiment, native_resolver = from_definitions(path, con, experiment_name="mixed_cuped")
+    native = (native_experiment, native_resolver)
     adopted = None
     try:
-        native_rows = _cells(native.run(metrics=["revenue"]))
+        native_rows = _cells(view_readout(native_experiment, native_resolver, metrics=["revenue"]))
         _guard_unit_transfers(monkeypatch, con, outcome_cells=True)
         adopted, _ = _publish(con, native)
         sources = (summary, panel, native, adopted)
         for index, source in enumerate(sources):
+            source_experiment, source_resolver = source
             expected = (
-                native_rows if source is native or source is adopted else _cells(source.run())
+                native_rows
+                if source is native or source is adopted
+                else _cells(view_readout(source_experiment, source_resolver))
             )
             assert expected.keys() == native_rows.keys()
             for key, row in expected.items():
@@ -468,7 +490,7 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
                         getattr(reference.require_lift(), field), rel=1e-10, abs=1e-12
                     )
             destination = tmp_path / f"fitted-{index}.parquet"
-            source.export(destination)
+            export_moments(source_experiment, source_resolver, destination)
             rows = pq.read_table(destination).to_pylist()
             assert {row["moments_format"] for row in rows} == {13}
             envelopes = [
@@ -482,7 +504,7 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
                 if payload["kind"] == "fitted_multicovariate" and payload["metric"] == "revenue"
             ]
             assert len(fitted) == 1
-            restored = Analysis.from_moments(
+            restored_experiment, restored_resolver = from_moments(
                 rows,
                 metrics=[frame_metric],
                 design=design,
@@ -490,9 +512,11 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
                 experiment_id="mixed_cuped",
             )
             try:
-                actual = _cells(restored.run(metrics=["revenue"]))
+                actual = _cells(
+                    view_readout(restored_experiment, restored_resolver, metrics=["revenue"])
+                )
             finally:
-                restored.close()
+                restored_resolver.close()
             assert actual.keys() == expected.keys()
             for key, row in expected.items():
                 replayed = actual[key]
@@ -502,8 +526,8 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
                     )
     finally:
         if adopted is not None:
-            adopted.close()
-        summary.close()
-        panel.close()
-        native.close()
+            adopted[1].close()
+        summary[1].close()
+        panel[1].close()
+        cast(Any, native_resolver).close()
         con.disconnect()
