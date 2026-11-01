@@ -214,6 +214,9 @@ def operation_options(
                     "missing": tuple(sorted(missing)),
                 },
             )
+    # `store` stays declared for saved experiments; a set store is refused before
+    # execution, and no view receives it.
+    values.pop("store", None)
     return values
 
 

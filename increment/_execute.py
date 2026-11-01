@@ -7,7 +7,6 @@ from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import replace
 from functools import partial
-from inspect import Parameter, signature
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
@@ -27,7 +26,6 @@ from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastRead
 from increment._evidence_types import SequentialCaptureRequest
 from increment._exploratory import exploratory_sibling, select_exploratory
 from increment._runnability import (
-    _SCOPE_OPERATIONS,
     operation_options,
     records_breakout_sources,
     require_breakout_sources,
@@ -512,24 +510,83 @@ _VIEWS: Mapping[str, Callable[..., Any]] = {
 }
 
 
+# Each view's declared keywords are part of every experiment's JSON and hash, so they
+# are fixed here rather than read from view signatures; saved experiments keep
+# validating. `store` stays declared, and a store request option refuses before any view.
+_OPERATION_KEYWORDS: Mapping[str, tuple[str, ...]] = {
+    "run": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "estimands",
+        "value_scale",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "store",
+        "_execution_context",
+        "capture",
+    ),
+    "run_daily_lift": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "estimands",
+        "dimension",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_daily": (
+        "metrics",
+        "dimension",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_asof_lift": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "dimension",
+        "estimands",
+        "completed_windows_only",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_asof": (
+        "metrics",
+        "dimension",
+        "completed_windows_only",
+        "exploratory_metrics",
+        "population",
+        "coherence",
+        "capture",
+    ),
+    "run_breakout": (
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+        "metrics",
+        "exploratory_metrics",
+        "population",
+        "capture",
+    ),
+}
+
+
 def operation_parameters() -> dict[str, Any]:
-    """Record the keyword contracts of the readout views a binding executes."""
-    declarations = {}
-    for operation in dict.fromkeys(name for names in _SCOPE_OPERATIONS.values() for name in names):
-        parameters = tuple(signature(_VIEWS[operation]).parameters.values())[1:]
-        keywords = tuple(
-            parameter
-            for parameter in parameters
-            if parameter.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
-        )
-        declarations[operation] = {
-            "accepted": (*tuple(parameter.name for parameter in keywords), "capture"),
-            "required": tuple(
-                parameter.name for parameter in keywords if parameter.default is Parameter.empty
-            ),
-            "variadic": any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters),
-        }
-    return declarations
+    """Record the declared keyword contracts of the readout views a binding executes."""
+    return {
+        operation: {"accepted": accepted, "required": (), "variadic": False}
+        for operation, accepted in _OPERATION_KEYWORDS.items()
+    }
 
 
 def _borrowed(

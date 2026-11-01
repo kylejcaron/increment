@@ -1,0 +1,1116 @@
+{
+ "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON and its hash, saved verbatim; never regenerate it.",
+ "hash": "82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570",
+ "experiment": {
+  "analysis_context": {
+   "cluster": null,
+   "configs": [
+    {
+     "covariate_available": true,
+     "covariates": [],
+     "decision_defaulted": true,
+     "decision_method": {
+      "conversion_inference": "auto",
+      "covariates": null,
+      "folds": null,
+      "name": "unadjusted",
+      "outcome_learner": null,
+      "propensity_learner": null,
+      "variance_reduction": "none"
+     },
+     "methods_explicitly_empty": false,
+     "metric": {
+      "description": "Did the user purchase within the analysis window?",
+      "entity": "user_id",
+      "fact": "purchase",
+      "filters": [],
+      "margin": null,
+      "margin_abs": null,
+      "name": "purchase_rate",
+      "preferred_direction": "increase",
+      "rollout_cost": null,
+      "type": "conversion",
+      "window_days": 14
+     },
+     "prior": null,
+     "prior_is_global": true,
+     "sensitivity_methods": [],
+     "source_methods": []
+    },
+    {
+     "covariate_available": true,
+     "covariates": [],
+     "decision_defaulted": true,
+     "decision_method": {
+      "conversion_inference": "auto",
+      "covariates": null,
+      "folds": null,
+      "name": "unadjusted",
+      "outcome_learner": null,
+      "propensity_learner": null,
+      "variance_reduction": "none"
+     },
+     "methods_explicitly_empty": false,
+     "metric": {
+      "aggregation": "avg_calendar_day",
+      "description": "Mean session duration (seconds) per user",
+      "entity": "user_id",
+      "fact": "session_end",
+      "filters": [
+       {
+        "op": "equals",
+        "property": "platform",
+        "values": [
+         "web"
+        ]
+       }
+      ],
+      "margin": null,
+      "margin_abs": null,
+      "name": "avg_session_duration",
+      "preferred_direction": "increase",
+      "rollout_cost": null,
+      "type": "mean",
+      "window_days": 7,
+      "winsorization": null
+     },
+     "prior": null,
+     "prior_is_global": true,
+     "sensitivity_methods": [],
+     "source_methods": []
+    },
+    {
+     "covariate_available": true,
+     "covariates": [],
+     "decision_defaulted": true,
+     "decision_method": {
+      "conversion_inference": "auto",
+      "covariates": null,
+      "folds": null,
+      "name": "unadjusted",
+      "outcome_learner": null,
+      "propensity_learner": null,
+      "variance_reduction": "none"
+     },
+     "methods_explicitly_empty": false,
+     "metric": {
+      "description": "User returned at least once during days 7-13 post-exposure",
+      "entity": "user_id",
+      "fact": "page_view",
+      "filters": [],
+      "margin": null,
+      "margin_abs": null,
+      "name": "d7_retention",
+      "preferred_direction": "increase",
+      "rollout_cost": null,
+      "threshold_days": [
+       7,
+       14
+      ],
+      "type": "retention",
+      "window_days": null
+     },
+     "prior": {
+      "mu": 0,
+      "sigma": 5
+     },
+     "prior_is_global": false,
+     "sensitivity_methods": [],
+     "source_methods": []
+    }
+   ],
+   "experiment": {
+    "breakouts": [
+     {
+      "property": "country",
+      "skip_missing": false,
+      "source": null
+     }
+    ],
+    "cluster": null,
+    "control_group": "control",
+    "description": "Test a redesigned onboarding flow against the current flow",
+    "end": "2025-02-15T00:00:00",
+    "exposure": "first_page_view",
+    "factors": [
+     {
+      "property": "country",
+      "source": null
+     }
+    ],
+    "intervention_grain": "unit",
+    "n_pre_periods": 14,
+    "name": "new_onboarding_v2",
+    "observation_end": null,
+    "plan": {
+     "alpha": 0.05,
+     "alternative": "two-sided",
+     "compliance": null,
+     "guardrails": [
+      {
+       "decision_method": null,
+       "margin": null,
+       "margin_abs": null,
+       "metric": "d7_retention",
+       "prior": {
+        "mu": 0,
+        "sigma": 5
+       },
+       "sensitivity_methods": []
+      }
+     ],
+     "inference": null,
+     "primary": null,
+     "secondaries": [
+      "purchase_rate",
+      "avg_session_duration"
+     ],
+     "view_multiplicity": {
+      "correction": "bonferroni",
+      "q": null
+     }
+    },
+    "start": "2025-01-15T00:00:00",
+    "trigger": null,
+    "unit": "user_id"
+   },
+   "operation_parameters": {
+    "run": {
+     "accepted": [
+      "decision_method",
+      "sensitivity_methods",
+      "prior",
+      "metrics",
+      "estimands",
+      "value_scale",
+      "exploratory_metrics",
+      "population",
+      "coherence",
+      "store",
+      "_execution_context",
+      "capture"
+     ],
+     "required": [],
+     "variadic": false
+    },
+    "run_asof": {
+     "accepted": [
+      "metrics",
+      "dimension",
+      "completed_windows_only",
+      "exploratory_metrics",
+      "population",
+      "coherence",
+      "capture"
+     ],
+     "required": [],
+     "variadic": false
+    },
+    "run_asof_lift": {
+     "accepted": [
+      "decision_method",
+      "sensitivity_methods",
+      "prior",
+      "metrics",
+      "dimension",
+      "estimands",
+      "completed_windows_only",
+      "exploratory_metrics",
+      "population",
+      "coherence",
+      "capture"
+     ],
+     "required": [],
+     "variadic": false
+    },
+    "run_breakout": {
+     "accepted": [
+      "decision_method",
+      "sensitivity_methods",
+      "prior",
+      "metrics",
+      "exploratory_metrics",
+      "population",
+      "capture"
+     ],
+     "required": [],
+     "variadic": false
+    },
+    "run_daily": {
+     "accepted": [
+      "metrics",
+      "dimension",
+      "exploratory_metrics",
+      "population",
+      "coherence",
+      "capture"
+     ],
+     "required": [],
+     "variadic": false
+    },
+    "run_daily_lift": {
+     "accepted": [
+      "decision_method",
+      "sensitivity_methods",
+      "prior",
+      "metrics",
+      "estimands",
+      "dimension",
+      "population",
+      "coherence",
+      "capture"
+     ],
+     "required": [],
+     "variadic": false
+    }
+   },
+   "plan": {
+    "alpha": 0.05,
+    "compliance": null,
+    "declared": true,
+    "inference": {
+     "kind": "fixed"
+    },
+    "path": "warehouse",
+    "procedures": {
+     "avg_session_duration": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "axis": "relative",
+      "decision_method": {
+       "conversion_inference": "auto",
+       "covariates": null,
+       "folds": null,
+       "name": "unadjusted",
+       "outcome_learner": null,
+       "propensity_learner": null,
+       "variance_reduction": "none"
+      },
+      "family": {
+       "family": {
+        "axes": [
+         "metric",
+         "arm"
+        ],
+        "correction": "bh",
+        "guarantee": "fdr",
+        "name": "secondary",
+        "q": 0.1
+       },
+       "member": true
+      },
+      "inference": {
+       "kind": "fixed"
+      },
+      "methods_explicitly_empty": false,
+      "metric": "avg_session_duration",
+      "null_lift": 0,
+      "prior": null,
+      "prior_is_global": true,
+      "role": "secondary",
+      "scale": "relative",
+      "sensitivity_methods": []
+     },
+     "d7_retention": {
+      "alpha": 0.05,
+      "alternative": "greater",
+      "axis": "relative",
+      "decision_method": {
+       "conversion_inference": "auto",
+       "covariates": null,
+       "folds": null,
+       "name": "unadjusted",
+       "outcome_learner": null,
+       "propensity_learner": null,
+       "variance_reduction": "none"
+      },
+      "family": {
+       "family": {
+        "kind": "none"
+       },
+       "member": false
+      },
+      "inference": {
+       "kind": "fixed"
+      },
+      "methods_explicitly_empty": false,
+      "metric": "d7_retention",
+      "null_lift": 0,
+      "prior": {
+       "mu": 0,
+       "sigma": 5
+      },
+      "prior_is_global": false,
+      "role": "guardrail",
+      "scale": "relative",
+      "sensitivity_methods": []
+     },
+     "purchase_rate": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "axis": "relative",
+      "decision_method": {
+       "conversion_inference": "auto",
+       "covariates": null,
+       "folds": null,
+       "name": "unadjusted",
+       "outcome_learner": null,
+       "propensity_learner": null,
+       "variance_reduction": "none"
+      },
+      "family": {
+       "family": {
+        "axes": [
+         "metric",
+         "arm"
+        ],
+        "correction": "bh",
+        "guarantee": "fdr",
+        "name": "secondary",
+        "q": 0.1
+       },
+       "member": true
+      },
+      "inference": {
+       "kind": "fixed"
+      },
+      "methods_explicitly_empty": false,
+      "metric": "purchase_rate",
+      "null_lift": 0,
+      "prior": null,
+      "prior_is_global": true,
+      "role": "secondary",
+      "scale": "relative",
+      "sensitivity_methods": []
+     }
+    },
+    "q": 0.1,
+    "q_explicit": false,
+    "view_policies": {
+     "asof": {
+      "axes": [
+       "metric",
+       "arm"
+      ],
+      "correction": "bonferroni",
+      "guarantee": "fwer",
+      "name": "asof",
+      "q": null
+     },
+     "encouragement_breakout": {
+      "axes": [
+       "metric",
+       "arm",
+       "segment"
+      ],
+      "correction": "none",
+      "guarantee": "none",
+      "name": "breakout",
+      "q": null
+     },
+     "randomized_breakout": {
+      "axes": [
+       "metric",
+       "arm",
+       "segment"
+      ],
+      "correction": "bonferroni",
+      "guarantee": "fwer",
+      "name": "breakout",
+      "q": null
+     }
+    }
+   },
+   "source_declaration": {
+    "definitions": {
+     "day_boundary": "UTC",
+     "dialect": "duckdb",
+     "dim_sources": [],
+     "experiments": [
+      {
+       "allocation": null,
+       "allocation_scheme": null,
+       "assignment_ledger": null,
+       "breakouts": [
+        {
+         "property": "country",
+         "skip_missing": false,
+         "source": null
+        }
+       ],
+       "cluster": null,
+       "control_group": "control",
+       "day_boundary": "UTC",
+       "description": "Test a redesigned onboarding flow against the current flow",
+       "design": null,
+       "end": "2025-02-15T00:00:00",
+       "exposure": "first_page_view",
+       "factors": [
+        {
+         "property": "country",
+         "source": null
+        }
+       ],
+       "intervention_grain": "unit",
+       "n_pre_periods": 14,
+       "name": "new_onboarding_v2",
+       "observation_end": null,
+       "plan": {
+        "alpha": 0.05,
+        "alternative": "two-sided",
+        "compliance": null,
+        "guardrails": [
+         {
+          "decision_method": null,
+          "margin": null,
+          "margin_abs": null,
+          "metric": "d7_retention",
+          "prior": {
+           "mu": 0,
+           "sigma": 5
+          },
+          "sensitivity_methods": []
+         }
+        ],
+        "inference": null,
+        "primary": null,
+        "q": 0.1,
+        "secondaries": [
+         "purchase_rate",
+         "avg_session_duration"
+        ],
+        "view_multiplicity": {
+         "correction": "bonferroni",
+         "q": null
+        }
+       },
+       "start": "2025-01-15T00:00:00",
+       "trigger": null,
+       "unit": "user_id"
+      },
+      {
+       "allocation": null,
+       "allocation_scheme": null,
+       "assignment_ledger": null,
+       "breakouts": [],
+       "cluster": null,
+       "control_group": "control",
+       "day_boundary": "UTC",
+       "description": "Test impact of showing enterprise upsell on free plan",
+       "design": null,
+       "end": null,
+       "exposure": "first_page_view",
+       "factors": [],
+       "intervention_grain": "unit",
+       "n_pre_periods": 0,
+       "name": "pricing_tier_test",
+       "observation_end": null,
+       "plan": {
+        "alpha": 0.05,
+        "alternative": "two-sided",
+        "compliance": null,
+        "guardrails": [
+         "avg_session_duration",
+         "d7_retention"
+        ],
+        "inference": null,
+        "primary": null,
+        "q": 0.1,
+        "secondaries": [
+         "purchase_rate",
+         "revenue_per_session"
+        ],
+        "view_multiplicity": null
+       },
+       "start": "2025-03-01T00:00:00",
+       "trigger": null,
+       "unit": "user_id"
+      },
+      {
+       "allocation": null,
+       "allocation_scheme": null,
+       "assignment_ledger": null,
+       "breakouts": [],
+       "cluster": null,
+       "control_group": "control",
+       "day_boundary": "UTC",
+       "description": "Checkout test read through the AOV = revenue/orders decomposition",
+       "design": null,
+       "end": "2025-05-31T00:00:00",
+       "exposure": "first_page_view",
+       "factors": [],
+       "intervention_grain": "unit",
+       "n_pre_periods": 0,
+       "name": "aov_decomposition",
+       "observation_end": null,
+       "plan": {
+        "alpha": 0.05,
+        "alternative": "two-sided",
+        "compliance": null,
+        "guardrails": [],
+        "inference": null,
+        "primary": null,
+        "q": 0.1,
+        "secondaries": [
+         "aov",
+         "revenue_per_user",
+         "orders_per_user"
+        ],
+        "view_multiplicity": null
+       },
+       "start": "2025-05-01T00:00:00",
+       "trigger": null,
+       "unit": "user_id"
+      },
+      {
+       "allocation": null,
+       "allocation_scheme": null,
+       "assignment_ledger": null,
+       "breakouts": [],
+       "cluster": null,
+       "control_group": "control",
+       "day_boundary": "UTC",
+       "description": "Session-randomized checkout latency test",
+       "design": null,
+       "end": "2025-05-31T00:00:00",
+       "exposure": "first_page_view",
+       "factors": [],
+       "intervention_grain": "unit",
+       "n_pre_periods": 0,
+       "name": "session_checkout",
+       "observation_end": null,
+       "plan": {
+        "alpha": 0.05,
+        "alternative": "two-sided",
+        "compliance": null,
+        "guardrails": [],
+        "inference": null,
+        "primary": null,
+        "q": 0.1,
+        "secondaries": [
+         "session_purchase_rate"
+        ],
+        "view_multiplicity": null
+       },
+       "start": "2025-05-01T00:00:00",
+       "trigger": null,
+       "unit": "session_id"
+      }
+     ],
+     "exposures": [
+      {
+       "description": "Exposure is the first page view in the analysis window. Used for experiments on the general user experience where every active user is expected to have at least one page view.\n",
+       "fact": "page_view",
+       "filters": [],
+       "name": "first_page_view",
+       "sql": null
+      },
+      {
+       "description": "Exposure is the first purchase event. Used for revenue / conversion experiments where only users who complete a purchase are eligible.\n",
+       "fact": "purchase",
+       "filters": [],
+       "name": "first_purchase",
+       "sql": null
+      },
+      {
+       "description": "Query-based exposure for experiments that use a dedicated enrollment table. Returns raw enrollment rows rather than aggregating per unit: first_exposures() takes the first row per unit itself, keeping the timestamp paired with the arm it was recorded with. Collapsing with MIN(event_at) plus ANY_VALUE(variant) would pair the earliest timestamp with an arbitrary arm and hide a unit enrolled in two arms from the mixed-assignment check.\n",
+       "fact": null,
+       "filters": [],
+       "name": "sql_enrolled",
+       "sql": "SELECT\n  user_id AS unit_id,\n  event_at AS ts,\n  variant AS group_id\nFROM analytics.enrollments\nWHERE experiment_id = 'experiment_name'\n"
+      }
+     ],
+     "fact_sources": [
+      {
+       "dims": [],
+       "entities": [
+        "user_id",
+        "session_id"
+       ],
+       "facts": [
+        {
+         "column": null,
+         "description": "A user viewed a page (occurrence-only event)",
+         "name": "page_view"
+        },
+        {
+         "column": "revenue",
+         "description": "A purchase event with revenue amount",
+         "name": "purchase"
+        },
+        {
+         "column": null,
+         "description": "A session was started",
+         "name": "session_start"
+        },
+        {
+         "column": "duration_s",
+         "description": "Session ended with duration in seconds",
+         "name": "session_end"
+        }
+       ],
+       "name": "event_log",
+       "properties": [
+        {
+         "as_of": "static",
+         "column": "country_code",
+         "description": "Geographic region, fixed per unit for the unit's lifetime (the seeded population assigns it once). as_of=static: the breakout lookup is unscoped \u2014 correct only because the value cannot change during the experiment.",
+         "dtype": "string",
+         "name": "country"
+        },
+        {
+         "as_of": "event_time",
+         "column": "device_type",
+         "description": "Device platform (ios / android / web)",
+         "dtype": "string",
+         "name": "platform"
+        },
+        {
+         "as_of": "event_time",
+         "column": "plan",
+         "description": "User's plan at event time (free / pro / enterprise)",
+         "dtype": "string",
+         "name": "plan_tier"
+        }
+       ],
+       "sql": "SELECT *\nFROM analytics.event_log\nWHERE event_at >= '2024-01-01'\n",
+       "timestamp_column": "event_at"
+      }
+     ],
+     "metrics": [
+      {
+       "aggregation": "avg_calendar_day",
+       "description": "Mean session duration (seconds) per user",
+       "entity": "user_id",
+       "fact": "session_end",
+       "filters": [
+        {
+         "op": "equals",
+         "property": "platform",
+         "values": [
+          "web"
+         ]
+        }
+       ],
+       "margin": null,
+       "margin_abs": null,
+       "name": "avg_session_duration",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "mean",
+       "window_days": 7,
+       "winsorization": null
+      },
+      {
+       "description": "Did the user purchase within the analysis window?",
+       "entity": "user_id",
+       "fact": "purchase",
+       "filters": [],
+       "margin": null,
+       "margin_abs": null,
+       "name": "purchase_rate",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "conversion",
+       "window_days": 14
+      },
+      {
+       "description": "User returned at least once during days 7-13 post-exposure",
+       "entity": "user_id",
+       "fact": "page_view",
+       "filters": [],
+       "margin": null,
+       "margin_abs": null,
+       "name": "d7_retention",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "threshold_days": [
+        7,
+        14
+       ],
+       "type": "retention",
+       "window_days": null
+      },
+      {
+       "denominator": {
+        "aggregation": "count",
+        "fact": "session_end",
+        "filters": [],
+        "window_days": 7
+       },
+       "description": "Revenue per session (ratio of sums)",
+       "entity": "user_id",
+       "margin": null,
+       "margin_abs": null,
+       "name": "revenue_per_session",
+       "numerator": {
+        "aggregation": "sum",
+        "fact": "purchase",
+        "filters": [],
+        "window_days": 7
+       },
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "ratio"
+      },
+      {
+       "aggregation": "sum",
+       "description": "Revenue guardrail: confirm we didn't lose more than 1%",
+       "entity": "user_id",
+       "fact": "purchase",
+       "filters": [],
+       "margin": 0.01,
+       "margin_abs": null,
+       "name": "revenue_guardrail",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "mean",
+       "window_days": 14,
+       "winsorization": null
+      },
+      {
+       "denominator": {
+        "aggregation": "count",
+        "fact": "purchase",
+        "filters": [],
+        "window_days": 14
+       },
+       "description": "Average order value: total revenue / total orders",
+       "entity": "user_id",
+       "margin": null,
+       "margin_abs": null,
+       "name": "aov",
+       "numerator": {
+        "aggregation": "sum",
+        "fact": "purchase",
+        "filters": [],
+        "window_days": 14
+       },
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "ratio"
+      },
+      {
+       "aggregation": "sum",
+       "description": "Total purchase revenue per enrolled user",
+       "entity": "user_id",
+       "fact": "purchase",
+       "filters": [],
+       "margin": null,
+       "margin_abs": null,
+       "name": "revenue_per_user",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "mean",
+       "window_days": 14,
+       "winsorization": null
+      },
+      {
+       "aggregation": "count",
+       "description": "Purchase count per enrolled user",
+       "entity": "user_id",
+       "fact": "purchase",
+       "filters": [],
+       "margin": null,
+       "margin_abs": null,
+       "name": "orders_per_user",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "mean",
+       "window_days": 14,
+       "winsorization": null
+      },
+      {
+       "description": "Did the session include a purchase?",
+       "entity": "session_id",
+       "fact": "purchase",
+       "filters": [],
+       "margin": null,
+       "margin_abs": null,
+       "name": "session_purchase_rate",
+       "preferred_direction": "increase",
+       "rollout_cost": null,
+       "type": "conversion",
+       "window_days": 1
+      }
+     ],
+     "week_start": "monday"
+    },
+    "experiment": {
+     "allocation": null,
+     "allocation_scheme": null,
+     "assignment_ledger": null,
+     "breakouts": [
+      {
+       "property": "country",
+       "skip_missing": false,
+       "source": null
+      }
+     ],
+     "cluster": null,
+     "control_group": "control",
+     "day_boundary": "UTC",
+     "description": "Test a redesigned onboarding flow against the current flow",
+     "design": null,
+     "end": "2025-02-15T00:00:00",
+     "exposure": "first_page_view",
+     "factors": [
+      {
+       "property": "country",
+       "source": null
+      }
+     ],
+     "intervention_grain": "unit",
+     "n_pre_periods": 14,
+     "name": "new_onboarding_v2",
+     "observation_end": null,
+     "plan": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "compliance": null,
+      "guardrails": [
+       {
+        "decision_method": null,
+        "margin": null,
+        "margin_abs": null,
+        "metric": "d7_retention",
+        "prior": {
+         "mu": 0,
+         "sigma": 5
+        },
+        "sensitivity_methods": []
+       }
+      ],
+      "inference": null,
+      "primary": null,
+      "q": 0.1,
+      "secondaries": [
+       "purchase_rate",
+       "avg_session_duration"
+      ],
+      "view_multiplicity": {
+       "correction": "bonferroni",
+       "q": null
+      }
+     },
+     "start": "2025-01-15T00:00:00",
+     "trigger": null,
+     "unit": "user_id"
+    },
+    "metrics": [
+     {
+      "description": "Did the user purchase within the analysis window?",
+      "entity": "user_id",
+      "fact": "purchase",
+      "filters": [],
+      "margin": null,
+      "margin_abs": null,
+      "name": "purchase_rate",
+      "preferred_direction": "increase",
+      "rollout_cost": null,
+      "type": "conversion",
+      "window_days": 14
+     },
+     {
+      "aggregation": "avg_calendar_day",
+      "description": "Mean session duration (seconds) per user",
+      "entity": "user_id",
+      "fact": "session_end",
+      "filters": [
+       {
+        "op": "equals",
+        "property": "platform",
+        "values": [
+         "web"
+        ]
+       }
+      ],
+      "margin": null,
+      "margin_abs": null,
+      "name": "avg_session_duration",
+      "preferred_direction": "increase",
+      "rollout_cost": null,
+      "type": "mean",
+      "window_days": 7,
+      "winsorization": null
+     },
+     {
+      "description": "User returned at least once during days 7-13 post-exposure",
+      "entity": "user_id",
+      "fact": "page_view",
+      "filters": [],
+      "margin": null,
+      "margin_abs": null,
+      "name": "d7_retention",
+      "preferred_direction": "increase",
+      "rollout_cost": null,
+      "threshold_days": [
+       7,
+       14
+      ],
+      "type": "retention",
+      "window_days": null
+     }
+    ],
+    "observation_mapping": {
+     "recipe_sha256": "dd683588c19c42a94e683831b9d2d85dc038d4d199706bd6452693abfc853cb5",
+     "source_mapping_format": 2
+    }
+   },
+   "source_name": "DefinitionsMomentSource",
+   "study_id": "new_onboarding_v2",
+   "trigger_name": null
+  },
+  "design": {
+   "allocation": null,
+   "control_group": "control",
+   "mechanism": "randomized"
+  },
+  "experiment_id": "new_onboarding_v2",
+  "implementation_refs": [],
+  "metrics": {
+   "avg_session_duration": {
+    "aggregation": "avg_calendar_day",
+    "description": "Mean session duration (seconds) per user",
+    "entity": "user_id",
+    "fact": "session_end",
+    "filters": [
+     {
+      "op": "equals",
+      "property": "platform",
+      "values": [
+       "web"
+      ]
+     }
+    ],
+    "margin": null,
+    "margin_abs": null,
+    "name": "avg_session_duration",
+    "preferred_direction": "increase",
+    "rollout_cost": null,
+    "type": "mean",
+    "window_days": 7,
+    "winsorization": null
+   },
+   "d7_retention": {
+    "description": "User returned at least once during days 7-13 post-exposure",
+    "entity": "user_id",
+    "fact": "page_view",
+    "filters": [],
+    "margin": null,
+    "margin_abs": null,
+    "name": "d7_retention",
+    "preferred_direction": "increase",
+    "rollout_cost": null,
+    "threshold_days": [
+     7,
+     14
+    ],
+    "type": "retention",
+    "window_days": null
+   },
+   "purchase_rate": {
+    "description": "Did the user purchase within the analysis window?",
+    "entity": "user_id",
+    "fact": "purchase",
+    "filters": [],
+    "margin": null,
+    "margin_abs": null,
+    "name": "purchase_rate",
+    "preferred_direction": "increase",
+    "rollout_cost": null,
+    "type": "conversion",
+    "window_days": 14
+   }
+  },
+  "operations": {},
+  "package_version": "0",
+  "registration": {
+   "registration_hash": "2f5e9ca7e5f5b730bc196ad8846bd0c507372671ebe99f071eb5f7d479b72532"
+  },
+  "request_options": {},
+  "schema_version": 1,
+  "scopes": [
+   {
+    "completion_policy": false,
+    "day_domain": [],
+    "grain": "total",
+    "population": "assigned",
+    "segment": [],
+    "through_day": null,
+    "time_basis": "calendar",
+    "view": "run"
+   }
+  ],
+  "source_refs": [
+   {
+    "capabilities": {
+     "assignment_relation": "reduced",
+     "available_covariates": null,
+     "breakouts": [
+      "country"
+     ],
+     "capture": "snapshot",
+     "compliance_axis": "none",
+     "count_grains": [
+      "assignment",
+      "unit"
+     ],
+     "grains": [
+      "asof",
+      "daily",
+      "total"
+     ],
+     "kind": "definitions",
+     "method_fit": "warehouse",
+     "operations": [
+      "allocation_history",
+      "breakout_source",
+      "breakout_sources",
+      "breakout_summaries",
+      "dashboard_group_data",
+      "day_source",
+      "exploratory_source",
+      "export_moments",
+      "factor_summaries",
+      "materialize",
+      "moments_source",
+      "panel_sql",
+      "readout_execution",
+      "readout_snapshot",
+      "sitewide_evidence",
+      "summary_sql",
+      "triggered_counts",
+      "triggered_source",
+      "unit_counts"
+     ],
+     "populations": [
+      "assigned"
+     ],
+     "raw_outcomes": true,
+     "scalar": {
+      "anonymous_metrics": [],
+      "bindings": null,
+      "breakout_evidence": true,
+      "covariate_grains": null,
+      "method_evidence": true,
+      "moments_only": false,
+      "recipe_configs": [],
+      "recipe_fixed": false
+     },
+     "sequential_capture": "asof",
+     "shape": null,
+     "sql_grains": [
+      "total"
+     ],
+     "unit_rows": true
+    },
+    "declaration_version": 1,
+    "expected_digest": "a1c56cd0bc1d7e8e80ebdaf72ed9eda31b2439ac3002ec94ea8a452580cce458",
+    "name": "source",
+    "schema": {},
+    "uri": "definitions://new_onboarding_v2"
+   }
+  ]
+ }
+}

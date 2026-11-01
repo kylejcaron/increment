@@ -8,6 +8,7 @@ import subprocess
 import sys
 import warnings
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -182,6 +183,25 @@ def test_definition_exploratory_metric_runs_with_cell_identity(seeded_defs, seed
     assert {
         verdict.role for verdict in result.decisions.cells if verdict.identity_hash in exploratory
     } == {"exploratory"}
+
+
+@pytest.mark.integration
+def test_saved_definitions_experiment_keeps_its_declaration_and_runs(seeded_defs, seeded_con):
+    reference = json.loads(
+        (Path(__file__).parent / "fixtures" / "definitions_experiment_reference.json").read_text()
+    )
+    saved = Experiment.from_json(json.dumps(reference["experiment"]))
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    try:
+        assert json.loads(experiment.to_json()) == reference["experiment"]
+        assert experiment.hash() == reference["hash"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            assert isinstance(run(saved, resolver), RunResult)
+    finally:
+        cast(Any, resolver).close()
 
 
 @pytest.mark.integration
