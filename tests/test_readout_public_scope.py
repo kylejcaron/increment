@@ -1,4 +1,4 @@
-"""Public Analysis.run readouts keep required-cell failures and completeness."""
+"""Public run readouts keep required-cell failures and completeness."""
 
 import copy
 import pickle
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, AnalysisPlan, CupedCovariate, Method, MetricSpec
+from increment import AnalysisPlan, CupedCovariate, Method, MetricSpec, from_frame, from_moments
 from increment.breakout.estimates import (
     BreakoutEstimate,
     DailyLiftEstimate,
@@ -26,6 +26,13 @@ from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.semantics.design import Randomized
 from increment.tables import readout_table
+from increment.workflows import (
+    capture_sequential,
+    export_moments,
+    health_check,
+    sequential_snapshot,
+)
+from tests.analysis_factory import view_readout
 from tests.readout_journeys import (
     assert_failed_assigned_integrity as check_failed_assigned_integrity,
 )
@@ -54,8 +61,9 @@ def _frame(*, guard_constant=True, drop_guard_treatment=False):
 
 
 def _analysis(frame, *, drop_missing_guard=False, design=None):
-    return Analysis.from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control=None if design is not None else "control",
@@ -91,13 +99,15 @@ def _analysis(frame, *, drop_missing_guard=False, design=None):
 def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
     frame = _frame(guard_constant=False)
     frame["secondary"] = frame["rev"] * 0.8
-    results = _analysis(
-        frame,
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-        ),
-    ).run()
+    results = view_readout(
+        *_analysis(
+            frame,
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+            ),
+        )
+    )
     rendered = repr(results)
     assert "treatment vs control" in rendered
     assert "control identity not retained" not in rendered
@@ -113,7 +123,7 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
 
 
 def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_row():
-    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    results = view_readout(*_analysis(_frame(guard_constant=False)), metrics=["rev"])
     html = readout_table(results).gt().as_raw_html()
     subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
     assert "<ul " in subtitle
@@ -132,7 +142,7 @@ def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_r
 def test_row_only_table_discloses_unknown_scope_and_integrity():
     from increment.tables import estimates_to_readout
 
-    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    results = view_readout(*_analysis(_frame(guard_constant=False)), metrics=["rev"])
     # A received row carries no collection evidence; the table must not look vouched for.
     html = readout_table(estimates_to_readout([results[0]])).gt().as_raw_html()
     subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
@@ -144,7 +154,7 @@ def test_row_only_table_discloses_unknown_scope_and_integrity():
 def test_readout_table_escapes_user_text_in_qualification_list():
     frame = _frame(guard_constant=False)
     frame["arm"] = frame["arm"].replace("treatment", "<img src=x>")
-    results = _analysis(frame).run(metrics=["rev"])
+    results = view_readout(*_analysis(frame), metrics=["rev"])
     html = readout_table(results).gt().as_raw_html()
     subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
 
@@ -191,8 +201,9 @@ def test_absolute_margin_repr_matches_exported_additive_interpretation():
                     "latency": value,
                 }
             )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(records),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -205,8 +216,8 @@ def test_absolute_margin_repr_matches_exported_additive_interpretation():
             guardrails=[ExperimentMetric(metric="latency", margin_abs=0.5)],
         ),
     )
-    with analysis:
-        results = analysis.run()
+    with resolver:
+        results = view_readout(experiment, resolver)
 
     latency = next(row for row in estimates_to_readout(results) if row["metric"] == "latency")
     rendered = repr(results)
@@ -433,7 +444,7 @@ def test_filtering_all_daily_means_keeps_arm_mean_identity():
 def test_row_only_readout_table_retains_roster_and_family_qualifications():
     from increment.tables import estimates_to_readout
 
-    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    results = view_readout(*_analysis(_frame(guard_constant=False)), metrics=["rev"])
     rows = estimates_to_readout(results)
     direct_html = readout_table(results).gt().as_raw_html()
     row_only_html = readout_table(rows).gt().as_raw_html()
@@ -473,8 +484,9 @@ def test_interpretation_labels_distinct_source_snapshots():
 def test_failure_passthrough_is_escaped_in_complete_html_table():
     payload = "<img src=x onerror=alert(1)>"
     frame = _frame(guard_constant=False).rename(columns={"guard": payload})
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -489,19 +501,19 @@ def test_failure_passthrough_is_escaped_in_complete_html_table():
         ],
         plan=AnalysisPlan(primary="rev", guardrails=[payload]),
     )
-    with analysis:
-        results = analysis.run()
-    html = readout_table(cast(Any, results)).gt().as_raw_html()
+    with resolver:
+        results = view_readout(experiment, resolver)
+    html = readout_table(results).gt().as_raw_html()
     assert "<img" not in html
     assert "&lt;img src=x onerror=alert(1)&gt;" in html
 
 
 def test_saved_results_decode_when_only_the_boundary_module_is_imported():
-    analysis = _analysis(_frame())
+    experiment, resolver = _analysis(_frame())
     try:
-        payload = analysis.run(metrics=["rev"]).model_dump_json()
+        payload = view_readout(experiment, resolver, metrics=["rev"]).model_dump_json()
     finally:
-        analysis.close()
+        resolver.close()
 
     code = (
         "import sys; "
@@ -515,8 +527,9 @@ def test_saved_results_decode_when_only_the_boundary_module_is_imported():
 
 
 def test_ordinary_run_keeps_each_mixed_family_row_provenance():
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         _frame(guard_constant=False),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -526,7 +539,7 @@ def test_ordinary_run_keeps_each_mixed_family_row_provenance():
         ],
         plan=AnalysisPlan(primary="rev", secondaries=["guard"]),
     )
-    results = _readouts(analysis.run())
+    results = _readouts(view_readout(experiment, resolver))
     primary = [row for row in results if row.metric == "rev"]
     secondary = [row for row in results if row.metric == "guard"]
     assert primary and secondary
@@ -571,14 +584,17 @@ def test_analysis_run_surfaces_assignment_integrity_without_changing_rows(
             allocation={"control": 0.5, "treatment": 0.5},
             allocation_scheme=design_scheme,
         )
-        return Analysis.from_unit_summary(
-            frame,
-            unit="unit",
-            group="arm",
-            design=design,
-            metrics=[MetricSpec(name="rev", type="mean", preferred_direction="increase")],
-            plan=AnalysisPlan(primary="rev"),
-        ).run()
+        return view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                design=design,
+                metrics=[MetricSpec(name="rev", type="mean", preferred_direction="increase")],
+                plan=AnalysisPlan(primary="rev"),
+            )
+        )
 
     results = run(scheme)
     baseline = run(None)
@@ -613,15 +629,18 @@ def test_observational_run_marks_assignment_integrity_not_applicable():
         ]
     )
     results = _readouts(
-        Analysis.from_unit_summary(
-            frame,
-            unit="unit",
-            group="arm",
-            design=Observational(
-                control_group="control", adjustment=AdjustmentSet(covariates=("x",))
-            ),
-            metrics=[MetricSpec(name="rev", type="mean")],
-        ).run()
+        view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit",
+                group="arm",
+                design=Observational(
+                    control_group="control", adjustment=AdjustmentSet(covariates=("x",))
+                ),
+                metrics=[MetricSpec(name="rev", type="mean")],
+            )
+        )
     )
 
     assert results.metadata is not None
@@ -677,8 +696,9 @@ def test_informative_prior_keeps_sampling_family_evidence_prior_free():
         for group in ("control", "treatment")
         for index, value in enumerate([9.0, 11.0] * 50)
     ]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -692,21 +712,24 @@ def test_informative_prior_keeps_sampling_family_evidence_prior_free():
         ],
         plan=AnalysisPlan(primary="y"),
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert isinstance(results, LiftEstimates)
     assert_prior_free_sampling_family(results)
 
 
 def test_unit_panel_run_checks_declared_assignment_counts():
     frame = _imbalanced_assignment_frame()
-    results = Analysis.from_unit_panel(
-        frame,
-        unit="unit",
-        group="arm",
-        date="ds",
-        design=_independent_design(),
-        metrics=[MetricSpec(name="rev", type="mean")],
-    ).run()
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="ds",
+            design=_independent_design(),
+            metrics=[MetricSpec(name="rev", type="mean")],
+        )
+    )
 
     _assert_failed_assigned_integrity(results)
 
@@ -718,40 +741,45 @@ def test_moments_replay_run_checks_declared_assignment_counts(tmp_path):
     from increment.semantics.design import Randomized
 
     design = _independent_design(Randomized)
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         _imbalanced_assignment_frame(),
+        shape="summary",
         unit="unit",
         group="arm",
         design=design,
         metrics=[MetricSpec(name="rev", type="mean")],
     )
     path = tmp_path / "assignment-counts.parquet"
-    summary.export(path)
-    replay = Analysis.from_moments(
+    export_moments(summary_experiment, summary_resolver, path)
+    replay_experiment, replay_resolver = from_moments(
         pq.read_table(path).to_pylist(),
         metrics=[MetricSpec(name="rev", type="mean")],
         design=design,
     )
-    health = replay.health_check()
+    health = health_check(replay_experiment, replay_resolver)
     assigned = next(check for check in health.checks if check.check == "assigned_allocation")
     assert assigned.availability == "available"
     assert assigned.conclusion == "warning"
     assert assigned.srm is not None and assigned.srm.is_srm
 
-    _assert_failed_assigned_integrity(replay.run())
+    _assert_failed_assigned_integrity(view_readout(replay_experiment, replay_resolver))
 
 
 def test_encouragement_run_checks_assignment_not_uptake_counts():
     from increment.semantics.design import Encouragement
 
     frame = _imbalanced_assignment_frame()
-    results = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        design=_independent_design(Encouragement),
-        metrics=[MetricSpec(name="rev", type="mean")],
-    ).run(estimands=["itt", "compliance"])
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=_independent_design(Encouragement),
+            metrics=[MetricSpec(name="rev", type="mean")],
+        ),
+        estimands=["itt", "compliance"],
+    )
 
     _assert_failed_assigned_integrity(results)
 
@@ -768,18 +796,21 @@ def test_unit_summary_preserves_literal_none_arm_but_excludes_unassigned_roster(
         {"unit": f"unassigned-{index}", "arm": None, "rev": float(index + 1)} for index in range(2)
     )
     results = _readouts(
-        Analysis.from_unit_summary(
-            pd.DataFrame(rows),
-            unit="unit",
-            group="arm",
-            design=Randomized(
-                control_group="control",
-                allocation={"control": 0.3, "treatment": 0.3, "None": 0.4},
-                allocation_scheme="blocked",
-            ),
-            on_unassigned="exclude",
-            metrics=[MetricSpec(name="rev", type="mean")],
-        ).run()
+        view_readout(
+            *from_frame(
+                pd.DataFrame(rows),
+                shape="summary",
+                unit="unit",
+                group="arm",
+                design=Randomized(
+                    control_group="control",
+                    allocation={"control": 0.3, "treatment": 0.3, "None": 0.4},
+                    allocation_scheme="blocked",
+                ),
+                on_unassigned="exclude",
+                metrics=[MetricSpec(name="rev", type="mean")],
+            )
+        )
     )
 
     assert {row.group_id for row in _lift_rows(results)} == {"treatment", "None"}
@@ -806,8 +837,9 @@ def _registered_integrity_analysis(*, n_control=900, n_treatment=100):
         for row in unit_rows(seed=17, n=n_control)
         if row["variant"] == "control" or int(row["user_id"].split("-")[1]) < n_treatment
     ]
-    return Analysis.from_unit_summary(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[MetricSpec(name="purchase", type="conversion")],
@@ -823,7 +855,7 @@ def _registered_integrity_analysis(*, n_control=900, n_treatment=100):
 
 
 def test_registered_sequential_run_checks_source_assigned_counts():
-    results = _registered_integrity_analysis().run()
+    results = view_readout(*_registered_integrity_analysis())
 
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
     assert integrity.status == "failed"
@@ -848,8 +880,9 @@ def test_registered_sequential_capture_retains_unassigned_audit_counts():
             "enrollment": rows[0]["enrollment"],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="user_id",
         group="variant",
         design=Randomized(
@@ -864,10 +897,11 @@ def test_registered_sequential_capture_retains_unassigned_audit_counts():
         exposure_date="enrollment",
     )
 
-    snapshot = analysis.sequential_snapshot()
+    snapshot = sequential_snapshot(experiment, resolver)
+    assert snapshot.assignment_counts is not None
     assert snapshot.assignment_counts[UNASSIGNED_LABEL] == 1
     assert UNASSIGNED_LABEL not in {cell.group_id for cell in snapshot.registration.roster}
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     metadata = results.metadata
     assert metadata is not None
     (integrity,) = next(iter(metadata.scope.by_source.values())).integrity
@@ -882,10 +916,12 @@ def test_registered_sequential_run_marks_legacy_missing_source_counts(tmp_path):
     from tests.binary_sequential_cases import unit_rows
 
     rows = unit_rows(seed=17, n=200)
-    analysis = _registered_integrity_analysis(n_control=200, n_treatment=200)
-    snapshot = analysis.sequential_snapshot()
+    analysis_experiment, analysis_resolver = _registered_integrity_analysis(
+        n_control=200, n_treatment=200
+    )
+    snapshot = sequential_snapshot(analysis_experiment, analysis_resolver)
     path = tmp_path / "registered-checkpoint.parquet"
-    analysis.export(path)
+    export_moments(analysis_experiment, analysis_resolver, path)
     payload = pq.read_table(path).to_pylist()
     legacy_snapshot = capture_sequential_snapshot(
         snapshot.registration,
@@ -905,7 +941,7 @@ def test_registered_sequential_run_marks_legacy_missing_source_counts(tmp_path):
     )
     payload[0]["sequential_snapshot"] = legacy_snapshot.model_dump_json()
     payload[0].pop(ASSIGNMENT_COUNTS_FIELD, None)
-    replay = Analysis.from_moments(
+    replay_experiment, replay_resolver = from_moments(
         payload,
         metrics=[MetricSpec(name="purchase", type="conversion")],
         design=Randomized(
@@ -914,7 +950,7 @@ def test_registered_sequential_run_marks_legacy_missing_source_counts(tmp_path):
             allocation_scheme="independent",
         ),
     )
-    results = replay.run()
+    results = view_readout(replay_experiment, replay_resolver)
 
     assert results.metadata is not None
     assert results.metadata.scope is not None
@@ -929,7 +965,9 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
 
     import ibis
 
+    from increment import Scope, run
     from increment.readouts import _sequential_scope
+    from tests.analysis_factory import lift_rows
     from tests.test_sequential_public_sources import _native_fixture
 
     query_calls: list[str] = []
@@ -954,8 +992,8 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
 
     monkeypatch.setattr(ibis.duckdb, "connect", guarded_connect)
 
-    _connection, _definitions, analysis = _native_fixture("bernoulli", triggered=True)
-    snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+    _connection, _definitions, (experiment, resolver) = _native_fixture("bernoulli", triggered=True)
+    snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
     expected_counts = snapshot.assignment_counts
     assert expected_counts is not None
     integrity_calls = []
@@ -966,20 +1004,27 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
         return original_integrity(*args, **kwargs)
 
     monkeypatch.setattr(_sequential_scope, "assignment_integrity", counted_integrity)
+    assigned_scope = Scope(view="run", grain="total")
+    triggered_scope = Scope(view="run", grain="total", population="triggered")
     armed = True
     try:
-        results = analysis.run()
+        shared = run(experiment.with_views(assigned_scope, triggered_scope), resolver)
     finally:
         armed = False
-        analysis.close()
+        resolver.close()
 
+    results = lift_rows(shared.readout(assigned_scope))
+    assert results.metadata is not None
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
     assert query_calls == []
-    assert len(integrity_calls) == 1
-    populations = {row.analysis_population for row in results}
-    assert populations == {"assigned", "triggered"}
-    assigned = next(row for row in results if row.analysis_population == "assigned")
-    triggered = next(row for row in results if row.analysis_population == "triggered")
+    # Each population's view checks integrity once, from the captured counts.
+    assert integrity_calls == [expected_counts, expected_counts]
+    (assigned,) = results
+    (triggered,) = lift_rows(shared.readout(triggered_scope))
+    assert (assigned.analysis_population, triggered.analysis_population) == (
+        "assigned",
+        "triggered",
+    )
     assert (triggered.estimand, triggered.value_scale, triggered.alternative) == (
         assigned.estimand,
         assigned.value_scale,
@@ -995,7 +1040,7 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
 def test_sequential_narrowed_view_keeps_the_registered_family_membership():
     from tests.binary_sequential_cases import ROUTES, frame_analysis, unit_rows
 
-    analysis = frame_analysis(
+    experiment, resolver = frame_analysis(
         unit_rows(seed=29, n=180, secondaries=2),
         ROUTES["always_valid"].inference,
         secondaries=2,
@@ -1012,8 +1057,8 @@ def test_sequential_narrowed_view_keeps_the_registered_family_membership():
             for family in results.metadata.scope.families
         }
 
-    full = analysis.run()
-    narrowed = analysis.run(metrics=["purchase"], estimands=["itt"])
+    full = view_readout(experiment, resolver)
+    narrowed = view_readout(experiment, resolver, metrics=["purchase"], estimands=["itt"])
     assert {row.metric for row in narrowed} == {"purchase"}
     assert memberships(narrowed) == memberships(full)
     assert {member[0] for members in memberships(narrowed).values() for member in members} >= {
@@ -1025,7 +1070,7 @@ def test_sequential_narrowed_view_keeps_the_registered_family_membership():
 
 def test_constant_guardrail_failure_survives_collection_views_and_saved_results():
     with pytest.warns(IncrementWarning) as captured:
-        results = _analysis(_frame()).run()
+        results = view_readout(*_analysis(_frame()))
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     context = warning_context(captured, "readouts.run.cell_refused")
     assert (context["metric_name"], context["group_id"], context["method_name"]) == (
@@ -1148,7 +1193,7 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
 
 
 def test_scoped_repr_keeps_relative_unavailability_reason():
-    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    results = view_readout(*_analysis(_frame(guard_constant=False)), metrics=["rev"])
     row = results[0].model_copy(
         update={"lift": None, "relative_unavailable_reason": "zero_relative_variance"}
     )
@@ -1208,12 +1253,12 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     import pyarrow.parquet as pq
 
     with pytest.warns(IncrementWarning) as captured:
-        analysis = _analysis(
+        analysis_experiment, analysis_resolver = _analysis(
             _frame(guard_constant=False, drop_guard_treatment=True), drop_missing_guard=True
         )
     assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
     assert warning_context(captured, "frame.validation.metric_missing_drop")["name"] == "guard"
-    results = analysis.run()
+    results = view_readout(analysis_experiment, analysis_resolver)
     (failed,) = [row for row in results if row.failure_code is not None]
     assert failed.metric == "guard"
     assert failed.failure_code == "readout.cell.missing_metric_observations"
@@ -1230,7 +1275,7 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert "unavailable guard:" in failed_repr.lower()
     failed_table = readout_table(results).gt().as_raw_html()
     assert "guard" in failed_table
-    corrected = _analysis(_frame(guard_constant=False)).run()
+    corrected = view_readout(*_analysis(_frame(guard_constant=False)))
     assert corrected.metadata.scope.decision_complete("assigned") is True
     assert "guard" in repr(corrected)
     corrected_table = readout_table(corrected).gt().as_raw_html()
@@ -1238,13 +1283,13 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert failed.lift is None
 
     path = tmp_path / "partial-required-cell.parquet"
-    analysis.export(path)
-    replay = Analysis.from_moments(
+    export_moments(analysis_experiment, analysis_resolver, path)
+    replay_experiment, replay_resolver = from_moments(
         pq.read_table(path).to_pylist(),
         metrics=[MetricSpec(name="rev", type="mean"), MetricSpec(name="guard", type="mean")],
         control="control",
     )
-    restored = _readouts(replay.run())
+    restored = _readouts(view_readout(replay_experiment, replay_resolver))
     restored_rows = _lift_rows(restored)
     assert restored.metadata is not None
     (restored_failed,) = [row for row in restored_rows if row.failure_code is not None]
@@ -1268,7 +1313,7 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
 
 
 def test_complete_readout_reports_complete_scope():
-    results = _analysis(_frame(guard_constant=False)).run()
+    results = view_readout(*_analysis(_frame(guard_constant=False)))
     assert [row.failure_code for row in results] == [None, None]
     assert results.metadata.scope.decision_complete("assigned") is True
     assert all(row.decision_scope_complete is True for row in results)
@@ -1276,7 +1321,7 @@ def test_complete_readout_reports_complete_scope():
 
 @pytest.mark.parametrize("operation", ["metadata_set", "metadata_delete"])
 def test_scoped_metadata_cannot_be_rebound_or_removed(operation):
-    results = _readouts(_analysis(_frame(guard_constant=False)).run())
+    results = _readouts(view_readout(*_analysis(_frame(guard_constant=False))))
     metadata = results.metadata
     assert metadata is not None
     with pytest.raises(InvalidRequestError) as raised:
@@ -1298,7 +1343,7 @@ def test_scoped_metadata_cannot_be_rebound_or_removed(operation):
 @pytest.mark.parametrize("operation", ["deepcopy", "pickle"])
 def test_collection_copy_protocols_preserve_failed_scope_and_provenance(operation):
     with pytest.warns(IncrementWarning) as captured:
-        results = _analysis(_frame()).run()
+        results = view_readout(*_analysis(_frame()))
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     copied = (
         copy.deepcopy(results) if operation == "deepcopy" else pickle.loads(pickle.dumps(results))
@@ -1311,7 +1356,7 @@ def test_collection_copy_protocols_preserve_failed_scope_and_provenance(operatio
 
 
 def test_concatenating_a_slice_with_its_complement_restores_the_whole_scope():
-    results = _analysis(_frame(guard_constant=False)).run()
+    results = view_readout(*_analysis(_frame(guard_constant=False)))
     left = results.filter(lambda row: row.metric == "rev")
     right = results.filter(lambda row: row.metric == "guard")
     joined = left.concat(right)
@@ -1322,7 +1367,7 @@ def test_concatenating_a_slice_with_its_complement_restores_the_whole_scope():
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 def test_frames_carry_failure_and_scope_columns_on_every_backend(backend):
     with pytest.warns(IncrementWarning) as captured:
-        frame = _analysis(_frame()).run().to_frame(backend=backend)
+        frame = view_readout(*_analysis(_frame())).to_frame(backend=backend)
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     wrapped = nw.from_native(frame, eager_only=True)
     assert {"failure_code", "decision_scope_complete", "view_partial"} <= set(wrapped.columns)
@@ -1333,7 +1378,7 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
     from increment.tables import estimates_to_readout, readout_table
 
     with pytest.warns(IncrementWarning) as captured:
-        results = _analysis(_frame()).run()
+        results = view_readout(*_analysis(_frame()))
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     full_rows = estimates_to_readout(results)
     failed_row = next(row for row in full_rows if row["failure_code"] is not None)
@@ -1353,7 +1398,7 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
 
 def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     pytest.importorskip("coeftable")
-    from increment import from_frame, run
+    from increment import run
     from increment.tables import estimates_to_readout, readout_table
     from tests.test_tables import _as_latex, _latex_text
 
@@ -1427,14 +1472,17 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
 
 
 def test_real_assignment_integrity_failure_still_says_failed():
-    results = Analysis.from_unit_panel(
-        _imbalanced_assignment_frame(),
-        unit="unit",
-        group="arm",
-        date="ds",
-        design=_independent_design(),
-        metrics=[MetricSpec(name="rev", type="mean")],
-    ).run()
+    results = view_readout(
+        *from_frame(
+            _imbalanced_assignment_frame(),
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="ds",
+            design=_independent_design(),
+            metrics=[MetricSpec(name="rev", type="mean")],
+        )
+    )
 
     rendered = repr(results)
     assert "Integrity: failed" in rendered
@@ -1448,7 +1496,7 @@ def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail
     frame = _frame(guard_constant=False)
     frame["rev"] = 1.0
     with pytest.warns(IncrementWarning) as captured:
-        results = _analysis(frame).run()
+        results = view_readout(*_analysis(frame))
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     (failed,) = [row for row in results if row.failure_code is not None]
     assert (failed.metric, failed.failure_context["reason"]) == ("rev", "zero_variance")
@@ -1497,8 +1545,9 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
                 }
             )
     with pytest.warns(IncrementWarning) as captured:
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pd.DataFrame(frame_rows),
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
@@ -1517,7 +1566,7 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
             plan=AnalysisPlan(primary="primary", secondaries=["secondary"], q=0.2),
         )
     assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
-    results = _readouts(analysis.run())
+    results = _readouts(view_readout(experiment, resolver))
     rows = _lift_rows(results)
     secondary_rows = [row for row in rows if row.metric == "secondary"]
     decision_rows = [row for row in secondary_rows if row.method_role == "decision"]
@@ -1600,8 +1649,9 @@ def test_sensitivity_survives_when_every_decision_method_fails():
             {"unit": f"{group}{i}", "arm": group, "rev": float(y[i]), "x": float(x[i])}
             for i in range(n)
         )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -1617,7 +1667,7 @@ def test_sensitivity_survives_when_every_decision_method_fails():
         ],
     )
     with pytest.warns(IncrementWarning) as captured:
-        results = _readouts(analysis.run())
+        results = _readouts(view_readout(experiment, resolver))
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     rows = _lift_rows(results)
     (sensitivity,) = [row for row in rows if row.method_role == "sensitivity"]
@@ -1644,10 +1694,9 @@ def test_every_cell_failing_remains_an_explicit_refusal():
     frame["rev"] = 1.0
     with pytest.warns(IncrementWarning) as captured:
         with pytest.raises(UnsupportedRequestError) as raised:
-            _analysis(frame).run()
+            view_readout(*_analysis(frame))
     assert warning_codes(captured) == ["readouts.run.cell_refused", "readouts.run.cell_refused"]
     assert raised.value.code == "readout.estimate_lift_every"
-    from typing import Any
 
     from pydantic import TypeAdapter
 
