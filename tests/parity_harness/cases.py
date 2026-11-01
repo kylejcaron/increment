@@ -1203,9 +1203,10 @@ def _dashboard_binding(bound: Bound) -> Bound:
 
 
 def _dashboard_group_data_case() -> ParityCase:
-    from increment.dashboard import prepare_dashboard
-
     def probe(path: str, bound: Bound) -> None:
+        # Imported per probe: building the case list must not need the dashboard extra.
+        from increment.dashboard import prepare_dashboard
+
         if path != "from_definitions":
             # Frame and moments sources carry no experiment definition and an adopted artifact
             # records no primary metric, so the dashboard refuses them before any read.
@@ -1303,8 +1304,6 @@ def _breakout_case(*, boolean: bool = False) -> ParityCase:
 
 
 def _dashboard_breakout_reads_case() -> ParityCase:
-    from increment.dashboard import load_explore, prepare_dashboard
-
     def outcome(load: Callable[[], Any], *, decisions_only: bool = False) -> Any:
         """A read's refusal code, or its rows keyed as parity compares them. Explore serves
         segment rows of the decision method only."""
@@ -1319,6 +1318,9 @@ def _dashboard_breakout_reads_case() -> ParityCase:
         )
 
     def probe(path: str, bound: Bound) -> None:
+        # Imported per probe: building the case list must not need the dashboard extra.
+        from increment.dashboard import prepare_dashboard
+
         # Frame and moments sources carry no experiment definition and an adopted artifact
         # records no primary metric, so the dashboard refuses them before any read.
         if path != "from_definitions":
@@ -1333,6 +1335,8 @@ def _dashboard_breakout_reads_case() -> ParityCase:
             dashboard[1].close()
 
     def _assert_breakout_reads_match(dashboard: Bound) -> None:
+        from increment.dashboard import load_explore, prepare_dashboard
+
         experiment = dashboard[0]
         snapshot = prepare_dashboard(*dashboard, config=_dashboard_config())
         (declared,) = workflows.experiment_definition(*dashboard).breakouts
