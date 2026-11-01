@@ -3,10 +3,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from increment import Scope, from_frame, from_switchback_frame
 from increment._evidence_dispatch import ContrastReadoutRequest
 from increment.analysis import Analysis
+from increment.artifacts import publish_unit_day_artifact
 from increment.decision import ContrastDecisionProcedure
 from increment.errors import CapabilityError, InvalidRequestError
+from increment.estimators import sitewide
+from increment.evidence import BreakoutIdentity
+from increment.query import summary_sql
 from increment.semantics.assignment import (
     IndependentBernoulliOrder,
     SharedScheduleOrder,
@@ -22,6 +27,14 @@ from increment.semantics.models import (
 )
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.switchback import from_switchback_panel
+from increment.workflows import (
+    assignment_diagnostic,
+    capture_sequential,
+    experiment_definition,
+    materialize,
+    srm,
+)
+from tests.analysis_factory import bound_analysis, view_readout
 from tests.sequential_cases import registered_spec
 
 
@@ -30,6 +43,15 @@ def _assignment() -> SwitchbackAssignment:
         sequence=IndependentBernoulliOrder(probability_ct=0.5),
         window=SwitchbackWindow(washout_steps=1, observation_steps=1),
     )
+
+
+_DAY_AXIS_AND_BREAKOUT_SCOPES = {
+    "run_daily": Scope(view="daily", grain="daily", values=True),
+    "run_daily_lift": Scope(view="daily", grain="daily"),
+    "run_asof": Scope(view="asof", grain="asof", values=True),
+    "run_asof_lift": Scope(view="asof", grain="asof"),
+    "run_breakout": Scope(view="breakout", grain="total"),
+}
 
 
 def _frame() -> pd.DataFrame:
@@ -137,8 +159,9 @@ def test_analysis_run_matches_arm_configs_by_metric_name():
             "outcome": [1.0, 2.0, 3.0, 4.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         metrics=[MetricSpec(name="outcome", type="mean", decision_method=Method(name="declared"))],
@@ -147,13 +170,13 @@ def test_analysis_run_matches_arm_configs_by_metric_name():
     variant = synthesise_metric(
         MetricSpec(name="outcome", type="mean", winsorization={"lower_value": 0.0})
     )
-    results = analysis.run(metrics=[variant])
+    results = view_readout(experiment, resolver, metrics=[variant])
     assert results and results[0].metric == "outcome"
     assert results[0].method == "declared"
 
 
 def test_analysis_switchback_run_returns_one_result_per_metric_and_diagnostic():
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         _frame(),
         unit="unit",
         cycle="cycle",
@@ -167,10 +190,10 @@ def test_analysis_switchback_run_returns_one_result_per_metric_and_diagnostic():
         assignment=_assignment(),
         contrast_references={"value": UnitCycleTApproximation()},
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert len(results) == 1
     assert results[0].metric == "value"
-    diagnostic = analysis.assignment_diagnostic()
+    diagnostic = assignment_diagnostic(experiment, resolver)
     assert diagnostic.n_units == 2
     assert diagnostic.observation_rows > 0
 
@@ -243,7 +266,7 @@ def test_switchback_store_projects_typed_uncertainty_into_history(tmp_path):
     ["run_daily", "run_daily_lift", "run_asof", "run_asof_lift", "run_breakout", "srm", "sitewide"],
 )
 def test_switchback_refuses_parallel_readouts_with_coded_capability(method: str):
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         _frame(),
         unit="unit",
         cycle="cycle",
@@ -259,14 +282,16 @@ def test_switchback_refuses_parallel_readouts_with_coded_capability(method: str)
     )
     with pytest.raises(CapabilityError) as exc:
         if method == "sitewide":
-            analysis.sitewide("value")
+            sitewide(experiment, resolver, "value")
+        elif method == "srm":
+            srm(experiment, resolver)
         else:
-            getattr(analysis, method)()
+            view_readout(experiment, resolver, _DAY_AXIS_AND_BREAKOUT_SCOPES[method])
     assert exc.value.code == "facade.analysis.contrast_unavailable"
 
 
 def test_contrast_results_convert_to_readout_rows():
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         _frame(),
         unit="unit",
         cycle="cycle",
@@ -282,7 +307,7 @@ def test_contrast_results_convert_to_readout_rows():
     )
     from increment.tables import estimates_to_readout
 
-    row = estimates_to_readout(analysis.run())[0]
+    row = estimates_to_readout(view_readout(experiment, resolver))[0]
     assert row["value_scale"] == "absolute"
     assert row["estimand"] == "retained_window_total_difference"
     assert row["n_units"] == 2
@@ -295,7 +320,7 @@ def test_contrast_results_convert_to_readout_rows():
 def test_scoped_contrast_collection_default_output_keeps_qualifications():
     import narwhals as nw
 
-    results = _switchback_analysis().run()
+    results = view_readout(*_switchback_analysis())
     rendered = repr(results)
     assert "SRM not run for this assignment design." in rendered
     for backend in ("pandas", "polars", "pyarrow"):
@@ -336,7 +361,7 @@ def test_shared_schedule_contrast_results_convert_to_readout_rows_with_block_cou
                             "value": value,
                         }
                     )
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -354,7 +379,7 @@ def test_shared_schedule_contrast_results_convert_to_readout_rows_with_block_cou
     )
     from increment.tables import estimates_to_readout
 
-    row = estimates_to_readout(analysis.run())[0]
+    row = estimates_to_readout(view_readout(experiment, resolver))[0]
     assert row["n_units"] == 3
     assert row["n_blocks"] == 2
     assert (row["ct_cycles"], row["tc_cycles"]) == (1, 1)
@@ -390,7 +415,7 @@ def test_conversion_readout_uses_retained_window_estimand(shared, carryover_orde
                             "converted": converted,
                         }
                     )
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         pd.DataFrame(rows),
         unit="unit",
         cycle="cycle",
@@ -411,7 +436,7 @@ def test_conversion_readout_uses_retained_window_estimand(shared, carryover_orde
             ),
         ),
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     result = contrast_rows(results)[0]
     assert result.estimate.value == pytest.approx(0.5)
     assert result.aggregation == "any"
@@ -436,7 +461,7 @@ def test_switchback_preferred_direction_reaches_result_and_readout():
     from increment.frame import MetricSpec
     from increment.tables import estimates_to_readout
 
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         _frame(),
         unit="unit",
         cycle="cycle",
@@ -457,7 +482,7 @@ def test_switchback_preferred_direction_reaches_result_and_readout():
         assignment=_assignment(),
         contrast_references={"value": UnitCycleTApproximation()},
     )
-    result = analysis.run()[0]
+    result = view_readout(experiment, resolver)[0]
     row = estimates_to_readout([result])[0]
     assert result.preferred_direction == "decrease"
     assert row["preferred_direction"] == "decrease"
@@ -545,7 +570,7 @@ def test_switchback_plan_multiplicity_refusals_precede_frame_access(monkeypatch,
 
     monkeypatch.setattr("increment.switchback.nw.from_native", fail)
     with pytest.raises(CapabilityError) as exc:
-        Analysis.from_switchback_panel(
+        from_switchback_frame(
             object(),  # ty: ignore[invalid-argument-type]
             unit="unit",
             cycle="cycle",
@@ -567,7 +592,7 @@ def test_switchback_plan_multiplicity_refusals_precede_frame_access(monkeypatch,
 def test_switchback_default_q_survives_plan_round_trip():
     plan = AnalysisPlan.model_validate(AnalysisPlan(primary="value").model_dump())
 
-    analysis = Analysis.from_switchback_panel(
+    experiment, resolver = from_switchback_frame(
         _frame(),
         unit="unit",
         cycle="cycle",
@@ -583,7 +608,7 @@ def test_switchback_default_q_survives_plan_round_trip():
         plan=plan,
     )
 
-    assert len(analysis.run()) == 1
+    assert len(view_readout(experiment, resolver)) == 1
 
 
 def _switchback_analysis(
@@ -592,11 +617,9 @@ def _switchback_analysis(
     probability_ct=0.5,
     value_shift=0.0,
     aggregation: str = "mean",
-    workflow: bool = False,
 ):
     import pandas as pd
 
-    from increment.analysis import Analysis
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,
@@ -634,22 +657,7 @@ def _switchback_analysis(
         sequence=IndependentBernoulliOrder(probability_ct=probability_ct),
         window=SwitchbackWindow(washout_steps=1, observation_steps=1),
     )
-    if workflow:
-        from increment import from_switchback_frame
-
-        return from_switchback_frame(
-            frame,
-            unit="unit",
-            cycle="cycle",
-            period="period",
-            step="step",
-            group="group",
-            metrics={"value": aggregation},
-            identification=identification,
-            contrast_references=contrast_references,
-            assignment=assignment,
-        )
-    return Analysis.from_switchback_panel(
+    return from_switchback_frame(
         frame,
         unit="unit",
         cycle="cycle",
@@ -664,15 +672,15 @@ def _switchback_analysis(
 
 
 def test_snapshot_identity_distinguishes_switchback_construction_inputs():
-    first = _switchback_analysis(probability_ct=0.5).run()
-    changed = _switchback_analysis(probability_ct=0.6).run()
+    first = view_readout(*_switchback_analysis(probability_ct=0.5))
+    changed = view_readout(*_switchback_analysis(probability_ct=0.6))
 
     assert first[0].source_snapshot_id != changed[0].source_snapshot_id
 
 
 def test_snapshot_identity_excludes_float_only_contrast_statistics():
-    first = _switchback_analysis().run()
-    changed = _switchback_analysis(value_shift=0.25).run()
+    first = view_readout(*_switchback_analysis())
+    changed = view_readout(*_switchback_analysis(value_shift=0.25))
 
     assert first[0].estimate.value != changed[0].estimate.value
     assert first[0].source_snapshot_id == changed[0].source_snapshot_id
@@ -682,7 +690,7 @@ def test_sum_contrast_saved_collection_replay_preserves_identity_and_consumers()
     from increment.estimation.readout_types import ReadoutResults
     from increment.tables import estimates_to_readout
 
-    results = _switchback_analysis().run()
+    results = view_readout(*_switchback_analysis())
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
 
     assert restored.metadata == results.metadata
@@ -698,7 +706,7 @@ def test_non_partial_contrast_collection_requires_every_scoped_row():
     from increment.errors import WireFormatError
     from increment.estimation.readout_types import ReadoutResults
 
-    results = _switchback_analysis().run()
+    results = view_readout(*_switchback_analysis())
     payload = json.loads(results.model_dump_json())
     payload["rows"] = []
     with pytest.raises(WireFormatError) as raised:
@@ -710,7 +718,7 @@ def test_non_partial_contrast_collection_requires_every_scoped_row():
 def test_contrast_concat_refuses_unknown_or_conflicting_provenance():
     from increment.estimation.contrast_results import ContrastResults
 
-    results = _switchback_analysis().run()
+    results = view_readout(*_switchback_analysis())
     with pytest.raises(InvalidRequestError) as raised:
         results.concat(ContrastResults())
     assert raised.value.code == "readout.collection.concat_metadata_mismatch"
@@ -738,7 +746,7 @@ def test_cross_snapshot_contrast_concat_preserves_coverage_and_refuses_sequentia
     )
     from increment.tables import estimates_to_readout
 
-    row = _switchback_analysis().run()[0]
+    row = view_readout(*_switchback_analysis())[0]
 
     def scoped(source_id, snapshot_id, sequential_snapshot=None, source="switchback"):
         source_row = row.model_copy(update={"source_snapshot_id": source_id})
@@ -821,7 +829,7 @@ def test_readout_wire_rejects_duplicate_object_keys_with_portable_refusal():
     from increment.errors import WireFormatError
     from increment.estimation.readout_types import ReadoutResults
 
-    results = _switchback_analysis().run()
+    results = view_readout(*_switchback_analysis())
     payload = results.model_dump_json().replace(
         '"kind": "increment.readout"',
         '"kind": "increment.readout", "kind": "increment.readout"',
@@ -845,10 +853,10 @@ def test_readout_wire_requires_snapshot_for_checkpoint_bearing_results():
     from increment.estimation.readout_types import ReadoutResults
     from tests.test_sequential_public_sources import _native_fixture
 
-    _connection, _definitions, analysis = _native_fixture("bernoulli")
+    _connection, _definitions, (experiment, resolver) = _native_fixture("bernoulli")
     try:
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
-        results = analysis.run()
+        capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 16))
+        results = view_readout(experiment, resolver)
         assert results.sequential_snapshot is not None
         assert any(row.sequential_result is not None for row in results)
         payload = json.loads(results.model_dump_json())
@@ -861,7 +869,7 @@ def test_readout_wire_requires_snapshot_for_checkpoint_bearing_results():
         assert deepcopy(raised.value).code == raised.value.code
         assert pickle.loads(pickle.dumps(raised.value)).code == raised.value.code
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize(
@@ -887,12 +895,10 @@ def test_switchback_source_operation_routes_refuse_with_coded_context(method: st
         from increment.workflows import (
             breakout_summaries,
             compiled_decision_plan,
-            experiment_definition,
             factor_summaries,
-            materialize,
         )
 
-        experiment, resolver = _switchback_analysis(workflow=True)
+        experiment, resolver = _switchback_analysis()
         try:
             operation = {
                 "workflow_materialize": lambda: materialize(experiment, resolver),
@@ -922,8 +928,14 @@ def test_switchback_source_operation_routes_refuse_with_coded_context(method: st
             if method == "workflow_experiment_definition"
             else method.removeprefix("workflow_")
         )
+    elif method in _DAY_AXIS_AND_BREAKOUT_SCOPES:
+        experiment, resolver = _switchback_analysis()
+        with pytest.raises(CapabilityError) as refusal:
+            view_readout(experiment, resolver, _DAY_AXIS_AND_BREAKOUT_SCOPES[method])
+        expected_method = method
     else:
-        analysis = _switchback_analysis()
+        _experiment, resolver = _switchback_analysis()
+        analysis = bound_analysis(resolver)
         if method == "legacy_experiment":
 
             def operation():
@@ -947,16 +959,15 @@ def test_switchback_dashboard_breakout_reads_refuses_with_contrast_code() -> Non
     from increment.errors import CapabilityError
     from increment.semantics.models import Breakout
 
+    _experiment, resolver = _switchback_analysis()
     with pytest.raises(CapabilityError) as refusal:
-        _switchback_analysis().dashboard_breakout_reads(Breakout(property="geo"))
+        bound_analysis(resolver).dashboard_breakout_reads(Breakout(property="geo"))
     assert refusal.value.code == "facade.analysis.contrast_unavailable"
     assert refusal.value.context["method"] == "dashboard_breakout_reads"
 
 
 def test_assignment_diagnostic_refuses_arm_evidence_with_its_own_code() -> None:
-    from increment import from_frame
     from increment.errors import CapabilityError
-    from increment.workflows import assignment_diagnostic
 
     frame = pd.DataFrame(
         {"unit": ["u1", "u2"], "group": ["control", "treatment"], "outcome": [1.0, 2.0]}
@@ -978,9 +989,9 @@ def test_assignment_diagnostic_refuses_arm_evidence_with_its_own_code() -> None:
 def test_switchback_sitewide_refuses_non_native_source() -> None:
     from increment.errors import CapabilityError
 
-    analysis = _switchback_analysis()
+    experiment, resolver = _switchback_analysis()
     with pytest.raises(CapabilityError) as refusal:
-        analysis.sitewide("value")
+        sitewide(experiment, resolver, "value")
     assert refusal.value.code == "facade.analysis.contrast_unavailable"
 
 
@@ -1004,11 +1015,26 @@ def test_envelope_refuses_arm_native_artifact_and_all_day_axis_routes(method, kw
     from tests.estimation.test_unit_cycle_envelope import envelope
 
     reference = envelope(p=0.5, cycles=2).model_copy(update={"assignment": _assignment()})
-    analysis = _switchback_analysis(reference)
-    result = analysis.run()[0]
+    experiment, resolver = _switchback_analysis(reference)
+    result = view_readout(experiment, resolver)[0]
     assert result.method == "switchback_unit_variance_envelope"
+    operations = {
+        "materialize": lambda: materialize(experiment, resolver),
+        "summary_sql": lambda: summary_sql(experiment, resolver),
+        "publish_unit_day_artifact": lambda: publish_unit_day_artifact(
+            experiment, resolver, kwargs["store"]
+        ),
+    }
     with pytest.raises(CapabilityError) as caught:
-        getattr(analysis, method)(**kwargs)
+        if method in operations:
+            operations[method]()
+        else:
+            scope = _DAY_AXIS_AND_BREAKOUT_SCOPES[method]
+            if "dimension" in kwargs:
+                scope = scope.model_copy(
+                    update={"segment": (BreakoutIdentity(kwargs["dimension"], None),)}
+                )
+            view_readout(experiment, resolver, scope)
     assert caught.value.code == "facade.analysis.contrast_unavailable"
 
 
@@ -1022,9 +1048,9 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):  # no
     from tests.estimation.test_unit_cycle_envelope import envelope
 
     reference = envelope(p=0.5, cycles=2).model_copy(update={"assignment": _assignment()})
-    analysis = _switchback_analysis(reference)
+    experiment, resolver = _switchback_analysis(reference)
     source = _source(reference)
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     result = results[0]
     rendered = repr(results)
     assert f"{result.metric} interpretation:" in rendered

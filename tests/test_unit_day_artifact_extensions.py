@@ -4,12 +4,14 @@ import hashlib
 import json
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 
-from increment.artifacts import SourceSnapshotEvidence
+from increment import Scope, from_definitions, from_unit_day_artifact
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
+from increment.estimators import sitewide
 from increment.evidence import EvidenceCapabilities
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import (
@@ -48,6 +50,8 @@ from increment.semantics.artifact import (
     TriggerPopulationExtension,
 )
 from increment.sources import BreakoutMomentsSource
+from increment.workflows import experiment_definition
+from tests.analysis_factory import bound_source, view_readout
 
 
 def _artifact_evidence(operations):
@@ -1433,13 +1437,11 @@ def test_clustered_artifact_publishes_cluster_grain_randomization_counts(tmp_pat
     grain='cluster'. Publishing unit counts there inflates cluster-robust n."""
     import ibis
 
-    from increment import Analysis
     from increment.artifacts import SourceSnapshotEvidence
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
     from increment.query.source import open_artifact
     from increment.semantics.loader import load
-    from tests.analysis_factory import _native_source
     from tests.test_analysis_trigger import _clustered_trigger_events, _defs_yaml_clustered
 
     con = ibis.duckdb.connect()
@@ -1451,22 +1453,26 @@ def test_clustered_artifact_publishes_cluster_grain_randomization_counts(tmp_pat
     definitions.write_text(_defs_yaml_clustered())
     cutoff = datetime(2024, 1, 10, tzinfo=UTC)
     evidence = SourceSnapshotEvidence(cutoff, {"events": cutoff})
-    analysis = Analysis.from_definitions(
-        "exp", definitions, con, store="none", source_snapshot_evidence=evidence
+    analysis_experiment, analysis_resolver = from_definitions(
+        definitions, con, experiment_name="exp", store="none", source_snapshot_evidence=evidence
     )
 
-    expected_grain, expected_counts, _units = _native_source(analysis).triggered_counts()
+    expected_grain, expected_counts, _units = bound_source(analysis_resolver).triggered_counts()
     assert expected_grain == "cluster"
 
     store = WarehouseArtifactStore(con, schema_name="cluster_counts_artifact")
-    context = artifact_context(load(definitions), analysis.experiment, "error")
+    context = artifact_context(
+        load(definitions), experiment_definition(analysis_experiment, analysis_resolver), "error"
+    )
     wanted = {"assignment_counts", "trigger_population", "cluster_identity"}
     requests = [
         entry.request
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind in wanted
     ]
-    ref = analysis.publish_unit_day_artifact(store, extensions=requests)
+    ref = publish_unit_day_artifact(
+        analysis_experiment, analysis_resolver, store, extensions=requests
+    )
 
     adopted = open_artifact(store, ref, expected_context=context)
     try:
@@ -1504,12 +1510,11 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
     source's exposure keys into the coverage check."""
     import ibis
 
-    from increment import Analysis
     from tests.test_unit_day_artifact_facade import _extensions, _native
 
-    con, native, context, store = _native()
+    con, (native_experiment, native_resolver), context, store = _native()
     requests = _extensions(context, "breakout_dimension")
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
     from contextlib import contextmanager
 
     original_open_snapshot = store.open_snapshot
@@ -1535,14 +1540,21 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
             yield SnapshotWithGhostExposure(snapshot)
 
     monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_ghost_exposure)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
         with pytest.raises(ArtifactContractError) as exc:
-            adopted.run_breakout(metrics=["purchase_rate"])
+            view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                Scope(view="breakout", grain="total"),
+                metrics=["purchase_rate"],
+            )
         assert exc.value.code == "artifact.extension.invalid"
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.slow
@@ -1552,10 +1564,10 @@ def test_dimension_relation_verifier_rejects_missing_and_empty_coverage(tmp_path
 
     from tests.test_unit_day_artifact_facade import _extensions, _native
 
-    con, native, context, store = _native()
+    con, (experiment, resolver), context, store = _native()
     try:
-        ref = native.publish_unit_day_artifact(
-            store, extensions=_extensions(context, "breakout_dimension")
+        ref = publish_unit_day_artifact(
+            experiment, resolver, store, extensions=_extensions(context, "breakout_dimension")
         )
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
@@ -1604,7 +1616,7 @@ def test_dimension_relation_verifier_rejects_missing_and_empty_coverage(tmp_path
                     )
                 assert caught.value.code == "artifact.extension.invalid"
     finally:
-        native.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1617,58 +1629,66 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
     """A site-volume extension read always threads exposure keys, even though
     its noop exposure-coverage check accepts them without filtering rows: an
     adopted artifact serves the same whole-site volume as the native path."""
-    from increment import Analysis
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
     definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
-    con, native, context, store = _native(
+    con, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
         ),
     )
     requests = _extensions(context, "site_volume")
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
-        expected = native.sitewide("purchase_count")
-        result = adopted.sitewide("purchase_count")
+        expected = sitewide(native_experiment, native_resolver, "purchase_count")
+        result = sitewide(adopted_experiment, adopted_resolver, "purchase_count")
         assert result.site_total_volume > 0  # ty: ignore[unresolved-attribute]
         assert result.site_total_volume == pytest.approx(expected.site_total_volume)  # ty: ignore[unresolved-attribute]
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.slow
 def test_extension_relation_publishes_and_reopens_under_digest_format_four() -> None:
     """Extension relations use the warehouse SQL digest and retain public rows."""
-    from increment import Analysis
     from tests.test_unit_day_artifact_facade import _extensions, _native
 
-    _con, native, context, store = _native()
+    _con, (native_experiment, native_resolver), context, store = _native()
     requests = _extensions(context, "breakout_dimension")
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert manifest.base.exposures.digest_format == 4
     assert [e.relation.digest_format for e in manifest.extensions] == [4] * len(requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
 
-        def rows(analysis):
-            breakout = analysis.run_breakout(metrics=["purchase_rate"])
+        def rows(experiment: Any, resolver: Any):
+            breakout = view_readout(
+                experiment,
+                resolver,
+                Scope(view="breakout", grain="total"),
+                metrics=["purchase_rate"],
+            )
             return sorted((str(row.dimension_value), row.abs_diff) for row in breakout)
 
-        adopted_rows, native_rows = rows(adopted), rows(native)
+        adopted_rows = rows(adopted_experiment, adopted_resolver)
+        native_rows = rows(native_experiment, native_resolver)
         assert adopted_rows
         assert [value for value, _ in adopted_rows] == [value for value, _ in native_rows]
         assert [diff for _, diff in adopted_rows] == pytest.approx(
             [diff for _, diff in native_rows]
         )
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1677,7 +1697,6 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     """Logical names sharing a recipe publish one physical row set and adopt independently."""
     import yaml
 
-    from increment import Analysis
     from increment.estimation.sitewide import SitewideImpact
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
@@ -1708,7 +1727,7 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     }
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    connection, native, context, store = _native(
+    connection, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
@@ -1717,7 +1736,7 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     adopted = None
     try:
         expected = {
-            name: native.sitewide(name).site_total_volume
+            name: cast(Any, sitewide(native_experiment, native_resolver, name)).site_total_volume
             for name in (
                 "purchase_count",
                 "purchase_count_copy",
@@ -1726,11 +1745,16 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
         }
         requests = _extensions(context, "site_volume")
         assert len(requests) == 1
-        reference = native.publish_unit_day_artifact(store, extensions=requests)
-        adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        reference = publish_unit_day_artifact(
+            native_experiment, native_resolver, store, extensions=requests
+        )
+        adopted_experiment, adopted_resolver = from_unit_day_artifact(
+            store, reference, expected_context=context
+        )
+        adopted = adopted_resolver
 
         for name, total in expected.items():
-            result = adopted.sitewide(name)
+            result = sitewide(adopted_experiment, adopted_resolver, name)
             assert isinstance(result, SitewideImpact)
             assert result.site_total_volume == pytest.approx(total)
 
@@ -1755,5 +1779,5 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     finally:
         if adopted is not None:
             adopted.close()
-        native.close()
+        native_resolver.close()
         connection.disconnect()

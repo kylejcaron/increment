@@ -9,7 +9,9 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from increment import from_frame
 from increment.breakout.estimates import run_breakout
+from tests.analysis_factory import view_readout
 from tests.breakout.test_estimates import _make_arm_row, _mean_metric
 
 
@@ -373,7 +375,6 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
 def test_encouragement_summary_retains_estimand_and_scale_identity():
     import pandas as pd
 
-    from increment import Analysis
     from increment.breakout.estimates import LiftEstimates
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -400,14 +401,17 @@ def test_encouragement_summary_retains_estimand_and_scale_identity():
     )
     results = cast(
         LiftEstimates,
-        Analysis.from_unit_summary(
-            df,
-            unit="user_id",
-            group="variant",
-            metrics={"revenue": "mean"},
-            design=design,
-            uptake="clicked",
-        ).run(),
+        view_readout(
+            *from_frame(
+                df,
+                shape="summary",
+                unit="user_id",
+                group="variant",
+                metrics={"revenue": "mean"},
+                design=design,
+                uptake="clicked",
+            )
+        ),
     )
 
     frame = cast(pd.DataFrame, results.to_frame(columns="summary"))
@@ -489,7 +493,7 @@ def test_selected_views_preserve_partial_and_scope_disclosures():
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        filtered = _analysis(_frame()).run().filter(lambda row: row.metric != "guard")
+        filtered = view_readout(*_analysis(_frame())).filter(lambda row: row.metric != "guard")
 
     summary = cast(pd.DataFrame, filtered.to_frame(columns="summary"))
     custom = cast(

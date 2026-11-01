@@ -12,8 +12,10 @@ from typing import Any, cast
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis
+from increment import from_definitions, workflows
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError
+from increment.estimation.diagnostics import SRMResult
 from increment.estimation.engine import Method
 from increment.evidence import (
     ComplianceRequest,
@@ -21,8 +23,10 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
+from increment.query import panel_sql, summary_sql
 from increment.sources import MomentsSource
-from tests.analysis_factory import _native_source
+from increment.workflows import allocation_history, experiment_definition, srm
+from tests.analysis_factory import bound_source, make_binding, view_readout
 
 pytestmark = pytest.mark.integration
 
@@ -50,32 +54,27 @@ def _assert_operation_refusal(
 def test_triggered_counts_are_the_complete_triggered_workflow(tmp_path):
     from tests.test_analysis_trigger import _analysis, _events
 
-    analysis = _analysis(tmp_path, _events(n_per_arm=200, trigger_rate=0.2))
-    source = _native_source(analysis)
+    experiment, resolver = _analysis(tmp_path, _events(n_per_arm=200, trigger_rate=0.2))
+    source = bound_source(resolver)
     try:
         grain, counts, unit_counts = source.triggered_counts()
-        result = analysis.srm(
-            expected={"C": 0.5, "T": 0.5},
-            population="triggered",
-        )
+        result = srm(experiment, resolver, expected={"C": 0.5, "T": 0.5}, population="triggered")
     finally:
-        analysis.close()
+        resolver.close()
 
     assert grain == "unit"
     assert unit_counts == {}
+    assert isinstance(result, SRMResult)
     assert counts == result.observed
     assert sum(counts.values()) < 400
 
 
 @pytest.mark.integration
-def test_moments_source_preserves_catalog(con):
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2",
-        "examples/definitions/",
-        con,
-        store="none",
+def test_moments_source_preserves_catalog(con, example_definitions):
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
-    source = _native_source(analysis)
+    source = bound_source(resolver)
     try:
         selected = tuple(source.context.metrics[:2])
         moments = source.moments_source(metrics=selected, population="assigned")
@@ -87,7 +86,7 @@ def test_moments_source_preserves_catalog(con):
             assert request_evidence(evidence_provider(moments), MomentsRequest(metric))
 
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.slow
@@ -98,7 +97,7 @@ def test_plan_alpha_narrows_the_reported_absolute_interval() -> None:
 
     from examples._seed import EXPERIMENT_ID, seed_event_log
     from increment.semantics.loader import load
-    from tests.analysis_factory import lift_rows, make_analysis
+    from tests.analysis_factory import lift_rows
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=600, seed=4, with_pre_period=True)
@@ -108,7 +107,7 @@ def test_plan_alpha_narrows_the_reported_absolute_interval() -> None:
 
     widths = {}
     for alpha in (0.05, 0.40):
-        analysis = make_analysis(
+        analysis_experiment, analysis_resolver = make_binding(
             con,
             defs,
             experiment=experiment,
@@ -116,7 +115,13 @@ def test_plan_alpha_narrows_the_reported_absolute_interval() -> None:
         )
         row = next(
             r
-            for r in lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+            for r in lift_rows(
+                view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    decision_method=Method(name="unadjusted"),
+                )
+            )
             if r.metric == "purchase_rate"
         )
         assert row.abs_ub is not None and row.abs_lb is not None
@@ -129,19 +134,22 @@ def test_plan_alpha_narrows_the_reported_absolute_interval() -> None:
 def test_call_wide_cuped_override_reaches_every_metric(seeded_pre_period_con, seeded_defs):
     from tests.analysis_factory import lift_rows
 
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2",
-        seeded_defs,
-        seeded_pre_period_con,
-        store="none",
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2", store="none"
     )
     try:
-        unadjusted = lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+        unadjusted = lift_rows(
+            view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+        )
         results = lift_rows(
-            analysis.run(decision_method=Method(name="cuped", variance_reduction="cuped"))
+            view_readout(
+                experiment,
+                resolver,
+                decision_method=Method(name="cuped", variance_reduction="cuped"),
+            )
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
     assert results
     assert {result.method for result in results} == {"cuped"}
@@ -171,14 +179,14 @@ def test_moments_source_refuses_a_clustered_native_source(tmp_path):
     definitions = tmp_path / "definitions.yaml"
     definitions.write_text(_DEFS_TEMPLATE.format(cluster_line="    cluster: store_id"))
     con = ibis.duckdb.connect()
-    analysis = Analysis.from_definitions("store_test", definitions, con)
-    source = _native_source(analysis)
+    experiment, resolver = from_definitions(definitions, con, experiment_name="store_test")
+    source = bound_source(resolver)
     con.disconnect()
     try:
         with pytest.raises(CapabilityError) as raised:
             source.moments_source(metrics=source.context.metrics)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
     for error in (
         raised.value,
@@ -192,20 +200,19 @@ def test_moments_source_refuses_a_clustered_native_source(tmp_path):
         assert error.context["route"]
 
 
-def test_triggered_counts_without_a_declared_trigger_keeps_the_null_trigger(con):
+def test_triggered_counts_without_a_declared_trigger_keeps_the_null_trigger(
+    con, example_definitions
+):
     """The refused population names the experiment and its actual, absent trigger."""
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2",
-        "examples/definitions/",
-        con,
-        store="none",
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
-    source = _native_source(analysis)
+    source = bound_source(resolver)
     try:
         with pytest.raises(CapabilityError) as raised:
             source.triggered_counts()
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
     _assert_operation_refusal(
         raised.value,
@@ -262,12 +269,12 @@ def test_query_exposure_refusal_names_missing_and_returned_columns(tmp_path):
         "enrollment_q",
         obj=[{"user_id": "u1", "first_exposure_ts": dt.datetime(2025, 1, 1, 9)}],
     )
-    analysis = Analysis.from_definitions("exp", defs_path, con)
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp")
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis.allocation_history()
+            allocation_history(experiment, resolver)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
     _assert_operation_refusal(
         raised.value,
@@ -283,19 +290,16 @@ def test_query_exposure_refusal_names_missing_and_returned_columns(tmp_path):
 
 
 @pytest.mark.integration
-def test_export_moments_is_source_owned_and_portable(con, tmp_path):
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2",
-        "examples/definitions/",
-        con,
-        store="none",
+def test_export_moments_is_source_owned_and_portable(con, tmp_path, example_definitions):
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
-    source = _native_source(analysis)
+    source = bound_source(resolver)
     path = Path(tmp_path) / "native-moments.parquet"
     try:
         source.export_moments(path)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
     table = pq.read_table(path)
     assert table.schema.metadata[b"increment.moments_format"] == b"12"
@@ -316,12 +320,9 @@ def test_export_moments_is_source_owned_and_portable(con, tmp_path):
 
 
 @pytest.mark.integration
-def test_panel_and_summary_sql_are_lazy(con, monkeypatch):
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2",
-        "examples/definitions/",
-        con,
-        store="none",
+def test_panel_and_summary_sql_are_lazy(con, monkeypatch, example_definitions):
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
 
     def no_query(*args: Any, **kwargs: Any):
@@ -329,11 +330,11 @@ def test_panel_and_summary_sql_are_lazy(con, monkeypatch):
 
     monkeypatch.setattr(con, "to_pyarrow", no_query)
     try:
-        panel = analysis.panel_sql()
-        summary = analysis.summary_sql()
-        expected = [metric.name for metric in analysis.metrics]
+        panel = panel_sql(experiment, resolver)
+        summary = summary_sql(experiment, resolver)
+        expected = [metric.name for metric in workflows.metrics(experiment, resolver)]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
     assert set(panel) == set(expected)
     assert set(summary) == set(expected)
@@ -489,17 +490,21 @@ experiments:
 """
 
 
-def _cluster_conflict_analysis(tmp_path) -> tuple[Analysis, Any]:
+def _cluster_conflict_analysis(tmp_path) -> tuple[Any, Any]:
     import ibis
 
     con = ibis.duckdb.connect()
     con.create_table("native_cluster_conflict_events", obj=_cluster_conflict_events())
     definitions = tmp_path / "defs.yaml"
     definitions.write_text(_CLUSTER_CONFLICT_DEFS_YAML)
-    analysis = Analysis(
-        "native_cluster", definitions, con, store="none", on_mixed_assignment="exclude"
+    pair = from_definitions(
+        definitions,
+        con,
+        experiment_name="native_cluster",
+        store="none",
+        on_mixed_assignment="exclude",
     )
-    return analysis, con
+    return pair, con
 
 
 @pytest.mark.slow
@@ -513,14 +518,16 @@ def test_native_cluster_conflict_refuses_before_readout(tmp_path) -> None:
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics.artifact import AssignmentCountsRequest
 
-    analysis, con = _cluster_conflict_analysis(tmp_path)
+    (experiment, resolver), con = _cluster_conflict_analysis(tmp_path)
     with pytest.raises(CodedError) as readout_error:
-        analysis.run()
+        view_readout(experiment, resolver)
     assert readout_error.value.code == "query.integrity.cluster_conflict"
 
     store = WarehouseArtifactStore(con, schema_name="native_cluster_conflict_artifact")
     with pytest.raises(CodedError) as publish_error:
-        analysis.publish_unit_day_artifact(store, extensions=[AssignmentCountsRequest()])
+        publish_unit_day_artifact(
+            experiment, resolver, store, extensions=[AssignmentCountsRequest()]
+        )
     assert publish_error.value.code == "query.integrity.cluster_conflict"
 
 
@@ -536,12 +543,12 @@ def test_cluster_identity_extension_alone_refuses_a_raw_label_conflict(tmp_path)
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics.artifact import ClusterIdentityRequest
 
-    analysis, con = _cluster_conflict_analysis(tmp_path)
-    cluster = cast("str", analysis.experiment.cluster)
+    (experiment, resolver), con = _cluster_conflict_analysis(tmp_path)
+    cluster = cast("str", experiment_definition(experiment, resolver).cluster)
     store = WarehouseArtifactStore(con, schema_name="cluster_identity_only_artifact")
     with pytest.raises(CodedError) as publish_error:
-        analysis.publish_unit_day_artifact(
-            store, extensions=[ClusterIdentityRequest(cluster_name=cluster)]
+        publish_unit_day_artifact(
+            experiment, resolver, store, extensions=[ClusterIdentityRequest(cluster_name=cluster)]
         )
     assert publish_error.value.code == "query.integrity.cluster_conflict"
 
@@ -551,8 +558,8 @@ def test_compliance_design_mismatch_refusal_survives_transport(con):
     from increment.semantics.design import Encouragement
     from tests.test_analysis_asof import _analysis_with_asof_encouragement_events
 
-    analysis = _analysis_with_asof_encouragement_events(con)
-    source = _native_source(analysis)
+    _experiment, resolver = _analysis_with_asof_encouragement_events(con)
+    source = bound_source(resolver)
     expected = source.context.design
     assert isinstance(expected, Encouragement)
     received = Encouragement.model_validate(
@@ -562,7 +569,7 @@ def test_compliance_design_mismatch_refusal_survives_transport(con):
         with pytest.raises(InvalidRequestError) as caught:
             request_evidence(evidence_provider(source), ComplianceRequest(received))
     finally:
-        analysis.close()
+        resolver.close()
 
     error = caught.value
     assert error.code == "source.native.compliance_design_mismatch"

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, CupedCovariate, Method
+from increment import CupedCovariate, Method, Scope, from_definitions, from_frame, from_moments
 from increment.errors import IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.semantics.design import Randomized
+from increment.workflows import export_moments
+from tests.analysis_factory import view_readout
 
 
 def _mixed_methods(*, categorical_decision: bool):
@@ -23,9 +27,11 @@ def _mixed_methods(*, categorical_decision: bool):
     return (categorical, continuous) if categorical_decision else (continuous, categorical)
 
 
-def _rows(analysis):
+def _rows(analysis: tuple[Any, Any]):
     return {
-        (row.metric, row.method): row for row in analysis.run() if isinstance(row, LiftEstimate)
+        (row.metric, row.method): row
+        for row in view_readout(*analysis)
+        if isinstance(row, LiftEstimate)
     }
 
 
@@ -51,22 +57,27 @@ def test_mixed_categorical_and_fitted_methods_replay_per_method(tmp_path, catego
         sensitivity_methods=(sensitivity,),
     )
     design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
-    source = Analysis.from_unit_summary(
-        pa.Table.from_pylist(data), unit="unit", group="arm", metrics=[metric], design=design
+    source = from_frame(
+        pa.Table.from_pylist(data),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics=[metric],
+        design=design,
     )
     try:
         expected = _rows(source)
         destination = tmp_path / "mixed-cuped.parquet"
-        source.export(destination)
-        restored = Analysis.from_moments(
+        export_moments(*source, destination)
+        restored = from_moments(
             pq.read_table(destination).to_pylist(), metrics=[metric], design=design
         )
         try:
             actual = _rows(restored)
         finally:
-            restored.close()
+            restored[1].close()
     finally:
-        source.close()
+        source[1].close()
     assert actual.keys() == expected.keys()
     for key, row in expected.items():
         for field in ("value", "log_se", "lb", "ub"):
@@ -124,20 +135,22 @@ def test_categorical_ratio_export_retains_withheld_arm_components(tmp_path, ingr
     design = experiment.resolved_design()
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(_events(units)))
-    source = Analysis.from_definitions("mixed_cuped", definitions, con, store="none")
+    experiment, resolver = from_definitions(
+        definitions, con, experiment_name="mixed_cuped", store="none"
+    )
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             with pytest.warns(IncrementWarning):
-                expected = source.run(metrics=["revenue_per_spend"])
+                expected = view_readout(experiment, resolver, metrics=["revenue_per_spend"])
         if ingress == "artifact":
-            source, _requests = _publish(con, source)
+            (experiment, resolver), _requests = _publish(con, (experiment, resolver))
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 with pytest.warns(IncrementWarning):
-                    expected = source.run(metrics=["revenue_per_spend"])
+                    expected = view_readout(experiment, resolver, metrics=["revenue_per_spend"])
         destination = tmp_path / "withheld-ratio.parquet"
-        source.export(destination)
+        export_moments(experiment, resolver, destination)
         rows = pq.read_table(destination).to_pylist()
         fitted = [
             json.loads(row["cuped_evidence"])
@@ -154,7 +167,7 @@ def test_categorical_ratio_export_retains_withheld_arm_components(tmp_path, ingr
             == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
             for arm, context in fit_state["refusal_contexts"]
         )
-        replay = Analysis.from_moments(
+        replay_experiment, replay_resolver = from_moments(
             rows,
             metrics=[
                 MetricSpec(
@@ -172,11 +185,11 @@ def test_categorical_ratio_export_retains_withheld_arm_components(tmp_path, ingr
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 with pytest.warns(IncrementWarning):
-                    actual = replay.run()
+                    actual = view_readout(replay_experiment, replay_resolver)
         finally:
-            replay.close()
+            replay_resolver.close()
     finally:
-        source.close()
+        cast(Any, resolver).close()
         con.disconnect()
     assert [(row.metric, row.method) for row in actual] == [
         (row.metric, row.method) for row in expected
@@ -220,12 +233,18 @@ def test_frame_ratio_export_preserves_withheld_arm_reason(tmp_path, ingress):
         allocation={"control": 1 / 3, "treatment": 1 / 3, "invalid": 1 / 3},
     )
     if ingress == "from_unit_summary":
-        source = Analysis.from_unit_summary(
-            pa.Table.from_pylist(rows), unit="unit", group="arm", metrics=[metric], design=design
+        source = from_frame(
+            pa.Table.from_pylist(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            metrics=[metric],
+            design=design,
         )
     else:
-        source = Analysis.from_unit_panel(
+        source = from_frame(
             pa.Table.from_pylist(rows),
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -236,7 +255,7 @@ def test_frame_ratio_export_preserves_withheld_arm_reason(tmp_path, ingress):
         with pytest.warns(IncrementWarning):
             expected = _rows(source)
         destination = tmp_path / f"{ingress}.parquet"
-        source.export(destination)
+        export_moments(*source, destination)
         exported = pq.read_table(destination).to_pylist()
         fitted = [
             json.loads(row["cuped_evidence"])
@@ -252,14 +271,14 @@ def test_frame_ratio_export_preserves_withheld_arm_reason(tmp_path, ingress):
             == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
             for arm, context in fit_state["refusal_contexts"]
         )
-        replay = Analysis.from_moments(exported, metrics=[metric], design=design)
+        replay = from_moments(exported, metrics=[metric], design=design)
         try:
             with pytest.warns(IncrementWarning):
                 actual = _rows(replay)
         finally:
-            replay.close()
+            replay[1].close()
     finally:
-        source.close()
+        source[1].close()
     assert actual.keys() == expected.keys()
     for key, row in expected.items():
         for field in ("value", "log_se", "lb", "ub"):
@@ -297,9 +316,13 @@ def test_breakout_snapshot_identity_tracks_aggregate_fit_evidence(tmp_path):
         if "events" in con.list_tables():
             con.drop_table("events")
         con.create_table("events", obj=pa.Table.from_pylist(_events(rows)))
-        analysis = Analysis.from_definitions("mixed_cuped", definitions, con, store="none")
+        experiment, resolver = from_definitions(
+            definitions, con, experiment_name="mixed_cuped", store="none"
+        )
         try:
-            estimates = analysis.run_breakout(metrics=["revenue"])
+            estimates = view_readout(
+                experiment, resolver, Scope(view="breakout", grain="total"), metrics=["revenue"]
+            )
             return (
                 {row.source_snapshot_id for row in estimates},
                 {
@@ -311,7 +334,7 @@ def test_breakout_snapshot_identity_tracks_aggregate_fit_evidence(tmp_path):
                 },
             )
         finally:
-            analysis.close()
+            cast(Any, resolver).close()
 
     groups: dict[tuple[str, str], list[int]] = {}
     for index, row in enumerate(units):

@@ -9,10 +9,8 @@ test double where none does yet (`"asof"` grain and breakout `by=`
 dimensions - neither is implemented by any concrete source in this
 codebase; `readouts.asof_lift`/`readouts.breakout`'s `Encouragement`
 branch are otherwise unreachable). The guardrail-restriction test goes
-through `Analysis.run()` on a hand-built native instance (DuckDB,
-`Analysis.__new__` + manual attribute assignment, the same pattern
-`tests/test_analysis.py` already uses) - see that test's docstring for
-why the layering decision landed there.
+through `run()` on an in-memory definitions binding over DuckDB - see
+that test's docstring for why the layering decision landed there.
 """
 
 from __future__ import annotations
@@ -27,13 +25,14 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts
+from increment import Scope, from_frame, from_switchback_frame, readouts, workflows
 from increment.errors import CapabilityError, InvalidRequestError, UnsupportedRequestError
 from increment.estimation import Normal
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.evidence import (
+    BreakoutIdentity,
     BreakoutMethodMomentsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
@@ -56,8 +55,16 @@ from increment.readouts._encouragement import encouragement_rows
 from increment.semantics.design import Encouragement, ExclusionRestriction, Randomized, UptakeSpec
 from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec, MeanMetric
 from increment.sources import EvidenceSource, SourceContext, SourceOperation
+from increment.workflows import experiment_definition
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _native_source, lift_rows, make_analysis, make_analysis_like
+from tests.analysis_factory import (
+    bind_pair,
+    bound_source,
+    lift_rows,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 from tests.sequential_cases import registration
 
 METRIC = MeanMetric(name="rev", entity="user_id", fact="orders", aggregation="sum")
@@ -479,7 +486,7 @@ def test_missing_compliance_axis_refuses_before_reading_outcomes(path):
         if path == "readouts":
             readouts.asof_lift(src)
         else:
-            Analysis._from_source(src, design).run_asof_lift()
+            view_readout(*bind_pair(src, design), Scope(view="asof", grain="asof"))
     assert error.value.code == "evidence.operation_unavailable"
 
 
@@ -526,8 +533,11 @@ def test_custom_compliance_axis_is_independent_of_selected_outcome_dates(path, s
     results = (
         readouts.asof_lift(src, metrics=selected, estimands=("itt", "compliance"))
         if path == "readouts"
-        else Analysis._from_source(src, design).run_asof_lift(
-            metrics=selected, estimands=("itt", "compliance")
+        else view_readout(
+            *bind_pair(src, design),
+            Scope(view="asof", grain="asof"),
+            metrics=selected,
+            estimands=("itt", "compliance"),
         )
     )
 
@@ -559,7 +569,7 @@ def test_asof_lift_suppresses_late_on_weak_days_and_reports_it_once_strong(path)
     results = (
         readouts.asof_lift(src)
         if path == "readouts"
-        else Analysis._from_source(src, design).run_asof_lift()
+        else view_readout(*bind_pair(src, design), Scope(view="asof", grain="asof"))
     )
 
     by_date: defaultdict[date | datetime | str | int | float, set[str]] = defaultdict(set)
@@ -686,7 +696,7 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     )
     from increment.frame import FramePanelSource, synthesise_metric
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id
-    from tests.analysis_factory import facade_binding, held_source
+    from tests.analysis_factory import held_source
     from tests.asymptotic_cases import mean_model
     from tests.sequential_cases import registration
 
@@ -736,8 +746,9 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         for i in range(96)
         for arm in ("control", "treatment")
     ]
-    analysis = Analysis.from_unit_panel(
+    analysis = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="arm",
         date="ds",
@@ -748,7 +759,7 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         metrics=specs,
         plan=plan,
     )
-    source = cast(FramePanelSource, held_source(analysis))
+    source = cast(FramePanelSource, held_source(analysis[1]))
     source.capture_sequential(finalized=True, as_of=date(2025, 1, 15))
     itt_only = readouts.run(source, estimands=("itt",))
     itt_and_compliance = readouts.run(source, estimands=("itt", "compliance"))
@@ -787,9 +798,8 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
     from dataclasses import replace
 
     from increment import run
-    from increment.kernel.contracts import Scope
 
-    experiment, resolver = facade_binding(analysis)
+    experiment, resolver = analysis
     whole_window = Scope(view="run", grain="total")
     cumulative = Scope(view="asof", grain="asof", completion_policy=True)
     experiment = replace(
@@ -843,7 +853,7 @@ def test_validate_encouragement_asof_inference_uses_the_retention_band_not_windo
 def test_asof_lift_randomized_design_stamps_ds_and_reports_itt():
     """The Randomized branch (estimate_lift dispatch, no encouragement
     guard/note logic) was previously exercised only through
-    Analysis.run_asof_lift's DIFFERENT day-axis pipeline, never through
+    the as-of view of `run()`'s DIFFERENT day-axis pipeline, never through
     this free function directly. Every row must carry itt only, a stamped
     ds, and the series-wide fixed-alpha monitoring caveat (an as-of itt
     trend invites the same repeated looks a late trend does).
@@ -1066,9 +1076,9 @@ def test_unadjusted_daily_and_asof_lift_support_declared_moment_provider():
     assert readouts.daily(src)
     assert readouts.asof_lift(src)
 
-    analysis = Analysis._from_source(src, design)
-    assert analysis.run_daily_lift()
-    assert analysis.run_asof_lift()
+    experiment, resolver = bind_pair(src, design)
+    assert view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+    assert view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
 
 
 # - breakout(): per-segment LATE gating -------------------------------------
@@ -1088,8 +1098,9 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
             "help_click": [0.0] * 40 + [float(i % 4 != 0) for i in range(40)],
         }
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         frame,
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -1098,11 +1109,19 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
         breakouts=["segment"],
     )
     sensitivity = [Method(name="sensitivity")] if include_sensitivity else []
-    combined = analysis.run_breakout(sensitivity_methods=sensitivity)
+    combined = view_readout(
+        experiment, resolver, Scope(view="breakout", grain="total"), sensitivity_methods=sensitivity
+    )
     separate = [
         row
         for metric in ("y", "z")
-        for row in analysis.run_breakout(metrics=[metric], sensitivity_methods=sensitivity)
+        for row in view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total"),
+            metrics=[metric],
+            sensitivity_methods=sensitivity,
+        )
     ]
 
     def identity(row):
@@ -1163,13 +1182,36 @@ def test_encouragement_breakout_methods_are_unique_per_metric(include_sensitivit
             (expected.lift.value, expected.lift.lb, expected.lift.ub, expected.lift.level)
         )
     with pytest.raises(InvalidRequestError) as duplicate:
-        analysis.run_breakout(
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total"),
             decision_method=Method(name="unadjusted"),
             sensitivity_methods=[Method(name="unadjusted")],
         )
     assert duplicate.value.code == "estimation.engine.method_names_unique"
-    assert analysis.run_daily(metrics=[], dimension="segment") == []
-    assert analysis.run_asof(metrics=[], dimension="segment") == []
+    assert (
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily", grain="daily", values=True, segment=BreakoutIdentity("segment", None)
+            ),
+            metrics=[],
+        )
+        == []
+    )
+    assert (
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof", grain="asof", values=True, segment=BreakoutIdentity("segment", None)
+            ),
+            metrics=[],
+        )
+        == []
+    )
 
 
 def test_breakout_emits_late_for_strong_segment_suppresses_weak():
@@ -1752,10 +1794,10 @@ def _guardrail_analysis(con):
         }
     )
 
-    analysis = make_analysis(
+    analysis = make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -1910,10 +1952,10 @@ def _multi_arm_guardrail_analysis(con):
         }
     )
 
-    return make_analysis(
+    return make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -1932,14 +1974,14 @@ def test_analysis_run_native_encouragement_declared_plan_primary_splits_alpha_by
     single-arm-fixture gap by adding a second treatment arm; this pins
     the same arithmetic for the encouragement branch."""
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(primary="revenue", guardrails=["errors"])}
         ),
     )
 
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
     assert {r.group_id for r in results if r.metric == "revenue"} == {"a", "b"}
 
     revenue_rows = [r for r in results if r.metric == "revenue"]
@@ -1956,14 +1998,14 @@ def test_analysis_run_native_encouragement_declared_plan_secondary_at_nominal_al
     representative, so compliance and late keep `discovery=None` because
     neither was the tested hypothesis."""
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(primary="errors", secondaries=["revenue"])}
         ),
     )
 
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
     revenue_rows = [r for r in results if r.metric == "revenue"]
     assert revenue_rows
     assert all(r.role == "secondary" for r in revenue_rows)
@@ -1995,13 +2037,13 @@ def test_analysis_run_native_encouragement_declared_plan_secondary_at_nominal_al
 
 def test_encouragement_missing_control_defers_to_family_gate(con):
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(primary="errors", secondaries=["revenue"])}
         ),
     )
-    src = _native_source(bound)
+    src = bound_source(bound[1])
     metrics = tuple(src.context.metrics)
     rows_by_metric: dict[str, list[Mapping[str, Any]]] = {
         metric.name: list(
@@ -2064,13 +2106,17 @@ def test_encouragement_missing_control_defers_to_family_gate(con):
 
 def test_late_only_family_omits_itt_keys(con):
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(primary="errors", secondaries=["revenue"])}
         ),
     )
-    revenue = [row for row in lift_rows(bound.run(estimands=("late",))) if row.metric == "revenue"]
+    revenue = [
+        row
+        for row in lift_rows(view_readout(*bound, estimands=("late",)))
+        if row.metric == "revenue"
+    ]
     assert revenue
     assert {row.estimand for row in revenue} == {"late"}
     assert all(row.discovery is None for row in revenue)
@@ -2084,9 +2130,9 @@ def test_analysis_run_native_encouragement_family_spans_metric_and_arm(con):
     across two treatment arms is four cells, not four times the estimand
     count - and every one of them now carries a verdict."""
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             # ~11 units per arm leave the Welch reference under 10 dof, so
             # p-values run several times the Normal ones (revenue: 0.0094 and
             # 0.0145, not 0.0013 and 0.0022); q separates the metrics at these values.
@@ -2094,7 +2140,7 @@ def test_analysis_run_native_encouragement_family_spans_metric_and_arm(con):
         ),
     )
 
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
     itt_rows = [r for r in results if r.estimand == "itt" and r.metric in {"revenue", "errors"}]
     assert {(r.metric, r.group_id) for r in itt_rows} == {
         ("revenue", "a"),
@@ -2135,14 +2181,14 @@ def test_selected_secondary_late_row_uses_corrected_level(con):
     level as its ITT row -- both test the same null, and a reader
     comparing the two intervals should not find different guarantees."""
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(q=0.03, secondaries=["revenue", "errors"])}
         ),
     )
 
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
 
     itt_rows = [r for r in results if r.metric == "revenue" and r.estimand == "itt"]
     late_rows = [r for r in results if r.metric == "revenue" and r.estimand == "late"]
@@ -2236,9 +2282,9 @@ def test_guardrail_metric_reports_itt_and_late_via_analysis_run(con):
     itt/compliance/late by default, identical to what the dataframe,
     artifact and moments routes report for a guardrail under an
     Encouragement design."""
-    analysis = _guardrail_analysis(con)
+    experiment, resolver = _guardrail_analysis(con)
 
-    results = lift_rows(analysis.run())
+    results = lift_rows(view_readout(experiment, resolver))
 
     by_base_metric: defaultdict[str, set[str]] = defaultdict(set)
     for r in results:
@@ -2266,12 +2312,12 @@ def test_analysis_run_native_groups_encouragement_dispatch_by_declared_methods(c
     uses, so a correct split reproduces the unbound baseline exactly."""
     from increment.semantics.models import ExperimentMetric, MethodSpec
 
-    baseline = lift_rows(_guardrail_analysis(con).run())
+    baseline = lift_rows(view_readout(*_guardrail_analysis(con)))
 
     bound = _guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=[
@@ -2285,7 +2331,7 @@ def test_analysis_run_native_groups_encouragement_dispatch_by_declared_methods(c
             }
         ),
     )
-    grouped = lift_rows(bound.run())
+    grouped = lift_rows(view_readout(*bound))
 
     def keys(results):
         return {(r.metric, r.group_id, r.estimand): r.require_lift().value for r in results}
@@ -2307,9 +2353,9 @@ def test_analysis_run_native_grouped_encouragement_reports_one_uptake_row_per_ar
     from increment.semantics.models import ExperimentMetric, MethodSpec
 
     bound = _guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=[
@@ -2323,7 +2369,7 @@ def test_analysis_run_native_grouped_encouragement_reports_one_uptake_row_per_ar
             }
         ),
     )
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
     uptake_keys = [(r.group_id, r.estimand) for r in results if r.metric == "uptake"]
     assert len(uptake_keys) == len(set(uptake_keys)), (
         f"duplicate uptake row(s) across groups: {uptake_keys}"
@@ -2333,9 +2379,9 @@ def test_analysis_run_native_grouped_encouragement_reports_one_uptake_row_per_ar
 def test_guardrail_estimands_narrowing_never_returns_unrequested_estimand(con):
     """Narrowing run(estimands=...) never returns an estimand the caller
     did not ask for, for a guardrail or any other metric."""
-    analysis = _guardrail_analysis(con)
+    experiment, resolver = _guardrail_analysis(con)
 
-    results = lift_rows(analysis.run(metrics=["errors"], estimands=("late",)))
+    results = lift_rows(view_readout(experiment, resolver, metrics=["errors"], estimands=("late",)))
 
     assert results, "a late-only request for a guardrail still returns its late row"
     assert {r.estimand for r in results} == {"late"}
@@ -2503,10 +2549,10 @@ def _uptake_named_secondary_analysis(con):
         }
     )
 
-    return make_analysis(
+    return make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -2541,9 +2587,9 @@ def test_outcome_metric_named_uptake_keeps_its_own_role_and_family_verdict(con):
     collision silently keeping the uptake-named row at the (also-nominal,
     unre-estimated) canonical compliance pass's level instead.
     """
-    analysis = _uptake_named_secondary_analysis(con)
+    experiment, resolver = _uptake_named_secondary_analysis(con)
 
-    results = lift_rows(analysis.run())
+    results = lift_rows(view_readout(experiment, resolver))
 
     by_key = {(r.metric, r.estimand): r for r in results}
 
@@ -2737,10 +2783,10 @@ def _uptake_guardrail_analysis(con, *, guardrail_metric_name="uptake"):
         }
     )
 
-    return make_analysis(
+    return make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -2761,9 +2807,11 @@ def test_guardrail_metric_colliding_with_compliance_name_reports_requested_estim
     naive ``_uptake`` suffix stripping. Both must report exactly the
     requested estimands, with the canonical compliance row told apart by
     estimand rather than metric string."""
-    analysis = _uptake_guardrail_analysis(con, guardrail_metric_name=guardrail_metric_name)
+    experiment, resolver = _uptake_guardrail_analysis(
+        con, guardrail_metric_name=guardrail_metric_name
+    )
 
-    results = lift_rows(analysis.run(estimands=("late", "compliance")))
+    results = lift_rows(view_readout(experiment, resolver, estimands=("late", "compliance")))
 
     by_metric_estimand: defaultdict[str, set[str]] = defaultdict(set)
     for r in results:
@@ -2796,24 +2844,30 @@ def test_analysis_run_native_encouragement_undeclared_plan_refuses_call_time_alt
     unconditionally, declared plan or not."""
     from increment.plan import compile_decision_plan
 
-    analysis = _guardrail_analysis(con)
-    analysis = make_analysis_like(
-        analysis, plan=compile_decision_plan(None, analysis.metrics, path="warehouse")
+    guardrail_experiment, guardrail_resolver = _guardrail_analysis(con)
+    experiment, resolver = make_binding_like(
+        guardrail_resolver,
+        plan=compile_decision_plan(
+            None, workflows.metrics(guardrail_experiment, guardrail_resolver), path="warehouse"
+        ),
     )
 
     with pytest.raises(TypeError):
-        lift_rows(analysis.run(alternative="greater"))  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, alternative="greater")
 
 
 def test_analysis_run_native_encouragement_undeclared_plan_refuses_margins(con):
     from increment.plan import compile_decision_plan
 
-    analysis = _guardrail_analysis(con)
-    analysis = make_analysis_like(
-        analysis, plan=compile_decision_plan(None, analysis.metrics, path="warehouse")
+    guardrail_experiment, guardrail_resolver = _guardrail_analysis(con)
+    experiment, resolver = make_binding_like(
+        guardrail_resolver,
+        plan=compile_decision_plan(
+            None, workflows.metrics(guardrail_experiment, guardrail_resolver), path="warehouse"
+        ),
     )
     with pytest.raises(TypeError):
-        lift_rows(analysis.run(margins={"revenue": 0.01}))  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, margins={"revenue": 0.01})
 
 
 def test_analysis_run_native_encouragement_empty_selection_refuses_call_time_policy(con):
@@ -2822,9 +2876,9 @@ def test_analysis_run_native_encouragement_empty_selection_refuses_call_time_pol
     non-default call-time policy kwarg the same way a non-empty selection
     does -- the early empty-selection return shares the declared-plan
     execute-family gate, not just the routed-path family's own check."""
-    analysis = _guardrail_analysis(con)
+    experiment, resolver = _guardrail_analysis(con)
     with pytest.raises(TypeError):
-        lift_rows(analysis.run(metrics=[], alternative="greater"))
+        lift_rows(view_readout(experiment, resolver, metrics=[], alternative="greater"))
 
 
 def test_analysis_run_native_encouragement_declared_plan_stamps_roles_and_guardrail_tail(con):
@@ -2834,14 +2888,14 @@ def test_analysis_run_native_encouragement_declared_plan_stamps_roles_and_guardr
     `errors` implies "less"), and leave the design-level `uptake`
     row's `role` unset (it names no plan-tracked metric)."""
     bound = _guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(primary="revenue", guardrails=["errors"])}
         ),
     )
 
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
 
     revenue_rows = [r for r in results if r.metric == "revenue"]
     assert revenue_rows
@@ -2860,10 +2914,10 @@ def test_analysis_run_native_encouragement_declared_plan_stamps_roles_and_guardr
 def _margined_guardrail_analysis(con):
     from increment.semantics.models import ExperimentMetric
 
-    analysis = _guardrail_analysis(con)
-    return make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(
+    analysis_experiment, analysis_resolver = _guardrail_analysis(con)
+    return make_binding_like(
+        analysis_resolver,
+        experiment=experiment_definition(analysis_experiment, analysis_resolver).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=["revenue"],
@@ -2878,7 +2932,7 @@ def test_guardrail_margin_applies_to_itt_under_encouragement(con):
     """A guardrail's margin (the randomized non-inferiority construction)
     applies to its ITT row unchanged under a declared Encouragement design;
     LATE carries no margin verdict."""
-    results = lift_rows(_margined_guardrail_analysis(con).run())
+    results = lift_rows(view_readout(*_margined_guardrail_analysis(con)))
     itt = next(r for r in results if r.metric == "errors" and r.estimand == "itt")
     late = next(r for r in results if r.metric == "errors" and r.estimand == "late")
 
@@ -2894,7 +2948,7 @@ def test_guardrail_margin_refuses_when_itt_not_requested(con):
     """A declared margin has no row to apply to when the request excludes
     itt entirely -- the one run request that still refuses, by name."""
     with pytest.raises(UnsupportedRequestError) as exc:
-        _margined_guardrail_analysis(con).run(metrics=["errors"], estimands=("late",))
+        view_readout(*_margined_guardrail_analysis(con), metrics=["errors"], estimands=("late",))
     assert exc.value.code == "readout.encouragement.margin"
 
 
@@ -2905,13 +2959,13 @@ def test_selected_margined_secondary_keeps_its_margin_when_reestimated(con):
     from increment.semantics.models import ExperimentMetric
 
     bound = _multi_arm_guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
+    bound = make_binding_like(
+        bound[1],
         [
             m.model_copy(update={"preferred_direction": "increase"}) if m.name == "revenue" else m
-            for m in bound.metrics
+            for m in workflows.metrics(*bound)
         ],
-        experiment=bound.experiment.model_copy(
+        experiment=experiment_definition(*bound).model_copy(
             update={
                 "plan": AnalysisPlan(
                     q=0.03,
@@ -2922,7 +2976,7 @@ def test_selected_margined_secondary_keeps_its_margin_when_reestimated(con):
     )
 
     revenue_itt = [
-        r for r in lift_rows(bound.run()) if r.metric == "revenue" and r.estimand == "itt"
+        r for r in lift_rows(view_readout(*bound)) if r.metric == "revenue" and r.estimand == "itt"
     ]
     assert {r.group_id for r in revenue_itt} == {"a", "b"}
     for r in revenue_itt:
@@ -2936,16 +2990,16 @@ def test_analysis_run_native_encouragement_declared_plan_refuses_call_time_alter
     """Regression coverage for the encouragement branch specifically:
     a declared plan refuses a call-time `alternative=` kwarg via the
     shared dispatch gate (Task 2), even on a non-empty selection."""
-    bound = _guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    guardrail_experiment, guardrail_resolver = _guardrail_analysis(con)
+    experiment, resolver = make_binding_like(
+        guardrail_resolver,
+        experiment=experiment_definition(guardrail_experiment, guardrail_resolver).model_copy(
             update={"plan": AnalysisPlan(primary="revenue", guardrails=["errors"])}
         ),
     )
 
     with pytest.raises(TypeError):
-        lift_rows(bound.run(alternative="greater"))  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, alternative="greater")
 
 
 def test_analysis_run_native_encouragement_refuses_unproved_default_late(con):
@@ -2960,7 +3014,8 @@ def test_analysis_run_native_encouragement_refuses_unproved_default_late(con):
 
     bound = _guardrail_analysis(con)
     metrics = [
-        m.model_copy(update={"preferred_direction": None, "margin": None}) for m in bound.metrics
+        m.model_copy(update={"preferred_direction": None, "margin": None})
+        for m in workflows.metrics(*bound)
     ]
     with pytest.raises(CapabilityError) as raised:
         registered_native(bound, metrics=metrics)
@@ -2973,14 +3028,14 @@ def test_analysis_run_native_encouragement_uptake_uses_plan_alpha_not_a_groups(c
     primaries split alpha_share to 0.025 each (level 0.975), which must
     not leak into uptake's own interval (level 0.95 at plan.alpha=0.05)."""
     bound = _guardrail_analysis(con)
-    bound = make_analysis_like(
-        bound,
-        experiment=bound.experiment.model_copy(
+    bound = make_binding_like(
+        bound[1],
+        experiment=experiment_definition(*bound).model_copy(
             update={"plan": AnalysisPlan(primary=["revenue", "errors"])}
         ),
     )
 
-    results = lift_rows(bound.run())
+    results = lift_rows(view_readout(*bound))
 
     primary_rows = [r for r in results if r.metric in ("revenue", "errors") and r.role == "primary"]
     assert primary_rows
@@ -3644,7 +3699,7 @@ def test_encouragement_switchback_identification_is_refused():
         window=SwitchbackWindow(washout_steps=1, observation_steps=2),
     )
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_switchback_panel(
+        from_switchback_frame(
             pl.DataFrame(rows),
             unit="unit",
             cycle="cycle",

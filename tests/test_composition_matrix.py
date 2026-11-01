@@ -43,9 +43,10 @@ from typing import Any, cast, get_args
 import pyarrow as pa
 import pytest
 
-from increment import readouts
+from increment import Scope, from_definitions, from_moments, readouts
 from increment.errors import CapabilityError, DefinitionError, InvalidRequestError
 from increment.estimation.engine import Method
+from increment.estimators import sitewide
 from increment.frame import CupedCovariate, MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics import models as semantic_models
 from increment.semantics.design import (
@@ -57,7 +58,9 @@ from increment.semantics.design import (
     UptakeSpec,
 )
 from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec
+from increment.workflows import capture_sequential, export_moments, metrics
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 from tests.compatibility_catalog import (
     CAPABILITIES,
     MATRIX,
@@ -268,12 +271,12 @@ def _bad_experiment_defs(metric_type: str) -> dict[str, Any]:
 
 
 def _quantile_experiment_analysis(tmp_path):
-    """A loadable native Analysis whose sole metric is a quantile.
+    """A loadable definitions binding whose sole metric is a quantile.
 
     ``export``/``sitewide`` are native-only capabilities with no frame-path
     counterpart, so unlike every other capability's quantile refusal probe
     (routed through ``_frame_spec``/``readouts.run``), these two need a real
-    ``Analysis`` - the shared ``native`` fixture's experiments never declare
+    definitions binding - the shared ``native`` fixture's experiments never declare
     a quantile metric, since none of ITS other probes need one on an actual
     experiment. ``sitewide`` resolves the fact table's schema before it
     reaches the quantile-type refusal, so an empty (but schema-matching)
@@ -284,8 +287,6 @@ def _quantile_experiment_analysis(tmp_path):
     import pyarrow as pa
     import yaml
 
-    from increment import Analysis
-
     defs_path = tmp_path / "quantile_only.yaml"
     defs_path.write_text(yaml.safe_dump(_bad_experiment_defs("quantile"), sort_keys=False))
     con = ibis.duckdb.connect()
@@ -293,7 +294,7 @@ def _quantile_experiment_analysis(tmp_path):
         [("user_id", pa.string()), ("ts", pa.timestamp("us")), ("revenue", pa.float64())]
     )
     con.create_table("raw_events", pa.Table.from_pylist([], schema=schema))
-    return Analysis("bad", defs_path, con)
+    return from_definitions(defs_path, con, experiment_name="bad")
 
 
 def _cell(capability: str, metric_type: str) -> Cell:
@@ -316,14 +317,13 @@ def _expect_refusal(cell: Cell, probe) -> None:
 
 def _main_with_always_valid_inference(defs_path: Any, con: Any) -> Any:
     """Predeclare the bounded retention target and explicitly finalize its units."""
-    from increment import Analysis
     from tests.sequential_cases import registered_native
 
-    analysis = Analysis("exp_main", defs_path, con)
-    metric = next(m for m in analysis.metrics if m.name == "d1")
-    analysis = registered_native(analysis, metrics=[metric])
-    analysis.capture_sequential(finalized=True, as_of=dt.date(2026, 1, 15))
-    return analysis
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp_main")
+    metric = next(m for m in metrics(experiment, resolver) if m.name == "d1")
+    experiment, resolver = registered_native((experiment, resolver), metrics=[metric])
+    capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2026, 1, 15))
+    return experiment, resolver
 
 
 # Native-path fixture: one in-memory DuckDB + minimal definitions, shared by
@@ -336,7 +336,6 @@ def native(tmp_path_factory):
     pytest.importorskip("duckdb")
     import yaml
 
-    from increment import Analysis
     from increment.estimators import MetricTrends
 
     n = 48
@@ -537,20 +536,22 @@ def native(tmp_path_factory):
             metric["denominator"]["fact"] = "order"
     sitewide_defs_path = tmp / "sitewide_defs.yaml"
     sitewide_defs_path.write_text(yaml.safe_dump(sitewide_defs, sort_keys=False))
-    sitewide_analysis = Analysis("exp_main", sitewide_defs_path, con)
-    clustered_sitewide_analysis = Analysis("exp_cluster", sitewide_defs_path, con)
+    sitewide_analysis = from_definitions(sitewide_defs_path, con, experiment_name="exp_main")
+    clustered_sitewide_analysis = from_definitions(
+        sitewide_defs_path, con, experiment_name="exp_cluster"
+    )
 
-    main = Analysis("exp_main", defs_path, con)
-    cuped = Analysis("exp_cuped", defs_path, con)
-    clustered = Analysis("exp_cluster", defs_path, con)
-    d1 = next(m for m in main.metrics if m.name == "d1")
+    main = from_definitions(defs_path, con, experiment_name="exp_main")
+    cuped_experiment, cuped_resolver = from_definitions(defs_path, con, experiment_name="exp_cuped")
+    clustered = from_definitions(defs_path, con, experiment_name="exp_cluster")
+    d1 = next(m for m in metrics(*main) if m.name == "d1")
 
     export_path = tmp / "moments.parquet"
-    main.export(export_path)
+    export_moments(*main, export_path)
     import pyarrow.parquet as pq
 
     export_rows = pq.read_table(export_path).to_pylist()
-    rehydrated = Analysis.from_moments(
+    rehydrated_experiment, rehydrated_resolver = from_moments(
         export_rows,
         metrics=[
             MetricSpec(name="revenue"),
@@ -622,13 +623,17 @@ def native(tmp_path_factory):
         sitewide_analysis: Any
         clustered_analysis: Any
         sitewide_clustered_analysis: Any
-        run = main.run()
-        seq_run = _main_with_always_valid_inference(defs_path, con).run()
-        cuped_run = cuped.run(decision_method=Method(name="cuped", variance_reduction="cuped"))
-        breakout = main.run_breakout()
-        asof = main.run_asof_lift(metrics=[d1])
-        cluster_run = clustered.run()
-        rehydrated_run = rehydrated.run()
+        run = view_readout(*main)
+        seq_run = view_readout(*_main_with_always_valid_inference(defs_path, con))
+        cuped_run = view_readout(
+            cuped_experiment,
+            cuped_resolver,
+            decision_method=Method(name="cuped", variance_reduction="cuped"),
+        )
+        breakout = view_readout(*main, Scope(view="breakout", grain="total"))
+        asof = view_readout(*main, Scope(view="asof", grain="asof"), metrics=[d1])
+        cluster_run = view_readout(*clustered)
+        rehydrated_run = view_readout(rehydrated_experiment, rehydrated_resolver)
         report = MetricTrends.from_definitions(report_defs, con)
 
     Native.export_rows = export_rows
@@ -1003,8 +1008,6 @@ def _moment_spec(metric_type: str, name: str) -> MetricSpec:
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
 def test_from_moments(metric_type, native):
-    from increment import Analysis
-
     cell = _cell("from_moments", metric_type)
     metric_name = {
         "mean": "revenue",
@@ -1015,7 +1018,7 @@ def test_from_moments(metric_type, native):
     rows = _current_moment_rows(metric_type, native)
     if cell.status == "na":
         with pytest.raises(InvalidRequestError) as unknown_type:
-            Analysis.from_moments(rows, metrics={metric_name: metric_type}, control="control")
+            from_moments(rows, metrics={metric_name: metric_type}, control="control")
         assert unknown_type.value.code == "frame.metric_unknown_type"
         assert unknown_type.value.context["kind"] == metric_type
         with pytest.raises(InvalidRequestError) as spec_error:
@@ -1024,12 +1027,10 @@ def test_from_moments(metric_type, native):
         return
 
     def probe():
-        analysis = Analysis.from_moments(
-            rows,
-            metrics=[_moment_spec(metric_type, metric_name)],
-            control="control",
+        experiment, resolver = from_moments(
+            rows, metrics=[_moment_spec(metric_type, metric_name)], control="control"
         )
-        return analysis.run()
+        return view_readout(experiment, resolver)
 
     if cell.status == "refused":
         _expect_refusal(cell, probe)
@@ -1037,7 +1038,7 @@ def test_from_moments(metric_type, native):
     _assert_sane_lift(probe(), metric_name)
     if metric_type == "retention":
         with pytest.raises(InvalidRequestError) as terse:
-            Analysis.from_moments(rows, metrics={"d1": "retention"}, control="control")
+            from_moments(rows, metrics={"d1": "retention"}, control="control")
         assert terse.value.code == "frame.metric_type_retention"
         native_d1 = next(e for e in native.run if e.metric == "d1")
         rehydrated_d1 = next(e for e in native.rehydrated_run if e.metric == "d1")
@@ -1053,8 +1054,10 @@ def test_export(metric_type, native, tmp_path):
         _assert_report_layer_unreachable(metric_type)
         return
     if cell.status == "refused":
-        analysis = _quantile_experiment_analysis(tmp_path)
-        _expect_refusal(cell, lambda: analysis.export(tmp_path / "unreachable.parquet"))
+        experiment, resolver = _quantile_experiment_analysis(tmp_path)
+        _expect_refusal(
+            cell, lambda: export_moments(experiment, resolver, tmp_path / "unreachable.parquet")
+        )
         return
     name = _REPORT_METRIC[metric_type]
     assert name in native.export_metrics
@@ -1074,8 +1077,10 @@ def test_sitewide(metric_type, native, tmp_path):
 
     def probe():
         if metric_type == "quantile":
-            return _quantile_experiment_analysis(tmp_path).sitewide("bad_metric")
-        return native.sitewide_analysis.sitewide(name)
+            experiment, resolver = _quantile_experiment_analysis(tmp_path)
+            return sitewide(experiment, resolver, "bad_metric")
+        experiment, resolver = native.sitewide_analysis
+        return sitewide(experiment, resolver, name)
 
     if cell.status == "refused":
         _expect_refusal(cell, probe)
@@ -1090,8 +1095,9 @@ def test_sitewide(metric_type, native, tmp_path):
     ("revenue", "purchase_rate", "rev_per_order"),
 )
 def test_sitewide_refuses_windowed_metrics(metric_name, native):
+    experiment, resolver = native.analysis
     with pytest.raises(CapabilityError) as excinfo:
-        native.analysis.sitewide(metric_name)
+        sitewide(experiment, resolver, metric_name)
     assert excinfo.value.code == "facade.analysis.sitewide_metric_unaligned"
 
 
@@ -1162,6 +1168,9 @@ def test_capability_pairs(pair, native):
     def clustered_src(**kw: Any):
         return _summary_source(mean, table=_clustered_table(), cluster="store", **kw)
 
+    clustered_experiment, clustered_resolver = native.clustered_analysis
+    sitewide_experiment, sitewide_resolver = native.sitewide_clustered_analysis
+
     probes: dict[tuple[str, str], Callable[[], Any]] = {
         ("cluster", "cuped"): lambda: _summary_source(
             _frame_spec("mean", covariate="pre"), table=_clustered_table(), cluster="store"
@@ -1190,8 +1199,12 @@ def test_capability_pairs(pair, native):
             metrics=[mean],
             cluster="seg",
         ),
-        ("cluster", "export"): lambda: native.clustered_analysis.export("unreachable.parquet"),
-        ("cluster", "sitewide"): lambda: native.sitewide_clustered_analysis.sitewide("revenue"),
+        ("cluster", "export"): lambda: export_moments(
+            clustered_experiment, clustered_resolver, "unreachable.parquet"
+        ),
+        ("cluster", "sitewide"): lambda: sitewide(
+            sitewide_experiment, sitewide_resolver, "revenue"
+        ),
         ("cluster", "encouragement"): lambda: readouts.run(
             clustered_src(uptake="uptake", design=_ENCOURAGEMENT)
         ),
