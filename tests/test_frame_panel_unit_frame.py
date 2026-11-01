@@ -2,10 +2,10 @@ import numpy as np
 import polars as pl
 import pytest
 
-from increment import AdjustmentSet, Analysis, MetricSpec, Observational, Winsorization
+from increment import AdjustmentSet, MetricSpec, Observational, Winsorization, from_frame
 from increment.errors import CodedError
 from tests._frame_evidence_requests import _unit_rows
-from tests.analysis_factory import _native_source, lift_rows
+from tests.analysis_factory import bound_source, lift_rows, view_readout
 
 
 def _panel_with_covariate(n=40, *, vary_within_unit=False):
@@ -31,8 +31,9 @@ def _panel_with_covariate(n=40, *, vary_within_unit=False):
 
 def test_unit_panel_unit_frame_serves_constant_within_unit_covariate():
     df, tenure, _group = _panel_with_covariate()
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -42,7 +43,7 @@ def test_unit_panel_unit_frame_serves_constant_within_unit_covariate():
         ),
     )
     table = _unit_rows(
-        _native_source(analysis), _native_source(analysis).context.metrics[0], covariates=["tenure"]
+        bound_source(resolver), bound_source(resolver).context.metrics[0], covariates=["tenure"]
     )
     rows = (
         {r["unit_id"]: r["tenure"] for r in table.to_pylist()}
@@ -54,8 +55,9 @@ def test_unit_panel_unit_frame_serves_constant_within_unit_covariate():
 
 def test_unit_panel_unit_frame_refuses_covariate_varying_within_unit():
     df, _tenure, _group = _panel_with_covariate(vary_within_unit=True)
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -66,8 +68,8 @@ def test_unit_panel_unit_frame_refuses_covariate_varying_within_unit():
     )
     with pytest.raises(CodedError) as raised:
         _unit_rows(
-            _native_source(analysis),
-            _native_source(analysis).context.metrics[0],
+            bound_source(resolver),
+            bound_source(resolver).context.metrics[0],
             covariates=["tenure"],
         )
     assert raised.value.code == "frame.frame_panel.unit_covariate_varies"
@@ -89,24 +91,32 @@ def test_unordered_categorical_panel_matches_summary_rows():
     design = Observational(
         control_group="C", adjustment=AdjustmentSet(covariates=("spend", "region"))
     )
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         panel_frame,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
         metrics={"revenue": "mean"},
         design=design,
     )
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         summary_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=design,
     )
     assert_rows_match(
-        [row.model_dump(mode="json") for row in lift_rows(summary.run())],
-        [row.model_dump(mode="json") for row in lift_rows(panel.run())],
+        [
+            row.model_dump(mode="json")
+            for row in lift_rows(view_readout(summary_experiment, summary_resolver))
+        ],
+        [
+            row.model_dump(mode="json")
+            for row in lift_rows(view_readout(panel_experiment, panel_resolver))
+        ],
     )
 
 
@@ -137,8 +147,9 @@ def test_unit_panel_unit_frame_serves_all_null_covariates_as_missing_on_pandas()
             )
     frame = pd.DataFrame(rows)
     frame["region"] = pd.Categorical(frame["region"], ordered=False)
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         frame,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -148,7 +159,7 @@ def test_unit_panel_unit_frame_serves_all_null_covariates_as_missing_on_pandas()
             adjustment=AdjustmentSet(covariates=("tenure", "region"), missing="impute-indicator"),
         ),
     )
-    source = _native_source(analysis)
+    source = bound_source(resolver)
     table = _unit_rows(source, source.context.metrics[0], covariates=["tenure", "region"])
     served = {r["unit_id"]: r for r in _frame_records(table)}
     assert set(served) == {f"u{i}" for i in range(12)}
@@ -159,8 +170,9 @@ def test_unit_panel_unit_frame_serves_all_null_covariates_as_missing_on_pandas()
 
 def test_unit_panel_unit_frame_still_refuses_windowed_metric():
     df, _tenure, _group = _panel_with_covariate()
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -169,7 +181,7 @@ def test_unit_panel_unit_frame_still_refuses_windowed_metric():
         control="control",
     )
     with pytest.raises(CodedError) as raised:
-        _unit_rows(_native_source(analysis), _native_source(analysis).context.metrics[0])
+        _unit_rows(bound_source(resolver), bound_source(resolver).context.metrics[0])
     assert raised.value.code == "source.frame.unit_frame_panel"
 
 
@@ -180,23 +192,38 @@ def test_unit_panel_unit_frame_serves_unwindowed_quantile_metric_matching_unit_s
     per-unit reduction, so an unwindowed quantile is no longer refused."""
     df, _tenure, _group = _panel_with_covariate()
     spec = {"name": "revenue", "type": "quantile", "quantile": 0.5}
-    panel = Analysis.from_unit_panel(
-        df, unit="user_id", group="variant", date="date", metrics=[spec], control="control"
+    panel_experiment, panel_resolver = from_frame(
+        df,
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="date",
+        metrics=[spec],
+        control="control",
     )
     summary_df = df.group_by(["user_id", "variant"]).agg(pl.col("revenue").sum())
-    summary = Analysis.from_unit_summary(
-        summary_df, unit="user_id", group="variant", metrics=[spec], control="control"
+    summary_experiment, summary_resolver = from_frame(
+        summary_df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics=[spec],
+        control="control",
     )
     panel_rows = {
         r["unit_id"]: r["y"]
         for r in _frame_records(
-            _unit_rows(_native_source(panel), _native_source(panel).context.metrics[0])
+            _unit_rows(
+                bound_source(panel_resolver), bound_source(panel_resolver).context.metrics[0]
+            )
         )
     }
     summary_rows = {
         r["unit_id"]: r["y"]
         for r in _frame_records(
-            _unit_rows(_native_source(summary), _native_source(summary).context.metrics[0])
+            _unit_rows(
+                bound_source(summary_resolver), bound_source(summary_resolver).context.metrics[0]
+            )
         )
     }
     assert panel_rows == pytest.approx(summary_rows)
@@ -209,8 +236,9 @@ def test_unit_panel_quantile_metric_cannot_declare_window_days():
     to refuse."""
     df, _tenure, _group = _panel_with_covariate()
     with pytest.raises(CodedError) as raised:
-        Analysis.from_unit_panel(
+        from_frame(
             df,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="date",
@@ -258,11 +286,22 @@ def _panel_and_summary(units, tenure, group, revenue, spec, design):
             "tenure": [tenure[u] for u in units],
         }
     )
-    panel = Analysis.from_unit_panel(
-        panel_df, unit="user_id", group="variant", date="date", metrics=[spec], design=design
+    panel = from_frame(
+        panel_df,
+        shape="panel",
+        unit="user_id",
+        group="variant",
+        date="date",
+        metrics=[spec],
+        design=design,
     )
-    summary = Analysis.from_unit_summary(
-        panel_df.drop("date"), unit="user_id", group="variant", metrics=[spec], design=design
+    summary = from_frame(
+        panel_df.drop("date"),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics=[spec],
+        design=design,
     )
     return panel, summary
 
@@ -279,21 +318,29 @@ def test_unit_panel_unit_frame_applies_winsorization_matching_unit_summary():
         adjustment=AdjustmentSet(covariates=("tenure",)),
         gate=IdentificationGate(overlap="trim"),
     )
-    panel, summary = _panel_and_summary(units, tenure, group, revenue, spec, design)
+    (panel_experiment, panel_resolver), (summary_experiment, summary_resolver) = _panel_and_summary(
+        units, tenure, group, revenue, spec, design
+    )
 
-    metric = _native_source(panel).context.metrics[0]
+    metric = bound_source(panel_resolver).context.metrics[0]
     panel_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(panel), metric))
+        r["unit_id"]: r["y"]
+        for r in _frame_records(_unit_rows(bound_source(panel_resolver), metric))
     }
     summary_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(summary), metric))
+        r["unit_id"]: r["y"]
+        for r in _frame_records(_unit_rows(bound_source(summary_resolver), metric))
     }
     assert panel_rows == pytest.approx(summary_rows)
     # The outlier must actually be clipped, not silently passed through raw.
     assert panel_rows["u0"] == pytest.approx(50.0)
 
-    panel_result = {r.group_id: r for r in lift_rows(panel.run())}
-    summary_result = {r.group_id: r for r in lift_rows(summary.run())}
+    panel_result = {
+        r.group_id: r for r in lift_rows(view_readout(panel_experiment, panel_resolver))
+    }
+    summary_result = {
+        r.group_id: r for r in lift_rows(view_readout(summary_experiment, summary_resolver))
+    }
     assert set(panel_result) == set(summary_result)
     for group_id, row in panel_result.items():
         oracle = summary_result[group_id]
@@ -318,21 +365,29 @@ def test_unit_panel_unit_frame_applies_missing_zero_matching_unit_summary():
         adjustment=AdjustmentSet(covariates=("tenure",)),
         gate=IdentificationGate(overlap="trim"),
     )
-    panel, summary = _panel_and_summary(units, tenure, group, revenue, spec, design)
+    (panel_experiment, panel_resolver), (summary_experiment, summary_resolver) = _panel_and_summary(
+        units, tenure, group, revenue, spec, design
+    )
 
-    metric = _native_source(panel).context.metrics[0]
+    metric = bound_source(panel_resolver).context.metrics[0]
     panel_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(panel), metric))
+        r["unit_id"]: r["y"]
+        for r in _frame_records(_unit_rows(bound_source(panel_resolver), metric))
     }
     summary_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(summary), metric))
+        r["unit_id"]: r["y"]
+        for r in _frame_records(_unit_rows(bound_source(summary_resolver), metric))
     }
     assert panel_rows["u1"] == pytest.approx(0.0)
     assert panel_rows["u5"] == pytest.approx(0.0)
     assert panel_rows == pytest.approx(summary_rows)
 
-    panel_result = {r.group_id: r for r in lift_rows(panel.run())}
-    summary_result = {r.group_id: r for r in lift_rows(summary.run())}
+    panel_result = {
+        r.group_id: r for r in lift_rows(view_readout(panel_experiment, panel_resolver))
+    }
+    summary_result = {
+        r.group_id: r for r in lift_rows(view_readout(summary_experiment, summary_resolver))
+    }
     assert set(panel_result) == set(summary_result)
     for group_id, row in panel_result.items():
         oracle = summary_result[group_id]
@@ -365,8 +420,9 @@ def test_unit_panel_unit_frame_refuses_covariate_null_on_some_rows_only():
                 }
             )
     df = pl.DataFrame(rows)
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
@@ -377,8 +433,8 @@ def test_unit_panel_unit_frame_refuses_covariate_null_on_some_rows_only():
     )
     with pytest.raises(CodedError) as raised:
         _unit_rows(
-            _native_source(analysis),
-            _native_source(analysis).context.metrics[0],
+            bound_source(resolver),
+            bound_source(resolver).context.metrics[0],
             covariates=["tenure"],
         )
     assert raised.value.code == "frame.frame_panel.unit_covariate_varies"

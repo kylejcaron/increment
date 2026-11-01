@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import ibis
 import pyarrow as pa
@@ -14,12 +14,14 @@ import pytest
 import yaml
 
 from examples._seed import seed_event_log
+from increment import Scope, from_definitions, from_unit_day_artifact, workflows
 from increment._moment_plan import SLOTS
 from increment.analysis import Analysis
-from increment.artifacts import SourceSnapshotEvidence
+from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.diagnostics import SRMResult
+from increment.estimators import sitewide
 from increment.evidence import (
     CountEvidence,
     CountsRequest,
@@ -42,8 +44,9 @@ from increment.query.source import open_artifact
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactManifest
 from increment.semantics.loader import load
 from increment.semantics.models import Definitions
+from increment.workflows import experiment_definition, export_moments, srm
 from tests._shared_cache import fixture_cache_key, get_or_build
-from tests.analysis_factory import _native_source, lift_rows
+from tests.analysis_factory import bound_analysis, bound_source, lift_rows, view_readout
 
 
 def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> pa.Table:
@@ -290,6 +293,27 @@ def _definitions(
     return path
 
 
+def _definitions_copy(definitions: str | Path) -> tuple[Path, Path]:
+    """Copy *definitions* into a fresh directory; return the copy and its directory.
+
+    The definitions builder writes a catalog beside the file it reads, so a shared
+    path (``examples/definitions``) must never be bound directly.
+    """
+    import shutil
+    import tempfile
+
+    root = Path(tempfile.mkdtemp())
+    source_path = Path(definitions)
+    copied = root / "definitions"
+    if source_path.is_dir():
+        shutil.copytree(source_path, copied)
+    else:
+        copied.mkdir()
+        shutil.copy2(source_path, copied / source_path.name)
+        copied = copied / source_path.name
+    return copied, root
+
+
 def _native(
     *,
     definitions: str | Path = "examples/definitions",
@@ -297,6 +321,9 @@ def _native(
     with_late_returns: bool = False,
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
 ):
+    import shutil
+    import weakref
+
     con = ibis.duckdb.connect()
     con.raw_sql("CREATE SCHEMA IF NOT EXISTS analytics")
     con.create_table(
@@ -308,15 +335,17 @@ def _native(
         database="analytics",
         overwrite=True,
     )
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2",
-        definitions,
+    copied, root = _definitions_copy(definitions)
+    native = from_definitions(
+        copied,
         con,
+        experiment_name="new_onboarding_v2",
         source_snapshot_evidence=source_snapshot_evidence,
     )
+    weakref.finalize(native[1], shutil.rmtree, root, True)
     context = _expected_context(definitions)
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    return con, analysis, context, store
+    return con, native, context, store
 
 
 def _published(
@@ -327,25 +356,16 @@ def _published(
     with_late_returns: bool = False,
 ):
     import shutil
-    import tempfile
 
-    from increment import from_definitions
-    from increment.artifacts import artifact_context, publish_unit_day_artifact
+    from increment.artifacts import artifact_context
 
     con, native, context, store = _native(
         definitions=definitions,
         with_pre_period=with_pre_period,
         with_late_returns=with_late_returns,
     )
-    source_path = Path(definitions)
-    with tempfile.TemporaryDirectory() as temporary:
-        copied = Path(temporary) / "definitions"
-        if source_path.is_dir():
-            shutil.copytree(source_path, copied)
-        else:
-            copied.mkdir()
-            shutil.copy2(source_path, copied / source_path.name)
-            copied = copied / source_path.name
+    copied, root = _definitions_copy(definitions)
+    try:
         experiment, resolver = from_definitions(copied, con, experiment_name="new_onboarding_v2")
         try:
             trusted_context = artifact_context(experiment, resolver)
@@ -354,6 +374,8 @@ def _published(
             ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
         finally:
             cast(Any, resolver).close()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
     return con, native, context, store, ref
 
 
@@ -432,9 +454,9 @@ def test_representative_publication_matches_golden_manifest(
         measure["outcome_domain"] = measure_domains[measure["measure_key"]]
     monkeypatch.setattr(session_module, "uuid", _FixedUUID())
     definitions = _definitions(tmp_path, breakouts=[{"property": "country"}])
-    _con, native, context, store = _native(definitions=definitions)
+    _con, (experiment, resolver), context, store = _native(definitions=definitions)
     extensions = _extensions(context, "breakout_dimension", "assignment_counts")
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
+    ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert all(extension.relation.digest_format == 4 for extension in manifest.extensions)
@@ -578,7 +600,7 @@ def test_format_one_local_codec_matches_saved_previous_writer_relation_digests(
                 )
         assert observed == saved["relation_digests"]
     finally:
-        native.close()
+        native[1].close()
         con.disconnect()
 
 
@@ -590,7 +612,7 @@ def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(session_module, "_SQL_DIGEST_BACKENDS", frozenset())
-    con, native, _context, store = _native()
+    con, (experiment, resolver), _context, store = _native()
     real_to_pyarrow = con.to_pyarrow
 
     def guarded_to_pyarrow(table, *args, **kwargs):
@@ -606,14 +628,14 @@ def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
     monkeypatch.setattr(con, "to_pyarrow_batches", unexpected_batch_transfer)
     try:
         with pytest.raises(CodedError) as refused:
-            native.publish_unit_day_artifact(store)
+            publish_unit_day_artifact(experiment, resolver, store)
         assert refused.value.code == "query.session.warehouse_artifact.verification_unavailable"
         assert refused.value.context["relation"] == "<publication>"
         assert refused.value.context["digest_format"] == 3
         assert "republish from trusted definitions" in str(refused.value.context["route"])
         assert not store.visible_manifests
     finally:
-        native.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -622,23 +644,58 @@ def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
 def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
     from increment.estimation.engine import Method
 
-    _con, native, context, store, ref = _published()
+    _con, (native_experiment, native_resolver), context, store, ref = _published()
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert manifest.context == context
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     unadjusted = Method(name="unadjusted")
-    native_rows = lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))
-    adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
+    native_rows = lift_rows(
+        view_readout(
+            native_experiment,
+            native_resolver,
+            metrics=["purchase_rate"],
+            decision_method=unadjusted,
+        )
+    )
+    adopted_rows = lift_rows(
+        view_readout(
+            adopted_experiment,
+            adopted_resolver,
+            metrics=["purchase_rate"],
+            decision_method=unadjusted,
+        )
+    )
     assert adopted_rows[0].metric == native_rows[0].metric
     assert adopted_rows[0].require_lift().value == pytest.approx(
         native_rows[0].require_lift().value
     )
-    assert len(adopted.run_daily(metrics=["purchase_rate"])) == len(
-        native.run_daily(metrics=["purchase_rate"])
+    assert len(
+        view_readout(
+            adopted_experiment,
+            adopted_resolver,
+            Scope(view="daily", grain="daily", values=True),
+            metrics=["purchase_rate"],
+        )
+    ) == len(
+        view_readout(
+            native_experiment,
+            native_resolver,
+            Scope(view="daily", grain="daily", values=True),
+            metrics=["purchase_rate"],
+        )
     )
-    adopted.close()
-    assert lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
+    adopted_resolver.close()
+    assert lift_rows(
+        view_readout(
+            adopted_experiment,
+            adopted_resolver,
+            metrics=["purchase_rate"],
+            decision_method=unadjusted,
+        )
+    )
 
 
 def _add_treatment_units(con: Any) -> None:
@@ -652,61 +709,94 @@ def _add_treatment_units(con: Any) -> None:
     )
 
 
-def _purchase_lift(analysis: Analysis) -> float:
+def _purchase_lift(pair: tuple[Any, Any]) -> float:
     from increment.estimation.engine import Method
 
+    experiment, resolver = pair
     return (
         lift_rows(
-            analysis.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+            view_readout(
+                experiment,
+                resolver,
+                metrics=["purchase_rate"],
+                decision_method=Method(name="unadjusted"),
+            )
         )[0]
         .require_lift()
         .value
     )
 
 
+def _population_readouts(
+    experiment: Any, resolver: Any, view: Literal["run", "breakout"] = "run", **options: Any
+) -> tuple[Any, list[Any]]:
+    """One capture of a triggered experiment's assigned and triggered views.
+
+    Returns the run and the rows of both populations, assigned first.
+    """
+    from increment import run
+
+    scopes = [
+        Scope(view=view, grain="total", population=population)
+        for population in ("assigned", "triggered")
+    ]
+    result = run(experiment.with_views(*scopes), resolver, **options)
+    return result, [row for scope in scopes for row in result.readout(scope)]
+
+
 @pytest.mark.integration
 def test_artifact_run_is_effectively_captured_when_live_is_requested() -> None:
     con, native, context, store, ref = _published()
     try:
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
-            results = adopted.run(metrics=["purchase_rate"], coherence="live")
+        experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
+        with resolver:
+            results = view_readout(
+                experiment, resolver, metrics=["purchase_rate"], coherence="live"
+            )
             assert results
             assert results.metadata is not None
             assert results.metadata.coherence == "captured"
             assert results.metadata.effective_modes
             assert set(results.metadata.effective_modes.values()) == {"captured"}
     finally:
-        native.close()
+        native[1].close()
         con.disconnect()
 
 
 @pytest.mark.slow
 @pytest.mark.integration
 def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one() -> None:
-    con, native, context, store, ref = _published()
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    con, (experiment, resolver), context, store, ref = _published()
+    adopted = from_unit_day_artifact(store, ref, expected_context=context)
     before = _purchase_lift(adopted)
-    adopted.close()
+    adopted[1].close()
     _add_treatment_units(con)
-    newer = native.publish_unit_day_artifact(store, refresh_of=ref)
-    with Analysis.from_unit_day_artifact(store, newer, expected_context=context) as latest:
+    newer = publish_unit_day_artifact(experiment, resolver, store, refresh_of=ref)
+    latest = from_unit_day_artifact(store, newer, expected_context=context)
+    with latest[1]:
         assert _purchase_lift(latest) != pytest.approx(before)
     assert _purchase_lift(adopted) == pytest.approx(before)
-    adopted.close()
+    adopted[1].close()
     assert _purchase_lift(adopted) == pytest.approx(before)
 
 
 def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysis_live() -> None:
     from increment._source_operations import DashboardSnapshotPayload
+    from increment.estimation.engine import Method
+    from tests.analysis_factory import bound_analysis
 
     con, native, _context, _store = _native()
     metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
     seen: dict[str, float] = {}
 
+    def facade_lift(isolated: Analysis) -> float:
+        rows = isolated.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+        return lift_rows(rows)[0].require_lift().value
+
     def operation(isolated: Analysis) -> DashboardSnapshotPayload:
-        seen["pinned_before"] = _purchase_lift(isolated)
+        seen["pinned_before"] = facade_lift(isolated)
         _add_treatment_units(con)
-        seen["pinned_after"] = _purchase_lift(isolated)
+        seen["pinned_after"] = facade_lift(isolated)
         return DashboardSnapshotPayload(
             allocation=None,
             allocation_refusal=None,
@@ -718,28 +808,30 @@ def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysi
         )
 
     try:
-        native.dashboard_snapshot(operation, metrics=metrics)
+        bound_analysis(native[1]).dashboard_snapshot(operation, metrics=metrics)
         assert seen["pinned_after"] == pytest.approx(seen["pinned_before"])
         assert _purchase_lift(native) != pytest.approx(seen["pinned_before"])
     finally:
-        native.close()
+        native[1].close()
 
 
 @pytest.mark.slow
 def test_dashboard_snapshot_refuses_an_artifact_backed_analysis_and_it_stays_usable() -> None:
+    from tests.analysis_factory import bound_analysis
+
     _con, _native_analysis, context, store, ref = _published()
     metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    adopted = from_unit_day_artifact(store, ref, expected_context=context)
     before = _purchase_lift(adopted)
 
     def operation(_isolated: Analysis) -> Any:
         raise AssertionError("the handler must not run on an artifact-backed analysis")
 
     with pytest.raises(CapabilityError) as raised:
-        adopted.dashboard_snapshot(operation, metrics=metrics)
+        bound_analysis(adopted[1]).dashboard_snapshot(operation, metrics=metrics)
     assert raised.value.code == "evidence.operation_unavailable"
     assert raised.value.context["requested"] == "readout_snapshot"
-    adopted.close()
+    adopted[1].close()
     assert _purchase_lift(adopted) == pytest.approx(before)
 
 
@@ -757,12 +849,15 @@ def test_artifact_source_reports_closed_only_after_close() -> None:
 @pytest.mark.parametrize("closer", ["parent", "triggered"])
 def test_closing_either_view_of_a_snapshot_closes_both(tmp_path: Path, closer: str) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _con, native, context, store = _native(
+    _con, (experiment, resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(datetime(2030, 1, 1, tzinfo=UTC)),
     )
-    ref = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "trigger_population", "assignment_counts")
+    ref = publish_unit_day_artifact(
+        experiment,
+        resolver,
+        store,
+        extensions=_extensions(context, "trigger_population", "assignment_counts"),
     )
     parent = open_artifact(store, ref, expected_context=context)
     triggered = cast("Any", parent.triggered_source())
@@ -776,21 +871,34 @@ def test_closing_either_view_of_a_snapshot_closes_both(tmp_path: Path, closer: s
 
 @pytest.mark.slow
 def test_public_extension_selection_uses_the_immutable_catalog() -> None:
-    _con, native, context, store = _native()
+    _con, (native_experiment, native_resolver), context, store = _native()
     request = next(
         entry.request
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind == "breakout_dimension"
     )
-    ref = native.publish_unit_day_artifact(store, extensions=[request])
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    assert adopted.run_breakout(metrics=["purchase_rate"])
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=[request])
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    assert view_readout(
+        adopted_experiment,
+        adopted_resolver,
+        Scope(view="breakout", grain="total"),
+        metrics=["purchase_rate"],
+    )
     with pytest.raises(ArtifactContractError):
-        native.publish_unit_day_artifact(store, extensions=[request, request])
+        publish_unit_day_artifact(
+            native_experiment, native_resolver, store, extensions=[request, request]
+        )
     with pytest.raises(ArtifactContractError):
-        native.publish_unit_day_artifact(
+        publish_unit_day_artifact(
+            native_experiment,
+            native_resolver,
             store,
-            extensions=[{"kind": "breakout_dimension", "property_name": request.property_name}],
+            extensions=cast(
+                Any, [{"kind": "breakout_dimension", "property_name": request.property_name}]
+            ),
         )
 
 
@@ -798,9 +906,9 @@ def test_artifact_reader_and_source_openers_share_hydrated_contract() -> None:
     from increment.query.artifact_reader import open_artifact as reader_open
     from increment.query.source import open_artifact as facade_open
 
-    _con, native, context, store = _native()
+    _con, (experiment, resolver), context, store = _native()
     request = _extensions(context, "breakout_dimension")[0]
-    ref = native.publish_unit_day_artifact(store, extensions=[request])
+    ref = publish_unit_day_artifact(experiment, resolver, store, extensions=[request])
 
     with (
         reader_open(store, ref, expected_context=context) as reader,
@@ -817,17 +925,21 @@ def test_artifact_reader_and_source_openers_share_hydrated_contract() -> None:
 
 
 @pytest.mark.slow
-def test_refresh_preserves_artifact_identity_and_rejects_cross_context() -> None:
-    _con, native, context, store, first = _published()
-    second = native.publish_unit_day_artifact(store, refresh_of=first)
+def test_refresh_preserves_artifact_identity_and_rejects_cross_context(
+    example_definitions: Path,
+) -> None:
+    _con, (native_experiment, native_resolver), context, store, first = _published()
+    second = publish_unit_day_artifact(native_experiment, native_resolver, store, refresh_of=first)
     assert second.artifact_id == first.artifact_id and second.generation_id != first.generation_id
-    other = Analysis.from_definitions("pricing_tier_test", "examples/definitions", _con)
+    other_experiment, other_resolver = from_definitions(
+        example_definitions, _con, experiment_name="pricing_tier_test"
+    )
     other_context = _expected_context("examples/definitions", "pricing_tier_test")
     with pytest.raises(ArtifactContractError):
-        other.publish_unit_day_artifact(store, refresh_of=first)
+        publish_unit_day_artifact(other_experiment, other_resolver, store, refresh_of=first)
     assert len(store.visible_manifests) == 2
     with pytest.raises(ArtifactContractError):
-        Analysis.from_unit_day_artifact(store, first, expected_context=other_context)
+        from_unit_day_artifact(store, first, expected_context=other_context)
 
 
 @pytest.mark.integration
@@ -847,7 +959,7 @@ def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
     store = ParquetResultsStore(tmp_path / "runs")
     hashes = []
     for definitions in (first_definitions, second_definitions):
-        con, analysis, _context, _artifact_store = _native(definitions=definitions)
+        con, (experiment, resolver), _context, _artifact_store = _native(definitions=definitions)
         try:
             import warnings
 
@@ -855,7 +967,9 @@ def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
 
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                rows = analysis.run(store=store)
+                # `run(..., results_store=)` saves under a run registration rather than
+                # the readout spec hash these assertions read; kept on the legacy route.
+                rows = bound_analysis(resolver).run(store=store)
             assert any(
                 isinstance(item.message, IncrementWarning)
                 and item.message.code == "analysis.cuped.covariate_unused"
@@ -864,7 +978,7 @@ def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
             assert rows.metadata is not None
             hashes.append(rows.metadata.analysis_spec_hash)
         finally:
-            analysis.close()
+            resolver.close()
             con.disconnect()
     assert hashes[0] != hashes[1]
 
@@ -875,17 +989,19 @@ def test_fresh_artifact_generation_preserves_content_digest(tmp_path: Path):
     from increment.store import ParquetResultsStore
 
     result_store = ParquetResultsStore(tmp_path / "runs")
-    _con, native, context, artifact_store, first = _published()
-    second = native.publish_unit_day_artifact(artifact_store, refresh_of=first)
-    first_analysis = Analysis.from_unit_day_artifact(
+    _con, (native_experiment, native_resolver), context, artifact_store, first = _published()
+    second = publish_unit_day_artifact(
+        native_experiment, native_resolver, artifact_store, refresh_of=first
+    )
+    first_experiment, first_resolver = from_unit_day_artifact(
         artifact_store, first, expected_context=context
     )
-    second_analysis = Analysis.from_unit_day_artifact(
+    second_experiment, second_resolver = from_unit_day_artifact(
         artifact_store, second, expected_context=context
     )
     try:
-        first_rows = first_analysis.run(store=result_store)
-        second_rows = second_analysis.run(store=result_store)
+        first_rows = bound_analysis(first_resolver).run(store=result_store)
+        second_rows = bound_analysis(second_resolver).run(store=result_store)
         first_cells = first_rows.as_cells()
         second_cells = second_rows.as_cells()
         first_digests = {cell.identity.source_content_digest for cell in first_cells}
@@ -910,8 +1026,8 @@ def test_fresh_artifact_generation_preserves_content_digest(tmp_path: Path):
         assert first_cells[0].provenance.source_content_digest != first.manifest_sha256
         assert first_digests and first_digests == second_digests
     finally:
-        first_analysis.close()
-        second_analysis.close()
+        first_resolver.close()
+        second_resolver.close()
 
 
 # Guards triggered dispatch from silently returning only the assigned population.
@@ -919,7 +1035,7 @@ def test_fresh_artifact_generation_preserves_content_digest(tmp_path: Path):
 @pytest.mark.slow
 def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _con, native, context, store = _native(
+    _con, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime(2030, 1, 1, tzinfo=UTC),
@@ -934,13 +1050,19 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
         "trigger_measure_stats",
         "assignment_counts",
     }
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
-        first = adopted.run(metrics=["purchase_rate"])
-        second = adopted.run(metrics=["purchase_rate"])
-        assert first and second
-        assert {row.analysis_population for row in first} == {"assigned", "triggered"}
+        first, first_rows = _population_readouts(
+            adopted_experiment, adopted_resolver, metrics=["purchase_rate"]
+        )
+        second, second_rows = _population_readouts(
+            adopted_experiment, adopted_resolver, metrics=["purchase_rate"]
+        )
+        assert first_rows and second_rows
+        assert {row.analysis_population for row in first_rows} == {"assigned", "triggered"}
         assert first.metadata is not None and second.metadata is not None
 
         def order(result):
@@ -959,8 +1081,8 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
         populations = tuple(item[0] for item in first_order)
         assert populations == tuple(sorted(populations))
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
         _con.disconnect()
 
 
@@ -970,14 +1092,20 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
 def test_site_volume_serves_logical_metric_names(tmp_path: Path) -> None:
 
     definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
-    _con, native, context, store = _native(definitions=definitions)
-    metric = next(item for item in native.metrics if item.name == "purchase_count")
-    assert metric.name != metric.fact
+    _con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
+    metric = next(
+        item
+        for item in workflows.metrics(native_experiment, native_resolver)
+        if item.name == "purchase_count"
+    )
+    assert metric.name != cast(Any, metric).fact
     selected = _extensions(context, "site_volume")
     assert selected
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    result = adopted.sitewide("purchase_count")
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    result = sitewide(adopted_experiment, adopted_resolver, "purchase_count")
     assert result.site_total_volume > 0  # ty: ignore[unresolved-attribute]
 
 
@@ -985,14 +1113,14 @@ def test_site_volume_coverage_with_no_declared_metrics_omits_extension(
     tmp_path: Path,
 ) -> None:
     definitions = _definitions(tmp_path, empty_plan=True)
-    _con, native, _context, store = _native(definitions=definitions)
+    _con, (experiment, resolver), _context, store = _native(definitions=definitions)
     coverage = {
         "first_ds": "2024-01-01",
         "last_ds": "2024-01-02",
         "freshness": {"loaded_through": "2024-01-02", "declared_complete": True},
     }
     context = compile_unit_day_artifact_context(
-        native.experiment.name,
+        experiment_definition(experiment, resolver).name,
         load(definitions),
         site_volume_coverage=coverage,
     )
@@ -1000,7 +1128,7 @@ def test_site_volume_coverage_with_no_declared_metrics_omits_extension(
         entry.request.kind == "site_volume"
         for entry in unit_day_artifact_extension_catalog(context)
     )
-    assert native.publish_unit_day_artifact(store)
+    assert publish_unit_day_artifact(experiment, resolver, store)
 
 
 # Guards reduction from accepting stored date rows with a non-canonical physical timestamp type.
@@ -1017,9 +1145,9 @@ def test_non_canonical_stored_rows_refuse() -> None:
                n_events, sum_value, min_value, max_value
         FROM "{stats_schema}"."{stats_name}"'''
     )
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     with pytest.raises(ArtifactDigestError) as raised:
-        lift_rows(adopted.run(metrics=["purchase_rate"]))
+        lift_rows(view_readout(experiment, resolver, metrics=["purchase_rate"]))
     assert raised.value.code == "artifact.digest.type"
 
 
@@ -1029,7 +1157,9 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
-    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    con, (experiment, resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
     forbidden_columns = (
         {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"},
         {"unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"},
@@ -1059,13 +1189,17 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
         requests = _extensions(
             context, "cuped_preperiod", "assignment_counts", "breakout_dimension"
         )
-        ref = native.publish_unit_day_artifact(store, extensions=requests)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        ref = publish_unit_day_artifact(experiment, resolver, store, extensions=requests)
+        adopted = from_unit_day_artifact(store, ref, expected_context=context)
+        rows = lift_rows(view_readout(*adopted, metrics=["purchase_rate"]))
         assert rows
         assert {row.analysis_population for row in rows} == {"assigned"}
         assert any(row.method == "cuped" for row in rows)
-        assert adopted.run_breakout(metrics=["purchase_rate"], population="assigned")
+        assert view_readout(
+            *adopted,
+            Scope(view="breakout", grain="total", population="assigned"),
+            metrics=["purchase_rate"],
+        )
         assert digest_batch_sizes == []
 
         with store.open_snapshot(ref) as snapshot:
@@ -1075,15 +1209,15 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
         )
         relation = covariate.relation.relation
         con.raw_sql(f'UPDATE "{relation.schema_name}"."{relation.name}" SET x = x + 1.0')
-        adopted.close()
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        adopted[1].close()
+        adopted = from_unit_day_artifact(store, ref, expected_context=context)
         with pytest.raises(ArtifactContractError) as raised:
-            adopted.run(metrics=["purchase_rate"])
+            view_readout(*adopted, metrics=["purchase_rate"])
         assert raised.value.code == "artifact.snapshot.mixed"
     finally:
         if adopted is not None:
-            adopted.close()
-        native.close()
+            adopted[1].close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1151,11 +1285,11 @@ def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_wareho
         datetime(2025, 3, 31, tzinfo=UTC), {"event_log": datetime(2025, 3, 31, tzinfo=UTC)}
     )
 
-    con_utc, native_utc, _context_utc, _store_utc = _native(
+    con_utc, (native_utc_experiment, native_utc_resolver), _context_utc, _store_utc = _native(
         definitions=definitions, source_snapshot_evidence=evidence
     )
 
-    con_la, native_la, context_la, store_la = _native(
+    con_la, (native_la_experiment, native_la_resolver), context_la, store_la = _native(
         definitions=definitions, source_snapshot_evidence=evidence
     )
 
@@ -1192,10 +1326,14 @@ def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_wareho
         unit_id = set_edge_exposure(con_utc)
         assert set_edge_exposure(con_la) == unit_id
         con_utc.raw_sql("SET TimeZone='UTC'")
-        expected = lift_rows(native_utc.run(metrics=["purchase_rate"]))
+        _, expected = _population_readouts(
+            native_utc_experiment, native_utc_resolver, metrics=["purchase_rate"]
+        )
 
         con_la.raw_sql("SET TimeZone='America/Los_Angeles'")
-        ref = native_la.publish_unit_day_artifact(
+        ref = publish_unit_day_artifact(
+            native_la_experiment,
+            native_la_resolver,
             store_la,
             extensions=_extensions(
                 context_la,
@@ -1205,8 +1343,11 @@ def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_wareho
                 "assignment_counts",
             ),
         )
-        adopted = Analysis.from_unit_day_artifact(store_la, ref, expected_context=context_la)
-        actual = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        adopted = from_unit_day_artifact(store_la, ref, expected_context=context_la)
+        adopted_experiment, adopted_resolver = adopted
+        _, actual = _population_readouts(
+            adopted_experiment, adopted_resolver, metrics=["purchase_rate"]
+        )
         assert [(row.metric, row.group_id, row.method) for row in actual] == [
             (row.metric, row.group_id, row.method) for row in expected
         ]
@@ -1248,9 +1389,9 @@ def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_wareho
         assert trigger_row["first_trigger_ts"] == datetime(2025, 3, 6, 23, tzinfo=UTC)
     finally:
         if adopted is not None:
-            adopted.close()
-        native_utc.close()
-        native_la.close()
+            adopted[1].close()
+        native_utc_resolver.close()
+        native_la_resolver.close()
         con_utc.disconnect()
         con_la.disconnect()
 
@@ -1297,14 +1438,17 @@ def test_publication_accepts_integer_and_boolean_property_covariates(
         }
     ]
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    con, native, context, store = _native(definitions=definitions)
+    con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     try:
-        reference = native.publish_unit_day_artifact(
-            store, extensions=_extensions(context, "unit_covariate")
+        reference = publish_unit_day_artifact(
+            native_experiment,
+            native_resolver,
+            store,
+            extensions=_extensions(context, "unit_covariate"),
         )
         assert reference.artifact_id
     finally:
-        native.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -1316,21 +1460,30 @@ def test_adopted_run_warns_for_published_cuped_covariate(tmp_path: Path) -> None
     from tests.warning_codes import warning_codes, warning_context
 
     definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
-    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    con, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
     requests = _extensions(context, "cuped_preperiod")
     assert any(request.metric_name == "purchase_rate" for request in requests)
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            adopted.run(metrics=["purchase_rate"], sensitivity_methods=[])
+            view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                metrics=["purchase_rate"],
+                sensitivity_methods=[],
+            )
         assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 1
         context_values = warning_context(caught, "analysis.cuped.covariate_unused")
         assert context_values["metric_names"] == ("purchase_rate",)
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -1339,20 +1492,24 @@ def test_adopted_run_warns_for_published_cuped_covariate(tmp_path: Path) -> None
 @pytest.mark.slow
 def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
-    _con, native, context, store = _native(definitions=definitions, with_pre_period=True)
-    assert native.experiment.n_pre_periods > 0
+    _con, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
+    assert experiment_definition(native_experiment, native_resolver).n_pre_periods > 0
     requests = _extensions(context, "breakout_dimension", "cuped_preperiod")
     assert any(request.kind == "cuped_preperiod" for request in requests)
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    metric = adopted.metrics[0]
-    breakout = adopted.experiment.breakouts[0]
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    metric = workflows.metrics(adopted_experiment, adopted_resolver)[0]
+    breakout = experiment_definition(adopted_experiment, adopted_resolver).breakouts[0]
     with open_artifact(store, ref, expected_context=context) as source:
         breakout_rows = _moments(
             source, metric, grain="total", by=("country",), include_covariate=True
         )
     native_rows = _moments(
-        _native_source(native).breakout_source(breakout, metrics=[metric]),
+        bound_source(native_resolver).breakout_source(breakout, metrics=[metric]),
         metric,
         by=("country",),
     )
@@ -1362,7 +1519,12 @@ def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
     assert sorted(row["ref_x"] for row in breakout_rows) == pytest.approx(
         sorted(row["ref_x"] for row in native_rows)
     )
-    assert adopted.run_breakout(metrics=["purchase_rate"])
+    assert view_readout(
+        adopted_experiment,
+        adopted_resolver,
+        Scope(view="breakout", grain="total"),
+        metrics=["purchase_rate"],
+    )
 
 
 # Guards bounded-retention daily lift from losing its non-null CUPED covariate moments.
@@ -1370,7 +1532,7 @@ def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("d7_retention",))
-    _con, native, context, store = _native(
+    _con, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions,
         with_pre_period=True,
         with_late_returns=True,
@@ -1379,31 +1541,45 @@ def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
 
     from tests.warning_codes import warning_codes, warning_context
 
-    assert native.experiment.n_pre_periods > 0
+    assert experiment_definition(native_experiment, native_resolver).n_pre_periods > 0
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        native.run(metrics=["d7_retention"], sensitivity_methods=[])
+        view_readout(
+            native_experiment, native_resolver, metrics=["d7_retention"], sensitivity_methods=[]
+        )
     assert "analysis.cuped.covariate_unused" in warning_codes(caught)
     assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
         "d7_retention",
     )
     selected = _extensions(context, "cuped_preperiod")
     assert selected
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        adopted.run(metrics=["d7_retention"], sensitivity_methods=[])
+        view_readout(
+            adopted_experiment, adopted_resolver, metrics=["d7_retention"], sensitivity_methods=[]
+        )
     assert "analysis.cuped.covariate_unused" in warning_codes(caught)
     assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
         "d7_retention",
     )
-    retention = next(metric for metric in adopted.metrics if metric.name == "d7_retention")
+    retention = next(
+        metric
+        for metric in workflows.metrics(adopted_experiment, adopted_resolver)
+        if metric.name == "d7_retention"
+    )
     with open_artifact(store, ref, expected_context=context) as source:
         daily_rows = _moments(source, retention, grain="daily", include_covariate=True)
-    native_retention = next(metric for metric in native.metrics if metric.name == "d7_retention")
+    native_retention = next(
+        metric
+        for metric in workflows.metrics(native_experiment, native_resolver)
+        if metric.name == "d7_retention"
+    )
     native_rows = _moments(
-        _native_source(native).day_source(metrics=[native_retention]),
+        bound_source(native_resolver).day_source(metrics=[native_retention]),
         native_retention,
         grain="daily",
         include_covariate=True,
@@ -1414,7 +1590,12 @@ def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     assert sorted(row["ref_x"] for row in daily_rows) == pytest.approx(
         sorted(row["ref_x"] for row in native_rows)
     )
-    assert adopted.run_daily_lift(metrics=["d7_retention"])
+    assert view_readout(
+        adopted_experiment,
+        adopted_resolver,
+        Scope(view="daily", grain="daily"),
+        metrics=["d7_retention"],
+    )
 
 
 # Dimension extensions preserve missing-property units and exclude fact-only units.
@@ -1448,7 +1629,9 @@ def test_dimension_extensions_are_left_joined_to_exposures(tmp_path: Path, as_of
         if experiment["name"] == "new_onboarding_v2":
             experiment["exposure"] = "independent_enrollment"
     definitions.write_text(yaml.safe_dump(payload))
-    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    con, (native_experiment, native_resolver), context, store = _native(
+        definitions=definitions, with_pre_period=True
+    )
     try:
         event_log = con.table("event_log", database="analytics").to_pyarrow()
         rows = event_log.to_pylist()
@@ -1486,7 +1669,9 @@ def test_dimension_extensions_are_left_joined_to_exposures(tmp_path: Path, as_of
             "breakout_dimension",
             "factor_dimension",
         }
-        ref = native.publish_unit_day_artifact(store, extensions=requests)
+        ref = publish_unit_day_artifact(
+            native_experiment, native_resolver, store, extensions=requests
+        )
         with open_artifact(store, ref, expected_context=context) as source:
             exposure_ids = {str(row["unit_id"]) for row in source._exposure_rows()}
             for request in requests:
@@ -1499,7 +1684,7 @@ def test_dimension_extensions_are_left_joined_to_exposures(tmp_path: Path, as_of
                 assert by_unit["u00000"]["value_is_missing"] is True
                 assert by_unit["u00001"]["value_is_missing"] is True
     finally:
-        native.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -1510,16 +1695,25 @@ def test_incomplete_breakout_coverage_refuses_before_reduction(tmp_path: Path) -
         tmp_path,
         breakouts=[{"property": "country"}, {"property": "platform"}],
     )
-    _con, native, context, store = _native(definitions=definitions)
+    _con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     country_request = next(
         entry.request
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind == "breakout_dimension" and entry.request.property_name == "country"
     )
-    ref = native.publish_unit_day_artifact(store, extensions=[country_request])
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=[country_request]
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     with pytest.raises(ArtifactContractError) as raised:
-        adopted.run_breakout(metrics=["purchase_rate"])
+        view_readout(
+            adopted_experiment,
+            adopted_resolver,
+            Scope(view="breakout", grain="total"),
+            metrics=["purchase_rate"],
+        )
     assert raised.value.code == "artifact.extension.missing"
 
 
@@ -1544,19 +1738,18 @@ def test_refused_open_releases_snapshot(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(store, "open_snapshot", spy_open_snapshot)
     with pytest.raises(ArtifactContractError) as raised:
-        Analysis.from_unit_day_artifact(store, ref, expected_context=bad_context)
+        from_unit_day_artifact(store, ref, expected_context=bad_context)
     assert raised.value.code == "artifact.refresh.context_mismatch"
     assert state == {"entered": 1, "exited": 1, "active": 0}
-    native.close()
+    native[1].close()
 
 
 # Guards same-name breakout routing from collapsing dimensions resolved from distinct fact sources.
 @pytest.mark.slow
 @pytest.mark.integration
 def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> None:
-    from increment import from_unit_day_artifact, run
+    from increment import run
     from increment.evidence import BreakoutIdentity
-    from increment.kernel.contracts import Scope
 
     definitions = _definitions(
         tmp_path,
@@ -1569,7 +1762,7 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
     requests = _extensions(_expected_context(definitions), "breakout_dimension")
     assert len(requests) == 2
     _con, native, context, store, ref = _published(extensions=requests, definitions=definitions)
-    native.close()
+    native[1].close()
     experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     country = (BreakoutIdentity("country", None),)
     scopes = (
@@ -1611,14 +1804,16 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
 @pytest.mark.slow
 def test_open_ended_experiment_omits_site_volume(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, open_ended=True)
-    _con, native, context, store = _native(definitions=definitions)
+    _con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     assert not any(
         entry.request.kind == "site_volume"
         for entry in unit_day_artifact_extension_catalog(context)
     )
-    ref = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    assert lift_rows(adopted.run(metrics=["purchase_rate"]))
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    assert lift_rows(view_readout(adopted_experiment, adopted_resolver, metrics=["purchase_rate"]))
 
 
 @pytest.mark.slow
@@ -1630,7 +1825,7 @@ def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) ->
         breakouts=[{"property": "country"}],
         cuped_metrics=("purchase_rate",),
     )
-    _con, native, context, store = _native(
+    _con, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions,
         with_pre_period=True,
         source_snapshot_evidence=SourceSnapshotEvidence(
@@ -1645,10 +1840,12 @@ def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) ->
         "breakout_dimension",
         "cuped_preperiod",
     )
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    assert lift_rows(adopted.run(metrics=["purchase_rate"]))
-    metric = adopted.metrics[0]
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    assert lift_rows(view_readout(adopted_experiment, adopted_resolver, metrics=["purchase_rate"]))
+    metric = workflows.metrics(adopted_experiment, adopted_resolver)[0]
     from increment.evidence import MomentsRequest, evidence_provider, request_evidence
 
     with open_artifact(store, ref, expected_context=context) as source:
@@ -1691,14 +1888,18 @@ def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_pat
             "    allocation_scheme: independent",
         )
     )
-    native = Analysis.from_definitions("exp", definitions, con)
+    native_experiment, native_resolver = from_definitions(definitions, con, experiment_name="exp")
     context = _expected_context(definitions, "exp")
     store = WarehouseArtifactStore(con, schema_name="cluster_integrity_artifact")
     extensions = _extensions(context, "assignment_counts", "cluster_identity")
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=extensions
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
 
-    results = adopted.run()
+    results = view_readout(adopted_experiment, adopted_resolver)
 
     with open_artifact(store, ref, expected_context=context) as source:
         assert _counts(source, "assignment") == {"C": 25, "T": 25}
@@ -1718,8 +1919,8 @@ def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_pat
         for component in source_payload["components"]
     )
     assert integrity.status == "not_rejected"
-    adopted.close()
-    native.close()
+    adopted_resolver.close()
+    cast(Any, native_resolver).close()
 
 
 @pytest.mark.slow
@@ -1739,18 +1940,23 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
     experiment_payload["allocation"] = {"control": 0.5, "treatment": 0.5}
     experiment_payload["allocation_scheme"] = "independent"
     definitions.write_text(yaml.safe_dump(definition_payload, sort_keys=False))
-    native = Analysis.from_definitions(
-        "new_onboarding_v2", definitions, con, on_mixed_assignment="exclude"
+    native_experiment, native_resolver = from_definitions(
+        definitions, con, experiment_name="new_onboarding_v2", on_mixed_assignment="exclude"
     )
     loaded = load(definitions)
     experiment = loaded.experiment("new_onboarding_v2")
     assert experiment is not None
     context = artifact_context(loaded, experiment, "exclude")
     store = WarehouseArtifactStore(con, schema_name="assignment_count_audit_artifact")
-    reference = native.publish_unit_day_artifact(
-        store, extensions=_extensions(context, "assignment_counts")
+    reference = publish_unit_day_artifact(
+        native_experiment,
+        native_resolver,
+        store,
+        extensions=_extensions(context, "assignment_counts"),
     )
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     expected = {
         "control": 99,
         "treatment": 100,
@@ -1762,8 +1968,12 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
             assert _counts(source, "unit") == expected
             assert _counts(source, "assignment") == expected
 
-        native_srm = native.srm(expected={"control": 0.5, "treatment": 0.5})
-        artifact_srm = adopted.srm(expected={"control": 0.5, "treatment": 0.5})
+        native_srm = srm(
+            native_experiment, native_resolver, expected={"control": 0.5, "treatment": 0.5}
+        )
+        artifact_srm = srm(
+            adopted_experiment, adopted_resolver, expected={"control": 0.5, "treatment": 0.5}
+        )
         assert isinstance(native_srm, SRMResult)
         assert isinstance(artifact_srm, SRMResult)
         assert artifact_srm.observed == native_srm.observed
@@ -1780,8 +1990,8 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
                 )
         assert raised.value.code == "artifact.evidence.unavailable"
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        cast(Any, native_resolver).close()
         con.disconnect()
 
 
@@ -1800,27 +2010,29 @@ def test_clustered_sitewide_supplies_assignment_counts(tmp_path: Path) -> None:
             "start: 2024-01-01T00:00:00", "start: 2024-01-01T00:00:00\n    end: 2024-01-09T00:00:00"
         )
     )
-    native = Analysis.from_definitions("exp", definitions, con)
+    experiment, resolver = from_definitions(definitions, con, experiment_name="exp")
     context = _expected_context(definitions, "exp")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     selected = _extensions(context, "site_volume", "cluster_identity")
     assert selected
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    result = adopted.sitewide("revenue")
+    ref = publish_unit_day_artifact(experiment, resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    result = sitewide(adopted_experiment, adopted_resolver, "revenue")
     assert result.delta is not None  # ty: ignore[unresolved-attribute]
     from increment.errors import CapabilityError
 
-    for method in (
-        adopted.run_daily,
-        adopted.run_daily_lift,
-        adopted.run_asof,
-        adopted.run_asof_lift,
+    for method, scope in (
+        ("run_daily", Scope(view="daily", grain="daily", values=True)),
+        ("run_daily_lift", Scope(view="daily", grain="daily")),
+        ("run_asof", Scope(view="asof", grain="asof", values=True)),
+        ("run_asof_lift", Scope(view="asof", grain="asof")),
     ):
         with pytest.raises(CapabilityError) as raised:
-            method(metrics=["revenue"])
+            view_readout(adopted_experiment, adopted_resolver, scope, metrics=["revenue"])
         assert raised.value.code == "facade.analysis.clustered_day_axis"
-        assert raised.value.context["method"] == method.__name__
+        assert raised.value.context["method"] == method
 
 
 @pytest.mark.slow
@@ -1848,17 +2060,26 @@ def test_clustered_artifact_moments_transport_refuses_before_writing(tmp_path: P
         ]
         definitions = tmp_path / "clustered-transport.yml"
         definitions.write_text(yaml.safe_dump(payload))
-        with Analysis.from_definitions("exp", definitions, con) as native:
+        native_experiment, native_resolver = from_definitions(
+            definitions, con, experiment_name="exp"
+        )
+        with cast(Any, native_resolver):
             context = _expected_context(definitions, "exp")
             store = WarehouseArtifactStore(con, schema_name="artifacts")
-            ref = native.publish_unit_day_artifact(
-                store, extensions=_extensions(context, "cluster_identity", "assignment_counts")
+            ref = publish_unit_day_artifact(
+                native_experiment,
+                native_resolver,
+                store,
+                extensions=_extensions(context, "cluster_identity", "assignment_counts"),
             )
-            with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
+            adopted_experiment, adopted_resolver = from_unit_day_artifact(
+                store, ref, expected_context=context
+            )
+            with adopted_resolver:
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always", IncrementRuntimeWarning)
-                    (native_row,) = lift_rows(native.run())
-                    (artifact_row,) = lift_rows(adopted.run())
+                    (native_row,) = lift_rows(view_readout(native_experiment, native_resolver))
+                    (artifact_row,) = lift_rows(view_readout(adopted_experiment, adopted_resolver))
                 assert set(warning_codes(caught)) == {"estimation.engine.small_total_clusters"}
                 for row in (native_row, artifact_row):
                     assert row.reference_kind == "t"
@@ -1869,7 +2090,7 @@ def test_clustered_artifact_moments_transport_refuses_before_writing(tmp_path: P
                 destination = tmp_path / "artifact-moments.parquet"
                 destination.write_bytes(b"preserve")
                 with pytest.raises(CapabilityError) as raised:
-                    adopted.export(destination)
+                    export_moments(adopted_experiment, adopted_resolver, destination)
                 assert raised.value.code == "evidence.cluster_unavailable"
                 assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
                 assert destination.read_bytes() == b"preserve"
@@ -1940,7 +2161,7 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
     evidence = SourceSnapshotEvidence(
         datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
     )
-    _con, native, context, store = _native(
+    _con, (native_experiment, native_resolver), context, store = _native(
         definitions=definitions, with_pre_period=True, source_snapshot_evidence=evidence
     )
     requests = _extensions(
@@ -1952,10 +2173,12 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
         "cuped_preperiod",
     )
     assert any(request.kind == "cuped_preperiod" for request in requests)
-    ref = native.publish_unit_day_artifact(store, extensions=requests)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
-        native_source = _native_source(native)
+        native_source = bound_source(native_resolver)
         from increment.evidence import (
             CountsRequest,
             MomentsRequest,
@@ -1984,8 +2207,8 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
         )
         assert 0 < triggered_count < enrolled_count
 
-        native_metric = native.metrics[0]
-        adopted_metric = adopted.metrics[0]
+        native_metric = workflows.metrics(native_experiment, native_resolver)[0]
+        adopted_metric = workflows.metrics(adopted_experiment, adopted_resolver)[0]
         native_rows = cast(
             "list[dict[str, Any]]",
             request_evidence(
@@ -2080,14 +2303,22 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
         # supported; see docs/reference/capabilities-by-entry-point.md,
         # "Triggered auxiliary readouts."
         _assert_breakout_rows_agree(
-            native.run_breakout(metrics=["purchase_rate"]),
-            adopted.run_breakout(metrics=["purchase_rate"]),
+            _population_readouts(
+                native_experiment, native_resolver, "breakout", metrics=["purchase_rate"]
+            )[1],
+            _population_readouts(
+                adopted_experiment, adopted_resolver, "breakout", metrics=["purchase_rate"]
+            )[1],
         )
 
         # The public whole-window readout (decision + CUPED sensitivity,
         # both assigned- and triggered-population rows) must match exactly.
-        native_lift = lift_rows(native.run(metrics=["purchase_rate"]))
-        adopted_lift = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        _, native_lift = _population_readouts(
+            native_experiment, native_resolver, metrics=["purchase_rate"]
+        )
+        _, adopted_lift = _population_readouts(
+            adopted_experiment, adopted_resolver, metrics=["purchase_rate"]
+        )
 
         def _row_key(row: Any) -> tuple[Any, ...]:
             return (row.metric, row.method, row.method_role, row.group_id, row.analysis_population)
@@ -2103,8 +2334,8 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
             assert adopted_lift_value.lb == pytest.approx(native_lift_value.lb, rel=1e-9), key
             assert adopted_lift_value.ub == pytest.approx(native_lift_value.ub, rel=1e-9), key
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 def _triggered_scalar_covariate_case(
@@ -2241,8 +2472,11 @@ def _triggered_scalar_covariate_case(
         "unit_covariate",
         "cuped_measure_covariate",
     )
-    published = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, published, expected_context=context)
+    native_experiment, native_resolver = native
+    published = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=extensions
+    )
+    adopted = from_unit_day_artifact(store, published, expected_context=context)
     return con, native, adopted, metric, covariate_name
 
 
@@ -2251,11 +2485,11 @@ def _triggered_scalar_covariate_case(
 def test_triggered_scalar_refuse_ignores_missing_outside_population(
     tmp_path: Path, binding: str
 ) -> None:
-    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
-        tmp_path, binding=binding, scenario="outside"
+    con, native, (experiment, resolver), metric_name, _covariate_name = (
+        _triggered_scalar_covariate_case(tmp_path, binding=binding, scenario="outside")
     )
     try:
-        rows = lift_rows(adopted.run(metrics=[metric_name]))
+        rows = _population_readouts(experiment, resolver, metrics=[metric_name])[1]
         assert rows
         assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
         triggered_cuped = next(
@@ -2263,8 +2497,8 @@ def test_triggered_scalar_refuse_ignores_missing_outside_population(
         )
         assert triggered_cuped.lift is not None
     finally:
-        adopted.close()
-        native.close()
+        resolver.close()
+        native[1].close()
         con.disconnect()
 
 
@@ -2273,18 +2507,18 @@ def test_triggered_scalar_refuse_ignores_missing_outside_population(
 def test_triggered_scalar_imputation_ignores_missing_outside_population(
     tmp_path: Path, binding: str
 ) -> None:
-    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
-        tmp_path, binding=binding, scenario="impute_outside"
+    con, native, (experiment, resolver), metric_name, _covariate_name = (
+        _triggered_scalar_covariate_case(tmp_path, binding=binding, scenario="impute_outside")
     )
     try:
-        rows = lift_rows(adopted.run(metrics=[metric_name]))
+        rows = _population_readouts(experiment, resolver, metrics=[metric_name])[1]
         triggered_cuped = next(
             row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
         )
         assert triggered_cuped.lift is not None
     finally:
-        adopted.close()
-        native.close()
+        resolver.close()
+        native[1].close()
         con.disconnect()
 
 
@@ -2293,12 +2527,20 @@ def test_triggered_scalar_imputation_ignores_missing_outside_population(
 def test_triggered_scalar_imputation_uses_triggered_population_mean(
     tmp_path: Path, binding: str
 ) -> None:
-    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
-        tmp_path, binding=binding, scenario="impute"
-    )
+    (
+        con,
+        (native_experiment, native_resolver),
+        (adopted_experiment, adopted_resolver),
+        metric_name,
+        _covariate_name,
+    ) = _triggered_scalar_covariate_case(tmp_path, binding=binding, scenario="impute")
     try:
-        expected = lift_rows(native.run(metrics=[metric_name]))
-        actual = lift_rows(adopted.run(metrics=[metric_name]))
+        expected = _population_readouts(native_experiment, native_resolver, metrics=[metric_name])[
+            1
+        ]
+        actual = _population_readouts(adopted_experiment, adopted_resolver, metrics=[metric_name])[
+            1
+        ]
         expected_triggered = next(row for row in expected if row.analysis_population == "triggered")
         actual_triggered = next(row for row in actual if row.analysis_population == "triggered")
         expected_lift = expected_triggered.require_lift()
@@ -2306,26 +2548,26 @@ def test_triggered_scalar_imputation_uses_triggered_population_mean(
         assert actual_lift.value == pytest.approx(expected_lift.value, rel=1e-9)
         assert actual_lift.log_se == pytest.approx(expected_lift.log_se, rel=1e-9)
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
         con.disconnect()
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("binding", ["property", "measure"])
 def test_triggered_scalar_all_null_within_population_refuses(tmp_path: Path, binding: str) -> None:
-    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
-        tmp_path, binding=binding, scenario="all_null"
+    con, native, (experiment, resolver), metric_name, _covariate_name = (
+        _triggered_scalar_covariate_case(tmp_path, binding=binding, scenario="all_null")
     )
     try:
-        rows = list(adopted.run(metrics=[metric_name]))
+        rows = _population_readouts(experiment, resolver, metrics=[metric_name])[1]
         triggered_cuped = next(
             row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
         )
         assert triggered_cuped.failure_code == "frame.validation.metric_covariate_impute_all_null"
     finally:
-        adopted.close()
-        native.close()
+        resolver.close()
+        native[1].close()
         con.disconnect()
 
 
@@ -2341,10 +2583,10 @@ def test_artifact_run_breakout_supports_trigger_with_required_evidence(tmp_path:
     con = ibis.duckdb.connect()
     seed_event_log(con)
     definitions = _triggered_definitions(tmp_path)
-    native = Analysis.from_definitions(
-        "new_onboarding_v2",
+    native_experiment, native_resolver = from_definitions(
         definitions,
         con,
+        experiment_name="new_onboarding_v2",
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
         ),
@@ -2363,16 +2605,24 @@ def test_artifact_run_breakout_supports_trigger_with_required_evidence(tmp_path:
         for entry in unit_day_artifact_extension_catalog(context)
         if entry.request.kind in required_kinds
     ]
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=extensions
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
         _assert_breakout_rows_agree(
-            native.run_breakout(metrics=["purchase_rate"]),
-            adopted.run_breakout(metrics=["purchase_rate"]),
+            _population_readouts(
+                native_experiment, native_resolver, "breakout", metrics=["purchase_rate"]
+            )[1],
+            _population_readouts(
+                adopted_experiment, adopted_resolver, "breakout", metrics=["purchase_rate"]
+            )[1],
         )
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        cast(Any, native_resolver).close()
         con.disconnect()
 
 
@@ -2393,17 +2643,18 @@ def test_trigger_artifact_publication_requires_explicit_cutoff_before_pinning(
 ) -> None:
     from increment.errors import CapabilityError
 
-    con, native, context, store = _native(definitions=_triggered_definitions(tmp_path))
+    con, (experiment, resolver), context, store = _native(
+        definitions=_triggered_definitions(tmp_path)
+    )
     _forbid_connection_queries(con, monkeypatch)
     try:
         with pytest.raises(CapabilityError) as raised:
-            native.publish_unit_day_artifact(
-                store,
-                extensions=_extensions(context, "trigger_population"),
+            publish_unit_day_artifact(
+                experiment, resolver, store, extensions=_extensions(context, "trigger_population")
             )
         assert raised.value.code == "source.native.trigger_evidence_required"
     finally:
-        native.close()
+        resolver.close()
 
 
 def test_triggered_assignment_count_publication_requires_snapshot_evidence_before_pinning(
@@ -2411,15 +2662,15 @@ def test_triggered_assignment_count_publication_requires_snapshot_evidence_befor
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     definitions = _triggered_definitions(tmp_path)
-    con, native, context, store = _native(definitions=definitions)
+    con, (experiment, resolver), context, store = _native(definitions=definitions)
     request = _extensions(context, "assignment_counts")[0]
     _forbid_connection_queries(con, monkeypatch)
     try:
         with pytest.raises(CapabilityError) as raised:
-            native.publish_unit_day_artifact(store, extensions=[request])
+            publish_unit_day_artifact(experiment, resolver, store, extensions=[request])
         assert raised.value.code == "source.native.trigger_evidence_required"
     finally:
-        native.close()
+        resolver.close()
 
 
 @pytest.mark.slow
@@ -2433,7 +2684,7 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     purchase event for a user who is never exposed at all, inside the experiment
     window, and asserts the whole-site reading includes it."""
     definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
-    con, native, context, store = _native(definitions=definitions)
+    con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     con.raw_sql(
         """
         INSERT INTO analytics.event_log
@@ -2454,9 +2705,11 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     )
     selected = _extensions(context, "site_volume")
     assert selected
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    result = adopted.sitewide("purchase_count")
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    result = sitewide(adopted_experiment, adopted_resolver, "purchase_count")
     assert result.site_total_volume == pytest.approx(float(expected_events))  # ty: ignore[unresolved-attribute]
 
 
@@ -2483,7 +2736,7 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
         observation_end="2025-03-01",
         day_boundary=day_boundary,
     )
-    con, native, context, store = _native(definitions=definitions)
+    con, (native_experiment, native_resolver), context, store = _native(definitions=definitions)
     con.raw_sql(
         """
         INSERT INTO analytics.event_log
@@ -2507,8 +2760,12 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
         .iloc[0]
     )
     (request,) = _extensions(context, "site_volume")
-    ref = native.publish_unit_day_artifact(store, extensions=(request,))
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    ref = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=(request,)
+    )
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         extension = next(item for item in manifest.extensions if item.kind == "site_volume")
@@ -2525,8 +2782,10 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
     assert {row["ds"] for row in rows} == {
         date(2025, 1, 15) + timedelta(days=offset) for offset in range(32)
     }
-    native_total = native.sitewide("purchase_count").site_total_volume
-    adopted_total = adopted.sitewide("purchase_count").site_total_volume  # ty: ignore[unresolved-attribute]
+    native_impact = sitewide(native_experiment, native_resolver, "purchase_count")
+    adopted_impact = sitewide(adopted_experiment, adopted_resolver, "purchase_count")
+    native_total = native_impact.site_total_volume  # ty: ignore[unresolved-attribute]
+    adopted_total = adopted_impact.site_total_volume  # ty: ignore[unresolved-attribute]
     assert native_total == pytest.approx(expected)
     assert adopted_total == pytest.approx(expected)
 
@@ -2627,7 +2886,7 @@ def test_site_volume_extension_matches_unpinned_total_when_filtered_on_a_joined_
     path = tmp_path / "definitions.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    con, native, context, store = _native(definitions=path)
+    con, (native_experiment, native_resolver), context, store = _native(definitions=path)
     con.raw_sql(
         """
         INSERT INTO analytics.event_log
@@ -2648,9 +2907,11 @@ def test_site_volume_extension_matches_unpinned_total_when_filtered_on_a_joined_
     )
     selected = _extensions(context, "site_volume")
     assert selected
-    ref = native.publish_unit_day_artifact(store, extensions=selected)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    result = adopted.sitewide("loyalty_purchase_site_volume")
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=selected)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
+    result = sitewide(adopted_experiment, adopted_resolver, "loyalty_purchase_site_volume")
     assert result.site_total_volume == pytest.approx(float(expected_total))  # ty: ignore[unresolved-attribute]
 
 
@@ -2741,21 +3002,35 @@ def test_equal_instants_in_different_offsets_share_one_context_for_adoption_and_
     from increment.estimation.engine import Method
 
     unadjusted = Method(name="unadjusted")
-    _con, native, _context, store = _native(definitions=offset)
-    ref = native.publish_unit_day_artifact(store)
-    refreshed = native.publish_unit_day_artifact(store, refresh_of=ref)
-    adopted = Analysis.from_unit_day_artifact(store, refreshed, expected_context=utc_context)
+    _con, (native_experiment, native_resolver), _context, store = _native(definitions=offset)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    refreshed = publish_unit_day_artifact(native_experiment, native_resolver, store, refresh_of=ref)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, refreshed, expected_context=utc_context
+    )
     try:
-        assert lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))[
-            0
-        ].require_lift().value == pytest.approx(
-            lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))[0]
+        assert lift_rows(
+            view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                metrics=["purchase_rate"],
+                decision_method=unadjusted,
+            )
+        )[0].require_lift().value == pytest.approx(
+            lift_rows(
+                view_readout(
+                    native_experiment,
+                    native_resolver,
+                    metrics=["purchase_rate"],
+                    decision_method=unadjusted,
+                )
+            )[0]
             .require_lift()
             .value
         )
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 @pytest.mark.slow
@@ -2769,19 +3044,24 @@ def test_adopted_experiment_keeps_inherited_versus_explicit_day_boundary(
             experiment["day_boundary"] = "UTC+01:00"
 
     path = _rewritten_definitions(tmp_path, "boundary", edit)
-    _con, native, context, store = _native(definitions=path)
-    ref = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    _con, (native_experiment, native_resolver), context, store = _native(definitions=path)
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, ref, expected_context=context
+    )
     try:
         expected = "UTC+01:00" if declared else "UTC-05:00"
-        assert adopted.experiment.day_boundary == expected
-        assert ("day_boundary" in adopted.experiment.model_dump()) is declared
+        assert experiment_definition(adopted_experiment, adopted_resolver).day_boundary == expected
+        assert (
+            "day_boundary"
+            in experiment_definition(adopted_experiment, adopted_resolver).model_dump()
+        ) is declared
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         assert manifest.day_boundary == expected
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
 
 
 def _secret_sql_definitions(tmp_path: Path, secrets: dict[str, str]) -> Path:
@@ -2822,9 +3102,9 @@ def test_publication_never_persists_or_returns_source_sql(tmp_path: Path) -> Non
         "exposure": "SECRET_EXPOSURE_6b73",
     }
     path = _secret_sql_definitions(tmp_path, secrets)
-    con, native, context, store = _native(definitions=path)
+    con, (experiment, resolver), context, store = _native(definitions=path)
     extensions = _extensions(context, "breakout_dimension", "assignment_counts")
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
+    ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
     try:
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
@@ -2841,7 +3121,7 @@ def test_publication_never_persists_or_returns_source_sql(tmp_path: Path) -> Non
             for secret in secrets.values():
                 assert secret not in output
     finally:
-        native.close()
+        resolver.close()
 
 
 pytestmark = pytest.mark.integration

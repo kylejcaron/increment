@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import ibis
 import numpy as np
 import pandas as pd
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_definitions, from_frame, from_unit_day_artifact, run
+from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.estimation.quantile import estimate_quantile_lift
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+from increment.workflows import experiment_definition, metrics, srm, unit_counts
 from tests._evidence_requests import (
     _cluster_counts,
     _unit_counts,
@@ -18,9 +22,10 @@ from tests._evidence_requests import (
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import (
     _make_event_log_table,
-    _native_source,
+    bound_source,
     lift_rows,
-    make_analysis_like,
+    make_binding_like,
+    view_readout,
 )
 
 pytestmark = pytest.mark.integration
@@ -34,12 +39,12 @@ def pricing_con():
 
 
 @pytest.fixture
-def pricing_analysis(pricing_con):
-    return Analysis.from_definitions("pricing_tier_test", "examples/definitions/", pricing_con)
+def pricing_pair(pricing_con, example_definitions):
+    return from_definitions(example_definitions, pricing_con, experiment_name="pricing_tier_test")
 
 
 @pytest.mark.integration
-def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
+def test_unit_counts_and_cluster_counts_match_srm(pricing_pair: tuple[Any, Any]):
     """unit_counts() (the MomentSource protocol's per-arm count) matches
     the enrolled counts srm() reports natively, and cluster_counts()
     refuses on this undeclared-cluster experiment the same way srm()'s
@@ -47,12 +52,12 @@ def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
     from increment.estimation.diagnostics import SRMResult
     from increment.semantics.design import Randomized
 
-    pricing_analysis = make_analysis_like(
-        pricing_analysis,
+    experiment, resolver = make_binding_like(
+        pricing_pair[1],
         design=Randomized(control_group="control", allocation_scheme="independent"),
     )
-    src = _native_source(pricing_analysis)
-    srm_result = pricing_analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    src = bound_source(resolver)
+    srm_result = srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(srm_result, SRMResult)
     assert srm_result.observed
     assert _unit_counts(src) == srm_result.observed
@@ -64,15 +69,16 @@ def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
 
 
 @pytest.mark.integration
-def test_public_unit_counts_match_definition_source(pricing_analysis):
-    source = _native_source(pricing_analysis)
-    assert pricing_analysis.unit_counts() == _unit_counts(source)
+def test_public_unit_counts_match_definition_source(pricing_pair: tuple[Any, Any]):
+    experiment, resolver = pricing_pair
+    assert unit_counts(experiment, resolver) == _unit_counts(bound_source(resolver))
 
 
-def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
+def test_day_axis_source_refuses_total_unit_counts(pricing_pair: tuple[Any, Any]):
     from increment.errors import CapabilityError
 
-    day_source = _native_source(pricing_analysis).day_source(metrics=pricing_analysis.metrics)
+    experiment, resolver = pricing_pair
+    day_source = bound_source(resolver).day_source(metrics=metrics(experiment, resolver))
     with pytest.raises(CapabilityError) as raised:
         _unit_counts(day_source)
     assert raised.value.code == "evidence.operation_unavailable"
@@ -82,14 +88,17 @@ def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
 @pytest.mark.integration
 def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path):
     defs_path, con = _quantile_defs_and_con(tmp_path, include_unassigned=True)
-    native = Analysis.from_definitions("exp", defs_path, con, on_mixed_assignment="exclude")
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="exp", on_mixed_assignment="exclude"
+    )
     groups = ["C"] * 200 + ["T"] * 200 + [None]
     units = [f"c{i}" for i in range(200)] + [f"t{i}" for i in range(200)] + ["unassigned"]
     summary_frame = pd.DataFrame(
         {"user_id": units, "arm": groups, "value": np.arange(len(units), dtype=float)}
     )
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         summary_frame,
+        shape="summary",
         unit="user_id",
         group="arm",
         control="C",
@@ -97,8 +106,9 @@ def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path)
         on_unassigned="exclude",
     )
     panel_frame = summary_frame.assign(day=np.datetime64("2024-01-02"))
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         panel_frame,
+        shape="panel",
         unit="user_id",
         group="arm",
         date="day",
@@ -106,8 +116,12 @@ def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path)
         metrics={"value": "mean"},
         on_unassigned="exclude",
     )
-    assert native.unit_counts() == summary.unit_counts() == panel.unit_counts()
-    assert native.unit_counts()["(unassigned)"] == 1
+    assert (
+        unit_counts(native_experiment, native_resolver)
+        == unit_counts(summary_experiment, summary_resolver)
+        == unit_counts(panel_experiment, panel_resolver)
+    )
+    assert unit_counts(native_experiment, native_resolver)["(unassigned)"] == 1
 
     from increment.artifacts import AssignmentCountsRequest
     from increment.query.session import WarehouseArtifactStore
@@ -115,18 +129,22 @@ def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path)
     store = WarehouseArtifactStore(con, schema_name="unit_count_artifacts")
     from increment.errors import CapabilityError
 
-    without_counts = native.publish_unit_day_artifact(store)
-    incomplete = Analysis.from_unit_day_artifact(
-        store, without_counts, expected_context=native.artifact_context
+    without_counts = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    incomplete_experiment, incomplete_resolver = from_unit_day_artifact(
+        store, without_counts, expected_context=artifact_context(native_experiment, native_resolver)
     )
     with pytest.raises(CapabilityError) as refused:
-        incomplete.unit_counts()
+        unit_counts(incomplete_experiment, incomplete_resolver)
     assert refused.value.code == "evidence.operation_unavailable"
-    reference = native.publish_unit_day_artifact(store, extensions=[AssignmentCountsRequest()])
-    artifact = Analysis.from_unit_day_artifact(
-        store, reference, expected_context=native.artifact_context
+    reference = publish_unit_day_artifact(
+        native_experiment, native_resolver, store, extensions=[AssignmentCountsRequest()]
     )
-    assert artifact.unit_counts() == native.unit_counts()
+    artifact_experiment, artifact_resolver = from_unit_day_artifact(
+        store, reference, expected_context=artifact_context(native_experiment, native_resolver)
+    )
+    assert unit_counts(artifact_experiment, artifact_resolver) == unit_counts(
+        native_experiment, native_resolver
+    )
 
 
 def _quantile_defs_and_con(
@@ -193,7 +211,7 @@ metrics:
 @pytest.mark.integration
 def test_quantile_parity(tmp_path):
     """unit_frame()-served per-unit rows, fed to estimate_quantile_lift
-    directly, must reproduce Analysis.run()'s own quantile row - the
+    directly, must reproduce the run's own quantile row - the
     D4-fallback path a quantile metric always needs (quantiles have no
     moments representation, so readouts.run's src.moments() route never
     serves them). The declared plan's sole secondary is a strong enough
@@ -203,8 +221,8 @@ def test_quantile_parity(tmp_path):
     explicitly, since this test is about `unit_frame()` data-serving
     parity, not about re-deriving the FCR alpha itself."""
     defs_path, con = _quantile_defs_and_con(tmp_path)
-    analysis = Analysis.from_definitions("exp", defs_path, con)
-    baseline = lift_rows(analysis.run())[0]
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp")
+    baseline = lift_rows(view_readout(experiment, resolver))[0]
     assert baseline.discovery is True
     assert baseline.require_lift().level is not None
     # A single in-family secondary always selects (R=1, m=1, q=0.10 default),
@@ -217,13 +235,13 @@ def test_quantile_parity(tmp_path):
     assert baseline.family_threshold == pytest.approx(0.10)
     assert baseline.family_q == pytest.approx(0.10)
 
-    src = _native_source(analysis)
-    metric = analysis.metrics[0]
+    src = bound_source(resolver)
+    metric = metrics(experiment, resolver)[0]
     unit_rows = _unit_rows(src, metric)
     (candidate,) = estimate_quantile_lift(
         type("_Src", (), {"unit_frame": staticmethod(lambda *a, **k: unit_rows)})(),
         metric,
-        analysis.experiment.control_group,
+        experiment_definition(experiment, resolver).control_group,
         alpha=1.0 - baseline_lift.level,
     )
     candidate_lift = candidate.require_lift()
@@ -240,8 +258,8 @@ def test_quantile_explicit_preferred_direction_flows_through_infer_lift(tmp_path
     on the readout, making the field inert for the metric type most likely
     to need it (the canonical latency-guardrail case)."""
     defs_path, con = _quantile_defs_and_con(tmp_path, preferred_direction="decrease")
-    analysis = Analysis.from_definitions("exp", defs_path, con)
-    est = lift_rows(analysis.run())[0]
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="exp")
+    est = lift_rows(view_readout(experiment, resolver))[0]
     assert est.preferred_direction == "decrease"
     assert est.prob_favorable() is None
 
@@ -325,13 +343,13 @@ experiments:
 def test_clustered_native_path_undeclared_metric_preferred_direction_is_none(tmp_path):
     """Finding 2: `_build_for_metrics`'s shared `estimate_lift(...)` call
     defaulted `preferred_direction="increase"` for every undeclared metric
-    stamp. `Analysis.run()` dispatches a clustered Definitions experiment
+    stamp. A run dispatches a clustered Definitions experiment
     through the shared readout pipeline (the warehouse source directly,
     since the moments cube carries no cluster marker), so an
     undeclared metric silently reported "increase" there too."""
     defs_path, con = _cluster_defs_and_con(tmp_path, cluster=True)
-    analysis = Analysis.from_definitions("store_test", defs_path, con)
-    (baseline,) = lift_rows(analysis.run())
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="store_test")
+    (baseline,) = lift_rows(view_readout(experiment, resolver))
     assert baseline.preferred_direction is None
 
 
@@ -342,10 +360,10 @@ def test_clustered_native_path_undeclared_metric_preferred_direction_is_none(tmp
 def test_clustered_run_refuses_call_time_policy_on_a_declared_plan(tmp_path):
     """A declared clustered plan refuses call-time policy overrides."""
     defs_path, con = _cluster_defs_and_con(tmp_path, cluster=True)
-    analysis = Analysis.from_definitions("store_test", defs_path, con)
-    assert lift_rows(analysis.run())
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="store_test")
+    assert lift_rows(view_readout(experiment, resolver))
     with pytest.raises(TypeError):
-        lift_rows(analysis.run(alpha=0.20))  # ty: ignore[unknown-argument]
+        run(experiment, resolver, alpha=0.20)  # ty: ignore[no-matching-overload]
 
 
 @pytest.mark.filterwarnings(
@@ -360,32 +378,31 @@ def test_metrics_reassignment_reresolves_a_same_name_metric_swap(tmp_path):
     stale instead of matching its own metric -- now load-bearing, since
     every dispatch path reads these fields."""
     defs_path, con = _cluster_defs_and_con(tmp_path, cluster=False)
-    analysis = Analysis.from_definitions("store_test", defs_path, con)
+    base_experiment, base_resolver = from_definitions(defs_path, con, experiment_name="store_test")
     name = "revenue_per_user"
 
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = make_binding_like(
+        base_resolver,
         [
             m.model_copy(update={"margin_abs": 1.0, "preferred_direction": "decrease"})
             if m.name == name
             else m
-            for m in analysis.metrics
+            for m in metrics(base_experiment, base_resolver)
         ],
         plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none")),
     )
 
-    (estimate,) = lift_rows(analysis.run())
+    (estimate,) = lift_rows(view_readout(experiment, resolver))
     assert estimate.null_abs == pytest.approx(1.0)
     assert estimate.alternative == "less"
 
 
 @pytest.mark.integration
 def test_definitions_unit_frame_serves_declared_covariate(tmp_path):
-    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, _group, _revenue = covariate_defs_and_con(tmp_path)
-    source = _native_source(Analysis.from_definitions("cov_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cov_test")[1])
     table = _unit_rows(source, source.context.metrics[0], covariates=["tenure"])
     rows = {r["unit_id"]: r["tenure"] for r in table.to_pylist()}
     assert rows == pytest.approx(tenure)
@@ -393,12 +410,11 @@ def test_definitions_unit_frame_serves_declared_covariate(tmp_path):
 
 @pytest.mark.integration
 def test_definitions_unit_frame_keeps_a_missing_covariate_null(tmp_path):
-    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, _group, _revenue = covariate_defs_and_con(tmp_path)
     con.raw_sql("UPDATE cov_events SET tenure = NULL WHERE user_id = 'u3'")
-    source = _native_source(Analysis.from_definitions("cov_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cov_test")[1])
     table = _unit_rows(source, source.context.metrics[0], covariates=["tenure"])
     rows = {r["unit_id"]: r["tenure"] for r in table.to_pylist()}
     assert rows["u3"] is None
@@ -407,11 +423,10 @@ def test_definitions_unit_frame_keeps_a_missing_covariate_null(tmp_path):
 
 def test_definitions_unit_frame_refuses_unresolvable_covariate(tmp_path):
     from increment.errors import CodedError
-    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, _tenure, _group, _revenue = covariate_defs_and_con(tmp_path)
-    source = _native_source(Analysis.from_definitions("cov_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cov_test")[1])
     with pytest.raises(CodedError) as raised:
         _unit_rows(source, source.context.metrics[0], covariates=["nonexistent_property"])
     assert raised.value.code == "source.native.covariate_unresolved"
@@ -495,7 +510,7 @@ def _ambiguous_covariate_source(tmp_path):
     )
     defs_path = tmp_path / "defs.yaml"
     defs_path.write_text(_AMBIGUOUS_COVARIATE_DEFS)
-    return _native_source(Analysis.from_definitions("amb_test", defs_path, con))
+    return bound_source(from_definitions(defs_path, con, experiment_name="amb_test")[1])
 
 
 @pytest.mark.parametrize(
