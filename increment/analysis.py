@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import builders
 from increment._analysis_execution import Analysis as _Analysis
-from increment._analysis_execution import fit_predeclared_adjustment
+from increment._predeclared_adjustment import fit_predeclared_adjustment
 
 if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend

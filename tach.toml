@@ -902,15 +902,20 @@ depends_on = [
   "increment.readouts._line2", "increment.readouts._execution_context",
   "increment.decision", "increment.estimation",
   "increment._binding", "increment.kernel", "increment.kernel.ports",
-  "increment.frame", "increment.query", "increment.query._workflows", "increment.readouts",
+  "increment.query", "increment.query._workflows", "increment.readouts",
   "increment.semantics",
 ]
+
+[[modules]]
+path = "increment._predeclared_adjustment"
+layer = "core"
+depends_on = ["increment.estimation", "increment.frame", "increment.semantics"]
 
 [[modules]]
 path = "increment.analysis"
 layer = "core"
 depends_on = [
-  "increment._analysis_execution", "increment.builders",
+  "increment._analysis_execution", "increment._predeclared_adjustment", "increment.builders",
 ]
 
 [[modules]]

@@ -22,7 +22,10 @@ _EXPORTS = {
     ),
     "ScalarMeanModel": ("increment.semantics.sequential", "ScalarMeanModel"),
     "PredeclaredAdjustment": ("increment.semantics.sequential", "PredeclaredAdjustment"),
-    "fit_predeclared_adjustment": ("increment.analysis", "fit_predeclared_adjustment"),
+    "fit_predeclared_adjustment": (
+        "increment._predeclared_adjustment",
+        "fit_predeclared_adjustment",
+    ),
     "AlwaysValid": ("increment.estimation.sequential", "AlwaysValid"),
     "PredictivePrior": ("increment.semantics.sequential", "PredictivePrior"),
     "SequentialModel": ("increment.semantics.sequential", "SequentialModel"),
@@ -113,6 +116,9 @@ _EXPORTS = {
 
 if TYPE_CHECKING:
     import increment.impute as impute
+    from increment._predeclared_adjustment import (
+        fit_predeclared_adjustment as fit_predeclared_adjustment,
+    )
     from increment._sitewide import sitewide as sitewide
     from increment._study import (
         ParallelStudyEnvelope as ParallelStudyEnvelope,
@@ -124,7 +130,6 @@ if TYPE_CHECKING:
         SwitchbackStudyEnvelope as SwitchbackStudyEnvelope,
     )
     from increment.absorption import absorb_factor as absorb_factor
-    from increment.analysis import fit_predeclared_adjustment as fit_predeclared_adjustment
     from increment.breakout.heterogeneity import (
         segment_contrast as segment_contrast,
     )
