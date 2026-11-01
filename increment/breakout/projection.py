@@ -18,6 +18,7 @@ from increment.estimation.sequential_result import SequentialInferenceResult
 if TYPE_CHECKING:
     from increment._interpretation import ReadoutInterpretation
     from increment.estimation.readout_types import ReadoutMetadata
+    from increment.kernel.contracts import Scope
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -658,6 +659,7 @@ def result_frame(
     groups: Sequence[tuple[type[BaseModel], Sequence[Any]]],
     metadata: ReadoutMetadata | None,
     *,
+    scopes: Sequence[Scope | None],
     backend: Backend,
     columns: Sequence[str] | None = None,
 ) -> IntoDataFrame:
@@ -666,7 +668,10 @@ def result_frame(
     Each group keeps its collection's typed projection; one interpretation of every
     row supplies the qualification columns. Groups of different models share their
     common columns, and a column one model lacks is null on the other's rows.
-    ``columns`` selects typed projection columns, as ``to_frame`` does.
+    ``scopes`` holds each row's scope in row order: every frame leads with its
+    ``view`` and ``values`` as ``scope_view`` and ``scope_values``, null where a
+    row records no scope. ``columns`` selects typed projection columns, as
+    ``to_frame`` does; the scope columns and ``view_partial`` are always kept.
     """
     from increment._interpretation import interpret_readout
     from increment.estimation.contrast_results import (
@@ -694,10 +699,30 @@ def result_frame(
         available.update(dict.fromkeys(typed))
         frames.append(nw.from_native(native, eager_only=True))
     frame = frames[0] if len(frames) == 1 else nw.concat(frames, how="diagonal")
-    if columns is None:
-        return frame.to_native()
-    selected = [*select_columns(columns, tuple(available)), "view_partial"]
-    native = cast(Any, frame.to_native())
+    selected = [
+        "scope_view",
+        "scope_values",
+        *(
+            frame.columns
+            if columns is None
+            else (*select_columns(columns, tuple(available)), "view_partial")
+        ),
+    ]
+    views = [None if scope is None else scope.view for scope in scopes]
+    values = [None if scope is None else scope.values for scope in scopes]
     if backend == "pandas":
+        import pandas as pd
+
+        native = cast(Any, frame.to_native())
+        native["scope_view"] = pd.array(views, dtype="string")
+        native["scope_values"] = pd.array(values, dtype="boolean")
         return native.loc[:, selected]
-    return frame.select(selected).to_native()
+    namespace = nw.get_native_namespace(frame)
+    return (
+        frame.with_columns(
+            nw.new_series("scope_view", views, dtype=nw.String(), backend=namespace),
+            nw.new_series("scope_values", values, dtype=nw.Boolean(), backend=namespace),
+        )
+        .select(selected)
+        .to_native()
+    )

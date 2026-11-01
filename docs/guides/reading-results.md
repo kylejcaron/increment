@@ -9,7 +9,7 @@ consumers each keep one format:
 | Need | Read | Format |
 |---|---|---|
 | The full result collection one view produced | `result.readout(scope)` | The `LiftEstimates`, `BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues` or `ContrastResults` described below, with every row field and live confidence set. `model_dump_json()` writes its full-row JSON. |
-| One frame of every result row | `result.to_frame()` | Each row's collection `to_frame` columns, with qualification columns that describe the whole run. |
+| One frame of every result row | `result.to_frame()` | Each row's `scope_view` and `scope_values`, then its collection's `to_frame` columns, with qualification columns that describe the whole run. |
 | Portable cells to exchange or archive | `result.envelope.to_payload()` or `.to_arrow()` | Versioned result cells and run metadata; no raw outcomes. |
 | A saved run to decide again | `results_store=` on `run`, then `RunResult.from_handle` | The stored run's cells and decision plan. |
 
@@ -57,6 +57,12 @@ saved_rows = rows.model_dump_json()
 A table compares rows of one view, so table each view of a several-view run
 with `readout_table(result.readout(scope))`. A frame of several views shares
 their common columns; a column one row type lacks is null on the other rows.
+Every `result.to_frame()` row leads with `scope_view` and `scope_values`, the
+`view` and `values` of the scope that produced it (a string and a nullable
+boolean, null only for a saved cell that records no scope). A daily lift and an
+as-of lift on the same day therefore stay distinct, and a restored result's
+frame filters to one view on these columns. A `columns` selection keeps both,
+as it keeps `view_partial`.
 
 Only whole-window `run` scopes, including the switchback contrast view, are
 evaluated against the registered decision plan. Daily, as-of, breakout,
@@ -164,9 +170,10 @@ renders retained scope and integrity for a scoped collection, and its
 `to_frame()` keeps the qualification columns with no rows. Row-only empty input
 reports that scope and integrity are unknown, as does a run whose metric
 selection was empty: that run has no retained scope, its `to_frame()` has only
-the row columns, and it cannot be saved. Export the collection's JSON
-(`model_dump_json()`) when you need to preserve the empty view's complete scope
-evidence; a zero-row frame/table has no row on which to store attribution.
+the scope and row columns, including after a pickle round trip, and it cannot be
+saved. Export the collection's JSON (`model_dump_json()`) when you need to
+preserve the empty view's complete scope evidence; a zero-row frame/table has no
+row on which to store attribution.
 
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the

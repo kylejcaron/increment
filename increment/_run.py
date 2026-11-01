@@ -37,6 +37,7 @@ from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order,
 
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
+    from pydantic import BaseModel
 
     from increment._analysis_execution import Analysis
     from increment._binding import SourceBinding
@@ -95,6 +96,8 @@ class RunResult:
     run: Any
     live_rows: tuple[Any | None, ...] = ()
     _scoped: tuple[ScopedReadout, ...] = field(default=(), repr=False, compare=False)
+    _row_models: tuple[type[BaseModel], ...] = field(default=(), repr=False, compare=False)
+    _input_backend: Backend | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_handle(cls, handle: RunHandlePort, *, registration: Registration) -> RunResult:
@@ -152,13 +155,15 @@ class RunResult:
     def to_frame(
         self, *, backend: Backend | None = None, columns: Sequence[str] | None = None
     ) -> IntoDataFrame:
-        """Project every result row with its qualification columns as one native frame.
+        """Project every result row with its view and qualification columns as one native frame.
 
-        Each row keeps its collection's ``to_frame`` columns; qualification columns
-        describe the whole run. A restored result projects its saved cells the same
-        way, and a live confidence-set row appears as ``render`` shows it. Views with
-        different row types share their common columns; ``readout(scope).to_frame()``
-        returns one view's frame. ``columns`` selects typed columns as there.
+        Each row leads with ``scope_view`` and ``scope_values``, the ``view`` and
+        ``values`` of the scope that produced it, then keeps its collection's
+        ``to_frame`` columns; qualification columns describe the whole run. A
+        restored result projects its saved cells the same way, and a live
+        confidence-set row appears as ``render`` shows it. Views with different row
+        types share their common columns; ``readout(scope).to_frame()`` returns one
+        view's frame. ``columns`` selects typed columns as there.
         """
         from itertools import groupby
 
@@ -170,17 +175,14 @@ class RunResult:
             for model, rows in groupby(result_rows(self.cells, self.live_rows), key=type)
         ]
         if not groups:
-            if not self._scoped:
+            if not self._row_models:
                 refuse(_READOUT_NOT_RETAINED, run_id=self.run.run_id)
-            models = dict.fromkeys(type(part.collection)._model for part in self._scoped)
-            groups = [(model, ()) for model in models]
-        input_backend = next(
-            (getattr(part.collection, "_default_backend", None) for part in self._scoped), None
-        )
+            groups = [(model, ()) for model in self._row_models]
         return result_frame(
             cast(Any, groups),
             self.metadata,
-            backend=default_frame_backend(backend or input_backend),
+            scopes=tuple(cell.identity.scope for cell in self.cells),
+            backend=default_frame_backend(backend or self._input_backend),
             columns=columns,
         )
 
@@ -194,7 +196,16 @@ class RunResult:
             )
         if any(row is not None for row in self.live_rows):
             refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="serialization")
-        return type(self), (self.cells, self.effects, self.decisions, self.run, self.live_rows)
+        return type(self), (
+            self.cells,
+            self.effects,
+            self.decisions,
+            self.run,
+            self.live_rows,
+            (),
+            self._row_models,
+            self._input_backend,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -973,6 +984,10 @@ def _run_rows(
         run=handle.run,
         live_rows=tuple(live_rows),
         _scoped=parts,
+        _row_models=tuple(dict.fromkeys(type(part.collection)._model for part in parts)),
+        _input_backend=next(
+            (getattr(part.collection, "_default_backend", None) for part in parts), None
+        ),
     )
     if decision_log is not None:
         for event in events:

@@ -144,10 +144,13 @@ change without notice.
   or a pickle. `result.metadata`, `result.envelope` and
   `result.to_frame(backend=..., columns=...)` read the run's metadata, portable
   envelope and one qualified frame of every row; `readout_table` accepts a
-  `RunResult`. Write full-row JSON with `result.readout(scope).model_dump_json()`
-  and portable cells with `result.envelope.to_payload()` or `.to_arrow()`;
-  constructing `AnalysisEnvelope(result.cells, result.run.metadata)` is no longer
-  needed.
+  `RunResult`. Every `result.to_frame()` row leads with `scope_view` (string)
+  and `scope_values` (nullable boolean), the `view` and `values` of the scope
+  that produced it, so rows of several views stay distinct in live, stored and
+  pickled results; a `columns` selection keeps both. Write full-row JSON with
+  `result.readout(scope).model_dump_json()` and portable cells with
+  `result.envelope.to_payload()` or `.to_arrow()`; constructing
+  `AnalysisEnvelope(result.cells, result.run.metadata)` is no longer needed.
 - Release note (bug fix): `DecisionLog.replay` accepts the logged decisions of a
   Bonferroni breakout family instead of refusing them with
   `store.decision.reference_invalid`. Existing decision logs replay unchanged.
