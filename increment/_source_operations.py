@@ -312,6 +312,19 @@ class PanelSQLOperation(Protocol):
 
 
 @runtime_checkable
+class NativePanelSqlOperation(Protocol):
+    def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
+
+    def build_panel_for_metric(
+        self,
+        exposures: Any,
+        metric: Metric,
+        *,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> Any: ...
+
+
+@runtime_checkable
 class SummarySQLOperation(Protocol):
     def _summary_sql_for_metrics(
         self,
@@ -339,7 +352,7 @@ __all__ = [
     "ExploratorySourceOperation",
     "ExportMomentsOperation",
     "MaterializeOperation",
-    "PanelSQLOperation",
+    "NativePanelSqlOperation",
     "SitewideEvidenceOperation",
     "SummarySQLOperation",
     "SummarySqlOperation",

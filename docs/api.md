@@ -35,6 +35,10 @@ The policy covers:
   `increment.artifacts`, `increment.digest`, `increment.estimators`, and
   `increment.evidence`. Existing family namespaces such as `increment.power`
   remain available;
+- `increment.query` promises only `build_panel_for_metric`, `panel_sql`, and
+  `summary_sql`. Each operates on an `(experiment, resolver)` pair; SQL
+  previews preserve their optional-breakout defaults and use adopted SQL as
+  the summary fallback.
 - `increment.workflows` promises only `materialize`, `export_moments`,
   `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
   `compiled_decision_plan`, and `available_metrics`. These functions operate on

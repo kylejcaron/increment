@@ -62,7 +62,6 @@ from increment._source_operations import (
     DashboardGroupDataOperation,
     DashboardSnapshotPayload,
     ExploratorySourceOperation,
-    SummarySqlOperation,
     TriggeredHealthEvidenceOperation,
 )
 from increment._source_types import declared_evidence, is_custom_source
@@ -1581,69 +1580,21 @@ class Analysis:
         *,
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> Any:
-        """Return one native metric's live panel tuple, independent of TEMP tables."""
-        from increment.query.native_contract import NativeCoreSource
+        from increment.query._workflows import _build_panel_for_metric_binding
 
-        src = _require_analysis_operation(
-            self._src,
-            "panel_sql",
-            NativeCoreSource,
-            message=(
-                "build_panel_for_metric() needs a native "
-                "Analysis.from_definitions instance with a warehouse backend"
-            ),
-        )
-        return src.build_panel_for_metric(
-            exposures,
-            metric,
-            population=population,
+        return _build_panel_for_metric_binding(
+            self._binding, exposures, metric, population=population
         )
 
     def panel_sql(self, breakouts: list[Breakout] | None = None) -> dict[str, str]:
-        """Return per-metric panel SQL without executing."""
-        from increment.query.native_contract import NativeCoreSource
+        from increment.query._workflows import _panel_sql_binding
 
-        src = _require_analysis_operation(
-            self._src,
-            "panel_sql",
-            NativeCoreSource,
-            message=(
-                "panel_sql() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has "
-                "no SQL substrate to introspect."
-            ),
-        )
-        return src.panel_sql(breakouts=breakouts or ())
+        return _panel_sql_binding(self._binding, breakouts)
 
     def summary_sql(self, breakouts: list[Breakout] | None = None) -> dict[str, str]:
-        """Return the per-metric group-summary SQL without executing.
+        from increment.query._workflows import _summary_sql_binding
 
-        Parameters
-        ----------
-        breakouts : list[Breakout] | None
-            When given, adds one dimensioned group_summary SQL entry
-
-        Returns
-        -------
-        dict[str, str]
-            ``{metric_name: group_summary_SQL_string}``, plus one
-            breakout entry per requested breakout.
-        """
-        self._require_arm_state("summary_sql")
-        src = self._src
-        if "summary_sql" not in declared_evidence(src).operations:
-            return src.sql()
-        summary = _require_analysis_operation(
-            src,
-            "summary_sql",
-            SummarySqlOperation,
-            message=(
-                "summary_sql() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has "
-                "no SQL substrate to introspect."
-            ),
-        )
-        return summary.summary_sql(breakouts=breakouts or ())
+        return _summary_sql_binding(self._binding, breakouts)
 
     def planning_baseline(self, metric: str) -> Baseline | SwitchbackBaseline:
         """The planning input a power solver needs, computed from THIS
