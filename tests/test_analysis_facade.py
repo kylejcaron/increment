@@ -1,11 +1,12 @@
-"""Test the Analysis facade against example definitions."""
+"""Test experiment readouts and source operations against example definitions."""
 
 from __future__ import annotations
 
 import warnings
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import datetime
+from functools import partial
 from importlib import import_module
 from typing import Any, cast
 from uuid import uuid4
@@ -13,7 +14,17 @@ from uuid import uuid4
 import ibis
 import pytest
 
-from increment import Analysis, Method
+from increment import (
+    Analysis,
+    Method,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+    workflows,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import (
     BreakoutEstimates,
     DailyLiftEstimates,
@@ -28,8 +39,10 @@ from increment.errors import (
 )
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.results import LiftEstimate
-from increment.estimators import IdentificationError
+from increment.estimators import IdentificationError, sitewide
+from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec
+from increment.query import panel_sql, summary_sql
 from increment.query.artifact_contract import ArtifactContractError
 from increment.readouts import _run as run_readout
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
@@ -39,9 +52,17 @@ from increment.semantics.models import (
     MeanMetric,
     RetentionMetric,
 )
+from increment.workflows import available_metrics, experiment_definition, export_moments, srm
 from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import held_source, make_analysis, make_analysis_like
+from tests.analysis_factory import (
+    bind_pair,
+    bound_source,
+    held_source,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
 from tests.test_unit_day_artifact_facade import _extensions, _published
@@ -113,110 +134,136 @@ def dataframe_dependencies():
     import_module("ibis.backends.duckdb")
 
 
+_DAILY_VALUES = Scope(view="daily", grain="daily", values=True)
+_DAILY_LIFT = Scope(view="daily", grain="daily")
+_ASOF_VALUES = Scope(view="asof", grain="asof", values=True)
+_ASOF_LIFT = Scope(view="asof", grain="asof")
+_BREAKOUT = Scope(view="breakout", grain="total")
+_BY_COUNTRY = (BreakoutIdentity("country", None),)
+
+
+def _day_axis_scope(readout: str, segment: tuple[BreakoutIdentity, ...] = ()) -> Scope:
+    """The day-axis view a readout parameter names, optionally by breakout."""
+    if readout == "run_daily":
+        return Scope(view="daily", grain="daily", values=True, segment=segment)
+    if readout == "run_daily_lift":
+        return Scope(view="daily", grain="daily", segment=segment)
+    if readout == "run_asof":
+        return Scope(view="asof", grain="asof", values=True, segment=segment)
+    if readout == "run_asof_lift":
+        return Scope(view="asof", grain="asof", segment=segment)
+    raise ValueError(f"unknown day-axis readout {readout!r}")
+
+
 @pytest.mark.slow
 class TestAnalysisReturnsCollectionTypes:
     """Uses new_onboarding_v2 (examples/definitions/): declares
     purchase_rate/avg_session_duration plus a d7_retention guardrail
-    (excluded via metrics= for the day-axis methods, which reject any
-    RetentionMetric) and a country breakout (for run_breakout and the
-    dimensioned day-axis paths)."""
+    (excluded via metrics= for the day-axis views, which reject any
+    RetentionMetric) and a country breakout (for the breakout view and the
+    dimensioned day-axis views)."""
 
-    def analysis(self, con) -> Analysis:
-        return Analysis(
-            experiment_name="new_onboarding_v2",
-            definitions_path="examples/definitions/",
-            con=con,
-        )
+    def binding(self, con, definitions) -> tuple[Any, Any]:
+        return from_definitions(definitions, con, experiment_name="new_onboarding_v2")
+
+    def non_retention(self, con, definitions) -> tuple[Any, Any, list[Any]]:
+        experiment, resolver = self.binding(con, definitions)
+        metrics = [
+            m for m in workflows.metrics(experiment, resolver) if not isinstance(m, RetentionMetric)
+        ]
+        return experiment, resolver, metrics
 
     def test_run_returns_lift_estimates(self, seeded_defs, seeded_con):
         # The seeded warehouse, not the 4-unit micro fixture: at n=2/arm the micro warehouse's purchase_rate is refused by infer_lift's precision guards (saturated control arm); this test is about the return type.
         import pandas as pd
 
-        results = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-            decision_method=Method(name="unadjusted")
+        experiment, resolver = from_definitions(
+            seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
         )
+        results = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
         assert isinstance(results, LiftEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
         assert isinstance(results.to_frame(), pd.DataFrame)
 
     @pytest.mark.slow
-    def test_run_breakout_returns_breakout_estimates(self, con):
+    def test_run_breakout_returns_breakout_estimates(self, con, example_definitions):
+        experiment, resolver = self.binding(con, example_definitions)
         with _ignore_ibis_deprecation():
-            results = self.analysis(con).run_breakout()
+            results = view_readout(experiment, resolver, _BREAKOUT)
         assert isinstance(results, BreakoutEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
 
-    def test_run_daily_returns_daily_metric_values(self, con):
-        analysis = self.analysis(con)
-        non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
-        results = analysis.run_daily(metrics=non_retention)
+    def test_run_daily_returns_daily_metric_values(self, con, example_definitions):
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
+        results = view_readout(experiment, resolver, _DAILY_VALUES, metrics=metrics)
         assert isinstance(results, DailyMetricValues)
         assert isinstance(results, list)
         assert len(results) > 0
 
-    def test_run_daily_dimensioned_returns_daily_metric_values(self, con):
+    def test_run_daily_dimensioned_returns_daily_metric_values(self, con, example_definitions):
         """The dimensioned path builds `segment_results` independently of
         the un-dimensioned path - both branches need the wrap, not just
         one."""
-        analysis = self.analysis(con)
-        non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
-        results = analysis.run_daily(dimension="country", metrics=non_retention)
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
+        scope = Scope(view="daily", grain="daily", values=True, segment=_BY_COUNTRY)
+        results = view_readout(experiment, resolver, scope, metrics=metrics)
         assert isinstance(results, DailyMetricValues)
         assert len(results) > 0
 
-    def test_run_daily_lift_returns_daily_lift_estimates(self, con):
-        analysis = self.analysis(con)
-        non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
-        results = analysis.run_daily_lift(metrics=non_retention)
+    def test_run_daily_lift_returns_daily_lift_estimates(self, con, example_definitions):
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
+        results = view_readout(experiment, resolver, _DAILY_LIFT, metrics=metrics)
         assert isinstance(results, DailyLiftEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
 
-    def test_run_daily_lift_dimensioned_returns_daily_lift_estimates(self, con):
-        analysis = self.analysis(con)
-        non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
-        results = analysis.run_daily_lift(dimension="country", metrics=non_retention)
+    def test_run_daily_lift_dimensioned_returns_daily_lift_estimates(
+        self, con, example_definitions
+    ):
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
+        scope = Scope(view="daily", grain="daily", segment=_BY_COUNTRY)
+        results = view_readout(experiment, resolver, scope, metrics=metrics)
         assert isinstance(results, DailyLiftEstimates)
         assert len(results) > 0
 
-    def test_run_asof_returns_daily_metric_values(self, con):
-        analysis = self.analysis(con)
-        non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
-        results = analysis.run_asof(metrics=non_retention)
+    def test_run_asof_returns_daily_metric_values(self, con, example_definitions):
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
+        results = view_readout(experiment, resolver, _ASOF_VALUES, metrics=metrics)
         assert isinstance(results, DailyMetricValues)
         assert isinstance(results, list)
         assert len(results) > 0
 
-    def test_run_asof_lift_returns_daily_lift_estimates(self, con):
-        analysis = self.analysis(con)
-        non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
-        results = analysis.run_asof_lift(metrics=non_retention)
+    def test_run_asof_lift_returns_daily_lift_estimates(self, con, example_definitions):
+        experiment, resolver, metrics = self.non_retention(con, example_definitions)
+        results = view_readout(experiment, resolver, _ASOF_LIFT, metrics=metrics)
         assert isinstance(results, DailyLiftEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
 
-    def test_empty_metrics_returns_typed_empty_collections(self, con):
+    def test_empty_metrics_returns_typed_empty_collections(self, con, example_definitions):
         """`metrics=[]` (rather than a data-driven sparse result) is the
         cleanest way to force the early-return branch every day-axis
-        method has - confirming even THAT branch returns the concrete
+        view has - confirming even THAT branch returns the concrete
         type, not a bare `[]`, is the whole point: it's the easiest
         branch to accidentally leave unwrapped."""
-        analysis = self.analysis(con)
-        assert isinstance(analysis.run_daily(metrics=[]), DailyMetricValues)
-        assert isinstance(analysis.run_daily_lift(metrics=[]), DailyLiftEstimates)
-        assert isinstance(analysis.run_asof(metrics=[]), DailyMetricValues)
-        assert isinstance(analysis.run_asof_lift(metrics=[]), DailyLiftEstimates)
+        experiment, resolver = self.binding(con, example_definitions)
+        for scope, collection in (
+            (_DAILY_VALUES, DailyMetricValues),
+            (_DAILY_LIFT, DailyLiftEstimates),
+            (_ASOF_VALUES, DailyMetricValues),
+            (_ASOF_LIFT, DailyLiftEstimates),
+        ):
+            assert isinstance(view_readout(experiment, resolver, scope, metrics=[]), collection)
 
-    def test_run_asof_lift_rejects_removed_correction_before_empty_metrics_return(self, con):
-        analysis = self.analysis(con)
+    def test_run_asof_lift_rejects_removed_correction_before_empty_metrics_return(
+        self, con, example_definitions
+    ):
+        experiment, resolver = self.binding(con, example_definitions)
 
         with pytest.raises(TypeError):
-            analysis.run_asof_lift(
-                metrics=[],
-                correction="holm",  # ty: ignore[unknown-argument]
-            )
+            view_readout(experiment, resolver, _ASOF_LIFT, metrics=[], correction="holm")
 
 
 def test_analysis_factory_signatures_preserve_inputs_and_return_type():
@@ -259,7 +306,6 @@ def test_analysis_from_source_refuses_a_contrast_design_that_disagrees_with_the_
     from types import SimpleNamespace
 
     from increment._study import SwitchbackStudyEnvelope
-    from increment.analysis import Analysis
     from increment.decision import ContrastContext
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
@@ -284,14 +330,13 @@ def test_analysis_from_source_refuses_a_contrast_design_that_disagrees_with_the_
     )
     src = SimpleNamespace(context=context)
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis._from_source(src, design)  # ty: ignore[invalid-argument-type]
+        bind_pair(src, design)
     assert exc_info.value.code == "facade.analysis.source_context_design_disagrees_arm"
 
 
 def test_analysis_from_source_refuses_an_arm_design_that_disagrees_with_the_source():
     from types import SimpleNamespace
 
-    from increment.analysis import Analysis
     from increment.semantics.design import Randomized
 
     design = Randomized(control_group="control")
@@ -299,7 +344,7 @@ def test_analysis_from_source_refuses_an_arm_design_that_disagrees_with_the_sour
     context = SimpleNamespace(design=other_design)
     src = SimpleNamespace(context=context, operations=frozenset())
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis._from_source(src, design)  # ty: ignore[invalid-argument-type]
+        bind_pair(src, design)
     assert exc_info.value.code == "facade.analysis.source_context_design_disagrees_arm"
 
 
@@ -309,16 +354,15 @@ def test_run_empty_metrics_on_experiment_less_double_returns_empty_without_readi
     """A bare double built without ``defs=`` (e.g. a seam source's own
     test substrate) has no ``_experiment`` at all. The empty-selection
     path must not inspect experiment state or acquire moments."""
-    from tests.analysis_factory import _native_source
 
-    analysis = make_analysis(defs=None)
+    experiment, resolver = make_binding(defs=None)
 
     def fail_on_read(*args, **kwargs):
         raise AssertionError("run() acquired moments for an empty selection")
 
-    monkeypatch.setattr(_native_source(analysis), "moments", fail_on_read)
+    monkeypatch.setattr(bound_source(resolver), "moments", fail_on_read)
 
-    assert analysis.run(metrics=[]) == LiftEstimates([])
+    assert view_readout(experiment, resolver, metrics=[]) == LiftEstimates([])
 
 
 def test_run_empty_metrics_still_refuses_source_without_design_before_reading(monkeypatch):
@@ -339,10 +383,10 @@ def test_run_empty_metrics_still_refuses_source_without_design_before_reading(mo
         raise AssertionError("run() read moments before validating the request")
 
     monkeypatch.setattr(source, "moments", fail_on_read)
-    analysis = Analysis._from_source(source)
+    experiment, resolver = bind_pair(source)
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(metrics=[])
+        view_readout(experiment, resolver, metrics=[])
 
     assert raised.value.code == "readout.design.required"
     assert read_calls == []
@@ -352,15 +396,15 @@ def test_run_empty_metrics_on_experiment_less_double_still_refuses_call_time_pol
     """The empty-selection branch still refuses a non-default call-time
     policy kwarg before returning early - an empty result must not
     silently swallow a dropped guardrail."""
-    analysis = make_analysis(defs=None)
+    experiment, resolver = make_binding(defs=None)
     with pytest.raises(TypeError):
-        analysis.run(metrics=[], margins={"x": 0.05})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, metrics=[], margins={"x": 0.05})
 
 
 def test_run_empty_metrics_on_experiment_less_double_still_validates_estimands():
-    analysis = make_analysis(defs=None)
+    experiment, resolver = make_binding(defs=None)
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(metrics=[], estimands=("typo",))
+        view_readout(experiment, resolver, metrics=[], estimands=("typo",))
     assert raised.value.code == "readout.estimands.unknown"
 
 
@@ -368,16 +412,24 @@ def test_run_empty_metrics_on_experiment_less_double_still_validates_estimands()
 def test_analysis_run_native_randomized_forwards_prior(seeded_con, seeded_defs):
     from increment.estimation import Normal
 
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con) as analysis:
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         flat = next(
             r
-            for r in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+            for r in _lift_rows(
+                view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+            )
             if r.metric == "purchase_rate"
         )
         with pytest.warns(IncrementWarning) as caught:
             with _ignore_ibis_deprecation():
                 shrunk_rows = _lift_rows(
-                    analysis.run(
+                    view_readout(
+                        experiment,
+                        resolver,
                         prior=Normal(mu=0.0, sigma=0.01),
                         decision_method=Method(name="unadjusted"),
                     )
@@ -399,7 +451,9 @@ def _capture_readout(con, definitions_path, readout: str) -> dict[str, float | N
     Keep this in lockstep with that script - if the two disagree on keys, the
     baseline comparison checks different things and silently passes.
     """
-    a = Analysis("new_onboarding_v2", definitions_path, con)
+    experiment, resolver = from_definitions(
+        definitions_path, con, experiment_name="new_onboarding_v2"
+    )
 
     def value_of(row) -> float | None:
         value = row.value
@@ -424,26 +478,40 @@ def _capture_readout(con, definitions_path, readout: str) -> dict[str, float | N
     if readout == "run":
         return {
             f"{e.metric}|{e.group_id}": lift_value(e)
-            for e in _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+            for e in _lift_rows(
+                view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+            )
         }
     if readout == "run_daily":
-        return {f"{v.metric}|{v.group_id}|{v.ds.isoformat()}": value_of(v) for v in a.run_daily()}
+        return {
+            f"{v.metric}|{v.group_id}|{v.ds.isoformat()}": value_of(v)
+            for v in view_readout(experiment, resolver, _DAILY_VALUES)
+        }
     if readout == "run_asof":
-        return {f"{v.metric}|{v.group_id}|{v.ds.isoformat()}": value_of(v) for v in a.run_asof()}
+        return {
+            f"{v.metric}|{v.group_id}|{v.ds.isoformat()}": value_of(v)
+            for v in view_readout(experiment, resolver, _ASOF_VALUES)
+        }
     if readout == "run_breakout":
         return {
             f"{e.metric}|{e.group_id}|{e.dimension}={e.dimension_value}": lift_value(e)
-            for e in a.run_breakout(decision_method=Method(name="unadjusted"))
+            for e in view_readout(
+                experiment, resolver, _BREAKOUT, decision_method=Method(name="unadjusted")
+            )
         }
     if readout == "run_daily_lift":
         return {
             f"{e.metric}|{e.group_id}|{e.ds}|{e.estimand}": lift_value(e)
-            for e in a.run_daily_lift(decision_method=Method(name="unadjusted"))
+            for e in view_readout(
+                experiment, resolver, _DAILY_LIFT, decision_method=Method(name="unadjusted")
+            )
         }
     if readout == "run_asof_lift":
         return {
             f"{e.metric}|{e.group_id}|{e.ds}|{e.estimand}": lift_value(e)
-            for e in a.run_asof_lift(decision_method=Method(name="unadjusted"))
+            for e in view_readout(
+                experiment, resolver, _ASOF_LIFT, decision_method=Method(name="unadjusted")
+            )
         }
     raise ValueError(f"unknown readout {readout!r}")
 
@@ -498,10 +566,15 @@ def test_analysis_from_unit_summary_runs():
             "revenue": [25.0, 35.0, 22.5, 13.0],
         }
     )
-    a = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    experiment, resolver = from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
-    results = a.run()
+    results = view_readout(experiment, resolver)
     assert isinstance(results, LiftEstimates)
     # treatment mean 30.0, control mean 17.75
     assert results[0].require_lift().value == pytest.approx(30.0 / 17.75 - 1, rel=1e-9)
@@ -517,14 +590,15 @@ def test_analysis_from_unit_summary_srm():
             "revenue": [25.0, 35.0, 22.5, 13.0],
         }
     )
-    a = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=Randomized(control_group="control", allocation_scheme="independent"),
     )
-    result = a.srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.observed == {"treatment": 2, "control": 2}
     assert result.is_srm is False
@@ -540,15 +614,16 @@ def test_analysis_srm_defaults_to_anytime_valid_inference():
             "revenue": [1.0] * 8,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="group",
         metrics={"revenue": "mean"},
         design=Randomized(control_group="control", allocation_scheme="independent"),
     )
 
-    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
 
     assert isinstance(result, SRMResult)
     assert result.inference == "always_valid"
@@ -565,15 +640,16 @@ def test_analysis_srm_is_not_applicable_without_declared_independent_scheme():
             "revenue": [1.0] * 8,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="group",
         control="control",
         metrics={"revenue": "mean"},
     )
 
-    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
 
     assert isinstance(result, NotApplicable)
     assert result.check == "srm"
@@ -594,8 +670,9 @@ def test_analysis_srm_requires_declared_allocation(inference):
             "revenue": [1.0] * 8,
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="group",
         control="control",
@@ -603,7 +680,7 @@ def test_analysis_srm_requires_declared_allocation(inference):
     )
 
     with pytest.raises(CapabilityError) as raised:
-        analysis.srm(inference=inference)
+        srm(experiment, resolver, inference=inference)
 
     error = raised.value
     assert error.code == "integrity.allocation_scheme_missing"
@@ -629,20 +706,26 @@ def test_analysis_from_unit_summary_on_unassigned_threads_through():
         }
     )
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
-            df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+        from_frame(
+            df,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"revenue": "mean"},
         )
     assert raised.value.code == "source.frame.unassigned"
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=Randomized(control_group="control", allocation_scheme="independent"),
         on_unassigned="exclude",
     )
-    assert [e.group_id for e in _lift_rows(analysis.run())] == ["treatment"]
-    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert [e.group_id for e in _lift_rows(view_readout(experiment, resolver))] == ["treatment"]
+    result = srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.observed == {"treatment": 4, "control": 4}
     assert result.df == 1
@@ -659,7 +742,11 @@ def test_analysis_native_srm(seeded_con, seeded_defs, monkeypatch):
     proves the group-by-count query is correct, not just that some number
     came back.
     """
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con) as a:
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         queries: list[str] = []
         to_pyarrow = seeded_con.to_pyarrow
 
@@ -670,7 +757,9 @@ def test_analysis_native_srm(seeded_con, seeded_defs, monkeypatch):
         monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = a.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+            result = srm(
+                experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+            )
         assert "query.integrity.mixed_assignments_excluded" not in warning_codes(caught)
         assert isinstance(result, SRMResult)
         assert result.observed["treatment"] == result.observed["control"]
@@ -691,9 +780,13 @@ def test_analysis_native_srm_zero_fills_explicit_missing_arm_for_fixed_look(seed
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=28)
     con.raw_sql("DELETE FROM analytics.event_log WHERE group_id = 'treatment'")
+    experiment, resolver = from_definitions(seeded_defs, con, experiment_name="new_onboarding_v2")
 
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as a:
-        result = a.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
+        result = srm(
+            experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+        )
 
     assert isinstance(result, SRMResult)
     assert result.inference == "fixed"
@@ -716,11 +809,13 @@ def test_analysis_native_srm_requires_declared_allocation(seeded_defs, monkeypat
         return to_pyarrow(expr, *args, **kwargs)
 
     monkeypatch.setattr(con, "to_pyarrow", record_query)
+    experiment, resolver = from_definitions(seeded_defs, con, experiment_name="new_onboarding_v2")
 
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         for inference in ("always_valid", "fixed"):
             with pytest.raises(CapabilityError) as raised:
-                analysis.srm(inference=inference)
+                srm(experiment, resolver, inference=inference)
             assert raised.value.code == "integrity.allocation_scheme_missing"
             assert raised.value.context == {"population": "assigned"}
     assert queries == []
@@ -828,10 +923,12 @@ def _mixed_assignment_connection():
 @pytest.mark.slow
 def test_analysis_native_mixed_assignment_errors_before_analysis(seeded_defs):
     con = _mixed_assignment_connection()
+    experiment, resolver = from_definitions(seeded_defs, con, experiment_name="new_onboarding_v2")
 
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.run()
+            view_readout(experiment, resolver)
     assert raised.value.code == "query.integrity.mixed_assignment_units"
 
 
@@ -844,22 +941,23 @@ def test_analysis_native_null_assignment_is_accounted_separately(seeded_defs, po
     seed_event_log(con, n_units=200)
     _extend_mixed_assignment_event_horizon(con)
     _insert_null_assignment(con)
+    experiment, resolver = from_definitions(
+        seeded_defs, con, experiment_name="new_onboarding_v2", on_mixed_assignment=policy
+    )
 
-    with Analysis.from_definitions(
-        "new_onboarding_v2",
-        seeded_defs,
-        con,
-        on_mixed_assignment=policy,
-    ) as analysis:
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         if policy == "warn":
             with pytest.warns(IncrementWarning) as rec:
                 with _ignore_ibis_deprecation():
-                    analysis.run(decision_method=Method(name="unadjusted"))
+                    view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
             assert "query.integrity.mixed_assignments_excluded" in warning_codes(rec)
         else:
             with _ignore_ibis_deprecation():
-                analysis.run(decision_method=Method(name="unadjusted"))
-        result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+                view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+        result = srm(
+            experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+        )
 
     assert isinstance(result, SRMResult)
     assert result.unassigned_units == 1
@@ -874,10 +972,12 @@ def test_analysis_native_null_assignment_errors_before_analysis(seeded_defs):
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
     _insert_null_assignment(con)
+    experiment, resolver = from_definitions(seeded_defs, con, experiment_name="new_onboarding_v2")
 
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.run()
+            view_readout(experiment, resolver)
     assert raised.value.code == "query.integrity.unassigned_assignment_units"
 
 
@@ -887,15 +987,19 @@ def test_analysis_revalidates_mixed_assignments_before_each_readout(seeded_defs)
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
-        result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    experiment, resolver = from_definitions(seeded_defs, con, experiment_name="new_onboarding_v2")
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
+        result = srm(
+            experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+        )
         assert isinstance(result, SRMResult)
         assert result.mixed_assignment_units == 0
 
         _insert_mixed_assignment(con)
 
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.run()
+            view_readout(experiment, resolver)
     assert raised.value.code == "query.integrity.mixed_assignment_units"
 
 
@@ -908,26 +1012,43 @@ def test_analysis_rebuilds_materialized_exposures_when_assignments_change(seeded
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
     _extend_mixed_assignment_event_horizon(con)
-    with Analysis.from_definitions(
-        "new_onboarding_v2",
+    analysis_experiment, analysis_resolver = from_definitions(
         seeded_defs,
         con,
+        experiment_name="new_onboarding_v2",
         store="always",
         on_mixed_assignment=policy,
-    ) as analysis:
+    )
+    assert isinstance(analysis_resolver, AbstractContextManager)
+    with analysis_resolver:
         with _ignore_ibis_deprecation():
-            analysis.run(decision_method=Method(name="unadjusted"))
+            view_readout(
+                analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+            )
 
         _insert_mixed_assignment(con)
 
         if policy == "warn":
             with pytest.warns(UserWarning):
                 with _ignore_ibis_deprecation():
-                    rows = analysis.run(decision_method=Method(name="unadjusted"))
+                    rows = view_readout(
+                        analysis_experiment,
+                        analysis_resolver,
+                        decision_method=Method(name="unadjusted"),
+                    )
         else:
             with _ignore_ibis_deprecation():
-                rows = analysis.run(decision_method=Method(name="unadjusted"))
-        counts = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+                rows = view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    decision_method=Method(name="unadjusted"),
+                )
+        counts = srm(
+            analysis_experiment,
+            analysis_resolver,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        )
         assert isinstance(counts, SRMResult)
         assert counts.mixed_assignment_units == 1
         assert sum(counts.observed.values()) == 199
@@ -935,12 +1056,22 @@ def test_analysis_rebuilds_materialized_exposures_when_assignments_change(seeded
             (row.metric, row.group_id, row.method): row.require_lift().value
             for row in _lift_rows(rows)
         }
-        with Analysis.from_definitions(
-            "new_onboarding_v2", seeded_defs, con, store="none", on_mixed_assignment="exclude"
-        ) as fresh:
+        fresh_experiment, fresh_resolver = from_definitions(
+            seeded_defs,
+            con,
+            experiment_name="new_onboarding_v2",
+            store="none",
+            on_mixed_assignment="exclude",
+        )
+        assert isinstance(fresh_resolver, AbstractContextManager)
+        with fresh_resolver:
             expected = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(fresh.run(decision_method=Method(name="unadjusted")))
+                for row in _lift_rows(
+                    view_readout(
+                        fresh_experiment, fresh_resolver, decision_method=Method(name="unadjusted")
+                    )
+                )
             }
         assert current == pytest.approx(expected)
 
@@ -956,36 +1087,65 @@ def test_analysis_rebuilds_materialized_exposures_without_fetching_mixed_identit
         raise AssertionError("mixed-assignment validation must not fetch identity batches")
 
     monkeypatch.setattr(con, "to_pyarrow_batches", reject_identity_batches)
-
-    with Analysis.from_definitions(
-        "new_onboarding_v2",
+    analysis_experiment, analysis_resolver = from_definitions(
         seeded_defs,
         con,
+        experiment_name="new_onboarding_v2",
         store="always",
         on_mixed_assignment="exclude",
-    ) as analysis:
+    )
+
+    assert isinstance(analysis_resolver, AbstractContextManager)
+    with analysis_resolver:
         with _ignore_ibis_deprecation():
             before = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+                for row in _lift_rows(
+                    view_readout(
+                        analysis_experiment,
+                        analysis_resolver,
+                        decision_method=Method(name="unadjusted"),
+                    )
+                )
             }
 
         _replace_mixed_assignment(con)
         with _ignore_ibis_deprecation():
             current = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+                for row in _lift_rows(
+                    view_readout(
+                        analysis_experiment,
+                        analysis_resolver,
+                        decision_method=Method(name="unadjusted"),
+                    )
+                )
             }
-        repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+        repaired = srm(
+            analysis_experiment,
+            analysis_resolver,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        )
         assert isinstance(repaired, SRMResult)
         assert repaired.mixed_assignment_units == 1
+        fresh_experiment, fresh_resolver = from_definitions(
+            seeded_defs,
+            con,
+            experiment_name="new_onboarding_v2",
+            store="none",
+            on_mixed_assignment="exclude",
+        )
 
-        with Analysis.from_definitions(
-            "new_onboarding_v2", seeded_defs, con, store="none", on_mixed_assignment="exclude"
-        ) as fresh:
+        assert isinstance(fresh_resolver, AbstractContextManager)
+        with fresh_resolver:
             expected = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(fresh.run(decision_method=Method(name="unadjusted")))
+                for row in _lift_rows(
+                    view_readout(
+                        fresh_experiment, fresh_resolver, decision_method=Method(name="unadjusted")
+                    )
+                )
             }
         assert current == pytest.approx(expected)
         assert any(current[key] != before[key] for key in current)
@@ -996,41 +1156,69 @@ def test_analysis_rebuilds_materialized_exposures_when_contamination_is_repaired
     seeded_defs,
 ):
     con = _mixed_assignment_connection()
-
-    with Analysis.from_definitions(
-        "new_onboarding_v2",
+    analysis_experiment, analysis_resolver = from_definitions(
         seeded_defs,
         con,
+        experiment_name="new_onboarding_v2",
         store="always",
         on_mixed_assignment="exclude",
-    ) as analysis:
+    )
+
+    assert isinstance(analysis_resolver, AbstractContextManager)
+    with analysis_resolver:
         with _ignore_ibis_deprecation():
-            analysis.run(decision_method=Method(name="unadjusted"))
-        contaminated = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+            view_readout(
+                analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+            )
+        contaminated = srm(
+            analysis_experiment,
+            analysis_resolver,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        )
         assert isinstance(contaminated, SRMResult)
         assert sum(contaminated.observed.values()) == 199
 
         _remove_second_assignment(con)
         with _ignore_ibis_deprecation():
-            analysis.run(decision_method=Method(name="unadjusted"))
-        repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+            view_readout(
+                analysis_experiment, analysis_resolver, decision_method=Method(name="unadjusted")
+            )
+        repaired = srm(
+            analysis_experiment,
+            analysis_resolver,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        )
         assert isinstance(repaired, SRMResult)
         assert repaired.mixed_assignment_units == 0
         assert sum(repaired.observed.values()) == 200
         current = {
             (row.metric, row.group_id, row.method): row
-            for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+            for row in _lift_rows(
+                view_readout(
+                    analysis_experiment,
+                    analysis_resolver,
+                    decision_method=Method(name="unadjusted"),
+                )
+            )
         }
-        with Analysis.from_definitions(
-            "new_onboarding_v2",
-            "examples/definitions",
+        fresh_experiment, fresh_resolver = from_definitions(
+            seeded_defs,
             con,
+            experiment_name="new_onboarding_v2",
             store="always",
             on_mixed_assignment="exclude",
-        ) as fresh:
+        )
+        assert isinstance(fresh_resolver, AbstractContextManager)
+        with fresh_resolver:
             expected = {
                 (row.metric, row.group_id, row.method): row
-                for row in _lift_rows(fresh.run(decision_method=Method(name="unadjusted")))
+                for row in _lift_rows(
+                    view_readout(
+                        fresh_experiment, fresh_resolver, decision_method=Method(name="unadjusted")
+                    )
+                )
             }
         assert set(current) == set(expected)
         for key, row in expected.items():
@@ -1040,20 +1228,21 @@ def test_analysis_rebuilds_materialized_exposures_when_contamination_is_repaired
 @pytest.mark.slow
 def test_analysis_native_mixed_assignment_warns_once_and_remains_accounted(seeded_defs):
     con = _mixed_assignment_connection()
+    experiment, resolver = from_definitions(
+        seeded_defs, con, experiment_name="new_onboarding_v2", on_mixed_assignment="warn"
+    )
 
-    with Analysis.from_definitions(
-        "new_onboarding_v2",
-        seeded_defs,
-        con,
-        on_mixed_assignment="warn",
-    ) as analysis:
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         with pytest.warns(IncrementWarning) as rec:
             with _ignore_ibis_deprecation():
-                analysis.run()
+                view_readout(experiment, resolver)
         assert "query.integrity.mixed_assignments_excluded" in warning_codes(rec)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+            result = srm(
+                experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+            )
 
     assert "query.integrity.mixed_assignments_excluded" not in warning_codes(caught)
     assert isinstance(result, SRMResult)
@@ -1065,17 +1254,18 @@ def test_analysis_native_mixed_assignment_warns_once_and_remains_accounted(seede
 @pytest.mark.slow
 def test_analysis_native_mixed_assignment_can_be_explicitly_excluded(seeded_defs):
     con = _mixed_assignment_connection()
+    experiment, resolver = from_definitions(
+        seeded_defs, con, experiment_name="new_onboarding_v2", on_mixed_assignment="exclude"
+    )
 
-    with Analysis.from_definitions(
-        "new_onboarding_v2",
-        seeded_defs,
-        con,
-        on_mixed_assignment="exclude",
-    ) as analysis:
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            analysis.run()
-            result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+            view_readout(experiment, resolver)
+            result = srm(
+                experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+            )
 
     assert "query.integrity.mixed_assignments_excluded" not in warning_codes(caught)
     assert isinstance(result, SRMResult)
@@ -1093,15 +1283,15 @@ def test_analysis_native_mixed_assignment_can_be_explicitly_excluded(seeded_defs
     ],
 )
 def test_analysis_unknown_experiment_is_coded_before_warehouse_access(
-    tmp_path, use_examples, available
+    tmp_path, example_definitions, use_examples, available
 ):
     definitions = tmp_path / "definitions.yaml"
     definitions.write_text("{}\n")
-    path = "examples/definitions" if use_examples else definitions
+    path = example_definitions if use_examples else definitions
     con = ibis.duckdb.connect()
     try:
         with pytest.raises(InvalidRequestError) as raised:
-            Analysis.from_definitions("missing-experiment", path, con)
+            from_definitions(path, con, experiment_name="missing-experiment")
         assert raised.value.code == "facade.analysis.unknown_experiment"
         assert raised.value.context["requested"] == "missing-experiment"
         assert raised.value.context["available"] == available
@@ -1111,10 +1301,10 @@ def test_analysis_unknown_experiment_is_coded_before_warehouse_access(
 
 def test_analysis_native_rejects_unknown_mixed_assignment_policy(seeded_con, seeded_defs):
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_definitions(
-            "new_onboarding_v2",
+        from_definitions(
             seeded_defs,
             seeded_con,
+            experiment_name="new_onboarding_v2",
             on_mixed_assignment="invalid",  # ty: ignore[invalid-argument-type]
         )
     assert raised.value.code == "facade.analysis.invalid_mixed_assignment_policy"
@@ -1127,10 +1317,10 @@ def test_analysis_native_rejects_unknown_store_before_loading(seeded_con, monkey
 
     monkeypatch.setattr("increment.semantics.loader.load", fail_load)
     with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_definitions(
-            "new_onboarding_v2",
+        from_definitions(
             "unused-definitions.yml",
             seeded_con,
+            experiment_name="new_onboarding_v2",
             store="alway",  # ty: ignore[invalid-argument-type]
         )
     assert raised.value.code == "facade.analysis.invalid_store_policy"
@@ -1147,24 +1337,24 @@ def test_from_unit_summary_day_axis_raises_capability_error():
             "revenue": [25.0, 22.5],
         }
     )
-    analysis = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    experiment, resolver = from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
-    for method in (
-        analysis.run_daily,
-        analysis.run_daily_lift,
-        analysis.run_asof,
-        analysis.run_asof_lift,
-    ):
+    for readout in ("run_daily", "run_daily_lift", "run_asof", "run_asof_lift"):
         with pytest.raises(CapabilityError) as exc_info:
-            method(dimension="country")
+            view_readout(experiment, resolver, _day_axis_scope(readout, _BY_COUNTRY))
         assert exc_info.value.code == "evidence.grain_unavailable"
 
 
 def test_day_axis_request_refuses_on_a_summary_with_the_shared_code():
     import pandas as pd
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "user_id": ["u1", "u2"],
@@ -1172,6 +1362,7 @@ def test_day_axis_request_refuses_on_a_summary_with_the_shared_code():
                 "revenue": [25.0, 22.5],
             }
         ),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -1179,10 +1370,10 @@ def test_day_axis_request_refuses_on_a_summary_with_the_shared_code():
     )
     try:
         with pytest.raises(CapabilityError) as refused:
-            analysis.run_daily()
+            view_readout(experiment, resolver, _DAILY_VALUES)
         assert refused.value.code == "evidence.grain_unavailable"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.parametrize(
@@ -1192,7 +1383,7 @@ def test_day_axis_request_refuses_on_a_summary_with_the_shared_code():
 def test_from_unit_summary_dimensioned_day_axis_raises_capability_error(method):
     import pandas as pd
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "user_id": ["u1", "u2"],
@@ -1200,13 +1391,14 @@ def test_from_unit_summary_dimensioned_day_axis_raises_capability_error(method):
                 "revenue": [25.0, 22.5],
             }
         ),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as exc_info:
-        getattr(analysis, method)(dimension="country")
+        view_readout(experiment, resolver, _day_axis_scope(method, _BY_COUNTRY))
     assert exc_info.value.code == "evidence.grain_unavailable"
 
 
@@ -1233,15 +1425,30 @@ def test_from_unit_summary_refusals_are_coded_and_actionable(method, expected_co
             "revenue": [25.0, 22.5],
         }
     )
-    analysis = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    experiment, resolver = from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
+    operation = {
+        "panel_sql": panel_sql,
+        "summary_sql": summary_sql,
+        "materialize": workflows.materialize,
+        "breakout_summaries": workflows.breakout_summaries,
+        "run_breakout": partial(view_readout, scope=_BREAKOUT),
+        "run_daily_lift": partial(view_readout, scope=_DAILY_LIFT),
+        "run_asof": partial(view_readout, scope=_ASOF_VALUES),
+        "run_asof_lift": partial(view_readout, scope=_ASOF_LIFT),
+    }[method]
     with pytest.raises(CapabilityError) as raised:
-        getattr(analysis, method)()
+        operation(experiment, resolver)
     assert raised.value.code == expected_code
     if requested is not None:
         assert raised.value.context["requested"] == requested
-    analysis.close()
+    resolver.close()
 
 
 @backend_fixture()
@@ -1257,29 +1464,32 @@ def sitewide_con():
     return con
 
 
-def _unwindowed_sitewide_analysis(definitions_path, con):
+def _unwindowed_sitewide_analysis(definitions_path, con) -> tuple[Any, Any]:
     from increment.semantics.models import MeanMetric
 
-    original = Analysis.from_definitions("new_onboarding_v2", definitions_path, con)
-    try:
+    experiment, resolver = from_definitions(
+        definitions_path, con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver:
         count_metric = MeanMetric(
             name="purchase_event_count",
             entity="user_id",
             fact="purchase",
             aggregation="count",
         )
-        return make_analysis_like(original, [*original.metrics, count_metric])
-    finally:
-        original.close()
+        return make_binding_like(resolver, [*workflows.metrics(experiment, resolver), count_metric])
 
 
 def test_sitewide_unknown_metric_is_coded(seeded_defs, seeded_con):
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.sitewide("not_a_declared_metric")
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver, pytest.raises(InvalidRequestError) as raised:
+        sitewide(experiment, resolver, "not_a_declared_metric")
     assert raised.value.code == "facade.analysis.unknown_metric"
     assert raised.value.context["metric"] == "not_a_declared_metric"
-    analysis.close()
 
 
 def test_sitewide_control_group_missing_is_coded(seeded_defs, sitewide_con):
@@ -1287,9 +1497,10 @@ def test_sitewide_control_group_missing_is_coded(seeded_defs, sitewide_con):
         "UPDATE analytics.event_log SET group_id = 'treatment' "
         "WHERE experiment_id = 'new_onboarding_v2' AND group_id = 'control'"
     )
-    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
+    experiment, resolver = _unwindowed_sitewide_analysis(seeded_defs, sitewide_con)
+    with resolver:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_event_count")
+            sitewide(experiment, resolver, "purchase_event_count")
     assert raised.value.code == "facade.analysis.sitewide_control_missing"
     assert raised.value.context["control_group"] == "control"
     assert raised.value.context["available"] == ("treatment",)
@@ -1300,9 +1511,10 @@ def test_sitewide_no_treatment_arm_is_coded(seeded_defs, sitewide_con):
         "DELETE FROM analytics.event_log "
         "WHERE experiment_id = 'new_onboarding_v2' AND group_id = 'treatment'"
     )
-    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
+    experiment, resolver = _unwindowed_sitewide_analysis(seeded_defs, sitewide_con)
+    with resolver:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_event_count")
+            sitewide(experiment, resolver, "purchase_event_count")
     assert raised.value.code == "facade.analysis.sitewide_no_treatment_arm"
     assert raised.value.context["control_group"] == "control"
 
@@ -1316,35 +1528,39 @@ def test_sitewide_multiple_arms_require_explicit_arm_is_coded(seeded_defs, sitew
         "WHERE experiment_id = 'new_onboarding_v2' AND group_id = 'treatment' "
         "ORDER BY user_id LIMIT 50)"
     )
-    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
+    experiment, resolver = _unwindowed_sitewide_analysis(seeded_defs, sitewide_con)
+    with resolver:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_event_count")
+            sitewide(experiment, resolver, "purchase_event_count")
     assert raised.value.code == "facade.analysis.sitewide_arm_required"
     assert raised.value.context["arms"] == ("treatment", "treatment_b")
 
 
 def test_sitewide_named_arm_not_enrolled_is_coded(seeded_defs, sitewide_con):
-    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
+    experiment, resolver = _unwindowed_sitewide_analysis(seeded_defs, sitewide_con)
+    with resolver:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_event_count", arm="not_an_arm")
+            sitewide(experiment, resolver, "purchase_event_count", arm="not_an_arm")
     assert raised.value.code == "facade.analysis.sitewide_arm_not_enrolled"
     assert raised.value.context["arm"] == "not_an_arm"
 
 
 def test_srm_invalid_population_is_coded(seeded_defs, seeded_con):
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.srm(population="bogus")  # ty: ignore[invalid-argument-type]
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert isinstance(resolver, AbstractContextManager)
+    with resolver, pytest.raises(InvalidRequestError) as raised:
+        srm(experiment, resolver, population="bogus")  # ty: ignore[invalid-argument-type]
     assert raised.value.code == "facade.analysis.invalid_population"
     assert raised.value.context["population"] == "bogus"
-    analysis.close()
 
 
 @pytest.fixture
 def unit_summary_analysis():
-    """A runnable `from_unit_summary` (seam-family) Analysis - same shape
-    as ``test_analysis_from_unit_summary_runs``' inline DataFrame, factored
-    out for tests that need to `run()` it more than once."""
+    """A runnable unit-summary experiment and resolver - same shape as
+    ``test_analysis_from_unit_summary_runs``' inline DataFrame, factored
+    out for tests that need to run it more than once."""
     import pandas as pd
 
     df = pd.DataFrame(
@@ -1354,8 +1570,13 @@ def unit_summary_analysis():
             "revenue": [25.0, 35.0, 22.5, 13.0],
         }
     )
-    return Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    return from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
 
 
@@ -1387,8 +1608,9 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
     from increment import CupedCovariate
     from increment.estimation import Normal
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         informative_prior_summary_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -1404,11 +1626,13 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        unadjusted, cuped = _lift_rows(analysis.run())
+        unadjusted, cuped = _lift_rows(view_readout(experiment, resolver))
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        shrunk_rows = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))
+        shrunk_rows = _lift_rows(
+            view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
+        )
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
     shrunk = next(row for row in shrunk_rows if row.method == "cuped")
 
@@ -1426,17 +1650,19 @@ def test_run_per_metric_declared_priors_shrink_independently(informative_prior_s
     frame = informative_prior_summary_frame.copy()
     frame["orders"] = frame["revenue"] / 2.0 + 1.0
 
-    flat_analysis = Analysis.from_unit_summary(
+    flat_experiment, flat_resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[MetricSpec(name="revenue"), MetricSpec(name="orders")],
     )
-    by_name = {r.metric: r for r in _lift_rows(flat_analysis.run())}
+    by_name = {r.metric: r for r in _lift_rows(view_readout(flat_experiment, flat_resolver))}
 
-    bound_analysis = Analysis.from_unit_summary(
+    bound_experiment, bound_resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -1445,7 +1671,9 @@ def test_run_per_metric_declared_priors_shrink_independently(informative_prior_s
             MetricSpec(name="orders", prior=Normal(mu=0.0, sigma=0.02)),
         ],
     )
-    shrunk_by_name = {r.metric: r for r in _lift_rows(bound_analysis.run())}
+    shrunk_by_name = {
+        r.metric: r for r in _lift_rows(view_readout(bound_experiment, bound_resolver))
+    }
 
     for name in ("revenue", "orders"):
         assert shrunk_by_name[name].require_lift() == by_name[name].require_lift()
@@ -1455,16 +1683,19 @@ def test_run_per_metric_declared_priors_shrink_independently(informative_prior_s
 def test_run_call_wide_prior_overrides_declared_per_metric_prior(informative_prior_summary_frame):
     from increment.estimation import Normal
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         informative_prior_summary_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[MetricSpec(name="revenue", prior=Normal(mu=0.0, sigma=100.0))],
     )
-    declared = _lift_rows(analysis.run())[0]
+    declared = _lift_rows(view_readout(experiment, resolver))[0]
     with pytest.warns(IncrementWarning) as caught:
-        overridden = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
+        overridden = _lift_rows(
+            view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
+        )[0]
     assert "analysis.run.override_replaces_declared" in warning_codes(caught)
 
     assert overridden.require_lift() == declared.require_lift()
@@ -1482,8 +1713,9 @@ def test_run_preserves_cluster_prior_refusal_for_a_declared_per_metric_prior(
     so this refusal must see it too."""
     from increment.estimation import Normal
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         informative_prior_summary_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -1491,15 +1723,16 @@ def test_run_preserves_cluster_prior_refusal_for_a_declared_per_metric_prior(
         cluster="store_id",
     )
     with pytest.raises(CapabilityError) as exc_info:
-        analysis.run()
+        view_readout(experiment, resolver)
     assert exc_info.value.code == "arm.adjustment.cluster_prior"
 
 
 def test_run_preserves_cluster_prior_refusal(informative_prior_summary_frame):
     from increment.estimation import Normal
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         informative_prior_summary_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -1508,7 +1741,7 @@ def test_run_preserves_cluster_prior_refusal(informative_prior_summary_frame):
     )
 
     with pytest.raises(CapabilityError) as exc_info:
-        analysis.run(prior=Normal(mu=0.0, sigma=0.01))
+        view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
     assert exc_info.value.code == "arm.adjustment.cluster_prior"
 
 
@@ -1533,8 +1766,9 @@ def _unit_summary_analysis_with_plan(plan):
         }
     )
     design = Randomized(control_group="control")
-    return Analysis.from_unit_summary(
+    return from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control=None,
@@ -1551,7 +1785,7 @@ def test_run_preserves_sequential_prior_refusal():
     call-time override, but the refusal survives the cutover."""
     from increment.estimation import Normal
 
-    analysis = _unit_summary_analysis_with_plan(
+    experiment, resolver = _unit_summary_analysis_with_plan(
         gaussian_plan([MetricSpec(name="revenue", type="conversion")], law="bernoulli")
     )
     with (
@@ -1559,23 +1793,23 @@ def test_run_preserves_sequential_prior_refusal():
         pytest.raises(ValueError) as raised,
     ):
         warnings.simplefilter("ignore", UserWarning)
-        analysis.run(prior=Normal(mu=0.0, sigma=0.01))
+        view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01))
     assert getattr(raised.value, "code", None) == "sequential.route.unsupported"
 
 
-def test_run_forwards_inference_label(unit_summary_analysis):
+def test_run_forwards_inference_label(unit_summary_analysis: tuple[Any, Any]):
     """A declared plan's inference labels every estimate; an undeclared
     plan stays 'fixed'. ``Analysis.run(inference=...)`` no longer
     reaches ``readouts.run()`` on the frame path - the source's own
     declared plan is the only mechanism now."""
-    fixed = unit_summary_analysis.run()
+    fixed = view_readout(*unit_summary_analysis)
     assert {row.inference for row in fixed} == {"fixed"}
-    seq_analysis = _unit_summary_analysis_with_plan(
+    experiment, resolver = _unit_summary_analysis_with_plan(
         gaussian_plan([MetricSpec(name="revenue", type="conversion")], law="bernoulli")
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # frame path is open-ended
-        seq = seq_analysis.run()
+        seq = view_readout(experiment, resolver)
     assert {r.inference for r in seq} == {"always_valid"}
     for row in seq:
         result = row.require_sequential_result()
@@ -1585,18 +1819,18 @@ def test_run_forwards_inference_label(unit_summary_analysis):
         assert type(row).model_validate_json(row.model_dump_json()) == row
 
 
-def test_run_forwards_prior(unit_summary_analysis):
+def test_run_forwards_prior(unit_summary_analysis: tuple[Any, Any]):
     from increment.estimation import Normal
 
-    flat = unit_summary_analysis.run()[0]
-    shrunk = unit_summary_analysis.run(prior=Normal(mu=0.0, sigma=0.01))[0]
+    flat = view_readout(*unit_summary_analysis)[0]
+    shrunk = view_readout(*unit_summary_analysis, prior=Normal(mu=0.0, sigma=0.01))[0]
 
     assert flat.require_lift().value > 0.0
     assert shrunk.require_lift() == flat.require_lift()
     assert shrunk.posterior_estimate is not None
 
 
-def test_run_forwards_alternative_label(unit_summary_analysis):
+def test_run_forwards_alternative_label(unit_summary_analysis: tuple[Any, Any]):
     """A declared plan's alternative labels every estimate and rejects
     unknown values. ``Analysis.run(alternative=...)`` no longer reaches
     ``readouts.run()`` on the frame path - the source's own declared
@@ -1604,12 +1838,12 @@ def test_run_forwards_alternative_label(unit_summary_analysis):
     frame path's secondary-by-default derivation) so the BH/FCR family
     machinery never re-estimates the interval at a level other than
     this metric's own alpha_share."""
-    two_sided = unit_summary_analysis.run()
+    two_sided = view_readout(*unit_summary_analysis)
     assert {r.alternative for r in two_sided} == {"two-sided"}
 
-    one_sided = _unit_summary_analysis_with_plan(
-        AnalysisPlan(primary="revenue", alternative="greater")
-    ).run()
+    one_sided = view_readout(
+        *_unit_summary_analysis_with_plan(AnalysisPlan(primary="revenue", alternative="greater"))
+    )
     assert {r.alternative for r in one_sided} == {"greater"}
     assert all(r.require_lift().level == pytest.approx(0.90) for r in one_sided)
 
@@ -1627,17 +1861,17 @@ def test_analysis_run_native_declared_margin_abs_reaches_the_estimate(seeded_con
     silently substituted superiority-at-zero test."""
     # Public LiftEstimate.stat_sig() below covers the serialized decision.
 
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    a = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
     # avg_session_duration declares preferred_direction=increase in the
     # example definitions; layer the absolute guardrail on top.
-    a = make_analysis_like(
-        a,
+    a = make_binding_like(
+        a[1],
         [
             m.model_copy(update={"margin_abs": 100.0}) if m.name == "avg_session_duration" else m
-            for m in a.metrics
+            for m in workflows.metrics(*a)
         ],
     )
-    results = _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+    results = _lift_rows(view_readout(*a, decision_method=Method(name="unadjusted")))
     rows = [r for r in results if r.metric == "avg_session_duration"]
     assert rows
     est = rows[0]
@@ -1654,14 +1888,16 @@ def test_analysis_run_native_declared_margin_abs_reaches_the_estimate(seeded_con
 
 def test_analysis_run_native_validates_before_materializing(seeded_con, seeded_defs, monkeypatch):
     """Static run refusals happen before any warehouse result is fetched."""
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     monkeypatch.setattr(
         seeded_con,
         "to_pyarrow",
         lambda *_args, **_kwargs: pytest.fail("run reached warehouse reduction before refusal"),
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        analysis.run(estimands=("late",))
+        view_readout(experiment, resolver, estimands=("late",))
     assert exc_info.value.code == "readout.assignment.estimands"
 
 
@@ -1677,20 +1913,20 @@ def test_analysis_run_native_exercises_primary_secondary_guardrail_roles(seeded_
     metrics needed (purchase_rate, avg_session_duration, d7_retention),
     with `d7_retention` already a declared guardrail carrying a prior
     binding and `preferred_direction`."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    a = make_analysis_like(
-        a,
-        experiment=a.experiment.model_copy(
+    a = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
+    a = make_binding_like(
+        a[1],
+        experiment=experiment_definition(*a).model_copy(
             update={
                 "plan": AnalysisPlan(
                     primary="purchase_rate",
                     secondaries=["avg_session_duration"],
-                    guardrails=a.experiment.plan.guardrails,
+                    guardrails=experiment_definition(*a).plan.guardrails,
                 )
             }
         ),
     )
-    results = _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+    results = _lift_rows(view_readout(*a, decision_method=Method(name="unadjusted")))
     by_metric = {r.metric: r for r in results}
     assert set(by_metric) == {"purchase_rate", "avg_session_duration", "d7_retention"}
 
@@ -1730,6 +1966,7 @@ def test_observational_estimand_guardrail_row_survives_native_run(
     canned readouts.run() result standing in for that row shape, holding
     the invariant even if that capability boundary ever moves."""
     from increment.estimation.results import Estimate
+    from tests.analysis_factory import make_analysis_like
 
     a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     a = make_analysis_like(
@@ -1768,7 +2005,9 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
     """A source constructor refuses observational relative margins."""
     from tests.capability_consumers_auxiliary import assert_refusal
 
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    a_experiment, a_resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     observational = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("x",))
     )
@@ -1783,7 +2022,11 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
     )
 
     with pytest.raises(UnsupportedRequestError) as exc:
-        make_analysis_like(a, metrics=[*a.metrics, relative_guardrail], design=observational)
+        make_binding_like(
+            a_resolver,
+            metrics=[*workflows.metrics(a_experiment, a_resolver), relative_guardrail],
+            design=observational,
+        )
     assert exc.value.code == "plan.observational.relative_margin"
     assert exc.value.context["metrics"] == ("revenue_relative_guardrail",)
     assert_refusal(
@@ -1795,9 +2038,11 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
 
     # The same refusal when the relative margin is already present and only
     # the design changes on the rebuilt source.
-    a_with_margin = make_analysis_like(a, [*a.metrics, relative_guardrail])
+    a_with_margin_experiment, a_with_margin_resolver = make_binding_like(
+        a_resolver, [*workflows.metrics(a_experiment, a_resolver), relative_guardrail]
+    )
     with pytest.raises(UnsupportedRequestError) as exc2:
-        make_analysis_like(a_with_margin, design=observational)
+        make_binding_like(a_with_margin_resolver, design=observational)
     assert exc2.value.code == "plan.observational.relative_margin"
     assert exc2.value.context["metrics"] == ("revenue_relative_guardrail",)
 
@@ -1810,14 +2055,18 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
         preferred_direction="decrease",
         margin_abs=1.0,
     )
-    abs_analysis = make_analysis_like(
-        a, metrics=[*a.metrics, absolute_guardrail], design=observational
+    abs_experiment, abs_resolver = make_binding_like(
+        a_resolver,
+        metrics=[*workflows.metrics(a_experiment, a_resolver), absolute_guardrail],
+        design=observational,
     )
-    assert abs_analysis.experiment.control_group == "control"
+    assert experiment_definition(abs_experiment, abs_resolver).control_group == "control"
 
     # ...and no margin at all under Observational.
-    plain_obs_analysis = make_analysis_like(a, design=observational)
-    assert plain_obs_analysis.experiment.control_group == "control"
+    plain_obs_experiment, plain_obs_resolver = make_binding_like(a_resolver, design=observational)
+    assert (
+        experiment_definition(plain_obs_experiment, plain_obs_resolver).control_group == "control"
+    )
 
 
 @pytest.mark.slow
@@ -1836,25 +2085,29 @@ def test_analysis_run_native_routed_refuses_call_time_epistemic_policy_kwargs(
     now raise TypeError naming itself instead of no-oping."""
     from increment.estimators import AlwaysValid
 
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    baseline = _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    baseline = _lift_rows(
+        view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
+    )
     # The declared plan selects purchase_rate as a lone in-family secondary: BH's
     # cutoff is q=0.10 and the cap holds the level at 0.95. This stable baseline
     # shows the raises below refuse alpha=0.30 rather than silently ignore it.
     assert baseline[0].require_lift().level == pytest.approx(0.95)
 
     with pytest.raises(TypeError):
-        a.run(alpha=0.30)  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, alpha=0.30)
     with pytest.raises(TypeError):
-        a.run(alternative="greater")  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, alternative="greater")
     with pytest.raises(TypeError):
-        a.run(inference=AlwaysValid(registration=registration()))  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, inference=AlwaysValid(registration=registration()))
     with pytest.raises(TypeError):
-        a.run(margins={"purchase_rate": 0.02})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, margins={"purchase_rate": 0.02})
     with pytest.raises(TypeError):
-        a.run(null_lifts={"purchase_rate": 0.02})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, null_lifts={"purchase_rate": 0.02})
     with pytest.raises(TypeError):
-        a.run(margins_abs={"purchase_rate": 0.02})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, margins_abs={"purchase_rate": 0.02})
 
 
 @pytest.mark.parametrize("param", ["margins", "null_lifts", "margins_abs"])
@@ -1864,9 +2117,11 @@ def test_analysis_run_native_unknown_margin_key_refused(seeded_con, seeded_defs,
     refused outright, before ever reaching a per-key unknown-metric
     check -- a typo'd key never even gets there; the refusal is broader,
     not narrower, than "never silently dropped"."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     with pytest.raises(TypeError):
-        a.run(**{param: {"purchase_rte": 0.01}})  # ty: ignore[invalid-argument-type]
+        view_readout(experiment, resolver, **{param: {"purchase_rte": 0.01}})  # ty: ignore[invalid-argument-type]
 
 
 def test_analysis_run_native_call_time_margin_zero_refused(seeded_con, seeded_defs):
@@ -1874,17 +2129,23 @@ def test_analysis_run_native_call_time_margin_zero_refused(seeded_con, seeded_de
     plan-driven routed path before it could silently flip a two-sided
     read one-sided at the zero null -- refused louder than the old
     per-value check, not by it."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     with pytest.raises(TypeError):
-        a.run(margins={"purchase_rate": 0.0})  # ty: ignore[unknown-argument]
+        view_readout(experiment, resolver, margins={"purchase_rate": 0.0})
 
 
 @pytest.mark.slow
 def test_analysis_run_native_filters_by_name(seeded_con, seeded_defs):
     """run(metrics=["purchase_rate"]) returns only that metric's rows on
     the definitions-backed (native) path - sm8m completion."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    results = a.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    results = view_readout(
+        experiment, resolver, metrics=["purchase_rate"], decision_method=Method(name="unadjusted")
+    )
     assert results
     assert {r.metric for r in results} == {"purchase_rate"}
 
@@ -1898,10 +2159,10 @@ def test_analysis_run_native_binding_drives_cuped_dispatch(seeded_pre_period_con
     hence the seeded (not synthetic 4-unit) population."""
     from increment.semantics.models import ExperimentMetric, MethodSpec
 
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
-    a = make_analysis_like(
-        a,
-        experiment=a.experiment.model_copy(
+    a = from_definitions(seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2")
+    a = make_binding_like(
+        a[1],
+        experiment=experiment_definition(*a).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=[
@@ -1914,12 +2175,12 @@ def test_analysis_run_native_binding_drives_cuped_dispatch(seeded_pre_period_con
                             ),
                         ),
                     ],
-                    guardrails=a.experiment.plan.guardrails,
+                    guardrails=experiment_definition(*a).plan.guardrails,
                 )
             }
         ),
     )
-    results = a.run(decision_method=Method(name="unadjusted"))
+    results = view_readout(*a, decision_method=Method(name="unadjusted"))
     by_metric_method = {(r.metric, r.method) for r in results}
     assert ("avg_session_duration", "cuped") in by_metric_method
     assert ("avg_session_duration", "unadjusted") in by_metric_method
@@ -1932,8 +2193,10 @@ def test_analysis_run_native_skips_pre_events_without_a_cuped_request(
     seeded_con, seeded_defs, monkeypatch
 ):
     """A native run without a CUPED request does not issue pre-period queries."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    assert a.experiment.n_pre_periods == 14
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    assert experiment_definition(experiment, resolver).n_pre_periods == 14
     queries: list[str] = []
     to_pyarrow = seeded_con.to_pyarrow
 
@@ -1942,7 +2205,7 @@ def test_analysis_run_native_skips_pre_events_without_a_cuped_request(
         return to_pyarrow(expr, *args, **kwargs)
 
     monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
-    results = a.run(decision_method=Method(name="unadjusted"))
+    results = view_readout(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert results
     # One captured source snapshot avoids the redundant live fingerprint read.
     # The contract is that none of these reads query the pre-period.
@@ -1953,17 +2216,21 @@ def test_analysis_run_native_skips_pre_events_without_a_cuped_request(
 
 
 def test_analysis_run_native_unknown_name_raises(seeded_con, seeded_defs):
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     with pytest.raises(InvalidRequestError) as exc_info:
-        a.run(metrics=["typo"])
+        view_readout(experiment, resolver, metrics=["typo"])
     assert exc_info.value.code == "facade.analysis_config.unknown_metric_declared"
     assert exc_info.value.context["unknown_names"] == ("typo",)
 
 
 def test_analysis_run_native_duplicate_names_raise(seeded_con, seeded_defs):
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
     with pytest.raises(InvalidRequestError) as exc_info:
-        a.run(metrics=["purchase_rate", "purchase_rate"])
+        view_readout(experiment, resolver, metrics=["purchase_rate", "purchase_rate"])
     assert exc_info.value.code == "facade.analysis_config.duplicate_metric_name"
     assert exc_info.value.context["duplicate_names"] == ("purchase_rate",)
 
@@ -1977,10 +2244,19 @@ def test_analysis_run_daily_string_and_object_forms_agree(seeded_con, seeded_def
     values: two independent DuckDB aggregate executions can differ at
     the ULP level under parallel execution, which is orthogonal to what
     this test verifies."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    metric = next(m for m in a.metrics if m.name == "purchase_rate")
-    by_name = a.run_daily(metrics=["purchase_rate"])
-    by_object = a.run_daily(metrics=[metric])
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    metric = next(m for m in workflows.metrics(experiment, resolver) if m.name == "purchase_rate")
+    by_name = view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", values=True),
+        metrics=["purchase_rate"],
+    )
+    by_object = view_readout(
+        experiment, resolver, Scope(view="daily", grain="daily", values=True), metrics=[metric]
+    )
 
     def keys(values):
         return {(row.metric, row.ds, row.group_id) for row in values}
@@ -1996,10 +2272,14 @@ def test_analysis_run_native_filtered_margins_key_raises_before_reduction(seeded
     set at all, not on this particular key naming a declared-but-FILTERED
     metric -- so a filtered-metric key can never reach a per-key
     unknown-metric check or a query reduction."""
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
 
     with pytest.raises(TypeError):
-        a.run(metrics=["purchase_rate"], margins={"avg_session_duration": 0.01})  # ty: ignore[unknown-argument]
+        view_readout(
+            experiment, resolver, metrics=["purchase_rate"], margins={"avg_session_duration": 0.01}
+        )
 
 
 def test_analysis_from_unit_summary_encouragement_uptake():
@@ -2029,15 +2309,16 @@ def test_analysis_from_unit_summary_encouragement_uptake():
         # instead of exercising weak-instrument suppression here.
         min_first_stage_z=0.5,
     )
-    a = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         df,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=design,
         uptake="clicked",
     )
-    results = a.run()
+    results = view_readout(experiment, resolver)
     assert {r.estimand for r in results} == {"itt", "compliance", "late"}
 
 
@@ -2167,10 +2448,10 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
 
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
-    analysis = make_analysis(
+    experiment, resolver = make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -2181,7 +2462,7 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
         ),
     )
 
-    results = analysis.run(estimands=estimands)
+    results = view_readout(experiment, resolver, estimands=estimands)
 
     by_metric: defaultdict[str, set[str]] = defaultdict(set)
     for row in _lift_rows(results):
@@ -2241,8 +2522,9 @@ def test_analysis_from_unit_panel_encouragement_staggered_entry():
         ),
         min_first_stage_z=0.001,
     )
-    a = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -2250,7 +2532,7 @@ def test_analysis_from_unit_panel_encouragement_staggered_entry():
         design=design,
         uptake="clicked",
     )
-    results = _lift_rows(a.run())
+    results = _lift_rows(view_readout(experiment, resolver))
     compliance = next(r for r in results if r.estimand == "compliance")
     assert compliance.require_lift().value == pytest.approx(
         1.0
@@ -2270,8 +2552,9 @@ def test_from_unit_panel_run_forwards_prior():
             "revenue": [10.0, 20.0, 20.0, 20.0, 8.0, 10.0, 10.0, 14.0],
         }
     )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -2279,8 +2562,8 @@ def test_from_unit_panel_run_forwards_prior():
         metrics={"revenue": "mean"},
     )
 
-    flat = _lift_rows(analysis.run())[0]
-    shrunk = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
+    flat = _lift_rows(view_readout(experiment, resolver))[0]
+    shrunk = _lift_rows(view_readout(experiment, resolver, prior=Normal(mu=0.0, sigma=0.01)))[0]
 
     assert flat.require_lift().value > 0.0
     assert shrunk.require_lift() == flat.require_lift()
@@ -2291,18 +2574,19 @@ def test_from_unit_panel_run_forwards_prior():
 def published_artifact():
     """Share published input only across read-only adoption tests."""
     published = _published()
+    con, (_experiment, resolver), *_ = published
     yield published
-    published[1].close()
-    published[0].disconnect()
+    resolver.close()
+    con.disconnect()
 
 
 @pytest.mark.slow
 def test_public_artifact_adoption_constructs_and_reopens(published_artifact):
     _con, native, context, store, ref = published_artifact
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    assert adopted.run(metrics=["purchase_rate"])
-    adopted.close()
-    assert adopted.run(metrics=["purchase_rate"])
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
+    assert view_readout(experiment, resolver, metrics=["purchase_rate"])
+    resolver.close()
+    assert view_readout(experiment, resolver, metrics=["purchase_rate"])
 
 
 def test_closed_artifact_analysis_repr_does_not_reopen_its_source(published_artifact):
@@ -2340,8 +2624,8 @@ def test_public_artifact_adoption_has_one_build_and_no_upstream_work(monkeypatch
     _con, _native_analysis, context, store, ref = _published()
     assert len(publications) == 1
     reads.clear()
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    assert adopted.run(metrics=["purchase_rate"])
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
+    assert view_readout(experiment, resolver, metrics=["purchase_rate"])
     assert len(publications) == 1
     assert not any("event_log" in query.lower() for query in reads)
 
@@ -2350,7 +2634,7 @@ def test_public_artifact_adoption_validates_fixed_reference(published_artifact):
     _con, _native_analysis, context, store, ref = published_artifact
     bad_ref = ref.model_copy(update={"generation_id": uuid4()})
     with pytest.raises(ArtifactContractError) as raised:
-        Analysis.from_unit_day_artifact(store, bad_ref, expected_context=context)
+        from_unit_day_artifact(store, bad_ref, expected_context=context)
     assert raised.value.code in {"artifact.refresh.invalid_ref", "artifact.snapshot.mixed"}
 
 
@@ -2360,7 +2644,7 @@ def test_public_artifact_adoption_refuses_malformed_base_locator(published_artif
         update={"manifest": ref.manifest.model_copy(update={"name": "bad\nlocator"})}
     )
     with pytest.raises(ArtifactContractError) as raised:
-        Analysis.from_unit_day_artifact(store, bad_ref, expected_context=context)
+        from_unit_day_artifact(store, bad_ref, expected_context=context)
     assert raised.value.code == "artifact.identifier.unsafe"
 
 
@@ -2384,17 +2668,17 @@ def test_public_artifact_adoption_refuses_zero_io_unsafe_locator(monkeypatch, pu
     monkeypatch.setattr(store, "validate_locator", record_validate)
     monkeypatch.setattr(store, "open_snapshot", record_open)
     with pytest.raises(ArtifactContractError):
-        Analysis.from_unit_day_artifact(store, bad_ref, expected_context=context)
+        from_unit_day_artifact(store, bad_ref, expected_context=context)
     assert calls == []
 
 
 @pytest.mark.slow
 def test_public_artifact_adoption_handles_snapshot_generation_race():
-    _con, native, context, store, first = _published()
-    second = native.publish_unit_day_artifact(store, refresh_of=first)
+    _con, (experiment, resolver), context, store, first = _published()
+    second = publish_unit_day_artifact(experiment, resolver, store, refresh_of=first)
     raced = first.model_copy(update={"generation_id": second.generation_id})
     with pytest.raises(ArtifactContractError) as raised:
-        Analysis.from_unit_day_artifact(store, raced, expected_context=context)
+        from_unit_day_artifact(store, raced, expected_context=context)
     assert raised.value.code in {"artifact.refresh.invalid_ref", "artifact.snapshot.mixed"}
 
 
@@ -2402,13 +2686,23 @@ def test_public_artifact_adoption_handles_snapshot_generation_race():
 def test_public_artifact_adoption_matches_native_results(published_artifact):
     from tests.capability_consumers_auxiliary import assert_support
 
-    _con, native, context, store, ref = published_artifact
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    _con, (native_experiment, native_resolver), context, store, ref = published_artifact
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     native_rows = _lift_rows(
-        native.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+        view_readout(
+            native_experiment,
+            native_resolver,
+            metrics=["purchase_rate"],
+            decision_method=Method(name="unadjusted"),
+        )
     )
     adopted_rows = _lift_rows(
-        adopted.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+        view_readout(
+            experiment,
+            resolver,
+            metrics=["purchase_rate"],
+            decision_method=Method(name="unadjusted"),
+        )
     )
     assert_support(
         "artifact_publication_abort_recovery", "publication_from_definitions_supported", ref
@@ -2424,12 +2718,12 @@ def test_public_artifact_adoption_matches_native_results(published_artifact):
 def test_public_artifact_adoption_refuses_a_dropped_generation():
     from tests.capability_consumers_auxiliary import assert_refusal
 
-    con, native, context, store, ref = _published()
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    con, (_native_experiment, native_resolver), context, store, ref = _published()
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     try:
         store.drop_generation(ref.artifact_id, ref.generation_id)
         with pytest.raises(ArtifactContractError) as refused:
-            adopted.run(metrics=["purchase_rate"])
+            view_readout(experiment, resolver, metrics=["purchase_rate"])
         assert refused.value.code == "artifact.generation.dropped"
         assert_refusal(
             "artifact_publication_abort_recovery",
@@ -2438,8 +2732,8 @@ def test_public_artifact_adoption_refuses_a_dropped_generation():
             stage="read",
         )
     finally:
-        adopted.close()
-        native.close()
+        resolver.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -2447,9 +2741,11 @@ def test_public_artifact_adoption_refuses_missing_extension(published_artifact):
     from tests.capability_consumers_auxiliary import assert_refusal
 
     _con, native, context, store, ref = published_artifact
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     with pytest.raises(ArtifactContractError) as raised:
-        adopted.run_breakout(metrics=["purchase_rate"])
+        view_readout(
+            experiment, resolver, Scope(view="breakout", grain="total"), metrics=["purchase_rate"]
+        )
     assert raised.value.code == "artifact.extension.missing"
     assert_refusal(
         "triggered_auxiliary_reads",
@@ -2461,11 +2757,11 @@ def test_public_artifact_adoption_refuses_missing_extension(published_artifact):
 
 @pytest.mark.slow
 def test_public_artifact_adoption_rejects_malformed_extension_relation():
-    _con, native, context, store, _ref = _published()
+    _con, (experiment, resolver), context, store, _ref = _published()
     request = next(iter(_extensions(context, "breakout_dimension")))
     malformed = request.model_copy(update={"property_name": "missing_property"})
     with pytest.raises(ArtifactContractError) as raised:
-        native.publish_unit_day_artifact(store, extensions=[malformed])
+        publish_unit_day_artifact(experiment, resolver, store, extensions=[malformed])
     assert raised.value.code == "artifact.extension.missing"
 
 
@@ -2476,16 +2772,15 @@ def test_value_scale_refusal_carries_the_same_code_on_every_family() -> None:
     import ibis
 
     from examples._seed import seed_event_log
-    from increment.analysis import Analysis
     from increment.errors import CodedError
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
-    analysis = Analysis.from_definitions(
-        "new_onboarding_v2", "examples/definitions", con, store="none"
+    experiment, resolver = from_definitions(
+        "examples/definitions", con, experiment_name="new_onboarding_v2", store="none"
     )
     with pytest.raises(CodedError) as refusal:
-        analysis.run(value_scale={"purchase_rate": "absolute"})
+        view_readout(experiment, resolver, value_scale={"purchase_rate": "absolute"})
     assert refusal.value.code == "readout.randomized.value_scale"
 
 
@@ -2505,13 +2800,14 @@ def _unit_summary_frame(tenure, group, revenue):
 def test_estimate_cate_matches_across_definitions_and_unit_summary(tmp_path):
     """A randomized experiment needs no declared design: estimate_cate reads
     the ad hoc covariate from the warehouse exactly as from a dataframe."""
-    from increment import from_definitions, from_frame
     from increment.estimators import estimate_cate
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, group, revenue = covariate_defs_and_con(tmp_path)
-    native = from_definitions(defs_path, con, experiment_name="cov_test")
-    oracle = from_frame(
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
+    oracle_experiment, oracle_resolver = from_frame(
         _unit_summary_frame(tenure, group, revenue),
         shape="summary",
         unit="user_id",
@@ -2519,8 +2815,12 @@ def test_estimate_cate_matches_across_definitions_and_unit_summary(tmp_path):
         metrics={"revenue": "mean"},
         control="control",
     )
-    native_result = estimate_cate(*native, "revenue", interact=["tenure"])
-    oracle_result = estimate_cate(*oracle, "revenue", control="control", interact=["tenure"])
+    native_result = estimate_cate(
+        native_experiment, native_resolver, "revenue", interact=["tenure"]
+    )
+    oracle_result = estimate_cate(
+        oracle_experiment, oracle_resolver, "revenue", control="control", interact=["tenure"]
+    )
     assert native_result.n == oracle_result.n == len(tenure)
     for field in ("ate", "se", "lb", "ub"):
         assert getattr(native_result, field) == pytest.approx(
@@ -2537,7 +2837,6 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
     import numpy as np
     import pandas as pd
 
-    from increment import from_frame
     from increment.estimators import estimate_cate
 
     rng = np.random.default_rng(6)
@@ -2554,7 +2853,7 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
             "date": ["2025-01-01"] * n,
         }
     )
-    panel = from_frame(
+    panel_experiment, panel_resolver = from_frame(
         frame,
         shape="panel",
         unit="user_id",
@@ -2563,9 +2862,11 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
         metrics={"revenue": "mean"},
         control="control",
     )
-    panel_result = estimate_cate(*panel, "revenue", control="control", interact=["tenure"])
+    panel_result = estimate_cate(
+        panel_experiment, panel_resolver, "revenue", control="control", interact=["tenure"]
+    )
 
-    summary = from_frame(
+    summary_experiment, summary_resolver = from_frame(
         frame.drop(columns=["date"]),
         shape="summary",
         unit="user_id",
@@ -2573,7 +2874,9 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
         metrics={"revenue": "mean"},
         control="control",
     )
-    summary_result = estimate_cate(*summary, "revenue", control="control", interact=["tenure"])
+    summary_result = estimate_cate(
+        summary_experiment, summary_resolver, "revenue", control="control", interact=["tenure"]
+    )
 
     assert panel_result.n == summary_result.n == n
     for field in ("ate", "se", "lb", "ub"):
@@ -2596,20 +2899,23 @@ def test_observational_ate_matches_across_definitions_artifact_and_unit_summary(
     from tests.covariate_cases import confounded_defs_and_con
 
     defs_path, con, tenure, group, revenue = confounded_defs_and_con(tmp_path)
-    native = Analysis.from_definitions("obs_test", defs_path, con)
+    native = from_definitions(defs_path, con, experiment_name="obs_test")
     defs = load(defs_path)
     experiment = defs.experiment("obs_test")
     assert experiment is not None
     context = artifact_context(defs, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = native.publish_unit_day_artifact(
-        store, extensions=[UnitCovariateRequest(property_name="tenure", source_name="events")]
+    ref = publish_unit_day_artifact(
+        *native,
+        store,
+        extensions=[UnitCovariateRequest(property_name="tenure", source_name="events")],
     )
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    adopted = from_unit_day_artifact(store, ref, expected_context=context)
     with open_artifact(store, ref, expected_context=context) as artifact_source:
         assert artifact_source.assignment_counts() == dict(Counter(group.values()))
-    oracle = Analysis.from_unit_summary(
+    oracle_experiment, oracle_resolver = from_frame(
         _unit_summary_frame(tenure, group, revenue),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -2617,10 +2923,10 @@ def test_observational_ate_matches_across_definitions_artifact_and_unit_summary(
             control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
         ),
     )
-    expected = {r.group_id: r for r in lift_rows(oracle.run())}
+    expected = {r.group_id: r for r in lift_rows(view_readout(oracle_experiment, oracle_resolver))}
     assert expected
     for analysis in (native, adopted):
-        rows = {r.group_id: r for r in lift_rows(analysis.run())}
+        rows = {r.group_id: r for r in lift_rows(view_readout(*analysis))}
         assert set(rows) == set(expected)
         for group_id, row in rows.items():
             oracle_row = expected[group_id]
@@ -2638,17 +2944,23 @@ def test_only_a_declared_observational_design_routes_readouts_through_the_unit_f
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=False)
-    randomized = Analysis.from_definitions("cov_test", defs_path, con)
-    randomized_methods = {row.method for row in lift_rows(randomized.run())}
+    randomized_experiment, randomized_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
+    randomized_methods = {
+        row.method for row in lift_rows(view_readout(randomized_experiment, randomized_resolver))
+    }
     assert randomized_methods == {"unadjusted"}
 
     defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
-    observational = Analysis.from_definitions("cov_test", defs_path, con)
+    observational_experiment, observational_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
     # The observational readout adjusts on the covariate through the unit
     # frame; this fixture's deterministic tenure separates the arms perfectly,
     # so that route's overlap gate refuses instead of returning unadjusted rows.
     with pytest.raises(IdentificationError):
-        observational.run()
+        view_readout(observational_experiment, observational_resolver)
 
     defs_path.write_text(
         defs_path.read_text().replace(
@@ -2684,28 +2996,31 @@ def test_assignment_integrity_uses_each_source_declared_grain(tmp_path):
         for index in range(n_units)
         for date in ("2025-01-01", "2025-01-02")
     ]
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="unit",
         group="arm",
         date="date",
         design=design,
         metrics=metrics,
     )
-    panel_result = panel.srm(expected={"control": 0.5, "treatment": 0.5})
+    panel_result = srm(
+        panel_experiment, panel_resolver, expected={"control": 0.5, "treatment": 0.5}
+    )
     assert_support("assignment_integrity_source_grain", "panel_unit_grain_supported", panel_result)
     assert isinstance(panel_result, SRMResult)
     assert panel_result.grain == "unit"
     assert panel_result.observed == {"control": 3, "treatment": 2}
 
     path = tmp_path / "unit-grain-assignment-counts.parquet"
-    panel.export(path)
-    replay = Analysis.from_moments(
-        pq.read_table(path).to_pylist(),
-        metrics=metrics,
-        design=design,
+    export_moments(panel_experiment, panel_resolver, path)
+    replay_experiment, replay_resolver = from_moments(
+        pq.read_table(path).to_pylist(), metrics=metrics, design=design
     )
-    replay_result = replay.srm(expected={"control": 0.5, "treatment": 0.5})
+    replay_result = srm(
+        replay_experiment, replay_resolver, expected={"control": 0.5, "treatment": 0.5}
+    )
     assert_support(
         "assignment_integrity_source_grain", "moments_unit_grain_supported", replay_result
     )
@@ -2724,15 +3039,18 @@ def test_assignment_integrity_uses_each_source_declared_grain(tmp_path):
         for cluster in range(2)
         for member in range(2)
     ]
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         pd.DataFrame(clustered_rows),
+        shape="summary",
         unit="unit",
         group="arm",
         cluster="store",
         design=design,
         metrics=metrics,
     )
-    summary_result = summary.srm(expected={"control": 0.5, "treatment": 0.5})
+    summary_result = srm(
+        summary_experiment, summary_resolver, expected={"control": 0.5, "treatment": 0.5}
+    )
     assert_support(
         "assignment_integrity_source_grain", "summary_cluster_grain_supported", summary_result
     )
@@ -2752,14 +3070,12 @@ def test_moments_checkpoint_reexport_refused(tmp_path):
             Path(__file__).parent / "fixtures" / "sequential_bool_null_prefix_prerelease.json"
         ).read_text()
     )
-    analysis = Analysis.from_moments(
-        rows,
-        metrics=[MetricSpec(name="outcome", type="conversion")],
-        control="control",
+    experiment, resolver = from_moments(
+        rows, metrics=[MetricSpec(name="outcome", type="conversion")], control="control"
     )
     target = tmp_path / "reexport.parquet"
     with pytest.raises(CapabilityError) as refused:
-        analysis.export(target)
+        export_moments(experiment, resolver, target)
     assert refused.value.code == "evidence.operation_unavailable"
     assert refused.value.context["requested"] == "export_moments"
     assert_refusal(
@@ -2791,9 +3107,10 @@ def test_unit_summary_to_frame_defaults_to_input_backend_without_pandas():
         """
 import sys
 import polars as pl
-from increment import Analysis
+from increment import from_frame, run
 frame = pl.DataFrame({"unit": ["c1", "c2", "t1", "t2"], "arm": ["control", "control", "treatment", "treatment"], "value": [1.0, 2.0, 2.0, 3.0]})
-results = Analysis.from_unit_summary(frame, unit="unit", group="arm", control="control", metrics={"value": "mean"}).run()
+experiment, resolver = from_frame(frame, shape="summary", unit="unit", group="arm", control="control", metrics={"value": "mean"})
+results = run(experiment, resolver).readout()
 sys.modules["pandas"] = None
 result = results.to_frame()
 assert isinstance(result, pl.DataFrame)
@@ -2809,9 +3126,11 @@ def test_unit_panel_daily_lift_to_frame_defaults_to_input_backend_without_pandas
         """
 import sys
 import polars as pl
-from increment import Analysis
+from increment import Scope, from_frame, run
 frame = pl.DataFrame({"unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"], "arm": ["control"] * 4 + ["treatment"] * 4, "day": ["2025-01-01", "2025-01-02"] * 4, "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0]})
-results = Analysis.from_unit_panel(frame, unit="unit", group="arm", date="day", control="control", metrics={"value": "mean"}).run_daily_lift()
+experiment, resolver = from_frame(frame, shape="panel", unit="unit", group="arm", date="day", control="control", metrics={"value": "mean"})
+daily = Scope(view="daily", grain="daily")
+results = run(experiment.with_views(daily), resolver).readout(daily)
 sys.modules["pandas"] = None
 result = results.to_frame()
 assert isinstance(result, pl.DataFrame)
@@ -2822,19 +3141,21 @@ print(f"{type(result).__module__}.{type(result).__name__}")
 
 
 @pytest.mark.integration
-def test_run_with_exploratory_metric_to_frame_without_pandas():
+def test_run_with_exploratory_metric_to_frame_without_pandas(example_definitions):
     output = _run_without_pandas(
+        f"definitions = {str(example_definitions)!r}\n"
         """
 import sys
 import ibis
 import polars as pl
 from examples._seed import seed_event_log
-from increment import Analysis, Method
+from increment import Method, from_definitions, run
+from increment.workflows import available_metrics
 con = ibis.duckdb.connect()
 seed_event_log(con)
-analysis = Analysis.from_definitions("new_onboarding_v2", "examples/definitions", con)
-exploratory = analysis.available_metrics[0].name
-results = analysis.run(exploratory_metrics=[exploratory], decision_method=Method(name="unadjusted"))
+experiment, resolver = from_definitions(definitions, con, experiment_name="new_onboarding_v2")
+exploratory = available_metrics(experiment, resolver)[0].name
+results = run(experiment, resolver, exploratory_metrics=[exploratory], decision_method=Method(name="unadjusted")).readout()
 assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
 sys.modules["pandas"] = None
 result = results.to_frame()
@@ -2858,13 +3179,16 @@ def test_polars_result_backend_survives_collection_reconstruction():
             "value": [1.0, 2.0, 2.0, 3.0],
         }
     )
-    results = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"value": "mean"},
-    ).run()
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+        )
+    )
     transformed = pickle.loads(pickle.dumps(copy.deepcopy(results.filter(lambda _: True)[:])))
 
     assert isinstance(transformed.to_frame(), pl.DataFrame)
@@ -2881,29 +3205,40 @@ def test_polars_backend_survives_daily_lift_results():
             "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0],
         }
     )
-    results = Analysis.from_unit_panel(
-        frame,
-        unit="unit",
-        group="arm",
-        date="day",
-        control="control",
-        metrics={"value": "mean"},
-    ).run_daily_lift()
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"value": "mean"},
+        ),
+        Scope(view="daily", grain="daily"),
+    )
 
     assert isinstance(results.to_frame(), pl.DataFrame)
 
 
 def test_polars_backend_survives_exploratory_run_and_breakout(seeded_defs, seeded_con):
+    from dataclasses import replace
+
     import polars as pl
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    analysis._input_backend = "polars"
-    exploratory = analysis.available_metrics[0].name
-    results = analysis.run(
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    bound = cast(Any, resolver)
+    bound.binding = replace(bound.binding, input_backend="polars")
+    exploratory = available_metrics(experiment, resolver)[0].name
+    results = view_readout(
+        experiment,
+        resolver,
         exploratory_metrics=[exploratory],
         decision_method=Method(name="unadjusted"),
     )
-    breakout = analysis.run_breakout()
+    breakout = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
 
     assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
     assert isinstance(results.to_frame(), pl.DataFrame)
@@ -2920,13 +3255,16 @@ def test_unit_summary_to_frame_defaults_to_pandas_input_backend():
             "value": [1.0, 2.0, 2.0, 3.0],
         }
     )
-    results = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"value": "mean"},
-    ).run()
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"value": "mean"},
+        )
+    )
 
     assert isinstance(results.to_frame(), pd.DataFrame)
 
@@ -2948,8 +3286,9 @@ def test_compliance_only_run_does_not_warn_about_unused_outcome_overrides():
             "clicked": [0, 0, 0, 1, 1, 1, 1, 0],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[MetricSpec(name="revenue", type="mean", prior=Normal(mu=0.0, sigma=0.1))],
@@ -2966,7 +3305,7 @@ def test_compliance_only_run_does_not_warn_about_unused_outcome_overrides():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rows = analysis.run(estimands=("compliance",), prior=None)
+        rows = view_readout(experiment, resolver, estimands=("compliance",), prior=None)
 
     assert {row.estimand for row in rows} == {"compliance"}
     assert not [
@@ -2991,7 +3330,7 @@ def test_custom_provider_owns_sequential_capture_request(con):
     from tests.test_analysis_asof import _analysis_with_asof_events
 
     original = registered_native(_analysis_with_asof_events(con, sequential=True))
-    source = cast(Any, held_source(original))
+    source = cast(Any, held_source(original[1]))
     delegate = evidence_provider(source)
     captured = object()
     requests = []
@@ -3043,26 +3382,29 @@ def test_custom_provider_owns_sequential_capture_request(con):
                 current[0] = link_snapshot(current[0], request.previous)
             return current[0]
 
-    analysis = Analysis._from_source(cast(Any, Provider()))
+    experiment, resolver = bind_pair(cast(Any, Provider()))
     try:
         # A construction-time provider needs no as_of, and applies its own freezes.
-        assert analysis.capture_sequential(finalized=True, freeze=("revenue",)) is captured
+        assert (
+            workflows.capture_sequential(experiment, resolver, finalized=True, freeze=("revenue",))
+            is captured
+        )
         assert requests == [
             SequentialCaptureRequest(finalized=True, previous=None, as_of=None, freeze=("revenue",))
         ]
-        checkpoint = analysis.capture_sequential(
-            finalized=True, as_of=date(2025, 7, 1), freeze=("revenue",)
+        checkpoint = workflows.capture_sequential(
+            experiment, resolver, finalized=True, as_of=date(2025, 7, 1), freeze=("revenue",)
         )
         assert checkpoint.frozen
-        linked = analysis.sequential_snapshot(previous=checkpoint)
+        linked = workflows.sequential_snapshot(experiment, resolver, previous=checkpoint)
         assert snapshot_requests == [SequentialSnapshotRequest(previous=checkpoint)]
         assert linked.frozen == checkpoint.frozen
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         assert rows
         assert rows.sequential_snapshot == linked
-        assert analysis.sequential_snapshot() == linked
+        assert workflows.sequential_snapshot(experiment, resolver) == linked
     finally:
-        original.close()
+        original[1].close()
 
 
 @pytest.mark.integration
@@ -3076,7 +3418,7 @@ def test_custom_provider_without_sequential_snapshot_refuses_before_moments(con)
     from tests.test_analysis_asof import _analysis_with_asof_events
 
     original = registered_native(_analysis_with_asof_events(con, sequential=True))
-    source = cast(Any, held_source(original))
+    source = cast(Any, held_source(original[1]))
     delegate = evidence_provider(source)
     from contextlib import contextmanager
 
@@ -3129,11 +3471,11 @@ def test_custom_provider_without_sequential_snapshot_refuses_before_moments(con)
                 raise AttributeError(name)
             return getattr(delegate, name)
 
-    analysis = Analysis._from_source(cast(Any, Provider()))
+    experiment, resolver = bind_pair(cast(Any, Provider()))
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis.run()
+            view_readout(experiment, resolver)
         assert raised.value.code == "sequential.continuation.legacy"
         assert moments_reads == []
     finally:
-        original.close()
+        original[1].close()
