@@ -117,8 +117,14 @@ change without notice.
   experiment-name-first `from_definitions(experiment_name, definitions_path,
   con)` form, the `run(analysis, registration, compiled_plan, ...)` overload and
   `increment.readouts.run_scoped` are removed too. Results, refusal codes and
-  their context fields are unchanged; refusal messages that named an
-  `Analysis` method name the replacement call. See
+  context keys are unchanged. Context values that named an `Analysis` member
+  (`route`, `constructor`, `reason`) now name the replacement builder, `run`
+  view or workflow function, and refusal messages name the replacement call.
+  No refusal code is retired with `Analysis`, so `increment.errors.RETIRED_CODES`
+  is unchanged.
+  `repr(experiment)` is one bounded line naming the experiment, its design,
+  metrics, view count and identity prefix; `repr(resolver)` names its source
+  and whether it is closed without reopening it. See
   [Migrating from `Analysis`](#migrating-from-analysis) for every replacement.
 - Release note (breaking API cutover): `ResultsStore.persist_results`,
   `ParquetResultsStore.persist_results`, `WarehouseResultsStore.persist_results`
@@ -208,6 +214,11 @@ change without notice.
   `wire.procedure.contrast_context`. Runs saved by `Analysis.run(store=)`
   remain readable; history does not join them with new runs, because the
   registration, scope and method identities differ.
+- Release note (bug fix): an experiment saved with `to_json` keeps the view
+  parameters it declared, so its hash does not change with a private executor
+  parameter and it runs against a new resolver. A `coherence` saved in an
+  experiment's request options applies to every selected view, and a
+  `coherence` passed to `run` replaces the saved one in either direction.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

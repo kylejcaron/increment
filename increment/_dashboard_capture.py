@@ -194,7 +194,7 @@ def dashboard_breakout_reads(binding: SourceBinding, breakout: Breakout) -> Dash
             binding.source,
             (breakout.property,),
             tuple(declared_evidence(binding.source).breakouts),
-            route="dashboard_breakout_reads() requires a definitions-backed breakout source",
+            route="prepare_dashboard() requires a definitions-backed breakout source",
         )
     declared = state.experiment.breakouts
     if breakout not in declared:

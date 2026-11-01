@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 _UNCORRECTED_SEQUENTIAL = RefusalSpec(
     "facade.analysis.uncorrected_segments_sequential",
     UnsupportedRequestError,
-    template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with run_breakout() instead.",
+    template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with a Scope(view='breakout', grain='total') view instead.",
 )
 
 

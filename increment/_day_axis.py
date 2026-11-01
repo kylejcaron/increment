@@ -141,7 +141,7 @@ _UNDECLARED_METRIC_FOR_DIMENSION = RefusalSpec(
 _ENCOURAGEMENT_DAILY_LATE = RefusalSpec(
     "facade.analysis.encouragement_daily_late",
     InvalidRequestError,
-    template="run_daily_lift: per-day incremental LATE is statistically meaningless under a weak daily first stage; use run_asof_lift for the as-of trend instead",
+    template="daily lift: per-day incremental LATE is statistically meaningless under a weak daily first stage; read the as-of trend with a Scope(view='asof', grain='asof') view instead",
     keys=frozenset({"experiment"}),
 )
 _OBSERVATIONAL_DAY_AXIS = RefusalSpec(
