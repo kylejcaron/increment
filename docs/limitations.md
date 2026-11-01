@@ -19,17 +19,17 @@ call cannot be written at all, so there is no `.code` to branch on.
     Not every unavailable capability is a refusal. Where the entry point has no parameter or
     constructor for the request, the table says **not expressible**: the call cannot be written, so
     Python raises `TypeError` (or there is nothing to call) and there is no `.code` to branch on.
-    `from_switchback_panel(..., design=...)` and `from_switchback_panel(..., cluster=...)` are
-    examples, as is every logged-policy request made through an `Analysis` entry point.
+    `from_switchback_frame(..., design=...)` and `from_switchback_frame(..., cluster=...)` are
+    examples, as is every logged-policy request made through an experiment builder.
 
     - **SOURCE**: the entry point's input does not carry what the capability needs, as when a
       moments cube carries no per-unit rows to attach a covariate to. This is a current absence
-      unless the text says structural, as the `from_switchback_panel` encouragement, observational
+      unless the text says structural, as the `from_switchback_frame` encouragement, observational
       and cluster rows (not expressible) and quantile requests (a coded refusal) do.
     - **CONSTRUCTION**: no admissible construction exists for the request on that path. Five
       reasons are stated: filling an outcome with its pooled mean shrinks variance; the margin
       verdict is carried by `itt`; JSON object keys are strings; windowed and retention metrics
-      have no per-unit collapse for a CUPED covariate (use `from_unit_summary`); and the repair
+      have no per-unit collapse for a CUPED covariate (use `from_frame(..., shape="summary")`); and the repair
       for adaptive logging is not implemented (tracker-owned).
     - **COMBINATION**: stored state from an earlier release meets the current reader, recipe or
       roster, as when a format-1 artifact context reaches the current reader.
@@ -80,13 +80,14 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 
 ## What runs where
 
-A capability is a claim only when its path is named. `Analysis` has six entry
-points in three families: **dataframe** (`from_unit_summary`, one row per unit;
-`from_unit_panel`, one row per unit per day; `from_switchback_panel`);
-**warehouse** (`from_definitions`, compiling from raw event facts;
-`from_unit_day_artifact`, reading unit × day relations previously published
-into the warehouse); and **portable** (`from_moments`, a file of pre-reduced
-moments exported from any of the others).
+A capability is a claim only when its path is named. Six builders feed
+`run(experiment, resolver)`, in three families: **dataframe**
+(`from_frame(..., shape="summary")`, one row per unit;
+`from_frame(..., shape="panel")`, one row per unit per day;
+`from_switchback_frame`); **warehouse** (`from_definitions`, compiling from raw
+event facts; `from_unit_day_artifact`, reading unit × day relations previously
+published into the warehouse); and **portable** (`from_moments`, a file of
+pre-reduced moments exported from any of the others).
 
 [Capabilities by entry point](reference/capabilities-by-entry-point.md#what-runs-where)
 records measured behavior on every path, checked against the dataframe unit-summary path
@@ -224,7 +225,7 @@ the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
     heavy-tail correction itself remains unresolved.
 
     The check runs where its inputs are defined. `from_definitions`, `from_unit_day_artifact`,
-    `from_unit_summary`, `from_unit_panel` and current `from_moments` cubes carry the third
+    `from_frame` summaries and panels and current `from_moments` cubes carry the third
     moment through every partition merge (day slices, breakout cells) and reach the same
     decision for the same units. A preceding-format moments cube or a format-1 raw-sum row
     has no third moment: its ratio rows load, and every lift row estimated from them carries
@@ -306,9 +307,9 @@ row count nor crossing the 40-cluster warning threshold establishes otherwise.
     Triggered daily/as-of values and outcome lifts are available for definitions
     and unit-day artifacts with explicit trigger evidence. Each unit enters on its
     first eligible trigger day, and outcome maturity is evaluated from that anchor.
-    Triggered encouragement compliance is also available through
-    `run_daily_lift(estimands=("compliance",), population="triggered")` and
-    `run_asof_lift(...)`: the cohort grows at each unit's trigger date, while
+    Triggered encouragement compliance is also available through a triggered daily or
+    as-of lift view (`Scope(view="daily", grain="daily", population="triggered")` with
+    `run(..., estimands=("compliance",))`): the cohort grows at each unit's trigger date, while
     uptake windows remain anchored at assignment and obey their declared half-open
     window and completion rules. The compliance-only request reads trigger and
     uptake evidence without reducing outcomes. Clustered outcome histories still
@@ -317,7 +318,7 @@ row count nor crossing the 40-cluster warning threshold establishes otherwise.
 
 ### Triggered-population sitewide impact needs an external assumption
 
-`Analysis.sitewide(population="triggered")` scales the triggered-cohort lift to the
+`increment.estimators.sitewide(experiment, resolver, metric, population="triggered")` scales the triggered-cohort lift to the
 enrolled triggered members while keeping the full-site volume. Reading it as whole-site
 impact assumes that trigger membership does not depend on treatment and that
 never-triggered units are unaffected; the allocation balance diagnostic can catch some
@@ -331,7 +332,7 @@ assigned-population result when those assumptions are not defensible.
     while the triggered sample-ratio check rejected in only 4.7% of runs.
 
 ??? info "Statistical details: what the triggered estimate conditions on"
-    `Analysis.sitewide(population="triggered")` reports a conditional, fixed-
+    `sitewide(..., population="triggered")` reports a conditional, fixed-
     membership estimate: the triggered-stratum lift is scaled by the number of
     enrolled units in finalized trigger membership, while the site-volume
     counterfactual remains full-site. Reading it as the whole-site impact
@@ -341,9 +342,9 @@ assigned-population result when those assumptions are not defensible.
     prove either assumption; equal marginal trigger rates do not rule out
     treatment-dependent membership or timing.
 
-    Both assigned and triggered `Analysis.sitewide()` require randomized
+    Both assigned and triggered `sitewide()` require randomized
     identification. Observational and encouragement designs refuse before
-    sitewide evidence is loaded; use `Analysis.run()` for their estimands.
+    sitewide evidence is loaded; use `run(experiment, resolver)` for their estimands.
 
     Both populations refuse conversion metrics with
     `facade.analysis.sitewide_metric_unaligned`: a converter indicator is a
@@ -659,7 +660,7 @@ that needs an absolute-scale estimand)
     delta-method value and no analysis-wide knob.
 
 ??? info "Statistical details: multiplicity families and the composite p-value"
-    A multiplicity family (a BH secondary family, `run_breakout(correction="bh")`,
+    A multiplicity family (a BH secondary family, a breakout view under BH `view_multiplicity`,
     `select_exploratory_family`) reads a member's p-value at levels below the row's own, as low as
     `q / m`, where the delta p-value is not validated. The member is still routed and cut at its own
     level; what changes is its p-value. Every delta-method conversion row persists its four counts
@@ -672,7 +673,7 @@ that needs an absolute-scale estimand)
     `p_exact` is the finite-sample route's p-value against the row's null read at the row's
     nominal tail with its nominal nuisance budget (`escalated_p_value`); `select_exploratory_family`
     reads the same composite on demand from the persisted counts of the uncorrected rows it is
-    given, so it and `run_breakout(correction="bh")` select on identical evidence. Read at any
+    given, so it and a BH breakout view select on identical evidence. Read at any
     level `u`, `p* <= u` only where the pipeline routed by counts
     at `u` rejects: by the delta row at `u` on counts dense at `u` (where `{p* <= u}` equals
     `{p_delta <= u}`), by the finite-sample test at `u` elsewhere, up to an exact float tie and the
@@ -987,7 +988,7 @@ that needs an absolute-scale estimand)
 Ordinary unclustered log-scale arm lift needs positive arm means. A control mean that can
 be zero or negative needs an additive-scale route: observational adjusted methods,
 encouragement LATE, switchback contrasts, sitewide impact, or the clustered unadjusted
-route's signed joint-relative set. `Analysis.run(value_scale="absolute")` is an
+route's signed joint-relative set. `run(..., value_scale="absolute")` is an
 observational selector, not a general randomized arm-lift option.
 
 ??? info "Statistical details: additive routes and the sitewide option"
@@ -996,10 +997,10 @@ observational selector, not a general randomized arm-lift option.
     can leave no finite ratio point. Ordinary unclustered log-scale arm lift still
     requires positive means. Absolute-scale estimation is supported directly by
     observational adjusted methods, encouragement LATE, switchback contrasts,
-    and sitewide impact APIs; `Analysis.run(value_scale="absolute")` remains an
+    and sitewide impact APIs; `run(..., value_scale="absolute")` remains an
     observational selector rather than a general randomized arm-lift option.
 
-    A randomized experiment is not shut out, though. `Analysis.sitewide()` derives an additive
+    A randomized experiment is not shut out, though. `sitewide()` derives an additive
     effect directly from enrolled-arm moments, so it is a conditional randomized route for a
     signed quantity. It is conditional on where the analysis came from: a definitions-backed
     analysis carries the site-volume evidence it needs, and an artifact-backed one qualifies
@@ -1047,7 +1048,7 @@ rounded data power has a ceiling below one, and `required_sample_size` refuses a
 above it with `power.quantile_size_search_unreachable`.
 
 ??? info "Statistical details: the pilot projection and the recording-grid ceiling"
-    `Analysis.planning_baseline(metric)` builds a `QuantileBaseline` from the pilot's own
+    `increment.workflows.planning_baseline(experiment, resolver, metric)` builds a `QuantileBaseline` from the pilot's own
     control-arm values; at each candidate sample size the solver applies the runtime's own
     half-width rule to a bracket projected from the pilot -- on continuous data the pilot's
     classical order-statistic standard error scaled by the asymptotic `1/sqrt(n)` rate, on
@@ -1092,7 +1093,7 @@ assumption precisely, and nothing verifies that it was long enough.
     default `0`) names how many additional post-washout steps are still assumed contaminated.
     The retained window is `step >= washout_steps + carryover_order`, of length
     `observation_steps - carryover_order`. Declaring a nonzero order records the assumption
-    precisely and is applied by `from_switchback_panel`'s runtime reduction; it does not prove
+    precisely and is applied by `from_switchback_frame`'s runtime reduction; it does not prove
     that carryover has vanished.
 
     Nothing verifies that `washout_steps + carryover_order` was long enough. The library
@@ -1100,7 +1101,7 @@ assumption precisely, and nothing verifies that it was long enough.
     carryover has actually vanished by the retained window's start. If residual carryover
     remains past that point, the contrast can be biased and the interval need not cover.
 
-    `from_switchback_panel` retains `step >= washout_steps + carryover_order` for declared orders
+    `from_switchback_frame` retains `step >= washout_steps + carryover_order` for declared orders
     0, 1, and 2 (whenever enough observation steps remain) under both `IndependentBernoulliOrder`
     and `SharedScheduleOrder`; declaring an order only records the assumption; nothing here proves
     carryover actually vanished by that point.
@@ -1156,7 +1157,7 @@ block grain, where the block is the replicate and cloning the roster changes not
 
     A `SharedScheduleOrder` sequence declares a coarser randomization: one shared Bernoulli
     CT/TC order per two-period block, drawn once for a fixed, complete unit roster rather than
-    independently per unit. `from_switchback_panel` reduces it with a block-level Student-t
+    independently per unit. `from_switchback_frame` reduces it with a block-level Student-t
     reference (`n_blocks - 1` degrees of freedom): the independent replicate is the block, not
     the roster unit, so a uniformly cloned roster changes neither the estimate nor its width.
 
@@ -1242,7 +1243,7 @@ is nominal from an effective sample size of 20 up (`ESS_FLOOR = 20`).
     `estimate_policy_contrast` evaluates a target policy against a reference policy from a
     logged decision trace with a trajectory-level self-normalized importance-weighted
     estimator, cumulative likelihood ratios, and a unit-clustered sandwich interval on a `t`
-    reference. The interval is asymptotic in the number of units. It runs on no `Analysis`
+    reference. The interval is asymptotic in the number of units. It runs on no experiment builder
     path (SOURCE: none carries a decision trace); its ingress is `LoggedTrace.from_records`
     / `from_frame`, and the [guide](guides/logged-policy.md) states the estimand.
 

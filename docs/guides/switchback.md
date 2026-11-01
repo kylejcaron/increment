@@ -3,7 +3,7 @@
 A switchback alternates a unit such as a store, a city, or a whole market
 between treatment and control over time instead of splitting users into two
 groups. Use it when units cannot be split and time trends affect the outcome;
-`Analysis.from_switchback_panel` reports an additive difference over the
+`from_switchback_frame` reports an additive difference over the
 retained windows, not a per-user relative lift.
 
 ## Supported contract
@@ -22,13 +22,14 @@ step** cell. Pass the column names for `unit`, `cycle`, `period`, `step`, and
 ```python
 # The frame has columns: store_id, cycle, period, step, arm, orders.
 # `panel` is an eager pandas, polars, or pyarrow frame prepared by the caller.
-from increment import Analysis, Randomized
+from increment import Randomized, from_switchback_frame, run
 from increment.estimators import (
     IndependentBernoulliOrder,
     SharedScheduleOrder,
     SwitchbackAssignment,
     SwitchbackWindow,
 )
+from increment.workflows import assignment_diagnostic
 
 assignment = SwitchbackAssignment(
     sequence=IndependentBernoulliOrder(probability_ct=0.5),
@@ -36,7 +37,7 @@ assignment = SwitchbackAssignment(
 )
 # Ordinary switchback inference selects the qualified unit-t approximation
 # from this design; no population envelope or reference declaration is needed.
-analysis = Analysis.from_switchback_panel(
+experiment, resolver = from_switchback_frame(
     panel,
     unit="store_id",
     cycle="cycle",
@@ -53,8 +54,8 @@ analysis = Analysis.from_switchback_panel(
     ),
     assignment=assignment,
 )
-results = analysis.run()
-diagnostics = analysis.assignment_diagnostic()
+results = run(experiment, resolver).readout()
+diagnostics = assignment_diagnostic(experiment, resolver)
 ```
 
 ### Choose the order law
@@ -161,7 +162,7 @@ regardless of roster size.
 
 ## Results and diagnostics
 
-`Analysis.run()` returns `ContrastResults`, a typed list of `ContrastResult`
+`run(experiment, resolver).readout()` returns `ContrastResults`, a typed list of `ContrastResult`
 objects, one per selected metric, each with `method_role="decision"` and
 `assignment="switchback"` (see [Reading results](reading-results.md) for
 contrast rows and [Multiplicity](multiplicity.md) for the status table):
@@ -177,8 +178,7 @@ contrast rows and [Multiplicity](multiplicity.md) for the status table):
 
 `increment.workflows.assignment_diagnostic(experiment, resolver)` returns the
 validated schedule evidence for an experiment built with
-`from_switchback_frame` (`analysis.assignment_diagnostic()` returns the same
-evidence on the compatibility route):
+`from_switchback_frame`:
 `probability_ct`, `randomization_law`, `independence_grain`,
 `schedule_complete`, `n_units`, `n_cycles`, `n_blocks` for shared schedules,
 `ct_count` and `tc_count` (unit-cycle draws under the unit-cycle law, block
@@ -236,7 +236,7 @@ import math
 
 import pandas as pd
 
-from increment import Analysis, Randomized
+from increment import Randomized, from_switchback_frame, run
 from increment.estimators import (
     SharedScheduleOrder,
     SwitchbackAssignment,
@@ -261,7 +261,7 @@ panel = pd.DataFrame(
         for step in range(4)
     ]
 )
-analysis = Analysis.from_switchback_panel(
+experiment, resolver = from_switchback_frame(
     panel,
     unit="unit",
     cycle="cycle",
@@ -278,7 +278,7 @@ analysis = Analysis.from_switchback_panel(
         window=SwitchbackWindow(washout_steps=1, observation_steps=3, carryover_order=1),
     ),
 )
-result = analysis.run()[0]
+result = run(experiment, resolver).readout()[0]
 assert math.isclose(result.estimate.value, 12)
 assert math.isclose(result.standard_error, math.sqrt(40 / 12))
 assert result.n_blocks == 4 and result.n_units == 3 and result.dof == 3
@@ -338,21 +338,21 @@ Switchback construction failures expose these stable codes:
   conservative alpha splitting. Duplicate metric specifications are rejected
   by metric coercion with an uncoded `ValueError`, and duplicate plan entries
   by `AnalysisPlan` validation, not `source.frame.switchback.plan`.
-- `Analysis.run()` accepts only its default role/prior arguments (`UNSET`).
+- `run(experiment, resolver)` accepts only its default role/prior arguments (`UNSET`).
   The fixed `ContrastDecisionProcedure` owns the one decision method, fixed
   inference, family (`none`), alternative, null, and alpha. Passing
   `decision_method`, `sensitivity_methods`, or `prior` raises
   `CapabilityError` with code `readout.contrast.override` before source access.
 
-For parallel A/B analyses, use `Analysis.from_unit_summary`,
-`Analysis.from_unit_panel`, or `Analysis.from_definitions`; their arm-moment
+For parallel A/B analyses, use `from_frame` (summary or panel shape) or
+`from_definitions`; their arm-moment
 results and role-aware method controls are separate from this contrast family.
 
 ## Optional finite-sample references and research laws
 
 If you can justify a prospective upper bound on the residual variance, supply
-`contrast_references={metric_name: envelope}` to `from_switchback_panel` or
-`Analysis.from_switchback_panel`. A `UnitCycleVarianceEnvelope` binds the
+`contrast_references={metric_name: envelope}` to `from_switchback_frame` or the
+source-level `increment.switchback.from_switchback_panel`. A `UnitCycleVarianceEnvelope` binds the
 assignment and window, metric and arm labels, response meaning, cycles per
 unit, the residual variance bound, and the provenance of the assumption: who
 declared it and why. Software does not prove it true. Ordinary construction

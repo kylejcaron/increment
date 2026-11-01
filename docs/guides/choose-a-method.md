@@ -59,10 +59,11 @@ An omitted sensitivity override inherits the declaration; `sensitivity_methods=[
     When the decision method is omitted, observational designs use IPTW; randomized and encouragement designs retain their unadjusted default. Adding a sensitivity method does not change that decision: for example, `run(sensitivity_methods=[Method(name="unadjusted")])` on an observational analysis reports an IPTW decision and an unadjusted sensitivity. An explicitly chosen unadjusted decision stays unadjusted.
 
 
-For observational designs, `run_daily_lift()` and `run_asof_lift()` refuse with
+For observational designs, daily and as-of lift views refuse with
 `facade.analysis.observational_day_axis`; these views do not provide adjusted
-day-axis contrasts. Use `run_daily()` or `run_asof()` for descriptive values,
-or `run()` for adjusted whole-experiment comparisons.
+day-axis contrasts. Use daily or as-of values views
+(`Scope(..., values=True)`) for descriptive values, or the whole-window `run`
+view for adjusted whole-experiment comparisons.
 
 For metric selection, always-valid inference, secondary family roles, and interactions between methods, see the [method compatibility reference](compatibility.md) and [Multiplicity](multiplicity.md).
 
@@ -75,7 +76,7 @@ Use heterogeneous-treatment-effect tools after estimating the overall effect. Se
 
 ## I need warehouse-backed analysis
 
-For randomized or observational warehouse analysis, declare sources, dimensions, exposures, metrics, and experiments in YAML, then use `Analysis.from_definitions`. Increment compiles inspectable Ibis expressions for the configured backend. `Analysis.from_unit_day_artifact` reuses published unit-day data. Observational methods need declared pre-exposure covariates; portable moments cannot reconstruct them. See [The data model](data-model.md) and [Analysis from a warehouse](../examples/analysis_from_a_warehouse.md).
+For randomized or observational warehouse analysis, declare sources, dimensions, exposures, metrics, and experiments in YAML, then use `from_definitions`. Increment compiles inspectable Ibis expressions for the configured backend. `from_unit_day_artifact` reuses published unit-day data. Observational methods need declared pre-exposure covariates; portable moments cannot reconstruct them. See [The data model](data-model.md) and [Analysis from a warehouse](../examples/analysis_from_a_warehouse.md).
 
 ## What Increment does not do
 

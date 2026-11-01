@@ -32,7 +32,7 @@ assert min(contrast.ess_by_time) >= contrast.ess_floor
 
 `contrast.estimate` is the policy-value difference on the reward scale; `lb`, `ub`, `se`, and `p_value` summarize the no-difference test. `ess_by_time` reports the smaller ESS of the two policies at each decision. `logging_policy_versions` identifies the fixed logger.
 
-This API is separate from `Analysis`: an analysis source does not contain a decision trace. Build one with `LoggedTrace` (examples below); there is no `Analysis` call for this feature.
+This API is separate from the experiment builders: an experiment source does not contain a decision trace. Build one with `LoggedTrace` (examples below); there is no builder or `run` call for this feature.
 
 ## What it estimates
 
@@ -51,7 +51,7 @@ The trace records each unit's sequence of decisions, observed context, chosen ac
 
     `contrast.estimate` is `Delta_T` on the reward scale, with `lb`, `ub`, `se` and `p_value` for the null of no difference. `target_value` and `reference_value` are the two policy values, `ess_by_time` the smaller of the two policies' effective sample sizes at each decision index, and `logging_policy_versions` the single version the trace was logged under.
 
-    This family has its own ingress. It does not run through any `Analysis` constructor or method, because none of them carries a decision trace; the "What runs where" table in [Capabilities by entry point](../reference/capabilities-by-entry-point.md#what-runs-where) records the capability as not expressible on every entry point: there is no `Analysis` call to write and no `.code`. Build the trace with `LoggedTrace` instead.
+    This family has its own ingress. It does not run through any experiment builder or `run`, because none of them carries a decision trace; the "What runs where" table in [Capabilities by entry point](../reference/capabilities-by-entry-point.md#what-runs-where) records the capability as not expressible on every entry point: there is no builder call to write and no `.code`. Build the trace with `LoggedTrace` instead.
 
 ## Assumptions and guarantee
 

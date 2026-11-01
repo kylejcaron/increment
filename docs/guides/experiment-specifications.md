@@ -113,14 +113,14 @@ does not execute experiments and refuses with
 `kernel.run.provider_execution_unavailable`. Use the bound resolver returned by
 a module builder to execute an experiment. The top-level
 `run(experiment, resolver)` verifies the binding before calling the resolver's
-experiment execution adapter. Existing `run(analysis, registration, compiled_plan, ...)` calls remain supported.
+experiment execution adapter.
 
 The specification format describes declarations; it does not itself open a warehouse or infer a source snapshot. Reproducible execution still requires the resolver and execution context to establish the actual snapshot identity.
 
 ## Building and running
 
-The module builders add a tuple-returning path without changing the existing
-`Analysis.from_*` constructors:
+Each module builder returns an experiment and the resolver that reads its
+source:
 
 ```python
 from increment import Experiment, from_frame, render, run
@@ -299,14 +299,14 @@ plans, metric definitions or unsupported scope coordinates refuse with
 `kernel.run.execution_unavailable`, before reading evidence.
 Source names, URIs, recorded digests, and capabilities must identify the
 bound source.
-`run` accepts the readout options of `Analysis.run()` as keywords:
+`run` accepts readout options as keywords:
 `decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
 `value_scale`, `exploratory_metrics`, `population` and `coherence`. Only the
 options you pass apply, so `prior=None` removes the registered prior while an
 omitted `prior` keeps it. A `population` must match every selected scope;
 declare a different population with `Scope(population=...)`.
-`Analysis.run()` remains the compatibility route
-that returns `LiftEstimates` or `ContrastResults`.
+`result.readout(scope)` returns the `LiftEstimates`, `ContrastResults` or
+other typed collection one scope produced.
 
 For example, a unit-panel source that supports daily data can declare whole-window
 and daily views together:
@@ -376,7 +376,7 @@ assert reopened.decisions == saved.decisions
 A reopened result recomputes its decisions from the saved cells; live readouts
 are not saved, so its `live_rows` holds `None` for every cell.
 
-Definitions-backed `Analysis.run(exploratory_metrics=...)` also shares one
+Definitions-backed `run(experiment, resolver, exploratory_metrics=...)` also shares one
 physical capture across declared and exploratory families. Each family retains
 the horizon of its original standalone declaration, including unselected
 declared metrics needed to determine a running calendar-day horizon. Such
@@ -387,10 +387,8 @@ No source snapshot hash or wire-format version changes.
 
 Connected definitions builders record dtypes lazily from the selected input
 relations during the first execution, then refresh their offline catalog.
-Construction performs no additional schema query. Ordinary `Analysis` facade
-construction and execution do not write that catalog. Both the original named
-`experiment_name` / `definitions_path` / `con` arguments and the path-first
-builder form are accepted.
+Construction performs no additional schema query. The definitions builder takes
+the path first and the experiment name as the `experiment_name=` keyword.
 Catalog refreshes retain the definitions digest from the original bind. Changing
 those files before execution cannot republish the old experiment as current;
 the refresh refuses with `kernel.definitions.catalog_stale`.
@@ -420,9 +418,9 @@ else:
 ```
 
 `ResultCell` preserves one cell's identity and outcome in a stored run;
-`Decisions` records the verdicts computed from those cells. The legacy
-`Analysis.run()` method returns estimate collections; the top-level
-`run(experiment, resolver)` returns a `RunResult` containing cells and decisions.
+`Decisions` records the verdicts computed from those cells. The top-level
+`run(experiment, resolver)` returns a `RunResult` containing cells and decisions;
+`result.readout(scope)` returns each view's estimate collection.
 
 ## Frozen-capture construction coverage
 

@@ -42,7 +42,7 @@ from random import Random
 
 import polars as pl
 
-from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
+from increment import AnalysisPlan, InferenceSpec, MetricSpec, Randomized, from_frame, run
 
 rng = Random(21)
 n = 2000
@@ -64,8 +64,9 @@ plan = AnalysisPlan(
     primary="purchase",
     inference=InferenceSpec(kind="always_valid", baseline_rate=0.03),
 )
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     finalized_frame,
+    shape="summary",
     unit="user_id",
     group="variant",
     design=design,
@@ -74,7 +75,7 @@ analysis = Analysis.from_unit_summary(
     plan=plan,
     exposure_date="enrolled_on",
 )
-results = analysis.run()
+results = run(experiment, resolver).readout()
 print(results)
 ```
 
@@ -397,7 +398,7 @@ re-weights past increments and breaks its martingale (see
 [`cuped.md`](cuped.md)).
 
 Structural-zero control uptake is a rate target; use the fixed-horizon
-compliance path. On `from_unit_summary` and `from_unit_panel`, declare a
+compliance path. On `from_frame` summaries and panels, declare a
 randomized segmented family before observing outcomes with ordinary frame metadata:
 
 ```python
@@ -410,8 +411,8 @@ Use a categorical column and list every level to monitor, including levels
 with no observations yet. Only the declared levels enter this family; other
 values join no cell. Membership must be determined before assignment for
 asymptotic monitoring, not chosen from outcomes. The package derives the
-registration and retains empty cells; read it with `run_breakout()`, not
-whole-window `run()` or `asof_lift()`. Exact monitoring uses the declared
+registration and retains empty cells; read it with a breakout view, not the
+whole-window or as-of lift view. Exact monitoring uses the declared
 breakout correction (e-BH by default); asymptotic monitoring uses fixed-roster
 Bonferroni by default and still refuses BH. Both retain the existing explicit
 uncorrected option. A manually built registration remains available but cannot
@@ -446,7 +447,7 @@ remove the existing encouragement breakout-readout restrictions.
 `from_definitions` and `from_unit_day_artifact` still refuse segmented capture
 because relational segment capture needs an immutable property-relation
 contract. `from_moments` can replay retained segmented state but carries no
-breakout catalog, so `run_breakout` refuses with `evidence.breakout_unavailable`.
+breakout catalog, so a breakout view refuses with `evidence.breakout_unavailable`.
 As-of output does not infer segmented historical checkpoints from a moment
 cube. Automatic registration does not change these source boundaries.
 
@@ -508,11 +509,10 @@ Those finite-sample bounds require exact-law guardrails. Asymptotic guardrails
 inherit the approximation and one-sided both-tails qualification below; the
 intersection-union argument does not remove either qualification.
 
-The legacy `Analysis.run()` facade reports each guardrail's own SAFE/HARM
-label. The additive `increment.run()` facade also reports an aggregate
-program verdict, but returns `pass` only when every required primary and
-guardrail result is available and assignment integrity is qualified. A
-caller using only the legacy labels must apply the compound
+Each guardrail row reports its own SAFE/HARM label. `run()` also reports an
+aggregate program verdict in `result.decisions`, but returns `pass` only when
+every required primary and guardrail result is available and assignment
+integrity is qualified. A caller using only the per-row labels must apply the compound
 "ship only if every guardrail is SAFE" rule. Reading several guardrail
 labels without applying that rule (for example, shipping when most, but
 not all, guardrails are SAFE) has only the weaker union bound (`k * alpha`
@@ -707,8 +707,9 @@ plan = AnalysisPlan(
         expected_decision_sample_size=5000,
     ),
 )
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     finalized_frame,
+    shape="summary",
     unit="user_id",
     group="variant",
     design=design,
@@ -717,7 +718,7 @@ analysis = Analysis.from_unit_summary(
     plan=plan,
     exposure_date="enrolled_on",
 )
-row = analysis.run()[0]
+row = run(experiment, resolver).readout()[0]
 result = row.require_asymptotic_sequential_result()
 ```
 !!! warning "Plan targets below the calibration range raise early-look risk"
@@ -876,7 +877,7 @@ arm retains with its full centered scatter:
     2022, [pdf](https://svenschmit.com/assets/pdf/code_2022_ci.pdf)). The
     `adjusted_*` laws are admitted on `AsymptoticMean` only; the exact Bernoulli
     route admits neither fitted nor predeclared CUPED. The adjusted laws need a
-    per-unit covariate: `from_unit_summary` supplies it through a metric's
+    per-unit covariate: a `from_frame` summary supplies it through a metric's
     `decision_method=Method.cuped(covariates=CupedCovariate(...))`, while
     `from_definitions` derives it from `n_pre_periods > 0`.
     The ratio laws declare
@@ -932,9 +933,10 @@ execution on `from_definitions` and `from_unit_day_artifact`
 (the artifact needs its `trigger_population`, `trigger_measure_stats` and
 triggered `assignment_counts` extensions); `from_moments` replays an exported
 checkpoint carrying both chains and cannot start one; frame sources have no
-trigger declaration. `run()` returns rows for both populations;
-`run(population="triggered")` and `run_asof_lift(population="triggered")`
-select the triggered checkpoint rows.
+trigger declaration. A view declared with
+`Scope(..., population="triggered")`, whole-window or as-of lift, reads the
+triggered checkpoint rows; declare an assigned view beside it to read both
+populations in one run.
 
 Keep three states separate when a triggered row is absent or unavailable. A
 missing or late trigger feed / certified watermark means the source cannot yet

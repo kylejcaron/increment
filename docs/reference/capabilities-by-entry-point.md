@@ -1,18 +1,19 @@
 # Capabilities by entry point
 
-This page records, for each of the six `Analysis` entry points, which capabilities run and which refuse.
+This page records, for each of the six experiment builders, which capabilities run and which refuse.
 The [Method compatibility reference](../guides/compatibility.md) is organised by metric type and method; neither page restates the other's cells.
 Where they disagree, the probe and harness results govern: `scripts/probe_capability_table.py`, `tests/test_composition_matrix.py` and `tests/parity_harness/matrix.py`.
 
 ## What runs where
 
-A capability is a claim only when its path is named. `Analysis` has six entry
-points in three families: **dataframe** (`from_unit_summary`, one row per unit;
-`from_unit_panel`, one row per unit per day; `from_switchback_panel`);
-**warehouse** (`from_definitions`, compiling from raw event facts;
-`from_unit_day_artifact`, reading unit × day relations previously published
-into the warehouse); and **portable** (`from_moments`, a file of pre-reduced
-moments exported from any of the others).
+A capability is a claim only when its path is named. Six builders feed
+`run(experiment, resolver)`, in three families: **dataframe**
+(`from_frame(..., shape="summary")`, one row per unit;
+`from_frame(..., shape="panel")`, one row per unit per day;
+`from_switchback_frame`); **warehouse** (`from_definitions`, compiling from raw
+event facts; `from_unit_day_artifact`, reading unit × day relations previously
+published into the warehouse); and **portable** (`from_moments`, a file of
+pre-reduced moments exported from any of the others).
 
 The tables project recorded consumer and parity contracts. Cells marked
 `not measured` or `no disposition` are not capability claims; regenerating the
@@ -127,7 +128,7 @@ compliance requests are explicitly refused with
 ## Triggered auxiliary readouts
 
 Triggered segmented readouts are separate populations, not a filter silently
-applied to the assigned view. `run_breakout()` and `breakout_summaries()` emit
+applied to the assigned view. A breakout view and `workflows.breakout_summaries()` emit
 assigned and triggered results with population-qualified family/table identity.
 Definitions are supported; a unit-day artifact is supported for breakouts only
 when it contains the declared breakout-dimension extension and current trigger
@@ -157,7 +158,7 @@ segments.
 
 For `from_definitions`, pinning preserves dimensions joined by freshness-bearing
 fact sources. Qualifying non-enrolled events can establish that later data has
-arrived without entering the enrolled outcome population. In `from_unit_panel`,
+arrived without entering the enrolled outcome population. In a `from_frame` panel,
 natural day labels such as `d9` and `d10` use numeric order when inferring
 maturity, matching the same explicitly declared observation bound.
 Windowed ratios use the earlier numerator/denominator observation bound for
@@ -205,7 +206,7 @@ it genuinely varies. A windowed or retention metric still refuses a CUPED
 covariate (CONSTRUCTION, `frame.validation.from_unit_panel`): those metrics
 have no per-unit collapse for that value to attach to. For a windowed
 metric, compute each unit's windowed value upstream and declare it as an
-unwindowed metric on `from_unit_summary`; no frame source serves a per-unit
+unwindowed metric on a `from_frame` summary; no frame source serves a per-unit
 retention value, so remove the covariate to run retention without CUPED.
 The switchback panel supports neither sequential inference
 nor CUPED; its contrasts are fixed-horizon. "Asymptotic route" means CUPED
@@ -224,7 +225,7 @@ family reports one shared `family_guarantee`, equal to the weakest regime any
 member carries -- with an asymptotic scalar-mean ITT cell in the family, that
 value is `asymptotic_sequential` on every selected row, including the exact
 Bernoulli compliance cell's own row, not "exact for one cell, asymptotic for
-the other." The `from_switchback_panel` encouragement and observational cells are a structural
+the other." The `from_switchback_frame` encouragement and observational cells are a structural
 limit of that constructor, not a gap. It has no `design=` parameter, so a `design:` declaration
 cannot be written and Python raises `TypeError` (no `.code`). It accepts only a
 switchback-shaped frame and `identification: Randomized`; an `Encouragement`/`Observational`
@@ -250,7 +251,7 @@ See [Priors and Bayesian decisions](../guides/priors-and-decisions.md) for
 binary boundary behavior and the distinction from prior-free sampling.
 
 Binary sequential monitoring (either automatic route) composes as follows, measured on
-`from_unit_summary` and pinned per axis. Multiplicity: every in-family secondary on the
+a `from_frame` summary and pinned per axis. Multiplicity: every in-family secondary on the
 metric/arm axis -- Bernoulli, scalar-mean, or a mix of both -- is registered into the
 family at a nominal per-cell allocation and selected by e-BH at the plan's `q`
 (supported); a selected member's interval is reinverted at `min(q * R / m, nominal_alpha)`,
@@ -275,7 +276,7 @@ mean metric a fixed clip is supported and a percentile clip refuses
 Quantile metrics: refused on the exact route (`definition.inference.always_valid_metric_type`)
 because the Bernoulli law does not describe them; use fixed-horizon inference (valid for one planned analysis, not repeated looks).
 Breakouts: `InferenceSpec.segments` fixes one string-valued dimension and its
-allowed levels before outcomes on `from_unit_summary` and `from_unit_panel`;
+allowed levels before outcomes on `from_frame` summaries and panels;
 an explicit registration is optional. Empty levels stay in the roster.
 Asymptotic segment membership must be determined before assignment and uses
 the existing fixed-roster Bonferroni construction, not BH. Segment labels are
@@ -288,7 +289,7 @@ spelling; `sequential.continuation.rewrite`). This is a stored-state boundary, n
 inherent limitation; recovery is in [Persisted formats](../api.md#persisted-formats).
 `from_definitions` and `from_unit_day_artifact` still refuse segmented capture
 (`sequential.route.unsupported`). A moments cube can replay retained segment
-state but has no breakout catalog, so `run_breakout` refuses
+state but has no breakout catalog, so a breakout view refuses
 (`evidence.breakout_unavailable`). Switchback: refused before any frame is read
 (`source.frame.switchback.plan`, reason `unsupported_inference`) for every sequential kind,
 automatic or explicit; the switchback contrast has no sequential construction.

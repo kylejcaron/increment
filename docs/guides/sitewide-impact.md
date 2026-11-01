@@ -3,8 +3,7 @@
 `increment.estimators.sitewide(experiment, resolver, metric)` estimates the
 whole-site change if the per-unit effect had applied to every enrolled unit
 during the experiment window. Use it for a rollout estimate, not as another
-per-unit effect. The legacy `Analysis.sitewide()` method returns the same
-result.
+per-unit effect.
 
 It needs the site's raw event volume, so it runs on an experiment built by
 `from_definitions` or on an adopted `from_unit_day_artifact` published with
@@ -36,7 +35,7 @@ import ibis
 import polars as pl
 import warnings
 
-from increment import from_definitions, Analysis
+from increment import from_definitions, from_unit_day_artifact
 from increment.artifacts import (
     SourceSnapshotEvidence,
     artifact_context,
@@ -44,7 +43,7 @@ from increment.artifacts import (
     unit_day_artifact_extension_catalog,
 )
 from increment.query.session import WarehouseArtifactStore
-from increment.estimators import IncrementWarning
+from increment.estimators import IncrementWarning, sitewide
 
 Path("triggered-definitions").mkdir(exist_ok=True)
 Path("triggered-definitions/fact_sources.yaml").write_text("""\
@@ -172,18 +171,18 @@ incomplete_reference = publish_unit_day_artifact(
         entry.request for entry in triggered_catalog if entry.request.kind == "site_volume"
     ],
 )
-incomplete_artifact = Analysis.from_unit_day_artifact(
+incomplete_experiment, incomplete_resolver = from_unit_day_artifact(
     triggered_store, incomplete_reference, expected_context=triggered_context
 )
-analysis = Analysis.from_unit_day_artifact(
+experiment, resolver = from_unit_day_artifact(
     triggered_store, triggered_reference, expected_context=triggered_context
 )
 ```
 
 ```python
 for m in ("revenue", "revenue_per_session"):
-    assigned = analysis.sitewide(metric=m)
-    triggered = analysis.sitewide(metric=m, population="triggered")
+    assigned = sitewide(experiment, resolver, metric=m)
+    triggered = sitewide(experiment, resolver, metric=m, population="triggered")
     print(f"{m}: assigned={assigned}; triggered={triggered}")
     assert assigned.snapshot_id == triggered.snapshot_id
     assert assigned.window == triggered.window
@@ -275,7 +274,7 @@ anytime-valid. Both baselines net out every enrolled non-control arm's lift
     !!! note
         A non-positive $V_0$ makes "relative impact" undefined -- a fraction
         of a baseline that isn't positive has no sensible sign or magnitude.
-        `Analysis.sitewide()` raises `ValueError` rather than return one when
+        `sitewide()` raises `ValueError` rather than return one when
         the baseline is non-positive.
 
     **Ratio metrics.** A ratio metric (revenue per session, CTR) needs two
@@ -313,7 +312,7 @@ anytime-valid. Both baselines net out every enrolled non-control arm's lift
     + 2\,g_{\text{num}}\,g_{\text{den}}\,\mathrm{Cov}(\delta_{\text{num}}, \delta_{\text{den}})
     $$
 
-    `Analysis.sitewide()` reports a ratio metric's `relative_impact` as
+    `sitewide()` reports a ratio metric's `relative_impact` as
     `absolute_impact / baseline_ratio`. Its uncertainty uses covariance-aware
     delta-method gradients for the numerator and denominator lifts; the
     reported intervals use the resulting relative-impact standard error.
@@ -446,14 +445,14 @@ units inside each cluster adds little.
 | `RetentionMetric` or `QuantileMetric` | `CapabilityError` before any moments are built: site volume is undefined, because a retention outcome is anchored to each unit's own exposure time and a quantile is not additive across events. | Use an additive mean, count, or ratio metric. |
 | Windowed or non-additive metric (`avg_event`, `min`, `count_distinct`, a per-unit window), including ratio components | Refuses before evidence loads: site totals cover the calendar window `[start, end]` and cannot align. | Use an unwindowed sum or count aggregation. |
 | Conversion metric | `facade.analysis.sitewide_metric_unaligned` before evidence loads, native or artifact: a converter indicator is a maximum over a unit's events, not an additive total. | Declare a `count` metric (`type: mean`, `aggregation: count`) on the conversion fact. |
-| `from_unit_summary`, `from_unit_panel`, `from_moments` | Pre-melted outcomes or moments carry no whole-site raw-event total. | Use `from_definitions`, or adopt a unit-day artifact published with the metric's `site_volume` extension ([extension matrix](data-model.md#operation-and-extension-matrix)). |
+| `from_frame` summaries and panels, `from_moments` | Pre-melted outcomes or moments carry no whole-site raw-event total. | Use `from_definitions`, or adopt a unit-day artifact published with the metric's `site_volume` extension ([extension matrix](data-model.md#operation-and-extension-matrix)). |
 | Artifact without trigger membership | `artifact.extension.missing` for `population="triggered"`. | Republish with the `trigger_population` extension, as below. |
 | Outcomes incomplete through the end day | `facade.analysis.sitewide_outcomes_incomplete`, either population. | Rerun after the feeds reach the end day. |
-| Observational or encouragement design | Refuses before evidence loads: the unadjusted sitewide contrast does not implement those estimands. | Use `Analysis.run()`. |
+| Observational or encouragement design | Refuses before evidence loads: the unadjusted sitewide contrast does not implement those estimands. | Use `run(experiment, resolver)`. |
 | Several non-control arms and no `arm=` | `ValueError` naming the candidates. | Pass `arm=`. |
 
 The artifact published in [Run it](#run-it) carries trigger membership.
-`incomplete_artifact`, published with only `site_volume`, refuses the
+The `incomplete_reference` artifact, published with only `site_volume`, refuses the
 triggered reading until the source is republished with the required evidence:
 
 
@@ -461,7 +460,7 @@ triggered reading until the source is republished with the required evidence:
 from increment.errors import InvalidRequestError
 
 try:
-    incomplete_artifact.sitewide("revenue", population="triggered")
+    sitewide(incomplete_experiment, incomplete_resolver, "revenue", population="triggered")
 except InvalidRequestError as err:
     print(err.code)
 
@@ -471,14 +470,16 @@ recovered_reference = publish_unit_day_artifact(
     triggered_store,
     extensions=triggered_requests,
 )
-recovered_artifact = Analysis.from_unit_day_artifact(
+recovered_experiment, recovered_resolver = from_unit_day_artifact(
     triggered_store, recovered_reference, expected_context=triggered_context
 )
-recovered = recovered_artifact.sitewide("revenue", population="triggered")
+recovered = sitewide(
+    recovered_experiment, recovered_resolver, "revenue", population="triggered"
+)
 print(recovered.analysis_population, recovered.membership_cutoff)
-incomplete_artifact.close()
-recovered_artifact.close()
-analysis.close()
+incomplete_resolver.close()
+recovered_resolver.close()
+resolver.close()
 triggered_resolver.close()
 ```
 
@@ -583,8 +584,8 @@ import warnings
 import ibis
 import polars as pl
 
-from increment import Analysis
-from increment.estimators import IncrementWarning
+from increment import from_definitions
+from increment.estimators import IncrementWarning, sitewide
 
 random.seed(4)
 start = dt.datetime(2025, 3, 1, 9, 0)
@@ -670,9 +671,9 @@ con.create_table("event_log", events.to_arrow(), database="analytics")
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", IncrementWarning)
-    analysis = Analysis.from_definitions("site_launch", "definitions/", con)
+    experiment, resolver = from_definitions("definitions/", con, experiment_name="site_launch")
 
-sum_result = analysis.sitewide("revenue_per_user")
+sum_result = sitewide(experiment, resolver, "revenue_per_user")
 print(f"observed site volume:   {sum_result.site_total_volume:,.2f}")
 print(f"counterfactual (V0):    {sum_result.baseline_volume:,.2f}")
 print(f"per-unit lift (delta):  {sum_result.delta:+.2f}")
@@ -685,7 +686,7 @@ print(
     f"[{sum_result.relative_impact_lb:+.2%}, {sum_result.relative_impact_ub:+.2%}]"
 )
 
-ratio_result = analysis.sitewide("revenue_per_session")
+ratio_result = sitewide(experiment, resolver, "revenue_per_session")
 print(f"baseline ratio:         {ratio_result.baseline_ratio:.4f}")
 print(f"shipped ratio:          {ratio_result.shipped_ratio:.4f}")
 print(
@@ -808,7 +809,9 @@ con.create_table("event_log", all_events.to_arrow(), database="analytics", overw
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", IncrementWarning)
-    cluster_analysis = Analysis.from_definitions("store_rollout", "definitions/", con)
+    cluster_experiment, cluster_resolver = from_definitions(
+        "definitions/", con, experiment_name="store_rollout"
+    )
 
 with warnings.catch_warnings(record=True) as cluster_warnings:
     # This is the documented cluster-population advisory, not an error in
@@ -818,8 +821,8 @@ with warnings.catch_warnings(record=True) as cluster_warnings:
         message=r"^sitewide under a declared cluster:",
         category=UserWarning,
     )
-    csum = cluster_analysis.sitewide("revenue_per_user")
-    cratio = cluster_analysis.sitewide("revenue_per_session")
+    csum = sitewide(cluster_experiment, cluster_resolver, "revenue_per_user")
+    cratio = sitewide(cluster_experiment, cluster_resolver, "revenue_per_session")
 
 assert len(cluster_warnings) == 2
 assert all(

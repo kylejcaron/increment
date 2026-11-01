@@ -1,6 +1,6 @@
 # Heterogeneity and rollout
 
-After `run_breakout()`, use `segment_heterogeneity` to ask whether effects differ across segments, and `segment_rollout_recommendation` to rank segments against a rollout cost. Both require estimates from the same `run_breakout()` call; combining calls silently merges the analysis.
+After reading a breakout view, use `segment_heterogeneity` to ask whether effects differ across segments, and `segment_rollout_recommendation` to rank segments against a rollout cost. Both require estimates from the same breakout readout; combining runs silently merges the analysis.
 
 For trigger-declared experiments, breakout output includes assigned and triggered populations. The functions keep these populations separate. Filter to one population when that is the question you intend to answer.
 
@@ -12,7 +12,7 @@ For trigger-declared experiments, breakout output includes assigned and triggere
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, MetricSpec
+from increment import MetricSpec, Scope, from_frame, run
 from increment.estimators import segment_heterogeneity, segment_rollout_recommendation
 
 rng = np.random.default_rng(21)
@@ -35,16 +35,17 @@ df = pl.DataFrame(
     }
 )
 
-analysis = Analysis.from_unit_summary(
+experiment, resolver = from_frame(
     df,
+    shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[MetricSpec(name="revenue", type="mean")],
     breakouts=["segment"],
 )
-
-breakout_estimates = analysis.run_breakout()
+breakout_view = Scope(view="breakout", grain="total")
+breakout_estimates = run(experiment.with_views(breakout_view), resolver).readout(breakout_view)
 summary, segments = segment_heterogeneity(breakout_estimates)
 for row in summary:
     print(f"{row.metric} dim={row.dimension} Q={row.q:.2f} tau2={row.tau2} i2={row.i2}")
@@ -99,10 +100,10 @@ Both APIs group by `estimand` and `value_scale`. `segment_heterogeneity` reports
 ??? info "Grouping and computed scale"
     Both APIs group by `estimand` and upstream `value_scale`. `segment_heterogeneity` identifies its computed scale with `scale`: relative-primary families can produce relative and absolute results; absolute-primary families produce only absolute results, using their additive moments. `segment_rollout_recommendation` prices only relative-primary families. It skips every `value_scale="absolute"` family, including encouragement LATE, even when the shared `lift.log_mean`/`lift.log_se` fields contain additive moments.
 
-Cost precedence is: explicit `rollout_cost=`; the matching metric's declared `rollout_cost`; then `0.0` (select any segment estimated favorable). A mapping with an unknown metric is refused. Frame-path `MetricSpec` has no `rollout_cost` field, so passing its `analysis.metrics` resolves to `0.0`. Costs are not weighted by exposure; small and large segments count equally.
+Cost precedence is: explicit `rollout_cost=`; the matching metric's declared `rollout_cost`; then `0.0` (select any segment estimated favorable). A mapping with an unknown metric is refused. Frame-path `MetricSpec` has no `rollout_cost` field, so passing its `increment.workflows.metrics(experiment, resolver)` resolves to `0.0`. Costs are not weighted by exposure; small and large segments count equally.
 
 ??? info "Supplying declared costs and reading recommendations"
-    Cost resolution is highest-precedence-first: an explicit `rollout_cost=` argument (a mapping's unknown metric name is refused), then the metric's own declared `rollout_cost` -- read from whichever `Metric` objects are passed via `metrics=`, matched to each estimate's metric name -- then `0.0` (ship any segment estimated favorable at all). This guide's own `analysis.metrics` (synthesized from the frame-path `MetricSpec` the example declares) can never carry a declared cost: `MetricSpec` has no `rollout_cost` field to set, so passing `metrics=analysis.metrics` here always resolves to `0.0` too. An arbitrary matching `Metric` object built with its own `rollout_cost` set is honored the same way regardless of how the estimates themselves were produced. Values are unweighted by exposure: a segment with few units and a wide interval is treated the same as a well-powered one on this pass. Read `RolloutRecommendation`'s field docs before quoting a rollout number in a launch review.
+    Cost resolution is highest-precedence-first: an explicit `rollout_cost=` argument (a mapping's unknown metric name is refused), then the metric's own declared `rollout_cost` -- read from whichever `Metric` objects are passed via `metrics=`, matched to each estimate's metric name -- then `0.0` (ship any segment estimated favorable at all). This guide's own `increment.workflows.metrics(experiment, resolver)` (synthesized from the frame-path `MetricSpec` the example declares) can never carry a declared cost: `MetricSpec` has no `rollout_cost` field to set, so passing `metrics=increment.workflows.metrics(experiment, resolver)` here always resolves to `0.0` too. An arbitrary matching `Metric` object built with its own `rollout_cost` set is honored the same way regardless of how the estimates themselves were produced. Values are unweighted by exposure: a segment with few units and a wide interval is treated the same as a well-powered one on this pass. Read `RolloutRecommendation`'s field docs before quoting a rollout number in a launch review.
 
 ## Scale dependence
 

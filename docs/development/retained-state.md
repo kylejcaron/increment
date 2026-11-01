@@ -16,7 +16,7 @@ Normal-reference Wald rows are not re-leveled in 3a: the portable `relevel()` op
 ## Saving results
 
 Use the collection's `model_dump_json()` when you need to save and reopen the
-collection as it is produced by `Analysis.run()`, including its rows and
+collection as `result.readout(scope)` returns it, including its rows and
 collection-level metadata.
 
 Use `ResultCell` or `AnalysisEnvelope` when you need portable per-cell
