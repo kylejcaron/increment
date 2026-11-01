@@ -31,8 +31,11 @@ def _incomplete(reasons: list[str]) -> CombineResult:
     )
 
 
-def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: int) -> CombineResult:
-    """Union executed statement lines only when both exact shard receipts qualify."""
+def combine_shards(
+    shards_root: Path, *, expected_sha: str, expected_attempt: int, splits: int
+) -> CombineResult:
+    """Union executed statement lines only when all ``splits`` shard receipts qualify."""
+    expected_shards = range(1, splits + 1)
     shards: dict[int, tuple[dict[str, Any], Path]] = {}
     reasons: list[str] = []
     for metadata_path in shards_root.rglob("metadata.json"):
@@ -42,12 +45,12 @@ def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: in
         except (OSError, json.JSONDecodeError, KeyError, TypeError):
             reasons.append(f"invalid metadata at {metadata_path}")
             continue
-        if shard not in (1, 2) or shard in shards:
+        if shard not in expected_shards or shard in shards:
             reasons.append(f"unknown or duplicate shard {shard!r}")
             continue
         shards[shard] = (metadata, metadata_path.parent)
 
-    for shard in (1, 2):
+    for shard in expected_shards:
         if shard not in shards:
             reasons.append(f"missing shard {shard}")
             continue
@@ -68,7 +71,7 @@ def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: in
 
     merged: dict[str, tuple[set[int], set[int]]] = {}
     try:
-        for shard in (1, 2):
+        for shard in expected_shards:
             _, artifact = shards[shard]
             report = json.loads((artifact / "coverage.json").read_text())
             package_files = [
@@ -131,8 +134,8 @@ def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: in
     }
     summary = (
         f"{label}: {covered_count}/{statement_count} increment/ statements executed across "
-        f"{len(files)} source files from fast shards 1 and 2. This measures executed code in the "
-        "fast tier only; it is not whole-package, all-tier, or line-quality coverage."
+        f"{len(files)} source files from all {splits} fast shards. This measures executed "
+        "code in the fast tier only; it is not whole-package, all-tier, or line-quality coverage."
     )
     return CombineResult(True, coverage_data, summary)
 
@@ -142,13 +145,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shards", type=Path, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--attempt", type=int, required=True)
+    parser.add_argument("--splits", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary-file", type=Path, required=True)
     parser.add_argument("--github-output", type=Path)
     arguments = parser.parse_args(argv)
 
     result = combine_shards(
-        arguments.shards, expected_sha=arguments.sha, expected_attempt=arguments.attempt
+        arguments.shards,
+        expected_sha=arguments.sha,
+        expected_attempt=arguments.attempt,
+        splits=arguments.splits,
     )
     arguments.summary_file.write_text(result.summary + "\n")
     if result.complete:
