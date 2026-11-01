@@ -4,7 +4,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -221,23 +221,29 @@ def test_multibreakout_frame_runs_every_declared_selection_and_refuses_unknown_b
             scopes=(Scope(view="breakout", grain="total", segment=identities),),
         )
 
+    def compiled(requested):
+        _, (request,) = requested.compile()
+        breakouts = cast(Any, request.requests[0].fields["breakouts"])
+        return tuple((item["source"], item["property"]) for item in breakouts)
+
+    def executed(cells):
+        return tuple(
+            dict.fromkeys((cell.identity.key.source, cell.identity.key.dimension) for cell in cells)
+        )
+
     every = selected()
     device = selected(BreakoutIdentity("device", None))
     for requested in (every, device):
         assert runnable(requested, "value")["randomized.unadjusted"].static_refusals == ()
     all_cells = run(every, resolver).cells
-    assert tuple(dict.fromkeys(cell.identity.key.dimension for cell in all_cells)) == (
-        "country",
-        "device",
-    )
+    assert compiled(every) == executed(all_cells) == ((None, "country"), (None, "device"))
     assert all(
         cell.identity.scope.segment == (BreakoutIdentity(cell.identity.key.dimension, None),)
         for cell in all_cells
     )
     by_key = {cell.identity.key: cell for cell in all_cells}
     device_cells = run(device, resolver).cells
-    assert device_cells
-    assert {cell.identity.key.dimension for cell in device_cells} == {"device"}
+    assert compiled(device) == executed(device_cells) == ((None, "device"),)
     for cell in device_cells:
         expected = by_key[cell.identity.key]
         assert (cell.summary, cell.family) == (expected.summary, expected.family)
