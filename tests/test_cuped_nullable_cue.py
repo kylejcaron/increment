@@ -4,11 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, MetricSpec
+from increment import MetricSpec, from_frame
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import CupedCovariate
+from tests.analysis_factory import view_readout
 
 
 def test_public_linear_cuped_accepts_nan_history_as_imputed_missingness():
@@ -37,9 +38,11 @@ def test_public_linear_cuped_accepts_nan_history_as_imputed_missingness():
         ),
     )
 
-    results = Analysis.from_unit_summary(
-        frame, unit="unit", group="arm", control="control", metrics=[metric]
-    ).run()
+    results = view_readout(
+        *from_frame(
+            frame, shape="summary", unit="unit", group="arm", control="control", metrics=[metric]
+        )
+    )
 
     (row,) = results
     assert isinstance(row, LiftEstimate)

@@ -12,6 +12,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.stats import binom, norm
 
+from increment import from_frame
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
@@ -31,6 +32,7 @@ from increment.estimation.conversion_route import (
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.inference import Normal
 from increment.semantics.models import MeanMetric
+from tests.analysis_factory import view_readout
 from tests.estimation._conversion_counts import (
     CONVERSION_METRIC,
     count_summary,
@@ -677,12 +679,12 @@ def _conversion_frame(successes: dict[str, int]):
 
 
 def _two_metric_analysis(plan, *, design=None, decision_method=None, successes=None, priors=None):
-    from increment import Analysis
     from increment.frame import MetricSpec
 
     successes = successes or {"a": _BETWEEN, "b": _CLEAR}
-    return Analysis.from_unit_summary(
+    return from_frame(
         _conversion_frame(successes),
+        shape="summary",
         unit="unit_id",
         group="group_id",
         **({"control": "control"} if design is None else {"design": design}),
@@ -719,7 +721,9 @@ class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
     def test_a_member_dense_at_its_own_level_keeps_the_delta_route(self):
         from increment import AnalysisPlan
 
-        family = _two_metric_analysis(AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b"))).run()
+        family = view_readout(
+            *_two_metric_analysis(AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")))
+        )
         assert _kinds(family) == {"a": "t", "b": "t"}
         counts = _evidence(family)
         assert set(counts) == {"a", "b"}
@@ -733,7 +737,7 @@ class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
     def test_the_same_counts_as_a_sole_primary_take_the_same_route(self):
         from increment import AnalysisPlan
 
-        alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a")).run()
+        alone = view_readout(*_two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a")))
         (row,) = [row for row in alone if row.metric == "a"]
         assert row.reference_kind == "t"
         assert row.delta_evidence is not None
@@ -747,11 +751,13 @@ class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
         deeper = dense_min_count(1.0 / 30.0)
         between_levels = (dense_min_count(0.05) + deeper) // 2
         assert dense_min_count(0.05) < between_levels < deeper
-        family = _two_metric_analysis(
-            AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "c", "d")),
-            successes={"a": _BETWEEN, "c": _CLEAR, "d": between_levels},
-            priors={"c": Normal(mu=0.0, sigma=0.5)},
-        ).run()
+        family = view_readout(
+            *_two_metric_analysis(
+                AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "c", "d")),
+                successes={"a": _BETWEEN, "c": _CLEAR, "d": between_levels},
+                priors={"c": Normal(mu=0.0, sigma=0.5)},
+            )
+        )
         assert _kinds(family) == {"a": "t", "c": "t", "d": "t"}
         rows = list(family)
         assert len(rows) == 3
@@ -773,9 +779,12 @@ class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
             one_sided=True,
             min_first_stage_z=0.001,
         )
-        family = _two_metric_analysis(
-            AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")), design=design
-        ).run(estimands=("itt",))
+        family = view_readout(
+            *_two_metric_analysis(
+                AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")), design=design
+            ),
+            estimands=("itt",),
+        )
         assert _kinds(family) == {"a": "t", "b": "t"}
         assert set(_evidence(family)) == {"a", "b"}
 
@@ -788,11 +797,13 @@ class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
             gate=IdentificationGate(overlap="trim"),
         )
         unadjusted = Method(name="unadjusted")
-        family = _two_metric_analysis(
-            AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")),
-            design=design,
-            decision_method=unadjusted,
-        ).run()
+        family = view_readout(
+            *_two_metric_analysis(
+                AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")),
+                design=design,
+                decision_method=unadjusted,
+            )
+        )
         assert _kinds(family) == {"a": "t", "b": "t"}
         assert set(_evidence(family)) == {"a", "b"}
 

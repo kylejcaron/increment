@@ -586,8 +586,9 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "list frame",
             "source.frame.input_type",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 [],  # ty: ignore[invalid-argument-type]
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",
@@ -597,10 +598,11 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "lazy frame",
             "source.frame.input_type",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 importlib.import_module("polars")
                 .DataFrame({"unit": ["u"], "arm": ["c"], "y": [1]})
                 .lazy(),  # ty: ignore[invalid-argument-type]
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",
@@ -610,8 +612,9 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "metric type required",
             "frame.metrics.type_required",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 importlib.import_module("pyarrow").table({"unit": ["u"], "arm": ["c"], "y": [1]}),
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",
@@ -621,10 +624,11 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
         (
             "CUPED covariate on a text column",
             "frame.validation.covariate_not_numeric",
-            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+            lambda: importlib.import_module("increment").from_frame(
                 importlib.import_module("pyarrow").table(
                     {"unit": ["u1", "u2"], "arm": ["c", "t"], "y": [1.0, 2.0], "pre": ["a", "b"]}
                 ),
+                shape="summary",
                 unit="unit",
                 group="arm",
                 control="c",

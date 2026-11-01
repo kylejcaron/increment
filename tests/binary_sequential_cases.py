@@ -7,7 +7,7 @@ a CUPED decision method), ``pre_period`` (a coefficient and centre fixed before
 the experiment, on ``InferenceSpec.adjustments``), ``winsor_percentile`` (a
 percentile clip), ``metric_type`` (the primary's type), ``secondaries`` (a count
 of secondary conversion metrics), ``breakout`` (a segment column read through
-``run_breakout``) and ``switchback`` (the switchback panel constructor).
+a breakout view) and ``switchback`` (the switchback frame builder).
 
 ``check_path_parity`` is the one path-parity assertion for both automatic
 binary routes: the unit panel, the definitions reader, the unit-day artifact
@@ -23,20 +23,32 @@ import tempfile
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
-from typing import NamedTuple, Protocol, cast
+from typing import Any, NamedTuple, Protocol, cast
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from increment import Analysis, Method, MetricSpec
+from increment import (
+    Method,
+    MetricSpec,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+    from_unit_day_artifact,
+)
 from increment._metric_specs import MetricSpecType
+from increment.artifacts import publish_unit_day_artifact
 from increment.frame import CupedCovariate
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec, Winsorization
 from increment.semantics.sequential import PredeclaredAdjustment
+from increment.workflows import capture_sequential, export_moments, sequential_snapshot
+from tests.analysis_factory import view_readout
 
 DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 AS_OF = dt.date(2025, 1, 14)
@@ -232,10 +244,11 @@ def analysis_plan(inference: InferenceSpec, **axes) -> AnalysisPlan:
     return AnalysisPlan(primary="purchase", secondaries=_secondary_names(axes), inference=inference)
 
 
-def frame_analysis(units: list[dict], inference: InferenceSpec, **axes) -> Analysis:
+def frame_analysis(units: list[dict], inference: InferenceSpec, **axes) -> Any:
     _check_axes(axes)
-    return Analysis.from_unit_summary(
+    return from_frame(
         pa.Table.from_pylist(units),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -250,7 +263,7 @@ def frame_analysis(units: list[dict], inference: InferenceSpec, **axes) -> Analy
     )
 
 
-def switchback_analysis(inference: InferenceSpec) -> Analysis:
+def switchback_analysis(inference: InferenceSpec) -> Any:
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
         SwitchbackAssignment,
@@ -258,7 +271,7 @@ def switchback_analysis(inference: InferenceSpec) -> Analysis:
     )
     from increment.semantics.unit_cycle import UnitCycleTApproximation
 
-    return Analysis.from_switchback_panel(
+    return from_switchback_frame(
         pa.Table.from_pylist(switchback_rows()),
         unit="unit",
         cycle="cycle",
@@ -281,13 +294,13 @@ def axis_run(inference: InferenceSpec, *, seed: int = 7, **axes) -> Callable[[],
     """Construction and readout for one axis, deferred so a refusal at either step is caught."""
     _check_axes(axes)
     if axes.get("switchback"):
-        return lambda: list(switchback_analysis(inference).run())
+        return lambda: list(view_readout(*switchback_analysis(inference)))
 
     def run():
-        analysis = frame_analysis(unit_rows(seed=seed, **axes), inference, **axes)
+        experiment, resolver = frame_analysis(unit_rows(seed=seed, **axes), inference, **axes)
         if axes.get("breakout"):
-            return list(analysis.run_breakout())
-        return list(analysis.run())
+            return list(view_readout(experiment, resolver, Scope(view="breakout", grain="total")))
+        return list(view_readout(experiment, resolver))
 
     return run
 
@@ -299,10 +312,10 @@ def _definitions_file(directory: str | Path, dialect: str, source: str, plan_yam
     return path
 
 
-def warehouse_analysis(con, dialect: str, source: str, plan_yaml: str) -> Analysis:
-    with tempfile.TemporaryDirectory() as td:
-        path = _definitions_file(td, dialect, source, plan_yaml)
-        return Analysis.from_definitions("exp", path, con, store="none")
+def warehouse_analysis(con, dialect: str, source: str, plan_yaml: str) -> Any:
+    """Bind the route's definitions; the file outlives the call because each run records it."""
+    path = _definitions_file(tempfile.mkdtemp(), dialect, source, plan_yaml)
+    return from_definitions(path, con, experiment_name="exp", store="none")
 
 
 def assert_same_interval(a, b) -> None:
@@ -326,10 +339,11 @@ def panel_rows(units: list[dict]) -> list[dict]:
     ]
 
 
-def panel_analysis(units: list[dict], inference: InferenceSpec) -> Analysis:
+def panel_analysis(units: list[dict], inference: InferenceSpec) -> Any:
     """The unit-panel reading under the definitions' two-day window, complete by ``AS_OF``."""
-    return Analysis.from_unit_panel(
+    return from_frame(
         pa.Table.from_pylist(panel_rows(units)),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -355,26 +369,26 @@ def expected_artifact_context(dialect: str, source: str, plan_yaml: str) -> Arti
 
 
 def adopt(
-    analysis: Analysis, con, expected_context: ArtifactContext
-) -> tuple[Analysis, WarehouseArtifactStore, UnitDayArtifactRef]:
+    analysis: tuple[Any, Any], con, expected_context: ArtifactContext
+) -> tuple[Any, WarehouseArtifactStore, UnitDayArtifactRef]:
     """Publish a definitions analysis as a unit-day artifact and reopen it through that reader."""
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    ref = analysis.publish_unit_day_artifact(store)
-    analysis.close()
+    ref = publish_unit_day_artifact(*analysis, store)
+    analysis[1].close()
     return (
-        Analysis.from_unit_day_artifact(store, ref, expected_context=expected_context),
+        from_unit_day_artifact(store, ref, expected_context=expected_context),
         store,
         ref,
     )
 
 
-def portable_replay(analysis: Analysis) -> Analysis:
+def portable_replay(analysis: tuple[Any, Any]) -> Any:
     """The exported checkpoint of *analysis* reopened through ``from_moments``."""
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "checkpoint.parquet"
-        analysis.export(path)
+        export_moments(*analysis, path)
         rows = pq.read_table(path).to_pylist()
-    return Analysis.from_moments(
+    return from_moments(
         rows, metrics=[MetricSpec(name="purchase", type="conversion")], control="control"
     )
 
@@ -404,15 +418,15 @@ def check_path_parity(
     route = ROUTES[kind]
     units = unit_rows()
     frame = observe("from_unit_summary", lambda: frame_analysis(units, route.inference))
-    oracle_snapshot = frame.capture_sequential(finalized=True)
-    oracle = frame.run()[0]
+    oracle_snapshot = capture_sequential(*frame, finalized=True)
+    oracle = view_readout(*frame)[0]
     assert oracle_snapshot.registration.models[0].law == route.law
 
-    def assert_same_state(analysis: Analysis):
-        snapshot = analysis.capture_sequential(finalized=True, as_of=AS_OF)
+    def assert_same_state(analysis: tuple[Any, Any]):
+        snapshot = capture_sequential(*analysis, finalized=True, as_of=AS_OF)
         assert snapshot.registration.models == oracle_snapshot.registration.models
         assert snapshot.states == oracle_snapshot.states
-        assert_same_interval(oracle, analysis.run()[0])
+        assert_same_interval(oracle, view_readout(*analysis)[0])
         return snapshot
 
     assert_same_state(observe("from_unit_panel", lambda: panel_analysis(units, route.inference)))
@@ -421,8 +435,8 @@ def check_path_parity(
     )
     definitions_snapshot = assert_same_state(definitions)
     replay = observe("from_moments", lambda: portable_replay(definitions))
-    assert replay.sequential_snapshot() == definitions_snapshot
-    assert_same_interval(oracle, replay.run()[0])
+    assert sequential_snapshot(*replay) == definitions_snapshot
+    assert_same_interval(oracle, view_readout(*replay)[0])
     artifact, store, ref = observe(
         "from_unit_day_artifact",
         lambda: adopt(
@@ -432,5 +446,5 @@ def check_path_parity(
     try:
         assert assert_same_state(artifact).prefix_id == definitions_snapshot.prefix_id
     finally:
-        artifact.close()
+        artifact[1].close()
         store.drop_generation(ref.artifact_id, ref.generation_id)

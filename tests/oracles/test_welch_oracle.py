@@ -5,7 +5,7 @@ tests/oracles/generate/gen_welch_oracle.R). No R at test time.
 Matched estimand: the unweighted two-sample difference of arm means with the
 Welch (Satterthwaite) variance estimator, Welch degrees of freedom and a
 two-sided central t interval. The rows are read from the absolute-axis fields
-of ``Analysis.from_unit_summary(...).run()``; the oracle does not cover
+of a ``from_frame(..., shape="summary")`` readout; the oracle does not cover
 cluster-robust, weighted, covariate-adjusted, ratio or sequential contrasts.
 """
 
@@ -17,7 +17,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from increment import Analysis
+from increment import from_frame
+from tests.analysis_factory import view_readout
 
 _FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "welch_t.json").read_text())
 _TOL = _FIXTURE["tolerance"]
@@ -33,10 +34,10 @@ def _run(case: dict):
             "y": [*control, *treatment],
         }
     )
-    analysis = Analysis.from_unit_summary(
-        frame, unit="unit", group="group", control="C", metrics={"y": "mean"}
+    experiment, resolver = from_frame(
+        frame, shape="summary", unit="unit", group="group", control="C", metrics={"y": "mean"}
     )
-    (row,) = analysis.run()
+    (row,) = view_readout(experiment, resolver)
     return row
 
 

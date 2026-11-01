@@ -1,4 +1,4 @@
-"""Analysis.allocation_history(): the daily/cumulative assigned-unit
+"""workflows.allocation_history(): the daily/cumulative assigned-unit
 enrollment timeline used by the reusable dashboard's allocation view.
 
 Sourced from the native warehouse path's own first-exposure assignment
@@ -17,10 +17,11 @@ from typing import Any, Literal
 import ibis
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_definitions, from_frame, from_switchback_frame
 from increment.errors import CapabilityError
 from increment.estimation.diagnostics import SRMResult
-from tests.analysis_factory import make_analysis
+from increment.workflows import allocation_history, srm
+from tests.analysis_factory import make_binding
 
 _DEFS_TEMPLATE = """
 dialect: duckdb
@@ -95,7 +96,7 @@ def _analysis(
     day_boundary: str | None = None,
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     suffix: str = "",
-) -> Analysis:
+) -> Any:
     con = ibis.duckdb.connect()
     con.create_table("ah_events", obj=rows)
     cluster_line = "    cluster: store_id" if cluster else ""
@@ -104,8 +105,12 @@ def _analysis(
     defs_path.write_text(
         _DEFS_TEMPLATE.format(cluster_line=cluster_line, day_boundary_line=day_boundary_line)
     )
-    return Analysis(
-        "ah_test", defs_path, con, store="none", on_mixed_assignment=on_mixed_assignment
+    return from_definitions(
+        defs_path,
+        con,
+        experiment_name="ah_test",
+        store="none",
+        on_mixed_assignment=on_mixed_assignment,
     )
 
 
@@ -115,8 +120,8 @@ def test_allocation_history_excludes_mixed_and_unassigned_units(tmp_path):
     contribute to neither arm's daily count -- allocation reads off the
     valid, single-arm assignment only, matching what SRM's own
     ``assignment_counts`` would report."""
-    analysis = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
-    history = analysis.allocation_history()
+    experiment, resolver = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
+    history = allocation_history(experiment, resolver)
     day1_control = [
         r
         for r in history.to_pylist()
@@ -139,8 +144,10 @@ def test_allocation_history_quiet_arm_gets_explicit_zero_day_row(tmp_path):
     """Treatment enrolls no one on day 2 (only control does); the quiet
     arm still gets an explicit ``n_daily=0`` row with ``n_cumulative``
     carried forward, rather than being silently absent."""
-    analysis = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
-    rows = {(r["ds"], r["group_id"]): r for r in analysis.allocation_history().to_pylist()}
+    experiment, resolver = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
+    rows = {
+        (r["ds"], r["group_id"]): r for r in allocation_history(experiment, resolver).to_pylist()
+    }
     day2_treatment = rows[(dt.date(2025, 8, 2), "treatment")]
     assert day2_treatment["n_daily"] == 0
     assert day2_treatment["n_cumulative"] == 2  # carried forward from day 1
@@ -152,8 +159,8 @@ def test_allocation_history_quiet_arm_gets_explicit_zero_day_row(tmp_path):
 
 @pytest.mark.integration
 def test_allocation_history_schema_and_sort_order(tmp_path):
-    analysis = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
-    history = analysis.allocation_history()
+    experiment, resolver = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
+    history = allocation_history(experiment, resolver)
     assert set(history.column_names) == {
         "experiment_id",
         "analysis_population",
@@ -174,12 +181,14 @@ def test_allocation_history_final_counts_reconcile_with_assigned_srm(tmp_path):
     """Each arm's final-day ``n_cumulative`` matches ``srm()``'s own
     assigned-population observed counts -- both read off the same
     excluded-mixed/unassigned assignment, never a metric's sample size."""
-    analysis = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
-    history = analysis.allocation_history().to_pylist()
+    experiment, resolver = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
+    history = allocation_history(experiment, resolver).to_pylist()
     last_day = max(r["ds"] for r in history)
     final_counts = {r["group_id"]: r["n_cumulative"] for r in history if r["ds"] == last_day}
 
-    srm_result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    srm_result = srm(
+        experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+    )
     assert isinstance(srm_result, SRMResult)
     assert final_counts == srm_result.observed
 
@@ -193,10 +202,10 @@ def test_allocation_history_respects_declared_day_boundary_shift(tmp_path):
         _row("u_shift", dt.datetime(2025, 8, 2, 3, 10, 0), "control"),
         _row("u_other", dt.datetime(2025, 8, 5, 9, 0, 0), "treatment"),
     ]
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         tmp_path, rows, day_boundary="UTC-05:00", on_mixed_assignment="error", suffix="_shift"
     )
-    history = analysis.allocation_history().to_pylist()
+    history = allocation_history(experiment, resolver).to_pylist()
     # Densification cross-joins every observed date x group, so a group
     # also gets an explicit zero row on the other's real exposure day --
     # only the row carrying real enrollment (n_daily > 0) proves the
@@ -216,9 +225,9 @@ def test_allocation_history_refuses_a_declared_cluster(tmp_path):
         _row("c0", dt.datetime(2025, 8, 1, 9, 0, 0), "control", store_id="s0"),
         _row("t0", dt.datetime(2025, 8, 1, 9, 0, 0), "treatment", store_id="s1"),
     ]
-    analysis = _analysis(tmp_path, rows, cluster=True, suffix="_cluster")
+    experiment, resolver = _analysis(tmp_path, rows, cluster=True, suffix="_cluster")
     with pytest.raises(CapabilityError) as caught:
-        analysis.allocation_history()
+        allocation_history(experiment, resolver)
     assert caught.value.code == "evidence.operation_unavailable"
 
 
@@ -227,9 +236,9 @@ def test_allocation_history_refuses_a_seam_family_instance():
     event stream to build a daily enrollment timeline from."""
     from tests.capability_consumers_auxiliary import assert_refusal
 
-    analysis = make_analysis()
+    experiment, resolver = make_binding()
     with pytest.raises(CapabilityError) as caught:
-        analysis.allocation_history()
+        allocation_history(experiment, resolver)
     assert caught.value.code == "evidence.operation_unavailable"
     assert_refusal(
         "triggered_auxiliary_reads", "allocation_moments_refused", caught.value, stage="read"
@@ -255,15 +264,16 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
     from tests.capability_consumers_auxiliary import assert_refusal
 
     if ingress == "from_unit_summary":
-        source = Analysis.from_unit_summary(
+        source = from_frame(
             pd.DataFrame({"unit": ["c", "t"], "arm": ["control", "treatment"], "value": [0, 1]}),
+            shape="summary",
             unit="unit",
             group="arm",
             metrics={"value": "mean"},
             control="control",
         )
     elif ingress == "from_unit_panel":
-        source = Analysis.from_unit_panel(
+        source = from_frame(
             pa.table(
                 {
                     "unit": ["c", "t"],
@@ -272,6 +282,7 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
                     "value": [0, 1],
                 }
             ),
+            shape="panel",
             unit="unit",
             group="arm",
             date="day",
@@ -279,7 +290,7 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
             control="control",
         )
     elif ingress == "from_switchback_panel":
-        source = Analysis.from_switchback_panel(
+        source = from_switchback_frame(
             pa.Table.from_pylist(
                 [
                     {
@@ -315,7 +326,7 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
             contrast_references={"value": UnitCycleTApproximation()},
         )
     else:
-        source = make_analysis()
+        source = make_binding()
 
     outcome_id = (
         "allocation_moments_refused"
@@ -324,7 +335,7 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
     )
     try:
         with pytest.raises(CapabilityError) as refused:
-            source.allocation_history()
+            allocation_history(*source)
         expected_code = (
             "evidence.assignment.identity_unavailable"
             if ingress in {"from_unit_summary", "from_unit_panel", "from_switchback_panel"}
@@ -333,4 +344,4 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
         assert refused.value.code == expected_code
         assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
-        source.close()
+        source[1].close()

@@ -21,7 +21,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from increment import readouts
+from increment import from_frame, readouts
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
@@ -36,6 +36,7 @@ from increment.frame import (
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests._frame_evidence_requests import _breakout_moments, _counts, _moments, _unit_rows
+from tests.analysis_factory import view_readout
 
 
 @settings(max_examples=8, deadline=None)
@@ -654,10 +655,9 @@ def test_declared_method_covariates_do_not_emit_unused_metric_field_warnings(
 
     import warnings
 
-    from increment import Analysis
-
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         arrow_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -673,7 +673,7 @@ def test_declared_method_covariates_do_not_emit_unused_metric_field_warnings(
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run()
+        view_readout(experiment, resolver)
 
     from tests.warning_codes import warning_codes
 
@@ -686,11 +686,11 @@ def test_declared_method_covariates_do_not_emit_unused_metric_field_warnings_per
 
     import warnings
 
-    from increment import Analysis
     from tests.warning_codes import warning_codes
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         arrow_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -713,8 +713,8 @@ def test_declared_method_covariates_do_not_emit_unused_metric_field_warnings_per
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run()
-        analysis.run()
+        view_readout(experiment, resolver)
+        view_readout(experiment, resolver)
 
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
@@ -731,11 +731,11 @@ def test_run_does_not_warn_when_decision_method_is_explicit(
 ) -> None:
     import warnings
 
-    from increment import Analysis
     from tests.warning_codes import warning_codes
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         arrow_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -749,7 +749,7 @@ def test_run_does_not_warn_when_decision_method_is_explicit(
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run(decision_method=decision_method)
+        view_readout(experiment, resolver, decision_method=decision_method)
 
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
@@ -757,11 +757,11 @@ def test_run_does_not_warn_when_decision_method_is_explicit(
 def test_run_does_not_warn_when_cuped_is_a_sensitivity_method(arrow_frame: pa.Table) -> None:
     import warnings
 
-    from increment import Analysis
     from tests.warning_codes import warning_codes
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         arrow_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -777,10 +777,12 @@ def test_run_does_not_warn_when_cuped_is_a_sensitivity_method(arrow_frame: pa.Ta
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run(
+        view_readout(
+            experiment,
+            resolver,
             sensitivity_methods=[
                 Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
-            ]
+            ],
         )
 
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
@@ -791,13 +793,13 @@ def test_run_does_not_recommend_cuped_for_observational_default(
 ) -> None:
     import warnings
 
-    from increment import Analysis
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import AdjustmentSet, Observational
     from tests.warning_codes import warning_codes
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         arrow_frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -813,7 +815,7 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
 
     decision_rows = [row for row in rows if row.estimand == "ate"]
     assert len(decision_rows) == 1
@@ -830,7 +832,6 @@ def test_run_does_not_recommend_cuped_for_observational_default(
 def test_observational_explicit_unadjusted_keeps_result_label(cluster: str | None) -> None:
     import pandas as pd
 
-    from increment import Analysis
     from increment.estimation.engine import Method
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import AdjustmentSet, Observational
@@ -843,8 +844,9 @@ def test_observational_explicit_unadjusted_keeps_result_label(cluster: str | Non
             "cluster_id": [f"c{i}" for i in range(80)],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="group",
         metrics=[MetricSpec(name="outcome", type="mean")],
@@ -854,7 +856,7 @@ def test_observational_explicit_unadjusted_keeps_result_label(cluster: str | Non
         cluster=cluster,
     )
 
-    rows = analysis.run(decision_method=Method.unadjusted())
+    rows = view_readout(experiment, resolver, decision_method=Method.unadjusted())
     estimate = next(row for row in rows if isinstance(row, LiftEstimate))
 
     assert estimate.method == Method.unadjusted().name
@@ -867,13 +869,13 @@ def test_run_does_not_warn_for_defaulted_fixed_horizon_encouragement_cuped(
 ) -> None:
     import warnings
 
-    from increment import Analysis
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
     from tests.warning_codes import warning_codes
 
     frame = arrow_frame.append_column("took", arrow_frame["converted"])
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -896,7 +898,7 @@ def test_run_does_not_warn_for_defaulted_fixed_horizon_encouragement_cuped(
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run()
+        view_readout(experiment, resolver)
 
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
@@ -906,13 +908,13 @@ def test_run_does_not_recommend_cuped_for_compliance_only_encouragement(
 ) -> None:
     import warnings
 
-    from increment import Analysis
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
     from tests.warning_codes import warning_codes
 
     frame = arrow_frame.append_column("took", arrow_frame["converted"])
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics=[
@@ -935,7 +937,7 @@ def test_run_does_not_recommend_cuped_for_compliance_only_encouragement(
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rows = analysis.run(estimands=("compliance",))
+        rows = view_readout(experiment, resolver, estimands=("compliance",))
 
     assert rows
     assert {row.estimand for row in rows} == {"compliance"}
