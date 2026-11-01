@@ -1,8 +1,4 @@
-"""Test Analysis facade — integration with examples/definitions.
-
-TDD Step 1: this test should fail before analysis.py exists, then pass
-after the facade is implemented.
-"""
+"""Breakout views over native definitions, frames and custom providers."""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_definitions, from_frame, query, workflows
 from increment.artifacts import SourceSnapshotEvidence
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import (
@@ -23,10 +19,24 @@ from increment.errors import (
     InvalidRequestError,
     UnsupportedRequestError,
 )
+from increment.evidence import BreakoutIdentity
 from increment.semantics.models import AnalysisPlan, Definitions, MultiplicitySpec
-from tests.analysis_factory import make_analysis, make_analysis_like
+from increment.workflows import (
+    experiment_definition,
+    metrics,
+    sequential_snapshot,
+    unit_counts,
+)
+from tests.analysis_factory import (
+    bind_pair,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 from tests.sequential_cases import registration
 from tests.warning_codes import warning_codes
+
+_BREAKOUT = Scope(view="breakout", grain="total")
 
 
 def _analysis_with_country_breakout(
@@ -150,33 +160,39 @@ def _analysis_with_country_breakout(
 
     if return_definitions:
         return defs
-    analysis = make_analysis(con, defs, source_snapshot_evidence=source_snapshot_evidence)
+    analysis = make_binding(con, defs, source_snapshot_evidence=source_snapshot_evidence)
     return analysis
 
 
 @pytest.fixture(scope="module")
 def country_breakout_estimates(con):
-    """Plain ``run_breakout()`` on the country fixture, computed once;
+    """Plain breakout view on the country fixture, computed once;
     the tests below assert different facets of one deterministic readout."""
-    return _analysis_with_country_breakout(con).run_breakout()
+    experiment, resolver = _analysis_with_country_breakout(con)
+    return view_readout(experiment, resolver, _BREAKOUT)
 
 
 @pytest.fixture(scope="module")
 def country_daily_lift_by_segment(con):
-    """Plain ``run_daily_lift(dimension="country")`` on the country fixture,
-    computed once and shared the same way."""
-    return _analysis_with_country_breakout(con).run_daily_lift(dimension="country")
+    """Plain country daily-lift view on the country fixture, computed once
+    and shared the same way."""
+    experiment, resolver = _analysis_with_country_breakout(con)
+    return view_readout(
+        experiment,
+        resolver,
+        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+    )
 
 
 def test_run_breakout_snapshot_identity_includes_pinned_source_evidence(con):
-    first = _analysis_with_country_breakout(
+    first_experiment, first_resolver = _analysis_with_country_breakout(
         con,
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime.fromisoformat("2025-06-30T00:00:00+00:00"),
             {"events": datetime.fromisoformat("2025-06-30T00:00:00+00:00")},
         ),
     )
-    changed = _analysis_with_country_breakout(
+    changed_experiment, changed_resolver = _analysis_with_country_breakout(
         con,
         source_snapshot_evidence=SourceSnapshotEvidence(
             datetime.fromisoformat("2025-07-01T00:00:00+00:00"),
@@ -184,8 +200,8 @@ def test_run_breakout_snapshot_identity_includes_pinned_source_evidence(con):
         ),
     )
     try:
-        first_rows = first.run_breakout()
-        changed_rows = changed.run_breakout()
+        first_rows = view_readout(first_experiment, first_resolver, _BREAKOUT)
+        changed_rows = view_readout(changed_experiment, changed_resolver, _BREAKOUT)
         assert first_rows and changed_rows
         assert [row.require_lift().value for row in first_rows] == pytest.approx(
             [row.require_lift().value for row in changed_rows]
@@ -194,20 +210,19 @@ def test_run_breakout_snapshot_identity_includes_pinned_source_evidence(con):
             {row.source_snapshot_id for row in changed_rows}
         )
     finally:
-        first.close()
-        changed.close()
+        first_resolver.close()
+        changed_resolver.close()
 
 
 def test_custom_unit_counts_refuse_before_an_undeclared_provider_read(con):
     from dataclasses import replace
     from typing import Any, cast
 
-    from increment import Analysis
     from increment.evidence import CountsRequest
     from tests.analysis_factory import held_source
 
-    analysis = _analysis_with_country_breakout(con)
-    source = cast(Any, held_source(analysis))
+    _, fixture_resolver = _analysis_with_country_breakout(con)
+    source = cast(Any, held_source(fixture_resolver))
     called = False
 
     class Provider:
@@ -243,17 +258,17 @@ def test_custom_unit_counts_refuse_before_an_undeclared_provider_read(con):
         def scope(self, request):
             raise AssertionError("unsupported scope")
 
-    custom = Analysis._from_source(cast(Any, Provider()))
+    experiment, resolver = bind_pair(cast(Any, Provider()))
     try:
         from increment.errors import CapabilityError
 
         with pytest.raises(CapabilityError) as raised:
-            custom.unit_counts()
+            unit_counts(experiment, resolver)
         assert raised.value.code == "evidence.operation_unavailable"
         assert not called
     finally:
-        custom.close()
-        analysis.close()
+        resolver.close()
+        fixture_resolver.close()
 
 
 def test_custom_breakout_uses_one_outer_snapshot_scope(con):
@@ -275,8 +290,8 @@ def test_custom_breakout_uses_one_outer_snapshot_scope(con):
     )
     from tests.analysis_factory import held_source
 
-    analysis = _analysis_with_country_breakout(con)
-    source = cast(Any, held_source(analysis))
+    analysis_experiment, analysis_resolver = _analysis_with_country_breakout(con)
+    source = cast(Any, held_source(analysis_resolver))
     builtin = evidence_provider(source)
     requests: list[tuple[EvidenceScope, bool]] = []
     active = 0
@@ -284,7 +299,7 @@ def test_custom_breakout_uses_one_outer_snapshot_scope(con):
     class Provider:
         context = source.context
         evidence = source.evidence
-        artifact_experiment = analysis.experiment
+        artifact_experiment = experiment_definition(analysis_experiment, analysis_resolver)
 
         def moments(self, request: MomentsRequest):
             return builtin.moments(request)
@@ -326,12 +341,12 @@ def test_custom_breakout_uses_one_outer_snapshot_scope(con):
         def close(self):
             return None
 
-    custom = Analysis._from_source(cast(Any, Provider()))
+    custom_experiment, custom_resolver = bind_pair(cast(Any, Provider()))
     try:
-        custom.run_breakout()
+        view_readout(custom_experiment, custom_resolver, _BREAKOUT)
     finally:
-        custom.close()
-        analysis.close()
+        custom_resolver.close()
+        analysis_resolver.close()
 
     snapshots = [(request, nested) for request, nested in requests if request.snapshot]
     assert len(snapshots) == 1
@@ -340,8 +355,8 @@ def test_custom_breakout_uses_one_outer_snapshot_scope(con):
 
 
 def test_run_breakout_returns_per_segment_estimates(country_breakout_estimates):
-    """Analysis.run_breakout() wires breakout_summaries into
-    the run_breakout wrapper and returns BreakoutEstimate rows for every
+    """The breakout view wires breakout_summaries into
+    the breakout readout and returns BreakoutEstimate rows for every
     declared breakout x metric, correctly attributed per segment (not
     cross-contaminated - US has positive lift, CA has negative)."""
     results = country_breakout_estimates
@@ -367,10 +382,10 @@ def test_run_breakout_returns_per_segment_estimates(country_breakout_estimates):
 def _configured_country_breakout_analysis(con, correction: Literal["none", "bonferroni", "bh"]):
     from increment.semantics.models import ExperimentMetric, MethodSpec, NormalPriorSpec
 
-    analysis = _analysis_with_country_breakout(con)
-    return make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(
+    analysis_experiment, analysis_resolver = _analysis_with_country_breakout(con)
+    return make_binding_like(
+        analysis_resolver,
+        experiment=experiment_definition(analysis_experiment, analysis_resolver).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=[
@@ -392,10 +407,10 @@ def test_native_breakout_ignores_incompatible_declared_method(con):
     declarations on a randomized design when no call-wide method is set."""
     from increment.semantics.models import ExperimentMetric, MethodSpec
 
-    analysis = _analysis_with_country_breakout(con)
-    configured = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(
+    analysis_experiment, analysis_resolver = _analysis_with_country_breakout(con)
+    configured_experiment, configured_resolver = make_binding_like(
+        analysis_resolver,
+        experiment=experiment_definition(analysis_experiment, analysis_resolver).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=[
@@ -410,7 +425,7 @@ def test_native_breakout_ignores_incompatible_declared_method(con):
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        configured.run_breakout()
+        view_readout(configured_experiment, configured_resolver, _BREAKOUT)
     assert raised.value.code == "estimation.engine.method_name_observational"
 
 
@@ -418,13 +433,18 @@ def test_native_breakout_ignores_incompatible_declared_method(con):
 def test_native_breakout_uses_callwide_methods_not_declared_methods(con, correction):
     from increment.estimation.engine import Method
 
-    analysis = _configured_country_breakout_analysis(con, correction)
+    experiment, resolver = _configured_country_breakout_analysis(con, correction)
 
-    results = analysis.run_breakout()
+    results = view_readout(experiment, resolver, _BREAKOUT)
     assert results
     assert {row.method for row in results} == {"declared"}
 
-    explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
+    explicit = view_readout(
+        experiment,
+        resolver,
+        _BREAKOUT,
+        decision_method=Method(name="call-wide"),
+    )
     assert explicit
     assert {row.method for row in explicit} == {"call-wide"}
 
@@ -435,10 +455,12 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
     from increment.estimation import Normal
     from increment.estimation.priors import MixturePrior
 
-    configured = _configured_country_breakout_analysis(con, correction)
-    baseline = make_analysis_like(
-        configured,
-        experiment=configured.experiment.model_copy(
+    configured_experiment, configured_resolver = _configured_country_breakout_analysis(
+        con, correction
+    )
+    baseline_experiment, baseline_resolver = make_binding_like(
+        configured_resolver,
+        experiment=experiment_definition(configured_experiment, configured_resolver).model_copy(
             update={
                 "plan": AnalysisPlan(
                     secondaries=["revenue"],
@@ -448,8 +470,8 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
         ),
     )
 
-    declared_results = configured.run_breakout()
-    baseline_results = baseline.run_breakout()
+    declared_results = view_readout(configured_experiment, configured_resolver, _BREAKOUT)
+    baseline_results = view_readout(baseline_experiment, baseline_resolver, _BREAKOUT)
 
     def keyed_lifts(results):
         return {
@@ -475,13 +497,23 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
     baseline_lifts = keyed_lifts(baseline_results)
     assert_same_sampling(declared_lifts, baseline_lifts)
 
-    prior_results = baseline.run_breakout(prior=Normal(mu=0.0, sigma=0.01))
+    prior_results = view_readout(
+        baseline_experiment,
+        baseline_resolver,
+        _BREAKOUT,
+        prior=Normal(mu=0.0, sigma=0.01),
+    )
     prior_lifts = keyed_lifts(prior_results)
     assert_same_sampling(prior_lifts, baseline_lifts)
     assert any(row.posterior_estimate is not None for row in prior_lifts.values())
 
     mixture_prior = MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15))
-    mixture_results = baseline.run_breakout(prior=mixture_prior)
+    mixture_results = view_readout(
+        baseline_experiment,
+        baseline_resolver,
+        _BREAKOUT,
+        prior=mixture_prior,
+    )
     mixture_lifts = keyed_lifts(mixture_results)
     assert_same_sampling(mixture_lifts, baseline_lifts)
     mixture_row = next(
@@ -520,43 +552,45 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
 
 def test_run_breakout_plan_declared_multiplicity_controls_level(con):
     """Breakout correction and alpha are read from the resolved plan."""
-    analysis = _analysis_with_country_breakout(con)
+    _, fixture_resolver = _analysis_with_country_breakout(con)
 
-    corrected = make_analysis_like(
-        analysis,
+    experiment, resolver = make_binding_like(
+        fixture_resolver,
         plan=AnalysisPlan(
             secondaries=["revenue"],
             view_multiplicity=MultiplicitySpec(correction="bonferroni"),
         ),
     )
-    default_alpha = corrected.run_breakout()
+    default_alpha = view_readout(experiment, resolver, _BREAKOUT)
     assert len(default_alpha) == 2
     for r in default_alpha:
         lift = r.lift
         assert lift is not None
         assert lift.level == pytest.approx(1 - 0.05 / 2)
 
-    custom_alpha = make_analysis_like(
-        analysis,
+    custom_experiment, custom_resolver = make_binding_like(
+        fixture_resolver,
         plan=AnalysisPlan(
             secondaries=["revenue"],
             alpha=0.1,
             view_multiplicity=MultiplicitySpec(correction="bonferroni"),
         ),
-    ).run_breakout()
+    )
+    custom_alpha = view_readout(custom_experiment, custom_resolver, _BREAKOUT)
     assert len(custom_alpha) == 2
     for r in custom_alpha:
         lift = r.lift
         assert lift is not None
         assert lift.level == pytest.approx(1 - 0.1 / 2)
 
-    uncorrected = make_analysis_like(
-        analysis,
+    uncorrected_experiment, uncorrected_resolver = make_binding_like(
+        fixture_resolver,
         plan=AnalysisPlan(
             secondaries=["revenue"],
             view_multiplicity=MultiplicitySpec(correction="none"),
         ),
-    ).run_breakout()
+    )
+    uncorrected = view_readout(uncorrected_experiment, uncorrected_resolver, _BREAKOUT)
     assert len(uncorrected) == 2
     for r in uncorrected:
         lift = r.lift
@@ -565,10 +599,10 @@ def test_run_breakout_plan_declared_multiplicity_controls_level(con):
 
 
 def test_run_breakout_default_correction_runs_bh_family(country_breakout_estimates):
-    """`Analysis.run_breakout()`'s `correction` default is `None`, which
+    """The breakout view's `correction` default is `None`, which
     delegates to `readouts.breakout()`'s own default (`"bh"` under a
     randomized design) instead of being pinned to the old `"none"` -- a
-    plain `run_breakout()` call now stamps a real `discovery` bool on
+    plain breakout view now stamps a real `discovery` bool on
     every row (the BH family actually ran), not the all-`None` a
     forced `correction="none"` would leave."""
     results = country_breakout_estimates
@@ -614,7 +648,7 @@ def _panel_with_borderline_country_segment():
 def test_run_breakout_declared_bh_q_controls_selection():
     """A declared breakout BH policy controls the family q level."""
     table = _panel_with_borderline_country_segment()
-    common = {
+    common: dict[str, Any] = {
         "unit": "user_id",
         "group": "variant",
         "date": "day",
@@ -622,24 +656,32 @@ def test_run_breakout_declared_bh_q_controls_selection():
         "metrics": {"revenue": "mean"},
         "breakouts": ["country"],
     }
-    tight = Analysis.from_unit_panel(
+    tight_experiment, tight_resolver = from_frame(
         table,
+        shape="panel",
         plan=AnalysisPlan(
             view_multiplicity=MultiplicitySpec(correction="bh", q=0.05),
         ),
-        **common,  # ty: ignore[invalid-argument-type]
+        **common,
     )
-    wide = Analysis.from_unit_panel(
+    wide_experiment, wide_resolver = from_frame(
         table,
+        shape="panel",
         plan=AnalysisPlan(
             view_multiplicity=MultiplicitySpec(correction="bh", q=0.10),
         ),
-        **common,  # ty: ignore[invalid-argument-type]
+        **common,
     )
 
-    tight_discovery = {r.dimension_value: r.discovery for r in tight.run_breakout()}
+    tight_discovery = {
+        r.dimension_value: r.discovery
+        for r in view_readout(tight_experiment, tight_resolver, _BREAKOUT)
+    }
     assert tight_discovery == {"US": True, "CA": False, "MX": False}
-    wide_discovery = {r.dimension_value: r.discovery for r in wide.run_breakout()}
+    wide_discovery = {
+        r.dimension_value: r.discovery
+        for r in view_readout(wide_experiment, wide_resolver, _BREAKOUT)
+    }
     assert wide_discovery == {"US": True, "CA": False, "MX": True}
 
 
@@ -673,8 +715,9 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
                     }
                 )
     table = pd.DataFrame(rows)
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         table,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -688,7 +731,7 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        results = analysis.run_breakout()
+        results = view_readout(experiment, resolver, _BREAKOUT)
     degenerate_rows = [r for r in results if r.metric == "refunds" and r.dimension_value == "GB"]
     assert degenerate_rows and all(
         r.excluded == "nonpositive_mean" and r.lift is None for r in degenerate_rows
@@ -721,7 +764,7 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
 
 
 def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -731,6 +774,7 @@ def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
                 "revenue": [1.0, 2.0, 3.0, 4.0],
             }
         ),
+        shape="panel",
         unit="unit",
         group="arm",
         date="date",
@@ -739,7 +783,9 @@ def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
         breakouts=["country"],
     )
     with pytest.raises(CapabilityError) as refused:
-        analysis.run_breakout(population="triggered")
+        view_readout(
+            experiment, resolver, Scope(view="breakout", grain="total", population="triggered")
+        )
     assert refused.value.code == "facade.analysis.trigger_unsupported"
 
 
@@ -775,8 +821,9 @@ def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():
                     "revenue": value,
                 }
             )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -790,7 +837,7 @@ def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        results = analysis.run_breakout()
+        results = view_readout(experiment, resolver, _BREAKOUT)
     gb = [r for r in results if r.dimension_value == "GB"]
     assert gb and all(r.excluded == "extreme_ratio" for r in gb)
     assert any(
@@ -941,9 +988,12 @@ def test_breakout_propagates_a_cuped_nonpositive_mean_row_unmodified(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
-    results = analysis.run_breakout(
-        decision_method=Method(name="cuped", variance_reduction="cuped")
+    experiment, resolver = make_binding(con, defs)
+    results = view_readout(
+        experiment,
+        resolver,
+        _BREAKOUT,
+        decision_method=Method(name="cuped", variance_reduction="cuped"),
     )
     cuped_row = next(
         r
@@ -1026,8 +1076,9 @@ def test_run_breakout_registered_raw_frame_results_roundtrip(policy_correction, 
         for arm, center in (("control", control), ("treatment", treatment))
         for i in range(512)
     ]
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="panel",
         unit="unit",
         group="arm",
         control="control",
@@ -1039,7 +1090,7 @@ def test_run_breakout_registered_raw_frame_results_roundtrip(policy_correction, 
         plan=plan,
     )
 
-    analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 15))
+    workflows.capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 1, 15))
     source = BreakoutMomentsSource(
         [],
         dimension="country",
@@ -1048,7 +1099,7 @@ def test_run_breakout_registered_raw_frame_results_roundtrip(policy_correction, 
         design=Randomized(control_group="control"),
         plan=plan,
     )
-    source.adopt_sequential_snapshot(analysis.sequential_snapshot())
+    source.adopt_sequential_snapshot(sequential_snapshot(experiment, resolver))
     result = readout_breakout(source, "country", correction=correction, q=0.2)
     inference = source.context.plan.inference
     _assert_registered_breakout_result(result, correction, inference, alpha)
@@ -1113,34 +1164,39 @@ def _assert_registered_breakout_result(result, correction, inference, alpha):
 
 
 def test_run_breakout_removed_kwargs_raise_typeerror(con):
-    """alpha=/inference= are no longer Analysis.run_breakout() call-time
+    """alpha=/inference= are no longer breakout-view call-time
     overrides - readouts.breakout() reads both off the source's own
     declared plan now, matching run()'s cutover."""
     from increment.estimators import AlwaysValid
 
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
     with pytest.raises(TypeError):
-        analysis.run_breakout(alpha=0.1)
+        view_readout(experiment, resolver, _BREAKOUT, alpha=0.1)
     with pytest.raises(TypeError):
-        analysis.run_breakout(inference=AlwaysValid(registration=registration()))
+        view_readout(
+            experiment,
+            resolver,
+            _BREAKOUT,
+            inference=AlwaysValid(registration=registration()),
+        )
     with pytest.raises(TypeError):
-        analysis.run_breakout(correction="bonferroni")
+        view_readout(experiment, resolver, _BREAKOUT, correction="bonferroni")
     with pytest.raises(TypeError):
-        analysis.run_breakout(q=0.05)
+        view_readout(experiment, resolver, _BREAKOUT, q=0.05)
 
 
 def test_run_breakout_refuses_a_declared_margin_metric(con):
     """readouts.breakout() refuses any metric declaring
     Metric.margin/margin_abs with NotImplementedError - breakout rows are
     tested two-sided vs 0 and a per-segment shifted null is not built.
-    This pins that refusal on Analysis.run_breakout()'s
+    This pins that refusal on the breakout view's
     definitions-backed path, routed through readouts.breakout().
     model_copy pattern mirrors
     test_analysis_run_native_declared_margin_abs_reaches_the_estimate,
     applied to the breakout path instead of run()."""
-    analysis = _analysis_with_country_breakout(con)
-    analysis = make_analysis_like(
-        analysis,
+    fixture_experiment, fixture_resolver = _analysis_with_country_breakout(con)
+    experiment, resolver = make_binding_like(
+        fixture_resolver,
         [
             # margin_abs requires an explicitly-declared direction (the semantics
             # layer refuses a defaulted one) -- declare it so this test exercises
@@ -1148,25 +1204,25 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
             m.model_copy(update={"margin_abs": 1.0, "preferred_direction": "decrease"})
             if m.name == "revenue"
             else m
-            for m in analysis.metrics
+            for m in metrics(fixture_experiment, fixture_resolver)
         ],
     )
     with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.run_breakout()
+        view_readout(experiment, resolver, _BREAKOUT)
     from contextlib import contextmanager
     from typing import Any, cast
 
     from increment.evidence import EvidenceScope, EvidenceScopeResult, evidence_provider
     from tests.analysis_factory import held_source
 
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     builtin = evidence_provider(source)
     scope_entries = 0
 
     class Provider:
         context = source.context
         evidence = source.evidence
-        artifact_experiment = analysis.experiment
+        artifact_experiment = experiment_definition(experiment, resolver)
 
         def moments(self, request):
             return builtin.moments(request)
@@ -1204,58 +1260,58 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
 
             return EvidenceScopeResult(scoped(), request)
 
-    assert analysis.experiment is not None
-    custom = Analysis._from_source(cast(Any, Provider()), experiment=analysis.experiment)
-    assert custom.experiment is not None
+    assert experiment_definition(experiment, resolver) is not None
+    custom_experiment, custom_resolver = bind_pair(
+        cast(Any, Provider()), experiment=experiment_definition(experiment, resolver)
+    )
+    assert experiment_definition(custom_experiment, custom_resolver) is not None
     try:
         with pytest.raises(UnsupportedRequestError) as custom_raised:
-            custom.run_breakout()
+            view_readout(custom_experiment, custom_resolver, _BREAKOUT)
         assert custom_raised.value.code == "readout.margin.breakout"
         assert scope_entries == 0
     finally:
-        custom.close()
-        analysis.close()
+        custom_resolver.close()
+        resolver.close()
     assert raised.value.code == "readout.margin.breakout"
 
 
-def test_run_breakout_empty_when_no_breakouts_declared(con):
-    """analysis.run_breakout() returns [] for an experiment with no
+def test_run_breakout_empty_when_no_breakouts_declared(con, example_definitions):
+    """A breakout view returns [] for an experiment with no
     declared breakouts - mirrors breakout_summaries' own empty-dict
-    contract, and confirms run_breakout doesn't require breakouts to be
+    contract, and confirms the breakout view doesn't require breakouts to be
     present to avoid crashing. `pricing_tier_test` is the experiment with
     no breakouts declared here - `new_onboarding_v2` gained a `country`
     breakout for the example notebook (see examples/breakout.py)."""
-    analysis = Analysis(
-        experiment_name="pricing_tier_test",
-        definitions_path="examples/definitions/",
-        con=con,
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="pricing_tier_test"
     )
-    assert analysis.experiment.breakouts == ()
+    assert experiment_definition(experiment, resolver).breakouts == ()
 
-    assert analysis.run_breakout() == []
+    assert view_readout(experiment, resolver, _BREAKOUT) == []
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_breakout(metrics=["not_declared"])
+        view_readout(experiment, resolver, _BREAKOUT, metrics=["not_declared"])
     assert raised.value.code == "facade.analysis_config.unknown_metric_declared"
 
 
 def test_panel_sql_and_summary_sql_with_breakouts_include_segment_sql(con):
     """panel_sql(breakouts=...)/summary_sql(breakouts=...), called
-    directly on ``Analysis`` (not the lower-level query
-    builders, and not ``run_breakout``/``breakout_summaries``, which are
+    directly through ``increment.query`` (not the lower-level query
+    builders, and not the breakout view/``breakout_summaries``, which are
     tested separately), include one valid, executable SQL entry per
     (metric, breakout) pair under the expected
     ``f"{metric.name}:{breakout.property}:{source_name}"`` key."""
-    analysis = _analysis_with_country_breakout(con)
-    breakouts = analysis.experiment.breakouts
+    experiment, resolver = _analysis_with_country_breakout(con)
+    breakouts = list(experiment_definition(experiment, resolver).breakouts)
     key = "revenue:country:events"
 
-    panel_sql = analysis.panel_sql(breakouts=breakouts)
+    panel_sql = query.panel_sql(experiment, resolver, breakouts=breakouts)
     assert key in panel_sql
     panel_df = con.sql(panel_sql[key]).execute()
     assert "country" in panel_df.columns
 
-    summary_sql = analysis.summary_sql(breakouts=breakouts)
+    summary_sql = query.summary_sql(experiment, resolver, breakouts=breakouts)
     assert key in summary_sql
     summary_df = con.sql(summary_sql[key]).execute()
     assert "country" in summary_df.columns
@@ -1263,9 +1319,9 @@ def test_panel_sql_and_summary_sql_with_breakouts_include_segment_sql(con):
 
 
 def _analysis_with_missing_control_segment(con):
-    """Build an ``Analysis`` with a 3-segment country breakout
+    """Bind a native experiment with a 3-segment country breakout
     where one segment (MX) has ONLY treatment units - no control arm at
-    all - to exercise ``run_breakout``'s per-segment "no control arm,
+    all - to exercise the breakout view's per-segment "no control arm,
     skip the segment" handling without losing the other 2 segments'
     already-computed estimates."""
     if "breakout_missing_control_events" not in con.list_tables():
@@ -1367,13 +1423,13 @@ def _analysis_with_missing_control_segment(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
 def test_run_breakout_sparse_segment_failure_aborts_complete_family(con):
     """A treatment-only segment fails its compiled family hypothesis."""
-    analysis = _analysis_with_missing_control_segment(con)
+    experiment, resolver = _analysis_with_missing_control_segment(con)
 
     with pytest.warns(IncrementWarning) as rec:
         with warnings.catch_warnings():
@@ -1384,7 +1440,7 @@ def test_run_breakout_sparse_segment_failure_aborts_complete_family(con):
                 module=r"ibis\.backends\.duckdb",
             )
             with pytest.raises(CapabilityError) as raised:
-                analysis.run_breakout()
+                view_readout(experiment, resolver, _BREAKOUT)
 
     assert "breakout.estimates.slice_no_control_arm" in warning_codes(rec)
 
@@ -1520,10 +1576,10 @@ def _analysis_with_encouragement_country_breakout(con):
             ],
         }
     )
-    return make_analysis(
+    return make_binding(
         con,
         defs,
-        _design=Encouragement(
+        design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
@@ -1536,9 +1592,9 @@ def _analysis_with_encouragement_country_breakout(con):
 
 def test_native_encouragement_breakout_carries_uptake_moments(con):
     """Native breakout reductions must materialize declared uptake moments."""
-    analysis = _analysis_with_encouragement_country_breakout(con)
+    experiment, resolver = _analysis_with_encouragement_country_breakout(con)
 
-    results = analysis.run_breakout()
+    results = view_readout(experiment, resolver, _BREAKOUT)
     assert {row.estimand for row in results} == {"itt", "compliance", "late"}
 
 
@@ -1629,7 +1685,6 @@ def _selected_breakout_sources(tmp_path):
     import ibis
     import pyarrow as pa
 
-    from increment import from_definitions
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
     events = _with_preassignment_region(_events(n_per_arm=8, trigger_rate=1.0))
@@ -1678,7 +1733,6 @@ def _selected_breakout_sources(tmp_path):
 
 
 def _breakout_scope(*identities):
-    from increment.kernel.contracts import Scope
 
     return Scope(view="breakout", grain="total", segment=identities)
 
@@ -1692,13 +1746,7 @@ def _identity_order(cells):
 @pytest.mark.integration
 def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp_path):
     from increment import run
-    from increment.evidence import (
-        BreakoutIdentity,
-        BreakoutSlicesRequest,
-        evidence_provider,
-        request_evidence,
-    )
-    from increment.kernel.contracts import Scope
+    from increment.evidence import BreakoutSlicesRequest, evidence_provider, request_evidence
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
     source = resolver.binding.source
@@ -1753,7 +1801,6 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
 @pytest.mark.integration
 def test_distinct_property_breakout_selection_keeps_declared_family_results(tmp_path):
     from increment import run
-    from increment.evidence import BreakoutIdentity
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
     try:
@@ -1791,7 +1838,7 @@ def test_distinct_property_breakout_selection_keeps_declared_family_results(tmp_
 
 @pytest.mark.integration
 def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
-    from increment.evidence import BreakoutIdentity, EvidenceScope, evidence_provider
+    from increment.evidence import EvidenceScope, evidence_provider
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
     source = resolver.binding.source
@@ -1823,7 +1870,6 @@ def _triggered_region_breakout(tmp_path):
 
     import ibis
 
-    from increment import Analysis
     from increment.artifacts import SourceSnapshotEvidence
     from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
@@ -1851,10 +1897,10 @@ def _triggered_region_breakout(tmp_path):
     definitions_path.write_text(definitions)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=events)
-    native = Analysis.from_definitions(
-        "exp",
+    native = from_definitions(
         definitions_path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
@@ -1874,14 +1920,13 @@ def _comparable(rows):
 def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp_path):
     import warnings
 
-    from increment import Analysis
     from increment.estimators import IncrementWarning
     from increment.evidence import EvidenceScope, EvidenceScopeResult, evidence_provider
     from tests.analysis_factory import held_source
 
-    native, con = _triggered_region_breakout(tmp_path)
-    source = cast(Any, held_source(native))
-    assert native.experiment.breakouts
+    (experiment, resolver), con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(resolver))
+    assert experiment_definition(experiment, resolver).breakouts
     assert "triggered" in source.evidence.populations
     builtin = evidence_provider(source)
     scope_requests: list[EvidenceScope] = []
@@ -1889,7 +1934,7 @@ def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp
     class Provider:
         context = source.context
         evidence = source.evidence
-        artifact_experiment = native.experiment
+        artifact_experiment = experiment_definition(experiment, resolver)
 
         def moments(self, request):
             return builtin.moments(request)
@@ -1928,17 +1973,27 @@ def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp
         def close(self):
             return None
 
-    provider_analysis = None
+    provider_resolver = None
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            expected = native.run_breakout(metrics=["revenue"], population="assigned")
-            provider_analysis = Analysis._from_source(Provider())
-            actual = provider_analysis.run_breakout(metrics=["revenue"], population="triggered")
+            expected = view_readout(
+                experiment,
+                resolver,
+                Scope(view="breakout", grain="total", population="assigned"),
+                metrics=["revenue"],
+            )
+            provider_experiment, provider_resolver = bind_pair(Provider())
+            actual = view_readout(
+                provider_experiment,
+                provider_resolver,
+                Scope(view="breakout", grain="total", population="triggered"),
+                metrics=["revenue"],
+            )
     finally:
-        if provider_analysis is not None:
-            provider_analysis.close()
-        native.close()
+        if provider_resolver is not None:
+            provider_resolver.close()
+        resolver.close()
         con.disconnect()
 
     assert _comparable(actual) == _comparable(expected)
@@ -1964,13 +2019,12 @@ def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp
 def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path):
     import warnings
 
-    from increment import Analysis
     from increment.estimators import IncrementWarning
     from increment.evidence import evidence_provider
     from tests.analysis_factory import held_source
 
-    native, con = _triggered_region_breakout(tmp_path)
-    source = cast(Any, held_source(native))
+    (experiment, resolver), con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(resolver))
     builtin = evidence_provider(source)
 
     class Provider:
@@ -2007,17 +2061,27 @@ def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path)
         def close(self):
             return None
 
-    provider_analysis = None
+    provider_resolver = None
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            expected = native.run_breakout(metrics=["revenue"], population="triggered")
-            provider_analysis = Analysis._from_source(Provider())
-            actual = provider_analysis.run_breakout(metrics=["revenue"], population="triggered")
+            expected = view_readout(
+                experiment,
+                resolver,
+                Scope(view="breakout", grain="total", population="triggered"),
+                metrics=["revenue"],
+            )
+            provider_experiment, provider_resolver = bind_pair(Provider())
+            actual = view_readout(
+                provider_experiment,
+                provider_resolver,
+                Scope(view="breakout", grain="total", population="triggered"),
+                metrics=["revenue"],
+            )
     finally:
-        if provider_analysis is not None:
-            provider_analysis.close()
-        native.close()
+        if provider_resolver is not None:
+            provider_resolver.close()
+        resolver.close()
         con.disconnect()
 
     assert expected
@@ -2030,7 +2094,6 @@ def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
 
     from increment.errors import CodedError
     from increment.evidence import (
-        BreakoutIdentity,
         BreakoutSlicesRequest,
         EvidenceScope,
         EvidenceScopeResult,
@@ -2039,8 +2102,8 @@ def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
     )
     from tests.analysis_factory import held_source
 
-    native, con = _triggered_region_breakout(tmp_path)
-    source = cast(Any, held_source(native))
+    (_, native_resolver), con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(native_resolver))
     builtin = evidence_provider(source)
     scope_entries = 0
     reads = 0
@@ -2108,7 +2171,7 @@ def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
         assert scope_entries == before
         assert reads == 0
     finally:
-        native.close()
+        native_resolver.close()
         con.disconnect()
 
 
@@ -2118,7 +2181,6 @@ def test_custom_breakout_scope_rechecks_scoped_unit_row_capability(tmp_path):
 
     from increment.errors import CodedError
     from increment.evidence import (
-        BreakoutIdentity,
         BreakoutSlicesRequest,
         EvidenceScopeResult,
         UnitRowsRequest,
@@ -2127,8 +2189,8 @@ def test_custom_breakout_scope_rechecks_scoped_unit_row_capability(tmp_path):
     )
     from tests.analysis_factory import held_source
 
-    native, con = _triggered_region_breakout(tmp_path)
-    source = cast(Any, held_source(native))
+    (_, native_resolver), con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(native_resolver))
     builtin = evidence_provider(source)
     reads = 0
 
@@ -2193,7 +2255,7 @@ def test_custom_breakout_scope_rechecks_scoped_unit_row_capability(tmp_path):
         assert raised.value.code == "evidence.unit_rows_unavailable"
         assert reads == 0
     finally:
-        native.close()
+        native_resolver.close()
         con.disconnect()
 
 
