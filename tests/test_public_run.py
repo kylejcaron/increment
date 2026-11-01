@@ -1058,6 +1058,7 @@ def _daily_panel_run(tmp_path, scopes):
             "arm": ["control", "treatment"] * 20,
             "day": [days[index // 20] for index in range(40)],
             "value": [float(index % 7) for index in range(40)],
+            "region": ["north", "north", "south", "south"] * 10,
         }
     )
     experiment, resolver = from_frame(
@@ -1072,6 +1073,7 @@ def _daily_panel_run(tmp_path, scopes):
             allocation_scheme="independent",
         ),
         metrics={"value": "mean"},
+        breakouts=["region"],
         plan=AnalysisPlan(primary="value"),
     )
     experiment = replace(experiment, scopes=scopes)
@@ -1123,7 +1125,7 @@ def test_run_result_returns_each_scope_collection_and_refuses_ambiguous_selectio
             raised.value.context["run_id"] = "another-run"  # ty: ignore[invalid-assignment]
 
 
-def test_run_frame_keeps_each_row_view_through_store_and_pickle(tmp_path):
+def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
     import pickle
 
     import narwhals as nw
@@ -1132,21 +1134,25 @@ def test_run_frame_keeps_each_row_view_through_store_and_pickle(tmp_path):
 
     views = (
         Scope(view="run", grain="total"),
+        Scope(view="breakout", grain="total"),
         Scope(view="daily", grain="daily"),
         Scope(view="daily", grain="daily", values=True),
         Scope(view="asof", grain="asof"),
         Scope(view="asof", grain="asof", values=True),
+        Scope(view="asof", grain="asof", completion_policy=True),
     )
     result, restored, _ = _daily_panel_run(tmp_path, views)
-    daily_lift, asof_lift = result.readout(views[1]), result.readout(views[3])
+    daily_lift, asof_lift = result.readout(views[2]), result.readout(views[4])
     assert {(row.metric, row.ds) for row in daily_lift} == {
         (row.metric, row.ds) for row in asof_lift
     }
 
-    fields = ("metric", "group_id", "ds", "lift", "value")
+    # No view declares a day, segment or population, so each row's key is its view's hash.
+    identity = ("scope_view", "scope_values", "scope_key")
+    fields = ("metric", "group_id", "dimension_value", "ds", "lift", "value")
     expected = sorted(
         (
-            (scope.view, scope.values, *(row.get(name) for name in fields))
+            (scope.view, scope.values, scope.hash(), *(row.get(name) for name in fields))
             for scope in views
             for row in nw.from_native(
                 result.readout(scope).to_frame(backend="polars"), eager_only=True
@@ -1156,12 +1162,10 @@ def test_run_frame_keeps_each_row_view_through_store_and_pickle(tmp_path):
     )
     for projected in (result, restored, pickle.loads(pickle.dumps(result))):
         frame = nw.from_native(projected.to_frame(backend="polars"), eager_only=True)
-        assert frame.columns[:2] == ["scope_view", "scope_values"]
-        assert sorted(frame.select("scope_view", "scope_values", *fields).rows(), key=repr) == (
-            expected
-        )
+        assert frame.columns[:3] == list(identity)
+        assert sorted(frame.select(*identity, *fields).rows(), key=repr) == expected
     selected = nw.from_native(result.to_frame(columns=["lift"]), eager_only=True)
-    assert selected.columns == ["scope_view", "scope_values", "lift", "view_partial"]
+    assert selected.columns == [*identity, "lift", "view_partial"]
 
 
 def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():

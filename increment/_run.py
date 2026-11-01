@@ -158,12 +158,13 @@ class RunResult:
         """Project every result row with its view and qualification columns as one native frame.
 
         Each row leads with ``scope_view`` and ``scope_values``, the ``view`` and
-        ``values`` of the scope that produced it, then keeps its collection's
-        ``to_frame`` columns; qualification columns describe the whole run. A
-        restored result projects its saved cells the same way, and a live
-        confidence-set row appears as ``render`` shows it. Views with different row
-        types share their common columns; ``readout(scope).to_frame()`` returns one
-        view's frame. ``columns`` selects typed columns as there.
+        ``values`` of the scope that produced it, and ``scope_key``, which identifies
+        that view, then keeps its collection's ``to_frame`` columns; qualification
+        columns describe the whole run. A restored result projects its saved cells
+        the same way, and a live confidence-set row appears as ``render`` shows it.
+        Views with different row types share their common columns;
+        ``readout(scope).to_frame()`` returns one view's frame. ``columns`` selects
+        typed columns as there.
         """
         from itertools import groupby
 

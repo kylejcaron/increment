@@ -146,8 +146,10 @@ change without notice.
   envelope and one qualified frame of every row; `readout_table` accepts a
   `RunResult`. Every `result.to_frame()` row leads with `scope_view` (string)
   and `scope_values` (nullable boolean), the `view` and `values` of the scope
-  that produced it, so rows of several views stay distinct in live, stored and
-  pickled results; a `columns` selection keeps both. Write full-row JSON with
+  that produced it, and `scope_key` (string), which identifies the view a row
+  came from: `Scope.hash()` of the row's scope without its day, segment and
+  population. Rows of several views stay distinct in live, stored and pickled
+  results, and a `columns` selection keeps all three. Write full-row JSON with
   `result.readout(scope).model_dump_json()` and portable cells with
   `result.envelope.to_payload()` or `.to_arrow()`; constructing
   `AnalysisEnvelope(result.cells, result.run.metadata)` is no longer needed.

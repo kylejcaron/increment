@@ -655,6 +655,13 @@ def with_readout_evidence(
     return result
 
 
+def _scope_key(scope: Scope) -> str:
+    """Hash a row's scope without its day, segment and population, which are row columns."""
+    return scope.model_copy(
+        update={"through_day": None, "segment": (), "population": "assigned"}
+    ).hash()
+
+
 def result_frame(
     groups: Sequence[tuple[type[BaseModel], Sequence[Any]]],
     metadata: ReadoutMetadata | None,
@@ -669,9 +676,10 @@ def result_frame(
     row supplies the qualification columns. Groups of different models share their
     common columns, and a column one model lacks is null on the other's rows.
     ``scopes`` holds each row's scope in row order: every frame leads with its
-    ``view`` and ``values`` as ``scope_view`` and ``scope_values``, null where a
-    row records no scope. ``columns`` selects typed projection columns, as
-    ``to_frame`` does; the scope columns and ``view_partial`` are always kept.
+    ``view`` and ``values`` as ``scope_view`` and ``scope_values`` and its view's
+    ``scope_key``, null where a row records no scope. ``columns`` selects typed
+    projection columns, as ``to_frame`` does; the scope columns and ``view_partial``
+    are always kept.
     """
     from increment._interpretation import interpret_readout
     from increment.estimation.contrast_results import (
@@ -699,29 +707,45 @@ def result_frame(
         available.update(dict.fromkeys(typed))
         frames.append(nw.from_native(native, eager_only=True))
     frame = frames[0] if len(frames) == 1 else nw.concat(frames, how="diagonal")
+    identity: dict[str, tuple[list[Any], Any, str]] = {
+        "scope_view": (
+            [None if scope is None else scope.view for scope in scopes],
+            nw.String(),
+            "string",
+        ),
+        "scope_values": (
+            [None if scope is None else scope.values for scope in scopes],
+            nw.Boolean(),
+            "boolean",
+        ),
+        "scope_key": (
+            [None if scope is None else _scope_key(scope) for scope in scopes],
+            nw.String(),
+            "string",
+        ),
+    }
     selected = [
-        "scope_view",
-        "scope_values",
+        *identity,
         *(
             frame.columns
             if columns is None
             else (*select_columns(columns, tuple(available)), "view_partial")
         ),
     ]
-    views = [None if scope is None else scope.view for scope in scopes]
-    values = [None if scope is None else scope.values for scope in scopes]
     if backend == "pandas":
         import pandas as pd
 
         native = cast(Any, frame.to_native())
-        native["scope_view"] = pd.array(views, dtype="string")
-        native["scope_values"] = pd.array(values, dtype="boolean")
+        for name, (values, _, pandas_dtype) in identity.items():
+            native[name] = pd.array(values, dtype=pandas_dtype)
         return native.loc[:, selected]
     namespace = nw.get_native_namespace(frame)
     return (
         frame.with_columns(
-            nw.new_series("scope_view", views, dtype=nw.String(), backend=namespace),
-            nw.new_series("scope_values", values, dtype=nw.Boolean(), backend=namespace),
+            *(
+                nw.new_series(name, values, dtype=dtype, backend=namespace)
+                for name, (values, dtype, _) in identity.items()
+            )
         )
         .select(selected)
         .to_native()

@@ -1397,7 +1397,7 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
         frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
         direct = nw.from_native(result.to_frame(backend=backend), eager_only=True)
         assert set(qualifications) <= set(frame.columns)
-        assert direct.columns == ["scope_view", "scope_values", *frame.columns]
+        assert direct.columns == ["scope_view", "scope_values", "scope_key", *frame.columns]
         assert direct.select(qualifications).rows() == frame.select(qualifications).rows()
     rows = estimates_to_readout(results)
     assert all(row["integrity_status"] == "not_checked_missing_declaration" for row in rows)
@@ -1418,7 +1418,9 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
         pickle.loads(pickle.dumps(unselected)).to_frame(), eager_only=True
     )
     assert len(unselected_frame) == 0
-    assert {"scope_view", "scope_values", "metric", "lift"} <= set(unselected_frame.columns)
+    assert {"scope_view", "scope_values", "scope_key", "metric", "lift"} <= set(
+        unselected_frame.columns
+    )
     assert "integrity_status" not in unselected_frame.columns
     assert unselected_frame.schema == live_frame.schema
     assert "Scope and integrity unknown" in readout_table(unselected).gt().as_raw_html()
