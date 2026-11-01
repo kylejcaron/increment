@@ -1,4 +1,4 @@
-# Traced on commit: 6a920db7c9807ac75923c0ba0a4121b148ae6670
+# Traced on commit: c400f1ef1535ed107ca717cd72350be400b2b698
 increment
 increment._analysis_config
 increment._analysis_execution
@@ -33,9 +33,11 @@ increment._plan_compatibility
 increment._policy_alpha
 increment._readout_request
 increment._runnability
+increment._source_admission
 increment._source_identity
 increment._source_operations
 increment._source_types
+increment._source_workflows
 increment._study
 increment._trigger_integrity
 increment._unit_cycle
@@ -124,6 +126,7 @@ increment.query._native_materialization
 increment.query._native_refusals
 increment.query._native_triggered
 increment.query._nonfinite
+increment.query._workflows
 increment.query.artifact_contract
 increment.query.artifact_digest
 increment.query.artifact_extensions
