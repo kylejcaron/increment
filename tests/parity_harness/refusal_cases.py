@@ -151,18 +151,21 @@ def _engine_scenario(code: str) -> Callable[[], object]:  # noqa: C901, PLR0915
         if code == "estimation.engine.ratio.cuped":
             import ibis
 
+            from tests.parity_harness.views import read
             from tests.test_analysis_asof import _analysis_with_daily_ratio_metric
 
             con = ibis.duckdb.connect()
-            analysis = None
+            bound = None
             try:
-                analysis = _analysis_with_daily_ratio_metric(con)
-                return analysis.run_asof_lift(
-                    decision_method=Method(name="cuped", variance_reduction="cuped")
+                bound = _analysis_with_daily_ratio_metric(con)
+                return read(
+                    bound,
+                    "asof_lift",
+                    decision_method=Method(name="cuped", variance_reduction="cuped"),
                 )
             finally:
-                if analysis is not None:
-                    analysis.close()
+                if bound is not None:
+                    bound[1].close()
                 con.disconnect()
         if code in {
             "estimation.engine.cuped_linear_cluster",

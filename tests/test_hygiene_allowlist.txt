@@ -151,8 +151,7 @@ tests/logged_policy/test_estimator.py 2
 tests/oracles/generate/gen_dml_oracle.py 1
 tests/oracles/generate/gen_winsor_positive_roots.py 1
 tests/oracles/test_winsor_positive_roots_oracle.py 1
-tests/parity_harness/cases.py 2
-tests/parity_harness/runner.py 1
+tests/parity_harness/cases.py 4
 tests/power/_sequential.py 11
 tests/power/test_binomial_planning.py 27
 tests/power/test_calibration.py 1
