@@ -110,6 +110,15 @@ depends_on = ["increment.errors"]
 
 
 [[modules]]
+path = "increment._source_admission"
+layer = "core"
+depends_on = [
+  "increment._evidence_refusals",
+  "increment._evidence_types",
+  "increment.sources",
+]
+
+[[modules]]
 path = "increment._health"
 layer = "core"
 depends_on = [
@@ -513,7 +522,7 @@ depends_on = [
   "increment._source_operations",
   "increment._source_types",
   "increment.errors",
-  "increment.readouts._whole_window",
+  "increment._source_admission",
 ]
 
 [[modules]]
@@ -691,7 +700,7 @@ layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._day_axis", "increment._evidence_types",
   "increment._readout_request",
-  "increment.breakout.estimates", "increment.errors", "increment.readouts", "increment.sources",
+  "increment.breakout.estimates", "increment.errors", "increment.readouts",
   "increment._evidence_refusals",
 ]
 [[modules]]
@@ -715,7 +724,7 @@ depends_on = [
 path = "increment._sitewide"
 layer = "core"
 depends_on = [
-  "increment._source_operations", "increment._source_types", "increment.readouts._whole_window", "increment.errors",
+  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment.readouts._whole_window", "increment.errors",
   "increment._evidence_refusals",
   "increment._evidence_types", "increment.evidence",
   "increment.estimation", "increment.query", "increment.semantics",
@@ -748,10 +757,10 @@ depends_on = [
   "increment._binding",
   "increment._evidence_refusals",
   "increment._source_operations",
+  "increment._source_admission",
   "increment._source_types",
   "increment.decision",
   "increment.errors",
-  "increment.readouts._whole_window",
   "increment.breakout.estimates",
   "increment.query",
 ]
@@ -771,7 +780,7 @@ depends_on = [
   "increment._evidence_types",
   "increment.evidence",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
-  "increment._source_operations", "increment._source_types", "increment._source_workflows", "increment.readouts._whole_window",
+  "increment._source_operations", "increment._source_types", "increment._source_admission", "increment._source_workflows", "increment.readouts._whole_window",
   "increment.readouts._line2",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
   "increment._evidence_refusals",

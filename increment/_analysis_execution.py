@@ -55,6 +55,7 @@ from increment._evidence_types import (
     SourceContext,
 )
 from increment._literals import Backend, Correction, ValueScale
+from increment._source_admission import _require_analysis_operation
 from increment._source_operations import (
     AllocationHistoryOperation,
     DashboardBreakoutReads,
@@ -102,7 +103,6 @@ from increment.readouts._whole_window import (
     WholeWindowFamilyRequest,
     WholeWindowReadouts,
     WholeWindowRequest,
-    _require_analysis_operation,
     reject_role_overrides_under_contrast,
     validate_contrast_request,
 )

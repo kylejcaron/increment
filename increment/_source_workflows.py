@@ -15,12 +15,12 @@ if TYPE_CHECKING:
     from increment.semantics.models import Experiment, Metric
 
 from increment._binding import SourceBinding, binding_for
+from increment._source_admission import _require_analysis_operation
 from increment._source_operations import ExportMomentsOperation, MaterializeOperation
 from increment._source_types import declared_evidence
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, refuse
 from increment.errors import refuse as _refuse
-from increment.readouts._whole_window import _require_analysis_operation
 
 _EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
     "facade.analysis.exploratory_metrics_source_limited",

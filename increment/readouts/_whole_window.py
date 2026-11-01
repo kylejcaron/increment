@@ -14,11 +14,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
-from increment._evidence_types import CountsRequest, SourceContext
+from increment._evidence_types import CountsRequest
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
@@ -36,7 +36,6 @@ from increment.readouts._requests import (
     _design_compliance_only,
     _sequential_compliance_requested,
 )
-from increment.sources import require_operation
 
 if TYPE_CHECKING:
     from increment._literals import ValueScale
@@ -49,7 +48,7 @@ if TYPE_CHECKING:
     from increment.readouts._run_acquisition import PreparedRunAcquisition
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Experiment, Metric
-    from increment.sources import SourceOperation, _BuiltinMomentSource
+    from increment.sources import _BuiltinMomentSource
 
 RouteName = DayAxisRoute
 
@@ -79,34 +78,6 @@ _UNKNOWN_METRIC = RefusalSpec(
     InvalidRequestError,
     template="metric {metric!r} is not declared on this experiment. Declared metrics: {declared!r}",
 )
-
-
-def _require_analysis_operation[T](
-    source: _BuiltinMomentSource,
-    operation: SourceOperation,
-    protocol: type[T] | None = None,
-    *,
-    message: str,
-) -> T:
-    declaration = cast(Any, source).evidence
-    if (
-        operation == "allocation_history"
-        and "allocation_history" not in declaration.operations
-        and declaration.assignment_relation == "reduced"
-    ):
-        from increment._evidence_refusals import refuse_assignment_identity
-
-        refuse_assignment_identity(source, operation=operation)
-    offered = tuple(sorted(declaration.operations))
-    if not isinstance(getattr(source, "context", None), SourceContext):
-        from increment._evidence_refusals import refuse_operation
-
-        refuse_operation(source, operation, offered, route=message)
-    if operation not in offered:
-        from increment._evidence_refusals import refuse_operation
-
-        refuse_operation(source, operation, offered, route=message)
-    return require_operation(source, operation, protocol)
 
 
 def reject_role_overrides_under_contrast(

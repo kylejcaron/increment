@@ -28,8 +28,8 @@ def _build_panel_for_metric_binding(
     *,
     population: Literal["assigned", "triggered"] = "assigned",
 ) -> Any:
+    from increment._source_admission import _require_analysis_operation
     from increment._source_operations import NativePanelSqlOperation
-    from increment.readouts._whole_window import _require_analysis_operation
 
     src = _require_analysis_operation(
         binding.source,
@@ -44,8 +44,8 @@ def _build_panel_for_metric_binding(
 
 
 def _panel_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) -> dict[str, str]:
+    from increment._source_admission import _require_analysis_operation
     from increment._source_operations import NativePanelSqlOperation
-    from increment.readouts._whole_window import _require_analysis_operation
 
     src = _require_analysis_operation(
         binding.source,
@@ -61,9 +61,9 @@ def _panel_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) ->
 
 
 def _summary_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) -> dict[str, str]:
+    from increment._source_admission import _require_analysis_operation
     from increment._source_operations import SummarySqlOperation
     from increment._source_types import declared_evidence
-    from increment.readouts._whole_window import _require_analysis_operation
 
     binding = _require_arm_binding(binding, "summary_sql")
     src = binding.source
