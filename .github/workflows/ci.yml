@@ -45,10 +45,10 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      # Pull requests run Python 3.14 in two shards, like 3.12: one shard holds the
-      # whole fast tier (~15 min) and hits this job's timeout during upload.
+      # Three duration-weighted shards per Python version keep each job well under this
+      # timeout on slower runners. ci-ok's coverage combine passes the same `--splits`.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":2},{"python-version":"3.14","group":2,"splits":2}]' || '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.13","group":1,"splits":2},{"python-version":"3.13","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":2},{"python-version":"3.14","group":2,"splits":2}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.12","group":1,"splits":3},{"python-version":"3.12","group":2,"splits":3},{"python-version":"3.12","group":3,"splits":3},{"python-version":"3.14","group":1,"splits":3},{"python-version":"3.14","group":2,"splits":3},{"python-version":"3.14","group":3,"splits":3}]' || '[{"python-version":"3.12","group":1,"splits":3},{"python-version":"3.12","group":2,"splits":3},{"python-version":"3.12","group":3,"splits":3},{"python-version":"3.13","group":1,"splits":3},{"python-version":"3.13","group":2,"splits":3},{"python-version":"3.13","group":3,"splits":3},{"python-version":"3.14","group":1,"splits":3},{"python-version":"3.14","group":2,"splits":3},{"python-version":"3.14","group":3,"splits":3}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -155,7 +155,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.sha }}
           EVENT_NAME: ${{ github.event_name }}
-          EXPECTED_SHARDS: ${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.14-1,3.14-2' || '3.12-1,3.12-2,3.13-1,3.13-2,3.14-1,3.14-2' }}
+          EXPECTED_SHARDS: ${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.12-3,3.14-1,3.14-2,3.14-3' || '3.12-1,3.12-2,3.12-3,3.13-1,3.13-2,3.13-3,3.14-1,3.14-2,3.14-3' }}
         run: |
           if [ -z "$BASE" ]; then
             printf 'incomplete evidence: no base\n' > selection-misses.txt
@@ -454,6 +454,7 @@ jobs:
             --shards .coverage-shards \
             --sha "$SHA" \
             --attempt "$ATTEMPT" \
+            --splits 3 \
             --output coverage/coverage.json \
             --summary-file coverage-summary.md \
             --github-output "$GITHUB_OUTPUT"

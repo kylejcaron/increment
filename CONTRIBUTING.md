@@ -96,12 +96,12 @@ branch-protection activation is an owner gate.
 
 The Python 3.12 fast shards upload optional executed-code coverage artifacts.
 After the required jobs, `ci-ok` combines matching shard artifacts and
-publishes a combined report when both are complete. This advisory step does not
-affect the required test result; missing, failed, or mismatched shard data means
-no combined report is published. Coverage counts `increment/` source statements
-executed during the fast tier (including pytest-cov's measured test workers); it
-does not measure the slow or scientific tiers, establish whole-suite coverage,
-or rate test quality.
+publishes a combined report when every shard is complete. This advisory step
+does not affect the required test result; missing, failed, or mismatched shard
+data means no combined report is published. Coverage counts `increment/` source
+statements executed during the fast tier (including pytest-cov's measured test
+workers); it does not measure the slow or scientific tiers, establish
+whole-suite coverage, or rate test quality.
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
@@ -501,17 +501,38 @@ Main pushes never use this filter.
 The PR PostgreSQL gate runs one duration-balanced shard. The reusable
 warehouse workflow defaults to three shards for weekly and manual runs.
 
-Each selected fast Python-version cell has two duration-balanced `pytest-split`
-shards, with `xdist` workers inside each shard, except that pull requests run
-Python 3.14 as a single shard. `ci-ok` requires all three PR shards or all six
-main-push shards (Python 3.12–3.14). The build job also runs the documentation
-snippet and strict-docs checks when changed paths require them. The
-machine-generated `.github/fast-test-durations.json` weights come from the
-complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
-Refresh them with the complete fast suite, preserving worker group suffixes:
+Each selected fast Python-version cell has three duration-balanced
+`pytest-split` shards, with `xdist` workers inside each shard. `ci-ok` requires
+all six PR shards or all nine main-push shards (Python 3.12–3.14). The build
+job also runs the documentation snippet and strict-docs checks when changed
+paths require them. The machine-generated `.github/fast-test-durations.json`
+weights come from a complete, passing local fast run on 2026-10-31 (Python 3.13,
+six `xdist` workers); only their proportions matter, and absent weights do not
+omit tests. Refresh them from a complete passing fast run; `--clean-durations`
+drops tests that no longer exist:
 
 ```bash
-make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
+make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/fast-test-durations.json"
+```
+
+The sharded run weighs a test in an `xdist_group` under `<node ID>@<group>`,
+while the single-process selection prediction looks up its bare node ID, so
+give each grouped weight both keys and round to milliseconds:
+
+```bash
+uv run --no-sync python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path(".github/fast-test-durations.json")
+durations = json.loads(path.read_text())
+for nodeid, seconds in list(durations.items()):
+    bare, _, group = nodeid.rpartition("@")
+    if bare and "]" not in group and "::" not in group:
+        durations[bare] = seconds
+rounded = {nodeid: round(seconds, 3) for nodeid, seconds in durations.items()}
+path.write_text(json.dumps(rounded, indent=4, sort_keys=True) + "\n")
+PY
 ```
 
 The generated `tests/selection_map.json` is an advisory fast-tier map from
