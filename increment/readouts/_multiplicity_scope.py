@@ -6,6 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
+from increment._evidence_types import ArtifactProvenance
 from increment.decision import MultiplicityFamily
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.multiplicity import multiplicity_status, row_multiplicity_status
@@ -388,6 +389,7 @@ def scoped_collection(  # noqa: PLR0913
     sequential_snapshot: Any = None,
     source_components: Sequence[Mapping[str, Any]] = (),
     identity_rows: Sequence[Any] | None = None,
+    artifact_provenance: ArtifactProvenance | None = None,
 ):
     """Return rows with a source snapshot and source-local readout metadata.
 
@@ -396,6 +398,7 @@ def scoped_collection(  # noqa: PLR0913
     they enter the source half of the snapshot identity, as the headline
     route's evidence components do. ``metrics`` are the declared metrics the
     rows were read for; every non-compliance row must name one of them.
+    ``artifact_provenance`` names the artifact the rows were read from.
     """
     from hashlib import sha256
 
@@ -528,6 +531,7 @@ def scoped_collection(  # noqa: PLR0913
         by_source={snapshot_id: source_scope},
     )
     config_by_metric = {config.metric.name: config for config in configs}
+    provenance = artifact_provenance or ArtifactProvenance()
     records: list[CellRecord] = []
     for row in stamped:
         cell = CellKey.from_row(row)
@@ -583,6 +587,8 @@ def scoped_collection(  # noqa: PLR0913
         cells=tuple(
             sorted(records, key=lambda record: cell_order(cast("CellRecord", record).cell))
         ),
+        artifact_manifest_sha256=provenance.manifest_sha256,
+        artifact_relation_digests=provenance.relation_digests,
     )
     return collection_type(stamped, metadata=metadata, sequential_snapshot=sequential_snapshot)
 

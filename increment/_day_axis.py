@@ -74,6 +74,7 @@ from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     MOMENTS_ROUTE,
     NATIVE_ROUTE,
+    artifact_provenance,
     assigned_breakout_values,
     day_axis_route,
     design_allocation,
@@ -1383,20 +1384,16 @@ def _scope_day_axis_rows(
         dimension=req.dimension,
         family_populations=family_populations,
         identity_rows=identity_rows,
+        artifact_provenance=artifact_provenance(source),
     )
     if result.metadata is not None:
         from increment._immutable import _FrozenMapping
         from increment.estimation.readout_types import ReadoutCapture
-        from increment.readouts._evidence import artifact_provenance
-
-        provenance = artifact_provenance(source)
 
         result._metadata = result.metadata.model_copy(
             update={
                 "coherence": coherence,
                 "effective_modes": _FrozenMapping(effective_modes),
-                "artifact_manifest_sha256": provenance.manifest_sha256,
-                "artifact_relation_digests": provenance.relation_digests,
                 "captures": ()
                 if execution_context is None or not execution_context.shared_capture
                 else (

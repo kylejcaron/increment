@@ -1582,16 +1582,19 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
     )
     both = {("event_log", "country"), ("event_log_secondary", "country")}
     with resolver:
-        for scope in scopes:
-            result = run(
-                experiment.with_views(scope),
-                resolver,
-                analysis_options={"metrics": ["purchase_rate"]},
+        result = run(
+            experiment.with_views(*scopes),
+            resolver,
+            analysis_options={"metrics": ["purchase_rate"]},
+        )
+        by_view: dict[tuple[str, bool], set[tuple[str | None, str | None]]] = {}
+        for cell in result.cells:
+            scope = cell.identity.scope
+            by_view.setdefault((scope.view, scope.values), set()).add(
+                (cell.identity.key.source, cell.identity.key.dimension)
             )
-            identities = {
-                (cell.identity.key.source, cell.identity.key.dimension) for cell in result.cells
-            }
-            assert identities == both, scope
+        assert by_view == {(scope.view, scope.values): both for scope in scopes}
+        assert len(result.run.metadata.captures) == 1
         secondary = (BreakoutIdentity("country", "event_log_secondary"),)
         qualified = run(
             experiment.with_views(Scope(view="breakout", grain="total", segment=secondary)),
