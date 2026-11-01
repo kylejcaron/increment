@@ -25,7 +25,13 @@ from increment._day_axis import (
 from increment._evidence_dispatch import ContrastEvidenceOperation, ContrastReadoutRequest
 from increment._evidence_types import SequentialCaptureRequest
 from increment._exploratory import exploratory_sibling, select_exploratory
-from increment._runnability import _SCOPE_OPERATIONS, operation_options, scope_operation
+from increment._runnability import (
+    _SCOPE_OPERATIONS,
+    operation_options,
+    records_breakout_sources,
+    require_breakout_sources,
+    scope_operation,
+)
 from increment._source_admission import (
     _arm_experiment,
     _require_analysis_operation,
@@ -579,10 +585,11 @@ def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scop
     """Narrow a binding to the breakout identities its scope selects, before any read.
 
     Identities come from the same declaration-based expansion ``Experiment.compile()``
-    reports. A recorded definition matches by ``(property, source)``; a source without
-    recorded definitions matches by property. An unknown property refuses with the
-    source's declared dimensions; an undeclared source of a known property refuses as
-    an undeclared breakout.
+    reports. A recorded definition matches by ``(property, source)``. A source without
+    recorded definitions matches an unqualified selection by property and refuses a
+    source qualifier, which none of its breakouts names. An unknown property refuses
+    with the source's declared dimensions; an undeclared source of a known property
+    refuses as an undeclared breakout.
     """
     if scope.view not in {"breakout", "daily", "asof"} or (
         scope.view != "breakout" and not scope.segment
@@ -593,10 +600,8 @@ def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scop
     from increment.semantics.models import Breakout
 
     identities = declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
-    recorded = experiment.analysis_context.get("experiment")
-    by_source = isinstance(recorded, Mapping) and isinstance(
-        recorded.get("breakouts"), (tuple, list)
-    )
+    require_breakout_sources(experiment, scope)
+    by_source = records_breakout_sources(experiment)
     declared = binding.declared_breakouts
     if not {identity.property for identity in identities} <= {item.property for item in declared}:
         require_evidence(binding.source, by=tuple(identity.property for identity in identities))

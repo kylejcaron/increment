@@ -255,13 +255,16 @@ def test_multibreakout_frame_runs_every_declared_selection_and_refuses_unknown_b
         expected = by_key[cell.identity.key]
         assert (cell.summary, cell.family) == (expected.summary, expected.family)
 
-    unknown = selected(BreakoutIdentity("browser", None))
-    (preflight,) = runnable(unknown, "value")["randomized.unadjusted"].static_refusals
-    with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
-        run(unknown, resolver)
-    assert reads == []
-    assert (raised.value.code, raised.value.context) == (preflight.code, preflight.context)
-    assert raised.value.code == "evidence.breakout_unavailable"
+    for unknown in (
+        selected(BreakoutIdentity("browser", None)),
+        selected(BreakoutIdentity("country", "missing_source")),
+    ):
+        (preflight,) = runnable(unknown, "value")["randomized.unadjusted"].static_refusals
+        with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
+            run(unknown, resolver)
+        assert reads == []
+        assert (raised.value.code, raised.value.context) == (preflight.code, preflight.context)
+        assert raised.value.code == "evidence.breakout_unavailable"
 
 
 def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_supply():

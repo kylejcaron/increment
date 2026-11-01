@@ -75,6 +75,41 @@ def scope_operation(experiment: Any, scope: Any) -> str:
     return experiment.operations.get(scope.hash(), _SCOPE_OPERATIONS[scope.view][0])
 
 
+def records_breakout_sources(experiment: Any) -> bool:
+    """Whether the experiment's recorded definitions name each breakout's fact source."""
+    recorded = experiment.analysis_context.get("experiment")
+    return isinstance(recorded, Mapping) and isinstance(recorded.get("breakouts"), (tuple, list))
+
+
+def require_breakout_sources(experiment: Any, scope: Any) -> None:
+    """Refuse a fact-source qualifier on breakouts declared by source capability alone.
+
+    A capability-declared breakout names no fact source, so no qualifier matches it.
+    """
+    if records_breakout_sources(experiment):
+        return
+    qualified = tuple(identity for identity in scope.segment if identity.source is not None)
+    if not qualified:
+        return
+    from increment._evidence_refusals import BREAKOUT_UNAVAILABLE
+
+    refuse(
+        BREAKOUT_UNAVAILABLE,
+        constructor=experiment.analysis_context.get("source_name")
+        or ", ".join(reference.name for reference in experiment.source_refs),
+        requested=tuple((identity.source, identity.property) for identity in qualified),
+        offered=tuple(
+            dict.fromkeys(
+                (None, name)
+                for reference in experiment.source_refs
+                if reference.capabilities is not None
+                for name in reference.capabilities.breakouts
+            )
+        ),
+        route="select the breakout by property alone; this source names no fact sources",
+    )
+
+
 def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
     """Validate supported execution coordinates without acquiring evidence."""
     from increment.kernel.contracts import declared_breakouts
@@ -115,6 +150,7 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
             return (refusal,)
     try:
         declared_breakouts(experiment.source_refs, scope, experiment.analysis_context)
+        require_breakout_sources(experiment, scope)
     except CodedError as refusal:
         return (refusal,)
     if scope.view == "switchback" and experiment.analysis_context.get("family") != "contrast":
