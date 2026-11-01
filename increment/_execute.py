@@ -672,10 +672,12 @@ def execute_views(
     view, or any view with a sequential capture, shares one owned capture; a
     supplied context is borrowed only after every selected request validates
     against it. A sequential capture is taken inside that context before any
-    view reads. The run's ``coherence`` applies to every view: a view that takes
-    none of its own reads under a shared capture opened with it.
+    view reads. The run's ``coherence``, saved in the experiment's request options or
+    passed at call time (which wins), applies to every view: a view that takes none
+    of its own reads under a shared capture opened with it.
     """
-    coherence = cast(Literal["captured", "live"], options.get("coherence", "captured"))
+    requested = {**experiment.request_options, **options}
+    coherence = cast(Literal["captured", "live"], requested.get("coherence", "captured"))
     planned = [
         (
             scope,
@@ -702,7 +704,7 @@ def execute_views(
         operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         for _, operation, kwargs, scope_binding in planned
     ]
-    if execution_context is not None and "coherence" in options:
+    if execution_context is not None and "coherence" in requested:
         execution_context.validate_requested_coherence(coherence)
     from increment._evidence_scopes import capture_requirements
 

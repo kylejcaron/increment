@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import warnings
 from contextlib import contextmanager
 from typing import Any
 
 import pytest
 
+from increment.errors import IncrementWarning
 from tests.source_conformance import definitions_source
 
 _MUTATIONS = {
@@ -136,3 +138,30 @@ def test_run_owner_coherence_mutations_between_primary_and_breakout(tmp_path, mu
     finally:
         baseline.close()
         resolver.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("selection", ("primary_and_breakout", "breakout_alone"))
+def test_saved_live_coherence_reads_every_selected_view_live(tmp_path, selection):
+    from dataclasses import replace
+
+    from increment import Scope, run
+
+    primary = Scope(view="run", grain="total")
+    breakout = Scope(view="breakout", grain="total")
+    views = (primary, breakout) if selection == "primary_and_breakout" else (breakout,)
+    (experiment, resolver), (_, con) = definitions_source(
+        tmp_path, return_binding=True, return_connection=True
+    )
+    _add_replication_units(con)
+    saved = replace(experiment.with_views(*views), request_options={"coherence": "live"})
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            metadata = run(saved, resolver).readout(breakout).metadata
+    finally:
+        resolver.close()
+
+    assert metadata is not None
+    assert metadata.coherence == "live"
+    assert set(metadata.effective_modes.values()) == {"live"}
