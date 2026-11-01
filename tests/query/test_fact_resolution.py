@@ -6,7 +6,8 @@ import datetime as dt
 import ibis
 import pytest
 
-from increment import Analysis
+from increment import from_moments
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import DefinitionError, InvalidRequestError
 from increment.query.fact_resolution import (
     _find_fact_source,
@@ -17,6 +18,7 @@ from increment.query.session import WarehouseSession
 from increment.semantics.design import Randomized
 from increment.semantics.models import Breakout, Definitions, Experiment, Fact, FactSource, Property
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 
 pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
@@ -48,7 +50,7 @@ def test_find_fact_source_reports_the_missing_name_and_every_declared_fact():
 )
 def test_require_design_rejects_zero_or_two_of_control_and_design(control, design):
     with pytest.raises(InvalidRequestError) as exc_info:
-        Analysis.from_moments((), metrics=(), control=control, design=design)
+        from_moments((), metrics=(), control=control, design=design)
     assert exc_info.value.code == "query.fact_resolution.pass_exactly_one"
     assert exc_info.value.context["constructor"] == "Analysis.from_moments"
 
@@ -322,7 +324,9 @@ def test_missing_fact_source_event_refuses_before_public_data_query(
             }
         )
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
-    connection, analysis, _context, store = _native(definitions=definitions)
+    connection, (analysis_experiment, analysis_resolver), _context, store = _native(
+        definitions=definitions
+    )
     if missing_source == "exposure":
         connection.raw_sql(
             """
@@ -341,11 +345,11 @@ def test_missing_fact_source_event_refuses_before_public_data_query(
     try:
         with pytest.raises(DefinitionError) as raised:
             if operation == "run":
-                analysis.run()
+                view_readout(analysis_experiment, analysis_resolver)
             else:
-                analysis.publish_unit_day_artifact(store)
+                publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         assert raised.value.code == "definition.fact_source.missing_columns"
         assert raised.value.context["missing"] == ("event",)
         assert not data_queries
     finally:
-        analysis.close()
+        analysis_resolver.close()

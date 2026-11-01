@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from increment import Analysis
+from increment import Analysis, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.estimators import CapabilityError
-from tests.analysis_factory import lift_rows
+from tests.analysis_factory import lift_rows, view_readout
 from tests.test_unit_day_artifact_facade import _native
 
 
@@ -32,18 +33,30 @@ def test_frame_sql_adapter_remains_distinct_from_warehouse_adoption() -> None:
 @pytest.mark.slow
 @pytest.mark.integration
 def test_artifact_open_is_the_adopted_panel_replacement() -> None:
-    _connection, native, context, store = _native()
-    reference = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    _connection, (native_experiment, native_resolver), context, store = _native()
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    adopted_experiment, adopted_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
     from increment.estimation.engine import Method
 
     unadjusted = Method(name="unadjusted")
     try:
         native_result = lift_rows(
-            native.run(metrics=["purchase_rate"], decision_method=unadjusted)
+            view_readout(
+                native_experiment,
+                native_resolver,
+                metrics=["purchase_rate"],
+                decision_method=unadjusted,
+            )
         )[0]
         adopted_result = lift_rows(
-            adopted.run(metrics=["purchase_rate"], decision_method=unadjusted)
+            view_readout(
+                adopted_experiment,
+                adopted_resolver,
+                metrics=["purchase_rate"],
+                decision_method=unadjusted,
+            )
         )[0]
         assert adopted_result.metric == native_result.metric == "purchase_rate"
         assert adopted_result.group_id == native_result.group_id == "treatment"
@@ -53,5 +66,5 @@ def test_artifact_open_is_the_adopted_panel_replacement() -> None:
         assert adopted_result.require_lift().lb == pytest.approx(native_result.require_lift().lb)
         assert adopted_result.require_lift().ub == pytest.approx(native_result.require_lift().ub)
     finally:
-        adopted.close()
-        native.close()
+        adopted_resolver.close()
+        native_resolver.close()
