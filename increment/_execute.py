@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset, overlay_configs, select_metrics
-from increment._binding import _execution_unavailable, _run_identity_hashes
+from increment._binding import _run_identity_hashes
 from increment._breakout_readouts import plan_breakout_request, run_breakout
 from increment._day_axis import (
     _TRIGGER_UNSUPPORTED,
@@ -656,8 +656,11 @@ def execute_views(
     Views run in declaration order. Without a supplied context, more than one
     view shares one owned capture; a supplied context is borrowed only after
     every selected request validates against it. A sequential capture is taken
-    inside that context before any view reads.
+    inside that context before any view reads. The run's ``coherence`` applies to
+    every view: a view that takes none of its own reads under a shared capture
+    opened with it.
     """
+    coherence = cast(Literal["captured", "live"], options.get("coherence", "captured"))
     planned = [
         (
             scope,
@@ -667,7 +670,7 @@ def execute_views(
         )
         for scope in scopes
     ]
-    if len(planned) == 1:
+    if len(planned) == 1 and (coherence == "captured" or "coherence" in planned[0][2]):
         scope, operation, kwargs, scope_binding = planned[0]
         if capture is not None:
             # Validate the view's request before the capture reads and retains source state.
@@ -685,10 +688,8 @@ def execute_views(
         operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         for _, operation, kwargs, scope_binding in planned
     ]
-    coherences = {kwargs.get("coherence", "captured") for _, _, kwargs, _ in planned}
-    if len(coherences) != 1:
-        _execution_unavailable(experiment, "coherence")
-    coherence = cast(Literal["captured", "live"], coherences.pop())
+    if execution_context is not None and "coherence" in options:
+        execution_context.validate_requested_coherence(coherence)
     from increment._evidence_scopes import capture_requirements
 
     scope_request = capture_requirements(binding.source, requests)

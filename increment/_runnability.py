@@ -172,7 +172,11 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
 def operation_options(
     experiment: Any, scope: Any, overrides: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Normalize and validate saved or immediate readout arguments."""
+    """Normalize and validate saved or immediate readout arguments.
+
+    ``coherence`` belongs to the run's shared capture: a view that takes no
+    coherence of its own reads under the run's, so it is not a view argument.
+    """
     values = {**typed_request_options(experiment.request_options), **(overrides or {})}
     if values.get("metrics") is None:
         values["metrics"] = list(scope.metrics) or list(experiment.metrics)
@@ -193,6 +197,8 @@ def operation_options(
     operation = scope_operation(experiment, scope)
     declaration = experiment.analysis_context.get("operation_parameters", {}).get(operation)
     if declaration is not None:
+        if not declaration["variadic"] and "coherence" not in declaration["accepted"]:
+            values.pop("coherence", None)
         unexpected = (
             set(values) - set(declaration["accepted"]) if not declaration["variadic"] else set()
         )
