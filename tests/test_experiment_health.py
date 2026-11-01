@@ -11,7 +11,7 @@ from increment import Analysis, from_definitions, from_frame
 from increment.results import ExperimentHealth, HealthCheck, SRMResult
 from increment.semantics.design import Randomized
 from increment.workflows import health_check, srm
-from tests.analysis_factory import facade_binding
+from tests.analysis_factory import facade_binding, view_readout
 
 
 def _summary_experiment(**options: Any) -> Any:
@@ -126,11 +126,11 @@ def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
         }
         expected_rates[arm] = len(triggered_units) / len(assigned_units)
 
-    analysis = _analysis(tmp_path, events)
+    experiment, resolver = _analysis(tmp_path, events)
     try:
-        report = health_check(*facade_binding(analysis), expected_allocation={"C": 0.5, "T": 0.5})
+        report = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
     finally:
-        analysis.close()
+        resolver.close()
     rates = next(check for check in report.checks if check.check == "trigger_rates")
     assumptions = next(check for check in report.checks if check.check == "trigger_assumptions")
     assert rates.availability == "available"
@@ -152,11 +152,11 @@ def test_native_health_check_preserves_trigger_evidence(tmp_path):
         / sum(row["group_id"] == arm and row["event"] == "enrolled" for row in event_rows)
         for arm in ("C", "T")
     }
-    analysis = _analysis(tmp_path, events)
+    experiment, resolver = _analysis(tmp_path, events)
     try:
-        report = health_check(*facade_binding(analysis), expected_allocation={"C": 0.5, "T": 0.5})
+        report = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
     finally:
-        analysis.close()
+        resolver.close()
 
     rates = next(check for check in report.checks if check.check == "trigger_rates")
     maturity = [check for check in report.checks if check.check == "trigger_maturity"]
@@ -197,38 +197,20 @@ def test_health_missing_certificates_are_unknown(tmp_path) -> None:
 def test_pinned_health_report_repeats_with_identical_source_evidence(tmp_path) -> None:
     import ibis
 
-    from increment._source_operations import DashboardSnapshotPayload
     from tests.test_analysis_trigger import _events, _write_defs
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
-    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path), con)
-    reports = []
-
-    def inspect_pinned(pinned: Analysis) -> DashboardSnapshotPayload:
-        reports.extend(
-            (
-                pinned.health_check(expected_allocation={"C": 0.5, "T": 0.5}),
-                pinned.health_check(expected_allocation={"C": 0.5, "T": 0.5}),
-            )
-        )
-        return DashboardSnapshotPayload(
-            allocation=None,
-            allocation_refusal=None,
-            allocation_history=None,
-            allocation_history_refusal=None,
-            estimates=(),
-            group_data=(),
-            explore=(),
-        )
-
+    experiment, resolver = from_definitions(_write_defs(tmp_path), con, experiment_name="exp")
     try:
-        analysis.dashboard_snapshot(inspect_pinned, metrics=analysis.metrics)
+        reports = [
+            health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
+            for _ in range(2)
+        ]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
-    assert len(reports) == 2
     assert reports[0] == reports[1]
     assert reports[0].source_snapshot_id == reports[1].source_snapshot_id
 
@@ -243,11 +225,11 @@ def test_health_preserves_assigned_failure_beside_triggered_balance(tmp_path) ->
     }
     remove = set(sorted(f"C{i}" for i in range(400) if f"C{i}" not in triggered_c)[:170])
     uneven = pa.Table.from_pylist([row for row in rows if row["user_id"] not in remove])
-    analysis = _analysis(tmp_path, uneven, allocation_scheme="independent")
+    experiment, resolver = _analysis(tmp_path, uneven, allocation_scheme="independent")
     try:
-        report = health_check(*facade_binding(analysis), expected_allocation={"C": 0.5, "T": 0.5})
+        report = health_check(experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5})
     finally:
-        analysis.close()
+        resolver.close()
     assigned = next(check for check in report.checks if check.check == "assigned_allocation")
     triggered = next(check for check in report.checks if check.check == "triggered_balance")
     assert (assigned.analysis_population, assigned.context["grain"]) == ("assigned", "unit")
@@ -264,19 +246,19 @@ def test_health_preserves_assigned_failure_beside_triggered_balance(tmp_path) ->
 def test_health_unsupported_assignment_law_is_not_a_unit_arm_pass(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         tmp_path, _events(n_per_arm=20, trigger_rate=0.5), allocation_scheme="blocked"
     )
     try:
         assigned = next(
             check
             for check in health_check(
-                *facade_binding(analysis), expected_allocation={"C": 0.5, "T": 0.5}
+                experiment, resolver, expected_allocation={"C": 0.5, "T": 0.5}
             ).checks
             if check.check == "assigned_allocation"
         )
     finally:
-        analysis.close()
+        resolver.close()
     assert assigned.availability == "unavailable"
     assert assigned.code == "integrity.allocation_scheme_unsupported"
     assert assigned.conclusion is None
@@ -830,7 +812,7 @@ def test_run_leaves_undeclared_srm_visible_in_health_check() -> None:
 
     from tests.warning_codes import warning_codes
 
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.table(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -838,6 +820,7 @@ def test_run_leaves_undeclared_srm_visible_in_health_check() -> None:
                 "value": [1.0, 2.0, 1.0, 2.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="C",
@@ -845,10 +828,10 @@ def test_run_leaves_undeclared_srm_visible_in_health_check() -> None:
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run()
+        view_readout(*analysis)
     assert "integrity.srm_not_checked" not in warning_codes(caught)
 
-    experiment, resolver = facade_binding(analysis)
+    experiment, resolver = analysis
     assigned = next(
         check
         for check in health_check(experiment, resolver).checks
@@ -992,13 +975,13 @@ def test_health_extreme_valid_srm_statistic_round_trips_through_json() -> None:
 def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         tmp_path, _events(n_per_arm=20, trigger_rate=0.0), allocation_scheme="independent"
     )
     try:
-        report = health_check(*facade_binding(analysis))
+        report = health_check(experiment, resolver)
     finally:
-        analysis.close()
+        resolver.close()
     assigned = next(check for check in report.checks if check.check == "assigned_allocation")
     triggered = next(check for check in report.checks if check.check == "triggered_balance")
     rates = next(check for check in report.checks if check.check == "trigger_rates")
@@ -1015,14 +998,14 @@ def test_health_validates_expected_allocation_before_empty_trigger_counts(tmp_pa
     from increment.errors import InvalidRequestError
     from tests.test_analysis_trigger import _analysis, _events
 
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         tmp_path, _events(n_per_arm=20, trigger_rate=0.0), allocation_scheme="blocked"
     )
     try:
         with pytest.raises(InvalidRequestError) as caught:
-            health_check(*facade_binding(analysis), expected_allocation={"C": 0.0, "T": 1.0})
+            health_check(experiment, resolver, expected_allocation={"C": 0.0, "T": 1.0})
     finally:
-        analysis.close()
+        resolver.close()
     assert caught.value.code == "estimation.diagnostics.every_expected_share_positive"
 
 
@@ -1054,7 +1037,7 @@ def test_health_assumption_discloses_triggered_family_guarantee(tmp_path) -> Non
     from tests.test_triggered_sequential import _FAMILY_PLAN, _analysis, _events
 
     secondaries = ("aux_a", "aux_b")
-    analysis, _ = _analysis(
+    (experiment, resolver), _ = _analysis(
         tmp_path,
         _events(n_per_arm=20, secondaries=secondaries),
         plan=_FAMILY_PLAN,
@@ -1063,11 +1046,11 @@ def test_health_assumption_discloses_triggered_family_guarantee(tmp_path) -> Non
     try:
         assumptions = next(
             check
-            for check in health_check(*facade_binding(analysis)).checks
+            for check in health_check(experiment, resolver).checks
             if check.check == "trigger_assumptions"
         )
     finally:
-        analysis.close()
+        resolver.close()
     assert assumptions.context["family_guarantee"] == "asymptotic_sequential"
     assert assumptions.context["family_guarantee_status"] == "assumed, not verified"
     assert assumptions.context["no_effect_before_trigger"] is not None

@@ -5,13 +5,14 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import AnalysisPlan, MetricSpec, from_frame
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import WireFormatError
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.readout_types import CellKey
 from increment.semantics.design import Randomized
+from tests.analysis_factory import view_readout
 from tests.readout_journeys import (
     assert_failed_assigned_integrity,
     assert_filtered_family_scope_unchanged,
@@ -22,7 +23,7 @@ from tests.test_readout_public_scope import _analysis, _frame
 
 def _failed_cell_readout() -> LiftEstimates:
     with pytest.warns():
-        return _analysis(_frame()).run()
+        return view_readout(*_analysis(_frame()))
 
 
 def _assert_required_failed_cell_is_visible(results: LiftEstimates) -> None:
@@ -57,18 +58,21 @@ def _integrity_readout() -> LiftEstimates:
             for index in range(count)
         ]
     )
-    results = Analysis.from_unit_panel(
-        frame,
-        unit="unit",
-        group="arm",
-        date="ds",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[MetricSpec(name="rev", type="mean")],
-    ).run()
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="panel",
+            unit="unit",
+            group="arm",
+            date="ds",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="rev", type="mean")],
+        )
+    )
     assert isinstance(results, LiftEstimates)
     return results
 
@@ -96,8 +100,9 @@ def _prior_readout() -> LiftEstimates:
         for group in ("control", "treatment")
         for index, value in enumerate([9.0, 11.0] * 50)
     ]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -111,7 +116,7 @@ def _prior_readout() -> LiftEstimates:
         ],
         plan=AnalysisPlan(primary="y"),
     )
-    results = analysis.run()
+    results = view_readout(experiment, resolver)
     assert isinstance(results, LiftEstimates)
     return results
 
@@ -147,7 +152,7 @@ def test_journey_four_rejects_prior_sensitive_evidence_in_sampling_family():
 
 
 def test_journey_three_rejects_filtering_that_shrinks_family_scope():
-    original = _analysis(_frame(guard_constant=False)).run()
+    original = view_readout(*_analysis(_frame(guard_constant=False)))
     filtered = original.filter(lambda row: row.metric == "rev")
     assert_filtered_family_scope_unchanged(original, filtered)
     assert filtered.metadata is not None

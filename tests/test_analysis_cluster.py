@@ -16,15 +16,21 @@ import ibis
 import numpy as np
 import pytest
 
-from increment import from_definitions
-from increment.analysis import Analysis
+from increment import Scope, from_definitions, from_frame, run
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.sitewide import SitewideImpact
 from increment.estimators import sitewide
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+from increment.query import summary_sql
+from increment.workflows import export_moments, metrics, srm
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _native_source, lift_rows, make_analysis_like
+from tests.analysis_factory import (
+    bound_source,
+    lift_rows,
+    make_binding_like,
+    view_readout,
+)
 from tests.sequential_cases import registration
 
 
@@ -123,9 +129,9 @@ def _warehouse(tmp_path, *, cluster: bool, rows, windowed: bool) -> tuple[Any, A
     return con, defs
 
 
-def _analysis(tmp_path, *, cluster: bool = True, rows=None, windowed: bool = True) -> Analysis:
+def _analysis(tmp_path, *, cluster: bool = True, rows=None, windowed: bool = True) -> Any:
     con, defs = _warehouse(tmp_path, cluster=cluster, rows=rows, windowed=windowed)
-    return Analysis("store_test", defs, con)
+    return from_definitions(defs, con, experiment_name="store_test")
 
 
 def _experiment(
@@ -150,8 +156,9 @@ def test_direct_unit_frame_validates_raw_cluster_labels(tmp_path, invalid, code)
     )
     if invalid == "conflict":
         rows.append({**rows[0], "store_id": "another_store", "event_at": dt.datetime(2025, 8, 2)})
-    with _analysis(tmp_path, rows=rows) as analysis:
-        source = _native_source(analysis)
+    analysis = _analysis(tmp_path, rows=rows)
+    with analysis[1]:
+        source = bound_source(analysis[1])
         with pytest.raises(InvalidRequestError) as error:
             _unit_rows(source, source.context.metrics[0])
         assert error.value.code == code
@@ -160,14 +167,16 @@ def test_direct_unit_frame_validates_raw_cluster_labels(tmp_path, invalid, code)
 def test_direct_unit_frame_accepts_observational_cluster_spanning_arms(tmp_path):
     from increment.semantics.design import AdjustmentSet, Observational
 
-    with _analysis(tmp_path, rows=_event_rows(spanning_store=True)) as analysis:
-        observational = make_analysis_like(
-            analysis,
+    analysis = _analysis(tmp_path, rows=_event_rows(spanning_store=True))
+
+    with analysis[1]:
+        experiment, resolver = make_binding_like(
+            analysis[1],
             design=Observational(
                 control_group="control", adjustment=AdjustmentSet(covariates=("baseline",))
             ),
         )
-        source = _native_source(observational)
+        source = bound_source(resolver)
         rows = _unit_rows(source, source.context.metrics[0]).to_pylist()
 
     assert len(rows) == 2 * N_STORES * UNITS_PER_STORE
@@ -184,8 +193,8 @@ def test_direct_unit_frame_accepts_observational_cluster_spanning_arms(tmp_path)
 
 
 def test_clustering_widens_the_se_but_never_moves_the_point_estimate(tmp_path):
-    (flat,) = lift_rows(lift_rows(_analysis(tmp_path, cluster=False).run()))
-    (clustered,) = lift_rows(lift_rows(_analysis(tmp_path, cluster=True).run()))
+    (flat,) = lift_rows(lift_rows(view_readout(*_analysis(tmp_path, cluster=False))))
+    (clustered,) = lift_rows(lift_rows(view_readout(*_analysis(tmp_path, cluster=True))))
 
     clustered_lift = clustered.require_lift()
     flat_lift = flat.require_lift()
@@ -217,7 +226,7 @@ def test_native_and_frame_substrates_agree_on_the_clustered_estimate(tmp_path):
     """Same population, two substrates: duckdb builders vs from_unit_summary."""
     import pandas as pd
 
-    (native,) = lift_rows(lift_rows(_analysis(tmp_path, cluster=True).run()))
+    (native,) = lift_rows(lift_rows(view_readout(*_analysis(tmp_path, cluster=True))))
 
     units = [
         {
@@ -232,14 +241,19 @@ def test_native_and_frame_substrates_agree_on_the_clustered_estimate(tmp_path):
     ]
     (frame,) = lift_rows(
         lift_rows(
-            Analysis.from_unit_summary(
-                pd.DataFrame(units),
-                unit="user_id",
-                group="variant",
-                control="control",
-                metrics=[{"name": "revenue_per_user", "type": "mean", "value_column": "revenue"}],
-                cluster="store_id",
-            ).run()
+            view_readout(
+                *from_frame(
+                    pd.DataFrame(units),
+                    shape="summary",
+                    unit="user_id",
+                    group="variant",
+                    control="control",
+                    metrics=[
+                        {"name": "revenue_per_user", "type": "mean", "value_column": "revenue"}
+                    ],
+                    cluster="store_id",
+                )
+            )
         )
     )
 
@@ -256,7 +270,7 @@ def test_native_and_frame_substrates_agree_on_the_clustered_srm(tmp_path):
 
     from increment.semantics.design import Randomized
 
-    native = _analysis(tmp_path, cluster=True).srm(expected={"control": 0.5, "treatment": 0.5})
+    native = srm(*_analysis(tmp_path, cluster=True), expected={"control": 0.5, "treatment": 0.5})
 
     units = [
         {
@@ -269,17 +283,21 @@ def test_native_and_frame_substrates_agree_on_the_clustered_srm(tmp_path):
         for s in range(N_STORES)
         for u in range(UNITS_PER_STORE)
     ]
-    frame = Analysis.from_unit_summary(
-        pd.DataFrame(units),
-        unit="user_id",
-        group="variant",
-        metrics=[{"name": "revenue_per_user", "type": "mean", "value_column": "revenue"}],
-        cluster="store_id",
-        design=Randomized(
-            control_group="control",
-            allocation_scheme="independent",
+    frame = srm(
+        *from_frame(
+            pd.DataFrame(units),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            metrics=[{"name": "revenue_per_user", "type": "mean", "value_column": "revenue"}],
+            cluster="store_id",
+            design=Randomized(
+                control_group="control",
+                allocation_scheme="independent",
+            ),
         ),
-    ).srm(expected={"control": 0.5, "treatment": 0.5})
+        expected={"control": 0.5, "treatment": 0.5},
+    )
 
     assert isinstance(native, SRMResult) and isinstance(frame, SRMResult)
     assert frame.grain == native.grain == "cluster"
@@ -375,14 +393,14 @@ def _ratio_event_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def _ratio_analysis(tmp_path, *, cluster: bool) -> Analysis:
+def _ratio_analysis(tmp_path, *, cluster: bool) -> Any:
     con = ibis.duckdb.connect()
     con.create_table("cl_events", obj=_ratio_event_rows())
     defs = tmp_path / f"ratio_defs_{int(cluster)}.yaml"
     defs.write_text(
         _RATIO_DEFS_TEMPLATE.format(cluster_line="    cluster: store_id" if cluster else "")
     )
-    return Analysis("store_test", defs, con)
+    return from_definitions(defs, con, experiment_name="store_test")
 
 
 def test_clustered_ratio_metric_widens_the_se_but_never_moves_the_estimate(tmp_path):
@@ -390,8 +408,8 @@ def test_clustered_ratio_metric_widens_the_se_but_never_moves_the_estimate(tmp_p
     metric's own per-cluster session totals, so the estimand is unchanged
     (sum(revenue)/sum(sessions) per arm) while the SE goes cluster-robust
     with separate relative t and additive Welch references."""
-    (flat,) = lift_rows(lift_rows(_ratio_analysis(tmp_path, cluster=False).run()))
-    (clustered,) = lift_rows(lift_rows(_ratio_analysis(tmp_path, cluster=True).run()))
+    (flat,) = lift_rows(lift_rows(view_readout(*_ratio_analysis(tmp_path, cluster=False))))
+    (clustered,) = lift_rows(lift_rows(view_readout(*_ratio_analysis(tmp_path, cluster=True))))
 
     clustered_lift = clustered.require_lift()
     flat_lift = flat.require_lift()
@@ -429,7 +447,7 @@ def test_clustered_ratio_native_and_frame_substrates_agree(tmp_path):
 
     from increment.semantics.models import AnalysisPlan
 
-    (native,) = lift_rows(lift_rows(_ratio_analysis(tmp_path, cluster=True).run()))
+    (native,) = lift_rows(lift_rows(view_readout(*_ratio_analysis(tmp_path, cluster=True))))
     units = [
         {
             "user_id": f"{arm[:1]}{s}_{u}",
@@ -444,22 +462,25 @@ def test_clustered_ratio_native_and_frame_substrates_agree(tmp_path):
     ]
     (frame,) = lift_rows(
         lift_rows(
-            Analysis.from_unit_summary(
-                pd.DataFrame(units),
-                unit="user_id",
-                group="variant",
-                control="control",
-                metrics=[
-                    {
-                        "name": "rev_per_session",
-                        "type": "ratio",
-                        "numerator": "revenue",
-                        "denominator": "sessions",
-                    }
-                ],
-                cluster="store_id",
-                plan=AnalysisPlan(secondaries=["rev_per_session"]),
-            ).run()
+            view_readout(
+                *from_frame(
+                    pd.DataFrame(units),
+                    shape="summary",
+                    unit="user_id",
+                    group="variant",
+                    control="control",
+                    metrics=[
+                        {
+                            "name": "rev_per_session",
+                            "type": "ratio",
+                            "numerator": "revenue",
+                            "denominator": "sessions",
+                        }
+                    ],
+                    cluster="store_id",
+                    plan=AnalysisPlan(secondaries=["rev_per_session"]),
+                )
+            )
         )
     )
     assert native.relative_confidence_set is not None
@@ -489,7 +510,7 @@ def test_clustered_ratio_native_and_frame_substrates_agree(tmp_path):
 
 
 def test_summary_sql_compiles_the_clustered_collapse_without_executing(tmp_path):
-    sql = _analysis(tmp_path, cluster=True).summary_sql()["revenue_per_user"]
+    sql = summary_sql(*_analysis(tmp_path, cluster=True))["revenue_per_user"]
     assert "store_id" in sql
 
 
@@ -497,16 +518,16 @@ def test_summary_sql_compiles_the_clustered_collapse_without_executing(tmp_path)
 
 
 def test_null_cluster_label_refuses_at_run(tmp_path):
-    a = _analysis(tmp_path, rows=_event_rows(null_store_unit="c0_0"))
+    experiment, resolver = _analysis(tmp_path, rows=_event_rows(null_store_unit="c0_0"))
     with pytest.raises(InvalidRequestError) as raised:
-        lift_rows(a.run())
+        lift_rows(view_readout(experiment, resolver))
     assert raised.value.code == "query.integrity.cluster_labels"
 
 
 def test_group_spanning_cluster_refuses_at_run(tmp_path):
-    a = _analysis(tmp_path, rows=_event_rows(spanning_store=True))
+    experiment, resolver = _analysis(tmp_path, rows=_event_rows(spanning_store=True))
     with pytest.raises(InvalidRequestError) as raised:
-        lift_rows(a.run())
+        lift_rows(view_readout(experiment, resolver))
     assert raised.value.code == "query.integrity.cluster_labels"
 
 
@@ -514,18 +535,18 @@ def test_null_cluster_label_refuses_at_srm(tmp_path):
     """srm() is public and callable without run(), so it must apply the same
     label gate: a null label vanishes from the distinct-cluster count while
     still landing in the unit count, skewing the chi-square either way."""
-    a = _analysis(tmp_path, rows=_event_rows(null_store_unit="c0_0"))
+    experiment, resolver = _analysis(tmp_path, rows=_event_rows(null_store_unit="c0_0"))
     with pytest.raises(InvalidRequestError) as raised:
-        a.srm(expected={"control": 0.5, "treatment": 0.5})
+        srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
     assert raised.value.code == "query.integrity.cluster_labels"
 
 
 def test_group_spanning_cluster_refuses_at_srm(tmp_path):
     """A store appearing in both arms is counted once per arm, inflating both
     cluster counts undetected unless srm() gates on it too."""
-    a = _analysis(tmp_path, rows=_event_rows(spanning_store=True))
+    experiment, resolver = _analysis(tmp_path, rows=_event_rows(spanning_store=True))
     with pytest.raises(InvalidRequestError) as raised:
-        a.srm(expected={"control": 0.5, "treatment": 0.5})
+        srm(experiment, resolver, expected={"control": 0.5, "treatment": 0.5})
     assert raised.value.code == "query.integrity.cluster_labels"
 
 
@@ -533,11 +554,11 @@ def test_group_spanning_cluster_refuses_at_srm(tmp_path):
 
 
 def test_export_refuses_on_a_clustered_experiment(tmp_path):
-    a = _analysis(tmp_path, cluster=True)
+    experiment, resolver = _analysis(tmp_path, cluster=True)
     destination = tmp_path / "moments.parquet"
     destination.write_bytes(b"keep me")
     with pytest.raises(CapabilityError) as raised:
-        a.export(destination)
+        export_moments(experiment, resolver, destination)
     assert raised.value.code == "evidence.cluster_unavailable"
     assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
     assert destination.read_bytes() == b"keep me"
@@ -547,17 +568,20 @@ def test_sequential_inference_refuses_call_time_on_a_clustered_experiment(tmp_pa
     from increment.estimation.sequential import AlwaysValid
     from increment.plan import compile_decision_plan
 
-    a = _analysis(tmp_path, cluster=True)
+    experiment, resolver = _analysis(tmp_path, cluster=True)
     # Clustered readouts now route through the shared readout pipeline
     # (Task 3), which reads its epistemic policy exclusively from the
     # declared AnalysisPlan -- call-time inference= is refused
     # unconditionally, declared plan or not.
-    a = make_analysis_like(a, plan=compile_decision_plan(None, a.metrics, path="warehouse"))
+    experiment, resolver = make_binding_like(
+        resolver,
+        plan=compile_decision_plan(None, metrics(experiment, resolver), path="warehouse"),
+    )
     # Build the inference outside the refusal block so a TypeError from the
     # constructor cannot stand in for run() rejecting the keyword.
     inference = AlwaysValid(registration=registration())
     with pytest.raises(TypeError):
-        lift_rows(a.run(inference=inference))  # ty: ignore[unknown-argument]
+        run(experiment, resolver, inference=inference)  # ty: ignore[no-matching-overload]
 
 
 def test_declared_plan_always_valid_inference_refuses_cluster_through_the_real_route(tmp_path):
@@ -569,11 +593,20 @@ def test_declared_plan_always_valid_inference_refuses_cluster_through_the_real_r
     assert raised.value.code == "sequential.route.unsupported"
 
 
-@pytest.mark.parametrize("method", ["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"])
-def test_day_axis_methods_refuse_on_a_clustered_experiment(tmp_path, method):
-    a = _analysis(tmp_path, cluster=True)
+@pytest.mark.parametrize(
+    "scope",
+    [
+        Scope(view="daily", grain="daily", values=True),
+        Scope(view="daily", grain="daily"),
+        Scope(view="asof", grain="asof", values=True),
+        Scope(view="asof", grain="asof"),
+    ],
+    ids=["daily_values", "daily_lift", "asof_values", "asof_lift"],
+)
+def test_day_axis_methods_refuse_on_a_clustered_experiment(tmp_path, scope):
+    experiment, resolver = _analysis(tmp_path, cluster=True)
     with pytest.raises(CapabilityError) as raised:
-        getattr(a, method)()
+        view_readout(experiment, resolver, scope)
     assert raised.value.code == "facade.analysis.clustered_day_axis"
 
 
@@ -729,15 +762,19 @@ def test_sitewide_serves_a_clustered_multi_arm_experiment(tmp_path):
     named, nets the OTHER arm's clusters out of the baseline exactly like
     it would at iid grain."""
     rows = [*_event_rows(), *_third_arm_rows()]
-    clustered = _experiment(tmp_path, cluster=True, rows=rows, windowed=False)
-    flat = _experiment(tmp_path, cluster=False, rows=rows, windowed=False)
+    clustered_experiment, clustered_resolver = _experiment(
+        tmp_path, cluster=True, rows=rows, windowed=False
+    )
+    flat_experiment, flat_resolver = _experiment(tmp_path, cluster=False, rows=rows, windowed=False)
 
     with pytest.raises(InvalidRequestError) as refused:
-        sitewide(*clustered, "revenue_per_user")
+        sitewide(clustered_experiment, clustered_resolver, "revenue_per_user")
     assert refused.value.code == "facade.analysis.sitewide_arm_required"
 
-    impact = sitewide(*clustered, "revenue_per_user", arm="treatment_b")
-    flat_impact = sitewide(*flat, "revenue_per_user", arm="treatment_b")
+    impact = sitewide(
+        clustered_experiment, clustered_resolver, "revenue_per_user", arm="treatment_b"
+    )
+    flat_impact = sitewide(flat_experiment, flat_resolver, "revenue_per_user", arm="treatment_b")
 
     assert isinstance(impact, SitewideImpact)
     assert isinstance(flat_impact, SitewideImpact)
@@ -805,7 +842,7 @@ def _sized_cluster_rows(sizes: dict[str, list[int]]) -> list[dict[str, Any]]:
 def test_srm_counts_clusters_not_units_on_a_clustered_experiment(tmp_path):
     """Balanced clusters of equal size: the check reads at the cluster grain
     and keeps the unit counts as labeled context."""
-    result = _analysis(tmp_path, cluster=True).srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(*_analysis(tmp_path, cluster=True), expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.grain == "cluster"
     assert result.observed == {"control": N_STORES, "treatment": N_STORES}
@@ -821,7 +858,7 @@ def test_unequal_cluster_sizes_are_not_a_sample_ratio_mismatch(tmp_path):
     randomizer allocated clusters, so this is not an SRM - but the unit
     counts it produces (40 vs 120) would have flagged loudly."""
     rows = _sized_cluster_rows({"control": [2] * 20, "treatment": [6] * 20})
-    result = _analysis(tmp_path, rows=rows).srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(*_analysis(tmp_path, rows=rows), expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.observed == {"control": 20, "treatment": 20}
     assert result.is_srm is False
@@ -841,8 +878,11 @@ def test_cluster_count_skew_flags_even_when_unit_counts_balance(tmp_path):
     so both arms land on 40 units. Unit counts see nothing; the cluster
     counts (what was actually randomized) flag."""
     rows = _sized_cluster_rows({"control": [2] * 20, "treatment": [5] * 8})
-    result = _analysis(tmp_path, rows=rows).srm(
-        expected={"control": 0.5, "treatment": 0.5}, inference="fixed", alpha=0.05
+    result = srm(
+        *_analysis(tmp_path, rows=rows),
+        expected={"control": 0.5, "treatment": 0.5},
+        inference="fixed",
+        alpha=0.05,
     )
     assert isinstance(result, SRMResult)
     assert result.observed == {"control": 20, "treatment": 8}
@@ -861,7 +901,7 @@ def test_cluster_count_skew_flags_even_when_unit_counts_balance(tmp_path):
 def test_clustered_srm_flags_a_missing_treatment_arm_in_a_cumulative_prefix(tmp_path):
     """A 14-cluster all-control prefix must retain the declared empty arm."""
     rows = _sized_cluster_rows({"control": [1] * 14})
-    result = _analysis(tmp_path, rows=rows).srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(*_analysis(tmp_path, rows=rows), expected={"control": 0.5, "treatment": 0.5})
 
     assert isinstance(result, SRMResult)
     assert result.grain == "cluster"
@@ -873,7 +913,7 @@ def test_clustered_srm_flags_a_missing_treatment_arm_in_a_cumulative_prefix(tmp_
 def test_srm_stays_at_unit_grain_without_a_declared_cluster(tmp_path):
     """Same population, no declared cluster: unchanged unit-grain behaviour,
     and no descriptive unit counts to duplicate ``observed``."""
-    result = _analysis(tmp_path, cluster=False).srm(expected={"control": 0.5, "treatment": 0.5})
+    result = srm(*_analysis(tmp_path, cluster=False), expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.grain == "unit"
     assert result.unit_counts == {}
@@ -953,23 +993,22 @@ def _quantile_event_rows(
 
 @backend_fixture()
 def quantile_source_factory(tmp_path):
-    """Build a fresh randomized quantile-metric Analysis on demand."""
+    """Build a fresh randomized quantile-metric experiment and resolver on demand."""
 
     def _make():
         con = ibis.duckdb.connect()
         con.create_table("ql_events", obj=_quantile_event_rows())
         defs = tmp_path / "quantile_defs.yaml"
         defs.write_text(_QUANTILE_DEFS_TEMPLATE)
-        return Analysis("quantile_test", defs, con)
+        return from_definitions(defs, con, experiment_name="quantile_test")
 
     return _make
 
 
 def test_quantile_run_loads_unit_frame_once_per_metric(quantile_source_factory, monkeypatch):
-    from tests.analysis_factory import _native_source
 
-    analysis = quantile_source_factory()
-    source: Any = _native_source(analysis)
+    experiment, resolver = quantile_source_factory()
+    source: Any = bound_source(resolver)
     calls = {"unit_frame": 0}
     source_type = type(source)
     real_unit_frame = source_type.unit_frame
@@ -980,12 +1019,12 @@ def test_quantile_run_loads_unit_frame_once_per_metric(quantile_source_factory, 
 
     monkeypatch.setattr(source_type, "unit_frame", counting_unit_frame)
     try:
-        estimates = analysis.run()
+        estimates = view_readout(experiment, resolver)
         assert calls["unit_frame"] == 1
         assert [row.metric for row in estimates] == ["p90_latency"]
         assert estimates[0].require_lift().value > 0
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 pytestmark = pytest.mark.integration

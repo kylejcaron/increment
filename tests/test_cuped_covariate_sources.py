@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, cast
 
 import narwhals as nw
 import pytest
 
-from increment.analysis import Analysis
+from increment import (
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+    from_unit_day_artifact,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.semantics import load
-from tests.analysis_factory import _moment_source
+from increment.workflows import export_moments
+from tests.analysis_factory import bound_source, view_readout
 from tests.covariate_cases import categorical_defs_and_con
 
 
@@ -63,7 +73,7 @@ def test_native_definition_covariate_property_acquisition_preserves_category_and
         defs_path,
         "{name: pre_region, kind: categorical, property: region, source: events}",
     )
-    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cat_test")[1])
     metric = source.context.metrics[0]
     table = nw.from_native(
         _unit_rows(source, metric, covariates=("pre_region",)), eager_only=True
@@ -87,7 +97,7 @@ def test_native_measure_covariate_is_scoped_before_assignment(tmp_path):
         "{name: pre_revenue, kind: continuous, measure: {fact: purchase, aggregation: sum}}",
         n_pre_periods=30,
     )
-    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cat_test")[1])
     metric = source.context.metrics[0]
     table = nw.from_native(
         _unit_rows(source, metric, covariates=("pre_revenue",), outcome_stage="raw"),
@@ -138,8 +148,10 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
         "{name: pre_value, kind: continuous, measure: {fact: history_value, aggregation: sum}}",
         n_pre_periods=30,
     )
-    analysis = Analysis.from_definitions("cat_test", defs_path, con)
-    source = _moment_source(analysis)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
+    source = bound_source(analysis_resolver)
     metric = source.context.metrics[0]
     rows = (
         nw.from_native(
@@ -159,9 +171,11 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = analysis.publish_unit_day_artifact(store)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    artifact = _moment_source(restored)
+    reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    artifact = bound_source(restored_resolver)
     artifact_values = {
         row["unit_id"]: row["pre_value"]
         for row in nw.from_native(
@@ -188,8 +202,10 @@ def test_occurrence_only_count_measure_acquires_native_and_artifact(tmp_path):
     experiment = definitions.experiment("cat_test")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
-    analysis = Analysis.from_definitions("cat_test", defs_path, con)
-    native = _moment_source(analysis)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
+    native = bound_source(analysis_resolver)
     metric = native.context.metrics[0]
     native_values = {
         row["unit_id"]: row["pre_visits"]
@@ -201,9 +217,11 @@ def test_occurrence_only_count_measure_acquires_native_and_artifact(tmp_path):
         .to_pylist()
     }
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = analysis.publish_unit_day_artifact(store)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    artifact = _moment_source(restored)
+    reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    artifact = bound_source(restored_resolver)
     artifact_values = {
         row["unit_id"]: row["pre_visits"]
         for row in nw.from_native(
@@ -235,7 +253,7 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
         defs_path,
         "{name: pre_region, kind: categorical, property: region, source: profiles}",
     )
-    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cat_test")[1])
     metric = source.context.metrics[0]
     rows = (
         nw.from_native(
@@ -259,10 +277,8 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     import pyarrow.parquet as pq
 
     from increment import run
-    from increment.builders import from_definitions
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
-    from increment.kernel.contracts import Scope
 
     defs_path, con, units = categorical_defs_and_con(tmp_path)
     con.create_table(
@@ -299,12 +315,14 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
         "property: tenure, source: preperiod}]}}}",
     )
     defs_path.write_text(text)
-    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
     exported = tmp_path / "scalar.parquet"
-    analysis.export(exported)
+    export_moments(analysis_experiment, analysis_resolver, exported)
     raw_moments = pq.read_table(exported).to_pylist()
     assert raw_moments[0]["ref_x"] is not None
-    native = analysis.run()[0]
+    native = view_readout(analysis_experiment, analysis_resolver)[0]
     oracle_frame = pa.table(
         {
             "unit": list(units),
@@ -313,21 +331,24 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
             "pre_tenure": [units[unit]["tenure"] for unit in units],
         }
     )
-    oracle = Analysis.from_unit_summary(
-        oracle_frame,
-        unit="unit",
-        group="group",
-        control="control",
-        metrics=[
-            MetricSpec(
-                name="revenue",
-                decision_method=Method.cuped(
-                    name="scalar",
-                    covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
-                ),
-            )
-        ],
-    ).run()[0]
+    oracle = view_readout(
+        *from_frame(
+            oracle_frame,
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        name="scalar",
+                        covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                    ),
+                )
+            ],
+        )
+    )[0]
 
     assert isinstance(native, LiftEstimate) and isinstance(oracle, LiftEstimate)
     assert native.require_lift().value == pytest.approx(oracle.require_lift().value)
@@ -339,8 +360,18 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
             row.n,
         )
         for rows in (
-            analysis.run_daily(metrics=["revenue"]),
-            analysis.run_asof(metrics=["revenue"]),
+            view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="daily", grain="daily", values=True),
+                metrics=["revenue"],
+            ),
+            view_readout(
+                analysis_experiment,
+                analysis_resolver,
+                Scope(view="asof", grain="asof", values=True),
+                metrics=["revenue"],
+            ),
         )
         for row in rows
     }
@@ -397,7 +428,7 @@ def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
         "property: tenure, source: events, missing: " + missing + "}]}}}",
     )
     defs_path.write_text(text)
-    native = Analysis.from_definitions("cat_test", defs_path, con)
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="cat_test")
     oracle_frame = pa.table(
         {
             "unit": list(units),
@@ -407,8 +438,9 @@ def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
         }
     )
     if missing == "refuse":
-        oracle = Analysis.from_unit_summary(
+        oracle = from_frame(
             oracle_frame,
+            shape="summary",
             unit="unit",
             group="group",
             control="control",
@@ -424,7 +456,7 @@ def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
                 )
             ],
         )
-        for result in (oracle.run(), native.run()):
+        for result in (view_readout(*oracle), view_readout(experiment, resolver)):
             (row,) = result
             assert isinstance(row, LiftEstimate)
             assert row.lift is None
@@ -432,8 +464,9 @@ def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
         return
 
     with pytest.warns() as imputation_warnings:
-        oracle = Analysis.from_unit_summary(
+        oracle = from_frame(
             oracle_frame,
+            shape="summary",
             unit="unit",
             group="group",
             control="control",
@@ -454,8 +487,8 @@ def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
     assert warning.code == "frame.validation.metric_covariate_missing_imputed"
     assert warning.context["n_missing"] == 1
 
-    native_row = native.run()[0]
-    oracle_row = oracle.run()[0]
+    native_row = view_readout(experiment, resolver)[0]
+    oracle_row = view_readout(*oracle)[0]
     assert isinstance(native_row, LiftEstimate)
     assert isinstance(oracle_row, LiftEstimate)
     assert native_row.require_lift().value == pytest.approx(
@@ -475,7 +508,7 @@ def test_method_covariate_alias_conflicts_with_observational_binding(tmp_path):
         defs_path,
         "{name: tenure, kind: categorical, property: region, source: events}",
     )
-    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    source = bound_source(from_definitions(defs_path, con, experiment_name="cat_test")[1])
 
     with pytest.raises(InvalidRequestError) as raised:
         request_evidence(
@@ -593,11 +626,15 @@ def test_multiple_primary_artifact_binding_resolves_property_alias(tmp_path):
     experiment = definitions.experiment("cat_test")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
-    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = analysis.publish_unit_day_artifact(store)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    source = _moment_source(restored)
+    reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    source = bound_source(restored_resolver)
 
     rows = (
         nw.from_native(
@@ -630,11 +667,15 @@ def test_artifact_deduplicates_omitted_and_explicit_resolved_source(tmp_path):
     experiment = definitions.experiment("cov_test")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
-    analysis = Analysis.from_definitions("cov_test", defs_path, con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = analysis.publish_unit_day_artifact(store)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    source = _moment_source(restored)
+    reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    source = bound_source(restored_resolver)
     rows = (
         nw.from_native(
             _unit_rows(source, source.context.metrics[0], covariates=("pre_tenure",)),
@@ -662,11 +703,15 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    native_analysis = Analysis.from_definitions("cat_test", defs_path, con)
-    reference = native_analysis.publish_unit_day_artifact(store)
-    artifact_analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    native = _moment_source(native_analysis)
-    artifact = _moment_source(artifact_analysis)
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    artifact_experiment, artifact_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    native = bound_source(native_resolver)
+    artifact = bound_source(artifact_resolver)
     metric = native.context.metrics[0]
 
     native_rows = (
@@ -719,11 +764,15 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
     experiment = definitions.experiment("cov_test")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
-    analysis = Analysis.from_definitions("cov_test", defs_path, con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = analysis.publish_unit_day_artifact(store)
-    artifact_analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    artifact = _moment_source(artifact_analysis)
+    reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+    artifact_experiment, artifact_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    artifact = bound_source(artifact_resolver)
     source_names = {
         extension.source_name
         for extension in artifact._manifest.extensions
@@ -784,11 +833,15 @@ def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
     experiment = definitions.experiment("cat_test")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
-    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    analysis_experiment, analysis_resolver = from_definitions(
+        defs_path, con, experiment_name="cat_test"
+    )
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = analysis.publish_unit_day_artifact(store)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    source = _moment_source(restored)
+    reference = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    source = bound_source(restored_resolver)
 
     measured = (
         nw.from_native(
@@ -823,10 +876,10 @@ def test_multicovariate_observational_route_refuses_before_acquisition(tmp_path)
         defs_path,
         "{name: region, kind: categorical, property: region, source: events}",
     )
-    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    experiment, resolver = from_definitions(defs_path, con, experiment_name="cat_test")
 
     with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.run()
+        view_readout(experiment, resolver)
 
     assert raised.value.code == "estimation.engine.cuped_linear_observational"
 
@@ -845,7 +898,7 @@ def test_from_moments_refuses_multicovariate_with_unit_source_route():
         ),
     )
     with pytest.raises(UnsupportedRequestError) as raised:
-        Analysis.from_moments([], metrics=[spec], control="control")
+        from_moments([], metrics=[spec], control="control")
 
     assert raised.value.code == "facade.analysis_config.cuped_linear_moments"
     import copy
@@ -872,8 +925,9 @@ def test_from_moments_named_scalar_accepts_legacy_x_and_refuses_known_mismatch(t
             "history_a": [1.0, 2.0, 4.0, 3.0, 1.0, 3.0, 2.0, 5.0],
         }
     )
-    source = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -888,7 +942,7 @@ def test_from_moments_named_scalar_accepts_legacy_x_and_refuses_known_mismatch(t
         ],
     )
     path = tmp_path / "moments.parquet"
-    source.export(path)
+    export_moments(experiment, resolver, path)
     stored = pq.read_table(path).to_pylist()
     named = MetricSpec(
         name="revenue",
@@ -898,13 +952,13 @@ def test_from_moments_named_scalar_accepts_legacy_x_and_refuses_known_mismatch(t
         ),
     )
 
-    (result,) = Analysis.from_moments(stored, metrics=[named], control="control").run()
+    (result,) = view_readout(*from_moments(stored, metrics=[named], control="control"))
     assert isinstance(result, LiftEstimate)
     assert result.lift is not None
 
     mismatched = [{**row, "covariate_name": "history_a"} for row in stored]
     with pytest.raises(UnsupportedRequestError) as raised:
-        Analysis.from_moments(mismatched, metrics=[named], control="control")
+        from_moments(mismatched, metrics=[named], control="control")
 
     assert raised.value.code == "facade.analysis_config.cuped_scalar_moments"
 
@@ -929,7 +983,7 @@ def test_switchback_refuses_multicovariate_with_independent_unit_route():
         ),
     )
     with pytest.raises(CapabilityError) as raised:
-        Analysis.from_switchback_panel(
+        from_switchback_frame(
             object(),  # ty: ignore[invalid-argument-type]
             unit="unit",
             cycle="cycle",
@@ -992,17 +1046,17 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
     rows.extend(late_profiles)
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows))
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         defs_path,
         con,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(
             dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
             {"events": dt.datetime(2024, 1, 31, tzinfo=dt.UTC)},
         ),
     )
     try:
-        source = _moment_source(analysis)
+        source = bound_source(resolver)
         metric = source.context.metrics[0]
         rows_by_unit = {
             row["unit_id"]: row["region"]
@@ -1020,7 +1074,7 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
             for unit, region in rows_by_unit.items()
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -1034,7 +1088,6 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
     from increment.frame import CupedCovariate, MetricSpec
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
-    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, groups, revenue = covariate_defs_and_con(tmp_path)
@@ -1046,15 +1099,19 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
     )
     defs_path.write_text(text)
 
-    native = Analysis.from_definitions("cov_test", defs_path, con)
+    native_experiment, native_resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test"
+    )
     definitions = load(defs_path)
     experiment = definitions.experiment("cov_test")
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
-    reference = native.publish_unit_day_artifact(store)
-    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    covariates = cast(Any, _native_source(native).context.configs[0].covariates)
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
+    restored_experiment, restored_resolver = from_unit_day_artifact(
+        store, reference, expected_context=context
+    )
+    covariates = bound_source(native_resolver).context.configs[0].covariates
     assert covariates[0].name == "pre_tenure"
     table = pa.Table.from_pylist(
         [
@@ -1067,8 +1124,9 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
             for unit in sorted(groups)
         ]
     )
-    dataframe = Analysis.from_unit_summary(
+    dataframe_experiment, dataframe_resolver = from_frame(
         table,
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
@@ -1084,9 +1142,9 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
         plan=AnalysisPlan(primary="revenue"),
     )
 
-    frame_result = cast(list[LiftEstimate], dataframe.run())
-    native_result = cast(list[LiftEstimate], native.run())
-    artifact_result = cast(list[LiftEstimate], restored.run())
+    frame_result = cast(list[LiftEstimate], view_readout(dataframe_experiment, dataframe_resolver))
+    native_result = cast(list[LiftEstimate], view_readout(native_experiment, native_resolver))
+    artifact_result = cast(list[LiftEstimate], view_readout(restored_experiment, restored_resolver))
     expected = next(row for row in frame_result if row.group_id == "treatment").require_lift()
 
     def source_signature(result):
@@ -1175,7 +1233,6 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
 
     from increment import Method
     from increment.frame import CupedCovariate
-    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, *_ = covariate_defs_and_con(tmp_path)
@@ -1187,7 +1244,9 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
             "[{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}}",
         )
     )
-    analysis = Analysis.from_definitions("cov_test", defs_path, con, store="none")
+    experiment, resolver = from_definitions(
+        defs_path, con, experiment_name="cov_test", store="none"
+    )
     try:
         with pytest.warns(IncrementWarning) as caught:
             warnings.filterwarnings(
@@ -1195,7 +1254,9 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
                 message=r"fetch_arrow_table\(\) is deprecated",
                 category=DeprecationWarning,
             )
-            override_rows = analysis.run(
+            override_rows = view_readout(
+                experiment,
+                resolver,
                 decision_method=Method(name="plain"),
                 sensitivity_methods=[
                     Method.cuped_multicovariate(
@@ -1213,7 +1274,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
             for row in cast(list[LiftEstimate], override_rows)
             if row.group_id == "treatment" and row.method == "linear"
         )
-        source = _native_source(analysis)
+        source = bound_source(resolver)
 
         from increment.query import cuped as cuped_query
 
@@ -1245,7 +1306,9 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
                 row.require_lift()
                 for row in cast(
                     list[LiftEstimate],
-                    analysis.run(
+                    view_readout(
+                        experiment,
+                        resolver,
                         decision_method=Method(name="plain"),
                         sensitivity_methods=[
                             Method.cuped_multicovariate(
@@ -1264,7 +1327,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
         assert mutated
         assert after.value == pytest.approx(baseline.value, rel=1e-10, abs=1e-10)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
         con.disconnect()
 
 
@@ -1284,8 +1347,9 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
         for group in ("control", "treatment")
         for index in range(12)
     ]
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="unit",
         group="group",
         control="control",
@@ -1302,7 +1366,9 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
         results = cast(
             list[LiftEstimate],
             list(
-                analysis.run(
+                view_readout(
+                    experiment,
+                    resolver,
                     decision_method=Method(name="plain"),
                     sensitivity_methods=[
                         Method.cuped_multicovariate(
@@ -1412,8 +1478,13 @@ def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed
         ]
     )
     try:
-        with Analysis.from_definitions("cov_test", path, con) as native:
-            joint = {row.method: row for row in native.run() if isinstance(row, LiftEstimate)}
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, native_resolver):
+            joint = {
+                row.method: row
+                for row in view_readout(native_experiment, native_resolver)
+                if isinstance(row, LiftEstimate)
+            }
             for method in methods:
                 with pytest.warns(IncrementWarning) as caught:
                     warnings.filterwarnings(
@@ -1421,7 +1492,12 @@ def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed
                         message=r"fetch_arrow_table\(\) is deprecated",
                         category=DeprecationWarning,
                     )
-                    (alone,) = native.run(decision_method=method, sensitivity_methods=())
+                    (alone,) = view_readout(
+                        native_experiment,
+                        native_resolver,
+                        decision_method=method,
+                        sensitivity_methods=(),
+                    )
                 expected_warnings = {"sensitivity_methods"}
                 if method != methods[0]:
                     expected_warnings.add("decision_method")
@@ -1436,8 +1512,9 @@ def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed
                     if method.variance_reduction == "cuped"
                     else Method.cuped_multicovariate
                 )
-                with Analysis.from_unit_summary(
+                frame_experiment, frame_resolver = from_frame(
                     table,
+                    shape="summary",
                     unit="unit",
                     group="group",
                     control="control",
@@ -1454,8 +1531,9 @@ def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed
                             ),
                         )
                     ],
-                ) as frame:
-                    (expected,) = frame.run()
+                )
+                with frame_resolver:
+                    (expected,) = view_readout(frame_experiment, frame_resolver)
                 assert isinstance(expected, LiftEstimate)
                 for actual in (joint[method.name], alone):
                     assert isinstance(actual, LiftEstimate)
@@ -1477,7 +1555,8 @@ def test_native_breakout_uses_effective_scalar_family(tmp_path):
         )
     )
     try:
-        with Analysis.from_definitions("cov_test", path, con) as analysis:
+        experiment, resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, resolver):
             import warnings
 
             with pytest.warns(IncrementWarning) as caught:
@@ -1486,13 +1565,21 @@ def test_native_breakout_uses_effective_scalar_family(tmp_path):
                     message=r"fetch_arrow_table\(\) is deprecated",
                     category=DeprecationWarning,
                 )
-                (expected,) = analysis.run(decision_method=methods[1], sensitivity_methods=())
+                (expected,) = view_readout(
+                    experiment, resolver, decision_method=methods[1], sensitivity_methods=()
+                )
             assert any(
                 getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
                 for warning in caught
             )
             assert isinstance(expected, LiftEstimate)
-            (actual,) = analysis.run_breakout(decision_method=methods[1], sensitivity_methods=())
+            (actual,) = view_readout(
+                experiment,
+                resolver,
+                Scope(view="breakout", grain="total"),
+                decision_method=methods[1],
+                sensitivity_methods=(),
+            )
             assert actual.dimension_value == "all"
             assert actual.require_lift().value == pytest.approx(
                 expected.require_lift().value, rel=1e-10
@@ -1569,28 +1656,28 @@ def test_native_scalar_measure_binding_runs_end_to_end(tmp_path):
         ]
     )
     try:
-        with (
-            Analysis.from_definitions("cov_test", path, con) as native,
-            Analysis.from_unit_summary(
-                table,
-                unit="unit",
-                group="group",
-                control="control",
-                metrics=[
-                    MetricSpec(
-                        name="revenue",
-                        decision_method=Method.cuped(
-                            name="scalar",
-                            covariates=CupedCovariate(
-                                name="pre_revenue", kind="continuous", missing="refuse"
-                            ),
+        native_experiment, native_resolver = from_definitions(path, con, experiment_name="cov_test")
+        frame_experiment, frame_resolver = from_frame(
+            table,
+            shape="summary",
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        name="scalar",
+                        covariates=CupedCovariate(
+                            name="pre_revenue", kind="continuous", missing="refuse"
                         ),
-                    )
-                ],
-            ) as frame,
-        ):
-            (actual,) = native.run()
-            (expected,) = frame.run()
+                    ),
+                )
+            ],
+        )
+        with cast(Any, native_resolver), frame_resolver:
+            (actual,) = view_readout(native_experiment, native_resolver)
+            (expected,) = view_readout(frame_experiment, frame_resolver)
             assert isinstance(actual, LiftEstimate)
             assert isinstance(expected, LiftEstimate)
             assert actual.require_lift().value == pytest.approx(
@@ -1618,7 +1705,9 @@ def _string_covariate_frame(*, panel: bool):
 
 
 def _frame_analysis(frame, *, panel: bool, metric):
-    constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+    constructor = (
+        partial(from_frame, shape="panel") if panel else partial(from_frame, shape="summary")
+    )
     return constructor(
         frame,
         unit="unit",
@@ -1651,10 +1740,12 @@ def test_continuous_covariate_on_string_column_refuses_with_route(
     with pytest.raises(InvalidRequestError) as raised:
         if declared:
             metric = MetricSpec(name="revenue", type="mean", decision_method=method)
-            _frame_analysis(frame, panel=panel, metric=metric).run()
+            view_readout(*_frame_analysis(frame, panel=panel, metric=metric))
         else:
             metric = MetricSpec(name="revenue", type="mean")
-            _frame_analysis(frame, panel=panel, metric=metric).run(decision_method=method)
+            view_readout(
+                *_frame_analysis(frame, panel=panel, metric=metric), decision_method=method
+            )
 
     assert raised.value.code == "frame.validation.covariate_not_numeric"
     assert raised.value.context["covariate"] == "pre"
@@ -1673,12 +1764,17 @@ def test_definitions_alias_shorthand_matches_plain_form(tmp_path):
     )
     shorthand = Method.cuped(name="scalar_a", covariates="history_a")
     try:
-        with Analysis.from_definitions("cov_test", path, con) as native:
+        experiment, resolver = from_definitions(path, con, experiment_name="cov_test")
+        with cast(Any, resolver):
             # Overriding the declared methods may warn; only the rows are compared.
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                (named,) = native.run(decision_method=shorthand, sensitivity_methods=())
-                (typed,) = native.run(decision_method=plain, sensitivity_methods=())
+                (named,) = view_readout(
+                    experiment, resolver, decision_method=shorthand, sensitivity_methods=()
+                )
+                (typed,) = view_readout(
+                    experiment, resolver, decision_method=plain, sensitivity_methods=()
+                )
         assert named == typed
     finally:
         con.disconnect()
@@ -1714,18 +1810,33 @@ def test_breakout_and_daily_lift_covariates_use_frame_refusals(route, column, co
 
     with pytest.raises(InvalidRequestError) as raised:
         if route == "breakout":
-            Analysis.from_unit_summary(
-                frame.drop(["day"]),
-                unit="unit",
-                group="arm",
-                control="control",
-                breakouts=("segment",),
-                metrics=[metric],
-            ).run_breakout(decision_method=method)
+            view_readout(
+                *from_frame(
+                    frame.drop(["day"]),
+                    shape="summary",
+                    unit="unit",
+                    group="arm",
+                    control="control",
+                    breakouts=("segment",),
+                    metrics=[metric],
+                ),
+                Scope(view="breakout", grain="total"),
+                decision_method=method,
+            )
         else:
-            Analysis.from_unit_panel(
-                frame, unit="unit", group="arm", date="day", control="control", metrics=[metric]
-            ).run_daily_lift(decision_method=method)
+            view_readout(
+                *from_frame(
+                    frame,
+                    shape="panel",
+                    unit="unit",
+                    group="arm",
+                    date="day",
+                    control="control",
+                    metrics=[metric],
+                ),
+                Scope(view="daily", grain="daily"),
+                decision_method=method,
+            )
 
     assert raised.value.code == code
 
@@ -1748,7 +1859,7 @@ def test_numeric_values_in_an_object_column_are_a_numeric_covariate():
     metric = MetricSpec(name="revenue", type="mean", decision_method=Method.cuped(covariates="pre"))
 
     def lifts(frame):
-        rows = _frame_analysis(frame, panel=False, metric=metric).run()
+        rows = view_readout(*_frame_analysis(frame, panel=False, metric=metric))
         return [row.require_lift() for row in rows]
 
     assert lifts(objects) == lifts(floats)
@@ -1781,7 +1892,7 @@ def test_object_numeric_covariate_with_pandas_missing_follows_its_missing_policy
     def lifts(frame):
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            rows = _frame_analysis(frame, panel=False, metric=metric).run()
+            rows = view_readout(*_frame_analysis(frame, panel=False, metric=metric))
         return [row.require_lift() for row in rows]
 
     assert lifts(objects) == lifts(floats)

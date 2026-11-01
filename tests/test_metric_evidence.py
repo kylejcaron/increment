@@ -13,11 +13,12 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, MetricSpec
+from increment import Analysis, MetricSpec, from_definitions, from_frame, from_moments
 from increment.errors import IncrementWarning
 from increment.evidence import EvidenceProvider
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan
+from increment.workflows import export_moments
 from scripts.capture_evidence_identity import (
     _frame_rows,
     _rows,
@@ -25,6 +26,7 @@ from scripts.capture_evidence_identity import (
     build_pairs,
     replay_export,
 )
+from tests.analysis_factory import view_readout
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.comparison import nested_close
 
@@ -435,8 +437,9 @@ def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=Non
             "y": [float(i + 1) for i in range(12)],
         }
     )
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="C" if design is None else None,
@@ -444,7 +447,7 @@ def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=Non
         cluster="store" if cluster else None,
         design=design,
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(analysis[1]))
     return analysis, _CountingSource(source), source.context.metrics[0]
 
 
@@ -457,8 +460,10 @@ def test_analysis_run_shares_one_snapshot_and_execution_for_multiple_metrics(
     from increment import Method
     from tests.analysis_factory import held_source
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
-    source = held_source(analysis)
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
+    source = held_source(resolver)
     source_type = type(source)
     snapshot_method = "readout_snapshot"
     execution_method = "readout_execution"
@@ -484,7 +489,9 @@ def test_analysis_run_shares_one_snapshot_and_execution_for_multiple_metrics(
     monkeypatch.setattr(source_type, "readout_snapshot", counted_snapshot)
     monkeypatch.setattr(source_type, "readout_execution", counted_execution)
     try:
-        rows = analysis.run(
+        rows = view_readout(
+            experiment,
+            resolver,
             metrics=["avg_session_duration", "purchase_rate"],
             decision_method=Method(name="cuped", variance_reduction="cuped"),
         )
@@ -492,7 +499,7 @@ def test_analysis_run_shares_one_snapshot_and_execution_for_multiple_metrics(
         assert snapshots == 1
         assert executions == 1
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_observational_readout_shares_frames_with_identity_digest(monkeypatch):
@@ -514,14 +521,15 @@ def test_observational_readout_shares_frames_with_identity_digest(monkeypatch):
         }
     )
     design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         metrics={"y": "mean", "z": "mean"},
         design=design,
     )
-    source = cast(Any, held_source(analysis))
+    source = cast(Any, held_source(resolver))
     read_metrics: list[str] = []
     original_unit_frame = source.unit_frame
 
@@ -538,7 +546,7 @@ def test_observational_readout_shares_frames_with_identity_digest(monkeypatch):
         # Each metric's unit rows are read once and shared by every estimate that needs them.
         assert Counter(read_metrics) == Counter({"y": 1, "z": 1})
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_call_time_unadjusted_override_reads_no_moments_cube_unit_frames(tmp_path):
@@ -558,25 +566,23 @@ def test_call_time_unadjusted_override_reads_no_moments_cube_unit_frames(tmp_pat
     )
     design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
     spec = MetricSpec(name="y", type="mean", decision_method=Method(name="iptw"))
-    original = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        metrics=[spec],
-        design=design,
+    original_experiment, original_resolver = from_frame(
+        frame, shape="summary", unit="unit", group="arm", metrics=[spec], design=design
     )
     path = tmp_path / "unadjusted_override.parquet"
-    original.export(path)
-    original.close()
-    cube = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=[spec], design=design)
-    source = _CountingSource(cast(Any, held_source(cube)))
+    export_moments(original_experiment, original_resolver, path)
+    original_resolver.close()
+    cube_experiment, cube_resolver = from_moments(
+        pq.read_table(path).to_pylist(), metrics=[spec], design=design
+    )
+    source = _CountingSource(cast(Any, held_source(cube_resolver)))
     try:
         rows = run(cast(Any, source), decision_method=Method(name="unadjusted"))
         assert [row.method for row in rows] == ["unadjusted"]
         assert source.unit_frame_reads == 0
         assert source.unit_frame_metrics == []
     finally:
-        cube.close()
+        cube_resolver.close()
 
 
 def test_quantile_lift_from_rows_equals_facade():
@@ -590,7 +596,7 @@ def test_quantile_lift_from_rows_equals_facade():
         assert isinstance(row_results, list)
         assert [row.model_dump() for row in row_results] == [row.model_dump() for row in facade]
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_adjustment_kernel_runs_on_plain_frames():
@@ -617,7 +623,7 @@ def test_adjustment_kernel_runs_on_plain_frames():
         )
         assert [row.model_dump() for row in kernel] == [row.model_dump() for row in facade]
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_adjusted_observational_methods_share_unit_frame_read():
@@ -632,7 +638,7 @@ def test_adjusted_observational_methods_share_unit_frame_read():
         estimate_ate(source, design, methods=[Method(name="iptw"), Method(name="dml")])
         assert source.unit_frame_reads == 1
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_unadjusted_observational_estimator_reads_no_unclustered_unit_rows():
@@ -647,7 +653,7 @@ def test_unadjusted_observational_estimator_reads_no_unclustered_unit_rows():
         estimate_ate(source, design, methods=[Method(name="unadjusted")])
         assert source.unit_frame_reads == 0
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_clustered_unadjusted_observational_estimator_reads_each_metric_once():
@@ -664,7 +670,7 @@ def test_clustered_unadjusted_observational_estimator_reads_each_metric_once():
             estimate_ate(source, design, methods=[Method(name="unadjusted")])
         assert source.unit_frame_reads == 1
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_read_free_refusals_precede_unit_frame_reads(monkeypatch):
@@ -687,7 +693,7 @@ def test_read_free_refusals_precede_unit_frame_reads(monkeypatch):
             assert raised.value.code == code
             assert source.unit_frame_reads == 0
         finally:
-            analysis.close()
+            analysis[1].close()
 
     from tests.analysis_factory import held_source
 
@@ -698,7 +704,7 @@ def test_read_free_refusals_precede_unit_frame_reads(monkeypatch):
         assert raised.value.code == "estimation.winsor.design_unsupported"
         assert source.unit_frame_reads == 0
 
-        backing = cast(Any, held_source(analysis))
+        backing = cast(Any, held_source(analysis[1]))
         source_type = type(backing)
         original_unit_frame = source_type.unit_frame
         reads = 0
@@ -710,11 +716,11 @@ def test_read_free_refusals_precede_unit_frame_reads(monkeypatch):
 
         monkeypatch.setattr(source_type, "unit_frame", count_unit_frame)
         with pytest.raises(CodedError) as raised:
-            analysis.run()
+            view_readout(*analysis)
         assert raised.value.code == "readout.metric.percentile_winsorization"
         assert reads == 0
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_refusal_precedes_any_loader_read():
@@ -733,7 +739,7 @@ def test_refusal_precedes_any_loader_read():
         assert raised.value.code == "readout.observational.quantile"
         assert source.unit_frame_reads == 0
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_quantile_rows_refuse_observational_design():
@@ -757,7 +763,7 @@ def test_quantile_rows_refuse_observational_design():
             )
         assert raised.value.code == "readout.observational.quantile"
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_adjustment_refusals_precede_unit_frame_reads():
@@ -794,7 +800,7 @@ def test_adjustment_refusals_precede_unit_frame_reads():
             assert raised.value.code == expected_code
             assert source.unit_frame_reads == 0
         finally:
-            analysis.close()
+            analysis[1].close()
 
     allow_design = design.model_copy(
         update={"adjustment": AdjustmentSet(covariates=("x",), missing="allow")}
@@ -806,7 +812,7 @@ def test_adjustment_refusals_precede_unit_frame_reads():
         assert raised.value.code == "adjust.identification.allow_requires_learner"
         assert source.unit_frame_reads == 0
     finally:
-        analysis.close()
+        analysis[1].close()
 
 
 def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_path):
@@ -832,16 +838,18 @@ def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_pa
         control_group="C",
         adjustment=AdjustmentSet.model_construct(covariates=()),
     )
-    original = Analysis.from_unit_summary(
-        rows, unit="unit", group="arm", metrics=specs, design=design
+    original_experiment, original_resolver = from_frame(
+        rows, shape="summary", unit="unit", group="arm", metrics=specs, design=design
     )
     path = tmp_path / "moments.parquet"
-    original.export(path)
-    original.close()
-    cube = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=specs, design=design)
+    export_moments(original_experiment, original_resolver, path)
+    original_resolver.close()
+    cube_experiment, cube_resolver = from_moments(
+        pq.read_table(path).to_pylist(), metrics=specs, design=design
+    )
     from tests.analysis_factory import held_source
 
-    cube_source = cast(Any, held_source(cube))
+    cube_source = cast(Any, held_source(cube_resolver))
     source = _CountingSource(cube_source)
     try:
         with pytest.warns(IncrementWarning) as caught:
@@ -854,4 +862,4 @@ def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_pa
         # The request is refused by the declared evidence before the provider is called.
         assert source.unit_frame_reads == 0
     finally:
-        cube.close()
+        cube_resolver.close()

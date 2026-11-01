@@ -4,8 +4,8 @@ The shipped `examples/realistic_demo/definitions/*.yaml` bind to Parquet via
 hardcoded relative paths (`read_parquet('examples/realistic_demo/warehouse/
 <table>/**/*.parquet')`), not via views bound on a connection object - so
 this module regenerates a small REAL warehouse at that exact relative path
-and drives the actual shipped YAML against it through the public `Analysis`
-facade, rather than a synthetic in-memory substitute (which would test
+and drives the actual shipped YAML against it through the public experiment
+builders, rather than a synthetic in-memory substitute (which would test
 something other than what ships).
 
 Restores the demo's normal (2 partitions x 2000 users) warehouse as the very
@@ -22,21 +22,40 @@ import warnings
 from collections import Counter
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import ibis
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, CupedCovariate, Method, MetricSpec
+from increment import (
+    CupedCovariate,
+    Method,
+    MetricSpec,
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+    workflows,
+)
+from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from increment.results import NotApplicable, SRMResult
 from increment.semantics.models import RatioMetric, RetentionMetric
+from increment.workflows import (
+    capture_sequential,
+    experiment_definition,
+    export_moments,
+    health_check,
+    sequential_snapshot,
+    srm,
+)
 from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import make_analysis_like
+from tests.analysis_factory import make_binding, make_binding_like, view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -125,12 +144,12 @@ def con():
 
 @pytest.fixture
 def analysis(con):
-    return Analysis(EXPERIMENT, DEFINITIONS, con)
+    return from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
 
 
 def _metric_spec(metric) -> MetricSpec:
     """Translate a semantic ``Metric`` into the ``MetricSpec`` dict
-    ``Analysis.from_moments`` needs (it takes ``increment.frame``
+    ``from_moments`` needs (it takes ``increment.frame``
     ``MetricSpec``s, not the semantic ``Metric`` models the definitions
     loader returns).
 
@@ -169,8 +188,8 @@ def test_latency_source_contains_repeated_checkout_measurements():
     assert max(counts.values()) > 1
 
 
-def test_run_returns_finite_estimates_for_all_declared_metrics(analysis):
-    estimates = analysis.run()
+def test_run_returns_finite_estimates_for_all_declared_metrics(analysis: tuple[Any, Any]):
+    estimates = view_readout(*analysis)
     assert {e.metric for e in estimates} == METRIC_NAMES
     for e in estimates:
         assert math.isfinite(e.require_lift().value)
@@ -187,17 +206,17 @@ def test_run_returns_finite_estimates_for_all_declared_metrics(analysis):
             assert lift.ub is not None and math.isfinite(lift.ub)
 
 
-def test_srm_reports_no_mismatch_on_triggered_population(analysis):
+def test_srm_reports_no_mismatch_on_triggered_population(analysis: tuple[Any, Any]):
     """Guards the generator's counterfactual (arm-independent) triggering:
     an arm-dependent trigger rate would surface here as a sample-ratio
     mismatch."""
-    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="always_valid")
+    result = srm(*analysis, expected={"control": 0.5, "treatment": 0.5}, inference="always_valid")
     assert isinstance(result, SRMResult)
     assert not isinstance(result, NotApplicable)
     assert result.is_srm is False
 
 
-def test_breakout_country_segments_have_no_null_bin(analysis):
+def test_breakout_country_segments_have_no_null_bin(analysis: tuple[Any, Any]):
     with pytest.warns(IncrementWarning) as record:
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -206,7 +225,7 @@ def test_breakout_country_segments_have_no_null_bin(analysis):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = analysis.run_breakout()
+            estimates = view_readout(*analysis, Scope(view="breakout", grain="total"))
     _assert_breakout_warnings(record)
     country_rows = [
         e for e in estimates if e.metric == "conversion_rate" and e.dimension == "country"
@@ -225,7 +244,7 @@ def test_breakout_country_segments_have_no_null_bin(analysis):
     assert len(set(values)) == len(values)
 
 
-def test_breakout_plan_segments_are_pre_exposure_free_only(analysis):
+def test_breakout_plan_segments_are_pre_exposure_free_only(analysis: tuple[Any, Any]):
     """The single most important assertion in this module: the only check
     that distinguishes a correct ``as_of=pre_exposure`` temporal
     resolution from a naive event-time join - it proves the generator
@@ -245,20 +264,20 @@ def test_breakout_plan_segments_are_pre_exposure_free_only(analysis):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = analysis.run_breakout()
+            estimates = view_readout(*analysis, Scope(view="breakout", grain="total"))
     _assert_breakout_warnings(record)
     plan_segments = {e.dimension_value for e in estimates if e.dimension == "plan"}
     assert plan_segments == {"free"}
 
 
 @pytest.mark.integration
-def test_daily_and_asof_lift_cover_all_metrics(analysis):
+def test_daily_and_asof_lift_cover_all_metrics(analysis: tuple[Any, Any]):
     """The day-axis / dense-panel code paths, distinct from the
     whole-window run() path exercised above."""
-    fixed_plan = analysis.experiment.plan.model_copy(update={"inference": None})
-    analysis = make_analysis_like(
-        analysis,
-        experiment=analysis.experiment.model_copy(update={"plan": fixed_plan}),
+    fixed_plan = experiment_definition(*analysis).plan.model_copy(update={"inference": None})
+    analysis = make_binding_like(
+        analysis[1],
+        experiment=experiment_definition(*analysis).model_copy(update={"plan": fixed_plan}),
     )
     with pytest.warns(IncrementWarning) as daily_warnings:
         with warnings.catch_warnings():
@@ -268,7 +287,7 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            daily = analysis.run_daily_lift()
+            daily = view_readout(*analysis, Scope(view="daily", grain="daily"))
     _assert_ratio_skew_warnings(daily_warnings)
     assert daily
     assert {e.metric for e in daily} == METRIC_NAMES
@@ -281,25 +300,25 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            asof = analysis.run_asof_lift()
+            asof = view_readout(*analysis, Scope(view="asof", grain="asof"))
     _assert_ratio_skew_warnings(asof_warnings)
     assert asof
     assert {e.metric for e in asof} == METRIC_NAMES
 
 
 @pytest.mark.integration
-def test_realistic_warehouse_artifact_replay_matches_native(analysis, con):
+def test_realistic_warehouse_artifact_replay_matches_native(analysis: tuple[Any, Any], con):
     from increment.estimation.readout_types import CellKey
     from increment.query.session import WarehouseArtifactStore
     from tests.readout_journeys import assert_prior_free_sampling_family
 
     store = WarehouseArtifactStore(con, schema_name="m3_realistic")
-    reference = analysis.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(
-        store, reference, expected_context=analysis.artifact_context
+    reference = publish_unit_day_artifact(*analysis, store)
+    experiment, resolver = from_unit_day_artifact(
+        store, reference, expected_context=artifact_context(*analysis)
     )
-    expected_result = analysis.run()
-    observed_result = adopted.run()
+    expected_result = view_readout(*analysis)
+    observed_result = view_readout(experiment, resolver)
     assert isinstance(expected_result, LiftEstimates)
     assert isinstance(observed_result, LiftEstimates)
     expected_metadata = expected_result.metadata
@@ -328,7 +347,7 @@ def test_realistic_warehouse_artifact_replay_matches_native(analysis, con):
         assert observed_row.family_size == expected_row.family_size
         assert observed_metadata.record(observed_row.source_snapshot_id, cell) is not None
         assert expected_metadata.record(expected_row.source_snapshot_id, cell) is not None
-    adopted.close()
+    resolver.close()
 
 
 def _assert_nested_approx_equal(actual, expected):
@@ -349,40 +368,39 @@ def _assert_nested_approx_equal(actual, expected):
 
 
 @pytest.mark.integration
-def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
+def test_export_from_moments_round_trips_run_exactly(analysis: tuple[Any, Any], tmp_path):
     """A real export/rehydrate must reproduce run() exactly, including the
     declared plan: without it a guardrail comes back unassigned and
     two-sided, widening its interval past what was pre-registered.
     """
     from increment.semantics.models import ConversionMetric, MeanMetric
-    from tests.analysis_factory import make_analysis_like
 
-    unequal_allocation = analysis.experiment.model_copy(
+    unequal_allocation = experiment_definition(*analysis).model_copy(
         update={"allocation": {"control": 0.6, "treatment": 0.4}}
     )
-    analysis = make_analysis_like(analysis, experiment=unequal_allocation)
-    metrics = {metric.name: metric for metric in analysis.metrics}
+    analysis = make_binding_like(analysis[1], experiment=unequal_allocation)
+    metrics = {metric.name: metric for metric in workflows.metrics(*analysis)}
 
     assert isinstance(metrics["conversion_rate"], ConversionMetric)
     assert metrics["conversion_rate"].window_days == 14
     assert isinstance(metrics["revenue_per_user"], MeanMetric)
     assert metrics["revenue_per_user"].window_days == 14
-    source_rows = _lift_rows(analysis.run())
+    source_rows = _lift_rows(view_readout(*analysis))
     baseline = {(e.metric, e.group_id): e.require_lift() for e in source_rows}
 
     path = tmp_path / "moments.parquet"
-    analysis.export(path)
+    export_moments(*analysis, path)
     rows = pq.read_table(path).to_pylist()
     assert {row["moments_format"] for row in rows} == {12}
 
-    specs = [_metric_spec(m) for m in analysis.metrics]
-    rehydrated_src = Analysis.from_moments(
-        rows, metrics=specs, design=analysis.experiment.resolved_design()
+    specs = [_metric_spec(m) for m in workflows.metrics(*analysis)]
+    rehydrated_src_experiment, rehydrated_src_resolver = from_moments(
+        rows, metrics=specs, design=experiment_definition(*analysis).resolved_design()
     )
-    rehydrated = _lift_rows(rehydrated_src.run())
+    rehydrated = _lift_rows(view_readout(rehydrated_src_experiment, rehydrated_src_resolver))
 
-    source_health = analysis.health_check()
-    replay_health = rehydrated_src.health_check()
+    source_health = health_check(*analysis)
+    replay_health = health_check(rehydrated_src_experiment, rehydrated_src_resolver)
     source_assigned = next(
         check for check in source_health.checks if check.check == "assigned_allocation"
     )
@@ -398,7 +416,7 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     assert [check.availability for check in feed_checks] == ["not_applicable"]
     assert feed_checks[0].conclusion is None
 
-    declared = next(e for e in _lift_rows(analysis.run()) if e.metric == "d7_retention")
+    declared = next(e for e in _lift_rows(view_readout(*analysis)) if e.metric == "d7_retention")
     carried = next(e for e in rehydrated if e.metric == "d7_retention")
     assert declared.role == "guardrail"
     assert carried.role == declared.role
@@ -427,30 +445,33 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
                 assert abs(endpoint - expected) < 1e-9
 
 
-def test_export_round_trips_registered_native_actual_state(analysis, con, tmp_path):
+def test_export_round_trips_registered_native_actual_state(
+    analysis: tuple[Any, Any], con, tmp_path
+):
     from increment.semantics import load
     from increment.semantics.models import AnalysisPlan
-    from tests.analysis_factory import make_analysis
     from tests.sequential_cases import registered_native
 
-    metric = next(m for m in analysis.metrics if m.type == "mean")
+    metric = next(m for m in workflows.metrics(*analysis) if m.type == "mean")
     metric = metric.model_copy(update={"window_days": 7})
     # The artifact extension catalog follows the saved experiment's metric
     # roster, so declare only this supported bounded Gaussian target there too.
-    experiment = analysis.experiment.model_copy(
+    experiment = experiment_definition(*analysis).model_copy(
         update={"plan": AnalysisPlan(secondaries=[metric.name])}
     )
     definitions = load(DEFINITIONS).model_copy(
         update={"experiments": (experiment,), "metrics": (metric,)}
     )
-    selected = make_analysis(con, definitions, experiment=experiment)
+    selected = make_binding(con, definitions, experiment=experiment)
     # A plain-mean metric under a fixed Randomized mechanism: the public
     # scalar_mean law admits this today; it is only
     # encouragement mechanisms that still refuse.
-    registered = registered_native(selected, public_mean=True)
-    end = analysis.experiment.end
+    registered_experiment, registered_resolver = registered_native(selected, public_mean=True)
+    end = experiment_definition(*analysis).end
     assert end is not None
-    checkpoint = registered.capture_sequential(finalized=True, as_of=end.date())
+    checkpoint = capture_sequential(
+        registered_experiment, registered_resolver, finalized=True, as_of=end.date()
+    )
     assert checkpoint.records
     checkpoint_size = len(checkpoint.model_dump_json().encode("utf-8"))
     assert checkpoint_size > 0
@@ -461,13 +482,17 @@ def test_export_round_trips_registered_native_actual_state(analysis, con, tmp_pa
     # This test transports an anytime checkpoint; finite-look state is tested
     # with fixed counts in test_readouts_plan's registered finite-look witness.
     path = tmp_path / "sequential.parquet"
-    registered.export(path)
+    export_moments(registered_experiment, registered_resolver, path)
     rows = pq.read_table(path).to_pylist()
-    replay = Analysis.from_moments(rows, metrics=[_metric_spec(metric)], control="control")
-    assert replay.sequential_snapshot() == checkpoint
+    replay_experiment, replay_resolver = from_moments(
+        rows, metrics=[_metric_spec(metric)], control="control"
+    )
+    assert sequential_snapshot(replay_experiment, replay_resolver) == checkpoint
     assert (
-        _lift_rows(replay.run())[0].require_sequential_result()
-        == _lift_rows(registered.run())[0].require_sequential_result()
+        _lift_rows(view_readout(replay_experiment, replay_resolver))[0].require_sequential_result()
+        == _lift_rows(view_readout(registered_experiment, registered_resolver))[
+            0
+        ].require_sequential_result()
     )
 
 
@@ -566,8 +591,9 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
         ),
     ]
     with pytest.warns(IncrementWarning) as warning_record:
-        source = Analysis.from_unit_panel(
+        source_experiment, source_resolver = from_frame(
             panel,
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
@@ -584,7 +610,9 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     assert imputation_warning.context["n_missing"] == 73
 
     with pytest.warns(IncrementWarning) as censoring_warnings:
-        source_result = source.run(decision_method=Method(name="unadjusted"))
+        source_result = view_readout(
+            source_experiment, source_resolver, decision_method=Method(name="unadjusted")
+        )
     assert censoring_warnings
     relevant_censoring_warnings = [
         warning
@@ -601,16 +629,18 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     assert any(row.group_id == "treatment" and row.lift is not None for row in source_result)
     path = tmp_path / "m3-late-panel.parquet"
     with pytest.warns(IncrementWarning) as export_warnings:
-        source.export(path)
+        export_moments(source_experiment, source_resolver, path)
     assert set(warning_codes(export_warnings)) == {"frame.censoring.dropped_units"}
-    replay = Analysis.from_moments(
+    replay_experiment, replay_resolver = from_moments(
         pq.read_table(path).to_pylist(),
         design=design,
         metrics=metrics,
         plan=plan,
         experiment_id="m3-late-panel",
     )
-    replay_result = replay.run(decision_method=Method(name="unadjusted"))
+    replay_result = view_readout(
+        replay_experiment, replay_resolver, decision_method=Method(name="unadjusted")
+    )
     assert isinstance(replay_result, LiftEstimates)
     assert_prior_free_sampling_family(replay_result)
     expected = {CellKey.from_row(row): row for row in source_result}
@@ -627,8 +657,8 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
         assert observed_row.source_snapshot_id is not None
         assert source_result.metadata.record(expected_row.source_snapshot_id, cell) is not None
         assert replay_result.metadata.record(observed_row.source_snapshot_id, cell) is not None
-    source_health = source.health_check()
-    replay_health = replay.health_check()
+    source_health = health_check(source_experiment, source_resolver)
+    replay_health = health_check(replay_experiment, replay_resolver)
     source_srm = next(
         check for check in source_health.checks if check.check == "assigned_allocation"
     )
@@ -642,8 +672,9 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     # This source capability is explicitly refused: panel data has no per-unit
     # window collapse to which CUPED can attach the pre-period covariate.
     with pytest.raises(InvalidRequestError) as refused:
-        Analysis.from_unit_panel(
+        from_frame(
             panel,
+            shape="panel",
             unit="unit_id",
             group="group_id",
             date="ds",
@@ -664,5 +695,5 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
             experiment_id="m3-windowed-covariate-refusal",
         )
     assert refused.value.code == "frame.validation.from_unit_panel"
-    source.close()
-    replay.close()
+    source_resolver.close()
+    replay_resolver.close()

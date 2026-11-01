@@ -6,10 +6,11 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
+from increment import from_frame, run
 from increment.errors import CodedError
 from increment.kernel.contracts import Scope
 from increment.store import HistorySelector, Run, WarehouseResultsStore
+from tests.analysis_factory import view_readout
 
 
 def _warehouse_run(
@@ -64,7 +65,7 @@ def _warehouse_run(
 @pytest.mark.integration
 def test_analysis_run_persists_public_cells_without_identity_rewrites():
     backend = ibis.duckdb.connect()
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -72,6 +73,7 @@ def test_analysis_run_persists_public_cells_without_identity_rewrites():
                 "value": [1.0, 2.0, 2.0, 3.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -81,12 +83,11 @@ def test_analysis_run_persists_public_cells_without_identity_rewrites():
     try:
         backend.create_database("analytics")
         store = WarehouseResultsStore(backend, schema="analytics")
-        rows = analysis.run(store=store)
-        metadata = rows.metadata
-        assert metadata is not None
-        assert metadata.analysis_spec_hash is not None
-        assert metadata.run_id is not None
-        handle = store.open_run("exp", metadata.analysis_spec_hash, metadata.run_id)
+        result = run(experiment, resolver, results_store=store)
+        assert result.metadata is not None
+        assert result.run.analysis_spec_hash is not None
+        assert result.run.run_id is not None
+        handle = store.open_run("exp", result.run.analysis_spec_hash, result.run.run_id)
         cells = handle.envelope().cells
         assert cells
         assert all(cell.identity.source_snapshot_id for cell in cells)
@@ -96,7 +97,7 @@ def test_analysis_run_persists_public_cells_without_identity_rewrites():
             for cell in cells
         )
     finally:
-        analysis.close()
+        resolver.close()
         backend.disconnect()
 
 
@@ -105,7 +106,7 @@ def test_warehouse_store_publishes_and_pins_complete_run():
     backend = ibis.duckdb.connect()
     try:
         backend.create_database("analytics")
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             pd.DataFrame(
                 {
                     "unit": ["c1", "c2", "t1", "t2"],
@@ -113,13 +114,14 @@ def test_warehouse_store_publishes_and_pins_complete_run():
                     "value": [1.0, 2.0, 2.0, 3.0],
                 }
             ),
+            shape="summary",
             unit="unit",
             group="arm",
             control="control",
             metrics={"value": "mean"},
             experiment_id="exp",
         )
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         scope = Scope(view="run", grain="total")
         cells = tuple(
             replace(
@@ -183,7 +185,7 @@ def test_warehouse_store_publishes_and_pins_complete_run():
 
 
 def _analysis(*, control="control", treatment="treatment"):
-    return Analysis.from_unit_summary(
+    return from_frame(
         pd.DataFrame(
             {
                 "unit": ["c1", "c2", "t1", "t2"],
@@ -191,6 +193,7 @@ def _analysis(*, control="control", treatment="treatment"):
                 "value": [1.0, 2.0, 2.0, 3.0],
             }
         ),
+        shape="summary",
         unit="unit",
         group="arm",
         control=control,
@@ -220,9 +223,9 @@ def _payloads_by_run_id(backend):
 def test_warehouse_explicit_open_rejects_a_different_valid_run():
     backend = ibis.duckdb.connect()
     backend.create_database("analytics")
-    analysis = _analysis()
+    experiment, resolver = _analysis()
     try:
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         requested = _warehouse_run(rows)
         foreign = _warehouse_run(
             rows,
@@ -247,7 +250,7 @@ def test_warehouse_explicit_open_rejects_a_different_valid_run():
             store.open_run("exp", "spec", "one")
         assert error.value.code == "store.run.corrupt"
     finally:
-        analysis.close()
+        resolver.close()
         backend.disconnect()
 
 
@@ -257,9 +260,9 @@ def test_warehouse_discovery_ignores_corrupt_payloads_for_other_experiments():
 
     backend = ibis.duckdb.connect()
     backend.create_database("analytics")
-    analysis = _analysis()
+    experiment, resolver = _analysis()
     try:
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         healthy = _warehouse_run(rows, experiment_id="exp-a", analysis_spec_hash="spec-a")
         unrelated = _warehouse_run(
             rows,
@@ -301,7 +304,7 @@ def test_warehouse_discovery_ignores_corrupt_payloads_for_other_experiments():
         )
         assert history.num_rows == 1
     finally:
-        analysis.close()
+        resolver.close()
         backend.disconnect()
 
 
@@ -309,9 +312,9 @@ def test_warehouse_discovery_ignores_corrupt_payloads_for_other_experiments():
 def test_warehouse_latest_and_history_reject_unreadable_committed_records():
     backend = ibis.duckdb.connect()
     backend.create_database("analytics")
-    analysis = _analysis()
+    experiment, resolver = _analysis()
     try:
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         older = _warehouse_run(rows, run_id="older", committed_day=2)
         newer = _warehouse_run(rows, run_id="newer", committed_day=3)
         store = WarehouseResultsStore(backend, schema="analytics")
@@ -342,7 +345,7 @@ def test_warehouse_latest_and_history_reject_unreadable_committed_records():
                 operation()
             assert error.value.code == "store.run.corrupt"
     finally:
-        analysis.close()
+        resolver.close()
         backend.disconnect()
 
 
@@ -350,9 +353,9 @@ def test_warehouse_latest_and_history_reject_unreadable_committed_records():
 def test_warehouse_contrast_matches_control_labels_containing_colons():
     backend = ibis.duckdb.connect()
     backend.create_database("analytics")
-    analysis = _analysis(control="control:v1")
+    experiment, resolver = _analysis(control="control:v1")
     try:
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         store = WarehouseResultsStore(backend, schema="analytics")
         store.put(_warehouse_run(rows))
 
@@ -369,5 +372,5 @@ def test_warehouse_contrast_matches_control_labels_containing_colons():
         )
         assert history.num_rows == 1
     finally:
-        analysis.close()
+        resolver.close()
         backend.disconnect()

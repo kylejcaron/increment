@@ -7,7 +7,15 @@ from typing import Any, cast
 
 import pytest
 
-from increment import Analysis
+from increment import (
+    Scope,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+    workflows,
+)
+from increment.artifacts import publish_unit_day_artifact
 from increment.evidence import (
     ComplianceRequest,
     ComplianceSummary,
@@ -21,7 +29,8 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from tests.analysis_factory import held_source
+from increment.workflows import export_moments, metrics
+from tests.analysis_factory import held_source, view_readout
 from tests.source_conformance import (
     switchback_analysis,
     unit_day_artifact_analysis,
@@ -98,16 +107,18 @@ class _ForwardingProvider:
 )
 def test_public_frame_constructors_declare_evidence(constructor, kind, operations) -> None:
     if constructor == "summary":
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             unit_summary_table(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
             metrics={"revenue": "mean"},
         )
     else:
-        analysis = Analysis.from_unit_panel(
+        analysis = from_frame(
             unit_panel_table(),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
@@ -115,18 +126,18 @@ def test_public_frame_constructors_declare_evidence(constructor, kind, operation
             metrics={"revenue": "mean"},
         )
 
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
     evidence = source.evidence
     assert evidence.capture == "snapshot"
     assert evidence.operations == operations
     assert pickle.loads(pickle.dumps(evidence)) == evidence
     assert copy.deepcopy(evidence) == evidence
-    analysis.close()
+    analysis[1].close()
 
 
 def test_switchback_declares_no_arm_moment_grains() -> None:
     analysis = switchback_analysis()
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
 
     evidence = source.evidence
     assert evidence.kind == "switchback"
@@ -144,7 +155,7 @@ def test_switchback_declares_no_arm_moment_grains() -> None:
     assert evidence.scalar is None
     assert evidence.available_covariates is None
     assert source.contrast_stats(source.metrics[0]) is not None
-    analysis.close()
+    analysis[1].close()
 
 
 @pytest.mark.parametrize(
@@ -196,8 +207,9 @@ def test_switchback_declares_no_arm_moment_grains() -> None:
 )
 def test_frame_evidence_matches_baseline(constructor, expected) -> None:
     if constructor == "summary":
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             unit_summary_table(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -205,8 +217,9 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
             breakouts=(),
         )
     else:
-        analysis = Analysis.from_unit_panel(
+        analysis = from_frame(
             unit_panel_table(),
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
@@ -214,7 +227,7 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
             metrics={"revenue": "mean"},
             breakouts=("segment",),
         )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
     evidence = source.evidence
 
     assert evidence.kind == expected["kind"]
@@ -241,12 +254,13 @@ def test_frame_evidence_matches_baseline(constructor, expected) -> None:
     assert scalar.method_evidence is True
     assert scalar.breakout_evidence is True
     assert scalar.covariate_grains == expected["scalar_covariate_grains"]
-    analysis.close()
+    analysis[1].close()
 
 
 def test_declared_panel_grains_match_moment_behavior() -> None:
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         unit_panel_table(),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -254,7 +268,7 @@ def test_declared_panel_grains_match_moment_behavior() -> None:
         metrics={"revenue": "mean"},
         breakouts=("segment",),
     )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(resolver))
     metric = source.context.metrics[0]
 
     for grain in source.evidence.grains:
@@ -262,19 +276,20 @@ def test_declared_panel_grains_match_moment_behavior() -> None:
             evidence_provider(source), MomentsRequest(metric, grain=grain, by=("segment",))
         )
         assert isinstance(cast(MomentRows, rows), tuple)
-    analysis.close()
+    resolver.close()
 
 
 def test_restricted_summary_breakout_declaration_matches_baseline() -> None:
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
         breakouts=["segment"],
     )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(resolver))
     breakout = source.summary_breakout_source
     assert breakout is not None
     evidence = breakout.evidence
@@ -304,15 +319,17 @@ def test_restricted_summary_breakout_declaration_matches_baseline() -> None:
     assert evidence.available_covariates == frozenset(
         {"__summary_day__", "revenue", "segment", "user_id", "variant"}
     )
-    analysis.close()
+    resolver.close()
 
 
 @pytest.mark.integration
 def test_definitions_and_pinned_sources_match_baseline(seeded_con, seeded_defs) -> None:
     from increment.errors import CapabilityError
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con, store="none")
-    source = cast("Any", held_source(analysis))
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="none"
+    )
+    source = cast("Any", held_source(resolver))
     evidence = source.evidence
 
     assert evidence.kind == "definitions"
@@ -365,13 +382,13 @@ def test_definitions_and_pinned_sources_match_baseline(seeded_con, seeded_defs) 
         assert pinned.evidence == evidence
     with pytest.raises(CapabilityError):
         source.triggered_source()
-    analysis.close()
+    cast(Any, resolver).close()
 
 
 @pytest.mark.integration
 def test_artifact_facade_evidence_matches_retained_methods(tmp_path) -> None:
     analysis = unit_day_artifact_analysis(tmp_path)
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
     evidence = source.evidence
     metric = source.context.metrics[0]
 
@@ -389,7 +406,7 @@ def test_artifact_facade_evidence_matches_retained_methods(tmp_path) -> None:
     assert request_evidence(evidence_provider(source), CountsRequest(kind="triggered"))
     triggered = source.triggered_source()
     assert triggered.evidence.populations == frozenset({"triggered"})
-    analysis.close()
+    analysis[1].close()
 
 
 @pytest.mark.integration
@@ -397,13 +414,13 @@ def test_artifact_without_trigger_extension_declares_assigned_only(tmp_path) -> 
     from tests.test_unit_day_artifact_facade import _published
 
     connection, native, context, store, reference = _published()
-    analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    source = cast("Any", held_source(analysis))
+    experiment, resolver = from_unit_day_artifact(store, reference, expected_context=context)
+    source = cast("Any", held_source(resolver))
 
     assert source.evidence.populations == frozenset({"assigned"})
     assert "triggered_source" not in source.evidence.operations
-    analysis.close()
-    native.close()
+    resolver.close()
+    native[1].close()
     connection.disconnect()
 
 
@@ -501,15 +518,16 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
     finally:
         source.close()
 
-    summary = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
         breakouts=("segment",),
     )
-    breakout = cast("Any", held_source(summary)).summary_breakout_source
+    breakout = cast("Any", held_source(resolver)).summary_breakout_source
     assert breakout is not None
     with pytest.raises(CapabilityError) as raised:
         request_evidence(
@@ -521,7 +539,7 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
         evidence_provider(breakout),
         MomentsRequest(breakout.context.metrics[0], grain="total", by=("segment",)),
     )
-    summary.close()
+    resolver.close()
 
 
 def test_breakout_moment_source_requires_exactly_its_dimension() -> None:
@@ -542,7 +560,7 @@ def test_breakout_moment_source_requires_exactly_its_dimension() -> None:
 @pytest.mark.integration
 def test_triggered_cluster_declaration_matches_cluster_counts(tmp_path) -> None:
     analysis = _triggered_analysis(tmp_path, cluster=True)
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
     triggered = source.triggered_source()
 
     assert triggered.evidence.count_grains == frozenset({"unit", "cluster"})
@@ -552,7 +570,7 @@ def test_triggered_cluster_declaration_matches_cluster_counts(tmp_path) -> None:
             evidence_provider(triggered), CountsRequest(kind="cluster", population="triggered")
         ),
     ).counts == {"control": 1, "treatment": 1}
-    analysis.close()
+    analysis[1].close()
     from tests.source_conformance import definitions_source
 
     source, _ = definitions_source(tmp_path, trigger=True)
@@ -597,8 +615,9 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
 
     if constructor == "summary":
         frame = unit_summary_table().append_column("pre", pa.array(["not numeric"] * 8))
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -608,8 +627,9 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
     else:
         table = unit_panel_table()
         frame = table.append_column("pre", pa.array(["not numeric"] * table.num_rows))
-        analysis = Analysis.from_unit_panel(
+        analysis = from_frame(
             frame,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
@@ -621,55 +641,59 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
     method = Method.cuped(covariates="pre")
     with pytest.raises(InvalidRequestError) as raised:
         if constructor == "panel":
-            analysis.run_daily_lift(decision_method=method)
+            view_readout(*analysis, Scope(view="daily", grain="daily"), decision_method=method)
         elif constructor == "breakout":
-            analysis.run_breakout(sensitivity_methods=(method,))
+            view_readout(
+                *analysis, Scope(view="breakout", grain="total"), sensitivity_methods=(method,)
+            )
         else:
-            analysis.run(decision_method=method)
+            view_readout(*analysis, decision_method=method)
     assert raised.value.code == "frame.validation.covariate_not_numeric"
-    analysis.close()
+    analysis[1].close()
 
 
 def test_undeclared_custom_source_refuses_with_the_shared_code() -> None:
     from increment.estimators import CapabilityError
     from increment.readouts import daily, run
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(resolver))
 
     legacy = cast("Any", _ForwardingProvider(source))
     try:
-        assert run(legacy) == analysis.run()
+        assert run(legacy) == view_readout(experiment, resolver)
         assert legacy.scope_calls == 1
         with pytest.raises(CapabilityError) as raised:
             daily(legacy)
         assert raised.value.code == "evidence.grain_unavailable"
         assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
     from increment.readouts import run
 
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[{"name": "revenue", "winsorization": {"upper_percentile": 0.75}}],
     )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(resolver))
 
     legacy = cast("Any", _ForwardingProvider(source))
     try:
-        baseline = analysis.run()
+        baseline = view_readout(experiment, resolver)
         estimate = next(iter(baseline)).model_dump()
         assert estimate["abs_diff"] == pytest.approx(2.375)
         assert estimate["abs_lb"] == pytest.approx(0.21680716886679186)
@@ -677,7 +701,7 @@ def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
         assert estimate["winsor_upper_bound"] == pytest.approx(5.25)
         assert run(legacy) == baseline
         assert legacy.scope_calls == 1
-        metric = analysis.metrics[0]
+        metric = metrics(experiment, resolver)[0]
         assert (
             cast(
                 UnitRows,
@@ -689,7 +713,7 @@ def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
             ).to_pylist()
         )
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
@@ -700,25 +724,28 @@ def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
 
     rows = unit_panel_table().to_pylist()
     frame = pa.Table.from_pylist([{**row, "pre": float(int(row["user_id"][1:]))} for row in rows])
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         frame,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
         control="control",
         metrics={"revenue": "mean"},
     )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(resolver))
     evidence = source.evidence
     assert evidence.scalar is not None
     assert evidence.scalar.covariate_grains == frozenset({"total"})
     method = Method.cuped(covariates="pre")
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_daily_lift(decision_method=method)
+        view_readout(
+            experiment, resolver, Scope(view="daily", grain="daily"), decision_method=method
+        )
     assert raised.value.code == "estimation.cuped.arm_no_covariate"
-    assert analysis.run(decision_method=method)
-    analysis.close()
+    assert view_readout(experiment, resolver, decision_method=method)
+    resolver.close()
 
 
 def test_moments_loader_declaration_matches_baseline(tmp_path) -> None:
@@ -726,20 +753,23 @@ def test_moments_loader_declaration_matches_baseline(tmp_path) -> None:
 
     from increment.errors import CapabilityError
 
-    producer = Analysis.from_unit_summary(
+    producer_experiment, producer_resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
     path = tmp_path / "moments.parquet"
-    producer.export(path)
+    export_moments(producer_experiment, producer_resolver, path)
     rows = pq.read_table(path).to_pylist()
-    producer.close()
+    producer_resolver.close()
 
-    analysis = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
-    source = cast("Any", held_source(analysis))
+    analysis_experiment, analysis_resolver = from_moments(
+        rows, metrics={"revenue": "mean"}, control="control"
+    )
+    source = cast("Any", held_source(analysis_resolver))
     evidence = source.evidence
     assert evidence.kind == "moments"
     assert evidence.grains == frozenset({"total"})
@@ -766,7 +796,7 @@ def test_moments_loader_declaration_matches_baseline(tmp_path) -> None:
     with pytest.raises(CapabilityError) as raised:
         request_evidence(evidence_provider(source), UnitRowsRequest(source.context.metrics[0]))
     assert getattr(raised.value, "code", None) == "evidence.unit_rows_unavailable"
-    analysis.close()
+    analysis_resolver.close()
 
 
 @pytest.mark.parametrize("constructor", ["summary", "panel"])
@@ -779,8 +809,9 @@ def test_frame_row_and_raw_outcome_capabilities_match_methods(constructor) -> No
     panel_table = unit_panel_table()
     panel_frame = panel_table.append_column("pre", pa.array([1.0] * panel_table.num_rows))
     if constructor == "summary":
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             summary_frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -788,8 +819,9 @@ def test_frame_row_and_raw_outcome_capabilities_match_methods(constructor) -> No
         )
         raw_supported = True
     else:
-        analysis = Analysis.from_unit_panel(
+        analysis = from_frame(
             panel_frame,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
@@ -797,7 +829,7 @@ def test_frame_row_and_raw_outcome_capabilities_match_methods(constructor) -> No
             metrics={"revenue": "mean"},
         )
         raw_supported = False
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
     metric = source.context.metrics[0]
     evidence = source.evidence
     assert evidence.unit_rows is True
@@ -816,20 +848,21 @@ def test_frame_row_and_raw_outcome_capabilities_match_methods(constructor) -> No
                 evidence_provider(source), UnitRowsRequest(metric, outcome_stage="raw")
             )
         assert raised.value.code == "evidence.raw_outcomes_unavailable"
-    analysis.close()
+    analysis[1].close()
 
 
 def test_frame_counts_and_compliance_axes_match_methods() -> None:
     from increment.errors import CapabilityError
 
-    summary = Analysis.from_unit_summary(
+    summary_experiment, summary_resolver = from_frame(
         unit_summary_table(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
-    summary_source = cast("Any", held_source(summary))
+    summary_source = cast("Any", held_source(summary_resolver))
     assert summary_source.evidence.count_grains == frozenset({"unit"})
     assert request_evidence(evidence_provider(summary_source), CountsRequest(kind="unit"))
     with pytest.raises(CapabilityError) as summary_cluster:
@@ -838,17 +871,18 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     with pytest.raises(CapabilityError) as summary_dates:
         summary_source.compliance_dates()
     assert summary_dates.value.code == "source.frame.compliance_asof"
-    summary.close()
+    summary_resolver.close()
 
-    panel = Analysis.from_unit_panel(
+    panel_experiment, panel_resolver = from_frame(
         unit_panel_table(),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
         control="control",
         metrics={"revenue": "mean"},
     )
-    panel_source = cast("Any", held_source(panel))
+    panel_source = cast("Any", held_source(panel_resolver))
     assert panel_source.evidence.count_grains == frozenset({"unit"})
     assert request_evidence(evidence_provider(panel_source), CountsRequest(kind="unit"))
     with pytest.raises(CapabilityError) as panel_cluster:
@@ -856,7 +890,7 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     assert panel_cluster.value.code == "evidence.cluster_unavailable"
     assert panel_source.evidence.compliance_axis == "asof"
     assert panel_source.compliance_dates()
-    panel.close()
+    panel_resolver.close()
 
 
 @pytest.mark.parametrize("constructor", ["summary", "panel"])
@@ -870,8 +904,9 @@ def test_local_method_fit_uses_declared_unit_rows(constructor) -> None:
         frame = pa.Table.from_pylist(
             [{**row, "pre": float(index)} for index, row in enumerate(rows)]
         )
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             frame,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -882,18 +917,19 @@ def test_local_method_fit_uses_declared_unit_rows(constructor) -> None:
         frame = pa.Table.from_pylist(
             [{**row, "pre": float(int(row["user_id"][1:]))} for row in rows]
         )
-        analysis = Analysis.from_unit_panel(
+        analysis = from_frame(
             frame,
+            shape="panel",
             unit="user_id",
             group="variant",
             date="ds",
             control="control",
             metrics={"revenue": "mean"},
         )
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
     assert source.evidence.method_fit == "local"
-    assert analysis.run(decision_method=Method.cuped(covariates="pre"))
-    analysis.close()
+    assert view_readout(*analysis, decision_method=Method.cuped(covariates="pre"))
+    analysis[1].close()
 
 
 @pytest.mark.integration
@@ -960,61 +996,67 @@ def test_declared_capabilities_match_public_method_behavior(
     from increment.errors import CodedError
 
     if constructor == "summary":
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             unit_summary_table(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
             metrics={"revenue": "mean"},
         )
-        source = cast("Any", held_source(analysis))
+        source = cast("Any", held_source(analysis[1]))
     elif constructor == "panel":
         analysis = _encouragement_panel_analysis()
-        source = cast("Any", held_source(analysis))
+        source = cast("Any", held_source(analysis[1]))
     elif constructor == "restricted_breakout":
-        analysis = Analysis.from_unit_summary(
+        analysis = from_frame(
             unit_summary_table(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
             metrics={"revenue": "mean"},
             breakouts=("segment",),
         )
-        source = cast("Any", held_source(analysis)).summary_breakout_source
+        source = cast("Any", held_source(analysis[1])).summary_breakout_source
     elif constructor == "moments":
         import pyarrow.parquet as pq
 
-        producer = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             unit_summary_table(),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
             metrics={"revenue": "mean"},
         )
         path = tmp_path / "capability-moments.parquet"
-        producer.export(path)
+        export_moments(experiment, resolver, path)
         moments = pq.read_table(path).to_pylist()
-        producer.close()
-        analysis = Analysis.from_moments(moments, metrics={"revenue": "mean"}, control="control")
-        source = cast("Any", held_source(analysis))
+        resolver.close()
+        analysis = from_moments(moments, metrics={"revenue": "mean"}, control="control")
+        source = cast("Any", held_source(analysis[1]))
         assert source.evidence.compliance_axis == "none"
     elif constructor in {"definitions", "pinned"}:
-        analysis = Analysis.from_definitions(
-            "new_onboarding_v2", seeded_defs, seeded_con, store="none"
+        analysis = cast(
+            "tuple[Any, Any]",
+            from_definitions(
+                seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="none"
+            ),
         )
-        source = cast("Any", held_source(analysis))
+        source = cast("Any", held_source(analysis[1]))
         if constructor == "pinned":
             metric = source.context.metrics[0]
             with source.readout_snapshot(metrics=(metric,), population="assigned") as pinned:
                 _assert_capability_methods_match_behavior(pinned, analysis, CodedError)
-            analysis.close()
+            analysis[1].close()
             return
     elif constructor == "triggered":
         analysis = _triggered_analysis(tmp_path)
-        source = cast("Any", held_source(analysis)).triggered_source()
+        source = cast("Any", held_source(analysis[1])).triggered_source()
     elif constructor == "artifact":
         analysis = unit_day_artifact_analysis(tmp_path)
-        source = cast("Any", held_source(analysis))
+        source = cast("Any", held_source(analysis[1]))
     elif constructor in {"sql_totals", "breakout_moments"}:
         from tests.source_conformance import breakout_moments_source, sql_totals_source
 
@@ -1022,7 +1064,7 @@ def test_declared_capabilities_match_public_method_behavior(
         source = sql_totals_source() if constructor == "sql_totals" else breakout_moments_source()
     else:
         analysis = switchback_analysis()
-        source = cast("Any", held_source(analysis))
+        source = cast("Any", held_source(analysis[1]))
         evidence = source.evidence
         assert evidence.grains == frozenset()
         assert evidence.unit_rows is False
@@ -1032,18 +1074,20 @@ def test_declared_capabilities_match_public_method_behavior(
         assert evidence.sequential_capture == "none"
         assert not callable(getattr(source, "moments", None))
         with pytest.raises(CodedError):
-            analysis.capture_sequential(finalized=True)
-        analysis.close()
+            workflows.capture_sequential(*analysis, finalized=True)
+        analysis[1].close()
         return
 
     _assert_capability_methods_match_behavior(source, analysis, CodedError)
     if analysis is None:
         source.close()
     else:
-        analysis.close()
+        analysis[1].close()
 
 
-def _assert_capability_methods_match_behavior(source, analysis, error_type) -> None:
+def _assert_capability_methods_match_behavior(
+    source, analysis: tuple[Any, Any] | None, error_type
+) -> None:
     evidence = source.evidence
     metric = source.context.metrics[0]
     by = tuple(evidence.breakouts) if evidence.kind == "breakout" else ()
@@ -1116,7 +1160,7 @@ def _assert_capability_methods_match_behavior(source, analysis, error_type) -> N
     if evidence.sequential_capture == "none":
         if analysis is not None:
             with pytest.raises(error_type):
-                analysis.capture_sequential(finalized=True)
+                workflows.capture_sequential(*analysis, finalized=True)
         elif callable(capture):
             with pytest.raises(error_type):
                 capture(finalized=True)
@@ -1216,10 +1260,10 @@ def _triggered_analysis(tmp_path, *, cluster=False):
     connection = ibis.duckdb.connect()
     connection.create_table("raw_events", obj=events)
     cutoff = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
-    return Analysis.from_definitions(
-        "triggered",
+    return from_definitions(
         definitions_path,
         connection,
+        experiment_name="triggered",
         store="none",
         source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
     )
@@ -1258,8 +1302,9 @@ def _registered_unit_summary_analysis():
         primary="revenue",
         inference=InferenceSpec(kind="asymptotic_mean", registration=registration),
     )
-    return Analysis.from_unit_summary(
+    return from_frame(
         frame,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -1271,12 +1316,12 @@ def _registered_unit_summary_analysis():
 
 
 def test_registered_unit_summary_declares_construction_capture() -> None:
-    analysis = _registered_unit_summary_analysis()
-    source = cast("Any", held_source(analysis))
+    experiment, resolver = _registered_unit_summary_analysis()
+    source = cast("Any", held_source(resolver))
 
     assert source.evidence.sequential_capture == "construction"
-    assert analysis.capture_sequential(finalized=True).records
-    analysis.close()
+    assert workflows.capture_sequential(experiment, resolver, finalized=True).records
+    resolver.close()
 
 
 def test_moments_with_restored_checkpoint_declares_replay_capture(tmp_path) -> None:
@@ -1284,23 +1329,21 @@ def test_moments_with_restored_checkpoint_declares_replay_capture(tmp_path) -> N
 
     from increment import MetricSpec
 
-    analysis = _registered_unit_summary_analysis()
-    expected = analysis.sequential_snapshot()
+    analysis_experiment, analysis_resolver = _registered_unit_summary_analysis()
+    expected = workflows.sequential_snapshot(analysis_experiment, analysis_resolver)
     path = tmp_path / "registered-checkpoint.parquet"
-    analysis.export(path)
+    export_moments(analysis_experiment, analysis_resolver, path)
     payload = pq.read_table(path).to_pylist()
-    analysis.close()
+    analysis_resolver.close()
 
-    replay = Analysis.from_moments(
-        payload,
-        metrics=[MetricSpec(name="revenue", type="mean")],
-        control="control",
+    replay_experiment, replay_resolver = from_moments(
+        payload, metrics=[MetricSpec(name="revenue", type="mean")], control="control"
     )
-    source = cast("Any", held_source(replay))
+    source = cast("Any", held_source(replay_resolver))
 
     assert source.evidence.sequential_capture == "replay"
-    assert replay.sequential_snapshot() == expected
-    replay.close()
+    assert workflows.sequential_snapshot(replay_experiment, replay_resolver) == expected
+    replay_resolver.close()
 
 
 def _encouragement_summary_analysis():
@@ -1318,8 +1361,9 @@ def _encouragement_summary_analysis():
             justification="assignment changes revenue through uptake"
         ),
     )
-    analysis = Analysis.from_unit_summary(
+    analysis = from_frame(
         pa.Table.from_pylist(rows),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
@@ -1345,8 +1389,9 @@ def _encouragement_panel_analysis():
             justification="assignment changes revenue through uptake"
         ),
     )
-    return Analysis.from_unit_panel(
+    return from_frame(
         frame,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -1360,8 +1405,8 @@ def _encouragement_panel_analysis():
 def test_summary_and_moments_declare_retained_total_compliance(tmp_path) -> None:
     import pyarrow.parquet as pq
 
-    analysis, design = _encouragement_summary_analysis()
-    source = cast("Any", held_source(analysis))
+    (analysis_experiment, analysis_resolver), design = _encouragement_summary_analysis()
+    source = cast("Any", held_source(analysis_resolver))
     summary = cast(
         ComplianceSummary,
         request_evidence(evidence_provider(source), ComplianceRequest(design)),
@@ -1370,12 +1415,14 @@ def test_summary_and_moments_declare_retained_total_compliance(tmp_path) -> None
     assert source.evidence.compliance_axis == "total"
 
     path = tmp_path / "encouragement-summary.parquet"
-    analysis.export(path)
+    export_moments(analysis_experiment, analysis_resolver, path)
     payload = pq.read_table(path).to_pylist()
-    analysis.close()
+    analysis_resolver.close()
 
-    replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, design=design)
-    replay_source = cast("Any", held_source(replay))
+    replay_experiment, replay_resolver = from_moments(
+        payload, metrics={"revenue": "mean"}, design=design
+    )
+    replay_source = cast("Any", held_source(replay_resolver))
     assert replay_source.evidence.compliance_axis == "total"
     assert (
         cast(
@@ -1384,15 +1431,17 @@ def test_summary_and_moments_declare_retained_total_compliance(tmp_path) -> None
         )
         == summary
     )
-    replay.close()
+    replay_resolver.close()
 
 
 @pytest.mark.integration
 def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_defs) -> None:
     from increment.errors import CapabilityError
 
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con, store="none")
-    source = cast("Any", held_source(analysis))
+    experiment, resolver = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="none"
+    )
+    source = cast("Any", held_source(resolver))
     day = source.day_source(metrics=(source.context.metrics[0],))
 
     assert day.evidence.grains == frozenset({"daily", "asof"})
@@ -1408,7 +1457,7 @@ def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_de
     if source.context.trigger_name is not None:
         triggered = source.day_source(metrics=(source.context.metrics[0],), population="triggered")
         assert triggered.evidence.populations == frozenset({"triggered"})
-    analysis.close()
+    cast(Any, resolver).close()
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1433,28 +1482,27 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
     definitions.write_text(_defs_yaml())
     connection = ibis.duckdb.connect()
     connection.create_table("events", obj=_events(n_per_arm=30))
-    native = Analysis.from_definitions(
-        "exp",
+    native = from_definitions(
         definitions,
         connection,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(dt.datetime(2024, 1, 31, tzinfo=dt.UTC)),
     )
     artifact_context = _expected_context(definitions, "exp")
     store = WarehouseArtifactStore(connection, schema_name="capabilities")
-    reference = native.publish_unit_day_artifact(
-        store,
-        extensions=_extensions(artifact_context, "trigger_population"),
+    reference = publish_unit_day_artifact(
+        *native, store, extensions=_extensions(artifact_context, "trigger_population")
     )
-    analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=artifact_context)
-    source = cast("Any", held_source(analysis))
+    analysis = from_unit_day_artifact(store, reference, expected_context=artifact_context)
+    source = cast("Any", held_source(analysis[1]))
     triggered = source.triggered_source()
 
     assert "unit" not in triggered.evidence.count_grains
     with pytest.raises(InvalidRequestError) as missing_counts:
         triggered.unit_counts()
     assert missing_counts.value.code == "artifact.extension.missing"
-    analysis.close()
-    native.close()
+    analysis[1].close()
+    cast(Any, native[1]).close()
     connection.disconnect()
 
     cluster_definitions = tmp_path / "cluster.yaml"
@@ -1470,17 +1518,17 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
     connection.create_table(
         "cluster_trigger_events", obj=_clustered_trigger_events(n_stores_per_arm=4)
     )
-    native = Analysis.from_definitions(
-        "exp",
+    native = from_definitions(
         cluster_definitions,
         connection,
+        experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(dt.datetime(2024, 1, 9, tzinfo=dt.UTC)),
     )
     artifact_context = _expected_context(cluster_definitions, "exp")
     store = WarehouseArtifactStore(connection, schema_name="cluster_capabilities")
-    reference = native.publish_unit_day_artifact(store)
-    analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=artifact_context)
-    source = cast("Any", held_source(analysis))
+    reference = publish_unit_day_artifact(*native, store)
+    analysis = from_unit_day_artifact(store, reference, expected_context=artifact_context)
+    source = cast("Any", held_source(analysis[1]))
 
     assert "assignment" not in source.evidence.count_grains
     assert "cluster" not in source.evidence.count_grains
@@ -1488,13 +1536,13 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
     with pytest.raises(InvalidRequestError) as missing_assignment_counts:
         request_evidence(evidence_provider(source), CountsRequest(kind="assignment"))
     assert missing_assignment_counts.value.code == "artifact.evidence.unavailable"
-    analysis.close()
-    native.close()
+    analysis[1].close()
+    cast(Any, native[1]).close()
     connection.disconnect()
 
     connection, native, context, store, reference = _published()
-    analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    source = cast("Any", held_source(analysis))
+    analysis = from_unit_day_artifact(store, reference, expected_context=context)
+    source = cast("Any", held_source(analysis[1]))
     assert source.evidence.count_grains == frozenset({"unit", "assignment"})
     assert (
         cast(
@@ -1505,16 +1553,16 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
             CountEvidence, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
         ).counts
     )
-    analysis.close()
-    native.close()
+    analysis[1].close()
+    native[1].close()
     connection.disconnect()
 
 
 @pytest.mark.integration
 def test_artifact_facade_keeps_warehouse_fit_declaration(tmp_path) -> None:
     analysis = unit_day_artifact_analysis(tmp_path)
-    source = cast("Any", held_source(analysis))
+    source = cast("Any", held_source(analysis[1]))
 
     assert source.evidence.method_fit == "warehouse"
     assert callable(source.fit_cuped_multicovariate)
-    analysis.close()
+    analysis[1].close()

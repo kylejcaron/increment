@@ -85,8 +85,8 @@ class CellClause:
 @dataclass(frozen=True)
 class EntryRow:
     """``family_clauses`` carry the conditions a capability's own family measures
-    outside every Analysis constructor; they render beneath the row, never in a
-    constructor column."""
+    outside every experiment builder; they render beneath the row, never in a
+    builder column."""
 
     id: str
     label: str
@@ -1556,7 +1556,7 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
 _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
     _triggered_auxiliary_row(
         "triggered-read-breakout",
-        "`run_breakout()` / `breakout_summaries()` with a declared trigger",
+        "breakout view / `breakout_summaries()` with a declared trigger",
         ("breakout_definitions_triggered_population",),
         (
             "breakout_artifact_complete_trigger_evidence",
@@ -1578,7 +1578,7 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
     ),
     _triggered_auxiliary_row(
         "triggered-read-dashboard-group",
-        "`dashboard_group_data(population=...)`",
+        "`prepare_dashboard()` group data per population",
         ("dashboard_definitions_population",),
         ("dashboard_artifact_refused",),
         _other_auxiliary_bindings("dashboard"),
@@ -1655,7 +1655,7 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
     ),
     _row(
         "callable-experiment-health",
-        "`Analysis.health_check()` source diagnostics",
+        "`health_check()` source diagnostics",
         {
             D: (_consumer("callable_experiment_health", "health_definitions_triggered"),),
             A: (
@@ -1833,7 +1833,7 @@ def validate_catalog(rows: Sequence[EntryRow] = ENTRY_ROWS) -> None:
     """Every row fills its table's columns and every clause names a resolvable
     contract whose evidence is a selector into an existing test module."""
     if set(INGRESSES) != set(CONSTRUCTORS):
-        raise ValueError("catalog ingresses must be exactly the Analysis constructors")
+        raise ValueError("catalog ingresses must be exactly the experiment builders")
     ids: set[str] = set()
     for row in rows:
         if row.id in ids:
@@ -1864,7 +1864,7 @@ def validate_catalog(rows: Sequence[EntryRow] = ENTRY_ROWS) -> None:
 
 def _validate_family_binding(where: str, binding: Binding) -> None:
     """A family clause is a consumer expectation on the family's own ingress,
-    never on an Analysis constructor or the auxiliary other-entry-points column."""
+    never on an experiment builder or the auxiliary other-entry-points column."""
     if not isinstance(binding, ConsumerBinding):
         raise ValueError(f"{where}: family clauses must name consumer evidence")
     expectation = _consumer_expectation(binding)

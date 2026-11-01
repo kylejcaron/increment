@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 from scipy.special import expit
 
-from increment import Analysis
+from increment import from_frame
 from increment.errors import InvalidRequestError
 from increment.estimation._adjust.dml import _dml_theta
 from increment.estimation._adjust.learners import RidgeOutcome
@@ -21,7 +21,7 @@ from increment.estimation.engine import Method
 from increment.estimators import IdentificationError
 from increment.frame import from_unit_summary
 from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
-from tests.analysis_factory import lift_rows
+from tests.analysis_factory import lift_rows, view_readout
 from tests.estimation.test_adjust import _CellMean
 
 
@@ -613,7 +613,7 @@ def test_relative_control_fits_never_perturb_the_slope_fits():
 
 
 # Parameter recovery: does DML recover a known effect under confounding that
-# biases the naive comparison, through the full Analysis(design=Observational(...)) entry point.
+# biases the naive comparison, through the full from_frame(design=Observational(...)) entry point.
 
 
 def _confounded_table(n: int, seed: int, effect: float = 2.0) -> pa.Table:
@@ -646,23 +646,27 @@ _TRUE_RELATIVE_LIFT = _TRUE_ADDITIVE_ATE / 10.0
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 def test_dml_recovers_theta_where_naive_is_biased():
-    an_dml = Analysis.from_unit_summary(
+    an_dml_experiment, an_dml_resolver = from_frame(
         _confounded_table(600, seed=3),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         design=_OBS_DML,
     )
-    (dml,) = lift_rows(an_dml.run(decision_method=Method(name="dml")))
+    (dml,) = lift_rows(
+        view_readout(an_dml_experiment, an_dml_resolver, decision_method=Method(name="dml"))
+    )
 
-    an_naive = Analysis.from_unit_summary(
+    an_naive_experiment, an_naive_resolver = from_frame(
         _confounded_table(600, seed=3),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="C",
         metrics={"revenue": "mean"},
     )
-    (naive,) = lift_rows(an_naive.run())
+    (naive,) = lift_rows(view_readout(an_naive_experiment, an_naive_resolver))
 
     dml_lift = dml.require_lift()
     naive_lift = naive.require_lift()
@@ -700,15 +704,21 @@ def _dml_recovery_replications():
     hits = 0
     for i in range(_RECOVERY_REPS):
         table = _confounded_table(_RECOVERY_N, seed=100 + i)
-        an_dml = Analysis.from_unit_summary(
+        an_dml_experiment, an_dml_resolver = from_frame(
             table,
+            shape="summary",
             unit="user_id",
             group="variant",
             metrics={"revenue": "mean"},
             design=_RECOVERY_GATE,
         )
-        an_naive = Analysis.from_unit_summary(
-            table, unit="user_id", group="variant", control="C", metrics={"revenue": "mean"}
+        an_naive_experiment, an_naive_resolver = from_frame(
+            table,
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="C",
+            metrics={"revenue": "mean"},
         )
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -716,8 +726,10 @@ def _dml_recovery_replications():
                 message=r"(?:IPTW|DML|AIPW) covariate balance advisory",
                 category=UserWarning,
             )
-            (dml,) = lift_rows(an_dml.run(decision_method=Method(name="dml")))
-            (naive,) = lift_rows(an_naive.run())
+            (dml,) = lift_rows(
+                view_readout(an_dml_experiment, an_dml_resolver, decision_method=Method(name="dml"))
+            )
+            (naive,) = lift_rows(view_readout(an_naive_experiment, an_naive_resolver))
         dml_lift = dml.require_lift()
         naive_lift = naive.require_lift()
         dml_errors.append(dml_lift.value - _TRUE_RELATIVE_LIFT)
@@ -770,10 +782,15 @@ def test_dml_recovery_smoke_single_replication_is_a_real_interval():
     test exists to be.
     """
     table = _confounded_table(60, seed=999)
-    an = Analysis.from_unit_summary(
-        table, unit="user_id", group="variant", metrics={"revenue": "mean"}, design=_RECOVERY_GATE
+    experiment, resolver = from_frame(
+        table,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=_RECOVERY_GATE,
     )
-    (dml,) = lift_rows(an.run(decision_method=Method(name="dml")))
+    (dml,) = lift_rows(view_readout(experiment, resolver, decision_method=Method(name="dml")))
     dml_lift = dml.require_lift()
     assert math.isfinite(dml_lift.value)
     assert dml_lift.lb is not None and dml_lift.ub is not None

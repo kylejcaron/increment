@@ -6,10 +6,12 @@ from fractions import Fraction as F
 
 import pytest
 
+from increment import from_frame
 from increment.errors import DefinitionError
 from increment.frame import MetricSpec, synthesise_metric
 from increment.semantics.models import AnalysisPlan, InferenceSpec
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 from tests.binary_sequential_cases import (
     DESIGN,
     check_path_parity,
@@ -422,8 +424,6 @@ def test_always_valid_family_allocation_matches_the_scalar_route():
 def test_end_to_end_binary_always_valid_returns_an_interval_and_a_decision():
     import pandas as pd
 
-    from increment import Analysis
-
     frame = pd.DataFrame(
         [
             {"unit": f"{i:08d}-{arm}", "arm": arm, "outcome": value, "exposure": i}
@@ -431,8 +431,9 @@ def test_end_to_end_binary_always_valid_returns_an_interval_and_a_decision():
             for arm, value in zip(("control", "treatment"), pair, strict=True)
         ]
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         exposure_date="exposure",
@@ -444,7 +445,7 @@ def test_end_to_end_binary_always_valid_returns_an_interval_and_a_decision():
             inference=InferenceSpec(kind="always_valid", baseline_rate=F(3, 10)),
         ),
     )
-    row = analysis.run()[0]
+    row = view_readout(experiment, resolver)[0]
     assert row.inference == "always_valid"
     lift = row.require_lift()
     assert lift.lb is not None and lift.lb > 0

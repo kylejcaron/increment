@@ -17,7 +17,7 @@ import pyarrow as pa
 import pytest
 from pydantic import ValidationError
 
-from increment import from_frame
+from increment import from_frame, from_moments
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.targeting import ClusterBootstrap, TargetingRule
@@ -57,6 +57,7 @@ from increment.simulate.cluster_dgp import (
     simulate_clustered_cate,
     validation_support_ceiling,
 )
+from tests.analysis_factory import view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -1039,7 +1040,7 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
     import pyarrow.parquet as pq
     from scipy.stats import t
 
-    from increment import Analysis, readouts
+    from increment import readouts
     from increment.evidence import (
         ComplianceRequest,
         CountEvidence,
@@ -1127,10 +1128,12 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
         assert compliance.lb is not None and compliance.ub is not None
         assert compliance.lb < compliance.value < compliance.ub
         assert any(row.estimand == "late" and row.require_lift().lb is not None for row in live)
-        portable = Analysis.from_moments(
+        experiment, resolver = from_moments(
             rows, metrics={m.name: "mean" for m in source.context.metrics}, design=design
         )
-        assert keyed(portable.run(estimands=["compliance", "late"])) == keyed(live)
+        assert keyed(view_readout(experiment, resolver, estimands=["compliance", "late"])) == keyed(
+            live
+        )
         if reference is None:
             reference = (wire, keyed(live))
         else:

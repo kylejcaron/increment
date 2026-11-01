@@ -5,18 +5,20 @@ from __future__ import annotations
 import ast
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
+from increment import Scope, from_frame
 from increment._policy_alpha import resolve_cell_alpha
-from increment.analysis import Analysis
 from increment.decision import CompiledDecisionPlan
 from increment.estimation.results import LiftEstimate
+from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec, synthesise_metric
 from increment.plan import compile_decision_plan
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+from tests.analysis_factory import view_readout
 
 _P = 3
 _A = 2
@@ -54,7 +56,7 @@ def _compiled_plan() -> CompiledDecisionPlan:
     )
 
 
-def _analysis() -> Analysis:
+def _analysis() -> Any:
     import pandas as pd
 
     metric_names = (
@@ -89,8 +91,9 @@ def _analysis() -> Analysis:
                         )
                     rows.append(row)
 
-    return Analysis.from_unit_panel(
+    return from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="unit_id",
         group="arm",
         date="day",
@@ -134,12 +137,16 @@ def _assert_rows_match_resolver(
 
 def test_every_confirmatory_path_matches_the_policy_resolver():
     assert len({_P, _A, _K}) == 3, "divisors must be pairwise-distinct"
-    analysis = _analysis()
+    experiment, resolver = _analysis()
     plan = _compiled_plan()
 
-    whole = analysis.run()
-    daily = analysis.run_daily_lift()
-    asof = analysis.run_asof_lift(dimension="segment")
+    whole = view_readout(experiment, resolver)
+    daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+    asof = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("segment", None)),
+    )
 
     expected_roles = {"primary", "secondary", "guardrail"}
     _assert_rows_match_resolver(

@@ -6,7 +6,7 @@ from fractions import Fraction
 
 import pytest
 
-from increment import Analysis
+from increment import from_frame, from_moments
 from increment.errors import CapabilityError
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec, synthesise_metric
@@ -15,6 +15,8 @@ from increment.semantics.design import Encouragement, ExclusionRestriction, Rand
 from increment.semantics.models import AnalysisPlan, InferenceSpec
 from increment.semantics.sequential import SequentialCompliancePolicy
 from increment.sequential_source import frame_observation_mapping
+from increment.workflows import capture_sequential, export_moments, sequential_snapshot
+from tests.analysis_factory import view_readout
 
 DESIGN = Encouragement(
     control_group="control",
@@ -149,8 +151,9 @@ def _frame(n=120):
 
 
 def _summary():
-    return Analysis.from_unit_summary(
+    return from_frame(
         _frame(),
+        shape="summary",
         unit="unit",
         group="arm",
         metrics=SPECS,
@@ -168,8 +171,8 @@ def _summary():
 
 @pytest.mark.integration
 def test_unit_summary_runs_the_composition_end_to_end():
-    analysis = _summary()
-    rows = analysis.run(estimands=("itt", "compliance"))
+    experiment, resolver = _summary()
+    rows = view_readout(experiment, resolver, estimands=("itt", "compliance"))
     assert all(isinstance(row, LiftEstimate) for row in rows)
     by_estimand = {(row.metric, row.estimand): row for row in rows if isinstance(row, LiftEstimate)}
     assert set(by_estimand) == {("orders", "itt"), ("revenue", "itt"), ("uptake", "compliance")}
@@ -207,18 +210,24 @@ def test_compiled_plan_round_trips_the_wire():
 def test_from_moments_replays_the_composed_checkpoint_exactly(tmp_path):
     import pyarrow.parquet as pq
 
-    summary = _summary()
-    snapshot = summary.capture_sequential(finalized=True)
-    oracle_rows = summary.run(estimands=("itt", "compliance"))
+    summary_experiment, summary_resolver = _summary()
+    snapshot = capture_sequential(summary_experiment, summary_resolver, finalized=True)
+    oracle_rows = view_readout(
+        summary_experiment, summary_resolver, estimands=("itt", "compliance")
+    )
     assert all(isinstance(row, LiftEstimate) for row in oracle_rows)
     oracle = {
         (row.metric, row.estimand): row for row in oracle_rows if isinstance(row, LiftEstimate)
     }
     path = tmp_path / "checkpoint.parquet"
-    summary.export(path)
-    replay = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=SPECS, design=DESIGN)
-    assert replay.sequential_snapshot() == snapshot
-    replayed_rows = replay.run(estimands=("itt", "compliance"))
+    export_moments(summary_experiment, summary_resolver, path)
+    replay_experiment, replay_resolver = from_moments(
+        pq.read_table(path).to_pylist(), metrics=SPECS, design=DESIGN
+    )
+    assert sequential_snapshot(replay_experiment, replay_resolver) == snapshot
+    replayed_rows = view_readout(
+        replay_experiment, replay_resolver, estimands=("itt", "compliance")
+    )
     assert all(isinstance(row, LiftEstimate) for row in replayed_rows)
     replayed = {
         (row.metric, row.estimand): row for row in replayed_rows if isinstance(row, LiftEstimate)
@@ -252,8 +261,9 @@ def _panel():
 
 @pytest.mark.integration
 def test_unit_panel_runs_the_composition_end_to_end():
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         _panel(),
+        shape="panel",
         unit="unit",
         group="arm",
         date="day",
@@ -269,8 +279,8 @@ def test_unit_panel_runs_the_composition_end_to_end():
             compliance=SequentialCompliancePolicy(alpha=Fraction(1, 20)),
         ),
     )
-    analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 1))
-    rows = analysis.run(estimands=("itt", "compliance"))
+    capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 1))
+    rows = view_readout(experiment, resolver, estimands=("itt", "compliance"))
     assert all(isinstance(row, LiftEstimate) for row in rows)
     by_estimand = {(row.metric, row.estimand): row for row in rows if isinstance(row, LiftEstimate)}
     assert set(by_estimand) == {("orders", "itt"), ("revenue", "itt"), ("uptake", "compliance")}
