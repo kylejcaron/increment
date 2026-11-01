@@ -272,6 +272,7 @@ def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_sup
 
     from increment import AnalysisPlan, InferenceSpec, Randomized
     from increment.evidence import BreakoutIdentity
+    from increment.workflows import sequential_snapshot
 
     exposed, closed = dt.date(2025, 1, 1), dt.date(2025, 1, 10)
     frame = pd.DataFrame(
@@ -312,12 +313,14 @@ def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_sup
             experiment, scopes=(Scope(view="breakout", grain="total", segment=identities),)
         )
 
-    with _frame_read_calls() as reads, pytest.raises(CodedError) as unread:
-        run(selected(), resolver)
-    assert reads == []
-    with pytest.raises(CodedError) as captured:
-        run(selected(), resolver, capture=capture)
-    assert unread.value.code == captured.value.code == "sequential.route.unsupported"
+    for requested_capture in (None, capture):
+        with _frame_read_calls() as reads, pytest.raises(CodedError) as raised:
+            run(selected(), resolver, capture=requested_capture)
+        assert raised.value.code == "sequential.route.unsupported"
+        assert reads == []
+    with pytest.raises(CodedError) as uncaptured:
+        sequential_snapshot(experiment, resolver)
+    assert uncaptured.value.code == "sequential.continuation.legacy"
     country = run(selected(BreakoutIdentity("country", None)), resolver, capture=capture).cells
     assert {cell.identity.key.dimension for cell in country} == {"country"}
 

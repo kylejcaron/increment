@@ -657,6 +657,9 @@ def execute_views(
     ]
     if len(planned) == 1:
         scope, operation, kwargs, scope_binding = planned[0]
+        if capture is not None:
+            # Validate the view's request before the capture reads and retains source state.
+            operation_scope(scope_binding, operation, kwargs, planner=_PLANNER, capture=capture)
         ambient = (
             nullcontext()
             if execution_context is None
