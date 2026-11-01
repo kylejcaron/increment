@@ -74,6 +74,7 @@ _EXPORTS = {
     "validate_cate": ("increment.cate", "validate_cate"),
     "select_targeting_rule": ("increment.cate", "select_targeting_rule"),
     "targeting_rule": ("increment.cate", "targeting_rule"),
+    "sitewide": ("increment._sitewide", "sitewide"),
     "segment_heterogeneity": ("increment.breakout.heterogeneity", "segment_heterogeneity"),
     "segment_contrast": ("increment.breakout.heterogeneity", "segment_contrast"),
     "segment_rollout_recommendation": (
@@ -112,6 +113,7 @@ _EXPORTS = {
 
 if TYPE_CHECKING:
     import increment.impute as impute
+    from increment._sitewide import sitewide as sitewide
     from increment._study import (
         ParallelStudyEnvelope as ParallelStudyEnvelope,
     )
@@ -430,6 +432,7 @@ __all__ = [
     "validate_cate",
     "select_targeting_rule",
     "targeting_rule",
+    "sitewide",
     "segment_heterogeneity",
     "segment_contrast",
     "segment_rollout_recommendation",

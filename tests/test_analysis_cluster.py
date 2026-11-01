@@ -16,10 +16,12 @@ import ibis
 import numpy as np
 import pytest
 
+from increment import from_definitions
 from increment.analysis import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.sitewide import SitewideImpact
+from increment.estimators import sitewide
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows, make_analysis_like
@@ -109,7 +111,7 @@ def _event_rows(
     return rows
 
 
-def _analysis(tmp_path, *, cluster: bool = True, rows=None, windowed: bool = True) -> Analysis:
+def _warehouse(tmp_path, *, cluster: bool, rows, windowed: bool) -> tuple[Any, Any]:
     con = ibis.duckdb.connect()
     con.create_table("cl_events", obj=rows if rows is not None else _event_rows())
     cluster_line = "    cluster: store_id" if cluster else ""
@@ -118,7 +120,19 @@ def _analysis(tmp_path, *, cluster: bool = True, rows=None, windowed: bool = Tru
     if not windowed:
         definitions = definitions.replace("    window_days: 7\n", "")
     defs.write_text(definitions)
+    return con, defs
+
+
+def _analysis(tmp_path, *, cluster: bool = True, rows=None, windowed: bool = True) -> Analysis:
+    con, defs = _warehouse(tmp_path, cluster=cluster, rows=rows, windowed=windowed)
     return Analysis("store_test", defs, con)
+
+
+def _experiment(
+    tmp_path, *, cluster: bool = True, rows=None, windowed: bool = True
+) -> tuple[Any, Any]:
+    con, defs = _warehouse(tmp_path, cluster=cluster, rows=rows, windowed=windowed)
+    return from_definitions(defs, con, experiment_name="store_test")
 
 
 @pytest.mark.parametrize(
@@ -568,9 +582,10 @@ def test_day_axis_methods_refuse_on_a_clustered_experiment(tmp_path, method):
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster:UserWarning")
 def test_sitewide_serves_a_clustered_experiment(tmp_path):
-    flat = _analysis(tmp_path, cluster=False, windowed=False).sitewide("revenue_per_user")
-    clustered = _analysis(tmp_path, cluster=True, windowed=False).sitewide("revenue_per_user")
+    flat = sitewide(*_experiment(tmp_path, cluster=False, windowed=False), "revenue_per_user")
+    clustered = sitewide(*_experiment(tmp_path, cluster=True, windowed=False), "revenue_per_user")
 
+    assert isinstance(flat, SitewideImpact)
     assert isinstance(clustered, SitewideImpact)
     assert clustered.absolute_impact == pytest.approx(flat.absolute_impact, rel=1e-9)
     assert clustered.absolute_impact_se > flat.absolute_impact_se
@@ -629,7 +644,9 @@ def test_sitewide_refuses_material_cross_arm_cluster_size_imbalance(tmp_path):
     # the whole-site number would confound the treatment effect with the size imbalance, so the clustered path refuses.
     rows = _sized_event_rows(control_units=2, treatment_units=6)
     with pytest.raises(CapabilityError) as raised:
-        _analysis(tmp_path, cluster=True, rows=rows, windowed=False).sitewide("revenue_per_user")
+        sitewide(
+            *_experiment(tmp_path, cluster=True, rows=rows, windowed=False), "revenue_per_user"
+        )
     assert raised.value.code == "query.builders.cluster_size_imbalance"
 
 
@@ -638,8 +655,8 @@ def test_sitewide_refuses_material_cross_arm_cluster_size_imbalance(tmp_path):
 def test_sitewide_allows_a_balanced_cluster_size_profile(tmp_path):
     # Matched cluster sizes (3 units/store in both arms) clear the guard.
     rows = _sized_event_rows(control_units=3, treatment_units=3)
-    impact = _analysis(tmp_path, cluster=True, rows=rows, windowed=False).sitewide(
-        "revenue_per_user"
+    impact = sitewide(
+        *_experiment(tmp_path, cluster=True, rows=rows, windowed=False), "revenue_per_user"
     )
     assert isinstance(impact, SitewideImpact)
     assert math.isfinite(impact.absolute_impact)
@@ -649,13 +666,13 @@ def test_sitewide_allows_a_balanced_cluster_size_profile(tmp_path):
 def test_sitewide_refuses_clustered_evidence_without_cluster_counts(tmp_path, monkeypatch):
     import dataclasses
 
-    analysis = _analysis(
+    experiment, resolver = _experiment(
         tmp_path,
         cluster=True,
         rows=_sized_event_rows(control_units=3, treatment_units=3),
         windowed=False,
     )
-    source = _native_source(analysis)
+    source = resolver.binding.source
     complete = source.sitewide_evidence
     monkeypatch.setattr(
         source,
@@ -665,7 +682,7 @@ def test_sitewide_refuses_clustered_evidence_without_cluster_counts(tmp_path, mo
         ),
     )
     with pytest.raises(CapabilityError) as raised:
-        analysis.sitewide("revenue_per_user")
+        sitewide(experiment, resolver, "revenue_per_user")
     assert raised.value.code == "facade.analysis.sitewide_cluster_counts_missing"
     assert raised.value.context["cluster"] == "store_id"
 
@@ -712,17 +729,18 @@ def test_sitewide_serves_a_clustered_multi_arm_experiment(tmp_path):
     named, nets the OTHER arm's clusters out of the baseline exactly like
     it would at iid grain."""
     rows = [*_event_rows(), *_third_arm_rows()]
-    clustered = _analysis(tmp_path, cluster=True, rows=rows, windowed=False)
-    flat = _analysis(tmp_path, cluster=False, rows=rows, windowed=False)
+    clustered = _experiment(tmp_path, cluster=True, rows=rows, windowed=False)
+    flat = _experiment(tmp_path, cluster=False, rows=rows, windowed=False)
 
     with pytest.raises(InvalidRequestError) as refused:
-        clustered.sitewide("revenue_per_user")
+        sitewide(*clustered, "revenue_per_user")
     assert refused.value.code == "facade.analysis.sitewide_arm_required"
 
-    impact = clustered.sitewide("revenue_per_user", arm="treatment_b")
-    flat_impact = flat.sitewide("revenue_per_user", arm="treatment_b")
+    impact = sitewide(*clustered, "revenue_per_user", arm="treatment_b")
+    flat_impact = sitewide(*flat, "revenue_per_user", arm="treatment_b")
 
     assert isinstance(impact, SitewideImpact)
+    assert isinstance(flat_impact, SitewideImpact)
     assert impact.other_arm_ids == ("treatment",)
     assert impact.absolute_impact == pytest.approx(flat_impact.absolute_impact, rel=1e-9)
     assert impact.absolute_impact_se > flat_impact.absolute_impact_se
@@ -740,7 +758,7 @@ def test_sitewide_serves_a_clustered_multi_arm_experiment(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_still_serves_the_same_fixture_without_a_cluster(tmp_path):
-    impact = _analysis(tmp_path, cluster=False, windowed=False).sitewide("revenue_per_user")
+    impact = sitewide(*_experiment(tmp_path, cluster=False, windowed=False), "revenue_per_user")
 
     assert isinstance(impact, SitewideImpact)
     assert math.isfinite(impact.absolute_impact)

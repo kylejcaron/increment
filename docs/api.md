@@ -43,7 +43,8 @@ The policy covers:
   `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
   `compiled_decision_plan`, `available_metrics`, `unit_counts`, `srm`,
   `trigger_rates`, `allocation_history`, `health_check`,
-  `assignment_diagnostic`, `capture_sequential`, and `sequential_snapshot`.
+  `assignment_diagnostic`, `planning_baseline`, `capture_sequential`, and
+  `sequential_snapshot`.
   These functions operate on an `(experiment, resolver)` pair; the experiment
   definition inspection returns the semantic source declaration, not the
   kernel execution request. A sequential capture is kept by the resolver's
@@ -53,9 +54,11 @@ The policy covers:
   `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
   pair, and publication retains trusted extension selection and refresh semantics.
 - `increment.estimators` conditional-effect operations `estimate_cate`,
-  `validate_cate`, `targeting_rule`, and `select_targeting_rule` operate on an
-  `(experiment, resolver)` pair; their remaining parameters are unchanged. The
-  data-only array kernels in `increment.estimation.targeting` take no source.
+  `validate_cate`, `targeting_rule`, and `select_targeting_rule`, and the
+  whole-site estimate `sitewide`, operate on an `(experiment, resolver)` pair;
+  their remaining parameters are unchanged. The data-only array kernels in
+  `increment.estimation.targeting` and `increment.estimation.sitewide`, and the
+  `increment.power` solvers, take no source.
 - result fields and schemas, including row sets, null reasons, and interval
   reference/guarantee labels;
 - stable refusal codes and named context fields;
@@ -111,6 +114,12 @@ change without notice.
   results, and refusal codes are unchanged; `estimate_cate`'s `control` defaults
   to the declared control arm, and a declared trigger restricts every operation
   to triggered units.
+- Release note (breaking API cutover): `increment.workflows.planning_baseline(experiment, resolver, metric)`
+  and `increment.estimators.sitewide(experiment, resolver, metric, *, arm=None, alpha=0.05, population="assigned")`
+  are the experiment-bound forms of `Analysis.planning_baseline` and `Analysis.sitewide`. Results,
+  trigger/CUPED/cluster/quantile/compliance handling, switchback baselines,
+  calendar-window site volume, randomized-only restrictions, and refusal codes
+  are unchanged. `increment.power` gains no source-reading function.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
@@ -1276,10 +1285,11 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 
 ## Results (`increment.results`)
 
-Sitewide behavior is exposed through `Analysis.sitewide(metric=...)`, with
-output values available from the receive-only results namespace.
+Sitewide behavior is exposed through
+`increment.estimators.sitewide(experiment, resolver, metric=...)`, with output
+values available from the receive-only results namespace.
 
-`Analysis.sitewide(metric, population="assigned")` reports an assigned
+`sitewide(experiment, resolver, metric, population="assigned")` reports an assigned
 intent-to-treat whole-site impact, including when the experiment declares a
 trigger. For triggered experiments, `population="triggered"` reports a
 conditional impact scaled to enrolled units in finalized trigger membership.

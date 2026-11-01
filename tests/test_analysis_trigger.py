@@ -763,6 +763,33 @@ def _analysis(
     )
 
 
+def _experiment(
+    tmp_path,
+    table,
+    trigger="saw_surface",
+    *,
+    end=None,
+    window_days=7,
+) -> tuple[Any, Any]:
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=table)
+    return from_definitions(
+        _write_defs(tmp_path, trigger, end=end, window_days=window_days),
+        con,
+        experiment_name="exp",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
+        ),
+    )
+
+
+def _close_pairs(*pairs: tuple[Any, Any] | None) -> None:
+    for pair in pairs:
+        if pair is not None:
+            pair[1].close()
+
+
 @pytest.mark.integration
 def test_headline_run_does_not_capture_unrequested_failing_breakout(tmp_path):
     definitions = (
@@ -2406,16 +2433,16 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
-    from tests.analysis_factory import _native_source, native_connection
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from increment.estimators import sitewide
+    from tests.analysis_factory import native_connection
 
-    analysis = _analysis(
+    native = _experiment(
         tmp_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         end="2024-01-15",
         window_days=None,
     )
-    untriggered = _analysis(
+    untriggered = _experiment(
         tmp_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         trigger=None,
@@ -2424,16 +2451,16 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
     )
     adopted = None
     try:
-        triggered_result = analysis.sitewide("revenue")
-        untriggered_result = untriggered.sitewide("revenue")
+        triggered_result = sitewide(*native, "revenue")
+        untriggered_result = sitewide(*untriggered, "revenue")
         assert triggered_result.analysis_population == "assigned"
         assert triggered_result.absolute_impact == pytest.approx(untriggered_result.absolute_impact)
         assert triggered_result.relative_impact == pytest.approx(untriggered_result.relative_impact)
 
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)), analysis, kinds=("site_volume",)
+        adopted = _adopted_cate_experiment(
+            native_connection(native[1].binding.source), native, kinds=("site_volume",)
         )
-        artifact_result = adopted.sitewide("revenue")
+        artifact_result = sitewide(*adopted, "revenue")
         assert artifact_result.analysis_population == "assigned"
         assert artifact_result.absolute_impact == pytest.approx(triggered_result.absolute_impact)
         assert artifact_result.relative_impact == pytest.approx(triggered_result.relative_impact)
@@ -2450,20 +2477,17 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
             artifact_result,
         )
 
-        triggered_result = analysis.sitewide("revenue", population="triggered")
+        triggered_result = sitewide(*native, "revenue", population="triggered")
         assert triggered_result.analysis_population == "triggered"
     finally:
-        analysis.close()
-        untriggered.close()
-        if adopted is not None:
-            _close_parity_analysis(adopted)
+        _close_pairs(adopted, native, untriggered)
 
 
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path):
-    from tests.analysis_factory import _native_source, native_connection
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from increment.estimators import sitewide
+    from tests.analysis_factory import native_connection
 
     base = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
     late = pa.table(
@@ -2477,28 +2501,25 @@ def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path
         },
         schema=base.schema,
     )
-    with_late = _analysis(
+    with_late = _experiment(
         tmp_path, pa.concat_tables([base, late]), end="2024-01-15", window_days=None
     )
-    without_late = _analysis(tmp_path, base, end="2024-01-15", window_days=None)
+    without_late = _experiment(tmp_path, base, end="2024-01-15", window_days=None)
     adopted = None
     try:
-        native = with_late.sitewide("revenue")
-        reference = without_late.sitewide("revenue")
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(with_late)), with_late, kinds=("site_volume",)
+        native = sitewide(*with_late, "revenue")
+        reference = sitewide(*without_late, "revenue")
+        adopted = _adopted_cate_experiment(
+            native_connection(with_late[1].binding.source), with_late, kinds=("site_volume",)
         )
-        artifact = adopted.sitewide("revenue")
+        artifact = sitewide(*adopted, "revenue")
         assert isinstance(reference, SitewideImpact)
         for result in (native, artifact):
             assert isinstance(result, SitewideImpact)
             assert result.site_total_volume == pytest.approx(reference.site_total_volume)
             assert result.relative_impact == pytest.approx(reference.relative_impact)
     finally:
-        with_late.close()
-        without_late.close()
-        if adopted is not None:
-            _close_parity_analysis(adopted)
+        _close_pairs(adopted, with_late, without_late)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")

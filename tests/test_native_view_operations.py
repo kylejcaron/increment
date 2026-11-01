@@ -24,7 +24,7 @@ from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, make_analysis_like
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
 from tests.test_analysis_breakout import _analysis_with_country_breakout
-from tests.test_analysis_sitewide import _REVENUE_PER_USER, _REVENUE_PER_USER_PLAN
+from tests.test_analysis_sitewide import _REVENUE_PER_USER, _pricing_experiment
 from tests.test_native_core_operations import _assert_operation_refusal
 
 
@@ -103,14 +103,12 @@ def pricing_analysis(pricing_con):
     return Analysis.from_definitions("pricing_tier_test", "examples/definitions/", pricing_con)
 
 
-def test_sitewide_impact_is_typed_and_reports_iid_arm_attribution(pricing_con):
-    analysis = make_analysis_like(
-        Analysis("pricing_tier_test", definitions_path="examples/definitions/", con=pricing_con),
-        [_REVENUE_PER_USER],
-        plan=_REVENUE_PER_USER_PLAN,
-    )
+def test_sitewide_impact_is_typed_and_reports_iid_arm_attribution(tmp_path, pricing_con):
+    from increment.estimators import sitewide
 
-    result = cast(SitewideImpact, analysis.sitewide("revenue_per_user"))
+    pricing = _pricing_experiment(tmp_path, pricing_con, [_REVENUE_PER_USER])
+
+    result = cast(SitewideImpact, sitewide(*pricing, "revenue_per_user"))
 
     assert result.treatment_group == "treatment"
     assert result.other_arm_ids == ()

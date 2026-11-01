@@ -1,13 +1,15 @@
 # Sitewide impact
 
-`Analysis.sitewide()` estimates the whole-site change if the per-unit effect
-had applied to every enrolled unit during the experiment window. Use it for
-a rollout estimate, not as another per-unit effect.
+`increment.estimators.sitewide(experiment, resolver, metric)` estimates the
+whole-site change if the per-unit effect had applied to every enrolled unit
+during the experiment window. Use it for a rollout estimate, not as another
+per-unit effect. The legacy `Analysis.sitewide()` method returns the same
+result.
 
-It needs the site's raw event volume, so it runs on a native
-`Analysis.from_definitions` source or on an adopted
-`Analysis.from_unit_day_artifact` published with the metric's `site_volume`
-extension. Pre-melted summaries and moments cannot supply it; see the
+It needs the site's raw event volume, so it runs on an experiment built by
+`from_definitions` or on an adopted `from_unit_day_artifact` published with
+the metric's `site_volume` extension. Pre-melted summaries and moments cannot
+supply it; see the
 [artifact extension matrix](data-model.md#operation-and-extension-matrix).
 
 !!! warning "Read only the window observed"
