@@ -12,26 +12,35 @@ def imports():
     import marimo as mo
     import pyarrow.parquet as pq
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec, Scope, from_definitions, from_moments, run
+    from increment.query import summary_sql
     from increment.tables import estimates_to_readout, readout_table
+    from increment.workflows import experiment_definition, export_moments, srm
 
     DEFINITIONS = "examples/realistic_demo/definitions/"
     EXPERIMENT = "checkout_redesign"
     MOMENTS_PARQUET = Path.cwd() / "increment_moments.parquet"
     WAREHOUSE = Path("examples/realistic_demo/warehouse")
     return (
-        Analysis,
         DEFINITIONS,
         EXPERIMENT,
         MOMENTS_PARQUET,
         MetricSpec,
         Path,
+        Scope,
         WAREHOUSE,
         estimates_to_readout,
+        experiment_definition,
+        export_moments,
+        from_definitions,
+        from_moments,
         ibis,
         mo,
         pq,
         readout_table,
+        run,
+        srm,
+        summary_sql,
     )
 
 
@@ -169,39 +178,48 @@ def _(mo, warehouse_manifest):
 
 
 @app.cell
-def _(Analysis, DEFINITIONS, EXPERIMENT, con, warehouse_ready):
+def _(
+    DEFINITIONS,
+    EXPERIMENT,
+    con,
+    experiment_definition,
+    from_definitions,
+    warehouse_ready,
+):
     assert (warehouse_ready / "manifest.json").exists(), (
         "warehouse missing; run the generation cell above first"
     )
-    analysis = Analysis.from_definitions(EXPERIMENT, DEFINITIONS, con, store="always")
-    experiment = analysis.experiment
-    return analysis, experiment
+    experiment, resolver = from_definitions(
+        DEFINITIONS, con, experiment_name=EXPERIMENT, store="always"
+    )
+    definition = experiment_definition(experiment, resolver)
+    return definition, experiment, resolver
 
 
 @app.cell(hide_code=True)
-def _(experiment, mo):
-    roles = experiment.plan.role_names()
+def _(definition, mo):
+    roles = definition.plan.role_names()
     primary = next(name for name, role in roles.items() if role == "primary")
     secondaries = [name for name, role in roles.items() if role == "secondary"]
     guardrails = [name for name, role in roles.items() if role == "guardrail"]
-    breakouts = [breakout.property for breakout in experiment.breakouts]
+    breakouts = [breakout.property for breakout in definition.breakouts]
     _inference = (
-        experiment.plan.inference.kind
-        if experiment.plan.inference is not None
+        definition.plan.inference.kind
+        if definition.plan.inference is not None
         else "method-selected fixed"
     )
 
     mo.md(
         f"""
-        ## Experiment: {experiment.name.replace("_", " ").title()}
+        ## Experiment: {definition.name.replace("_", " ").title()}
 
-        {experiment.description}
+        {definition.description}
 
         | | |
         |---|---|
-        | Window | {experiment.start:%b %d, %Y} to {experiment.end:%b %d, %Y} |
-        | Unit | `{experiment.unit}` |
-        | Control | `{experiment.control_group}` |
+        | Window | {definition.start:%b %d, %Y} to {definition.end:%b %d, %Y} |
+        | Unit | `{definition.unit}` |
+        | Control | `{definition.control_group}` |
         | Primary | `{primary}` |
         | Secondaries | {", ".join(f"`{name}`" for name in secondaries)} |
         | Guardrails | {", ".join(f"`{name}`" for name in guardrails)} |
@@ -213,8 +231,8 @@ def _(experiment, mo):
 
 
 @app.cell(hide_code=True)
-def _(analysis, mo):
-    conversion_sql = analysis.summary_sql()["conversion_rate"]
+def _(experiment, mo, resolver, summary_sql):
+    conversion_sql = summary_sql(experiment, resolver)["conversion_rate"]
     mo.vstack(
         [
             mo.md(r"""
@@ -233,9 +251,11 @@ def _(analysis, mo):
 
 
 @app.cell(hide_code=True)
-def _(analysis, mo):
+def _(experiment, mo, resolver, srm):
     # The realistic generator uses independent 50/50 assignment; declare the anytime-valid check.
-    srm_result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="always_valid")
+    srm_result = srm(
+        experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="always_valid"
+    )
     srm_status = "SRM detected" if srm_result.is_srm else "No SRM detected"
     mo.md(
         f"""
@@ -273,9 +293,9 @@ def _(mo):
 
 
 @app.cell
-def _(analysis):
+def _(experiment, resolver, run):
     # This readout materializes once for all declared metrics.
-    estimates = analysis.run()
+    estimates = run(experiment, resolver).readout()
     return (estimates,)
 
 
@@ -303,8 +323,11 @@ def _(mo):
 
 
 @app.cell
-def _(analysis, estimates_to_readout, readout_table):
-    breakout_estimates = analysis.run_breakout()
+def _(Scope, estimates_to_readout, experiment, readout_table, resolver, run):
+    breakout_scope = Scope(view="breakout", grain="total")
+    breakout_estimates = run(experiment.with_views(breakout_scope), resolver).readout(
+        breakout_scope
+    )
     country_breakout_estimates = [
         estimate
         for estimate in breakout_estimates
@@ -322,10 +345,13 @@ def _(analysis, estimates_to_readout, readout_table):
 
 
 @app.cell
-def _(analysis, estimates, estimates_to_readout, readout_table):
-    daily_estimates = analysis.run_asof_lift(
+def _(Scope, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
+    asof_lift_scope = Scope(view="asof", grain="asof")
+    daily_estimates = run(
+        experiment.with_views(asof_lift_scope),
+        resolver,
         metrics=["conversion_rate"],
-    )
+    ).readout(asof_lift_scope)
 
     trend_table = readout_table(
         estimates_to_readout([e for e in estimates if e.metric == "conversion_rate"]),
@@ -342,10 +368,10 @@ def _(mo):
     mo.md(r"""
     ## Exporting moments for reuse
 
-    `Analysis.export()` writes additive moments, not event rows. Each row
+    `workflows.export_moments()` writes additive moments, not event rows. Each row
     carries a `moments_format=7` version stamp and the complete compiled
     decision plan - methods, roles, inference, and view policies travel
-    with the evidence. A second analysis can load that compact cube and
+    with the evidence. A second experiment can load that compact cube and
     reproduce the headline estimates without a warehouse connection;
     `from_moments` validates the embedded plan and refuses legacy or
     partial exports, so a rehydrated readout cannot silently decide under
@@ -355,14 +381,14 @@ def _(mo):
 
 
 @app.cell
-def _(MOMENTS_PARQUET, analysis, pq):
-    analysis.export(MOMENTS_PARQUET)
+def _(MOMENTS_PARQUET, experiment, export_moments, pq, resolver):
+    export_moments(experiment, resolver, MOMENTS_PARQUET)
     exported_moments = pq.read_table(MOMENTS_PARQUET).to_pylist()
     return (exported_moments,)
 
 
 @app.cell
-def _(Analysis, MetricSpec, experiment, exported_moments):
+def _(MetricSpec, definition, exported_moments, from_moments, run):
     moment_metrics = [
         MetricSpec(
             name="conversion_rate",
@@ -398,13 +424,13 @@ def _(Analysis, MetricSpec, experiment, exported_moments):
             preferred_direction="decrease",
         ),
     ]
-    rehydrated_analysis = Analysis.from_moments(
+    _experiment, _resolver = from_moments(
         exported_moments,
         metrics=moment_metrics,
-        control=experiment.control_group,
-        experiment_id=experiment.name,
+        control=definition.control_group,
+        experiment_id=definition.name,
     )
-    rehydrated_estimates = rehydrated_analysis.run()
+    rehydrated_estimates = run(_experiment, _resolver).readout()
     return (rehydrated_estimates,)
 
 
@@ -439,7 +465,7 @@ def _(mo):
 
     The [data model guide](../guides/data-model/) opens up the warehouse and
     query pipeline. The [dataframe tutorial](analysis_from_a_dataframe.html)
-    shows the same analysis facade when the input is already one row per unit
+    shows the same builders and `run` when the input is already one row per unit
     or a unit-day panel.
     """)
     return

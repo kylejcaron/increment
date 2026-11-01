@@ -10,18 +10,19 @@ def _():
     import marimo as mo
     from _seed import seed_event_log
 
-    from increment import Analysis, Method
+    from increment import Method, from_definitions, run
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
 
     return (
-        Analysis,
         LiftEstimate,
         Method,
         estimates_to_readout,
+        from_definitions,
         ibis,
         mo,
         readout_table,
+        run,
         seed_event_log,
     )
 
@@ -66,20 +67,22 @@ def _(LiftEstimate):
 
 
 @app.cell
-def _(Analysis, DEFINITIONS, EXPERIMENT, ibis, seed_event_log):
+def _(DEFINITIONS, EXPERIMENT, from_definitions, ibis, seed_event_log):
     con = ibis.duckdb.connect()
 
     # generate events
     seed_event_log(con, with_pre_period=True)
 
-    analysis = Analysis.from_definitions(EXPERIMENT, DEFINITIONS, con)
-    return (analysis,)
+    experiment, resolver = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    return experiment, resolver
 
 
 @app.cell
-def _(CUPED, UNADJUSTED, analysis):
+def _(CUPED, UNADJUSTED, experiment, resolver, run):
     # One run computes both methods from the same queried moments.
-    estimates = analysis.run(decision_method=UNADJUSTED, sensitivity_methods=(CUPED,))
+    estimates = run(
+        experiment, resolver, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
+    ).readout()
 
     by_method = {(est.metric, est.group_id, est.method): est for est in estimates}
     arms = sorted({est.group_id for est in estimates})

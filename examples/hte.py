@@ -11,7 +11,7 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis, from_frame
+    from increment import from_frame, run
     from increment.estimators import (
         Covariate,
         estimate_cate,
@@ -20,7 +20,6 @@ def _():
     )
 
     return (
-        Analysis,
         Covariate,
         ct,
         estimate_cate,
@@ -28,6 +27,7 @@ def _():
         mo,
         np,
         pd,
+        run,
         targeting_rule,
         validate_cate,
     )
@@ -154,14 +154,16 @@ def _(mo):
 
 
 @app.cell
-def _(Analysis, hetero_df):
-    headline = Analysis.from_unit_summary(
+def _(from_frame, hetero_df, run):
+    _experiment, _resolver = from_frame(
         hetero_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
-    ).run()
+    )
+    headline = run(_experiment, _resolver).readout()
     return (headline,)
 
 

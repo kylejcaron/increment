@@ -10,23 +10,27 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis, CupedCovariate, Method, MetricSpec
+    from increment import CupedCovariate, Method, MetricSpec, Scope, from_frame, run
     from increment.estimators import Normal
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
+    from increment.workflows import srm
 
     return (
-        Analysis,
         CupedCovariate,
         LiftEstimate,
         Method,
         MetricSpec,
         Normal,
+        Scope,
         estimates_to_readout,
+        from_frame,
         mo,
         np,
         pd,
         readout_table,
+        run,
+        srm,
     )
 
 
@@ -53,7 +57,7 @@ def _(mo):
 
     The treatment raises the value of each order by 15% and touches nothing
     else, so order counts carry no true effect. One row per user, exactly what
-    `from_unit_summary` expects.
+    `from_frame(..., shape="summary")` expects.
     """)
     return
 
@@ -147,20 +151,21 @@ def _(mo):
 
 
 @app.cell
-def _(Analysis, checkout_df, estimates_to_readout, readout_table):
+def _(checkout_df, estimates_to_readout, from_frame, readout_table, run):
     # pass in your experiment
-    baseline = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         checkout_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean", "converted": "conversion"},
     )
-    baseline_results = baseline.run()
+    baseline_results = run(experiment, resolver).readout()
 
     # visualize the readout
     readout_table(estimates_to_readout(baseline_results), title="Checkout experiment")
-    return (baseline,)
+    return experiment, resolver
 
 
 @app.cell
@@ -180,19 +185,21 @@ def _(mo):
 
 @app.cell
 def cuped(
-    Analysis,
     CupedCovariate,
     Method,
     MetricSpec,
     checkout_df,
     estimates_to_readout,
+    from_frame,
     readout_table,
+    run,
 ):
     UNADJUSTED = Method(name="unadjusted")
     CUPED = Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
 
-    cuped_analysis = Analysis.from_unit_summary(
+    _experiment, _resolver = from_frame(
         checkout_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -204,7 +211,9 @@ def cuped(
             )
         ],
     )
-    cuped_estimates = cuped_analysis.run(decision_method=UNADJUSTED, sensitivity_methods=(CUPED,))
+    cuped_estimates = run(
+        _experiment, _resolver, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
+    ).readout()
     readout_table(estimates_to_readout(cuped_estimates), title="CUPED Comparison", nest_by="method")
     return (cuped_estimates,)
 
@@ -242,7 +251,7 @@ def _(mo):
     Priors on the lift can be set via
 
     ```python
-    analysis.run(prior=Normal(mu=mu, sigma=sigma))
+    run(experiment, resolver, prior=Normal(mu=mu, sigma=sigma))
     ```
 
     This adds a separate posterior summary; it does not replace the sampling inference or the declared multiplicity/sequential procedure.
@@ -251,8 +260,8 @@ def _(mo):
 
 
 @app.cell
-def _(Normal, baseline, estimates_to_readout, readout_table):
-    prior_results = baseline.run(prior=Normal(mu=0.0, sigma=0.05))
+def _(Normal, estimates_to_readout, experiment, readout_table, resolver, run):
+    prior_results = run(experiment, resolver, prior=Normal(mu=0.0, sigma=0.05)).readout()
     readout_table(
         estimates_to_readout(prior_results),
         title="Checkout experiment — informative prior",
@@ -279,9 +288,10 @@ def _(mo):
 
 
 @app.cell
-def _(Analysis, MetricSpec, checkout_df, estimates_to_readout, readout_table):
-    ratio_result = Analysis.from_unit_summary(
+def _(MetricSpec, checkout_df, estimates_to_readout, from_frame, readout_table, run):
+    _experiment, _resolver = from_frame(
         checkout_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -303,7 +313,8 @@ def _(Analysis, MetricSpec, checkout_df, estimates_to_readout, readout_table):
                 value_column="orders",
             ),
         ],
-    ).run()
+    )
+    ratio_result = run(_experiment, _resolver).readout()
 
     readout_table(
         estimates_to_readout(ratio_result),
@@ -344,11 +355,13 @@ def _(mo):
 
 
 @app.cell
-def _(baseline):
+def _(experiment, resolver, srm):
     from rich.pretty import pprint
 
     # Request one fixed-look check on the simulated population.
-    srm_result = baseline.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    srm_result = srm(
+        experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+    )
     pprint(srm_result, expand_all=True)
     return
 
@@ -358,7 +371,7 @@ def _(mo):
     mo.md(r"""
     # Analyzing a panel dataset
 
-    `Analysis.from_unit_panel` takes the same experiment used above at user-day grain.
+    `from_frame(..., shape="panel")` takes the same experiment used above at user-day grain.
     The unit-summary examples aggregate this panel to one row per user, so their
     whole-window effects match exactly. `country` is a stable per-user dimension
     carried on every daily row.
@@ -373,17 +386,22 @@ def _(panel_df):
 
 
 @app.cell
-def _(Analysis, estimates_to_readout, mo, panel_df, readout_table):
-    panel_analysis = Analysis.from_unit_panel(
+def _(Scope, estimates_to_readout, from_frame, mo, panel_df, readout_table, run):
+    _experiment, _resolver = from_frame(
         panel_df,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
         control="control",
         metrics={"revenue": "mean"},
     )
-    daily_values = panel_analysis.run_daily()
-    panel_results = panel_analysis.run()
+    # One run reads the whole-window readout and the per-day values together.
+    _whole_window = Scope(view="run", grain="total")
+    _daily = Scope(view="daily", grain="daily", values=True)
+    _panel_run = run(_experiment.with_views(_whole_window, _daily), _resolver)
+    daily_values = _panel_run.readout(_daily)
+    panel_results = _panel_run.readout(_whole_window)
     panel_readout = readout_table(
         estimates_to_readout(panel_results),
         title="Analyzing Panel Data",
@@ -391,7 +409,7 @@ def _(Analysis, estimates_to_readout, mo, panel_df, readout_table):
     mo.vstack(
         [
             panel_readout,
-            mo.md(f"`run_daily()` produced **{len(daily_values)}** per-day metric values."),
+            mo.md(f"`daily_values` produced **{len(daily_values)}** per-day metric values."),
         ]
     )
     return
@@ -417,13 +435,14 @@ def _(mo):
 
 
 @app.cell
-def _(Analysis, MetricSpec, estimates_to_readout, panel_df, readout_table):
+def _(MetricSpec, estimates_to_readout, from_frame, panel_df, readout_table, run):
     # Every unit in this synthetic panel enrolled on the same day; a real
     # dataset would carry its own per-unit exposure_date column instead.
     panel_df_exposed = panel_df.assign(exposure_date="2026-02-01")
 
-    windowed_lift_breakout = Analysis.from_unit_panel(
+    _experiment, _resolver = from_frame(
         panel_df_exposed,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -435,7 +454,8 @@ def _(Analysis, MetricSpec, estimates_to_readout, panel_df, readout_table):
             ),
         ],
         exposure_date="exposure_date",
-    ).run()
+    )
+    windowed_lift_breakout = run(_experiment, _resolver).readout()
 
     readout_table(
         estimates_to_readout(windowed_lift_breakout),
@@ -447,14 +467,16 @@ def _(Analysis, MetricSpec, estimates_to_readout, panel_df, readout_table):
 
 @app.cell
 def _(
-    Analysis,
     MetricSpec,
     estimates_to_readout,
+    from_frame,
     panel_df_exposed,
     readout_table,
+    run,
 ):
-    retention_lift = Analysis.from_unit_panel(
+    _experiment, _resolver = from_frame(
         panel_df_exposed,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="day",
@@ -468,7 +490,8 @@ def _(
             )
         ],
         exposure_date="exposure_date",
-    ).run()
+    )
+    retention_lift = run(_experiment, _resolver).readout()
 
     readout_table(
         estimates_to_readout(retention_lift),
@@ -482,16 +505,16 @@ def _(mo):
     mo.md(r"""
     ## What's still not here
 
-    `from_unit_panel` covariates (CUPED) remain unsupported - collapsing a
+    Panel-frame covariates (CUPED) remain unsupported - collapsing a
     pre-period value from per-day rows is ambiguous; aggregate to one row
-    per unit yourself and use `from_unit_summary` instead (see
+    per unit yourself and use `from_frame(..., shape="summary")` instead (see
     [`docs/guides/cuped.md`](../docs/guides/cuped.md)).
 
-    `Analysis.from_definitions` remains the richer retention home: a
-    bounded `RetentionMetric` supports all five readout axes there.
-    `from_unit_panel` retention supports `run()`, `run_asof()`, and
-    `run_asof_lift()`, but raises `CapabilityError` from `run_daily()`
-    and `run_daily_lift()` - the frame-backed panel has no per-day
+    `from_definitions` remains the richer retention home: a
+    bounded `RetentionMetric` supports all five readout views there.
+    Panel-frame retention supports the whole-window readout and the as-of
+    value and lift views, but raises `CapabilityError` from the daily value
+    and daily lift views - the frame-backed panel has no per-day
     cohort reduction, bounded band or not.
     """)
     return
