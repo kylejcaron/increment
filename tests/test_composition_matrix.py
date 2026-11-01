@@ -861,6 +861,7 @@ def test_encouragement(metric_type):
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
 def test_cate(metric_type):
+    from increment import from_frame
     from increment.estimators import estimate_cate
 
     cell = _cell("cate", metric_type)
@@ -870,8 +871,16 @@ def test_cate(metric_type):
 
     def probe():
         spec = _frame_spec(metric_type)
-        src = _summary_source(spec, table=_unit_table(40))
-        return estimate_cate(src, spec.name, control="control", interact=["pre"])
+        experiment, resolver = from_frame(
+            _unit_table(40),
+            shape="summary",
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[spec],
+            exposure_date="exposure_date",
+        )
+        return estimate_cate(experiment, resolver, spec.name, control="control", interact=["pre"])
 
     if metric_type == "retention":
         _expect_refusal(

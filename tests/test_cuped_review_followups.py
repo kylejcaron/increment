@@ -1009,20 +1009,21 @@ def test_observational_frame_covariate_named_like_a_unit_frame_column_is_unchang
 
 @pytest.mark.parametrize("name", ["y", "y_den", "unit_id", "group_id"])
 def test_cate_frame_covariate_named_like_a_unit_frame_column_is_unchanged(name):
-    from increment.cate import estimate_cate
-    from increment.frame import from_unit_summary
+    from increment import from_frame
+    from increment.estimators import estimate_cate
 
     def estimate(covariate: str):
-        source = from_unit_summary(
+        experiment, resolver = from_frame(
             _observational_frame(covariate).rename_columns(
                 ["user_id", "variant", "revenue", covariate]
             ),
+            shape="summary",
             unit="user_id",
             group="variant",
             control="C",
             metrics=[MetricSpec(name="revenue")],
         )
-        return estimate_cate(source, "revenue", control="C", interact=[covariate])
+        return estimate_cate(experiment, resolver, "revenue", control="C", interact=[covariate])
 
     baseline, renamed = estimate("pre"), estimate(name)
     assert renamed.ate == pytest.approx(baseline.ate)

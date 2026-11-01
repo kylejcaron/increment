@@ -11,21 +11,20 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis
+    from increment import Analysis, from_frame
     from increment.estimators import (
         Covariate,
         estimate_cate,
         targeting_rule,
         validate_cate,
     )
-    from increment.frame import from_unit_summary
 
     return (
         Analysis,
         Covariate,
         ct,
         estimate_cate,
-        from_unit_summary,
+        from_frame,
         mo,
         np,
         pd,
@@ -209,7 +208,7 @@ def _(mo):
 
 
 @app.cell
-def _(Covariate, estimate_cate, from_unit_summary, hetero_df):
+def _(Covariate, estimate_cate, from_frame, hetero_df):
     INTERACT = [
         "spend",
         Covariate(name="tenure", knots=4),
@@ -217,21 +216,23 @@ def _(Covariate, estimate_cate, from_unit_summary, hetero_df):
     ]
     ADJUST = []
 
-    hetero_src = from_unit_summary(
+    hetero_experiment, hetero_resolver = from_frame(
         hetero_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
     )
     fit = estimate_cate(
-        hetero_src,
+        hetero_experiment,
+        hetero_resolver,
         "revenue",
         control="control",
         interact=INTERACT,
         adjust=ADJUST,
     )
-    return ADJUST, INTERACT, fit, hetero_src
+    return ADJUST, INTERACT, fit, hetero_experiment, hetero_resolver
 
 
 @app.cell(hide_code=True)
@@ -376,9 +377,10 @@ def _(mo):
 
 
 @app.cell
-def _(ADJUST, INTERACT, hetero_src, validate_cate):
+def _(ADJUST, INTERACT, hetero_experiment, hetero_resolver, validate_cate):
     validation = validate_cate(
-        hetero_src,
+        hetero_experiment,
+        hetero_resolver,
         "revenue",
         control="control",
         interact=INTERACT,
@@ -642,14 +644,15 @@ def _(Covariate, np):
 def _(
     CANDIDATES,
     estimate_cate,
-    from_unit_summary,
+    from_frame,
     simulate,
     top_group_in_sample,
     validate_cate,
 ):
     null_df = simulate(1_200, 20260813, heterogeneous=False)
-    null_src = from_unit_summary(
+    null_experiment, null_resolver = from_frame(
         null_df,
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
@@ -657,14 +660,21 @@ def _(
     )
 
     # The naive path: one fit on everything, then read its own top quintile.
-    null_fit = estimate_cate(null_src, "revenue", control="control", interact=CANDIDATES)
+    null_fit = estimate_cate(
+        null_experiment, null_resolver, "revenue", control="control", interact=CANDIDATES
+    )
     null_in_sample = top_group_in_sample(null_df, null_fit)
 
     # The honest path: fit on half, re-estimate on the other half.
     null_validation = validate_cate(
-        null_src, "revenue", control="control", interact=CANDIDATES, n_groups=5
+        null_experiment,
+        null_resolver,
+        "revenue",
+        control="control",
+        interact=CANDIDATES,
+        n_groups=5,
     )
-    return null_fit, null_in_sample, null_src, null_validation
+    return null_experiment, null_fit, null_in_sample, null_resolver, null_validation
 
 
 @app.cell(hide_code=True)
@@ -719,7 +729,7 @@ def _(mo):
 def _(
     CANDIDATES,
     estimate_cate,
-    from_unit_summary,
+    from_frame,
     np,
     simulate,
     top_group_in_sample,
@@ -728,8 +738,9 @@ def _(
     _in_sample, _honest, _fired = [], [], 0
     for _seed in range(800_000, 800_040):
         df_i = simulate(1_200, _seed, heterogeneous=False)
-        analysis_i = from_unit_summary(
+        _experiment_i = from_frame(
             df_i,
+            shape="summary",
             unit="user_id",
             group="variant",
             control="control",
@@ -737,10 +748,11 @@ def _(
         )
         _in_sample.append(
             top_group_in_sample(
-                df_i, estimate_cate(analysis_i, "revenue", control="control", interact=CANDIDATES)
+                df_i,
+                estimate_cate(*_experiment_i, "revenue", control="control", interact=CANDIDATES),
             )
         )
-        _run = validate_cate(analysis_i, "revenue", control="control", interact=CANDIDATES)
+        _run = validate_cate(*_experiment_i, "revenue", control="control", interact=CANDIDATES)
         _honest.append(_run.groups[-1].effect)
         _fired += _run.passed
 
@@ -801,9 +813,10 @@ def _(mo):
 
 
 @app.cell
-def _(ADJUST, INTERACT, hetero_src, targeting_rule):
+def _(ADJUST, INTERACT, hetero_experiment, hetero_resolver, targeting_rule):
     rule = targeting_rule(
-        hetero_src,
+        hetero_experiment,
+        hetero_resolver,
         "revenue",
         control="control",
         interact=INTERACT,
@@ -845,9 +858,10 @@ def _(COVARIATE_COLUMNS, hetero_df, mo, rule):
 
 
 @app.cell
-def _(CANDIDATES, null_src, targeting_rule):
+def _(CANDIDATES, null_experiment, null_resolver, targeting_rule):
     null_rule = targeting_rule(
-        null_src,
+        null_experiment,
+        null_resolver,
         "revenue",
         control="control",
         interact=CANDIDATES,

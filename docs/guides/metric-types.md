@@ -584,7 +584,8 @@ deployment. Randomized clusters must belong to one arm; observational dependence
 clusters may contain both arms. Fitted CATE results report `n_clusters`, while
 targeting policies retain the intervention grain and required scoring columns.
 
-All four entry points also work through `Analysis`. `n_train` and `n_holdout`
+All four operations take the `(experiment, resolver)` pair from a builder such
+as `from_frame` or `from_definitions`. `n_train` and `n_holdout`
 count members; validation's `n_clusters` counts independent heldout clusters.
 Selection's count describes the inner population, while `selection.rule.n_clusters`
 describes the untouched outer holdout. Repeating members under the same cluster
@@ -611,14 +612,15 @@ Member-count weighting budgets members; equal-cluster weighting budgets clusters
 and uses the same target for fitting and evaluation. An oversized leading cluster
 leaves the policy empty. Fractions zero and one select nobody and everybody.
 
-<!-- skip: next "requires a clustered source with a spend covariate" -->
+<!-- skip: next "requires a clustered experiment with a spend covariate" -->
 
 ```python
 from increment.estimators import ClusterBootstrap, targeting_rule
 from increment.results import TargetingRule
 
 rule = targeting_rule(
-    source,
+    experiment,
+    resolver,
     "revenue",
     control="control",
     interact=["spend"],

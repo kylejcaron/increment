@@ -1,9 +1,11 @@
-"""Public adapters: fit, validate, and deploy a CATE model from a unit-grain source.
+"""Fit, validate, and deploy a CATE model for an experiment's unit-grain data.
 
-Pulls one row per unit from MomentSource.unit_frame and hands the
-columns to increment.estimation.cate and increment.estimation.targeting
-as plain numpy arrays; lives outside increment/estimation/ because it
-touches narwhals frames, keeping the estimation layer pure math.
+Each operation verifies the experiment's resolver, reads one row per unit
+from the bound source (its triggered view when the experiment declares a
+trigger) and hands the columns to increment.estimation.cate and
+increment.estimation.targeting as plain numpy arrays; lives outside
+increment/estimation/ because it touches narwhals frames, keeping the
+estimation layer pure math.
 
 estimate_cate fits; validate_cate is the gate saying whether the fit's
 heterogeneity survives units it never saw. targeting_rule is the
@@ -24,9 +26,11 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 import narwhals as nw
 import numpy as np
 
-from increment._evidence_refusals import require_evidence
+from increment._binding import SourceBinding, binding_for
+from increment._evidence_refusals import CONTRAST_UNAVAILABLE, require_evidence
 from increment._evidence_types import UnitRowsRequest, unit_frame_covariate_columns
 from increment._identity import canonical_id_strings
+from increment._source_admission import _require_analysis_operation
 from increment._source_types import (
     declared_evidence,
     evidence_is_declared,
@@ -64,6 +68,8 @@ from increment.readouts._evidence import load_unit_rows
 from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
+    from increment.kernel.experiment import Experiment
+    from increment.kernel.resolver import Resolver
     from increment.semantics.design import Design, Observational
     from increment.semantics.models import Metric
 
@@ -395,49 +401,39 @@ def _score_plan(
     return (), _ipw_psi_fn, "welch"
 
 
-def estimate_cate(
-    source: EvidenceSource,
+def _cate_source(binding: SourceBinding, method: str) -> EvidenceSource:
+    """The unit source *method* reads: its triggered view when a trigger is declared."""
+    if binding.state.family != "arm_moments":
+        refuse(CONTRAST_UNAVAILABLE, method=method)
+    experiment = getattr(binding, "experiment", None)
+    if experiment is None or experiment.trigger is None:
+        return binding.source
+    triggered = _require_analysis_operation(
+        binding.source,
+        "triggered_source",
+        message=(
+            f"{method}() needs a source-owned triggered unit view; this source "
+            "cannot reconstruct trigger membership."
+        ),
+    )
+    return triggered.triggered_source()
+
+
+def _estimate_cate_binding(
+    binding: SourceBinding,
     metric: str,
     *,
-    control: str,
+    control: str | None,
     interact: Sequence[Covariate | str],
-    adjust: Sequence[Covariate | str] = (),
-    alpha: float = 0.05,
-    ard: bool = False,
-    cluster_weight: Literal["member_count", "equal"] = "member_count",
+    adjust: Sequence[Covariate | str],
+    alpha: float,
+    ard: bool,
+    cluster_weight: Literal["member_count", "equal"],
 ) -> CateResult:
-    """Estimate conditional average treatment effects for *metric*.
-
-    Nothing this returns is validated: scoring units with it and
-    reporting the top group's effect is exactly the in-sample
-    fabrication ``validate_cate`` exists to catch - on data with no true
-    heterogeneity, that top quintile reads 2.9x the true effect. Run
-    ``validate_cate`` before any subgroup number leaves this function.
-
-    ``source`` must serve unit-grain rows (``CapabilityError``
-    otherwise). ``control`` names the control ``group_id``; the frame
-    must contain exactly that arm plus one other. ``interact``
-    covariates model effect heterogeneity; ``adjust`` covariates enter
-    as main effects only, for precision without a heterogeneity claim.
-    ``ard`` shrinks the interaction coefficients by evidence
-    maximization, moving only the scored points - not
-    ``ate``/``se``/``heterogeneity``.
-    Returns effects on the metric's own absolute scale. Declared clusters use
-    a weighted cluster-score sandwich with t(K-1) intervals; otherwise HC2.
-    ``cluster_weight="member_count"`` weights units equally (the default);
-    ``"equal"`` weights clusters equally and requires a declared cluster.
-    Intervention grain never selects weighting. Cluster rank deficiency,
-    single-cluster-only directions and unavailable uncertainty refuse with
-    ``InvalidRequestError``; inference metadata live on the returned fit.
-    Raises ``InvalidRequestError`` (``cate.identification.randomized_only``)
-    for a source whose design is not randomized; ``ValueError`` for an
-    undeclared metric, absent control, or a non-two-arm frame;
-    ``NotImplementedError`` for ratio and quantile metrics.
-
-    Covariates must be strictly pre-exposure; results do not compose
-    with the package's default relative lifts (see
-    ``increment.estimation.cate``).
-    """
+    if control is None:
+        assert binding.design is not None
+        control = binding.design.control_group
+    source = _cate_source(binding, "estimate_cate")
     _validate_cluster_weight(cluster_weight, clustered=source.context.cluster is not None)
     interact_covs = _coerce(interact)
     adjust_covs = _coerce(adjust)
@@ -467,65 +463,20 @@ def estimate_cate(
     )
 
 
-def validate_cate(
-    source: EvidenceSource,
+def _validate_cate_binding(
+    binding: SourceBinding,
     metric: str,
     *,
     control: str,
     interact: Sequence[Covariate | str],
-    adjust: Sequence[Covariate | str] = (),
-    n_groups: int = 5,
-    alpha: float = 0.05,
-    cluster_weight: Literal["member_count", "equal"] = "member_count",
-    bootstrap: ClusterBootstrap | None = None,
-    include_evaluation_population: bool = False,
+    adjust: Sequence[Covariate | str],
+    n_groups: int,
+    alpha: float,
+    cluster_weight: Literal["member_count", "equal"],
+    bootstrap: ClusterBootstrap | None,
+    include_evaluation_population: bool,
 ) -> CateValidation:
-    """Fit CATE on one honest partition and validate it on the other.
-
-    The gate for every heterogeneity claim: a CATE fit always hands back
-    a winner, so the top group's in-sample effect is not evidence of
-    anything. Splits the units by a content hash of their id, fits on
-    one half (whole clusters when declared), and reports sorted-group effects,
-    rank tests, and a CLAN profile computed entirely on the other.
-    ``CateValidation.passed`` is the verdict; while false, the only defensible
-    number is the average effect.
-
-    Randomized sources use raw arm contrasts. Observational sources use
-    cross-fitted doubly robust scores over the design's declared adjustment
-    set; a numeric adjustment column enters as it is and a string column as
-    modal-reference level indicators fitted inside every nuisance fit (a
-    null level refuses, as this path supports ``missing="refuse"`` only).
-    Its overlap gate can refuse or trim the
-    reported population. ``n_groups`` sets how many predicted-effect groups
-    to cut the holdout into. ``alpha`` is two-sided for every reported
-    interval; the rank tests are one-sided against it, and ``passed`` is
-    ``autoc.p_value < alpha``.
-
-    Returns holdout-only numbers on the metric's own absolute scale.
-    Units are keyed by ``unit_frame``'s ``unit_id`` (already cast to
-    String), so the same logical unit lands in the same half across
-    runs. There is deliberately no ``ard=`` here: this gate's null size
-    was measured on the unclustered unpenalized score (4.8% against a nominal 5%),
-    and shrinkage is a reporting choice for ``estimate_cate``, not a
-    knob on the test.
-
-    Missing or unsupported identification raises
-    ``cate.identification.unsupported_mechanism``. Observational policies
-    other than ``missing="refuse"`` or with a non-null ``max_smd`` raise
-    ``cate.identification.unsupported_missing_policy`` or
-    ``cate.identification.unsupported_max_smd`` before reading data.
-    Declared clusters use ``cluster_weight="member_count"`` (unit weights)
-    or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
-    CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a
-    delete-one-cluster jackknife-t interval, conditional on training-frozen
-    nuisances; ``bootstrap`` (default
-    ``ClusterBootstrap(seed=0, repetitions=999)``) is recorded on results.
-    Missing uncertainty has a nullable numeric field and an
-    ``unavailable_reason`` code.
-    ``n_train`` and ``n_holdout`` count members; ``n_clusters`` counts the
-    independent heldout clusters. The unclustered calibration above does not
-    establish calibration of the cluster bootstrap at small cluster counts.
-    """
+    source = _cate_source(binding, "validate_cate")
     _validate_cluster_weight(cluster_weight, clustered=source.context.cluster is not None)
     bootstrap = (
         ClusterBootstrap() if bootstrap is None else ClusterBootstrap.model_validate(bootstrap)
@@ -570,59 +521,21 @@ def validate_cate(
     return result.model_copy(update={"report_context": report_context})
 
 
-def targeting_rule(
-    source: EvidenceSource,
+def _targeting_rule_binding(
+    binding: SourceBinding,
     metric: str,
     *,
     control: str,
     interact: Sequence[Covariate | str],
-    adjust: Sequence[Covariate | str] = (),
+    adjust: Sequence[Covariate | str],
     fraction: float,
-    alpha: float = 0.05,
-    cluster_weight: Literal["member_count", "equal"] = "member_count",
-    bootstrap: ClusterBootstrap | None = None,
-    deploy_grain: Literal["unit", "cluster"] | None = None,
-    include_evaluation_population: bool = False,
+    alpha: float,
+    cluster_weight: Literal["member_count", "equal"],
+    bootstrap: ClusterBootstrap | None,
+    deploy_grain: Literal["unit", "cluster"] | None,
+    include_evaluation_population: bool,
 ) -> TargetingRule:
-    """Decide whether to target the top *fraction* of units on *metric*.
-
-    The question a heterogeneity analysis is actually asked is not
-    "which group responded best" but "what rule should I deploy". Runs
-    ``validate_cate``'s honest split; unless the gate passes, returns
-    ``recommendation="simple"`` (treat everyone alike on the average
-    effect). Only a passing gate gets a threshold, a policy value, and
-    an uplift over the average.
-
-    ``fraction`` is required with no default: pre-committing to the cut
-    is the entire value of this function - choosing it after seeing
-    ``validate_cate``'s group table biases the reported policy value
-    upward by 60-120%. Identification and policy refusals follow
-    ``validate_cate``, including observational adjustment and overlap rules.
-    ``alpha`` gates the same ``autoc.p_value < alpha`` test. ``ard=`` is absent for the
-    same reason it is absent from ``validate_cate``: the gate was
-    calibrated on the unpenalized score.
-
-    A failed gate is a result, not an exception: ``recommendation`` and
-    the attached ``validation`` say why, and the three policy fields are
-    ``None`` together so no caller reads an unsupported number.
-    Conditional on a gate that passed by chance, ``policy_value`` runs
-    high - unconditionally it is unbiased; treat a barely-passing gate
-    as weak evidence for the magnitude, not just the ranking.
-    Declared clusters use ``cluster_weight="member_count"`` (unit weights)
-    or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
-    CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a
-    delete-one-cluster jackknife-t interval, conditional on training-frozen
-    nuisances; ``bootstrap`` (default
-    ``ClusterBootstrap(seed=0, repetitions=999)``) is recorded on results.
-    Deployment defaults only from the declared intervention grain. Cluster
-    policies pool member scores and take the longest feasible whole-cluster
-    prefix, with canonical-ID tie breaks; ``cluster_weight`` determines both
-    budget and evaluation mass. Fractions zero/one deploy nobody/everybody.
-    The result stores requested and achieved shares and portable scoring state.
-    ``predict`` applies the candidate policy; ``recommendation`` is its gate.
-    Missing uncertainty has a nullable numeric field and an
-    ``unavailable_reason`` code.
-    """
+    source = _cate_source(binding, "targeting_rule")
     deploy_grain = resolve_deploy_grain(
         source.context.intervention_grain,
         deploy_grain,
@@ -677,60 +590,24 @@ def targeting_rule(
     return result.model_copy(update={"report_context": identity_context, "validation": validation})
 
 
-# Identification, selection and deployment controls remain explicit at the public boundary.
-def select_targeting_rule(  # noqa: PLR0913
-    source: EvidenceSource,
+def _select_targeting_rule_binding(  # noqa: PLR0913
+    binding: SourceBinding,
     metric: str,
     *,
     control: str,
     interact: Sequence[Covariate | str],
-    adjust: Sequence[Covariate | str] = (),
+    adjust: Sequence[Covariate | str],
     fractions: Sequence[float],
-    cost_per_treated: float = 0.0,
-    n_folds: int = 5,
+    cost_per_treated: float,
+    n_folds: int,
     seed: int,
-    alpha: float = 0.05,
-    cluster_weight: Literal["member_count", "equal"] = "member_count",
-    bootstrap: ClusterBootstrap | None = None,
-    deploy_grain: Literal["unit", "cluster"] | None = None,
-    include_evaluation_population: bool = False,
+    alpha: float,
+    cluster_weight: Literal["member_count", "equal"],
+    bootstrap: ClusterBootstrap | None,
+    deploy_grain: Literal["unit", "cluster"] | None,
+    include_evaluation_population: bool,
 ) -> TargetingSelection:
-    """Choose the share of units to target on *metric*, honestly.
-
-    :func:`targeting_rule` demands a pre-committed fraction because choosing
-    the cut after seeing results biases the reported policy value upward by
-    60-120%.  This is the sanctioned way to CHOOSE that fraction: a seeded,
-    arm-stratified half of the units is set aside untouched; on the other
-    half, K-fold out-of-fold scores estimate each grid fraction's net
-    benefit ``E[1{targeted} (tau - cost_per_treated)]``; the argmax is
-    locked and then evaluated exactly once on the untouched half, through
-    the same gate and policy numbers :func:`targeting_rule` reports.
-    For observational sources, both the inner selection objective and the
-    untouched outer report use the declared doubly robust score and overlap policy.
-
-    *fractions*, in ``[0, 1]`` each, and *seed* are REQUIRED with no
-    defaults: the grid and the split are pre-commitments.
-    *cost_per_treated* is in the metric's own units per treated unit;
-    at the default ``0.0`` the objective is total benefit, which favors
-    wide fractions whenever the marginal unit's effect is positive.
-
-    Raises exactly what :func:`targeting_rule` raises, plus ``ValueError``
-    for an invalid grid or a fold too small to hold 2 units per arm.
-    Declared clusters use ``cluster_weight="member_count"`` (unit weights)
-    or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
-    CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a
-    delete-one-cluster jackknife-t interval, conditional on training-frozen
-    nuisances; ``bootstrap`` (default
-    ``ClusterBootstrap(seed=0, repetitions=999)``) is recorded on results.
-    Deployment defaults only from the declared intervention grain. Cluster
-    policies pool member scores and take the longest feasible whole-cluster
-    prefix, with canonical-ID tie breaks; ``cluster_weight`` determines both
-    budget and evaluation mass. Fractions zero/one deploy nobody/everybody.
-    The result stores requested and achieved shares and portable scoring state.
-    ``predict`` applies the candidate policy; ``recommendation`` is its gate.
-    Missing uncertainty has a nullable numeric field and an
-    ``unavailable_reason`` code.
-    """
+    source = _cate_source(binding, "select_targeting_rule")
     deploy_grain = resolve_deploy_grain(
         source.context.intervention_grain,
         deploy_grain,
@@ -785,6 +662,280 @@ def select_targeting_rule(  # noqa: PLR0913
     return result.model_copy(update={"report_context": identity_context, "rule": rule})
 
 
+def estimate_cate(
+    experiment: Experiment,
+    resolver: Resolver,
+    metric: str,
+    *,
+    control: str | None = None,
+    interact: Sequence[Covariate | str],
+    adjust: Sequence[Covariate | str] = (),
+    alpha: float = 0.05,
+    ard: bool = False,
+    cluster_weight: Literal["member_count", "equal"] = "member_count",
+) -> CateResult:
+    """Estimate conditional average treatment effects for *metric*.
+
+    Nothing this returns is validated: scoring units with it and
+    reporting the top group's effect is exactly the in-sample
+    fabrication ``validate_cate`` exists to catch - on data with no true
+    heterogeneity, that top quintile reads 2.9x the true effect. Run
+    ``validate_cate`` before any subgroup number leaves this function.
+
+    The experiment's source must serve unit-grain rows (``CapabilityError``
+    otherwise); a declared trigger restricts the fit to triggered units.
+    ``control`` names the control ``group_id`` and defaults to the declared
+    control arm; the units must contain exactly that arm plus one other.
+    ``interact``
+    covariates model effect heterogeneity; ``adjust`` covariates enter
+    as main effects only, for precision without a heterogeneity claim.
+    ``ard`` shrinks the interaction coefficients by evidence
+    maximization, moving only the scored points - not
+    ``ate``/``se``/``heterogeneity``.
+    Returns effects on the metric's own absolute scale. Declared clusters use
+    a weighted cluster-score sandwich with t(K-1) intervals; otherwise HC2.
+    ``cluster_weight="member_count"`` weights units equally (the default);
+    ``"equal"`` weights clusters equally and requires a declared cluster.
+    Intervention grain never selects weighting. Cluster rank deficiency,
+    single-cluster-only directions and unavailable uncertainty refuse with
+    ``InvalidRequestError``; inference metadata live on the returned fit.
+    Raises ``InvalidRequestError`` (``cate.identification.randomized_only``)
+    for a design that is not randomized; ``ValueError`` for an
+    undeclared metric, absent control, or a non-two-arm frame;
+    ``NotImplementedError`` for ratio and quantile metrics.
+
+    Covariates must be strictly pre-exposure; results do not compose
+    with the package's default relative lifts (see
+    ``increment.estimation.cate``).
+    """
+    return _estimate_cate_binding(
+        binding_for(experiment, resolver),
+        metric,
+        control=control,
+        interact=interact,
+        adjust=adjust,
+        alpha=alpha,
+        ard=ard,
+        cluster_weight=cluster_weight,
+    )
+
+
+def validate_cate(
+    experiment: Experiment,
+    resolver: Resolver,
+    metric: str,
+    *,
+    control: str,
+    interact: Sequence[Covariate | str],
+    adjust: Sequence[Covariate | str] = (),
+    n_groups: int = 5,
+    alpha: float = 0.05,
+    cluster_weight: Literal["member_count", "equal"] = "member_count",
+    bootstrap: ClusterBootstrap | None = None,
+    include_evaluation_population: bool = False,
+) -> CateValidation:
+    """Fit CATE on one honest partition and validate it on the other.
+
+    The gate for every heterogeneity claim: a CATE fit always hands back
+    a winner, so the top group's in-sample effect is not evidence of
+    anything. Splits the units by a content hash of their id, fits on
+    one half (whole clusters when declared), and reports sorted-group effects,
+    rank tests, and a CLAN profile computed entirely on the other.
+    ``CateValidation.passed`` is the verdict; while false, the only defensible
+    number is the average effect.
+
+    Randomized designs use raw arm contrasts. Observational designs use
+    cross-fitted doubly robust scores over the design's declared adjustment
+    set; a numeric adjustment column enters as it is and a string column as
+    modal-reference level indicators fitted inside every nuisance fit (a
+    null level refuses, as this path supports ``missing="refuse"`` only).
+    Its overlap gate can refuse or trim the
+    reported population. ``n_groups`` sets how many predicted-effect groups
+    to cut the holdout into. ``alpha`` is two-sided for every reported
+    interval; the rank tests are one-sided against it, and ``passed`` is
+    ``autoc.p_value < alpha``.
+
+    Returns holdout-only numbers on the metric's own absolute scale.
+    Units are keyed by ``unit_frame``'s ``unit_id`` (already cast to
+    String), so the same logical unit lands in the same half across
+    runs. There is deliberately no ``ard=`` here: this gate's null size
+    was measured on the unclustered unpenalized score (4.8% against a nominal 5%),
+    and shrinkage is a reporting choice for ``estimate_cate``, not a
+    knob on the test.
+
+    Missing or unsupported identification raises
+    ``cate.identification.unsupported_mechanism``. Observational policies
+    other than ``missing="refuse"`` or with a non-null ``max_smd`` raise
+    ``cate.identification.unsupported_missing_policy`` or
+    ``cate.identification.unsupported_max_smd`` before reading data.
+    Declared clusters use ``cluster_weight="member_count"`` (unit weights)
+    or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
+    CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a
+    delete-one-cluster jackknife-t interval, conditional on training-frozen
+    nuisances; ``bootstrap`` (default
+    ``ClusterBootstrap(seed=0, repetitions=999)``) is recorded on results.
+    Missing uncertainty has a nullable numeric field and an
+    ``unavailable_reason`` code.
+    ``n_train`` and ``n_holdout`` count members; ``n_clusters`` counts the
+    independent heldout clusters. The unclustered calibration above does not
+    establish calibration of the cluster bootstrap at small cluster counts.
+    """
+    return _validate_cate_binding(
+        binding_for(experiment, resolver),
+        metric,
+        control=control,
+        interact=interact,
+        adjust=adjust,
+        n_groups=n_groups,
+        alpha=alpha,
+        cluster_weight=cluster_weight,
+        bootstrap=bootstrap,
+        include_evaluation_population=include_evaluation_population,
+    )
+
+
+def targeting_rule(
+    experiment: Experiment,
+    resolver: Resolver,
+    metric: str,
+    *,
+    control: str,
+    interact: Sequence[Covariate | str],
+    adjust: Sequence[Covariate | str] = (),
+    fraction: float,
+    alpha: float = 0.05,
+    cluster_weight: Literal["member_count", "equal"] = "member_count",
+    bootstrap: ClusterBootstrap | None = None,
+    deploy_grain: Literal["unit", "cluster"] | None = None,
+    include_evaluation_population: bool = False,
+) -> TargetingRule:
+    """Decide whether to target the top *fraction* of units on *metric*.
+
+    The question a heterogeneity analysis is actually asked is not
+    "which group responded best" but "what rule should I deploy". Runs
+    ``validate_cate``'s honest split; unless the gate passes, returns
+    ``recommendation="simple"`` (treat everyone alike on the average
+    effect). Only a passing gate gets a threshold, a policy value, and
+    an uplift over the average.
+
+    ``fraction`` is required with no default: pre-committing to the cut
+    is the entire value of this function - choosing it after seeing
+    ``validate_cate``'s group table biases the reported policy value
+    upward by 60-120%. Identification and policy refusals follow
+    ``validate_cate``, including observational adjustment and overlap rules.
+    ``alpha`` gates the same ``autoc.p_value < alpha`` test. ``ard=`` is absent for the
+    same reason it is absent from ``validate_cate``: the gate was
+    calibrated on the unpenalized score.
+
+    A failed gate is a result, not an exception: ``recommendation`` and
+    the attached ``validation`` say why, and the three policy fields are
+    ``None`` together so no caller reads an unsupported number.
+    Conditional on a gate that passed by chance, ``policy_value`` runs
+    high - unconditionally it is unbiased; treat a barely-passing gate
+    as weak evidence for the magnitude, not just the ranking.
+    Declared clusters use ``cluster_weight="member_count"`` (unit weights)
+    or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
+    CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a
+    delete-one-cluster jackknife-t interval, conditional on training-frozen
+    nuisances; ``bootstrap`` (default
+    ``ClusterBootstrap(seed=0, repetitions=999)``) is recorded on results.
+    Deployment defaults only from the declared intervention grain. Cluster
+    policies pool member scores and take the longest feasible whole-cluster
+    prefix, with canonical-ID tie breaks; ``cluster_weight`` determines both
+    budget and evaluation mass. Fractions zero/one deploy nobody/everybody.
+    The result stores requested and achieved shares and portable scoring state.
+    ``predict`` applies the candidate policy; ``recommendation`` is its gate.
+    Missing uncertainty has a nullable numeric field and an
+    ``unavailable_reason`` code.
+    """
+    return _targeting_rule_binding(
+        binding_for(experiment, resolver),
+        metric,
+        control=control,
+        interact=interact,
+        adjust=adjust,
+        fraction=fraction,
+        alpha=alpha,
+        cluster_weight=cluster_weight,
+        bootstrap=bootstrap,
+        deploy_grain=deploy_grain,
+        include_evaluation_population=include_evaluation_population,
+    )
+
+
+# Identification, selection and deployment controls remain explicit at the public boundary.
+def select_targeting_rule(  # noqa: PLR0913
+    experiment: Experiment,
+    resolver: Resolver,
+    metric: str,
+    *,
+    control: str,
+    interact: Sequence[Covariate | str],
+    adjust: Sequence[Covariate | str] = (),
+    fractions: Sequence[float],
+    cost_per_treated: float = 0.0,
+    n_folds: int = 5,
+    seed: int,
+    alpha: float = 0.05,
+    cluster_weight: Literal["member_count", "equal"] = "member_count",
+    bootstrap: ClusterBootstrap | None = None,
+    deploy_grain: Literal["unit", "cluster"] | None = None,
+    include_evaluation_population: bool = False,
+) -> TargetingSelection:
+    """Choose the share of units to target on *metric*, honestly.
+
+    :func:`targeting_rule` demands a pre-committed fraction because choosing
+    the cut after seeing results biases the reported policy value upward by
+    60-120%.  This is the sanctioned way to CHOOSE that fraction: a seeded,
+    arm-stratified half of the units is set aside untouched; on the other
+    half, K-fold out-of-fold scores estimate each grid fraction's net
+    benefit ``E[1{targeted} (tau - cost_per_treated)]``; the argmax is
+    locked and then evaluated exactly once on the untouched half, through
+    the same gate and policy numbers :func:`targeting_rule` reports.
+    For observational sources, both the inner selection objective and the
+    untouched outer report use the declared doubly robust score and overlap policy.
+
+    *fractions*, in ``[0, 1]`` each, and *seed* are REQUIRED with no
+    defaults: the grid and the split are pre-commitments.
+    *cost_per_treated* is in the metric's own units per treated unit;
+    at the default ``0.0`` the objective is total benefit, which favors
+    wide fractions whenever the marginal unit's effect is positive.
+
+    Raises exactly what :func:`targeting_rule` raises, plus ``ValueError``
+    for an invalid grid or a fold too small to hold 2 units per arm.
+    Declared clusters use ``cluster_weight="member_count"`` (unit weights)
+    or ``"equal"`` (inverse cluster-size weights). Clustered rank, GATES and
+    CLAN intervals contain both a heldout-only whole-cluster bootstrap-t and a
+    delete-one-cluster jackknife-t interval, conditional on training-frozen
+    nuisances; ``bootstrap`` (default
+    ``ClusterBootstrap(seed=0, repetitions=999)``) is recorded on results.
+    Deployment defaults only from the declared intervention grain. Cluster
+    policies pool member scores and take the longest feasible whole-cluster
+    prefix, with canonical-ID tie breaks; ``cluster_weight`` determines both
+    budget and evaluation mass. Fractions zero/one deploy nobody/everybody.
+    The result stores requested and achieved shares and portable scoring state.
+    ``predict`` applies the candidate policy; ``recommendation`` is its gate.
+    Missing uncertainty has a nullable numeric field and an
+    ``unavailable_reason`` code.
+    """
+    return _select_targeting_rule_binding(
+        binding_for(experiment, resolver),
+        metric,
+        control=control,
+        interact=interact,
+        adjust=adjust,
+        fractions=fractions,
+        cost_per_treated=cost_per_treated,
+        n_folds=n_folds,
+        seed=seed,
+        alpha=alpha,
+        cluster_weight=cluster_weight,
+        bootstrap=bootstrap,
+        deploy_grain=deploy_grain,
+        include_evaluation_population=include_evaluation_population,
+    )
+
+
 __all__ = [
     "estimate_cate",
     "select_targeting_rule",
@@ -794,7 +945,11 @@ __all__ = [
 
 
 def core_operations():
-    """Return the CATE routes used by core orchestration."""
+    """Return the CATE routes used by core orchestration.
+
+    The public operations take an experiment and its resolver; the
+    ``*_binding`` operations take a source binding that is already verified.
+    """
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -802,4 +957,8 @@ def core_operations():
         validate_cate=validate_cate,
         targeting_rule=targeting_rule,
         select_targeting_rule=select_targeting_rule,
+        estimate_cate_binding=_estimate_cate_binding,
+        validate_cate_binding=_validate_cate_binding,
+        targeting_rule_binding=_targeting_rule_binding,
+        select_targeting_rule_binding=_select_targeting_rule_binding,
     )

@@ -912,15 +912,15 @@ def _run_cate_for_replication(
     supports, when the scenario declares ``covariate_sd > 0``. ``{}``
     otherwise.
 
-    Routes entirely through ``increment.frame.from_unit_summary`` -- a
-    public in-memory API, never a warehouse query -- since the native
-    ibis path's ``unit_frame()`` explicitly refuses covariates.
+    Builds each experiment with ``increment.from_frame`` -- a public
+    in-memory API, never a warehouse query -- since the native ibis
+    path's ``unit_frame()`` explicitly refuses covariates.
     """
     if scenario.covariate_sd <= 0:
         return {}
 
+    from increment.builders import from_frame
     from increment.estimation.cate import Covariate
-    from increment.frame import from_unit_summary
     from increment.kernel.ports import cate_operations
 
     estimate_cate = cate_operations().estimate_cate
@@ -934,8 +934,9 @@ def _run_cate_for_replication(
         if metric.name not in scenario.true_lift or metric.name not in _METRIC_SPEC_TYPE:
             continue
         frame_df = _cate_source_frame(pdf, metric.name)
-        src = from_unit_summary(
+        experiment, resolver = from_frame(
             frame_df,
+            shape="summary",
             unit="unit_id",
             group="group_id",
             control="control",
@@ -943,7 +944,11 @@ def _run_cate_for_replication(
             experiment_id="sim",
         )
         results[metric.name] = estimate_cate(
-            src, metric.name, control="control", interact=[Covariate(name="covariate")]
+            experiment,
+            resolver,
+            metric.name,
+            control="control",
+            interact=[Covariate(name="covariate")],
         )
     return results
 

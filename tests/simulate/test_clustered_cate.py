@@ -17,10 +17,16 @@ import pyarrow as pa
 import pytest
 from pydantic import ValidationError
 
-from increment.cate import estimate_cate, select_targeting_rule, targeting_rule, validate_cate
+from increment import from_frame
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.targeting import ClusterBootstrap, TargetingRule
+from increment.estimators import (
+    estimate_cate,
+    select_targeting_rule,
+    targeting_rule,
+    validate_cate,
+)
 from increment.frame import MetricSpec, from_unit_summary
 from increment.semantics.design import Randomized
 from increment.simulate.cluster_dgp import (
@@ -40,8 +46,8 @@ from increment.simulate.cluster_dgp import (
     _validation_targets,
     cell_inventory,
     child_rng,
+    clustered_experiment,
     clustered_sizing_inventory,
-    clustered_source,
     clustered_table_payload,
     evaluate_clustered_replication,
     evaluation_policy_truth,
@@ -66,6 +72,19 @@ def _source(table, *, grain="cluster"):
         unit="unit_id",
         group="group_id",
         control="control",
+        cluster="cluster_id",
+        intervention_grain=grain,
+        metrics={"y": "mean"},
+        design=Randomized(control_group="control"),
+    )
+
+
+def _experiment(table, *, grain="cluster") -> tuple[Any, Any]:
+    return from_frame(
+        table,
+        shape="summary",
+        unit="unit_id",
+        group="group_id",
         cluster="cluster_id",
         intervention_grain=grain,
         metrics={"y": "mean"},
@@ -255,7 +274,7 @@ def test_independent_potential_outcome_equations_and_informative_targets():
 def test_public_fit_matches_hand_derived_nonzero_effect_and_cluster_sandwich(weight):
     data = _balanced_population()
     fit = estimate_cate(
-        _source(data.table), "y", control="control", interact=["x0"], cluster_weight=weight
+        *_experiment(data.table), "y", control="control", interact=["x0"], cluster_weight=weight
     )
     # Each arm has 20 independent c's, mean(c²)=2; CR1=40/39.
     assert fit.ate == pytest.approx(2)
@@ -281,7 +300,7 @@ def test_exact_small_balanced_randomization_enumeration_has_unbiased_public_ate(
             for j in range(2)
         ]
         fit = estimate_cate(
-            _source(pa.Table.from_pylist(rows)), "y", control="control", interact=[]
+            *_experiment(pa.Table.from_pylist(rows)), "y", control="control", interact=[]
         )
         expected = 2 + np.mean(list(treated)) - np.mean([g for g in range(4) if g not in treated])
         assert fit.ate == pytest.approx(expected)
@@ -299,7 +318,7 @@ def test_assignment_support_is_not_inference_availability_and_never_redraws():
     # The schedule is drawn once and never redrawn to rescue arm support.
     np.testing.assert_array_equal(groups == "treatment", draws < s.treatment_ratio)
     with pytest.raises(InvalidRequestError) as caught:
-        estimate_cate(clustered_source(drawn), "y", control="control", interact=[])
+        estimate_cate(*clustered_experiment(drawn), "y", control="control", interact=[])
     assert caught.value.code == "estimation.cate.each_arm_needs"
     assert caught.value.context == {
         "n_treated": int((groups == "treatment").sum()),
@@ -312,7 +331,7 @@ def test_assignment_support_is_not_inference_availability_and_never_redraws():
 def test_public_frozen_rule_predicts_independent_oracle_and_honors_budgets(weight, share, effect):
     data = _balanced_population()
     rule = targeting_rule(
-        _source(data.table),
+        *_experiment(data.table),
         "y",
         control="control",
         interact=["x0"],
@@ -460,10 +479,11 @@ def test_public_policy_and_selection_values_match_nonzero_causal_targets(grain, 
         "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
         "include_evaluation_population": True,
     }
-    source = _source(data.table, grain=grain)
-    fixed = targeting_rule(source, "y", fraction=0.5, **options)
+    experiment, resolver = _experiment(data.table, grain=grain)
+    fixed = targeting_rule(experiment, resolver, "y", fraction=0.5, **options)
     selected = select_targeting_rule(
-        source,
+        experiment,
+        resolver,
         "y",
         fractions=(0.0, 0.5, 1.0),
         n_folds=2,
@@ -557,9 +577,9 @@ def test_weighted_gates_tied_boundary_permutations_and_clones(clones, order):
         "cluster_weight": "equal",
         "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
     }
-    source = _source(data.table, grain="unit")
-    validation = validate_cate(source, "y", n_groups=2, **options)
-    rule = targeting_rule(source, "y", fraction=0.5, **options)
+    experiment, resolver = _experiment(data.table, grain="unit")
+    validation = validate_cate(experiment, resolver, "y", n_groups=2, **options)
+    rule = targeting_rule(experiment, resolver, "y", fraction=0.5, **options)
     independent = _validation_targets(data, "equal", rule)
     assert validation.n_holdout == 12 * clones
     for group, target in zip(validation.groups, (0.0, 1.0), strict=True):
@@ -581,7 +601,7 @@ def test_uniform_order_statistic_finite_batch_target(k):
     assert Fraction(1, 2) - top == Fraction(1, 2 * (k + 1))
     assert (1 + top) != Fraction(3, 2)  # Finite draws are not population truth.
     rule = targeting_rule(
-        _source(_balanced_population().table),
+        *_experiment(_balanced_population().table),
         "y",
         control="control",
         interact=["x0"],
@@ -671,10 +691,12 @@ def test_exact_policy_target_preserves_evaluation_roster(weight, grain):
         "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
         "include_evaluation_population": True,
     }
-    source = clustered_source(data)
+    experiment, resolver = clustered_experiment(data)
     rules = (
-        targeting_rule(source, "y", fraction=0.5, **options),
-        select_targeting_rule(source, "y", fractions=(0.5,), seed=12, n_folds=2, **options).rule,
+        targeting_rule(experiment, resolver, "y", fraction=0.5, **options),
+        select_targeting_rule(
+            experiment, resolver, "y", fractions=(0.5,), seed=12, n_folds=2, **options
+        ).rule,
     )
     positions = {str(value): index for index, value in enumerate(data.table["unit_id"])}
     for rule in rules:
@@ -733,14 +755,14 @@ def test_independent_rank_integrals_have_hand_computed_tied_targets():
 @pytest.mark.parametrize("grain", ["unit", "cluster"])
 def test_public_validation_selection_and_predictions_have_available_evidence(grain):
     data = _balanced_population(grain=grain)
-    source = _source(data.table, grain=grain)
+    experiment, resolver = _experiment(data.table, grain=grain)
     options: dict[str, Any] = {
         "control": "control",
         "interact": ["x0"],
         "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
         "include_evaluation_population": True,
     }
-    validation = validate_cate(source, "y", n_groups=2, **options)
+    validation = validate_cate(experiment, resolver, "y", n_groups=2, **options)
     assert validation.holdout_ate is not None and validation.holdout_ate.lb is not None
     assert validation.holdout_ate.ub is not None
     assert validation.holdout_ate_se is not None and validation.holdout_ate_se > 0
@@ -749,7 +771,7 @@ def test_public_validation_selection_and_predictions_have_available_evidence(gra
     assert validation.autoc.se is not None and validation.autoc.se > 0
     assert validation.qini.se is not None and validation.qini.se > 0
     selected = select_targeting_rule(
-        source, "y", fractions=(0.0, 0.5, 1.0), n_folds=2, seed=12, **options
+        experiment, resolver, "y", fractions=(0.0, 0.5, 1.0), n_folds=2, seed=12, **options
     )
     assert selected.rule.deploy_grain == grain
     oracle = _four_cluster_oracle()
@@ -781,15 +803,21 @@ def test_observational_mixed_clusters_adjust_all_confounders_and_keep_unit_polic
         intervention_grain=grain,
     )
     data = simulate_clustered_cate(s)
-    source = clustered_source(data)
-    assert source.context.design.adjustment.covariates == ("z", "x0", "x1")
+    experiment, resolver = clustered_experiment(data)
+    assert cast(Any, experiment.design)["adjustment"]["covariates"] == ("z", "x0", "x1")
     groups = np.asarray(data.table["group_id"])
     assert any(
         np.unique(groups[np.array(data.cluster_index) == g]).size == 2 for g in range(s.n_clusters)
     )
     bootstrap = ClusterBootstrap(seed=57, repetitions=99)
     validation = validate_cate(
-        source, "y", control="control", interact=["x0"], n_groups=2, bootstrap=bootstrap
+        experiment,
+        resolver,
+        "y",
+        control="control",
+        interact=["x0"],
+        n_groups=2,
+        bootstrap=bootstrap,
     )
     assert validation.population is None
     assert validation.holdout_ate is not None
@@ -800,7 +828,13 @@ def test_observational_mixed_clusters_adjust_all_confounders_and_keep_unit_polic
     assert abs(validation.holdout_ate.value - 2) < 4 * validation.holdout_ate_se
     np.testing.assert_allclose(data.tau, 2)
     rule = targeting_rule(
-        source, "y", control="control", interact=["x0"], fraction=0.5, bootstrap=bootstrap
+        experiment,
+        resolver,
+        "y",
+        control="control",
+        interact=["x0"],
+        fraction=0.5,
+        bootstrap=bootstrap,
     )
     assert rule.deploy_grain == grain
     actions = rule.predict(data.covariates, cluster_ids=np.asarray(data.table["cluster_id"]))
@@ -815,7 +849,7 @@ def test_observational_mixed_clusters_adjust_all_confounders_and_keep_unit_polic
             for g in range(s.n_clusters)
         )
     with pytest.raises(InvalidRequestError) as caught:
-        estimate_cate(source, "y", control="control", interact=["x0"])
+        estimate_cate(experiment, resolver, "y", control="control", interact=["x0"])
     assert caught.value.code == "cate.identification.randomized_only"
 
 
@@ -830,14 +864,14 @@ def test_arbitrary_ids_row_order_and_exact_uniform_cloning_preserve_public_fit(s
         ]
         table = table.set_column(1, "cluster_id", pa.array(labels))
     options: dict[str, Any] = {"control": "control", "interact": ["x0"], "cluster_weight": weight}
-    fit = estimate_cate(_source(table), "y", **options)
+    fit = estimate_cate(*_experiment(table), "y", **options)
     reversed_fit = estimate_cate(
-        _source(table.take(pa.array(np.arange(len(data.rows))[::-1]))), "y", **options
+        *_experiment(table.take(pa.array(np.arange(len(data.rows))[::-1]))), "y", **options
     )
     cloned = _balanced_population(clones=5).table
     if style != "plain":
         cloned = cloned.set_column(1, "cluster_id", pa.array(np.repeat(labels, 5)))
-    clone_fit = estimate_cate(_source(cloned), "y", **options)
+    clone_fit = estimate_cate(*_experiment(cloned), "y", **options)
     for actual in (reversed_fit, clone_fit):
         assert actual.ate == pytest.approx(2)
         assert actual.lb == pytest.approx(fit.lb)
@@ -858,15 +892,15 @@ def test_uniform_cloning_preserves_validation_and_deployment_not_just_fit(weight
     records = []
     for clones in (1, 5):
         data = _balanced_population(clones=clones)
-        source = _source(data.table)
+        experiment, resolver = _experiment(data.table)
         options: dict[str, Any] = {
             "control": "control",
             "interact": ["x0"],
             "cluster_weight": weight,
             "bootstrap": ClusterBootstrap(seed=57, repetitions=99),
         }
-        validation = validate_cate(source, "y", n_groups=2, **options)
-        rule = targeting_rule(source, "y", fraction=0.5, **options)
+        validation = validate_cate(experiment, resolver, "y", n_groups=2, **options)
+        rule = targeting_rule(experiment, resolver, "y", fraction=0.5, **options)
         records.append((validation, rule, policy_truth(rule, _four_cluster_oracle())))
     a, b = records
     assert a[0].holdout_ate is not None and b[0].holdout_ate is not None
@@ -912,10 +946,11 @@ def test_incomplete_or_malformed_roster_has_exact_construction_refusal(fault, co
 @pytest.mark.slow
 def test_shared_reducer_separates_real_point_only_interval_and_failed_results():
     data = _balanced_population()
-    source = _source(data.table)
-    fit = estimate_cate(source, "y", control="control", interact=["x0"])
+    experiment, resolver = _experiment(data.table)
+    fit = estimate_cate(experiment, resolver, "y", control="control", interact=["x0"])
     validation = validate_cate(
-        source,
+        experiment,
+        resolver,
         "y",
         control="control",
         interact=[],
@@ -929,7 +964,7 @@ def test_shared_reducer_separates_real_point_only_interval_and_failed_results():
     )
     with pytest.raises(InvalidRequestError) as caught:
         estimate_cate(
-            _source(data.table.slice(0, 1).append_column("unused", pa.array([0]))),
+            *_experiment(data.table.slice(0, 1).append_column("unused", pa.array([0]))),
             "y",
             control="control",
             interact=[],
@@ -1116,9 +1151,9 @@ def test_original_varying_noise_witness_retained_with_independent_truth(k, membe
     x = np.asarray(data.table["x0"])
     np.testing.assert_allclose(data.potential_outcomes["tau"], 0.12 * x)
     assert data.truth.member_ate == pytest.approx(0 if k == 80 else -0.192)
-    source = clustered_source(data)
+    experiment, resolver = clustered_experiment(data)
     options: dict[str, Any] = {"control": "control", "interact": ["x0"]}
-    fit = estimate_cate(source, "y", **options)
+    fit = estimate_cate(experiment, resolver, "y", **options)
     # Independent WLS/CR1 equation, not the estimator's returned coefficients as truth.
     d = (np.asarray(data.table["group_id"]) == "treatment").astype(float)
     z = np.column_stack([np.ones(x.size), d, x - x.mean(), d * (x - x.mean())])
@@ -1132,11 +1167,12 @@ def test_original_varying_noise_witness_retained_with_independent_truth(k, membe
     assert fit.se**2 == pytest.approx(covariance[1, 1])
     assert fit.se > 0
     bootstrap = ClusterBootstrap(seed=0, repetitions=999)
-    validation = validate_cate(source, "y", bootstrap=bootstrap, **options)
+    validation = validate_cate(experiment, resolver, "y", bootstrap=bootstrap, **options)
     assert validation.holdout_ate_se is not None and validation.holdout_ate_se > 0
     assert validation.autoc.se is not None and validation.autoc.se > 0
     selection = select_targeting_rule(
-        source,
+        experiment,
+        resolver,
         "y",
         fractions=(0.0, 0.5, 1.0),
         seed=0,
@@ -1872,7 +1908,7 @@ def test_shared_accounting_serialization_preserves_nulls_and_owned_reason_maps()
         }
     )
     with pytest.raises(InvalidRequestError) as caught:
-        estimate_cate(_source(rows), "y", control="control", interact=[])
+        estimate_cate(*_experiment(rows), "y", control="control", interact=[])
     table = reduce_clustered_observations((_record("ate", caught.value, 2),))
     payload = clustered_table_payload(table)
     restored = json.loads(json.dumps(payload, allow_nan=False))
@@ -2063,7 +2099,7 @@ def test_affine_public_reporting_actual_fractions_and_mutation(fraction):
     from increment.simulate.cluster_dgp import check_policy_reconstruction
 
     data = _affine_witness()
-    source = clustered_source(data)
+    experiment, resolver = clustered_experiment(data)
     options: dict[str, Any] = {
         "control": "control",
         "interact": ["x0"],
@@ -2072,9 +2108,9 @@ def test_affine_public_reporting_actual_fractions_and_mutation(fraction):
         "include_evaluation_population": True,
     }
     rules = (
-        targeting_rule(source, "y", fraction=fraction, **options),
+        targeting_rule(experiment, resolver, "y", fraction=fraction, **options),
         select_targeting_rule(
-            source, "y", fractions=(fraction,), n_folds=2, seed=12, **options
+            experiment, resolver, "y", fractions=(fraction,), n_folds=2, seed=12, **options
         ).rule,
     )
     for rule in rules:
@@ -2309,7 +2345,7 @@ def test_affine_reporting_gate_matches_public_bootstrap_t_and_jackknife(heteroge
 
     data = _affine_witness(heterogeneity=heterogeneity)
     rule = targeting_rule(
-        clustered_source(data),
+        *clustered_experiment(data),
         "y",
         fraction=0.5,
         control="control",

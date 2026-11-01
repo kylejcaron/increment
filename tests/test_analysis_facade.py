@@ -2505,19 +2505,22 @@ def _unit_summary_frame(tenure, group, revenue):
 def test_estimate_cate_matches_across_definitions_and_unit_summary(tmp_path):
     """A randomized experiment needs no declared design: estimate_cate reads
     the ad hoc covariate from the warehouse exactly as from a dataframe."""
+    from increment import from_definitions, from_frame
+    from increment.estimators import estimate_cate
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, group, revenue = covariate_defs_and_con(tmp_path)
-    native = Analysis.from_definitions("cov_test", defs_path, con)
-    oracle = Analysis.from_unit_summary(
+    native = from_definitions(defs_path, con, experiment_name="cov_test")
+    oracle = from_frame(
         _unit_summary_frame(tenure, group, revenue),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         control="control",
     )
-    native_result = native.estimate_cate("revenue", interact=["tenure"])
-    oracle_result = oracle.estimate_cate("revenue", control="control", interact=["tenure"])
+    native_result = estimate_cate(*native, "revenue", interact=["tenure"])
+    oracle_result = estimate_cate(*oracle, "revenue", control="control", interact=["tenure"])
     assert native_result.n == oracle_result.n == len(tenure)
     for field in ("ate", "se", "lb", "ub"):
         assert getattr(native_result, field) == pytest.approx(
@@ -2534,6 +2537,9 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
     import numpy as np
     import pandas as pd
 
+    from increment import from_frame
+    from increment.estimators import estimate_cate
+
     rng = np.random.default_rng(6)
     n = 40
     tenure = {f"u{i}": float(rng.normal(100, 15)) for i in range(n)}
@@ -2548,24 +2554,26 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
             "date": ["2025-01-01"] * n,
         }
     )
-    panel = Analysis.from_unit_panel(
+    panel = from_frame(
         frame,
+        shape="panel",
         unit="user_id",
         group="variant",
         date="date",
         metrics={"revenue": "mean"},
         control="control",
     )
-    panel_result = panel.estimate_cate("revenue", control="control", interact=["tenure"])
+    panel_result = estimate_cate(*panel, "revenue", control="control", interact=["tenure"])
 
-    summary = Analysis.from_unit_summary(
+    summary = from_frame(
         frame.drop(columns=["date"]),
+        shape="summary",
         unit="user_id",
         group="variant",
         metrics={"revenue": "mean"},
         control="control",
     )
-    summary_result = summary.estimate_cate("revenue", control="control", interact=["tenure"])
+    summary_result = estimate_cate(*summary, "revenue", control="control", interact=["tenure"])
 
     assert panel_result.n == summary_result.n == n
     for field in ("ate", "se", "lb", "ub"):

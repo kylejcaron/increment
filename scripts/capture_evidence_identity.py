@@ -144,6 +144,7 @@ def load_operations_capture(path: Path) -> dict[str, Any]:
 def _population_identity(analysis: Analysis, case: Any, cells: Sequence[Any]) -> dict[str, Any]:
     import narwhals as nw
 
+    from increment.cate import _cate_source
     from increment.errors import CodedError, InvalidRequestError
 
     populations = {cell.identity.key.analysis_population for cell in cells} or {case.population}
@@ -152,7 +153,7 @@ def _population_identity(analysis: Analysis, case: Any, cells: Sequence[Any]) ->
         try:
             source = analysis._readout_source(population=population)
             if population == "triggered":
-                source = analysis._cate_source("capture population identity")
+                source = cast(Any, _cate_source(analysis._binding, "capture population identity"))
         except (CodedError, InvalidRequestError):
             continue
         if not hasattr(source, "unit_frame"):
