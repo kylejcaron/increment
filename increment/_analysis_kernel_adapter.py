@@ -202,19 +202,6 @@ class AnalysisResolver(ResolverBinding):
     def set_run_result_factory(self, factory: Callable[..., Any]) -> None:
         self._run_result_factory = factory
 
-    def capture_sequential(
-        self,
-        *,
-        finalized: bool,
-        previous: Any | None = None,
-        as_of: Any | None = None,
-        freeze: Sequence[str] = (),
-    ) -> Any:
-        """Capture or adopt a sequential checkpoint on the bound analysis."""
-        return self._analysis.capture_sequential(
-            finalized=finalized, previous=previous, as_of=as_of, freeze=freeze
-        )
-
     def resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> Any:
         provider = super().resolve(source_refs, ctx)
         self._analysis._binding = self.binding

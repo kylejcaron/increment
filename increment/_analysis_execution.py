@@ -1001,54 +1001,18 @@ class Analysis:
         results can reveal future triggered outcomes, including the same
         metric, and must not inform those decisions.
         """
-        from increment.readouts._evidence import load_sequential_capture
+        from increment._source_sequential import _capture_sequential_binding
 
-        source = cast(Any, self._state.source)
         request = SequentialCaptureRequest(
             finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
         )
-        context = _current_execution_context()
-        if context is None:
-            return load_sequential_capture(source, request)
-
-        from increment._source_types import is_custom_source
-        from increment.readouts._evidence import _builtin_source
-
-        context.validate_request(
-            source, tuple(source.context.metrics), tuple(source.context.configs)
-        )
-        with context.borrow() as scoped:
-            capture_source = scoped if is_custom_source(source) else _builtin_source(scoped)
-            snapshot = load_sequential_capture(capture_source, request)
-        if not is_custom_source(source):
-            from increment.sequential_source import adopt_source_snapshot
-
-            snapshot = adopt_source_snapshot(source, snapshot)
-        return snapshot
+        return _capture_sequential_binding(self._binding, request, _current_execution_context())
 
     def sequential_snapshot(self, *, previous=None):
         """Retrieve a current exact checkpoint, optionally proving its parent."""
-        from increment.readouts._evidence import current_source_snapshot
+        from increment._source_sequential import _sequential_snapshot_binding
 
-        source = cast(Any, self._state.source)
-        context = _current_execution_context()
-        if context is None:
-            return current_source_snapshot(source, previous=previous)
-
-        from increment._source_types import is_custom_source
-        from increment.readouts._evidence import _builtin_source
-
-        context.validate_request(
-            source, tuple(source.context.metrics), tuple(source.context.configs)
-        )
-        with context.borrow() as scoped:
-            snapshot_source = scoped if is_custom_source(source) else _builtin_source(scoped)
-            snapshot = current_source_snapshot(snapshot_source, previous=previous)
-        if not is_custom_source(source):
-            from increment.sequential_source import adopt_source_snapshot
-
-            snapshot = adopt_source_snapshot(source, snapshot)
-        return snapshot
+        return _sequential_snapshot_binding(self._binding, previous, _current_execution_context())
 
     def __repr__(self) -> str:
         study = getattr(self._state, "study", None)

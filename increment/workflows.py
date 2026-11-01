@@ -8,6 +8,7 @@ from increment._source_diagnostics import (
     trigger_rates,
     unit_counts,
 )
+from increment._source_sequential import capture_sequential, sequential_snapshot
 from increment._source_workflows import (
     available_metrics,
     breakout_summaries,
@@ -24,6 +25,7 @@ __all__ = [
     "assignment_diagnostic",
     "available_metrics",
     "breakout_summaries",
+    "capture_sequential",
     "compiled_decision_plan",
     "experiment_definition",
     "export_moments",
@@ -31,6 +33,7 @@ __all__ = [
     "health_check",
     "materialize",
     "metrics",
+    "sequential_snapshot",
     "srm",
     "trigger_rates",
     "unit_counts",

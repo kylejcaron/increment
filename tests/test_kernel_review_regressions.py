@@ -817,8 +817,9 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
 
 
 @pytest.mark.integration
-def test_builder_resolver_can_capture_sequential_checkpoint_before_run():
+def test_workflow_capture_sequential_checkpoint_feeds_builder_run():
     from increment.builders import from_frame
+    from increment.workflows import capture_sequential
     from tests.test_sequential_public_sources import _frame as sequential_frame
     from tests.test_sequential_public_sources import gaussian_plan
 
@@ -842,7 +843,7 @@ def test_builder_resolver_can_capture_sequential_checkpoint_before_run():
             exposure_date="exposed",
         ),
     )
-    resolver.capture_sequential(finalized=True, as_of=1)
+    capture_sequential(experiment, resolver, finalized=True, as_of=1)
     scope = Scope(view="asof", grain="asof", completion_policy=True)
     requested = replace(experiment, scopes=(scope,))
 

@@ -42,10 +42,13 @@ The policy covers:
 - `increment.workflows` promises only `materialize`, `export_moments`,
   `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
   `compiled_decision_plan`, `available_metrics`, `unit_counts`, `srm`,
-  `trigger_rates`, `allocation_history`, `health_check`, and
-  `assignment_diagnostic`. These functions operate on an `(experiment,
-  resolver)` pair; the experiment definition inspection returns the semantic
-  source declaration, not the kernel execution request.
+  `trigger_rates`, `allocation_history`, `health_check`,
+  `assignment_diagnostic`, `capture_sequential`, and `sequential_snapshot`.
+  These functions operate on an `(experiment, resolver)` pair; the experiment
+  definition inspection returns the semantic source declaration, not the
+  kernel execution request. A sequential capture is kept by the resolver's
+  source, so the next `run(experiment, resolver)` and `export_moments` with
+  that resolver read it.
 - `increment.artifacts` promises only `artifact_context` and
   `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
   pair, and publication retains trusted extension selection and refresh semantics.
@@ -93,6 +96,10 @@ change without notice.
   `from_moments` return an experiment/resolver pair. Top-level
   `run(experiment, resolver)` returns `RunResult`; legacy `Analysis.run()` keeps
   its result type. See the [experiment specification guide](guides/experiment-specifications.md).
+- Release note (breaking API cutover): the module-builder resolver no longer
+  has a `capture_sequential` method. Call
+  `increment.workflows.capture_sequential(experiment, resolver, ...)`, and read
+  the retained checkpoint with `increment.workflows.sequential_snapshot`.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 
