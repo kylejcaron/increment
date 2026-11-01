@@ -135,7 +135,7 @@ def scope_refusals(experiment: Any, scope: Any) -> tuple[CodedError, ...]:
         from increment._evidence_refusals import CONTRAST_UNAVAILABLE
 
         try:
-            if scope.population == "triggered":
+            if scope.population == "triggered" and operation not in _VALUE_OPERATIONS:
                 refuse(
                     _TRIGGER_UNSUPPORTED,
                     method=operation,
