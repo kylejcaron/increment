@@ -465,8 +465,9 @@ covariate reports `zero_covariate_variance`) and per-unit covariate data:
 - `from_unit_day_artifact`: publish each adjusted method's `cuped_preperiod`
   extension. Select its `entry.request` from
   `unit_day_artifact_extension_catalog(context)` and pass it through
-  `extensions=` to `analysis.publish_unit_day_artifact`. Default publication
-  (`extensions=()`) omits CUPED covariates. See the
+  `extensions=` to `increment.artifacts.publish_unit_day_artifact(experiment, resolver, store, ...)`.
+  The trusted `context` comes from `increment.artifacts.artifact_context(experiment, resolver)`.
+  Default publication (`extensions=()`) omits CUPED covariates. See the
   [artifact extension matrix](data-model.md#operation-and-extension-matrix).
 
 Capture retains the same zero-filled pre-period total as fixed-horizon CUPED.

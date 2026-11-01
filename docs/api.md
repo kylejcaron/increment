@@ -44,6 +44,9 @@ The policy covers:
   `compiled_decision_plan`, and `available_metrics`. These functions operate on
   an `(experiment, resolver)` pair; the experiment definition inspection returns
   the semantic source declaration, not the kernel execution request.
+- `increment.artifacts` promises only `artifact_context` and
+  `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
+  pair, and publication retains trusted extension selection and refresh semantics.
 - result fields and schemas, including row sets, null reasons, and interval
   reference/guarantee labels;
 - stable refusal codes and named context fields;

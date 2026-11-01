@@ -180,11 +180,7 @@ def _artifact_analysis(tmp_path: Path) -> Any:
         con,
         source_snapshot_evidence=SourceSnapshotEvidence(evidence, {"event_log": evidence}),
     )
-    context = native._artifact_context(
-        native._defs,  # ty: ignore[invalid-argument-type]
-        native._experiment,
-        native._on_mixed_assignment,
-    )
+    context = native.artifact_context
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     requests = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
     reference = native.publish_unit_day_artifact(store, extensions=requests)

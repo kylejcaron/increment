@@ -755,14 +755,16 @@ layer = "core"
 depends_on = [
   "increment._analysis_config",
   "increment._binding",
+  "increment._canonical",
   "increment._evidence_refusals",
   "increment._source_operations",
   "increment._source_admission",
   "increment._source_types",
+  "increment.breakout.estimates",
   "increment.decision",
   "increment.errors",
-  "increment.breakout.estimates",
   "increment.query",
+  "increment.query.artifact_ports",
 ]
 
 [[modules]]
@@ -787,7 +789,7 @@ depends_on = [
   "increment._canonical", "increment.kernel.contracts", "increment._analysis_kernel_adapter",
   "increment.frame", "increment.plan",
   "increment.query", "increment.readouts", "increment.semantics",
-  "increment.query.artifact_ports",
+
   "increment.query._workflows",
   "increment.sources",
   "increment.sequential_source",

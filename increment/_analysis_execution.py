@@ -461,73 +461,6 @@ class Analysis:
         self._require_arm_state("experiment")
         return self._binding.experiment
 
-    @staticmethod
-    def _artifact_context(
-        definitions: Definitions,
-        experiment: Experiment,
-        policy: Literal["error", "warn", "exclude"],
-        design: Any | None = None,
-    ) -> ArtifactContext:
-        from increment.query.artifact_ports import artifact_query_ports
-
-        return artifact_query_ports().publisher.artifact_context(
-            definitions,
-            experiment,
-            policy,
-            encouragement_uptake=design
-            if getattr(design, "mechanism", None) == "encouragement"
-            else None,
-        )
-
-    @staticmethod
-    def _select_artifact_extensions(
-        context: ArtifactContext,
-        extensions: Sequence[Any],
-    ) -> tuple[Any, ...]:
-        from increment._canonical import canonical_json_bytes
-        from increment.query.artifact_contract import (
-            ArtifactContractError,
-            unit_day_artifact_extension_catalog,
-        )
-
-        def canonical_json(value: object) -> str:
-            return canonical_json_bytes(value).decode()
-
-        entries = unit_day_artifact_extension_catalog(context)
-        selected: list[Any] = []
-        seen: set[str] = set()
-        for requested in extensions:
-            request = getattr(requested, "request", requested)
-            if isinstance(request, Mapping):
-                payload = dict(request)
-            elif hasattr(request, "model_dump"):
-                payload = request.model_dump(mode="json")
-            else:
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "extension request must be a closed typed request",
-                )
-            identity = canonical_json(payload)
-            if identity in seen:
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "duplicate extension request",
-                )
-            matches = [
-                entry
-                for entry in entries
-                if canonical_json(entry.request.model_dump(mode="json")) == identity
-            ]
-            if len(matches) != 1:
-                code = "artifact.extension.missing" if not matches else "artifact.extension.invalid"
-                raise ArtifactContractError(
-                    code,
-                    "extension request is not selected exactly once in trusted context",
-                )
-            seen.add(identity)
-            selected.append(matches[0].request)
-        return tuple(selected)
-
     def publish_unit_day_artifact(
         self,
         store: ArtifactStore,
@@ -536,34 +469,12 @@ class Analysis:
         refresh_of: UnitDayArtifactRef | None = None,
     ) -> UnitDayArtifactRef:
         """Publish this definitions-backed arm analysis as an immutable artifact."""
-        from increment.query.native_contract import NativeCoreSource
+        from increment._source_workflows import _publish_unit_day_artifact_binding
 
-        state = self._require_arm_state("publish_unit_day_artifact")
-        if not isinstance(state, DefinitionsArmAnalysisState):
-            from increment._evidence_refusals import refuse_operation
-
-            refuse_operation(
-                self._src,
-                "materialize",
-                tuple(sorted(declared_evidence(self._src).operations)),
-                route="publish_unit_day_artifact() requires Analysis.from_definitions",
-            )
-        native = _require_analysis_operation(
-            self._src,
-            "materialize",
-            NativeCoreSource,
-            message="publish_unit_day_artifact() requires a definitions-backed source",
-        )
-        context = self._artifact_context(
-            cast(Definitions, self._defs),
-            self._experiment,
-            self._on_mixed_assignment,
-            design=self._src.context.design,
-        )
-        selected = self._select_artifact_extensions(context, extensions)
-        return cast(Any, native).publish_unit_day_artifact(
+        return _publish_unit_day_artifact_binding(
+            self._binding,
             store,
-            extensions=selected,
+            extensions=extensions,
             refresh_of=refresh_of,
         )
 
@@ -1493,22 +1404,9 @@ class Analysis:
         Pass this value as ``expected_context`` when reopening an artifact
         published from the same analysis.
         """
-        state = self._require_arm_state("artifact_context")
-        if not isinstance(state, DefinitionsArmAnalysisState):
-            from increment._evidence_refusals import refuse_operation
+        from increment._source_workflows import _artifact_context_binding
 
-            refuse_operation(
-                self._src,
-                "materialize",
-                tuple(sorted(declared_evidence(self._src).operations)),
-                route="artifact_context requires Analysis.from_definitions",
-            )
-        return self._artifact_context(
-            state.definitions,
-            self.experiment,
-            self._on_mixed_assignment,
-            design=self._design,
-        )
+        return _artifact_context_binding(self._binding)
 
     @property
     def metrics(self) -> list[Metric]:

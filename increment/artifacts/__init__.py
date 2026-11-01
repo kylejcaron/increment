@@ -66,9 +66,13 @@ _EXPORTS = {
         "unit_day_artifact_extension_catalog",
     ),
     "SourceSnapshotEvidence": ("increment.query.session", "SourceSnapshotEvidence"),
+    "artifact_context": ("increment._source_workflows", "artifact_context"),
+    "publish_unit_day_artifact": ("increment._source_workflows", "publish_unit_day_artifact"),
 }
 
 if TYPE_CHECKING:
+    from increment._source_workflows import artifact_context as artifact_context
+    from increment._source_workflows import publish_unit_day_artifact as publish_unit_day_artifact
     from increment.query.artifact_contract import (
         ArtifactPublication as ArtifactPublication,
     )
@@ -265,4 +269,6 @@ __all__ = [
     "compile_unit_day_artifact_context",
     "unit_day_artifact_extension_catalog",
     "SourceSnapshotEvidence",
+    "artifact_context",
+    "publish_unit_day_artifact",
 ]

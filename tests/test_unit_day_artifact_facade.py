@@ -326,12 +326,31 @@ def _published(
     with_pre_period: bool = False,
     with_late_returns: bool = False,
 ):
+    import shutil
+    import tempfile
+
+    from increment import from_definitions
+    from increment.artifacts import publish_unit_day_artifact
+
     con, native, context, store = _native(
         definitions=definitions,
         with_pre_period=with_pre_period,
         with_late_returns=with_late_returns,
     )
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
+    source_path = Path(definitions)
+    with tempfile.TemporaryDirectory() as temporary:
+        copied = Path(temporary) / "definitions"
+        if source_path.is_dir():
+            shutil.copytree(source_path, copied)
+        else:
+            copied.mkdir()
+            shutil.copy2(source_path, copied / source_path.name)
+            copied = copied / source_path.name
+        experiment, resolver = from_definitions(copied, con, experiment_name="new_onboarding_v2")
+        try:
+            ref = publish_unit_day_artifact(experiment, resolver, store, extensions=extensions)
+        finally:
+            cast(Any, resolver).close()
     return con, native, context, store, ref
 
 
@@ -2800,3 +2819,33 @@ def test_publication_never_persists_or_returns_source_sql(tmp_path: Path) -> Non
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.slow
+def test_public_artifact_workflow_publishes_reopens_and_runs(tmp_path: Path) -> None:
+    from increment import from_definitions
+    from increment.artifacts import artifact_context as artifact_context_for
+    from increment.artifacts import publish_unit_day_artifact
+
+    con = ibis.duckdb.connect()
+    con.raw_sql("CREATE SCHEMA IF NOT EXISTS analytics")
+    con.create_table(
+        "event_log",
+        _seed_event_log_input(with_pre_period=False, with_late_returns=False),
+        database="analytics",
+        overwrite=True,
+    )
+    definitions = _definitions(tmp_path)
+    experiment, resolver = from_definitions(definitions, con, experiment_name="new_onboarding_v2")
+    context = artifact_context_for(experiment, resolver)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref = publish_unit_day_artifact(experiment, resolver, store)
+    try:
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+        assert manifest.context == context
+        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as reopened:
+            assert reopened.run(metrics=["purchase_rate"])
+    finally:
+        cast(Any, resolver).close()
+        con.disconnect()
