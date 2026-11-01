@@ -29,7 +29,7 @@ from increment.query.artifact_contract import (
     unit_day_artifact_extension_catalog,
 )
 
-_EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
+EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
     "facade.analysis.exploratory_metrics_source_limited",
     CapabilityError,
     template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- use Analysis.from_definitions.",
@@ -237,7 +237,7 @@ def compiled_decision_plan(
 def _available_metrics_binding(binding: SourceBinding) -> list[Metric]:
     state = binding.state
     if not isinstance(state, DefinitionsArmAnalysisState):
-        refuse(_EXPLORATORY_SOURCE_LIMITED, method="available_metrics")
+        refuse(EXPLORATORY_SOURCE_LIMITED, method="available_metrics")
     declared = {*state.experiment.metric_names, *(metric.name for metric in binding.metrics)}
     return [
         metric

@@ -66,6 +66,7 @@ from increment._source_operations import (
     TriggeredHealthEvidenceOperation,
 )
 from increment._source_types import declared_evidence, is_custom_source
+from increment._source_workflows import EXPLORATORY_SOURCE_LIMITED as _EXPLORATORY_SOURCE_LIMITED
 from increment.decision import (
     AnalysisState,
     ArmAnalysisState,
@@ -124,11 +125,6 @@ _INVALID_POPULATION = RefusalSpec(
     template="population must be 'assigned' or 'triggered'; got {population!r}",
 )
 
-_EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
-    "facade.analysis.exploratory_metrics_source_limited",
-    CapabilityError,
-    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- use Analysis.from_definitions.",
-)
 _EXPLORATORY_SEQUENTIAL = RefusalSpec(
     "facade.analysis.exploratory_metrics_sequential",
     UnsupportedRequestError,
@@ -207,11 +203,6 @@ _REFUSALS = refusals(
     {
         "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
         "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
-        "store.run.legacy_analysis_required": RefusalSpec(
-            "store.run.legacy_analysis_required",
-            InvalidRequestError,
-            template="Switchback results do not have a registered family decision plan; use {route}",
-        ),
     },
 )
 
