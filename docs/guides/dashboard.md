@@ -206,7 +206,8 @@ populations. Without a trigger, the dashboard is assigned-only.
     checks describe triggered-cohort balance and cannot validate
     randomization: triggered inference is appropriate only when treatment
     does not affect trigger membership or timing, and balanced rates cannot
-    prove that. Use [`Analysis.health_check()`](../api.md#diagnostics-and-robustness)
+    prove that. Use
+    [`increment.workflows.health_check()`](../api.md#diagnostics-and-robustness)
     as a sanity check, not a causal-validity badge. An incomplete feed or
     immature window is not a null estimate.
 
@@ -513,7 +514,8 @@ pointwise 95% Wilson interval around its observed share.
     bands remain nonzero at observed shares of zero or one.
 
 ??? info "`snapshot.allocation_history`"
-    It stores immutable rows from `Analysis.allocation_history()`. Each row
+    It stores immutable rows from the allocation history operation
+    (`increment.workflows.allocation_history()`). Each row
     carries its `analysis_population` (`assigned` or `triggered`) so
     enrollment and first-trigger cohorts remain distinct; rows are ordered by
     date and arm within population. A capability refusal is retained in

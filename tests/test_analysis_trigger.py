@@ -113,15 +113,16 @@ def _write_defs(
 
 
 def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does_not(tmp_path):
+    from increment.workflows import trigger_rates
     from tests.capability_consumers_auxiliary import assert_refusal
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
-    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path), con)
+    experiment, resolver = from_definitions(_write_defs(tmp_path), con, experiment_name="exp")
     try:
         con.disconnect()
         with pytest.raises(CapabilityError) as raised:
-            analysis.trigger_rates()
+            trigger_rates(experiment, resolver)
         assert raised.value.code == "source.native.trigger_evidence_required"
         assert_refusal(
             "trigger_source_snapshot_evidence",
@@ -130,7 +131,7 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
             stage="read",
         )
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
@@ -1091,8 +1092,10 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
 
 def test_observed_trigger_rate_is_reported(tmp_path):
     """The planner needs the measured rate to size a follow-up."""
-    an = _analysis(tmp_path, _events(trigger_rate=0.2))
-    rates = an.trigger_rates()
+    from increment.workflows import trigger_rates
+    from tests.analysis_factory import facade_binding
+
+    rates = trigger_rates(*facade_binding(_analysis(tmp_path, _events(trigger_rate=0.2))))
     assert set(rates) == {"C", "T"}
     for arm in ("C", "T"):
         assert rates[arm] == pytest.approx(0.2, abs=0.03)
@@ -1104,12 +1107,14 @@ def test_observed_trigger_rate_is_reported(tmp_path):
 )
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_trigger_rates_enforces_assignment_policy(tmp_path, policy, warning):
+    from increment.workflows import trigger_rates
+
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(trigger_rate=0.2))
-    an = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         _write_defs(tmp_path),
         con,
+        experiment_name="exp",
         on_mixed_assignment=policy,
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
@@ -1120,21 +1125,23 @@ def test_trigger_rates_enforces_assignment_policy(tmp_path, policy, warning):
 
     if policy == "error":
         with pytest.raises(InvalidRequestError) as caught:
-            an.trigger_rates()
+            trigger_rates(experiment, resolver)
         assert caught.value.code == "query.integrity.unassigned_assignment_units"
         return
 
     if warning:
         with pytest.warns(IncrementWarning) as rec:
-            rates = an.trigger_rates()
+            rates = trigger_rates(experiment, resolver)
         assert "query.integrity.mixed_assignments_excluded" in warning_codes(rec)
     else:
-        rates = an.trigger_rates()
+        rates = trigger_rates(experiment, resolver)
     assert set(rates) == {"C", "T"}
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
+    from increment.workflows import trigger_rates
+    from tests.analysis_factory import facade_binding
 
     rows = _events(trigger_rate=0.2).to_pylist()
     assignments = [row for row in rows if row["event"] == "enrolled"]
@@ -1146,7 +1153,9 @@ def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
     analysis = _analysis(tmp_path, pa.Table.from_pylist(rows), on_mixed_assignment="exclude")
 
     try:
-        assert analysis.trigger_rates() == pytest.approx({"C": 0.20270270270270271, "T": 0.1925})
+        assert trigger_rates(*facade_binding(analysis)) == pytest.approx(
+            {"C": 0.20270270270270271, "T": 0.1925}
+        )
         assert analysis.run()
         assert analysis.run(population="triggered")
     finally:
@@ -2251,6 +2260,8 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
 
 @pytest.mark.slow
 def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
+    from increment.workflows import allocation_history
+    from tests.analysis_factory import facade_binding
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
@@ -2308,8 +2319,8 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         assert {row.analysis_population for row in triggered} == {"triggered"}
         assert all(row.assigned_units is not None and row.assigned_units < 300 for row in triggered)
 
-        assigned_history = analysis.allocation_history()
-        triggered_history = analysis.allocation_history(population="triggered")
+        assigned_history = allocation_history(*facade_binding(analysis))
+        triggered_history = allocation_history(*facade_binding(analysis), population="triggered")
         assert_support(
             "triggered_auxiliary_reads", "allocation_definitions_population", triggered_history
         )
@@ -2349,7 +2360,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
                 "dashboard_artifact_refused",
             ),
             (
-                lambda: adopted.allocation_history(population="triggered"),
+                lambda: allocation_history(*facade_binding(adopted), population="triggered"),
                 "allocation_artifact_refused",
             ),
         ):
@@ -2586,16 +2597,24 @@ def test_srm_population_triggered_counts_the_narrowed_population(tmp_path):
     """srm(population='triggered') is a real guardrail: a trigger
     correlated with assignment shows up as an allocation imbalance there
     even when enrollment itself is balanced."""
-    an = _analysis(
-        tmp_path,
-        _events(trigger_rate=0.2, n_per_arm=500),
-        allocation_scheme="independent",
+    from increment.results import SRMResult
+    from increment.workflows import srm
+    from tests.analysis_factory import facade_binding
+
+    experiment, resolver = facade_binding(
+        _analysis(
+            tmp_path,
+            _events(trigger_rate=0.2, n_per_arm=500),
+            allocation_scheme="independent",
+        )
     )
     expected = {"C": 0.5, "T": 0.5}
-    assigned = an.srm(expected=expected)
-    triggered = an.srm(expected=expected, population="triggered")
+    assigned = srm(experiment, resolver, expected=expected)
+    triggered = srm(experiment, resolver, expected=expected, population="triggered")
+    assert isinstance(assigned, SRMResult) and isinstance(triggered, SRMResult)
     assert sum(assigned.observed.values()) == 1000
     assert sum(triggered.observed.values()) < sum(assigned.observed.values())
+    assert assigned.grain == triggered.grain == "unit"
 
 
 def test_triggered_run_does_not_retest_assigned_law_on_selected_counts(tmp_path):
@@ -2826,8 +2845,9 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
 def test_srm_population_triggered_refuses_on_a_seam_instance():
     import pandas as pd
 
-    from increment import Analysis
+    from increment import from_frame
     from increment.errors import CapabilityError
+    from increment.workflows import srm
 
     df = pd.DataFrame(
         {
@@ -2836,17 +2856,26 @@ def test_srm_population_triggered_refuses_on_a_seam_instance():
             "revenue": [25.0, 35.0, 22.5, 13.0],
         }
     )
-    a = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    experiment, resolver = from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        a.srm(population="triggered")
+        srm(experiment, resolver, population="triggered")
     assert raised.value.code == "evidence.operation_unavailable"
+    assert raised.value.context["requested"] == "triggered_counts"
 
 
 def test_srm_rejects_unknown_population_before_assigned_readout():
     import pandas as pd
 
+    from increment import from_frame
+    from increment.workflows import srm
+
     df = pd.DataFrame(
         {
             "user_id": ["u1", "u2", "u3", "u4"],
@@ -2854,11 +2883,16 @@ def test_srm_rejects_unknown_population_before_assigned_readout():
             "revenue": [25.0, 35.0, 22.5, 13.0],
         }
     )
-    analysis = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+    experiment, resolver = from_frame(
+        df,
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
     )
     with pytest.raises(InvalidRequestError) as caught:
-        analysis.srm(population="trigger")  # ty: ignore[invalid-argument-type]
+        srm(experiment, resolver, population="trigger")  # ty: ignore[invalid-argument-type]
     assert caught.value.code == "facade.analysis.invalid_population"
     assert caught.value.context["population"] == "trigger"
 

@@ -41,9 +41,11 @@ The policy covers:
   the summary fallback.
 - `increment.workflows` promises only `materialize`, `export_moments`,
   `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
-  `compiled_decision_plan`, and `available_metrics`. These functions operate on
-  an `(experiment, resolver)` pair; the experiment definition inspection returns
-  the semantic source declaration, not the kernel execution request.
+  `compiled_decision_plan`, `available_metrics`, `unit_counts`, `srm`,
+  `trigger_rates`, `allocation_history`, `health_check`, and
+  `assignment_diagnostic`. These functions operate on an `(experiment,
+  resolver)` pair; the experiment definition inspection returns the semantic
+  source declaration, not the kernel execution request.
 - `increment.artifacts` promises only `artifact_context` and
   `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
   pair, and publication retains trusted extension selection and refresh semantics.
@@ -450,21 +452,21 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 
 ## Analysis and reporting
 
-`Analysis.unit_counts()` returns enrolled counts by canonical group label,
-including excluded units as `"(unassigned)"`. The source must retain total-grain
-counts; day-axis views refuse.
+`increment.workflows.unit_counts(experiment, resolver)` returns enrolled counts
+by canonical group label, including excluded units as `"(unassigned)"`. The
+source must retain total-grain counts; day-axis views refuse.
 
 `increment.artifacts.artifact_context(experiment, resolver)` returns the trusted
 context for a definitions-backed experiment. Pass it as `expected_context` when
 opening an artifact published from that experiment.
 
-`Analysis.allocation_history(population=...)` returns a PyArrow table with
-`experiment_id`, `analysis_population`, `ds`, `group_id`, `n_daily`, and
-`n_cumulative`, ordered by population, date, and arm. Native assigned cohorts
-are binned by first exposure date; triggered cohorts start at their first
-eligible trigger. Artifact-backed assigned history is available only when the
-artifact retains assignment identity rows, and remains aggregate rather than
-per-unit replay data; otherwise it refuses with
+`increment.workflows.allocation_history(experiment, resolver, population=...)`
+returns a PyArrow table with `experiment_id`, `analysis_population`, `ds`,
+`group_id`, `n_daily`, and `n_cumulative`, ordered by population, date, and
+arm. Native assigned cohorts are binned by first exposure date; triggered
+cohorts start at their first eligible trigger. Artifact-backed assigned history
+is available only when the artifact retains assignment identity rows, and
+remains aggregate rather than per-unit replay data; otherwise it refuses with
 `evidence.assignment.identity_unavailable`. Triggered artifact history is not
 available. Clustered sources refuse with `CapabilityError`.
 
@@ -903,12 +905,12 @@ different approximations and limits.
 
 `increment.estimators.confounding_sensitivity` reports a marginal conversion risk-ratio interval for an observational `LiftEstimate`; `increment.results.ConfoundingSensitivity` is its receive-only result type.
 
-`Analysis.health_check()` combines assignment balance, triggered-cohort
-balance, descriptive trigger rates, retained source-maturity/completeness
-evidence, and declared trigger assumptions. Use it alongside estimates; it is
-not a general safety verdict or causal-validity test. Missing source evidence
-remains unavailable with its identity and reason. A non-rejected SRM does not
-prove valid assignment.
+`increment.workflows.health_check(experiment, resolver)` combines assignment
+balance, triggered-cohort balance, descriptive trigger rates, retained
+source-maturity/completeness evidence, and declared trigger assumptions. Use it
+alongside estimates; it is not a general safety verdict or causal-validity test.
+Missing source evidence remains unavailable with its identity and reason. A
+non-rejected SRM does not prove valid assignment.
 
 For triggered experiments, inspect assigned and triggered checks separately.
 Balanced rates do not remove the assumptions of treatment-independent
@@ -929,7 +931,8 @@ not verified; robustness is not identification.
 ```python
 import pandas as pd
 
-from increment import Analysis
+from increment import from_frame
+from increment.workflows import health_check
 
 units = pd.DataFrame(
     {
@@ -938,16 +941,20 @@ units = pd.DataFrame(
         "value": [1.0, 0.0, 1.5, 1.0],
     }
 )
-analysis = Analysis.from_unit_summary(
-    units, unit="unit", group="arm", control="control", metrics={"value": "mean"}
+experiment, resolver = from_frame(
+    units,
+    shape="summary",
+    unit="unit",
+    group="arm",
+    control="control",
+    metrics={"value": "mean"},
 )
-report = analysis.health_check()
+report = health_check(experiment, resolver)
 for check in report.checks:
     print(check.check, check.analysis_population, check.availability, check.conclusion)
-analysis.close()
 ```
 
-::: increment.Analysis.health_check
+::: increment.workflows.health_check
 
 ## Conditional effects and targeting
 

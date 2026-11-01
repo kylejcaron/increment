@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import pytest
 
-from tests.source_conformance import switchback_source
+from tests.source_conformance import switchback_experiment, switchback_source
 
 
 def test_switchback_source_serves_each_declared_metric_and_diagnostics() -> None:
+    from increment.workflows import assignment_diagnostic
+
     source = switchback_source()
     metric = source.metrics[0]
     stats = source.contrast_stats(metric)
     assert stats.metric == metric.name
     assert stats.n_units >= 1
-    report = source.diagnostic_report()
-    assert report["schedule_complete"] is True
-    assert report["n_units"] == stats.n_units
     source.close()
+    experiment, resolver = switchback_experiment()
+    with resolver:
+        diagnostic = assignment_diagnostic(experiment, resolver)
+    assert diagnostic.schedule_complete is True
+    assert diagnostic.n_units == stats.n_units
 
 
 def test_switchback_absent_metric_is_a_stable_coded_refusal() -> None:

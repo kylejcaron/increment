@@ -26,8 +26,8 @@ below for route-specific assumptions and limitations.
     choices about when to look can invalidate a family claim. Triggered effects
     also require treatment-independent trigger membership and timing, plus
     counterfactual logging; balanced rates do not prove these assumptions.
-    [`Analysis.health_check()`](../api.md#diagnostics-and-robustness) is a
-    sanity check, not proof of causal validity.
+    [`increment.workflows.health_check(experiment, resolver)`](../api.md#diagnostics-and-robustness)
+    is a sanity check, not proof of causal validity.
 
 ## Sequential monitoring of a conversion metric
 
@@ -927,7 +927,8 @@ triggers depends on its arm, so that the triggered contrast is an intent-to-trea
 effect on the triggered subpopulation. This is stronger than equal trigger rates
 across arms: treatment can change *which* units trigger while leaving both arms'
 trigger rates equal, and no sample-ratio or trigger-rate diagnostic can see
-that. `srm(population="triggered")` and `trigger_rates()` can reject some
+that. `srm(experiment, resolver, population="triggered")` and
+`trigger_rates(experiment, resolver)` from `increment.workflows` can reject some
 violations; a passing check is not evidence that `A2` holds. `A3`
 (trigger-order stationarity): among triggered units, trigger timing carries no
 information about the complete retained vector -- outcome, ratio numerator and
@@ -938,7 +939,8 @@ assigned sequence, and every calendar look is a prefix of it.
 
 ### A practical triggered-health review
 
-Before interpreting a triggered result, call `analysis.health_check()` and read
+Before interpreting a triggered result, call
+`increment.workflows.health_check(experiment, resolver)` and read
 each entry by population. First review `assigned_allocation` for assignment
 integrity; then inspect `triggered_balance` and descriptive `trigger_rates` as
 separate cohort diagnostics. Check each metric's retained maturity and each

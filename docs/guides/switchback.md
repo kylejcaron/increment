@@ -175,14 +175,20 @@ contrast rows and [Multiplicity](multiplicity.md) for the status table):
 | `ct_cycles`, `tc_cycles` | Realized order draws: unit-cycle draws under `independent_bernoulli_order`, block draws under `shared_schedule`. |
 | `aggregation`, `probability_ct`, `randomization_law`, `independence_grain`, `carryover_order`, `observation_steps`, `retained_steps`, `identifying_assumption` | The declared design, echoed; `retained_steps=observation_steps-carryover_order`. |
 
-`analysis.assignment_diagnostic()` returns the validated schedule evidence:
+`increment.workflows.assignment_diagnostic(experiment, resolver)` returns the
+validated schedule evidence for an experiment built with
+`from_switchback_frame` (`analysis.assignment_diagnostic()` returns the same
+evidence on the compatibility route):
 `probability_ct`, `randomization_law`, `independence_grain`,
 `schedule_complete`, `n_units`, `n_cycles`, `n_blocks` for shared schedules,
 `ct_count` and `tc_count` (unit-cycle draws under the unit-cycle law, block
 draws under the shared law), washout/observation/retained step and row
 counts, `carryover_order`, `identifying_assumption`, and any integrity
 failures. It is not an SRM test and contains no p-value or anytime-valid
-guarantee.
+guarantee. Unit-arm checks do not apply to switchback order randomization:
+`health_check` reports assignment balance as unavailable
+(`integrity.switchback_assignment_law`) and `srm` refuses with
+`facade.analysis.contrast_unavailable`.
 
 Unit-cycle envelopes support additive `sum` aggregation only; they reject
 `any`/conversion shifts, whose binary support does not permit an unrestricted

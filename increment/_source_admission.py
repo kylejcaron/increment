@@ -5,10 +5,20 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._evidence_types import SourceContext
+from increment.errors import refuse
 from increment.sources import require_operation
 
 if TYPE_CHECKING:
+    from increment._binding import SourceBinding
     from increment.sources import SourceOperation, _BuiltinMomentSource
+
+
+def _require_arm_binding(binding: SourceBinding, method: str) -> SourceBinding:
+    if binding.state.family != "arm_moments":
+        from increment._evidence_refusals import CONTRAST_UNAVAILABLE
+
+        refuse(CONTRAST_UNAVAILABLE, method=method)
+    return binding
 
 
 def _require_analysis_operation[T](

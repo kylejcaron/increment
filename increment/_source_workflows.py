@@ -18,12 +18,11 @@ if TYPE_CHECKING:
 
 from increment._binding import SourceBinding, binding_for
 from increment._canonical import canonical_json_bytes
-from increment._source_admission import _require_analysis_operation
+from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExportMomentsOperation, MaterializeOperation
 from increment._source_types import declared_evidence
 from increment.decision import DefinitionsArmAnalysisState
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, refuse
-from increment.errors import refuse as _refuse
 from increment.query.artifact_contract import (
     ArtifactContractError,
     unit_day_artifact_extension_catalog,
@@ -39,14 +38,6 @@ _PLAN_MISSING = RefusalSpec(
     InvalidRequestError,
     template="Switchback results do not have a registered family decision plan; use {route}",
 )
-
-
-def _require_arm_binding(binding: SourceBinding, method: str) -> SourceBinding:
-    if binding.state.family != "arm_moments":
-        from increment._evidence_refusals import CONTRAST_UNAVAILABLE
-
-        _refuse(CONTRAST_UNAVAILABLE, method=method)
-    return binding
 
 
 def _arm_binding(experiment: KernelExperiment, resolver: Resolver, method: str) -> SourceBinding:
