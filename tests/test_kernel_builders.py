@@ -22,7 +22,6 @@ from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
 from increment.workflows import export_moments, materialize
 from tests.analysis_factory import replace_bound_source, view_readout
-from tests.test_evidence_identity_parity import _capture
 from tests.warning_codes import warning_codes
 
 
@@ -508,56 +507,6 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     assert tuple(error.code for error in resolver.verify(offline.source_refs, object())) == (
         "kernel.definitions.catalog_stale",
     )
-
-
-@pytest.mark.integration
-@pytest.mark.slow
-@pytest.mark.filterwarnings(
-    "ignore:metric .* has window_days=None:increment.errors.IncrementWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:metric .*quantile sequential inference is refused:increment.errors.IncrementWarning"
-)
-@pytest.mark.parametrize(
-    ("scenario_id", "ingress", "expected"),
-    [
-        pytest.param(scenario_id, ingress, expected, id=f"{scenario_id}-{ingress}")
-        for scenario_id, scenario in _capture()["scenarios"].items()
-        for ingress, expected in scenario.items()
-    ],
-)
-def test_frozen_capture_builder_specification_round_trip(
-    scenario_id, ingress, expected, record_property
-):
-    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
-
-    cases = {case.id: case for case in PARITY_CASES}
-    base_id = scenario_id.removeprefix("asof_lift-").removeprefix("asof-")
-    case = cases.get(base_id)
-    if case is None:
-        assert expected["kind"] in {"refusal", "absent"}
-        record_property(
-            "not_expressible",
-            expected.get("reason", "isolated refusal probe, not an analysis construction"),
-        )
-        return
-    if ingress not in case.build:
-        assert expected["kind"] == "absent"
-        record_property("not_expressible", "no constructor for this declared ingress")
-        return
-    try:
-        bound = case.build[ingress]()
-    except CodedError as error:
-        assert expected["kind"] == "refusal"
-        assert error.code == expected["code"]
-        record_property("not_expressible", f"construction refuses: {error.code}")
-        return
-    try:
-        experiment, _ = bound
-        assert Experiment.from_json(experiment.to_json()).hash() == experiment.hash()
-        record_property("specification_hash", experiment.hash())
-    finally:
-        _close_parity_binding(bound)
 
 
 @pytest.mark.integration

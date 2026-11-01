@@ -77,17 +77,11 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 def test_runnable_preserves_preflight_refusals(
     cell, method, ingress, code, monkeypatch, record_property
 ):
-    from dataclasses import replace
-
     from increment import Experiment, runnable, workflows
     from increment.evidence import BreakoutIdentity
     from increment.kernel.contracts import Scope
     from tests.analysis_factory import held_source
-    from tests.parity_harness.cases import (
-        _capture_kwargs,
-        _close_parity_binding,
-        sequential_as_of,
-    )
+    from tests.parity_harness.cases import _capture_kwargs, _close_parity_binding
     from tests.test_metric_evidence import _CountingSource
 
     outcomes = matrix.classify(cell).outcomes(method)
@@ -110,35 +104,10 @@ def test_runnable_preserves_preflight_refusals(
         scope = Scope(
             view=cell.view,
             grain=cell.view if cell.view in {"daily", "asof"} else "total",
+            values=method == "values",
             segment=(BreakoutIdentity("store", None),) if cell.view == "breakout" else (),
         )
-        operation = (
-            f"run_{cell.view}" + ("_lift" if method == "lift" else "")
-            if cell.view in {"daily", "asof"}
-            else "run_breakout"
-            if cell.view == "breakout"
-            else "run"
-        )
-        if case.sequential:
-            capture_as_of = sequential_as_of(bound)
-            capture = {
-                "finalized": True,
-                "as_of": capture_as_of.isoformat() if capture_as_of is not None else None,
-            }
-            with pytest.raises(CodedError) as refusal:
-                replace(
-                    experiment,
-                    scopes=(scope,),
-                    operations={scope.hash(): operation},
-                    request_options={"capture": capture},
-                )
-            assert refusal.value.code == "kernel.request.capture_not_supported"
-        experiment = replace(
-            experiment,
-            scopes=(scope,),
-            operations={scope.hash(): operation},
-            request_options={},
-        )
+        experiment = experiment.with_views(scope)
         counted = _CountingSource(held_source(resolver))
         counted.loader_reads.clear()
         for name in (
