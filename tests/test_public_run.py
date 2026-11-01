@@ -960,7 +960,7 @@ def test_run_result_preserves_set_only_projection_through_store_codecs_and_rende
     finally:
         analysis.close()
 
-    envelope = AnalysisEnvelope(result.cells, result.run.metadata)
+    envelope = result.envelope
     restored = (
         AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload()))),
         AnalysisEnvelope.from_arrow(envelope.to_arrow()),
@@ -981,6 +981,7 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
 
     from increment import MetricSpec, Randomized, from_frame
     from increment.errors import WireFormatError
+    from increment.estimation.readout_types import ReadoutResults
     from increment.estimation.results import LiftEstimate
     from increment.result_envelope import render
     from increment.store import DecisionLog, ParquetResultsStore
@@ -1027,8 +1028,11 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
     assert f"{live.lift.value:.6g}" in brief
     assert "status=unavailable" in brief
     assert result.cells[0].summary is None
-    with pytest.raises(WireFormatError):
+    restored = ReadoutResults.model_validate_json(result.readout().model_dump_json())
+    assert restored[0].confidence_set == live.confidence_set
+    with pytest.raises(WireFormatError) as pickled:
         pickle.dumps(result)
+    assert pickled.value.code == "wire.result.raw_outcomes_unavailable"
 
     logged = run(experiment, resolver, decision_log=DecisionLog())
     assert logged.decisions.cells[0].status == "not_evaluated"
@@ -1038,6 +1042,130 @@ def test_public_run_preserves_live_percentile_winsorized_result(tmp_path):
     assert error.value.code == "wire.result.raw_outcomes_unavailable"
     assert reads == []
     assert not tuple((tmp_path / "runs").rglob("*.parquet"))
+
+
+def _daily_panel_run(tmp_path, scopes):
+    from dataclasses import replace
+    from datetime import date
+
+    from increment import Randomized, from_frame
+    from increment.store import ParquetResultsStore
+
+    days = (date(2025, 1, 1), date(2025, 1, 2))
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{index}" for index in range(40)],
+            "arm": ["control", "treatment"] * 20,
+            "day": [days[index // 20] for index in range(40)],
+            "value": [float(index % 7) for index in range(40)],
+            "region": ["north", "north", "south", "south"] * 10,
+        }
+    )
+    experiment, resolver = from_frame(
+        frame,
+        shape="panel",
+        unit="unit",
+        group="arm",
+        date="day",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics={"value": "mean"},
+        breakouts=["region"],
+        plan=AnalysisPlan(primary="value"),
+    )
+    experiment = replace(experiment, scopes=scopes)
+    store = ParquetResultsStore(tmp_path / "runs")
+    result = run(experiment, resolver, results_store=store)
+    restored = RunResult.from_handle(
+        store.open_run(result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id),
+        registration=experiment.registration,
+    )
+    return result, restored, days
+
+
+def test_run_result_returns_each_scope_collection_and_refuses_ambiguous_selection(tmp_path):
+    from increment.breakout.estimates import DailyMetricValues, LiftEstimates
+    from increment.errors import CodedError
+    from increment.kernel.contracts import Scope
+
+    whole = Scope(view="run", grain="total")
+    values = Scope(view="daily", grain="daily", values=True)
+    result, restored, days = _daily_panel_run(tmp_path, (whole, values))
+
+    whole_rows = result.readout(whole)
+    value_rows = result.readout(values)
+    assert isinstance(whole_rows, LiftEstimates) and isinstance(value_rows, DailyMetricValues)
+    assert [row.metric for row in whole_rows] == ["value"]
+    assert {(row.group_id, row.ds) for row in value_rows} == {
+        (arm, day) for arm in ("control", "treatment") for day in days
+    }
+    run_id = result.run.run_id
+    lift = Scope(view="daily", grain="daily")
+    for select, code, context in (
+        (
+            result.readout,
+            "results.readout.scope_required",
+            {"run_id": run_id, "scope_hashes": (whole.hash(), values.hash())},
+        ),
+        (
+            lambda: result.readout(lift),
+            "results.readout.scope_unknown",
+            {"run_id": run_id, "scope_hash": lift.hash()},
+        ),
+        (lambda: restored.readout(values), "results.readout.not_retained", {"run_id": run_id}),
+    ):
+        with pytest.raises(CodedError) as raised:
+            select()
+        assert raised.value.code == code
+        assert raised.value.context == context
+        with pytest.raises(TypeError):
+            raised.value.context["run_id"] = "another-run"  # ty: ignore[invalid-assignment]
+
+
+def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
+    import pickle
+
+    import narwhals as nw
+
+    from increment.kernel.contracts import Scope
+
+    views = (
+        Scope(view="run", grain="total"),
+        Scope(view="breakout", grain="total"),
+        Scope(view="daily", grain="daily"),
+        Scope(view="daily", grain="daily", values=True),
+        Scope(view="asof", grain="asof"),
+        Scope(view="asof", grain="asof", values=True),
+        Scope(view="asof", grain="asof", completion_policy=True),
+    )
+    result, restored, _ = _daily_panel_run(tmp_path, views)
+    daily_lift, asof_lift = result.readout(views[2]), result.readout(views[4])
+    assert {(row.metric, row.ds) for row in daily_lift} == {
+        (row.metric, row.ds) for row in asof_lift
+    }
+
+    # No view declares a day, segment or population, so each row's key is its view's hash.
+    identity = ("scope_view", "scope_values", "scope_key")
+    fields = ("metric", "group_id", "dimension_value", "ds", "lift", "value")
+    expected = sorted(
+        (
+            (scope.view, scope.values, scope.hash(), *(row.get(name) for name in fields))
+            for scope in views
+            for row in nw.from_native(
+                result.readout(scope).to_frame(backend="polars"), eager_only=True
+            ).rows(named=True)
+        ),
+        key=repr,
+    )
+    for projected in (result, restored, pickle.loads(pickle.dumps(result))):
+        frame = nw.from_native(projected.to_frame(backend="polars"), eager_only=True)
+        assert frame.columns[:3] == list(identity)
+        assert sorted(frame.select(*identity, *fields).rows(), key=repr) == expected
+    selected = nw.from_native(result.to_frame(columns=["lift"]), eager_only=True)
+    assert selected.columns == [*identity, "lift", "view_partial"]
 
 
 def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
@@ -1435,8 +1563,6 @@ def test_unicode_daily_metadata_order_roundtrips_after_run():
     )
 
     result = run(requested, resolver)
-    envelope = AnalysisEnvelope(result.cells, result.run.metadata)
-
-    restored = AnalysisEnvelope.from_payload(envelope.to_payload())
+    restored = AnalysisEnvelope.from_payload(result.envelope.to_payload())
 
     assert {cell.identity.key.group_id for cell in restored.cells} == {"control", "z", "é"}

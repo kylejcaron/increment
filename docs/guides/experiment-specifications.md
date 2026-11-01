@@ -14,6 +14,8 @@ factory; experiments containing one remain in-memory-only.
 scopes, sharing one physical evidence capture. `views=(scope, ...)` selects
 declared scopes by their hashes; execution follows declaration order, not
 selection order. Empty, duplicate or undeclared selections refuse before reads.
+`result.readout(scope)` returns the typed collection each executed scope
+produced; see [reading results](reading-results.md).
 
 Declare the result views on the experiment with `with_views`; it returns a new
 experiment and preserves the supplied view order:

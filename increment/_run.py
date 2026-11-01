@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._analysis_config import UNSET, _Unset
 from increment._binding import ResolverBinding, _run_identity_hashes
 from increment._interpretation import EffectEstimate
-from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
+from increment.errors import CodedError, InvalidRequestError, RefusalSpec, WireFormatError, refuse
 from increment.estimation.readout_types import (
     ReadoutAssembly,
     ScopedReadout,
@@ -33,17 +33,23 @@ from increment.kernel.ports import (
     program_store_operations,
 )
 from increment.kernel.program_refusals import refuse_store
-from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order
+from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order, result_rows
 
 if TYPE_CHECKING:
+    from narwhals.typing import IntoDataFrame
+    from pydantic import BaseModel
+
     from increment._analysis_execution import Analysis
     from increment._binding import SourceBinding
     from increment._evidence_types import SequentialCaptureRequest
-    from increment._literals import ValueScale
+    from increment._literals import Backend, ValueScale
+    from increment.breakout.estimates import EstimateList
     from increment.decide.evaluator import Decisions
     from increment.decision import CompiledDecisionPlan
+    from increment.estimation.contrast_results import ContrastResults
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
+    from increment.estimation.readout_types import ReadoutMetadata
     from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import Experiment
     from increment.kernel.resolver import Resolver
@@ -60,6 +66,26 @@ _LIVE_RAW_SET_NOT_PORTABLE = RefusalSpec(
     WireFormatError,
     template="a live confidence-set result depends on raw outcomes; {action} is unavailable",
 )
+_READOUT_SCOPE_REQUIRED = RefusalSpec(
+    "results.readout.scope_required",
+    InvalidRequestError,
+    template="run {run_id} holds several result views; pass one of its scopes to readout(scope)",
+    keys=frozenset({"scope_hashes"}),
+)
+_READOUT_SCOPE_UNKNOWN = RefusalSpec(
+    "results.readout.scope_unknown",
+    InvalidRequestError,
+    template="run {run_id} did not execute the requested scope; pass a scope the run selected",
+    keys=frozenset({"scope_hash"}),
+)
+_READOUT_NOT_RETAINED = RefusalSpec(
+    "results.readout.not_retained",
+    InvalidRequestError,
+    template=(
+        "run {run_id} keeps only its saved result cells; read its cells or envelope, "
+        "or run the experiment again for its result collections"
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,13 +95,16 @@ class RunResult:
     decisions: Decisions
     run: Any
     live_rows: tuple[Any | None, ...] = ()
+    _scoped: tuple[ScopedReadout, ...] = field(default=(), repr=False, compare=False)
+    _row_models: tuple[type[BaseModel], ...] = field(default=(), repr=False, compare=False)
+    _input_backend: Backend | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_handle(cls, handle: RunHandlePort, *, registration: Registration) -> RunResult:
         """Restore a saved run's portable cells and decide them again under ``registration``.
 
         The saved decision plan must belong to ``registration``. Live readouts are
-        not stored, so every restored cell reports none.
+        not stored, so every restored cell reports none and ``readout`` refuses.
         """
         from increment.decide import decide
 
@@ -89,6 +118,75 @@ class RunResult:
             live_rows=(None,) * len(envelope.cells),
         )
 
+    @property
+    def metadata(self) -> ReadoutMetadata | None:
+        """The run's scope, integrity, family and capture record."""
+        return self.run.metadata
+
+    @property
+    def envelope(self) -> AnalysisEnvelope:
+        """The portable result cells with the run's metadata."""
+        return AnalysisEnvelope(self.cells, self.run.metadata)
+
+    def readout(self, scope: Scope | None = None) -> EstimateList[Any] | ContrastResults:
+        """Return the result collection one executed scope produced, unchanged.
+
+        ``scope`` may be omitted only when the run executed one scope. A result
+        restored from a store or a pickle keeps its portable cells only.
+        """
+        if not self._scoped:
+            refuse(_READOUT_NOT_RETAINED, run_id=self.run.run_id)
+        if scope is None:
+            if len(self._scoped) != 1:
+                refuse(
+                    _READOUT_SCOPE_REQUIRED,
+                    run_id=self.run.run_id,
+                    scope_hashes=tuple(
+                        part.scope.hash() for part in self._scoped if part.scope is not None
+                    ),
+                )
+            return self._scoped[0].collection
+        scope_hash = scope.hash()
+        for part in self._scoped:
+            if part.scope is not None and part.scope.hash() == scope_hash:
+                return part.collection
+        refuse(_READOUT_SCOPE_UNKNOWN, run_id=self.run.run_id, scope_hash=scope_hash)
+
+    def to_frame(
+        self, *, backend: Backend | None = None, columns: Sequence[str] | None = None
+    ) -> IntoDataFrame:
+        """Project every result row with its view and qualification columns as one native frame.
+
+        Each row leads with ``scope_view`` and ``scope_values``, the ``view`` and
+        ``values`` of the scope that produced it, and ``scope_key``, which identifies
+        that view, then keeps its collection's ``to_frame`` columns; qualification
+        columns describe the whole run. A restored result projects its saved cells
+        the same way, and a live confidence-set row appears as ``render`` shows it.
+        Views with different row types share their common columns;
+        ``readout(scope).to_frame()`` returns one view's frame. ``columns`` selects
+        typed columns as there.
+        """
+        from itertools import groupby
+
+        from increment._literals import default_frame_backend
+        from increment.breakout.projection import result_frame
+
+        groups = [
+            (model, tuple(rows))
+            for model, rows in groupby(result_rows(self.cells, self.live_rows), key=type)
+        ]
+        if not groups:
+            if not self._row_models:
+                refuse(_READOUT_NOT_RETAINED, run_id=self.run.run_id)
+            groups = [(model, ()) for model in self._row_models]
+        return result_frame(
+            cast(Any, groups),
+            self.metadata,
+            scopes=tuple(cell.identity.scope for cell in self.cells),
+            backend=default_frame_backend(backend or self._input_backend),
+            columns=columns,
+        )
+
     def __reduce__(self):
         reason = self.run.decision_plan_unavailable_reason
         if reason is not None:
@@ -99,7 +197,16 @@ class RunResult:
             )
         if any(row is not None for row in self.live_rows):
             refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="serialization")
-        return type(self), (self.cells, self.effects, self.decisions, self.run, self.live_rows)
+        return type(self), (
+            self.cells,
+            self.effects,
+            self.decisions,
+            self.run,
+            self.live_rows,
+            (),
+            self._row_models,
+            self._input_backend,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -726,9 +833,9 @@ def _merge_scoped_readouts(parts: Sequence[ScopedReadout]) -> Any:
     return rows
 
 
-def _run_rows(  # noqa: PLR0913
+def _run_rows(
     source_binding: SourceBinding,
-    rows: Any,
+    parts: tuple[ScopedReadout, ...],
     registration: Registration,
     compiled_plan: CompiledDecisionPlan | None,
     *,
@@ -738,17 +845,9 @@ def _run_rows(  # noqa: PLR0913
     run_id: str,
     results_store: ResultsStorePort | None = None,
     decision_log: DecisionLogPort | None = None,
-    declared_scope: Scope | None = None,
-    identity_options: Mapping[str, object] | None = None,
-    scoped_rows: Sequence[ScopedReadout] | None = None,
 ) -> RunResult:
     operations = program_store_operations()
     contrast_context = _contrast_context(source_binding)
-    parts = (
-        tuple(scoped_rows)
-        if scoped_rows is not None
-        else (ScopedReadout(rows, declared_scope, identity_options or {}),)
-    )
     overrides = [
         _execution_overrides(
             source_binding, part.collection, part.options, contrast=contrast_context is not None
@@ -885,6 +984,11 @@ def _run_rows(  # noqa: PLR0913
         decisions=decisions,
         run=handle.run,
         live_rows=tuple(live_rows),
+        _scoped=parts,
+        _row_models=tuple(dict.fromkeys(type(part.collection)._model for part in parts)),
+        _input_backend=next(
+            (getattr(part.collection, "_default_backend", None) for part in parts), None
+        ),
     )
     if decision_log is not None:
         for event in events:
@@ -911,7 +1015,7 @@ def _experiment_result(
     analysis_spec_hash, execution_identity_hash = _run_identity_hashes(experiment, identity_options)
     return _run_rows(
         binding,
-        scoped[0].collection,
+        tuple(scoped),
         experiment.registration,
         binding.plan if hasattr(binding.context, "plan") else None,
         experiment_id=experiment.experiment_id,
@@ -920,9 +1024,6 @@ def _experiment_result(
         run_id=run_id,
         results_store=results_store,
         decision_log=decision_log,
-        declared_scope=scoped[0].scope,
-        identity_options=scoped[0].options,
-        scoped_rows=None if single else scoped,
     )
 
 
@@ -1136,7 +1237,7 @@ def run(  # noqa: PLR0913
             results_store=results_store,
             decision_log=decision_log,
         )
-    for field, value in (
+    for option, value in (
         ("views", views),
         ("capture", capture),
         ("execution_context", execution_context),
@@ -1145,7 +1246,7 @@ def run(  # noqa: PLR0913
             raise CodedError(
                 "This option requires an Experiment",
                 code="kernel.run.invalid_input",
-                context={"field": field},
+                context={"field": option},
             )
     analysis = cast(Any, experiment)
     registration = resolver
@@ -1181,7 +1282,7 @@ def run(  # noqa: PLR0913
     rows = execute(**overrides)
     return _run_rows(
         analysis._binding,
-        rows,
+        (ScopedReadout(rows, None, {}),),
         registration,
         compiled_plan,
         experiment_id=experiment_id,

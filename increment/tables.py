@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from coeftable.theme import Direction
     from narwhals.typing import IntoDataFrame
 
+    from increment._run import RunResult
     from increment.breakout.estimates import EstimateList
     from increment.estimation.contrast_results import ContrastResults
     from increment.result_envelope import AnalysisEnvelope
@@ -1649,11 +1650,13 @@ def _readout_envelope_rows(data: Any) -> Any:
     from importlib import import_module
 
     envelope_module = import_module("increment.result_envelope")
+    if isinstance(data, import_module("increment._run").RunResult):
+        return _EnvelopeReadoutRows(
+            envelope_module.result_rows(data.cells, data.live_rows), data.metadata, data.cells
+        )
     if not isinstance(data, envelope_module.AnalysisEnvelope):
         return data
-    return _EnvelopeReadoutRows(
-        (cell._projection_row() for cell in data.cells), data.metadata, data.cells
-    )
+    return _EnvelopeReadoutRows(envelope_module.result_rows(data.cells), data.metadata, data.cells)
 
 
 # Keep trend labels aligned with ``_resolve_trend_frame``.
@@ -1662,7 +1665,8 @@ def readout_table(
     | list[dict[str, Any]]
     | EstimateList[Any]
     | ContrastResults
-    | AnalysisEnvelope,
+    | AnalysisEnvelope
+    | RunResult,
     *,
     title: str = "Experiment Readout",
     subtitle: str = "",
@@ -1689,7 +1693,9 @@ def readout_table(
     ``advisory=True``; a shifted ``null_lift`` also draws a dashed forest
     reference line. Row ``note`` values and posterior refusal reasons are
     rendered as qualifications; ``excluded``, ``low_reliability``, and
-    ``inference`` remain available in the input frame.
+    ``inference`` remain available in the input frame. A ``run()`` result or a
+    saved result envelope renders its cells with the run's scope and integrity
+    qualifications; a live confidence-set row renders as ``render`` shows it.
 
     For ``binomial_set`` rows, the table adds a ``Numerical qualification``
     column. Its values identify ``scipy_special_function_error_model_conditional_v1``

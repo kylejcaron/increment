@@ -3,6 +3,7 @@ experiment's own data and declared design, on every builder that can supply
 it."""
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -26,12 +27,12 @@ from increment import (
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
+from increment.kernel.contracts import Scope
 from increment.power import Baseline
 from increment.semantics.models import CupedCovariateBinding, Measure, MethodSpec
 from increment.workflows import export_moments, planning_baseline, srm, trigger_rates
 from increment.workflows import metrics as workflow_metrics
 from tests._override_warnings import allow_declared_overrides
-from tests.analysis_factory import run_rows
 from tests.capability_consumers_scalar import PLANNING_BASELINE, completed, refused
 
 
@@ -51,9 +52,22 @@ def _plan(pilot: tuple[Any, Any], metric, outcome_id=None):
 
 
 def _abs_se(pilot: tuple[Any, Any]):
-    row = run_rows(pilot[1])[0]
+    row = run(*pilot).readout()[0]
     assert isinstance(row, LiftEstimate) and row.abs_se is not None
     return row.abs_se
+
+
+_POPULATION_VIEWS = (
+    Scope(view="run", grain="total", population="assigned"),
+    Scope(view="run", grain="total", population="triggered"),
+)
+
+
+def _population_rows(pair: tuple[Any, Any], **options: Any) -> list[Any]:
+    """Whole-window rows of the assigned and then the triggered population of one run."""
+    experiment, resolver = pair
+    result = run(replace(experiment, scopes=_POPULATION_VIEWS), resolver, **options)
+    return [row for scope in _POPULATION_VIEWS for row in result.readout(scope)]
 
 
 def _unit_summary_frame(n=400, with_covariate=False, with_cluster=False):
@@ -831,7 +845,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
     def run_with_small_cluster_advisories(source, n_clusters):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", IncrementRuntimeWarning)
-            results = run_rows(source[1], metrics=["revenue"])
+            results = _population_rows(source, metrics=["revenue"])
         assert [
             (warning.message.code, dict(warning.message.context))
             for warning in caught
@@ -1005,7 +1019,7 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
             assert integrity.unit_counts == {"control": 6, "treatment": 6}
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", IncrementRuntimeWarning)
-                results = run_rows(source[1], metrics=["revenue"])
+                results = _population_rows(source, metrics=["revenue"])
             assert [
                 (warning.message.code, dict(warning.message.context))
                 for warning in caught
@@ -1498,16 +1512,16 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 for ingress, source in (("definitions", pilot), ("artifact", reopened)):
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", DeprecationWarning)
-                        plain_rows = run_rows(
-                            source[1],
+                        plain_rows = _population_rows(
+                            source,
                             metrics=["revenue"],
                             decision_method=Method(name="unadjusted"),
                             prior=None,
                         )
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", DeprecationWarning)
-                        informed_rows = run_rows(
-                            source[1],
+                        informed_rows = _population_rows(
+                            source,
                             metrics=["revenue"],
                             decision_method=Method(name="unadjusted"),
                             prior=prior,
@@ -1591,7 +1605,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
                     expected_percentile_cutoff
                 )
                 with pytest.raises(CapabilityError) as raised:
-                    run_rows(source[1], metrics=["percentile_revenue"])
+                    _population_rows(source, metrics=["percentile_revenue"])
                 assert raised.value.code == "readout.metric.percentile_winsorization"
         finally:
             pilot[1].close()

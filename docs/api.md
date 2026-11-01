@@ -135,6 +135,24 @@ change without notice.
   nothing; an ID is generated when `run_id` is omitted.
   `RunResult.from_handle(handle, registration=...)` decides a saved run again
   and refuses a registration the run was not saved under.
+- Release note (API addition): `RunResult` is read directly. `result.readout(scope)`
+  returns the full typed collection one executed view produced, including live
+  confidence sets; omit `scope` only for a one-view run. It refuses with
+  `results.readout.scope_required` when several views ran,
+  `results.readout.scope_unknown` for a view the run did not execute, and
+  `results.readout.not_retained` on a result restored by `RunResult.from_handle`
+  or a pickle. `result.metadata`, `result.envelope` and
+  `result.to_frame(backend=..., columns=...)` read the run's metadata, portable
+  envelope and one qualified frame of every row; `readout_table` accepts a
+  `RunResult`. Every `result.to_frame()` row leads with `scope_view` (string)
+  and `scope_values` (nullable boolean), the `view` and `values` of the scope
+  that produced it, and `scope_key` (string), which identifies the view a row
+  came from: `Scope.hash()` of the row's scope without its day, segment and
+  population. Rows of several views stay distinct in live, stored and pickled
+  results, and a `columns` selection keeps all three. Write full-row JSON with
+  `result.readout(scope).model_dump_json()` and portable cells with
+  `result.envelope.to_payload()` or `.to_arrow()`; constructing
+  `AnalysisEnvelope(result.cells, result.run.metadata)` is no longer needed.
 - Release note (bug fix): `DecisionLog.replay` accepts the logged decisions of a
   Bonferroni breakout family instead of refusing them with
   `store.decision.reference_invalid`. Existing decision logs replay unchanged.

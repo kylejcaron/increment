@@ -1353,9 +1353,24 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
 
 def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     pytest.importorskip("coeftable")
+    from increment import from_frame, run
     from increment.tables import estimates_to_readout, readout_table
+    from tests.test_tables import _as_latex, _latex_text
 
-    results = _analysis(_frame(guard_constant=False)).run()
+    experiment, resolver = from_frame(
+        _frame(guard_constant=False),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="rev", type="mean", preferred_direction="increase"),
+            MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
+        ],
+        plan=AnalysisPlan(primary="rev", guardrails=["guard"]),
+    )
+    result = run(experiment, resolver)
+    results = result.readout()
     rendered = repr(results)
     assert "SRM not checked" in rendered
     assert not any(
@@ -1367,29 +1382,48 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     metric_headline = next(i for i, line in enumerate(lines) if "rev (primary" in line)
     assert metric_headline < 5
     assert metric_headline < next(i for i, line in enumerate(lines) if "SRM not checked" in line)
+    qualifications = [
+        "metric",
+        "analysis_population",
+        "source_snapshot_id",
+        "integrity_status",
+        "required_cell_count",
+        "unavailable_cells",
+        "hidden_cells",
+        "advisories",
+        "view_partial",
+    ]
     for backend in ("pandas", "polars", "pyarrow"):
         frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
-        assert {
-            "analysis_population",
-            "source_snapshot_id",
-            "integrity_status",
-            "required_cell_count",
-            "unavailable_cells",
-            "hidden_cells",
-            "advisories",
-        } <= set(frame.columns)
+        direct = nw.from_native(result.to_frame(backend=backend), eager_only=True)
+        assert set(qualifications) <= set(frame.columns)
+        assert direct.columns == ["scope_view", "scope_values", "scope_key", *frame.columns]
+        assert direct.select(qualifications).rows() == frame.select(qualifications).rows()
     rows = estimates_to_readout(results)
     assert all(row["integrity_status"] == "not_checked_missing_declaration" for row in rows)
     assert all(row["analysis_population"] == "assigned" for row in rows)
-    assert "not_checked_missing_declaration" in readout_table(results).gt().as_raw_html()
-    from tests.test_tables import _as_latex, _latex_text
-
+    for table in (readout_table(results), readout_table(result)):
+        assert "not_checked_missing_declaration" in table.gt().as_raw_html()
     assert "not_checked_missing_declaration" in _latex_text(_as_latex(readout_table(results)))
 
     empty = results.filter(lambda row: False)
     assert "View: partial" in repr(empty)
     empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
     assert len(empty_frame) == 0 and "integrity_status" in empty_frame.columns
+    assert "Scope and integrity unknown" not in readout_table(empty).gt().as_raw_html()
+
+    unselected = run(experiment, resolver, metrics=[])
+    live_frame = nw.from_native(unselected.to_frame(), eager_only=True)
+    unselected_frame = nw.from_native(
+        pickle.loads(pickle.dumps(unselected)).to_frame(), eager_only=True
+    )
+    assert len(unselected_frame) == 0
+    assert {"scope_view", "scope_values", "scope_key", "metric", "lift"} <= set(
+        unselected_frame.columns
+    )
+    assert "integrity_status" not in unselected_frame.columns
+    assert unselected_frame.schema == live_frame.schema
+    assert "Scope and integrity unknown" in readout_table(unselected).gt().as_raw_html()
 
 
 def test_real_assignment_integrity_failure_still_says_failed():

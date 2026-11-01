@@ -299,8 +299,7 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
         assert actual.decisions.program == separate[0].decisions.program
         assert all(family in actual.decisions.families for family in separate[0].decisions.families)
         assert len(actual.run.metadata.captures) == 1
-        envelope = AnalysisEnvelope(actual.cells, actual.run.metadata)
-        restored = AnalysisEnvelope.from_payload(envelope.to_payload())
+        restored = AnalysisEnvelope.from_payload(actual.envelope.to_payload())
         assert restored.cells == actual.cells
         assert pickle.loads(pickle.dumps(actual)).cells == actual.cells
         store = ParquetResultsStore(tmp_path / "runs")

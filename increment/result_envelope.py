@@ -1846,6 +1846,16 @@ def _report_detail(cell: ResultCell) -> str | None:
     return f"{report}; control={control}" if control is not None else str(report)
 
 
+def result_rows(cells: Sequence[ResultCell], live_rows: Sequence[Any] = ()) -> list[Any]:
+    """Return each cell's live row where one is retained, otherwise its portable row."""
+    return [
+        live_rows[index]
+        if index < len(live_rows) and live_rows[index] is not None
+        else cell._projection_row()
+        for index, cell in enumerate(cells)
+    ]
+
+
 def render(
     envelope: AnalysisEnvelope | RunResult, audience: Literal["brief", "full"] = "brief"
 ) -> str:
@@ -1870,11 +1880,7 @@ def render(
         render_readout_text,
     )
 
-    rows = [
-        live_row if index < len(live_rows) and live_row is not None else cell._projection_row()
-        for index, cell in enumerate(envelope.cells)
-        for live_row in (live_rows[index] if index < len(live_rows) else None,)
-    ]
+    rows = result_rows(envelope.cells, live_rows)
     interpretation = interpret_readout(rows, envelope.metadata)
 
     brief_cells = tuple(

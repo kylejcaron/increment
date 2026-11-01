@@ -2157,11 +2157,30 @@ def test_undeclared_breakout_dimension_refuses_before_the_read(tmp_path, monkeyp
 
 
 @pytest.mark.integration
-def test_line2_owner_reuses_one_capture_for_primary_and_auxiliary_readouts(tmp_path, monkeypatch):
-    from increment.readouts import run_scoped
+def test_run_reuses_one_capture_for_primary_and_auxiliary_views(tmp_path, monkeypatch):
+    import warnings
+    from dataclasses import replace
 
-    analysis, _ = definitions_source(tmp_path, return_analysis=True)
-    source = cast(Any, held_source(analysis))
+    from increment import run as run_views
+    from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
+    from increment.errors import CodedError, IncrementWarning
+    from increment.evidence import BreakoutIdentity
+    from increment.kernel.contracts import Scope
+    from tests.parity_harness import dataset as ds
+    from tests.test_shared_capture import _builder
+
+    con = ds.duckdb_connection()
+    experiment, resolver = _builder(con, tmp_path)
+    scopes = (
+        Scope(view="run", grain="total"),
+        Scope(view="breakout", grain="total", segment=(BreakoutIdentity("store", None),)),
+        Scope(view="daily", grain="daily"),
+        Scope(view="daily", grain="daily", values=True),
+        Scope(view="asof", grain="asof"),
+        Scope(view="asof", grain="asof", values=True),
+    )
+    experiment = replace(experiment, scopes=scopes)
+    source = resolver.binding.source
     captures = 0
     original = source.readout_snapshot
 
@@ -2172,15 +2191,29 @@ def test_line2_owner_reuses_one_capture_for_primary_and_auxiliary_readouts(tmp_p
 
     monkeypatch.setattr(source, "readout_snapshot", count_capture)
     try:
-        with pytest.warns():
-            results = run_scoped(analysis, breakout_correction="none")
-        assert set(results) == {"run", "breakout", "daily", "daily_lift", "asof", "asof_lift"}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run_views(experiment, resolver, views=scopes)
         assert captures == 1
-        for collection in results.values():
-            assert collection.metadata is not None
-            assert collection.metadata.coherence == "captured"
+        with pytest.raises(CodedError) as ambiguous:
+            result.readout()
+        assert ambiguous.value.context["scope_hashes"] == tuple(scope.hash() for scope in scopes)
+        assert result.metadata is not None
+        (capture,) = result.metadata.captures
+        daily_lift = result.readout(scopes[2])
+        daily_values = result.readout(scopes[3])
+        assert isinstance(daily_lift, DailyLiftEstimates)
+        assert isinstance(daily_values, DailyMetricValues)
+        assert {(row.metric, row.ds) for row in daily_lift} == {
+            (row.metric, row.ds) for row in daily_values
+        }
+        for scope in scopes:
+            metadata = result.readout(scope).metadata
+            assert metadata is not None
+            assert metadata.coherence == "captured"
+            assert metadata.captures == (capture,)
     finally:
-        analysis.close()
+        con.disconnect()
 
 
 def test_sequential_run_pins_the_registered_family_and_records_mode():

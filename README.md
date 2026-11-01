@@ -136,7 +136,9 @@ For an available guardrail and recovery, see the
 
 The separate compatibility route `Analysis.run()` still returns
 `LiftEstimates` or `ContrastResults`; top-level `run(exp, resolver)` returns a
-`RunResult` with result cells, effects, and decisions.
+`RunResult` with result cells, effects, and decisions. `result.readout()` returns
+the same typed collection, and `result.to_frame()` and `readout_table(result)`
+read the result directly.
 
 The [dataframe quickstart](https://getincrement.io/docs/guides/quickstart/) continues
 with CUPED, monitoring, and other data shapes.

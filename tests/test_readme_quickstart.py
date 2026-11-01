@@ -65,8 +65,6 @@ def test_readme_quickstart_executes_recommended_run() -> None:
     assert "complaints" in rendered
     assert "unavailable" in rendered
     from increment import render
-    from increment.result_envelope import AnalysisEnvelope
 
-    envelope = AnalysisEnvelope(result.cells, result.run.metadata)
     for audience in ("brief", "full"):
-        assert render(result, audience) == render(envelope, audience)
+        assert render(result, audience) == render(result.envelope, audience)
