@@ -1,4 +1,4 @@
-"""Small matched CUPED/regression efficiency comparison through Analysis.run."""
+"""Small matched CUPED/regression efficiency comparison through the public run route."""
 
 from __future__ import annotations
 
@@ -38,7 +38,8 @@ def _ols_relative_interval(y: np.ndarray, x: np.ndarray, n: int) -> tuple[float,
 def run(*, reps: int = 50, seed: int = 20261008) -> dict[str, object]:
     import polars as pl
 
-    from increment import Analysis, CupedCovariate, Method, MetricSpec
+    from increment import CupedCovariate, Method, MetricSpec, from_frame
+    from increment import run as run_experiment
     from tests.analysis_factory import lift_rows
 
     rng = np.random.default_rng(seed)
@@ -65,19 +66,26 @@ def run(*, reps: int = 50, seed: int = 20261008) -> dict[str, object]:
         )
         cuped = Method.cuped(covariates=CupedCovariate(name="x", kind="continuous"))
         metric = MetricSpec(name="y", type="mean", sensitivity_methods=(cuped,))
-        analysis = Analysis.from_unit_summary(
-            frame, unit="unit_id", group="variant", control="control", metrics=[metric]
+        experiment, resolver = from_frame(
+            frame,
+            shape="summary",
+            unit="unit_id",
+            group="variant",
+            control="control",
+            metrics=[metric],
         )
         started = time.perf_counter()
         try:
             rows = lift_rows(
-                analysis.run(
+                run_experiment(
+                    experiment,
+                    resolver,
                     decision_method=Method(name="unadjusted"),
                     sensitivity_methods=(cuped,),
-                )
+                ).readout()
             )
         finally:
-            analysis.close()
+            resolver.close()
         elapsed_candidate += time.perf_counter() - started
         candidate = {row.method: row for row in rows}["cuped"]
         estimate = candidate.lift

@@ -200,17 +200,18 @@ def _temp_table_count(source: Any) -> int:
 
 
 def _source(backend: Backend, root: Path) -> tuple[Any, Any]:
+    """The resolver of one bound fixture and the source it holds."""
     if backend == "duckdb":
         from tests.source_conformance import definitions_source
 
-        analysis, _ = definitions_source(root, store="always", return_analysis=True)
-        source = analysis._src
+        (_, resolver), _ = definitions_source(root, store="always", return_binding=True)
+        source = resolver.binding.source
         _duckdb_connection(source).raw_sql("SET enable_progress_bar = false")
-        return analysis, source
+        return resolver, source
     from tests.source_conformance import unit_day_artifact_analysis
 
-    analysis = unit_day_artifact_analysis(root)
-    return analysis, analysis._src
+    _, resolver = unit_day_artifact_analysis(root)
+    return resolver, resolver.binding.source
 
 
 def _stable_value(value: Any) -> Any:
@@ -387,14 +388,14 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
     from increment.readouts._evidence import _builtin_source
 
     with tempfile.TemporaryDirectory(prefix="kernel-context-measure-") as directory:
-        analysis, source = _source(backend, Path(directory))
+        resolver, source = _source(backend, Path(directory))
         if backend == "duckdb":
             _append_fixed_units(source)
             if rows == 10_000_000:
                 _append_units(source, (rows - 16) // 2)
         from increment.readouts import _breakout
 
-        breakout = analysis.experiment.breakouts[0]
+        breakout = resolver.binding.experiment.breakouts[0]
         breakout_name = breakout.property
         metrics = tuple(source.context.metrics)
         configs = tuple(source.context.configs)
@@ -549,7 +550,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
             source.readout_snapshot = original_snapshot
         wall = time.perf_counter() - started
         temp_bytes_after_scope = _temp_bytes(source)
-        analysis.close()
+        resolver.close()
         cleanup = _temp_table_count(source) <= before_temp_tables
         return Sample(
             wall_seconds=wall,
@@ -572,7 +573,7 @@ def _coherence_sample(rows: int, seed: int) -> tuple[float, float]:
     from increment import readouts
 
     with tempfile.TemporaryDirectory(prefix="kernel-context-coherence-") as directory:
-        analysis, source = _source("duckdb", Path(directory))
+        resolver, source = _source("duckdb", Path(directory))
         try:
             _append_fixed_units(source)
             if rows == 10_000_000:
@@ -594,7 +595,7 @@ def _coherence_sample(rows: int, seed: int) -> tuple[float, float]:
                 times[coherence] = time.perf_counter() - started
             return times["live"], times["captured"]
         finally:
-            analysis.close()
+            resolver.close()
 
 
 def _coherence_sample_child(rows: int, seed: int) -> tuple[float, float]:

@@ -138,7 +138,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
     import ibis.expr.types as ir
     import yaml
 
-    from increment import Analysis
+    from increment import Scope, from_definitions, run
     from increment.errors import IncrementWarning
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -220,14 +220,15 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
                         entry["decision_method"]["covariates"] = covariates
                 path = Path(directory) / f"{route}.yaml"
                 path.write_text(yaml.safe_dump(config, sort_keys=False))
-                analysis = Analysis.from_definitions("mixed_cuped", path, con)
+                experiment, resolver = from_definitions(path, con, experiment_name="mixed_cuped")
                 try:
-                    analysis.run(metrics=["revenue", "rpo"])
+                    run(experiment, resolver, metrics=["revenue", "rpo"])
+                    breakout = Scope(view="breakout", grain="total")
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", IncrementWarning)
-                        analysis.run_breakout(metrics=["revenue", "rpo"])
+                        run(experiment.with_views(breakout), resolver, metrics=["revenue", "rpo"])
                 finally:
-                    analysis.close()
+                    resolver.close()
     finally:
         backend_type.to_pyarrow = original_to_pyarrow
         backend_type.create_table = original_create_table

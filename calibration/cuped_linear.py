@@ -709,7 +709,7 @@ def _public_route_probe() -> dict:
     """Run the smallest public multicovariate CUPED analysis."""
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, Method
+    from increment import AnalysisPlan, Method, from_frame, run
     from increment.breakout.estimates import LiftEstimates
     from increment.frame import CupedCovariate, MetricSpec
 
@@ -730,15 +730,16 @@ def _public_route_probe() -> dict:
             covariates=CupedCovariate(name="x", kind="continuous", missing="impute-indicator"),
         ),
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="c",
         metrics=[metric],
         plan=AnalysisPlan(primary="outcome"),
     )
-    rows = analysis.run()
+    rows = run(experiment, resolver).readout()
     returned = isinstance(rows, LiftEstimates) and any(row.metric == "outcome" for row in rows)
     return {"refusal": None, "satisfied": bool(returned)}
 
@@ -756,7 +757,7 @@ PREREQUISITES = MappingProxyType(
             _support_region_probe,
         ),
         "public_route": Prerequisite(
-            "Analysis.run() with Method.cuped_multicovariate(name='linear', covariates=...) returns LiftEstimates rows; the FCP families and the public D7 sentinel select and reinterval through it",
+            "run(experiment, resolver).readout() with Method.cuped_multicovariate(name='linear', covariates=...) returns LiftEstimates rows; the FCP families and the public D7 sentinel select and reinterval through it",
             _public_route_probe,
         ),
     }
@@ -1180,7 +1181,7 @@ def family_trial(cell: Cell, replication: int) -> dict:
     """Exercise production declared-secondary BH selection and retained reintervaling."""
     import pandas as pd
 
-    from increment import Analysis, Method
+    from increment import Method, from_frame, run
     from increment.breakout.estimates import LiftEstimates
     from increment.frame import CupedCovariate, MetricSpec
     from increment.semantics.models import AnalysisPlan
@@ -1222,15 +1223,16 @@ def family_trial(cell: Cell, replication: int) -> dict:
         else:
             frame[name] = draw.outcomes[0]
         specs.append(MetricSpec.model_validate(kwargs))
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(frame),
+        shape="summary",
         unit="unit",
         group="arm",
         control="c",
         metrics=specs,
         plan=AnalysisPlan(secondaries=tuple(s.name for s in specs), q=ALPHA, alpha=ALPHA),
     )
-    returned = analysis.run()
+    returned = run(experiment, resolver).readout()
     if not isinstance(returned, LiftEstimates):
         return {"status": "blocked", "reason": "production did not return fixed-horizon lift rows"}
     rows = list(returned)

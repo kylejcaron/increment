@@ -1,4 +1,4 @@
-# Traced on commit: 911b5f92db1bfead84d78ef6b68fb6341d60576f
+# Traced on commit: 27a077dbe0dc5db41b08ebf69c8dc02e136b6d63
 increment
 increment._analysis_config
 increment._analysis_execution
@@ -25,6 +25,7 @@ increment._frame_panel
 increment._frame_validation
 increment._identity
 increment._immutable
+increment._interpretation
 increment._labels
 increment._lift_options
 increment._literals
@@ -34,6 +35,7 @@ increment._multiplicity
 increment._plan_compatibility
 increment._policy_alpha
 increment._readout_request
+increment._run
 increment._runnability
 increment._source_admission
 increment._source_identity
@@ -52,6 +54,9 @@ increment.breakout
 increment.breakout.estimates
 increment.builders
 increment.compatibility
+increment.decide
+increment.decide.evaluator
+increment.decide.family
 increment.decision
 increment.decision_wire
 increment.declarations
@@ -66,6 +71,7 @@ increment.estimation._adjust.overlap
 increment.estimation._adjust.value_scale
 increment.estimation._binomial_support
 increment.estimation._certified
+increment.estimation._fcr_reinterval
 increment.estimation._readout_refusals
 increment.estimation._sequential_inversion
 increment.estimation._sequential_likelihood
@@ -116,6 +122,8 @@ increment.kernel
 increment.kernel.context
 increment.kernel.contracts
 increment.kernel.experiment
+increment.kernel.ports
+increment.kernel.program_refusals
 increment.kernel.resolver
 increment.plan
 increment.query
@@ -169,6 +177,7 @@ increment.readouts._run_acquisition
 increment.readouts._source_digest
 increment.readouts._srm
 increment.readouts._whole_window
+increment.result_envelope
 increment.semantics
 increment.semantics.artifact
 increment.semantics.assignment
@@ -181,5 +190,12 @@ increment.semantics.unit_cycle
 increment.sequential_source
 increment.sequential_state
 increment.sources
+increment.store
+increment.store.base
+increment.store.decision_log
+increment.store.parquet
+increment.store.producer
+increment.store.types
+increment.store.warehouse
 increment.switchback
 increment.winsor

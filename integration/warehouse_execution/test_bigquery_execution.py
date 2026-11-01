@@ -1,6 +1,6 @@
 # integration/warehouse_execution/test_bigquery_execution.py
-"""Real BigQuery execution through the actual public Analysis entry
-points: a ratio metric, materialized-cache correction, and artifact
+"""Real BigQuery execution through the public builders and ``run``:
+a ratio metric, materialized-cache correction, and artifact
 publish/adopt parity -- not a hand-assembled query-builder pipeline."""
 
 from __future__ import annotations

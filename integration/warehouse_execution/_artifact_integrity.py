@@ -1,4 +1,4 @@
-"""Artifact integrity and bounded transfers through public analysis ingress."""
+"""Artifact integrity and bounded transfers through the public builders and ``run``."""
 
 from __future__ import annotations
 
@@ -10,8 +10,12 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
-from increment.artifacts import SourceSnapshotEvidence
+from increment import Scope, from_definitions, from_unit_day_artifact, run
+from increment.artifacts import (
+    SourceSnapshotEvidence,
+    artifact_context,
+    publish_unit_day_artifact,
+)
 from increment.query.artifact_contract import (
     ArtifactContractError,
     unit_day_artifact_extension_catalog,
@@ -139,15 +143,15 @@ experiments:
         cleanup.callback(_drop_scratch_namespace, con, schema, _scratch_catalog(con, dialect))
         transfers = _bounded_transfers(con, monkeypatch)
         cutoff = dt.datetime(2025, 1, 31, tzinfo=dt.UTC)
-        native = Analysis.from_definitions(
-            "exp",
+        native = from_definitions(
             definitions,
             con,
+            experiment_name="exp",
             store="none",
             source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
         )
-        cleanup.callback(native.close)
-        context = native.artifact_context
+        cleanup.callback(native[1].close)
+        context = artifact_context(*native)
         store = WarehouseArtifactStore(con, schema_name=schema)
         requests = [
             entry.request
@@ -159,29 +163,30 @@ experiments:
             "assignment_counts",
             "breakout_dimension",
         }
-        expected = native.run()[0]
+        expected = run(*native).readout()[0]
         _damage_extension_relation(monkeypatch, damage)
         if damage in {"duplicate", "domain"}:
             with pytest.raises(ArtifactContractError) as caught:
-                native.publish_unit_day_artifact(store, extensions=requests)
+                publish_unit_day_artifact(*native, store, extensions=requests)
             assert caught.value.code == "artifact.extension.invalid"
             assert transfers
             return
-        ref = native.publish_unit_day_artifact(store, extensions=requests)
+        ref = publish_unit_day_artifact(*native, store, extensions=requests)
         cleanup.callback(_drop_probe_generation, con, store, ref, dialect, schema_name=schema)
-        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        experiment, adopted = from_unit_day_artifact(store, ref, expected_context=context)
         cleanup.callback(adopted.close)
         if damage == "exposure":
             with pytest.raises(ArtifactContractError) as caught:
-                adopted.run()
+                run(experiment, adopted)
             assert caught.value.code == "artifact.extension.invalid"
             return
-        actual = adopted.run()[0]
+        actual = run(experiment, adopted).readout()[0]
         assert actual.method == "cuped"
         assert actual.lift.value == pytest.approx(expected.lift.value, rel=1e-12)
         assert actual.lift.lb == pytest.approx(expected.lift.lb, rel=1e-12)
         assert actual.lift.ub == pytest.approx(expected.lift.ub, rel=1e-12)
-        assert adopted.run_breakout(metrics=["revenue"], population="assigned")
+        breakout = Scope(view="breakout", grain="total", population="assigned")
+        assert run(experiment.with_views(breakout), adopted, metrics=["revenue"]).readout(breakout)
         assert transfers
         if damage == "tamper":
             with store.open_snapshot(ref) as snapshot:
@@ -191,8 +196,8 @@ experiments:
             ).relation.relation
             con.raw_sql(f'UPDATE "{relation.schema_name}"."{relation.name}" SET x = x + 1.0')
             adopted.close()
-            reopened = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-            cleanup.callback(reopened.close)
+            reopened = from_unit_day_artifact(store, ref, expected_context=context)
+            cleanup.callback(reopened[1].close)
             with pytest.raises(ArtifactContractError) as caught:
-                reopened.run()
+                run(*reopened)
             assert caught.value.code == "artifact.snapshot.mixed"

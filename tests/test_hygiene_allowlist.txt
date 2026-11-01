@@ -1,7 +1,6 @@
 # H1: pytest.raises(..., match=...) on coded or unresolved exceptions
 # ---
 # H2: private-attribute reach-ins outside the two sanctioned shims
-tests/test_kernel_context_measurement.py::test_measurement_duckdb_source_disables_progress_output::_src
 tests/test_readout_execution_context.py::test_analysis_run_exposes_live_coherence_when_temp_tables_are_denied::_con
 tests/test_readout_execution_context.py::test_custom_provider_preserves_snapshot_after_update::_con
 tests/test_readout_execution_context.py::test_mutable_sql_panel_is_not_reported_as_captured::_con

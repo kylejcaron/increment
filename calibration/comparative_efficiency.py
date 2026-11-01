@@ -121,7 +121,7 @@ def _mean_case(reps: int, seed: int) -> dict[str, object]:
     """Compare production absolute-axis intervals with matched raw-array Welch intervals."""
     import polars as pl
 
-    from increment import Analysis, MetricSpec
+    from increment import MetricSpec, from_frame, run
     from tests.analysis_factory import lift_rows
 
     rng = np.random.default_rng(seed)
@@ -143,8 +143,9 @@ def _mean_case(reps: int, seed: int) -> dict[str, object]:
                 "y": np.concatenate((control, treatment)),
             }
         )
-        analysis = Analysis.from_unit_summary(
+        experiment, resolver = from_frame(
             frame,
+            shape="summary",
             unit="unit_id",
             group="variant",
             control="control",
@@ -152,9 +153,9 @@ def _mean_case(reps: int, seed: int) -> dict[str, object]:
         )
         started = time.perf_counter()
         try:
-            (row,) = lift_rows(analysis.run())
+            (row,) = lift_rows(run(experiment, resolver).readout())
         finally:
-            analysis.close()
+            resolver.close()
         candidate_elapsed += time.perf_counter() - started
         if row.abs_lb is None or row.abs_ub is None:
             unavailable += 1
