@@ -445,7 +445,7 @@ def test_categorical_warehouse_unresolvable_summation_range_refuses_before_trans
     assert raised.value.context["arm"] == "c"
     assert raised.value.context["component"] == "outcome"
     route = raised.value.context["route"]
-    assert isinstance(route, str) and "from_unit_summary" in route
+    assert isinstance(route, str) and "from_frame" in route
     assert transfers
     assert all(
         not name.startswith(("ref_", "first_", "cross_"))
@@ -574,7 +574,7 @@ def test_categorical_warehouse_ineligible_request_transfers_no_outcome_cells(
         assert raised.value.context["reason"] == reason
         route = raised.value.context["route"]
         assert isinstance(route, str)
-        assert "from_unit_summary" in route
+        assert "from_frame" in route
         assert any(num_rows == 1 for _columns, num_rows in transfers)
         assert all(
             not name.startswith(("ref_", "first_", "cross_"))

@@ -124,8 +124,8 @@ _TRIGGER_UNSUPPORTED = RefusalSpec(
             else f"{method}: experiment {experiment!r} declares trigger {trigger!r}, "
             "which this readout does not apply."
         )
-        + " To analyze triggered populations, use Analysis.from_definitions or an "
-        "Analysis.from_unit_day_artifact carrying trigger-population evidence."
+        + " To analyze triggered populations, build the experiment with from_definitions, "
+        "or with from_unit_day_artifact from an artifact carrying trigger-population evidence."
     ),
 )
 _UNKNOWN_DIMENSION = RefusalSpec(
@@ -1618,7 +1618,7 @@ class DayAxisReadouts:
         req = replace(req, experiment=self._experiment)
         scope = _day_axis_scope(req) if scope is None else scope
         route = self._route()
-        from increment._analysis_config import validate_scalar_route
+        from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
 
         _, requested_estimands, encouragement_design = validate_lift_request(
             req,
@@ -1766,7 +1766,7 @@ class DayAxisReadouts:
         scalar_evidence = evidence_provider(self._src).evidence.scalar
         validate_scalar_route(
             opts.configs,
-            route=f"Analysis.{req.caller}",
+            route=DAY_AXIS_ROUTES[req.caller],
             representation=(
                 "registered"
                 if getattr(self._plan.inference, "registration", None) is not None

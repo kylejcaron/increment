@@ -79,7 +79,7 @@ def test_frame_input_type_refusals_name_the_route(monkeypatch):
                 {"user_id": ["u"], "variant": ["control"], "date": ["2026-01-01"], "value": [1]}
             ),
             "Table",
-            "Analysis.from_definitions",
+            "from_definitions",
         ),
         (
             pl.DataFrame(

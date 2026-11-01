@@ -1717,9 +1717,9 @@ def _refuse_design_tuning_keys(mechanism: str, data: object, known: frozenset[st
             "definition.experiment.design_tuning_key_not_yaml",
             f"design: {{mechanism: {mechanism}, ...}} does not accept "
             f"{present} from YAML -- statistical tuning keeps its "
-            f"library default here; declare a full "
-            f"Encouragement/Observational object from "
-            f"Analysis.from_unit_summary/from_unit_panel to override it",
+            f"library default here; pass a full "
+            f"Encouragement/Observational object as design= to "
+            f"from_frame to override it",
             mechanism=mechanism,
             keys=present,
         )

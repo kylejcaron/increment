@@ -429,7 +429,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 operation=operation,
                 route=(
                     "pass source_snapshot_evidence=SourceSnapshotEvidence(...) to "
-                    "Analysis.from_definitions using the upstream source's explicit "
+                    "from_definitions using the upstream source's explicit "
                     "event-time cutoff; provide feed watermarks only when certified"
                 ),
             )

@@ -43,7 +43,7 @@ _MAGNITUDE_RANGE = RefusalSpec(
         "Metric {metric!r} has {component} in arm {arm!r} outside the warehouse CUPED "
         "RMS magnitude range [1e-50, 1e50] (bound: {bound}); rescale the values "
         "(change units) or fit from explicitly supplied per-unit data with "
-        "Analysis.from_unit_summary or Analysis.from_unit_panel."
+        "from_frame."
     ),
     keys=frozenset({"metric", "arm", "component", "bound"}),
 )
@@ -57,7 +57,7 @@ def general_qr_required(metric, reason: str, **detail: object) -> NoReturn:
         _GENERAL_QR,
         metric=metric.name,
         reason=reason,
-        route="Use explicitly supplied local per-unit data with Analysis.from_unit_summary or Analysis.from_unit_panel; warehouse units are never downloaded automatically.",
+        route="Use explicitly supplied local per-unit data with from_frame; warehouse units are never downloaded automatically.",
         **detail,
     )
 

@@ -2713,10 +2713,10 @@ def from_unit_panel(  # noqa: PLR0913
 
         refuse(
             CLUSTER_UNAVAILABLE,
-            constructor="Analysis.from_unit_panel",
+            constructor="from_frame",
             requested=cluster,
             offered=(),
-            route="aggregate to one row per unit and use from_unit_summary(cluster=...)",
+            route='aggregate to one row per unit and use from_frame(shape="summary", cluster=...)',
         )
     return FramePanelSource.from_frame(
         frame,

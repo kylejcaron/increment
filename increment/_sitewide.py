@@ -271,11 +271,10 @@ class SitewideReadouts:
                 "sitewide_evidence",
                 SitewideEvidenceOperation,
                 message=(
-                    "sitewide() needs a native Analysis.from_definitions instance "
-                    "-- a frame/warehouse/moments-backed analysis retains no raw "
-                    "event stream to sum site-wide over (it starts from a "
-                    "pre-melted unit summary or a precomputed moments cube, "
-                    "never a raw fact table); build one with Analysis.from_definitions."
+                    "sitewide() needs an experiment built by from_definitions -- a frame, "
+                    "warehouse or moments experiment retains no raw event stream to sum "
+                    "site-wide over (it starts from a pre-melted unit summary or a "
+                    "precomputed moments cube, never a raw fact table)."
                 ),
             )
         metrics_by_name = {metric.name: metric for metric in source.context.metrics}

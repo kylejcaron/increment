@@ -414,7 +414,12 @@ def run_standalone_day_axis_lift(
             method=req.caller,
         )
 
-    from increment._analysis_config import overlay_configs, resolve_configs, validate_scalar_route
+    from increment._analysis_config import (
+        DAY_AXIS_ROUTES,
+        overlay_configs,
+        resolve_configs,
+        validate_scalar_route,
+    )
 
     base = source.context.configs
     base_names = {config.metric.name for config in base}
@@ -460,7 +465,7 @@ def run_standalone_day_axis_lift(
     scalar_evidence = declared_evidence(source).scalar
     validate_scalar_route(
         configs,
-        route=f"Analysis.{req.caller}",
+        route=DAY_AXIS_ROUTES[req.caller],
         representation=(
             "registered"
             if getattr(plan.inference, "registration", None) is not None

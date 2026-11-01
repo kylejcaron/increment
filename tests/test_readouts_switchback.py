@@ -904,7 +904,7 @@ def test_switchback_source_operation_routes_refuse_with_coded_context(method: st
                 with pytest.raises(InvalidRequestError) as refusal:
                     operation()
                 assert refusal.value.code == "store.run.legacy_analysis_required"
-                assert refusal.value.context["route"] == "Analysis.run()"
+                assert refusal.value.context["route"] == "run(experiment, resolver)"
                 return
             with pytest.raises(CapabilityError) as refusal:
                 operation()

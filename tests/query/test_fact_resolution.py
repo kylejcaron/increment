@@ -52,7 +52,7 @@ def test_require_design_rejects_zero_or_two_of_control_and_design(control, desig
     with pytest.raises(InvalidRequestError) as exc_info:
         from_moments((), metrics=(), control=control, design=design)
     assert exc_info.value.code == "query.fact_resolution.pass_exactly_one"
-    assert exc_info.value.context["constructor"] == "Analysis.from_moments"
+    assert exc_info.value.context["constructor"] == "from_moments"
 
 
 def _breakout_fact_source():

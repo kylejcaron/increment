@@ -703,7 +703,8 @@ def test_health_renderer_consumes_restored_health_report(
                     "route": (
                         "Declare allocation_scheme='independent' on a design that uses an "
                         "independent constant-probability draw, or use "
-                        "Analysis.srm(inference='fixed') for one predeclared look."
+                        "workflows.srm(experiment, resolver, inference='fixed') for one "
+                        "predeclared look."
                     ),
                 },
             ),

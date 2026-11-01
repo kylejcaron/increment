@@ -129,7 +129,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
         "readout.run.segment_unsupported": RefusalSpec(
             "readout.run.segment_unsupported",
             UnsupportedRequestError,
-            template="metric {metric!r}: run(by=...) is not supported -- the whole-window lift-cell estimator indexes rows by (metric, arm) only, so multiple segments would silently overwrite one another and the result type carries no segment identity -- use breakout()/Analysis.run_breakout() for a per-segment split instead",
+            template='metric {metric!r}: run(by=...) is not supported -- the whole-window lift-cell estimator indexes rows by (metric, arm) only, so multiple segments would silently overwrite one another and the result type carries no segment identity -- use breakout() or a Scope(view="breakout", grain="total") view of run() for a per-segment split instead',
         ),
         "readout.arms.no_treatment": RefusalSpec(
             "readout.arms.no_treatment",
@@ -148,7 +148,8 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
                 f"asof_lift(by={list(by)}) is not supported -- the as-of series result "
                 "type (LiftEstimate) carries no segment identity, so every segment's rows "
                 "for a date collapse into one bucket and are estimated against the wrong "
-                "segment's control -- use Analysis.run_asof_lift(dimension=...) for a "
+                'segment\'s control -- use a Scope(view="asof", grain="asof", '
+                "segment=BreakoutIdentity(property, None)) view of run() for a "
                 "per-segment as-of split instead"
             ),
         ),

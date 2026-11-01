@@ -48,7 +48,7 @@ _BINDING_REFUSALS = refusals(
                 f"(available: {list(available)!r})"
             ),
         ),
-        "facade.analysis.source_context_design_disagrees_arm": "source context design disagrees with Analysis construction",
+        "facade.analysis.source_context_design_disagrees_arm": "source context design disagrees with the design passed to the builder",
         "facade.analysis.invalid_mixed_assignment_policy": RefusalSpec(
             "facade.analysis.invalid_mixed_assignment_policy",
             InvalidRequestError,
@@ -262,7 +262,7 @@ def _bind_summary(  # noqa: PLR0913
     from increment.frame import from_unit_summary
     from increment.query.fact_resolution import _require_design
 
-    _require_design(control, design, constructor="Analysis.from_unit_summary")
+    _require_design(control, design, constructor="from_frame")
     if control is None:
         assert design is not None
         control = str(design.control_group)
@@ -309,7 +309,7 @@ def _bind_panel(  # noqa: PLR0913
     from increment.frame import from_unit_panel
     from increment.query.fact_resolution import _require_design
 
-    _require_design(control, design, constructor="Analysis.from_unit_panel")
+    _require_design(control, design, constructor="from_frame")
     if control is None:
         assert design is not None
         control = str(design.control_group)
@@ -423,7 +423,7 @@ def _bind_moments(
     from increment.sources import MomentsSource, cuped_evidence_items
 
     design = canonical_design_for_moments(design)
-    _require_design(control, design, constructor="Analysis.from_moments")
+    _require_design(control, design, constructor="from_moments")
     if control is None:
         assert design is not None
         control = canonical_control_for_moments(design.control_group)
@@ -472,7 +472,7 @@ def _bind_moments(
                     method.variance_reduction == "cuped"
                     and carried.get(method_key(method)) != "scalar_moments"
                 ):
-                    refuse_missing_scalar_evidence("Analysis.from_moments", method.name)
+                    refuse_missing_scalar_evidence("from_moments", method.name)
             portable_metrics.add(spec.name)
             continue
         requested_covariates = {
@@ -509,7 +509,7 @@ def _bind_moments(
     )
     validate_scalar_route(
         tuple(config for config in configs if config.metric.name not in portable_metrics),
-        route="Analysis.from_moments",
+        route="from_moments",
         representation="moments",
         design=design,
     )

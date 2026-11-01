@@ -143,7 +143,7 @@ def test_frame_input_type_refusals_name_the_route(monkeypatch):
         (
             ibis.memtable({"user_id": ["u"], "variant": ["control"], "value": [1]}),
             "Table",
-            "Analysis.from_definitions",
+            "from_definitions",
         ),
         (
             pl.DataFrame({"user_id": ["u"], "variant": ["control"], "value": [1]}).lazy(),

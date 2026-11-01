@@ -71,8 +71,8 @@ def capture_dashboard[T](
         binding.source,
         "readout_snapshot",
         message=(
-            "dashboard_snapshot() needs a native Analysis.from_definitions instance "
-            "with a warehouse-backed source."
+            "prepare_dashboard() needs an experiment built by from_definitions "
+            "with a warehouse connection."
         ),
     )
     scoped = evidence_provider(binding.source).scope(
@@ -226,8 +226,8 @@ def dashboard_group_data(
         "dashboard_group_data",
         DashboardGroupDataOperation,
         message=(
-            "dashboard_group_data() needs a native Analysis.from_definitions "
-            "instance with a warehouse-backed source."
+            "prepare_dashboard() needs an experiment built by from_definitions "
+            "with a warehouse connection."
         ),
     )
     return tuple(

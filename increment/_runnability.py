@@ -561,12 +561,12 @@ def readout_refusals(
 
         check(_validate_daily_inference, inference)
     if operation in {"run_daily_lift", "run_asof_lift"}:
-        from increment._analysis_config import validate_scalar_route
+        from increment._analysis_config import DAY_AXIS_ROUTES, validate_scalar_route
 
         check(
             validate_scalar_route,
             configs,
-            route=f"Analysis.{operation}",
+            route=DAY_AXIS_ROUTES[operation],
             representation="registered" if inference is not None else "implicit",
             registered_plan=plan,
             design=context.design,

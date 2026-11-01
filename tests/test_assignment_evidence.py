@@ -67,7 +67,7 @@ def test_assignment_request_refuses_without_relation_capability() -> None:
         require_evidence(source, request=AssignmentRequest(experiment="exp"))
     assert error.value.code == "evidence.assignment.unavailable"
     assert error.value.context["offered"] == "none"
-    assert "from_unit_summary" in str(error.value.context["route"])
+    assert 'from_frame(shape="summary")' in str(error.value.context["route"])
 
 
 def test_custom_assignment_provider_serves_declared_evidence_or_refuses() -> None:
@@ -313,7 +313,7 @@ def test_reduced_only_analysis_refuses_allocation_history_with_identity_route() 
             "constructor": "FrameTotalsSource",
             "operation": "allocation_history",
             "route": (
-                "supply a row-level assignment ledger via Analysis.from_definitions "
+                "supply a row-level assignment ledger via from_definitions "
                 "with experiment.assignment_ledger, or via a FrameLedger"
             ),
         }
@@ -357,7 +357,7 @@ def test_assignment_identity_refusal_code_matches_across_summary_and_moments(tmp
             "constructor": "MomentsSource",
             "operation": "allocation_history",
             "route": (
-                "supply a row-level assignment ledger via Analysis.from_definitions "
+                "supply a row-level assignment ledger via from_definitions "
                 "with experiment.assignment_ledger, or via a FrameLedger"
             ),
         }

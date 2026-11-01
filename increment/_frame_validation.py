@@ -382,9 +382,7 @@ def require_eager_frame(frame: object, *, constructor: str) -> None:
     if module.startswith("ibis"):
         # A switchback panel has no definitions route; materialize the table instead.
         route = (
-            "table.to_pyarrow()"
-            if constructor == "from_switchback_panel"
-            else "Analysis.from_definitions"
+            "table.to_pyarrow()" if constructor == "from_switchback_panel" else "from_definitions"
         )
         refuse(
             _UNSUPPORTED_FRAME_INPUT, constructor=constructor, input_type=input_type, route=route

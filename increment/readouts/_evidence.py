@@ -1136,13 +1136,13 @@ def load_breakout_evidence(
                 tuple(item.property for item in request.breakouts),
                 declaration.breakouts,
                 route=(
-                    "run_breakout() needs a native Analysis.from_definitions or "
-                    "Analysis.from_unit_panel instance with declared breakouts"
+                    "a breakout view needs an experiment built by from_definitions or "
+                    'from_frame(shape="panel") with declared breakouts'
                 ),
             )
         route_message = (
-            "run_breakout() needs a native Analysis.from_definitions or "
-            "Analysis.from_unit_panel instance with declared breakouts"
+            "a breakout view needs an experiment built by from_definitions or "
+            'from_frame(shape="panel") with declared breakouts'
         )
         if not isinstance(src.context, SourceContext):
             from increment._evidence_refusals import refuse_operation
@@ -1315,7 +1315,7 @@ def _acquire_triggered_observation_edges(
             "triggered_observation_edges",
             tuple(sorted(declared_evidence(src).operations)),
             route="triggered daily readouts need trigger observation edges; "
-            "use Analysis.from_definitions or Analysis.from_unit_day_artifact",
+            "build the experiment with from_definitions or from_unit_day_artifact",
         )
     return {
         metric.name: edge_source.triggered_observation_edges(metric) for metric in request.metrics

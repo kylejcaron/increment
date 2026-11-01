@@ -255,7 +255,7 @@ _REFUSALS = refusals(
         "power.baseline.confidence_produces_non": "confidence produces a non-finite variance inflation",
         "power.baseline.mean_den": "mean_den must be > 0, got {mean_den}",
         "power.quantile_baseline.cuped_unsupported": "cuped_rho={cuped_rho} was declared, but a quantile metric has no runtime CUPED route to credit -- QuantileBaseline always plans without variance reduction",
-        "power.quantile_baseline.metric_not_quantile": "a QuantileBaseline plans a quantile metric, but {metric!r} is declared as {metric_type!r} -- plan a quantile metric with ArmPlanningProcedure.standard('quantile'), and any other metric with Analysis.planning_baseline(metric) or a Baseline constructor",
+        "power.quantile_baseline.metric_not_quantile": "a QuantileBaseline plans a quantile metric, but {metric!r} is declared as {metric_type!r} -- plan a quantile metric with ArmPlanningProcedure.standard('quantile'), and any other metric with workflows.planning_baseline(experiment, resolver, metric) or a Baseline constructor",
         "power.quantile_size_search_unreachable": RefusalSpec(
             "power.quantile_size_search_unreachable",
             InvalidRequestError,
