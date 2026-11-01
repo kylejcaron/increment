@@ -16,7 +16,6 @@ import yaml
 from examples._seed import seed_event_log
 from increment import Scope, from_definitions, from_unit_day_artifact, workflows
 from increment._moment_plan import SLOTS
-from increment.analysis import Analysis
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.armstats import ArmStats
@@ -46,7 +45,7 @@ from increment.semantics.loader import load
 from increment.semantics.models import Definitions
 from increment.workflows import experiment_definition, export_moments, srm
 from tests._shared_cache import fixture_cache_key, get_or_build
-from tests.analysis_factory import bound_analysis, bound_source, lift_rows, view_readout
+from tests.analysis_factory import bound_source, lift_rows, view_readout
 
 
 def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> pa.Table:
@@ -776,59 +775,6 @@ def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one(
     with latest[1]:
         assert _purchase_lift(latest) != pytest.approx(before)
     assert _purchase_lift(adopted) == pytest.approx(before)
-    adopted[1].close()
-    assert _purchase_lift(adopted) == pytest.approx(before)
-
-
-def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysis_live() -> None:
-    from increment._source_operations import DashboardSnapshotPayload
-    from increment.estimation.engine import Method
-
-    con, native, _context, _store = _native()
-    metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
-    seen: dict[str, float] = {}
-
-    def facade_lift(isolated: Analysis) -> float:
-        rows = isolated.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
-        return lift_rows(rows)[0].require_lift().value
-
-    def operation(isolated: Analysis) -> DashboardSnapshotPayload:
-        seen["pinned_before"] = facade_lift(isolated)
-        _add_treatment_units(con)
-        seen["pinned_after"] = facade_lift(isolated)
-        return DashboardSnapshotPayload(
-            allocation=None,
-            allocation_refusal=None,
-            allocation_history=None,
-            allocation_history_refusal=None,
-            estimates=(),
-            group_data=(),
-            explore=(),
-        )
-
-    try:
-        bound_analysis(native[1]).dashboard_snapshot(operation, metrics=metrics)
-        assert seen["pinned_after"] == pytest.approx(seen["pinned_before"])
-        assert _purchase_lift(native) != pytest.approx(seen["pinned_before"])
-    finally:
-        native[1].close()
-
-
-@pytest.mark.slow
-def test_dashboard_snapshot_refuses_an_artifact_backed_analysis_and_it_stays_usable() -> None:
-
-    _con, _native_analysis, context, store, ref = _published()
-    metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
-    adopted = from_unit_day_artifact(store, ref, expected_context=context)
-    before = _purchase_lift(adopted)
-
-    def operation(_isolated: Analysis) -> Any:
-        raise AssertionError("the handler must not run on an artifact-backed analysis")
-
-    with pytest.raises(CapabilityError) as raised:
-        bound_analysis(adopted[1]).dashboard_snapshot(operation, metrics=metrics)
-    assert raised.value.code == "evidence.operation_unavailable"
-    assert raised.value.context["requested"] == "readout_snapshot"
     adopted[1].close()
     assert _purchase_lift(adopted) == pytest.approx(before)
 

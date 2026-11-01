@@ -363,7 +363,7 @@ def test_clustered_run_refuses_call_time_policy_on_a_declared_plan(tmp_path):
     experiment, resolver = from_definitions(defs_path, con, experiment_name="store_test")
     assert lift_rows(view_readout(experiment, resolver))
     with pytest.raises(TypeError):
-        run(experiment, resolver, alpha=0.20)  # ty: ignore[no-matching-overload]
+        run(experiment, resolver, alpha=0.20)  # ty: ignore[unknown-argument]
 
 
 @pytest.mark.filterwarnings(

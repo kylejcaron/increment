@@ -10,36 +10,10 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, from_definitions, from_frame
+from increment import from_definitions, from_frame
 from increment.semantics.models import AnalysisPlan, ConversionMetric
 from increment.workflows import experiment_definition, metrics
 from tests.analysis_factory import _make_event_log_table, make_binding_like, view_readout
-
-_ANALYSIS_SOURCE_SHIMS = {
-    "_materialized",
-    "_materialize",
-    "_panel_cache",
-    "_reduction_calls",
-    "_mixed_assignment_units",
-    "_site_volume_row",
-    "_day_axis_source",
-    "_breakout_moments_source",
-    "_get_exposures",
-    "_get_trigger_population",
-    "_validate_mixed_assignments",
-    "_metric_primary_events",
-    "_union_event_horizon",
-    "_note_reduction",
-    "_build_exposure_events_table",
-    "_data_as_of",
-    "_resolve_breakout_props",
-    "_build_pre_events",
-    "_resolve_uptake",
-    "_build_metric_summary",
-    "_panel_sql_for_metrics",
-    "_summary_sql_for_metrics",
-    "_moments_for_metrics",
-}
 
 
 def _run_roles(experiment: Any, resolver: Any) -> set[tuple[str, str | None]]:
@@ -98,15 +72,6 @@ def _aov_decomposition_rows() -> list[dict]:
                 }
             )
     return rows
-
-
-def test_analysis_has_no_private_source_forwarding_shims():
-    """Private source implementation belongs on ``Analysis._src``.
-
-    The broader ratchet against tests reaching into those private attributes
-    lives in tests/test_test_hygiene.py::test_no_private_attribute_reach_ins.
-    """
-    assert _ANALYSIS_SOURCE_SHIMS.isdisjoint(vars(Analysis))
 
 
 def test_full_plan_resolves_every_declared_role(tmp_path):

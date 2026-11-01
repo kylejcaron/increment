@@ -7,9 +7,8 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
@@ -721,33 +720,6 @@ def from_frame(
     return resolver_for(binding)
 
 
-def _accept_definitions_arguments[**P, R](builder: Callable[P, R]) -> Callable[P, R]:
-    @wraps(builder)
-    def parsed(*args: Any, **kwargs: Any) -> R:
-        legacy = (
-            len(args) == 3
-            or (len(args) == 2 and isinstance(args[1], (str, os.PathLike)))
-            or (len(args) == 1 and kwargs.get("definitions_path") is not None)
-        )
-        names = (
-            ("experiment_name", "definitions_path", "con")
-            if legacy
-            else ("definitions_path", "con")
-        )
-        if len(args) > len(names):
-            _refuse("kernel.request.invalid", field="too many positional definitions arguments")
-        for name, value in zip(names, args, strict=False):
-            if kwargs.get(name) is not None:
-                _refuse("kernel.request.invalid", field=f"{name} was supplied twice")
-            kwargs[name] = value
-        if kwargs.get("definitions_path") is None:
-            _refuse("kernel.request.invalid", field="definitions_path is required")
-        return cast(Callable[..., R], builder)(**kwargs)
-
-    return parsed
-
-
-@_accept_definitions_arguments
 def from_definitions(
     definitions_path: str | os.PathLike[str],
     con: SQLBackend | None = None,
@@ -759,29 +731,6 @@ def from_definitions(
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
 ) -> tuple[Experiment, SourceResolver | _OfflineResolver]:
     """Build from definitions, using a bound versioned catalog when offline."""
-    return _from_definitions(
-        definitions_path,
-        con,
-        experiment_name=experiment_name,
-        backend=backend,
-        store=store,
-        on_mixed_assignment=on_mixed_assignment,
-        source_snapshot_evidence=source_snapshot_evidence,
-    )
-
-
-@_accept_definitions_arguments
-def _from_definitions(
-    definitions_path: str | os.PathLike[str],
-    con: SQLBackend | None = None,
-    *,
-    experiment_name: str | None = None,
-    backend: str | None = None,
-    store: Literal["auto", "always", "none"] = "auto",
-    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    _record_schema: bool = True,
-) -> tuple[Experiment, SourceResolver | _OfflineResolver]:
     path = Path(definitions_path)
     if con is None:
         catalog_path = _catalog_path(path)
@@ -813,7 +762,7 @@ def _from_definitions(
 
     from increment.semantics.loader import load
 
-    definitions_digest = _definitions_digest(path) if _record_schema else ""
+    definitions_digest = _definitions_digest(path)
     if experiment_name is None:
         definitions = load(path)
         if len(definitions.experiments) != 1:
@@ -829,12 +778,9 @@ def _from_definitions(
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=source_snapshot_evidence,
     )
-    experiment, resolver = resolver_for(binding, record_schema=_record_schema)
-    if _record_schema:
-        _write_catalog(path, experiment, definitions_digest)
-        resolver.catalog_writer = lambda captured: _write_catalog(
-            path, captured, definitions_digest
-        )
+    experiment, resolver = resolver_for(binding, record_schema=True)
+    _write_catalog(path, experiment, definitions_digest)
+    resolver.catalog_writer = lambda captured: _write_catalog(path, captured, definitions_digest)
     return experiment, resolver
 
 
@@ -900,11 +846,3 @@ def from_moments(
         plan=plan,
     )
     return resolver_for(binding)
-
-
-def from_unit_summary(*args: Any, **kwargs: Any) -> tuple[Experiment, SourceResolver]:
-    return from_frame(*args, shape="summary", **kwargs)
-
-
-def from_unit_panel(*args: Any, **kwargs: Any) -> tuple[Experiment, SourceResolver]:
-    return from_frame(*args, shape="panel", **kwargs)

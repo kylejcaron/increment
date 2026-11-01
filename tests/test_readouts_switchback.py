@@ -33,7 +33,7 @@ from increment.workflows import (
     materialize,
     srm,
 )
-from tests.analysis_factory import bound_analysis, view_readout
+from tests.analysis_factory import view_readout
 from tests.sequential_cases import registered_spec
 
 
@@ -870,10 +870,6 @@ def test_readout_wire_requires_snapshot_for_checkpoint_bearing_results():
     [
         "run_daily",
         "run_asof",
-        "breakout_summaries",
-        "factor_summaries",
-        "legacy_materialize",
-        "legacy_experiment",
         "workflow_materialize",
         "workflow_breakout_summaries",
         "workflow_factor_summaries",
@@ -921,42 +917,13 @@ def test_switchback_source_operation_routes_refuse_with_coded_context(method: st
             if method == "workflow_experiment_definition"
             else method.removeprefix("workflow_")
         )
-    elif method in _DAY_AXIS_AND_BREAKOUT_SCOPES:
+    else:
         experiment, resolver = _switchback_analysis()
         with pytest.raises(CapabilityError) as refusal:
             view_readout(experiment, resolver, _DAY_AXIS_AND_BREAKOUT_SCOPES[method])
         expected_method = method
-    else:
-        _experiment, resolver = _switchback_analysis()
-        analysis = bound_analysis(resolver)
-        if method == "legacy_experiment":
-
-            def operation():
-                return analysis.experiment
-
-            expected_method = "experiment"
-        else:
-            operation = (
-                analysis.materialize
-                if method == "legacy_materialize"
-                else getattr(analysis, method)
-            )
-            expected_method = "materialize" if method == "legacy_materialize" else method
-        with pytest.raises(CapabilityError) as refusal:
-            operation()
     assert refusal.value.code == "facade.analysis.contrast_unavailable"
     assert refusal.value.context["method"] == expected_method
-
-
-def test_switchback_dashboard_breakout_reads_refuses_with_contrast_code() -> None:
-    from increment.errors import CapabilityError
-    from increment.semantics.models import Breakout
-
-    _experiment, resolver = _switchback_analysis()
-    with pytest.raises(CapabilityError) as refusal:
-        bound_analysis(resolver).dashboard_breakout_reads(Breakout(property="geo"))
-    assert refusal.value.code == "facade.analysis.contrast_unavailable"
-    assert refusal.value.context["method"] == "dashboard_breakout_reads"
 
 
 def test_assignment_diagnostic_refuses_arm_evidence_with_its_own_code() -> None:

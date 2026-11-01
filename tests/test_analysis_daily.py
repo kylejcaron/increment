@@ -2298,11 +2298,9 @@ def test_artifact_dimensioned_daily_lift_preserves_estimator_warning_contract(mo
 
     monkeypatch.setattr(source_type, "_dimensioned_moments", add_guarded_arm)
 
-    from increment import analysis as analysis_module
     from increment.breakout import estimates as breakout_estimates
 
-    for module in (analysis_module, breakout_estimates):
-        getattr(module, "__warningregistry__", {}).clear()
+    getattr(breakout_estimates, "__warningregistry__", {}).clear()
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

@@ -21,7 +21,6 @@ core = [
   "increment.readouts*",
   "increment.breakout*",
   "increment.builders",
-  "increment.analysis",
   "increment.workflows",
   "increment._analysis*",
   "increment.summaries",

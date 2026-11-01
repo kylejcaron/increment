@@ -581,7 +581,7 @@ def test_sequential_inference_refuses_call_time_on_a_clustered_experiment(tmp_pa
     # constructor cannot stand in for run() rejecting the keyword.
     inference = AlwaysValid(registration=registration())
     with pytest.raises(TypeError):
-        run(experiment, resolver, inference=inference)  # ty: ignore[no-matching-overload]
+        run(experiment, resolver, inference=inference)  # ty: ignore[unknown-argument]
 
 
 def test_declared_plan_always_valid_inference_refuses_cluster_through_the_real_route(tmp_path):

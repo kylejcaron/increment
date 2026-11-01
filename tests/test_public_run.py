@@ -4,7 +4,6 @@ import pandas as pd
 import pytest
 
 from increment import (
-    Analysis,
     AnalysisPlan,
     RunResult,
     Scope,
@@ -794,72 +793,6 @@ def test_breakout_declared_analysis_run_matches_legacy_whole_window_results():
     assert result.cells[0].identity.key.dimension is None
     assert result.cells[0].identity.key.dimension_value is None
     assert result.cells[0].retained_row().stat_sig() is legacy_row.stat_sig()
-
-
-def test_switchback_public_run_refuses_before_read_with_legacy_route():
-    from increment import Randomized
-    from increment.errors import CodedError
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
-
-    frame = pd.DataFrame(
-        [
-            {
-                "unit": unit,
-                "cycle": cycle,
-                "period": period,
-                "step": step,
-                "group": group,
-                "value": float(cycle + period + step + (group == "treatment")),
-            }
-            for unit, order in (("u1", ("control", "treatment")), ("u2", ("treatment", "control")))
-            for cycle in range(2)
-            for period, group in enumerate(order)
-            for step in range(2)
-        ]
-    )
-    analysis = Analysis.from_switchback_panel(
-        frame,
-        unit="unit",
-        cycle="cycle",
-        period="period",
-        step="step",
-        group="group",
-        metrics={"value": "mean"},
-        identification=Randomized(
-            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-        ),
-        assignment=SwitchbackAssignment(
-            sequence=IndependentBernoulliOrder(probability_ct=0.5),
-            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-        ),
-        plan=AnalysisPlan(primary="value"),
-        experiment_id="switchback-run",
-    )
-    metric = synthesise_metric(MetricSpec(name="value", type="mean"))
-    compiled = compile_decision_plan(AnalysisPlan(primary="value"), [metric], path="frame")
-    registration = Registration.from_plan(compiled)
-    try:
-        legacy = analysis.run()
-        with pytest.raises(CodedError) as raised:
-            run(
-                analysis,
-                registration,
-                compiled,
-                experiment_id="switchback-run",
-                analysis_spec_hash="sha256:" + "5" * 64,
-                execution_identity_hash="sha256:" + "6" * 64,
-                run_id="switchback-run",
-            )
-    finally:
-        analysis.close()
-
-    assert len(legacy) == 1
-    assert raised.value.code == "store.run.legacy_analysis_required"
-    assert raised.value.context["route"] == "Analysis.run()"
 
 
 @pytest.mark.integration

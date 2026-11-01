@@ -129,41 +129,6 @@ def test_from_frame_builder_estimates_survive_specification_round_trip(shape):
     assert cell.summary.point == pytest.approx(4 / 3)
 
 
-def test_frame_run_matches_analysis_run():
-
-    frame = _frame()
-    design = Randomized(control_group="control")
-    expected = view_readout(
-        *from_frame(
-            frame,
-            shape="summary",
-            unit="unit",
-            group="arm",
-            design=design,
-            metrics={"value": "mean"},
-        )
-    )
-    experiment, resolver = from_frame(
-        frame,
-        shape="summary",
-        unit="unit",
-        group="arm",
-        design=design,
-        metrics={"value": "mean"},
-    )
-    actual = run(experiment, resolver)
-    assert isinstance(actual, RunResult)
-    expected_cells = expected.as_cells()
-    assert len(actual.cells) == len(expected_cells)
-    for actual_cell, expected_cell in zip(actual.cells, expected_cells, strict=True):
-        assert actual_cell.identity.key == expected_cell.identity.key
-        assert actual_cell.summary is not None
-        assert expected_cell.summary is not None
-        assert actual_cell.summary.point == pytest.approx(expected_cell.summary.point, rel=1e-9)
-        assert actual_cell.summary.lower == pytest.approx(expected_cell.summary.lower, rel=1e-9)
-        assert actual_cell.summary.upper == pytest.approx(expected_cell.summary.upper, rel=1e-9)
-
-
 def test_frame_builder_records_source_reference_fields():
 
     analysis = from_frame(
@@ -640,21 +605,3 @@ def test_artifact_resolver_reopens_owned_snapshot_after_close():
         if resolver is not None:
             resolver.close()
         con.disconnect()
-
-
-@pytest.mark.integration
-def test_definitions_positional_arguments_remain_executable(seeded_defs, seeded_con):
-    builder = cast(Any, from_definitions)
-    for build in (
-        lambda: builder("new_onboarding_v2", seeded_defs, seeded_con),
-        lambda: builder("new_onboarding_v2", seeded_defs, con=seeded_con),
-        lambda: builder("new_onboarding_v2", definitions_path=seeded_defs, con=seeded_con),
-    ):
-        experiment, resolver = build()
-        with resolver, warnings.catch_warnings():
-            warnings.simplefilter("ignore", IncrementWarning)
-            result = run(experiment, resolver, metrics=["purchase_rate"])
-        assert result.cells
-        assert all(
-            cell.summary is not None and cell.summary.point is not None for cell in result.cells
-        )

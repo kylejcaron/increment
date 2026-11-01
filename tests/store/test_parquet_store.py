@@ -10,7 +10,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, from_frame
+from increment import from_frame
 from increment import run as run_views
 from increment.errors import CodedError
 from increment.estimation.readout_types import ReadoutResults
@@ -252,56 +252,6 @@ def test_saved_readout_json_keeps_its_persisted_cell_identity():
     with pytest.raises(CodedError) as foreign_cells:
         ReadoutResults.model_validate_json(json.dumps(foreign))
     assert foreign_cells.value.code == "readout.serialization.identity_mismatch"
-
-
-def test_percentile_winsorized_persisted_results_round_trip_json(tmp_path):
-    import numpy as np
-
-    from increment.semantics.models import AnalysisPlan
-
-    rng = np.random.default_rng(3)
-    n = 20
-    analysis = Analysis.from_unit_summary(
-        pd.DataFrame(
-            {
-                "unit": list(range(2 * n)),
-                "arm": ["control"] * n + ["treatment"] * n,
-                "value": np.concatenate([rng.lognormal(1.0, 1.0, n), rng.lognormal(1.3, 1.0, n)]),
-            }
-        ),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[
-            {
-                "name": "value",
-                "winsorization": {
-                    "upper_percentile": 0.75,
-                    "support": {"lower": 0, "upper": 1000, "provenance": "fixture"},
-                },
-            }
-        ],
-        experiment_id="exp",
-        plan=AnalysisPlan(primary="value"),
-    )
-    try:
-        from increment.estimation.results import LiftEstimate
-
-        rows = analysis.run(store=ParquetResultsStore(tmp_path))
-
-        from increment.estimation.readout_types import ReadoutResults
-
-        original = rows[0]
-        assert isinstance(original, LiftEstimate)
-        assert original.confidence_set is not None
-
-        restored = ReadoutResults.model_validate_json(rows.model_dump_json())
-        restored_row = restored[0]
-        assert isinstance(restored_row, LiftEstimate)
-        assert restored_row.confidence_set == original.confidence_set
-        assert restored.as_cells()[0].identity == rows.as_cells()[0].identity
-    finally:
-        analysis.close()
 
 
 def test_declared_prior_changes_persisted_spec_identity(tmp_path):

@@ -15,7 +15,6 @@ import ibis
 import pytest
 
 from increment import (
-    Analysis,
     Method,
     Scope,
     from_definitions,
@@ -44,7 +43,6 @@ from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec
 from increment.query import panel_sql, summary_sql
 from increment.query.artifact_contract import ArtifactContractError
-from increment.readouts import _run as run_readout
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import (
     AnalysisPlan,
@@ -53,7 +51,6 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from increment.workflows import available_metrics, experiment_definition, export_moments, srm
-from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import (
     bind_pair,
@@ -67,48 +64,6 @@ from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
 from tests.test_unit_day_artifact_facade import _extensions, _published
 from tests.warning_codes import warning_codes
-
-
-@allow_declared_overrides
-def test_analysis_repr_and_run_signature_are_readable_without_changing_unset_identity():
-    import inspect
-
-    import pandas as pd
-
-    from increment import CupedCovariate
-
-    analysis = Analysis.from_unit_summary(
-        pd.DataFrame(
-            {
-                "user_id": ["u1", "u2", "u3", "u4"],
-                "variant": ["treatment", "treatment", "control", "control"],
-                "revenue": [25.0, 35.0, 22.5, 13.0],
-                "pre_revenue": [8.0, 9.0, 3.0, 4.0],
-            }
-        ),
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics=[
-            MetricSpec(
-                name="revenue",
-                type="mean",
-                decision_method=Method.cuped(
-                    covariates=CupedCovariate(name="pre_revenue", kind="continuous")
-                ),
-            )
-        ],
-    )
-    display = repr(analysis)
-    signature = str(inspect.signature(Analysis.run))
-    assert "Analysis(" in display and "\n" in display
-    assert "experiment=" in display and "design=" in display
-    assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
-    assert "<not set>" in signature and "0x" not in signature
-    assert {row.method for row in _lift_rows(analysis.run())} == {"cuped"}
-    assert {
-        row.method for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
-    } == {"unadjusted"}
 
 
 def _lift_rows(rows: object) -> list[LiftEstimate]:
@@ -264,23 +219,6 @@ class TestAnalysisReturnsCollectionTypes:
 
         with pytest.raises(TypeError):
             view_readout(experiment, resolver, _ASOF_LIFT, metrics=[], correction="holm")
-
-
-def test_analysis_factory_signatures_preserve_inputs_and_return_type():
-    from inspect import signature
-
-    factories = {
-        "from_unit_day_artifact": "store",
-        "from_definitions": "experiment_name",
-        "from_unit_summary": "frame",
-        "from_unit_panel": "frame",
-        "from_moments": "rows",
-        "from_switchback_panel": "frame",
-    }
-    for name, first_input in factories.items():
-        factory_signature = signature(getattr(Analysis, name))
-        assert next(iter(factory_signature.parameters)) == first_input
-        assert factory_signature.return_annotation == "Analysis"
 
 
 def test_analysis_build_state_refuses_definitions_without_a_declared_design():
@@ -1952,55 +1890,6 @@ def test_analysis_run_native_exercises_primary_secondary_guardrail_roles(seeded_
     assert guardrail.require_lift().level == pytest.approx(0.9)
 
 
-@pytest.mark.slow
-def test_observational_estimand_guardrail_row_survives_native_run(
-    seeded_con, seeded_defs, monkeypatch
-):
-    """Analysis.run() on the native path returns every row the readout
-    emits for a guardrail, whatever its estimand label: an observational
-    adjustment row carries 'ate'/'plr_slope'/'overlap_subpopulation_ate',
-    not 'itt', and must never be filtered out by estimand. IPTW/DML/AIPW
-    cannot reach the native (warehouse) path today --
-    DefinitionsMomentSource.unit_frame refuses any covariates, and every
-    adjustment needs at least one -- so this drives the native run with a
-    canned readouts.run() result standing in for that row shape, holding
-    the invariant even if that capability boundary ever moves."""
-    from increment.estimation.results import Estimate
-    from tests.analysis_factory import make_analysis_like
-
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    a = make_analysis_like(
-        a,
-        design=Observational(control_group="control", adjustment=AdjustmentSet(covariates=("x",))),
-    )
-
-    lift = Estimate(value=0.01, lb=-0.02, ub=0.04, level=0.9)
-    canned = [
-        LiftEstimate(
-            metric="purchase_rate",
-            group_id="treatment",
-            method="iptw",
-            method_role="decision",
-            lift=lift,
-            estimand="ate",
-        ),
-        LiftEstimate(
-            metric="d7_retention",
-            group_id="treatment",
-            method="iptw",
-            method_role="decision",
-            lift=lift,
-            estimand="ate",
-        ),
-    ]
-    monkeypatch.setattr(run_readout, "run", lambda *args, **kwargs: canned)
-    results = a.run(decision_method=Method(name="iptw"))
-    metrics_seen = {r.metric for r in results}
-    assert "d7_retention" in metrics_seen, (
-        f"guardrail row silently dropped after the estimand relabel, got {metrics_seen}"
-    )
-
-
 def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded_defs):
     """A source constructor refuses observational relative margins."""
     from tests.capability_consumers_auxiliary import assert_refusal
@@ -2587,17 +2476,6 @@ def test_public_artifact_adoption_constructs_and_reopens(published_artifact):
     assert view_readout(experiment, resolver, metrics=["purchase_rate"])
     resolver.close()
     assert view_readout(experiment, resolver, metrics=["purchase_rate"])
-
-
-def test_closed_artifact_analysis_repr_does_not_reopen_its_source(published_artifact):
-    _con, _native, context, store, ref = published_artifact
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    adopted.close()
-    source = held_source(adopted)
-
-    for display in (repr(adopted), str(adopted), repr(adopted.__repr_args__())):
-        assert display
-        assert held_source(adopted) is source
 
 
 @pytest.mark.slow

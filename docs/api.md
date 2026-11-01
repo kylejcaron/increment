@@ -120,6 +120,18 @@ change without notice.
   their context fields are unchanged; refusal messages that named an
   `Analysis` method name the replacement call. See
   [Migrating from `Analysis`](#migrating-from-analysis) for every replacement.
+- Release note (breaking API cutover): `ResultsStore.persist_results`,
+  `ParquetResultsStore.persist_results`, `WarehouseResultsStore.persist_results`
+  and the `increment.store.producer` module with its `PersistenceIdentity` are
+  removed without an alias; save a run with
+  `run(experiment, resolver, results_store=store)`. The saved run
+  and cell identities are on `RunResult.run` and `RunResult.cells` rather than
+  on the returned rows. A compliance-only selection made with a call-time
+  `estimands=("compliance",)` cannot be saved, and a live percentile-winsorized
+  confidence set refuses to save with `wire.result.raw_outcomes_unavailable`
+  before any read. Readout JSON written with persisted cells stays readable.
+  `dashboard.prepare_dashboard` replaces the dashboard capture members; a
+  dataframe or moments experiment refuses with `dashboard.unsupported_experiment`.
 - Release note (breaking API cutover): the module-builder resolver no longer
   has a `capture_sequential` method. Call
   `increment.workflows.capture_sequential(experiment, resolver, ...)`, and read

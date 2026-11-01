@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING
 
 from increment._binding import (
     ResolverBinding,
@@ -40,16 +40,8 @@ def _reopen_artifact(binding: SourceBinding) -> object:
 class SourceResolver(ResolverBinding):
     """Own a built-in source binding and execute the experiment declared over it."""
 
-    def __init__(
-        self,
-        binding: SourceBinding,
-        experiment: Experiment,
-        *,
-        run_options: Mapping[str, object] | None = None,
-    ) -> None:
+    def __init__(self, binding: SourceBinding, experiment: Experiment) -> None:
         super().__init__(binding, experiment, reopen_artifact=_reopen_artifact)
-        self._run_options = dict(run_options or {})
-        self._refuse_store = run_options is None
 
     def run_experiment(
         self,
@@ -63,19 +55,20 @@ class SourceResolver(ResolverBinding):
         """Admit every selected view before any read, then execute them in one capture."""
         if provider is not self._source:
             _execution_unavailable(experiment, "declarations")
-        merged = {**self._run_options, **(options or {})}
+        if experiment.request_options.get("store") is not None:
+            raise CodedError(
+                "Experiment execution does not accept a store request option; "
+                "pass results_store to run()",
+                code="kernel.run.invalid_input",
+                context={"field": "store"},
+            )
+        merged = dict(options or {})
         for scope in experiment.scopes:
             refusals = scope_refusals(experiment, scope)
             if refusals:
                 raise refusals[0]
             selected_binding(self.binding, experiment, scope)
-            kwargs = operation_options(experiment, scope, merged)
-            if self._refuse_store and kwargs.get("store") is not None:
-                raise CodedError(
-                    "Experiment execution does not support the Analysis.run store option",
-                    code="kernel.run.invalid_input",
-                    context={"field": "store"},
-                )
+            operation_options(experiment, scope, merged)
         scoped = execute_views(
             self.binding,
             experiment,
@@ -99,24 +92,15 @@ class SourceResolver(ResolverBinding):
 
 
 def resolver_for(
-    binding: SourceBinding,
-    *,
-    run_options: Mapping[str, object] | None = None,
-    record_schema: bool = False,
+    binding: SourceBinding, *, record_schema: bool = False
 ) -> tuple[Experiment, SourceResolver]:
     """Declare the experiment a binding executes and the resolver that owns it."""
-    if run_options is not None:
-        run_options = {"population": None, **run_options}
-    population = cast(
-        Literal["assigned", "triggered"], (run_options or {}).get("population") or "assigned"
-    )
     experiment = experiment_for_binding(
         binding,
         operation_parameters=operation_parameters(),
         record_schema=record_schema,
-        population=population,
     )
-    return experiment, SourceResolver(binding, experiment, run_options=run_options)
+    return experiment, SourceResolver(binding, experiment)
 
 
 __all__ = ["SourceResolver", "resolver_for"]

@@ -136,7 +136,7 @@ def test_all_tables_have_their_declared_column_shapes() -> None:
 
 
 @pytest.mark.integration
-def test_renderer_import_does_not_load_scenarios_or_analysis() -> None:
+def test_renderer_import_does_not_load_scenarios_or_builders() -> None:
     code = """
 import builtins
 
@@ -146,7 +146,7 @@ blocked = (
     "tests.parity_harness.runner",
     "tests.parity_harness.scalar_capability_cases",
     "tests.parity_harness.auxiliary_capability_cases",
-    "increment.analysis",
+    "increment.builders",
 )
 
 def guarded_import(name, *args, **kwargs):

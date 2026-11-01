@@ -41,7 +41,7 @@ depends_on = [
   "increment.estimation",
   "increment.kernel.contracts",
   "increment.kernel.program_refusals", "increment.decide.evaluator",
-  "increment.result_envelope", "increment.declarations",
+  "increment.result_envelope",
 ]
 [[modules]]
 path = "increment._multiplicity"
@@ -788,7 +788,6 @@ depends_on = [
   "increment._evidence_types",
   "increment._exploratory",
   "increment._frame_validation",
-  "increment._run",
   "increment._runnability",
   "increment._source_admission",
   "increment._source_types",
@@ -889,34 +888,9 @@ layer = "core"
 depends_on = ["increment._source_diagnostics", "increment._source_sequential", "increment._source_workflows"]
 
 [[modules]]
-path = "increment._analysis_execution"
-layer = "core"
-depends_on = [
-  "increment._literals",
-  "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
-  "increment._dashboard_capture",
-  "increment._evidence_types",
-  "increment._execute", "increment._exploratory", "increment._source_resolver",
-  "increment._sitewide",
-  "increment._source_operations", "increment._source_diagnostics", "increment._source_workflows",
-  "increment.readouts._line2", "increment.readouts._execution_context",
-  "increment.decision", "increment.estimation",
-  "increment._binding", "increment.kernel", "increment.kernel.ports",
-  "increment.query", "increment.query._workflows", "increment.readouts",
-  "increment.semantics",
-]
-
-[[modules]]
 path = "increment._predeclared_adjustment"
 layer = "core"
 depends_on = ["increment.estimation", "increment.frame", "increment.semantics"]
-
-[[modules]]
-path = "increment.analysis"
-layer = "core"
-depends_on = [
-  "increment._analysis_execution", "increment._predeclared_adjustment", "increment.builders",
-]
 
 [[modules]]
 path = "increment._sequential_readouts"
@@ -939,7 +913,7 @@ depends_on = [
   "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders", "increment._evidence_scopes", "increment.kernel.context",
   "increment._sequential_readouts", "increment.estimation.sequential",
-  "increment.declarations", "increment._source_admission", "increment.readouts._execution_context",
+  "increment.declarations", "increment._source_admission",
   "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result",
 ]
 
@@ -950,8 +924,7 @@ depends_on = [
   "increment._analysis_config", "increment._exploratory", "increment._source_admission",
   "increment._evidence_dispatch", "increment._evidence_refusals", "increment._evidence_scopes",
   "increment._evidence_types", "increment._source_types", "increment._readout_request",
-  "increment._literals",
-  "increment.decision", "increment.declarations", "increment.errors", "increment.estimation",
+  "increment.decision", "increment.estimation",
   "increment.estimation.sequential",
   "increment.kernel.context", "increment.readouts._execution_context",
   "increment.readouts",
@@ -1172,7 +1145,7 @@ expose = [
 from = ["increment._day_axis"]
 expose = [
   "DayAxisReadouts", "EvidenceSlice", "DayAxisRoute", "validate_day_axis", "validate_lift_request",
-  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "day_axis_readouts", "preflight_line4_views",
+  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "day_axis_readouts",
   "require_arm_state", "run_asof", "run_asof_lift", "run_daily", "run_daily_lift",
 ]
 
@@ -1400,13 +1373,11 @@ layer = "core"
 depends_on = [
   "increment._analysis_config",
   "increment._binding",
-  "increment._canonical",
   "increment._literals",
   "increment.breakout.projection",
   "increment._exploratory",
   "increment._interpretation",
   "increment._runnability",
-  "increment.decision",
   "increment.semantics",
   "increment.estimation",
   "increment.errors",

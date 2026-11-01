@@ -23,13 +23,13 @@ more at FCR selection time -- see the secondary bullet below.
   ``alpha / k``), but at the cost of making each individual guardrail's
   own test harder to reject, i.e. less power to certify a genuinely safe
   metric -- a real cost with no offsetting benefit the IUT bound needs.
-  The legacy ``Analysis.run()`` facade reports each guardrail's own SAFE/HARM
-  label. The additive ``increment.run()`` facade also reports an aggregate
-  program verdict, but returns ``pass`` only when every required primary and
-  guardrail result is available and assignment integrity is qualified. A caller
-  using only the legacy labels must apply the ship-only-if-all-SAFE rule;
-  otherwise the joint probability that at least one label is a false SAFE has
-  only the weaker union bound (``k * alpha`` across ``k`` guardrails).
+  Each guardrail result carries its own SAFE/HARM label. ``increment.run()``
+  also reports an aggregate program verdict, but returns ``pass`` only when
+  every required primary and guardrail result is available and assignment
+  integrity is qualified. A caller using only the per-guardrail labels must
+  apply the ship-only-if-all-SAFE rule; otherwise the joint probability that
+  at least one label is a false SAFE has only the weaker union bound
+  (``k * alpha`` across ``k`` guardrails).
 - secondary: the discovery family at ``q``. A fixed-horizon cell
   estimates at the nominal level; a sequential cell
   (``auto_register_scalar_mean``/``auto_register_bernoulli``) instead

@@ -1,20 +1,19 @@
-"""Shared constructor for test-only :class:`Analysis` instances.
+"""Shared constructors for test ``(experiment, resolver)`` bindings.
 
 Definitions are built in memory, so this helper resolves the experiment,
-constructs its warehouse source, and routes both paths through the same
-immutable Analysis construction state used by production constructors.
+constructs its warehouse source, and binds it through the same immutable
+construction state the public builders use.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 import ibis
 import pyarrow as pa
 from ibis.backends.sql import SQLBackend
 
-from increment.analysis import Analysis
 from increment.breakout.estimates import LiftEstimates
 from increment.estimation.contrast_results import ContrastResults
 from increment.query.native_source import DefinitionsMomentSource
@@ -48,21 +47,9 @@ def view_readout(
     return run(experiment.with_views(scope), resolver, **options).readout(scope)
 
 
-def _moment_source(analysis: Analysis) -> Any:
-    """Access an arm-analysis source for numeric moment probes."""
-    return analysis._src
-
-
-def held_source(owner: Any) -> object:
-    """The source a resolver (or analysis) currently holds, without reopening a closed artifact."""
-    binding = getattr(owner, "binding", None)
-    if binding is not None:
-        return binding.state.source
-    return owner._state.source
-
-
-def _native_source(analysis: Analysis) -> DefinitionsMomentSource:
-    return cast("DefinitionsMomentSource", _moment_source(analysis))
+def held_source(resolver: Any) -> object:
+    """The source a resolver currently holds, without reopening a closed artifact."""
+    return resolver.binding.state.source
 
 
 def native_connection(source: DefinitionsMomentSource) -> Any:
@@ -70,46 +57,14 @@ def native_connection(source: DefinitionsMomentSource) -> Any:
     return source._con
 
 
-def facade_binding(analysis: Analysis) -> Any:
-    """Return the builder product retained by a public facade constructor."""
-    binding = getattr(analysis, "_kernel_binding", None)
-    if binding is not None:
-        assert binding[1]._source is analysis._state.source
-    return binding
-
-
-def bound_analysis(resolver: Any) -> Analysis:
-    """A legacy readout facade over a builder resolver's binding, for live comparisons."""
-    analysis = Analysis.__new__(Analysis)
-    analysis._binding = resolver.binding
-    return analysis
-
-
 def bound_source(resolver: Any) -> Any:
     """The source a builder resolver holds, for instance-level spies."""
     return resolver.binding.source
 
 
-def replace_analysis_source(analysis: Analysis, source: object) -> None:
-    """Install a counting source in a fixture's immutable construction state."""
-    object.__setattr__(analysis._state, "source", source)
-
-
 def replace_bound_source(resolver: Any, source: object) -> None:
     """Install a counting source in a builder resolver's immutable construction state."""
     object.__setattr__(resolver.binding.state, "source", source)
-
-
-def definitions_inputs(analysis: Analysis) -> tuple[Any, ...]:
-    """Return the original definitions inputs of an in-memory analysis fixture."""
-    source = _native_source(analysis)
-    return (
-        source._defs,
-        source._experiment,
-        source._con,
-        source.context.plan,
-        analysis._on_mixed_assignment,
-    )
 
 
 def lift_rows(results: object) -> LiftEstimates:
@@ -226,76 +181,6 @@ def _factory_source(
             "store": store,
             "on_mixed_assignment": on_mixed_assignment,
         },
-    )
-
-
-def make_analysis(
-    con: Any = None,
-    defs: Definitions | None = None,
-    *,
-    experiment: Experiment | str | None = None,
-    store: Literal["auto", "always", "none"] = "none",
-    backend: str | None = None,
-    on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-    metrics: list[Metric] | None = None,
-    plan: Any = None,
-    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-    **overrides: Any,
-) -> Analysis:
-    """Build a test analysis through the same source/context constructor."""
-    src, design, options = _factory_source(
-        con,
-        defs,
-        experiment=experiment,
-        store=store,
-        backend=backend,
-        on_mixed_assignment=on_mixed_assignment,
-        metrics=metrics,
-        plan=plan,
-        source_snapshot_evidence=source_snapshot_evidence,
-        design=overrides.pop("_design", None),
-    )
-    return Analysis._from_source(src, design, **options)
-
-
-def make_analysis_like(
-    analysis: Analysis,
-    metrics: list[Metric] | None = None,
-    *,
-    design: Any = None,
-    plan: Any = None,
-    experiment: Any = None,
-) -> Analysis:
-    """Rebuild a native test analysis through the in-memory constructor.
-
-    Reads `Analysis`'s construction state directly: the facade exposes only
-    ``experiment``/``metrics`` publicly, and callers hold no other input to
-    re-derive a con/defs/store/plan from.
-    """
-    current_experiment = analysis.experiment
-    next_experiment = current_experiment if experiment is None else experiment
-    if design is None and experiment is not None:
-        declared = current_experiment.resolved_design()
-        design = (
-            next_experiment.resolved_design() if analysis._design == declared else analysis._design
-        )
-    return make_analysis(
-        analysis._con,
-        analysis._defs,
-        experiment=next_experiment,
-        store=analysis._store,
-        backend=analysis._backend,
-        plan=(
-            plan
-            if plan is not None
-            else None
-            if metrics is not None or experiment is not None
-            else analysis._plan
-        ),
-        on_mixed_assignment=analysis._on_mixed_assignment,
-        metrics=list(analysis.metrics) if metrics is None else metrics,
-        source_snapshot_evidence=getattr(analysis._session, "source_snapshot_evidence", None),
-        _design=analysis._design if design is None else design,
     )
 
 

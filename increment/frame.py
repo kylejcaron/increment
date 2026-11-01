@@ -2,11 +2,12 @@
 
     import increment as inc
 
-    src = inc.Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control",
+    experiment, resolver = inc.from_frame(
+        df, shape="summary", unit="user_id", group="variant",
+        design=inc.Randomized(control_group="control"),
         metrics={"revenue": "mean", "converted": "conversion"},
     )
-    results = src.run()
+    result = inc.run(experiment, resolver)
 
 Pure narwhals over pandas/polars/pyarrow, so this works with no backend
 installed and can never import ibis or `increment/query/`. `from_unit_panel`

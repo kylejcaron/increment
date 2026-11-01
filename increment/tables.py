@@ -1,7 +1,6 @@
 """CoefTable renderers for experiment readouts and calendar metric trends.
 
-Requires the tables extra (``coeftable`` and ``pandas``). Must not be
-imported from ``increment.analysis``.
+Requires the tables extra (``coeftable`` and ``pandas``).
 
 ``readout_table`` accepts a scoped estimate collection, a narwhals-supported
 native frame (pandas, polars, pyarrow, ...), or a list of row dicts. Its

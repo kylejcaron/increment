@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from increment._run import RunResult, run
-    from increment.analysis import Analysis
     from increment.builders import (
         from_definitions,
         from_frame,
@@ -51,7 +50,6 @@ except PackageNotFoundError:  # pragma: no cover - source tree without an instal
     __version__ = "0.0.0.dev0"
 
 __all__ = [
-    "Analysis",
     "Experiment",
     "SourceReference",
     "Scope",
@@ -92,7 +90,6 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
-    "Analysis": ("increment.analysis", "Analysis"),
     "RunResult": ("increment._run", "RunResult"),
     "run": ("increment._run", "run"),
     "Experiment": ("increment.kernel.experiment", "Experiment"),

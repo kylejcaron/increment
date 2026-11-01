@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from increment import Analysis, from_unit_day_artifact
+from increment import from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.estimators import CapabilityError
 from tests.analysis_factory import lift_rows, view_readout
@@ -17,10 +17,6 @@ def test_randomized_and_capability_error_canonical_imports() -> None:
 
     assert increment.Randomized(control_group="control").control_group == "control"
     assert CapabilityError is errors.CapabilityError
-
-
-def test_warehouse_panel_adoption_path_is_removed_without_a_compatibility_shim() -> None:
-    assert not hasattr(Analysis, "from_warehouse_panel")
 
 
 def test_frame_sql_adapter_remains_distinct_from_warehouse_adoption() -> None:

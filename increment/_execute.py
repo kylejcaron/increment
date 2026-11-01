@@ -355,7 +355,6 @@ def run_whole_window(
     exploratory_metrics: Sequence[str] | None = None,
     population: Literal["assigned", "triggered"] | None = None,
     coherence: Literal["captured", "live"] = "captured",
-    store: Any | None = None,
     _execution_context: EvidenceExecutionContext | None = None,
 ) -> LiftEstimates | ContrastResults:
     """Run the whole-window readout: one estimate per metric, method and non-control arm."""
@@ -374,13 +373,6 @@ def run_whole_window(
             supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
     added = select_exploratory(binding, exploratory_metrics, caller="run")
-    runtime_request: dict[str, object] = {}
-    if prior is not UNSET:
-        runtime_request["prior"] = prior
-    if estimands is not None:
-        runtime_request["estimands"] = tuple(estimands)
-    if value_scale is not None:
-        runtime_request["value_scale"] = value_scale
     if isinstance(state, ContrastAnalysisState):
         rows = _run_contrast(
             binding,
@@ -393,10 +385,6 @@ def run_whole_window(
             execution_context=_execution_context,
         )
         rows._default_backend = binding.input_backend
-        if store is not None:
-            _persist(
-                binding, store, rows, decision_method, sensitivity_methods, (), runtime_request
-            )
         return rows
     selected = select_metrics(cast("Sequence[Metric]", binding.metrics), metrics, caller="run")
 
@@ -452,37 +440,7 @@ def run_whole_window(
             }
         )
     rows._default_backend = binding.input_backend
-    if store is not None:
-        _persist(binding, store, rows, decision_method, sensitivity_methods, added, runtime_request)
     return rows
-
-
-def _persist(
-    binding: SourceBinding,
-    store: Any,
-    rows: Any,
-    decision_method: Method | _Unset,
-    sensitivity_methods: Sequence[Method] | _Unset,
-    added: Sequence[Metric],
-    runtime_request: Mapping[str, object],
-) -> None:
-    from uuid import uuid4
-
-    from increment._run import _persistence_identity
-
-    store.persist_results(
-        rows,
-        binding.experiment_name,
-        uuid4().hex,
-        _persistence_identity(
-            binding,
-            rows,
-            decision_method,
-            sensitivity_methods,
-            added,
-            runtime_request=runtime_request,
-        ),
-    )
 
 
 def _contrast_request(operation: str, options: Mapping[str, Any]) -> None:

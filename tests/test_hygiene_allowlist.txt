@@ -46,7 +46,7 @@ tests/simulate/test_dgp.py 2
 tests/simulate/test_end_to_end.py 3
 tests/simulate/test_switchback.py 3
 tests/test_analysis_asof.py 2
-tests/test_analysis_facade.py 3
+tests/test_analysis_facade.py 2
 tests/test_analysis_moments.py 1
 tests/test_analysis_trigger.py 1
 tests/test_cate.py 1
@@ -184,7 +184,7 @@ tests/test_allocation_endpoints.py 1
 tests/test_analysis_asof.py 2
 tests/test_analysis_config.py 9
 tests/test_analysis_config_roles.py 3
-tests/test_analysis_facade.py 2
+tests/test_analysis_facade.py 1
 tests/test_analysis_frame_sources.py 1
 tests/test_analysis_moments.py 2
 tests/test_analysis_trigger.py 5
@@ -247,7 +247,7 @@ tests/test_unit_day_artifact_adoption.py 8
 tests/test_unit_day_artifact_digest_v2.py 3
 tests/test_unit_day_artifact_digest_v2_dialects.py 8
 tests/test_unit_day_artifact_extensions.py 1
-tests/test_unit_day_artifact_facade.py 3
+tests/test_unit_day_artifact_facade.py 2
 tests/test_unit_day_artifact_parity.py 2
 tests/test_warehouse_cuped_qr.py 47
 tests/test_warehouse_cuped_qr_edges.py 4

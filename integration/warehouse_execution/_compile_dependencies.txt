@@ -1,14 +1,12 @@
-# Traced on commit: 9fed225fa93aa8671562ee39bfd92aeae38b9e8d
+# Traced on commit: 3e1238904f82937c4f61006bc9d6f4d5089300d9
 increment
 increment._analysis_config
-increment._analysis_execution
 increment._artifact_identity
 increment._assignment_refusals
 increment._binding
 increment._breakout_readouts
 increment._canonical
 increment._cuped_evidence
-increment._dashboard_capture
 increment._day_axis
 increment._day_axis_labels
 increment._display
@@ -36,7 +34,6 @@ increment._multiplicity
 increment._plan_compatibility
 increment._planning_baseline
 increment._policy_alpha
-increment._predeclared_adjustment
 increment._readout_request
 increment._run
 increment._runnability
@@ -53,7 +50,6 @@ increment._trigger_integrity
 increment._unit_cycle
 increment._window
 increment._winsor_errors
-increment.analysis
 increment.artifacts
 increment.artifacts._query
 increment.breakout
@@ -201,7 +197,6 @@ increment.store
 increment.store.base
 increment.store.decision_log
 increment.store.parquet
-increment.store.producer
 increment.store.types
 increment.store.warehouse
 increment.switchback

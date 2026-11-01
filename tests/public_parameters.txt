@@ -59,7 +59,6 @@ expected: Expected counts or values used for comparison.
 expected_allocation: Expected assignment share for each arm.
 expected_context: Expected context to validate against.
 experiment_id: Stable identifier for the analyzed experiment.
-analysis_spec_hash: Stable hash of the registered analysis specification.
 experiment_name: Name of the experiment definition.
 exploratory_metrics: Metrics included in an exploratory family.
 exposure_date: Column recording exposure timing.
@@ -123,10 +122,8 @@ site_volume_coverage: Coverage declaration for site-volume evidence.
 skip_file_prefixes: File prefixes ignored when locating warning sources.
 snapshot: Sequential checkpoint or artifact snapshot.
 source: Data source supplying observations or moments.
-execution_identity_hash: Stable identity for implementation and execution pins.
 results_store: Optional durable store for validated run results.
 decision_log: Optional durable log for final decision events.
-compiled_plan: Immutable compiled decision plan bound to a registration.
 source_id: Stable identifier for the source data.
 source_mapping: Mapping from source columns to analysis fields.
 source_snapshot_evidence: Source cutoff and completeness evidence.

@@ -482,9 +482,9 @@ CAPABILITY_PROVENANCE: dict[str, Provenance] = {
         f"{_COMPOSITION_PROBE}::test_report_calendar", "increment.reporting"
     ),
     "report_window": Provenance(f"{_COMPOSITION_PROBE}::test_report_window", "increment.reporting"),
-    "from_moments": Provenance(f"{_COMPOSITION_PROBE}::test_from_moments", "increment.analysis"),
-    "export": Provenance(f"{_COMPOSITION_PROBE}::test_export", "increment.analysis"),
-    "sitewide": Provenance(f"{_COMPOSITION_PROBE}::test_sitewide", "increment.analysis"),
+    "from_moments": Provenance(f"{_COMPOSITION_PROBE}::test_from_moments", "increment.builders"),
+    "export": Provenance(f"{_COMPOSITION_PROBE}::test_export", "increment._source_workflows"),
+    "sitewide": Provenance(f"{_COMPOSITION_PROBE}::test_sitewide", "increment._sitewide"),
     "rollout": Provenance(f"{_COMPOSITION_PROBE}::test_rollout", "increment.breakout.rollout"),
 }
 
@@ -494,8 +494,8 @@ PAIR_PROVENANCE: dict[tuple[str, str], Provenance] = {
     ("cluster", "prior"): Provenance(_PAIR_PROBE, "increment.readouts"),
     ("cluster", "breakout"): Provenance(_PAIR_PROBE, "increment.readouts"),
     ("cluster", "daily_asof"): Provenance(_PAIR_PROBE, "increment.frame"),
-    ("cluster", "export"): Provenance(_PAIR_PROBE, "increment.analysis"),
-    ("cluster", "sitewide"): Provenance(_PAIR_PROBE, "increment.analysis"),
+    ("cluster", "export"): Provenance(_PAIR_PROBE, "increment._source_workflows"),
+    ("cluster", "sitewide"): Provenance(_PAIR_PROBE, "increment._sitewide"),
     ("cluster", "encouragement"): Provenance(_PAIR_PROBE, "increment.readouts"),
     ("cluster", "observational"): Provenance(_PAIR_PROBE, "increment.readouts"),
     ("sequential", "observational"): Provenance(_PAIR_PROBE, "increment.readouts"),

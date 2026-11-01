@@ -1,15 +1,12 @@
-"""The registered sequential family's shared evidence context over one binding."""
+"""The registered sequential family's shared evidence scope over one binding."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 from increment._evidence_types import EvidenceScope
 from increment._source_admission import _arm_experiment
 from increment._source_types import declared_evidence, is_custom_source
-from increment.kernel.context import EvidenceExecutionContext, ExecutionMode
 
 if TYPE_CHECKING:
     from increment._binding import SourceBinding
@@ -52,29 +49,3 @@ def sequential_scope(binding: SourceBinding, *, include_breakouts: bool = False)
         execution=True,
         include_breakouts=include_breakouts,
     )
-
-
-def run_scoped_line3[T](
-    binding: SourceBinding,
-    operation: Callable[[], T],
-    *,
-    coherence: ExecutionMode = "captured",
-    include_breakouts: bool = False,
-    on_context: Callable[[EvidenceExecutionContext], None] | None = None,
-) -> T:
-    """Run sequential captures and readouts under one family-wide evidence owner."""
-    from increment.readouts._execution_context import execution_context_scope
-    from increment.readouts._run_acquisition import RunAcquisitionOwner
-
-    provider = RunAcquisitionOwner.provider_for(binding.source)
-    context = EvidenceExecutionContext(
-        provider,
-        sequential_scope(binding, include_breakouts=include_breakouts),
-        run_id=uuid4().hex,
-        coherence=coherence,
-    )
-    with context.evidence_scope(), execution_context_scope(context):
-        result = operation()
-        if on_context is not None:
-            on_context(context)
-        return result

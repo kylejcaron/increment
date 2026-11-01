@@ -2803,17 +2803,9 @@ def _registered_sequential_trigger_fixture(tmp_path, monkeypatch, *, store="auto
 
 
 def _assert_live_assignment_counts_refuse(analysis: tuple[Any, Any]):
-    from increment.readouts import run_scoped
-    from tests.analysis_factory import bound_analysis
-
     with pytest.raises(InvalidRequestError) as count_refusal:
         workflows.unit_counts(*analysis)
     assert count_refusal.value.code == "query.integrity.mixed_assignment_units"
-    # An operation under one shared evidence capture has no builder route.
-    legacy = bound_analysis(analysis[1])
-    with pytest.raises(InvalidRequestError) as scoped_count_refusal:
-        run_scoped(legacy, legacy.unit_counts)
-    assert scoped_count_refusal.value.code == "query.integrity.mixed_assignment_units"
 
 
 @pytest.mark.parametrize("store", ["auto", "always"])

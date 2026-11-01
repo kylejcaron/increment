@@ -941,17 +941,6 @@ def test_workflow_capture_sequential_checkpoint_feeds_builder_run():
     assert {cell.identity.key.ds for cell in result.cells} == {1}
 
 
-@pytest.mark.parametrize(
-    "option", ["experiment_id", "analysis_spec_hash", "execution_identity_hash", "compiled_plan"]
-)
-def test_experiment_run_refuses_unsupported_execution_options(option):
-    experiment, resolver = _experiment()
-    with pytest.raises(CodedError) as error:
-        options: dict[str, Any] = {option: "requested"}
-        run(experiment, resolver, **options)
-    assert error.value.code == "kernel.run.invalid_input"
-
-
 def test_run_rejects_store_request_option_before_persisting(tmp_path):
     from increment.store import ParquetResultsStore
 

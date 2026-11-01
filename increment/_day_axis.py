@@ -238,8 +238,6 @@ def _compliance_readouts(
     )
 
 
-# The arm-family guard (`Analysis._require_arm_state`) stays in the facade:
-# every day-axis method must call it first, before delegating here.
 def validate_day_axis(
     req: DayAxisRequest,
     *,
@@ -2015,39 +2013,6 @@ def _day_axis_lift(
         prior=prior,
         options=options,
     )
-
-
-def preflight_line4_views(
-    binding: SourceBinding,
-    *,
-    population: Literal["assigned", "triggered"],
-    readouts: Sequence[Literal["run", "daily", "daily_lift", "asof", "asof_lift"]],
-) -> None:
-    """Validate the population's day-axis requests before their shared scope opens."""
-    caller_by_name: dict[
-        str, Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
-    ] = {
-        "daily": "run_daily",
-        "daily_lift": "run_daily_lift",
-        "asof": "run_asof",
-        "asof_lift": "run_asof_lift",
-    }
-    day_axis = day_axis_readouts(binding)
-    experiment = getattr(binding.state, "experiment", None)
-    for name in readouts:
-        if name == "run":
-            continue
-        grain = "daily" if name.startswith("daily") else "asof"
-        request = DayAxisRequest(
-            caller=caller_by_name[name],
-            grain=grain,
-            metrics=tuple(binding.metrics),
-            dimension=None,
-            estimands=None,
-            population=population,
-            experiment=experiment,
-        )
-        day_axis.validate_request(request, lift=name.endswith("_lift"))
 
 
 def run_daily(
