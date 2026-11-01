@@ -437,7 +437,7 @@ def validate_request(request: ReadoutRequest) -> None:
     Validators are intentionally imported at call time.  Each owner receives
     the normalized request and remains responsible for its own axis rules;
     adding an assignment/evidence adapter therefore extends one owner rather
-    than every Analysis method.
+    than every readout view.
     """
     _validate_estimands(request)
     _validate_identification(request)

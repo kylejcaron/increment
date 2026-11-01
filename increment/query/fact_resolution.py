@@ -3,8 +3,8 @@
 Bridges the semantic layer (``increment.semantics.models``, which
 describes facts/dims/entities by their declared vocabulary) to the
 builders in ``increment.query.builders`` (which expect the canonical
-column set defined in ``increment.query.schemas``). Shared by
-``Analysis`` and ``MetricTrends`` so both facades build fact tables
+column set defined in ``increment.query.schemas``). Shared by the
+definitions builder and ``MetricTrends`` so both build fact tables
 identically.
 """
 
@@ -247,8 +247,8 @@ def _dim_joined_fact_table(
 ) -> Table:
     """Fact-source SQL -> declared dim joins -> builder column renames.
 
-    Shared by ``Analysis`` and ``MetricTrends``, the one seam that keeps both
-    facades building fact tables identically. *dim_cache* is
+    Shared by the definitions builder and ``MetricTrends``, the one seam that
+    keeps both building fact tables identically. *dim_cache* is
     caller-owned, keyed by dim name, so two fact sources sharing a dim
     reuse one scan.
     """

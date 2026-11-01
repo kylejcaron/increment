@@ -1408,7 +1408,7 @@ class DailyLiftEstimate(_RowIdentity):
     # unavailable; never reconstructed from the relative interval.
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory"
     # Output provenance for the lightweight standalone default versus the
-    # compiled policy supplied by Analysis.
+    # compiled policy an experiment run supplies.
 
     n_treat: int | None = None
     n_control: int | None = None

@@ -1,9 +1,4 @@
-"""Frozen resolution of decision/sensitivity methods and priors for the day-axis lift path.
-
-Replaces `Analysis._resolve_lift_options` and the `_effective_role_maps`
-overwrite it fed: three of its six return values were always discarded
-and recomputed by `_effective_role_maps` before any caller used them.
-"""
+"""Frozen resolution of decision/sensitivity methods and priors for the day-axis lift path."""
 
 from __future__ import annotations
 

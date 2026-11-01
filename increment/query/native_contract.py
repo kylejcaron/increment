@@ -1,7 +1,7 @@
 """Evidence shapes and capability protocols of the native warehouse path.
 
 ``DefinitionsMomentSource`` (``native_source``) implements these protocols and
-builds these shapes. Consumers import the contracts here; ``Analysis`` still
+builds these shapes. Consumers import the contracts here; ``from_definitions``
 imports the concrete warehouse adapter for construction.
 Nothing here may import an adapter module.
 """

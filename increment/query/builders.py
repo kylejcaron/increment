@@ -601,8 +601,8 @@ def resolved_measure_key(
     A resolved measure is a fact plus its filters plus a value column -
     everything `metric_events` needs to build one ref's events. Two refs
     that produce the same key here produce identical `metric_events`
-    output in every load-bearing column, which is how `Analysis` dedupes
-    declared metrics down to the distinct measures actually scanned.
+    output in every load-bearing column, which is how the definitions source
+    dedupes declared metrics down to the distinct measures actually scanned.
 
     `value_column` folds to None for an occurrence-only ref (its events
     never touch the value column). Filter order is canonicalized away:

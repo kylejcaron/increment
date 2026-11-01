@@ -1,5 +1,5 @@
 """WarehouseSession: one ibis connection's fact-table cache and TEMP-table
-mechanics, shared by every warehouse-backed facade (`Analysis`, `MetricTrends`).
+mechanics, shared by the definitions builder and `MetricTrends`.
 """
 
 from __future__ import annotations

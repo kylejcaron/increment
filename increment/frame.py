@@ -1133,7 +1133,7 @@ def from_unit_summary(  # noqa: PLR0913
     frame : IntoDataFrame
         A narwhals-supported eager frame with one row per unit. A lazy Polars frame
         must be collected first; ibis tables should use
-        :meth:`Analysis.from_definitions`.
+        :func:`increment.from_definitions`.
     unit, group : str
         Columns identifying the unit and its variant label.
     control : str
@@ -2649,7 +2649,7 @@ def from_unit_panel(  # noqa: PLR0913
     frame : IntoDataFrame
         Eager frame with at most one row per (*unit*, *date*). A lazy Polars frame
         must be collected first; ibis tables should use
-        :meth:`Analysis.from_definitions`.
+        :func:`increment.from_definitions`.
     unit, group, control, cluster : str
         As :func:`from_unit_summary`.
     date : str

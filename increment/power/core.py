@@ -648,7 +648,7 @@ class _ProjectionMemo:
 class QuantileBaseline(Baseline):
     """A ``Baseline`` for quantile-metric planning.
 
-    Build one with ``Analysis.planning_baseline(metric)``, which passes the
+    Build one with ``workflows.planning_baseline(experiment, resolver, metric)``, which passes the
     declared metric and the pilot's control-arm values to
     ``from_control_values``. Its variance comes from the
     runtime's own order-statistic construction
@@ -833,7 +833,7 @@ class PowerResult(CodedModel, BaseModel):
         planning assumed. ``None`` for a fixed-horizon result.
     planned_metric_name, planned_quantile : str | None, float | None
         The metric name and quantile level a ``QuantileBaseline`` was
-        built for (``Analysis.planning_baseline(metric)``), echoed here so
+        built for (``workflows.planning_baseline``), echoed here so
         a caller who reuses one metric's baseline to plan a different
         metric sees the mismatch stated in the answer instead of
         discovering it, if at all, from a silently mis-sized design.
@@ -3691,7 +3691,7 @@ def required_sample_size(  # noqa: PLR0915
     cluster-corrected, and ``n_clusters_per_arm``/``n_clusters_total``
     report the clusters to recruit. Triggered designs also require
     ``baseline.cluster_participation``: contributing analyzed pilot clusters
-    divided by recruited pilot clusters. ``Analysis.planning_baseline`` derives
+    divided by recruited pilot clusters. ``workflows.planning_baseline`` derives
     it from the source; manual baselines use those pilot counts.
     Omitting clustering is anticonservative by the design effect -- at ICC
     0.05 and 50 units per cluster it under-sizes by 3.45x.
