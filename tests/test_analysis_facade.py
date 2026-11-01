@@ -2766,7 +2766,7 @@ def test_public_artifact_adoption_rejects_malformed_extension_relation():
 
 
 @pytest.mark.slow
-def test_value_scale_refusal_carries_the_same_code_on_every_family() -> None:
+def test_value_scale_refusal_carries_the_same_code_on_every_family(example_definitions) -> None:
     """value_scale= on a randomized analysis is one refusal with one stable
     code, whichever constructor built the analysis."""
     import ibis
@@ -2777,7 +2777,7 @@ def test_value_scale_refusal_carries_the_same_code_on_every_family() -> None:
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
     experiment, resolver = from_definitions(
-        "examples/definitions", con, experiment_name="new_onboarding_v2", store="none"
+        example_definitions, con, experiment_name="new_onboarding_v2", store="none"
     )
     with pytest.raises(CodedError) as refusal:
         view_readout(experiment, resolver, value_scale={"purchase_rate": "absolute"})
