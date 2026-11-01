@@ -22,7 +22,7 @@ from increment.declarations import (
     Method,
     estimator_id_for_selector,
 )
-from increment.errors import CapabilityError, CodedModel, InvalidRequestError, raiser, refusals
+from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
 from increment.semantics.models import Metric
 
 CONTRACTS_SCHEMA_VERSION: int = 1
@@ -129,14 +129,16 @@ def declared_breakouts(
     scope: Scope,
     analysis_context: Mapping[str, Any] | None = None,
 ) -> tuple[BreakoutIdentity, ...]:
-    """Expand selectors from recorded definition identities or source capabilities."""
+    """Expand selectors from recorded definition identities or source capabilities.
+
+    A selection the declarations cannot match stays unresolved; the evidence validators
+    refuse an unavailable breakout with the source's declared dimensions.
+    """
     declarations: tuple[BreakoutIdentity, ...] | None = None
-    definitions_recorded = False
     recorded_experiment = None if analysis_context is None else analysis_context.get("experiment")
     if isinstance(recorded_experiment, Mapping):
         raw = recorded_experiment.get("breakouts")
         if isinstance(raw, (tuple, list)):
-            definitions_recorded = True
             parsed = []
             for item in raw:
                 if isinstance(item, Mapping):
@@ -159,9 +161,6 @@ def declared_breakouts(
                 for property in source.capabilities.breakouts
             )
         )
-    complete = definitions_recorded or all(
-        source.capabilities is not None for source in source_refs
-    )
     if not scope.segment:
         return declarations if scope.view == "breakout" else ()
 
@@ -188,40 +187,6 @@ def declared_breakouts(
             and (selector.source is None or selector.source == identity.source)
         )
         if not matches:
-            if complete:
-                source = next(
-                    (source for source in source_refs if source.capabilities is not None),
-                    None,
-                )
-                constructor = (
-                    source.constructor or source.capabilities.kind
-                    if source is not None
-                    else "recorded source declarations"
-                )
-                requested = (
-                    tuple(identity.property for identity in declarations)
-                    if definitions_recorded
-                    else (
-                        tuple(source.capabilities.breakouts)
-                        if source is not None
-                        else tuple(identity.property for identity in declarations)
-                    )
-                )
-                offered = (
-                    tuple(source.capabilities.breakouts)
-                    if source is not None
-                    else tuple(identity.property for identity in declarations)
-                )
-                raise CapabilityError(
-                    "Recorded source declarations cannot supply the requested breakout",
-                    code="evidence.breakout_unavailable",
-                    context={
-                        "constructor": constructor,
-                        "requested": requested,
-                        "offered": offered,
-                        "route": "use a source with the requested breakout dimensions",
-                    },
-                )
             unresolved.append(selector)
             continue
         selected.update(matches)

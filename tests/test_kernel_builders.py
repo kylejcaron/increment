@@ -178,6 +178,14 @@ def test_analysis_summary_facade_delegates_to_public_builder():
     experiment, resolver = facade_binding(analysis)
 
     assert isinstance(experiment, Experiment)
+    assert set(experiment.source_refs[0].canonical_payload()) == {
+        "name",
+        "uri",
+        "expected_digest",
+        "schema",
+        "capabilities",
+        "declaration_version",
+    }
     assert isinstance(run(experiment, resolver), RunResult)
 
 

@@ -164,7 +164,6 @@ def experiment_for_analysis(
                 expected_digest=_source_digest(source),
                 schema=_schema_for_source(source) if record_schema else None,
                 capabilities=capabilities,
-                constructor=type(source).__name__,
             ),
         ),
         scopes=(scope,),

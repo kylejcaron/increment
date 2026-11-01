@@ -252,16 +252,19 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
     assert raised.value.code == "kernel.request.invalid"
     assert raised.value.context["field"] == "duplicate breakout selection 'country'"
 
-    with pytest.raises(CodedError) as raised:
-        experiment.with_views(
-            Scope(
-                view="breakout",
-                grain="total",
-                segment=({"property": "unknown", "source": None},),
-            )
-        ).compile()
-    assert raised.value.code == "evidence.breakout_unavailable"
-    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
+    _, (unknown,) = experiment.with_views(
+        Scope(
+            view="breakout",
+            grain="total",
+            segment=({"property": "unknown", "source": None},),
+        )
+    ).compile()
+    unknown_breakouts = cast(
+        tuple[Mapping[str, object], ...], unknown.requests[0].fields["breakouts"]
+    )
+    assert tuple((item["property"], item["source"]) for item in unknown_breakouts) == (
+        ("unknown", None),
+    )
     with pytest.raises(CodedError) as raised:
         experiment.with_views(
             Scope(
