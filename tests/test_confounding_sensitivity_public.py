@@ -10,12 +10,12 @@ import pytest
 
 from increment import (
     AdjustmentSet,
-    Analysis,
     IdentificationGate,
     Method,
     MetricSpec,
     Observational,
     from_frame,
+    from_switchback_frame,
 )
 from increment.errors import CodedError, UnsupportedRequestError
 from increment.estimators import confounding_sensitivity
@@ -23,11 +23,12 @@ from increment.results import ConfoundingSensitivity, LiftEstimate
 from tests.analysis_factory import view_readout
 from tests.capability_consumers_scalar import CONFOUNDING_SENSITIVITY, completed, refused
 from tests.parity_harness.cases import (
-    _close_parity_analysis,
+    _close_parity_binding,
     _observational_aipw_conversion_case,
     _observational_conversion_case,
 )
 from tests.parity_harness.comparison import nested_close
+from tests.parity_harness.views import read
 
 _RISKS = np.array([[0.08, 0.20], [0.30, 0.45], [0.06, 0.16]])
 
@@ -194,10 +195,10 @@ def test_cross_ingress_sensitivity_parity(method):
         "from_definitions",
         "from_unit_day_artifact",
     ):
-        analysis = completed(CONFOUNDING_SENSITIVITY, ingress, case.build[ingress])
+        bound = completed(CONFOUNDING_SENSITIVITY, ingress, case.build[ingress])
         try:
             rows: list[LiftEstimate] = []
-            for row in analysis.run():
+            for row in read(bound):
                 assert isinstance(row, LiftEstimate)
                 rows.append(row)
             assert {row.group_id for row in rows} == {"treat_a", "treat_b"}
@@ -212,16 +213,16 @@ def test_cross_ingress_sensitivity_parity(method):
                 assert result.source_snapshot_id == row.source_snapshot_id
                 dumps[ingress][row.group_id] = result.model_dump(exclude={"source_snapshot_id"})
         finally:
-            _close_parity_analysis(analysis)
+            _close_parity_binding(bound)
     for ingress, actual in dumps.items():
         assert nested_close(dumps["from_unit_summary"], actual), ingress
 
     def moments_request():
-        analysis = case.build["from_moments"]()
+        bound = case.build["from_moments"]()
         try:
-            return analysis.run()
+            return read(bound)
         finally:
-            _close_parity_analysis(analysis)
+            _close_parity_binding(bound)
 
     error = refused(CONFOUNDING_SENSITIVITY, "from_moments", moments_request)
     assert isinstance(error, CodedError)
@@ -232,7 +233,7 @@ def test_cross_ingress_sensitivity_parity(method):
     error = refused(
         CONFOUNDING_SENSITIVITY,
         "from_switchback_panel",
-        lambda: Analysis.from_switchback_panel(
+        lambda: from_switchback_frame(
             pl.DataFrame(_rows()),
             unit="unit",
             cycle="cycle",

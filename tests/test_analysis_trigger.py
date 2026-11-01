@@ -73,11 +73,17 @@ _POPULATION_SCOPES = (
     Scope(view="run", grain="total"),
     Scope(view="run", grain="total", population="triggered"),
 )
+_BREAKOUT_POPULATION_SCOPES = (
+    Scope(view="breakout", grain="total"),
+    Scope(view="breakout", grain="total", population="triggered"),
+)
 
 
-def _both_populations(experiment: Any, resolver: Any, **options: Any) -> Any:
-    """One run's assigned then triggered whole-window collections, concatenated."""
-    assigned, triggered = _POPULATION_SCOPES
+def _both_populations(
+    experiment: Any, resolver: Any, *, breakout: bool = False, **options: Any
+) -> Any:
+    """One run's assigned then triggered whole-window (or breakout) collections, concatenated."""
+    assigned, triggered = _BREAKOUT_POPULATION_SCOPES if breakout else _POPULATION_SCOPES
     result = run(experiment.with_views(assigned, triggered), resolver, **options)
     return result.readout(assigned).concat(result.readout(triggered))
 
@@ -1420,19 +1426,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
-        native_summaries = analysis.breakout_summaries()
-        native_factors = analysis.factor_summaries()
+        native_summaries = workflows.breakout_summaries(*native)
+        native_factors = workflows.factor_summaries(*native)
         assert_support(
             "triggered_auxiliary_reads",
             "breakout_definitions_triggered_population",
@@ -1446,7 +1444,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 set(table["analysis_population"].to_pylist()) == {population}
                 for table in tables.values()
             )
-        rows = analysis.run_breakout()
+        rows = _both_populations(*native, breakout=True)
         assert "analysis_population" in rows.to_frame(backend="polars").columns
         assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
         assert {row.dimension_value for row in rows} == {"north", "south"}
@@ -1474,11 +1472,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
             "assigned",
             "triggered",
         }
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "breakout_dimension",
                 "factor_dimension",
@@ -1486,7 +1484,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 "trigger_measure_stats",
             ),
         )
-        artifact_factors = adopted.factor_summaries()
+        artifact_factors = workflows.factor_summaries(*adopted)
         assert_support(
             "triggered_auxiliary_reads",
             "factor_artifact_complete_trigger_evidence",
@@ -1499,7 +1497,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 artifact_factors[key],
                 keys=("analysis_population", "group_id", "region"),
             )
-        artifact_summaries = adopted.breakout_summaries()
+        artifact_summaries = workflows.breakout_summaries(*adopted)
         assert_support(
             "triggered_auxiliary_reads",
             "breakout_artifact_complete_trigger_evidence",
@@ -1518,7 +1516,7 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                         if column in table.column_names
                     ),
                 )
-        artifact_rows = adopted.run_breakout()
+        artifact_rows = _both_populations(*adopted, breakout=True)
         native_by_cell = {
             (row.analysis_population, row.dimension_value, row.group_id): row for row in rows
         }
@@ -1536,14 +1534,14 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
             )
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_path):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     con = ibis.duckdb.connect()
     con.create_table(
@@ -1565,29 +1563,19 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
             "    breakouts: [{property: region, source: events}]\n    plan:\n",
         )
     )
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
-        adopted = _publish_and_adopt(
-            con, analysis, kinds=("breakout_dimension", "assignment_counts")
-        )
+        adopted = _publish_and_adopt(con, native, kinds=("breakout_dimension", "assignment_counts"))
         with pytest.raises(InvalidRequestError) as raised:
-            adopted.run_breakout(population="triggered")
+            view_readout(*adopted, Scope(view="breakout", grain="total", population="triggered"))
         assert raised.value.code == "frame.metric.window_days_supported"
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_breakout_without_declared_trigger_is_refused_even_without_breakouts(tmp_path):
@@ -1607,7 +1595,7 @@ def test_triggered_breakout_without_declared_trigger_is_refused_even_without_bre
 
 
 def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     path = _write_defs(tmp_path)
     path.write_text(
@@ -1615,55 +1603,42 @@ def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
         )
-        assert adopted.run_breakout() == []
-        assert adopted.run_breakout(population="assigned") == []
-        assert adopted.run_breakout(population="triggered") == []
+        assert _both_populations(*adopted, breakout=True) == []
+        assert view_readout(*adopted, Scope(view="breakout", grain="total")) == []
+        assert (
+            view_readout(*adopted, Scope(view="breakout", grain="total", population="triggered"))
+            == []
+        )
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_artifact_run_refuses_invalid_estimand_before_population_read(
     tmp_path, monkeypatch
 ):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
-    analysis = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path),
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(_write_defs(tmp_path), con)
     adopted = None
     armed = False
     try:
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
         )
         query_calls = []
@@ -1680,23 +1655,23 @@ def test_triggered_artifact_run_refuses_invalid_estimand_before_population_read(
                 monkeypatch.setattr(con, method, guard_query)
         armed = True
         with pytest.raises(InvalidRequestError) as refused:
-            adopted.run(population="triggered", estimands=["late"])
+            view_readout(*adopted, population="triggered", estimands=["late"])
         assert refused.value.code == "readout.assignment.estimands"
         assert query_calls == []
     finally:
         armed = False
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 def test_triggered_artifact_breakout_refuses_invalid_method_before_population_read(
     tmp_path, monkeypatch
 ):
     from increment.estimation.engine import Method
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
     definitions = (
         _defs_yaml()
@@ -1715,21 +1690,13 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
     con.create_table("events", obj=_with_preassignment_region(_events(n_per_arm=10)))
     path = tmp_path / "triggered-breakout.yml"
     path.write_text(definitions)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     armed = False
     try:
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "breakout_dimension",
                 "trigger_population",
@@ -1751,8 +1718,9 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
                 monkeypatch.setattr(con, method, guard_query)
         armed = True
         with pytest.raises(InvalidRequestError) as refused:
-            adopted.run_breakout(
-                population="triggered",
+            view_readout(
+                *adopted,
+                Scope(view="breakout", grain="total", population="triggered"),
                 decision_method=Method(name="iptw"),
             )
         assert refused.value.code == "estimation.engine.method_name_observational"
@@ -1760,10 +1728,10 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
     finally:
         armed = False
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -1792,18 +1760,10 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native_pair = _pinned_experiment(path, con)
     adopted = None
     try:
-        native = analysis.breakout_summaries()
+        native = workflows.breakout_summaries(*native_pair)
         native_daily = native["revenue:region:events:triggered"]["daily_group_summary"]
         zero_days = {dt.date(2024, 1, day) for day in (6, 7, 8, 9)}
         native_rows = native_daily.to_pylist()
@@ -1813,14 +1773,14 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
             for row in native_rows
             if row["ds"] in zero_days
         )
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native_pair,
             kinds=("breakout_dimension", "trigger_population", "trigger_measure_stats"),
         )
-        artifact_daily = adopted.breakout_summaries()["revenue:region:events:triggered"][
+        artifact_daily = workflows.breakout_summaries(*adopted)["revenue:region:events:triggered"][
             "daily_group_summary"
         ]
         _assert_parity_tables_close(
@@ -1831,10 +1791,10 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
         assert zero_days <= {row["ds"] for row in artifact_daily.to_pylist()}
     finally:
         if adopted is None:
-            analysis.close()
+            native_pair[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -1873,31 +1833,23 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 5, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 5, tzinfo=dt.UTC)},
-        ),
-    )
+    native_pair = _pinned_experiment(path, con, cutoff_day=5)
     adopted = None
     try:
         with pytest.warns(IncrementWarning):
-            native = analysis.breakout_summaries()
+            native = workflows.breakout_summaries(*native_pair)
         native_daily = native["revenue:region:events:triggered"]["daily_group_summary"]
         native_days = native_daily["ds"].to_pylist()
         assert native_days
         assert max(native_days) <= dt.date(2024, 1, 4)
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native_pair,
             kinds=("breakout_dimension", "trigger_population", "trigger_measure_stats"),
         )
-        artifact = adopted.breakout_summaries()
+        artifact = workflows.breakout_summaries(*adopted)
         artifact_daily = artifact["revenue:region:events:triggered"]["daily_group_summary"]
         assert max(artifact_daily["ds"].to_pylist()) <= dt.date(2024, 1, 4)
         _assert_parity_tables_close(
@@ -1907,21 +1859,20 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
         )
     finally:
         if adopted is None:
-            analysis.close()
+            native_pair[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
-def _triggered_cate_experiment(path, con) -> tuple[Any, Any]:
+def _pinned_experiment(path, con, *, cutoff_day: int = 16) -> tuple[Any, Any]:
+    """Definitions pinned to a snapshot whose evidence is complete through `cutoff_day`."""
+    cutoff = dt.datetime(2024, 1, cutoff_day, tzinfo=dt.UTC)
     return from_definitions(
         path,
         con,
         experiment_name="exp",
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
     )
 
 
@@ -1974,7 +1925,7 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    native = _triggered_cate_experiment(path, con)
+    native = _pinned_experiment(path, con)
     experiments = [native]
     try:
         from increment.estimation.cate import Covariate
@@ -2067,7 +2018,7 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    native = _triggered_cate_experiment(path, con)
+    native = _pinned_experiment(path, con)
     experiments = [native]
     try:
         from increment.estimation.cate import Covariate
@@ -2249,15 +2200,15 @@ def test_triggered_observational_run_estimates_the_undiluted_triggered_lift(tmp_
 
 
 def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_path):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
-    analysis, con = _observational_triggered_analysis(tmp_path)
+    native, con = _observational_triggered_analysis(tmp_path)
     adopted = None
     try:
-        expected = _lifts(analysis.run(metrics=["revenue"], population="triggered"))
+        expected = _lifts(view_readout(*native, metrics=["revenue"], population="triggered"))
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "trigger_population",
                 "assignment_counts",
@@ -2265,16 +2216,16 @@ def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_pa
                 "unit_covariate_level",
             ),
         )
-        actual = _lifts(adopted.run(metrics=["revenue"], population="triggered"))
+        actual = _lifts(view_readout(*adopted, metrics=["revenue"], population="triggered"))
         assert actual.keys() == expected.keys()
         for key, value in expected.items():
             assert actual[key] == pytest.approx(value)
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
@@ -2288,7 +2239,7 @@ def test_triggered_cate_randomized_artifact_without_covariates_preserves_populat
     counts = Counter(row["group_id"] for row in table.to_pylist() if row["event"] == "saw_surface")
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    native = _triggered_cate_experiment(_write_defs(tmp_path), con)
+    native = _pinned_experiment(_write_defs(tmp_path), con)
     experiments = [native]
     try:
         native_result = estimate_cate(*native, "revenue", control="C", interact=[])
@@ -2365,28 +2316,20 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 20, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 20, tzinfo=dt.UTC)},
-        ),
-    )
+    native_pair = _pinned_experiment(path, con, cutoff_day=20)
     adopted = None
     try:
-        native = analysis.breakout_summaries(metrics=["revenue_per_session"])
+        native = workflows.breakout_summaries(*native_pair, metrics=["revenue_per_session"])
         native_daily = native["revenue_per_session:region:events:triggered"]["daily_group_summary"]
         assert {dt.date(2024, 1, day) for day in (9, 10, 11)} <= set(native_daily["ds"].to_pylist())
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native_pair,
             kinds=("breakout_dimension", "trigger_population", "trigger_measure_stats"),
         )
-        artifact = adopted.breakout_summaries(metrics=["revenue_per_session"])
+        artifact = workflows.breakout_summaries(*adopted, metrics=["revenue_per_session"])
         artifact_daily = artifact["revenue_per_session:region:events:triggered"][
             "daily_group_summary"
         ]
@@ -2397,16 +2340,16 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
         )
     finally:
         if adopted is None:
-            analysis.close()
+            native_pair[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
 def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
+    from increment._dashboard_capture import dashboard_group_data
     from increment.workflows import allocation_history
-    from tests.analysis_factory import facade_binding
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
@@ -2430,18 +2373,10 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
     )
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
+    native = _pinned_experiment(path, con)
     adopted = None
     try:
-        factors = analysis.factor_summaries()
+        factors = workflows.factor_summaries(*native)
         assert_support(
             "triggered_auxiliary_reads", "factor_definitions_triggered_population", factors
         )
@@ -2456,16 +2391,19 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             for value in table["analysis_population"].to_pylist()
         } == {"assigned", "triggered"}
 
-        assigned = analysis.dashboard_group_data(metrics=analysis.metrics)
-        triggered = analysis.dashboard_group_data(metrics=analysis.metrics, population="triggered")
+        declared = metrics(*native)
+        assigned = dashboard_group_data(native[1].binding, metrics=declared)
+        triggered = dashboard_group_data(
+            native[1].binding, metrics=declared, population="triggered"
+        )
         assert_support("triggered_auxiliary_reads", "dashboard_definitions_population", triggered)
         assert assigned and triggered
         assert {row.analysis_population for row in assigned} == {"assigned"}
         assert {row.analysis_population for row in triggered} == {"triggered"}
         assert all(row.assigned_units is not None and row.assigned_units < 300 for row in triggered)
 
-        assigned_history = allocation_history(*facade_binding(analysis))
-        triggered_history = allocation_history(*facade_binding(analysis), population="triggered")
+        assigned_history = allocation_history(*native)
+        triggered_history = allocation_history(*native, population="triggered")
         assert_support(
             "triggered_auxiliary_reads", "allocation_definitions_population", triggered_history
         )
@@ -2476,15 +2414,15 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         assert set(assigned_history["ds"].to_pylist()) == {dt.date(2024, 1, 2)}
         assert set(triggered_history["ds"].to_pylist()) == {dt.date(2024, 1, 3)}
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
         adopted = _publish_and_adopt(
-            con, analysis, kinds=("trigger_population", "trigger_measure_stats")
+            con, native, kinds=("trigger_population", "trigger_measure_stats")
         )
         from increment.query.artifact_contract import ArtifactContractError
 
         with pytest.raises(ArtifactContractError) as missing:
-            adopted.run_breakout()
+            _both_populations(*adopted, breakout=True)
         assert_refusal(
             "triggered_auxiliary_reads",
             "breakout_artifact_missing_extension",
@@ -2492,7 +2430,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             stage="read",
         )
         with pytest.raises(CapabilityError) as missing_factor:
-            adopted.factor_summaries()
+            workflows.factor_summaries(*adopted)
         assert_refusal(
             "triggered_auxiliary_reads",
             "factor_artifact_missing_extension",
@@ -2501,11 +2439,11 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         for operation, outcome_id in (
             (
-                lambda: adopted.dashboard_group_data(metrics=adopted.metrics),
+                lambda: dashboard_group_data(adopted[1].binding, metrics=metrics(*adopted)),
                 "dashboard_artifact_refused",
             ),
             (
-                lambda: allocation_history(*facade_binding(adopted), population="triggered"),
+                lambda: allocation_history(*adopted, population="triggered"),
                 "allocation_artifact_refused",
             ),
         ):
@@ -2520,10 +2458,10 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
         if adopted is None:
-            analysis.close()
+            native[1].close()
             con.disconnect()
         else:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
@@ -4077,9 +4015,9 @@ def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_p
 def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_artifact(
     tmp_path,
 ):
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 
-    analysis, con = _country_analysis(
+    native, con = _country_analysis(
         tmp_path,
         (
             ("C-literal", "C", "__null__", 17),
@@ -4088,11 +4026,13 @@ def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_
             ("T-null", "T", None, 17),
         ),
     )
+    scope = _day_axis_scope("run_daily", population="triggered", dimension="country")
     adopted = None
     try:
+        native_rows = view_readout(native[0], native[1], scope)
         adopted = _publish_and_adopt(
             con,
-            analysis,
+            native,
             kinds=(
                 "breakout_dimension",
                 "trigger_population",
@@ -4101,15 +4041,14 @@ def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_
             ),
         )
         expected = {"__null__", "\\__null__"}
-        for source in (analysis, adopted):
-            rows = source.run_daily(dimension="country", population="triggered")
+        for rows in (native_rows, view_readout(*adopted, scope)):
             assert rows
             assert {row.dimension_value for row in rows} == expected
     finally:
         if adopted is not None:
-            _close_parity_analysis(adopted)
+            _close_parity_binding(adopted)
         else:
-            analysis.close()
+            native[1].close()
         con.disconnect()
 
 

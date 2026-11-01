@@ -664,7 +664,7 @@ def linear_cuped_frame_case(
     breakout: bool = False,
     scalar_cuped: bool = False,
     fixed_winsorization: bool = False,
-):
+) -> Bound:
     """Build mixed-CUPED dataframe roles with optional scalar, clipping, breakout, or mutation axes."""
     from increment.frame import CupedCovariate
 

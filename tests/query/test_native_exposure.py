@@ -291,8 +291,8 @@ experiments:
     try:
         captured = view_readout(experiment, resolver)
         live = view_readout(experiment, resolver, coherence="live")
-        assert cast(Any, captured[0]).require_lift().value == pytest.approx(1.6)
-        assert cast(Any, live[0]).require_lift().value == pytest.approx(1.6)
+        assert captured[0].require_lift().value == pytest.approx(1.6)
+        assert live[0].require_lift().value == pytest.approx(1.6)
         assert captured.metadata is not None and captured.metadata.coherence == "captured"
         assert live.metadata is not None and live.metadata.coherence == "live"
     finally:

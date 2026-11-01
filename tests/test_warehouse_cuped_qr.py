@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 from increment import (
-    Analysis,
     Scope,
     from_definitions,
     from_frame,
@@ -1865,7 +1864,7 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
     connection.create_table("qr_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "qr.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("qr_events"))
-    warehouse = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    warehouse = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
     local = matrix_cases.linear_cuped_frame_case(units, panel=False)
 
     def forbidden_unit_transfer(*args, **kwargs):
@@ -1874,8 +1873,8 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
     monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_transfer)
     _guard_no_unit_keyed_transfers(monkeypatch)
     try:
-        actual = cast(list[LiftEstimate], warehouse.run(metrics=[metric]))
-        expected = cast(list[LiftEstimate], local.run(metrics=[metric]))
+        actual = cast(list[LiftEstimate], view_readout(*warehouse, metrics=[metric]))
+        expected = cast(list[LiftEstimate], view_readout(*local, metrics=[metric]))
         actual_rows = {(row.metric, row.group_id, row.method): row for row in actual}
         expected_rows = {(row.metric, row.group_id, row.method): row for row in expected}
         assert actual_rows.keys() == expected_rows.keys()
@@ -1908,24 +1907,27 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
             decision_method=method,
         )
         destination = tmp_path / f"{metric}-moments.parquet"
-        warehouse.export(destination)
+        export_moments(*warehouse, destination)
         exported = pq.read_table(destination).to_pylist()
         frame_destination = tmp_path / f"{metric}-frame-moments.parquet"
-        local.export(frame_destination)
+        export_moments(*local, frame_destination)
         frame_exported = pq.read_table(frame_destination).to_pylist()
         _assert_fit_coordinates_equal(exported, frame_exported)
         assert {row["moments_format"] for row in exported} == {13}
         _assert_fitted_evidence_rejections(
             exported, metric_spec, method, experiment.resolved_design()
         )
-        replay = Analysis.from_moments(
+        replay_experiment, replay_resolver = from_moments(
             exported,
             metrics=[metric_spec],
             design=experiment.resolved_design(),
             plan=AnalysisPlan(alpha=0.2, primary=metric),
         )
         try:
-            replay_rows = cast(list[LiftEstimate], replay.run(metrics=[metric]))
+            replay_rows = cast(
+                list[LiftEstimate],
+                view_readout(replay_experiment, replay_resolver, metrics=[metric]),
+            )
             replay_map = {(row.metric, row.group_id) for row in replay_rows}
             assert replay_map == {(row.metric, row.group_id) for row in actual}
             for row in replay_rows:
@@ -1936,14 +1938,14 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
                 assert row.require_lift().lb != pytest.approx(original.require_lift().lb)
                 assert row.require_lift().ub != pytest.approx(original.require_lift().ub)
         finally:
-            replay.close()
+            replay_resolver.close()
     finally:
-        local.close()
-        warehouse.close()
+        local[1].close()
+        cast(Any, warehouse[1]).close()
         connection.disconnect()
 
 
-def _assert_fit_replay(source, metric, binding, design, expected, destination):
+def _assert_fit_replay(source: tuple[Any, Any], metric, binding, design, expected, destination):
     import pyarrow.parquet as pq
 
     from increment.estimation.engine import Method
@@ -1957,7 +1959,7 @@ def _assert_fit_replay(source, metric, binding, design, expected, destination):
         denominator="orders" if metric == "rpo" else None,
         decision_method=Method.model_validate(binding.decision_method.model_dump()),
     )
-    source.export(destination)
+    export_moments(*source, destination)
     exported = pq.read_table(destination).to_pylist()
     assert {row["moments_format"] for row in exported} == {13}
     experiment, resolver = from_moments(
@@ -1997,15 +1999,15 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
     connection.create_table("qr_artifact_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "qr_artifact.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("qr_artifact_events"))
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    native = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
     definitions = load(definitions_path)
     experiment = definitions.experiment("mixed_cuped")
     assert experiment is not None
     store = WarehouseArtifactStore(connection, schema_name="qr_compact_artifacts")
     context = artifact_context(definitions, experiment, "error")
     extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    reference = native.publish_unit_day_artifact(store, extensions=extensions)
-    artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    reference = publish_unit_day_artifact(*native, store, extensions=extensions)
+    artifact = from_unit_day_artifact(store, reference, expected_context=context)
     local = matrix_cases.linear_cuped_frame_case(units, panel=False)
 
     def forbidden_unit_transfer(*args, **kwargs):
@@ -2016,8 +2018,8 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
     )
     _guard_no_unit_keyed_transfers(monkeypatch)
     try:
-        actual = cast(list[LiftEstimate], artifact.run(metrics=[metric]))
-        expected = cast(list[LiftEstimate], local.run(metrics=[metric]))
+        actual = cast(list[LiftEstimate], view_readout(*artifact, metrics=[metric]))
+        expected = cast(list[LiftEstimate], view_readout(*local, metrics=[metric]))
         actual_rows = {(row.metric, row.group_id, row.method): row for row in actual}
         expected_rows = {(row.metric, row.group_id, row.method): row for row in expected}
         assert actual_rows.keys() == expected_rows.keys()
@@ -2042,13 +2044,13 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
         import pyarrow.parquet as pq
 
         frame_destination = tmp_path / f"artifact-{metric}-frame-moments.parquet"
-        local.export(frame_destination)
+        export_moments(*local, frame_destination)
         frame_exported = pq.read_table(frame_destination).to_pylist()
         _assert_fit_coordinates_equal(artifact_exported, frame_exported)
     finally:
-        local.close()
-        artifact.close()
-        native.close()
+        local[1].close()
+        artifact[1].close()
+        cast(Any, native[1]).close()
         connection.disconnect()
 
 

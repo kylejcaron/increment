@@ -187,7 +187,7 @@ tests/test_analysis_config_roles.py 3
 tests/test_analysis_facade.py 2
 tests/test_analysis_frame_sources.py 1
 tests/test_analysis_moments.py 2
-tests/test_analysis_trigger.py 4
+tests/test_analysis_trigger.py 5
 tests/test_asymptotic_public_sources.py 1
 tests/test_cate_calibration.py 7
 tests/test_compatibility_contract.py 1
@@ -211,7 +211,7 @@ tests/test_dashboard_population.py 6
 tests/test_dashboard_result_evidence.py 11
 tests/test_errors.py 1
 tests/test_evidence_identity_parity.py 2
-tests/test_experiment_health.py 3
+tests/test_experiment_health.py 2
 tests/test_exploratory_metrics.py 2
 tests/test_frame_exact_successes.py 4
 tests/test_frame_missing.py 6
@@ -247,7 +247,7 @@ tests/test_unit_day_artifact_digest_v2.py 3
 tests/test_unit_day_artifact_digest_v2_dialects.py 8
 tests/test_unit_day_artifact_extensions.py 1
 tests/test_unit_day_artifact_facade.py 3
-tests/test_unit_day_artifact_parity.py 1
+tests/test_unit_day_artifact_parity.py 2
 tests/test_warehouse_cuped_qr.py 47
 tests/test_warehouse_cuped_qr_edges.py 4
 tests/test_warehouse_cuped_qr_regressions.py 3

@@ -882,10 +882,9 @@ def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
     "ignore:metric 'm' has window_days=None:increment.errors.IncrementWarning"
 )
 def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
-    from tests.analysis_factory import facade_binding
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
     from tests.parity_harness import matrix, matrix_cases
-    from tests.parity_harness.cases import _close_parity_analysis
+    from tests.parity_harness.cases import _close_parity_binding
 
     baseline = matrix.Cell("mean", "run", "none", "utc", "error")
     temporal = replace(baseline, view="daily")
@@ -896,9 +895,9 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
         **matrix_cases.build_switchback_case(baseline, "rows", outcomes).build,
     }
     for ingress, build in builders.items():
-        analysis = build()
+        bound = build()
         try:
-            experiment, resolver = facade_binding(analysis)
+            experiment, resolver = bound
             scopes = (Scope(view="run", grain="total"), Scope(view="daily", grain="daily"))
             experiment = replace(experiment, scopes=scopes)
             disposition = dispositions[ingress]
@@ -935,23 +934,22 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
                     stage="read",
                 )
         finally:
-            _close_parity_analysis(analysis)
+            _close_parity_binding(bound)
 
 
 def test_switchback_metric_selection_scopes_share_contrast_evidence():
-    from tests.analysis_factory import facade_binding
     from tests.parity_harness import matrix, matrix_cases
-    from tests.parity_harness.cases import _close_parity_analysis
+    from tests.parity_harness.cases import _close_parity_binding
 
     cell = matrix.Cell("mean", "run", "none", "utc", "error")
     case = matrix_cases.build_switchback_case(cell, "rows", matrix.classify(cell).outcomes("rows"))
-    analysis = case.build["from_switchback_panel"]()
+    bound = case.build["from_switchback_panel"]()
     try:
-        experiment, resolver = facade_binding(analysis)
+        experiment, resolver = bound
         scope = Scope(
             view="switchback",
             grain="total",
-            metrics=tuple(dict(item) for item in experiment.metrics.values()),
+            metrics=tuple(dict(cast(Any, item)) for item in experiment.metrics.values()),
         )
         scopes = (*experiment.scopes, scope)
         experiment = replace(experiment, scopes=scopes)
@@ -964,4 +962,4 @@ def test_switchback_metric_selection_scopes_share_contrast_evidence():
                 expected.cells,
             )
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)

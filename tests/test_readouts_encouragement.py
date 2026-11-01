@@ -3593,20 +3593,19 @@ def test_encouragement_margin_guardrail_refuses_late_only_on_every_constructor(c
     nothing left to compare on any path once every one refuses, so this
     is a focused per-constructor test rather than a second ParityCase."""
     from increment.errors import CodedError
-    from tests.parity_harness.cases import _encouragement_guardrail_case
+    from tests.parity_harness.cases import _close_parity_binding, _encouragement_guardrail_case
+    from tests.parity_harness.views import read
 
     case = _encouragement_guardrail_case(
         id="margin_late_only_probe", estimands=("late",), margin_abs=5.0
     )
-    analysis = case.build[constructor]()
+    bound = case.build[constructor]()
     try:
         with pytest.raises(CodedError) as exc_info:
-            analysis.run(estimands=("late",))
+            read(bound, estimands=("late",))
         assert exc_info.value.code == "readout.encouragement.margin"
     finally:
-        analysis.close()
-        for connection in getattr(analysis, "_parity_connections", ()):
-            connection.disconnect()
+        _close_parity_binding(bound)
 
 
 @pytest.mark.parametrize(
@@ -3633,7 +3632,8 @@ def test_encouragement_retention_refuses_on_every_reachable_constructor(construc
     different hazard the panel does not share."""
     from increment.errors import CodedError
     from tests.capability_consumers_auxiliary import assert_refusal
-    from tests.parity_harness.cases import _encouragement_retention_case
+    from tests.parity_harness.cases import _close_parity_binding, _encouragement_retention_case
+    from tests.parity_harness.views import read
 
     outcome_id, stage = {
         "from_definitions": ("itt_late_definitions_refused", "read"),
@@ -3655,16 +3655,14 @@ def test_encouragement_retention_refuses_on_every_reachable_constructor(construc
         assert exc_info.value.code == expected_code
         assert_refusal("encouragement_retention_readouts", outcome_id, exc_info.value, stage=stage)
         return
-    analysis = case.build[constructor]()
+    bound = case.build[constructor]()
     try:
         with pytest.raises(CodedError) as exc_info:
-            analysis.run()
+            read(bound)
         assert exc_info.value.code == expected_code
         assert_refusal("encouragement_retention_readouts", outcome_id, exc_info.value, stage=stage)
     finally:
-        analysis.close()
-        for connection in getattr(analysis, "_parity_connections", ()):
-            connection.disconnect()
+        _close_parity_binding(bound)
 
 
 def test_encouragement_switchback_identification_is_refused():

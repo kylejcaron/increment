@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -104,15 +104,16 @@ def test_triggered_day_axis_source_snapshot_ids_match_frozen_capture(
     scenario: str, operation: str, expected: str
 ) -> None:
     """Triggered IDs are frozen operations.json.gz pre-kernel from_definitions oracles."""
-    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
+    from tests.parity_harness.views import View, read
 
     case = next(case for case in PARITY_CASES if case.id == scenario)
-    analysis = case.build["from_definitions"]()
+    bound = case.build["from_definitions"]()
     try:
-        kwargs = {"population": "triggered"}
+        kwargs: dict[str, Any] = {"population": "triggered"}
         if scenario == "triggered_encouragement_compliance_asof":
             kwargs["estimands"] = ("compliance",)
-        result = getattr(analysis, operation)(**kwargs)
+        result = read(bound, cast(View, operation.removeprefix("run_")), **kwargs)
         assert _snapshot_id(result) == expected
     finally:
-        analysis.close()
+        _close_parity_binding(bound)

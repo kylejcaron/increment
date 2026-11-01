@@ -187,9 +187,16 @@ def test_switchback_request_preserves_inference_grain():
 def test_switchback_neighboring_integer_oracle():
     from scipy.stats import t
 
-    from tests.parity_harness.cases import _neighboring_integer_switchback_analysis
+    from tests.parity_harness.cases import (
+        _close_parity_binding,
+        _neighboring_integer_switchback_binding,
+    )
 
-    (result,) = _run(_neighboring_integer_switchback_analysis())
+    bound = _neighboring_integer_switchback_binding()
+    try:
+        (result,) = _run(bound)
+    finally:
+        _close_parity_binding(bound)
     assert result.estimate.value == pytest.approx(1.5)
     assert result.standard_error == pytest.approx(0.5)
     radius = 0.5 * t.isf(result.alpha / 2, 1)

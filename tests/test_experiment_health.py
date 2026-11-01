@@ -7,11 +7,11 @@ import pyarrow as pa
 import pytest
 from pydantic import ValidationError
 
-from increment import Analysis, from_definitions, from_frame
+from increment import from_definitions, from_frame
 from increment.results import ExperimentHealth, HealthCheck, SRMResult
 from increment.semantics.design import Randomized
 from increment.workflows import health_check, srm
-from tests.analysis_factory import facade_binding, view_readout
+from tests.analysis_factory import view_readout
 
 
 def _summary_experiment(**options: Any) -> Any:
@@ -386,36 +386,24 @@ def test_health_second_call_sees_new_rows(tmp_path, monkeypatch) -> None:
 @pytest.mark.integration
 def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) -> None:
     """Matched native/artifact diagnostics; portable shapes do not retain trigger evidence."""
-    import datetime as dt
-
     import ibis
 
-    from increment.artifacts import SourceSnapshotEvidence
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
-    from tests.test_analysis_trigger import _events, _write_defs
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
+    from tests.test_analysis_trigger import _events, _pinned_experiment, _write_defs
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=30, trigger_rate=0.5))
-    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
-    native = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path, allocation_scheme="independent"),
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=cutoff,
-            complete_through_by_feed={"events": cutoff},
-        ),
-    )
-    native_report = health_check(*facade_binding(native))
+    native = _pinned_experiment(_write_defs(tmp_path, allocation_scheme="independent"), con)
+    native_report = health_check(*native)
     artifact = _publish_and_adopt(
         con,
         native,
         kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
     )
     try:
-        report = health_check(*facade_binding(artifact))
+        report = health_check(*artifact)
     finally:
-        _close_parity_analysis(artifact)
+        _close_parity_binding(artifact)
     native_by_check = {check.check: check for check in native_report.checks}
     artifact_by_check = {check.check: check for check in report.checks}
     for name in (
@@ -504,31 +492,19 @@ def test_health_models_round_trip_pickle_deepcopy_and_nested_immutability() -> N
 
 @pytest.mark.integration
 def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> None:
-    import datetime as dt
-
     import ibis
 
-    from increment.artifacts import SourceSnapshotEvidence
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
-    from tests.test_analysis_trigger import _events, _write_defs
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
+    from tests.test_analysis_trigger import _events, _pinned_experiment, _write_defs
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
-    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
-    native = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path, allocation_scheme="independent"),
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=cutoff,
-            complete_through_by_feed={"events": cutoff},
-        ),
-    )
+    native = _pinned_experiment(_write_defs(tmp_path, allocation_scheme="independent"), con)
     artifact = _publish_and_adopt(con, native, kinds=("assignment_counts",))
     try:
-        report = health_check(*facade_binding(artifact))
+        report = health_check(*artifact)
     finally:
-        _close_parity_analysis(artifact)
+        _close_parity_binding(artifact)
     for name in ("triggered_balance", "trigger_rates"):
         check = next(row for row in report.checks if row.check == name)
         assert check.availability == "unavailable"
@@ -541,36 +517,24 @@ def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> 
 def test_triggered_health_without_declared_allocation_is_unavailable_for_native_and_artifact(
     tmp_path,
 ) -> None:
-    import datetime as dt
-
     import ibis
 
-    from increment.artifacts import SourceSnapshotEvidence
-    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
-    from tests.test_analysis_trigger import _events, _write_defs
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
+    from tests.test_analysis_trigger import _events, _pinned_experiment, _write_defs
 
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
-    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
-    native = Analysis.from_definitions(
-        "exp",
-        _write_defs(tmp_path),
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=cutoff,
-            complete_through_by_feed={"events": cutoff},
-        ),
-    )
+    native = _pinned_experiment(_write_defs(tmp_path), con)
+    native_report = health_check(*native)
     artifact = _publish_and_adopt(
         con,
         native,
         kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
     )
     try:
-        reports = (health_check(*facade_binding(native)), health_check(*facade_binding(artifact)))
+        reports = (native_report, health_check(*artifact))
     finally:
-        _close_parity_analysis(artifact)
-        native.close()
+        _close_parity_binding(artifact)
     for report in reports:
         check = next(row for row in report.checks if row.check == "triggered_balance")
         assert check.availability == "unavailable"

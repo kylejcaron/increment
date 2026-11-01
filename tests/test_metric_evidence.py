@@ -13,7 +13,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, MetricSpec, from_definitions, from_frame, from_moments
+from increment import MetricSpec, from_definitions, from_frame, from_moments
 from increment.errors import IncrementWarning
 from increment.evidence import EvidenceProvider
 from increment.semantics.design import Randomized

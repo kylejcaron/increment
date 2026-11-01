@@ -20,12 +20,7 @@ from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
 from increment.workflows import export_moments, materialize
-from tests.analysis_factory import (
-    definitions_inputs,
-    facade_binding,
-    replace_bound_source,
-    view_readout,
-)
+from tests.analysis_factory import replace_bound_source, view_readout
 from tests.test_evidence_identity_parity import _capture
 from tests.warning_codes import warning_codes
 
@@ -547,11 +542,9 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     ],
 )
 def test_frozen_capture_builder_specification_round_trip(
-    scenario_id, ingress, expected, tmp_path, record_property
+    scenario_id, ingress, expected, record_property
 ):
-    import yaml
-
-    from tests.parity_harness.cases import PARITY_CASES, _close_parity_analysis
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
 
     cases = {case.id: case for case in PARITY_CASES}
     base_id = scenario_id.removeprefix("asof_lift-").removeprefix("asof-")
@@ -568,55 +561,18 @@ def test_frozen_capture_builder_specification_round_trip(
         record_property("not_expressible", "no constructor for this declared ingress")
         return
     try:
-        analysis = case.build[ingress]()
+        bound = case.build[ingress]()
     except CodedError as error:
         assert expected["kind"] == "refusal"
         assert error.code == expected["code"]
         record_property("not_expressible", f"construction refuses: {error.code}")
         return
     try:
-        binding = facade_binding(analysis)
-        if binding is not None:
-            experiment, _ = binding
-        else:
-            definitions, declared, connection, compiled_plan, mixed = definitions_inputs(analysis)
-            registered = getattr(compiled_plan.inference, "registration", None)
-            if registered is not None:
-                from increment.semantics.models import InferenceSpec
-
-                assert declared.plan.inference is not None
-                inference = InferenceSpec(
-                    kind=declared.plan.inference.kind,
-                    registration=registered,
-                    triggered_registration=getattr(
-                        compiled_plan.inference, "triggered_registration", None
-                    ),
-                )
-                declared = declared.model_copy(
-                    update={"plan": declared.plan.model_copy(update={"inference": inference})}
-                )
-                definitions = definitions.model_copy(
-                    update={
-                        "experiments": tuple(
-                            declared if item.name == declared.name else item
-                            for item in definitions.experiments
-                        ),
-                    }
-                )
-            path = tmp_path / "definitions.yaml"
-            path.write_text(yaml.safe_dump(definitions.model_dump(mode="json")), encoding="utf-8")
-            experiment, resolver = from_definitions(
-                path,
-                connection,
-                experiment_name=analysis.experiment.name,
-                store="none",
-                on_mixed_assignment=mixed,
-            )
-            assert experiment.registration == Registration.from_plan(compiled_plan)
+        experiment, _ = bound
         assert Experiment.from_json(experiment.to_json()).hash() == experiment.hash()
         record_property("specification_hash", experiment.hash())
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)
 
 
 @pytest.mark.integration

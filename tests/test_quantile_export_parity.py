@@ -26,7 +26,7 @@ from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import Definitions
 from increment.workflows import export_moments, sequential_snapshot
 from tests.analysis_factory import bound_source
-from tests.parity_harness.cases import PARITY_CASES, _close_parity_analysis
+from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
 from tests.test_native_encouragement_declaration import (
     _observational_quantile_defs,
     _seed,
@@ -53,13 +53,13 @@ def test_randomized_quantile_export_refuses_on_every_ingress(
     tmp_path: Path, case_id: str, ingress: str
 ) -> None:
     """The second case also declares additive siblings: one quantile still refuses the cube."""
-    analysis = _QUANTILE_CASES[case_id].build[ingress]()
+    bound = _QUANTILE_CASES[case_id].build[ingress]()
     path = tmp_path / "quantile-moments.parquet"
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis.export(path)
+            export_moments(*bound, path)
     finally:
-        _close_parity_analysis(analysis)
+        _close_parity_binding(bound)
     assert raised.value.code == "source.frame.quantile_no_moments"
     assert raised.value.context["metric"] == "p90_latency"
     assert not path.exists()

@@ -14,12 +14,14 @@ import ibis
 import pytest
 import yaml
 
-from increment import from_definitions
+from increment import from_definitions, from_unit_day_artifact
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import DefinitionError
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Definitions
 from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
+from tests.parity_harness.views import read
 from tests.warehouse_cuped_cases import (
     check_day_axis_parity,
     check_fixed_horizon_parity,
@@ -231,6 +233,33 @@ def _assert_usable_cuped_rows(results):
             )
 
 
+def _native_and_adopted(connection, definitions_path, schema_name, *, all_extensions=False):
+    """The mixed-CUPED definitions pair and its published, re-adopted unit-day artifact."""
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+
+    native = from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    store = WarehouseArtifactStore(connection, schema_name=schema_name)
+    context = artifact_context(definitions, experiment, "error")
+    extensions = (
+        [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+        if all_extensions
+        else []
+    )
+    ref = publish_unit_day_artifact(*native, store, extensions=extensions)
+    return native, from_unit_day_artifact(store, ref, expected_context=context)
+
+
+def _close_pairs(*pairs):
+    for _, resolver in pairs:
+        cast(Any, resolver).close()
+
+
 @backend_fixture(scope="module")
 def duck():
     con = ibis.duckdb.connect()
@@ -283,7 +312,7 @@ def test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles():
     summary = matrix_cases.linear_cuped_frame_case(rows, panel=False)
     panel = matrix_cases.linear_cuped_frame_case(rows, panel=True)
     try:
-        left, right = summary.run(), panel.run()
+        left, right = read(summary), read(panel)
         assert {(r.metric, r.group_id, r.method, r.method_role) for r in left} == {
             (r.metric, r.group_id, r.method, r.method_role) for r in right
         }
@@ -303,8 +332,7 @@ def test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles():
         assert left.metadata.scope.cells and right.metadata.scope.cells
         assert left.metadata.scope.snapshot_id and right.metadata.scope.snapshot_id
     finally:
-        summary.close()
-        panel.close()
+        _close_pairs(summary, panel)
 
 
 @pytest.mark.integration
@@ -317,7 +345,7 @@ def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
     panel = matrix_cases.linear_cuped_frame_case(rows, panel=True, corrupt=True)
     try:
 
-        def statistical_outputs(analysis):
+        def statistical_outputs(bound):
             return {
                 (row.metric, row.group_id, row.method, row.method_role): {
                     "estimate": row.lift.value if row.lift is not None else None,
@@ -328,13 +356,12 @@ def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
                     "posterior_available": row.posterior_available,
                     "failure": (row.sampling_reason_code, row.sampling_reason_context),
                 }
-                for row in analysis.run()
+                for row in read(bound)
             }
 
         assert not nested_close(statistical_outputs(summary), statistical_outputs(panel))
     finally:
-        summary.close()
-        panel.close()
+        _close_pairs(summary, panel)
 
 
 @pytest.mark.parametrize(
@@ -349,10 +376,6 @@ def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
 )
 @pytest.mark.slow
 def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
-    from increment import Analysis
-    from increment.query.artifact_publish import artifact_context
-    from increment.query.session import WarehouseArtifactStore
-    from increment.semantics.loader import load
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.warehouse_cuped_cases import (
         mixed_cuped_definitions_yaml,
@@ -360,7 +383,7 @@ def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
     )
 
     units = matrix_data.linear_cuped_rows(**rows)
-    analyses = [
+    pairs = [
         matrix_cases.linear_cuped_frame_case(units, panel=False),
         matrix_cases.linear_cuped_frame_case(units, panel=True),
     ]
@@ -368,19 +391,11 @@ def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
     con.create_table("mixed_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "mixed_cuped_refusal.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, con)
-    definitions = load(definitions_path)
-    experiment = definitions.experiment("mixed_cuped")
-    assert experiment is not None
-    store = WarehouseArtifactStore(con, schema_name="mixed_cuped_refusal_artifacts")
-    context = artifact_context(definitions, experiment, "error")
-    ref = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    analyses.extend((native, adopted))
+    pairs.extend(_native_and_adopted(con, definitions_path, "mixed_cuped_refusal_artifacts"))
     try:
         expected_failures = None
-        for analysis in analyses:
-            results = analysis.run()
+        for bound in pairs:
+            results = read(bound)
             failures = tuple(
                 sorted(
                     (
@@ -405,17 +420,12 @@ def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
             else:
                 assert failures == expected_failures
     finally:
-        for analysis in analyses:
-            analysis.close()
+        _close_pairs(*pairs)
         con.disconnect()
 
 
 @pytest.mark.slow
 def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tmp_path):
-    from increment import Analysis
-    from increment.query.artifact_publish import artifact_context
-    from increment.query.session import WarehouseArtifactStore
-    from increment.semantics.loader import load
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.parity_harness.comparison import nested_close
     from tests.warehouse_cuped_cases import (
@@ -428,20 +438,11 @@ def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tm
     connection.create_table("mixed_events", obj=mixed_cuped_event_rows(units))
     definitions_path = tmp_path / "mixed_cuped.yaml"
     definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
-    definitions = load(definitions_path)
-    experiment = definitions.experiment("mixed_cuped")
-    assert experiment is not None
-    store = WarehouseArtifactStore(connection, schema_name="mixed_cuped_artifacts")
-    expected_context = artifact_context(definitions, experiment, "error")
-    artifact_ref = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(
-        store, artifact_ref, expected_context=expected_context
-    )
+    native, adopted = _native_and_adopted(connection, definitions_path, "mixed_cuped_artifacts")
     summary = matrix_cases.linear_cuped_frame_case(units, panel=False)
     panel = matrix_cases.linear_cuped_frame_case(units, panel=True)
     try:
-        results = [summary.run(), panel.run(), native.run(), adopted.run()]
+        results = [read(summary), read(panel), read(native), read(adopted)]
         _assert_usable_cuped_rows(results)
 
         from tests.parity_harness.runner import (
@@ -474,19 +475,11 @@ def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tm
             assert nested_close(expected_state, _retained_mixed_cuped_signature(result)), name
 
     finally:
-        summary.close()
-        panel.close()
-        adopted.close()
-        native.close()
+        _close_pairs(summary, panel, adopted, native)
 
 
 @pytest.mark.slow
 def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
-    from increment import Analysis
-    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-    from increment.query.artifact_publish import artifact_context
-    from increment.query.session import WarehouseArtifactStore
-    from increment.semantics.loader import load
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -504,19 +497,13 @@ def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
             n_pre_periods=30,
         )
     )
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
-    definitions = load(definitions_path)
-    experiment = definitions.experiment("mixed_cuped")
-    assert experiment is not None
-    store = WarehouseArtifactStore(connection, schema_name="mixed_scalar_artifacts")
-    context = artifact_context(definitions, experiment, "error")
-    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+    native, adopted = _native_and_adopted(
+        connection, definitions_path, "mixed_scalar_artifacts", all_extensions=True
+    )
     summary = matrix_cases.linear_cuped_frame_case(units, panel=False, scalar_cuped=True)
     panel = matrix_cases.linear_cuped_frame_case(units, panel=True, scalar_cuped=True)
     try:
-        results = [summary.run(), panel.run(), native.run(), adopted.run()]
+        results = [read(summary), read(panel), read(native), read(adopted)]
         for result in results:
             adjusted = [
                 row
@@ -531,10 +518,7 @@ def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
                 assert row.lift is not None
                 assert row.lift.value is not None and math.isfinite(row.lift.value)
     finally:
-        summary.close()
-        panel.close()
-        adopted.close()
-        native.close()
+        _close_pairs(summary, panel, adopted, native)
         connection.disconnect()
 
 
@@ -542,10 +526,6 @@ def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
 def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses(
     tmp_path,
 ):
-    from increment import Analysis
-    from increment.query.artifact_publish import artifact_context
-    from increment.query.session import WarehouseArtifactStore
-    from increment.semantics.loader import load
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.parity_harness.comparison import nested_close
     from tests.parity_harness.runner import _normalize, _validate_source_snapshot_ids
@@ -560,22 +540,15 @@ def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingres
     definitions_path.write_text(
         mixed_cuped_definitions_yaml("mixed_winsor_events", fixed_winsorization=True)
     )
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
-    definitions = load(definitions_path)
-    experiment = definitions.experiment("mixed_cuped")
-    assert experiment is not None
-    store = WarehouseArtifactStore(connection, schema_name="mixed_winsor_artifacts")
-    context = artifact_context(definitions, experiment, "error")
-    artifact_ref = native.publish_unit_day_artifact(store)
-    adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+    native, adopted = _native_and_adopted(connection, definitions_path, "mixed_winsor_artifacts")
     summary = matrix_cases.linear_cuped_frame_case(units, panel=False, fixed_winsorization=True)
     panel = matrix_cases.linear_cuped_frame_case(units, panel=True, fixed_winsorization=True)
     try:
         results = [
-            summary.run(metrics=["revenue"]),
-            panel.run(metrics=["revenue"]),
-            native.run(metrics=["revenue"]),
-            adopted.run(metrics=["revenue"]),
+            read(summary, metrics=["revenue"]),
+            read(panel, metrics=["revenue"]),
+            read(native, metrics=["revenue"]),
+            read(adopted, metrics=["revenue"]),
         ]
         names = ("summary", "panel", "definitions", "artifact")
         normalized = []
@@ -591,21 +564,13 @@ def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingres
             assert nested_close(retained, _retained_mixed_cuped_signature(result))
             assert nested_close(source_scope, _source_scope_signature(result.metadata))
     finally:
-        summary.close()
-        panel.close()
-        adopted.close()
-        native.close()
+        _close_pairs(summary, panel, adopted, native)
         connection.disconnect()
 
 
 @pytest.mark.slow
 def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path, monkeypatch):
-    from increment import Analysis
     from increment.errors import CodedError
-    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
-    from increment.query.artifact_publish import artifact_context
-    from increment.query.session import WarehouseArtifactStore
-    from increment.semantics.loader import load
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.parity_harness.comparison import nested_close
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
@@ -617,18 +582,8 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
     definitions_path.write_text(
         mixed_cuped_definitions_yaml("mixed_breakout_events", breakout=True)
     )
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
-    definitions = load(definitions_path)
-    experiment = definitions.experiment("mixed_cuped")
-    assert experiment is not None
-    store = WarehouseArtifactStore(connection, schema_name="mixed_cuped_breakout_artifacts")
-    context = artifact_context(definitions, experiment, "error")
-    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(
-        store,
-        artifact_ref,
-        expected_context=context,
+    native, adopted = _native_and_adopted(
+        connection, definitions_path, "mixed_cuped_breakout_artifacts", all_extensions=True
     )
     summary = matrix_cases.linear_cuped_frame_case(units, panel=False)
     panel = matrix_cases.linear_cuped_frame_case(units, panel=True, breakout=True)
@@ -646,10 +601,10 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
     _guard_no_unit_keyed_transfers(monkeypatch)
     try:
         with pytest.raises(CodedError) as raised:
-            summary.run_breakout()
+            read(summary, "breakout")
         assert raised.value.code == "evidence.breakout_unavailable"
 
-        results = [panel.run_breakout(), native.run_breakout(), adopted.run_breakout()]
+        results = [read(panel, "breakout"), read(native, "breakout"), read(adopted, "breakout")]
         expected_keys = {
             (metric, region, arm, "linear", "decision")
             for metric in ("revenue", "rpo", "signups")
@@ -695,10 +650,7 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
             assert nested_close(expected_rows, payload)
             assert nested_close(expected_scope, _retained_breakout_signature(rows))
     finally:
-        summary.close()
-        panel.close()
-        adopted.close()
-        native.close()
+        _close_pairs(summary, panel, adopted, native)
         connection.disconnect()
 
 

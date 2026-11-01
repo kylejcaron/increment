@@ -1616,10 +1616,11 @@ def test_unbounded_retention_breakout_refuses_before_warehouse_access(ingress, t
     import ibis
     import yaml
 
+    from increment.workflows import breakout_summaries
+
     con = ibis.duckdb.connect()
     if ingress == "from_definitions":
         from increment import from_definitions
-        from increment.workflows import breakout_summaries
 
         definitions = _analysis_with_country_breakout(
             con, unbounded_retention=True, return_definitions=True
@@ -1645,40 +1646,41 @@ def test_unbounded_retention_breakout_refuses_before_warehouse_access(ingress, t
                 close()
         return
 
-    analysis = _analysis_with_country_breakout(con, unbounded_retention=True)
-    if ingress == "from_unit_day_artifact":
-        from tests.parity_harness.cases import _publish_and_adopt
+    from tests.parity_harness.cases import _publish_and_adopt
 
-        analysis = _publish_and_adopt(con, analysis, kinds=("breakout_dimension",))
+    adopted = _publish_and_adopt(
+        con,
+        _analysis_with_country_breakout(con, unbounded_retention=True),
+        kinds=("breakout_dimension",),
+    )
     con.disconnect()
     try:
         with pytest.raises(InvalidRequestError) as caught:
-            analysis.breakout_summaries(metrics=["revenue", "unbounded"])
+            breakout_summaries(*adopted, metrics=["revenue", "unbounded"])
         assert caught.value.code == "breakout.retention.unbounded"
         assert caught.value.context["names"] == ("unbounded",)
     finally:
-        analysis.close()
+        adopted[1].close()
 
 
 @pytest.mark.slow
 def test_retention_breakout_reports_censoring_once():
-    from tests.parity_harness.cases import _retention_breakout_cohorts_case
+    from increment.workflows import breakout_summaries
+    from tests.parity_harness.cases import _close_parity_binding, _retention_breakout_cohorts_case
 
     case = _retention_breakout_cohorts_case(single_segment=True, late_units=20)
-    analysis = case.build["from_definitions"]()
+    bound = case.build["from_definitions"]()
     try:
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always", IncrementWarning)
-            tables = analysis.breakout_summaries(metrics=["d7_retention"])
+            tables = breakout_summaries(*bound, metrics=["d7_retention"])
         assert [w.message.code for w in recorded if isinstance(w.message, IncrementWarning)] == [
             "frame.censoring.dropped_units"
         ]
         totals = tables["d7_retention:store:events"]["group_summary"].to_pylist()
         assert {row["group_id"]: row["n"] for row in totals} == {"control": 20, "treatment": 20}
     finally:
-        analysis.close()
-        for connection in getattr(analysis, "_parity_connections", ()):
-            connection.disconnect()
+        _close_parity_binding(bound)
 
 
 def _selected_breakout_sources(tmp_path):

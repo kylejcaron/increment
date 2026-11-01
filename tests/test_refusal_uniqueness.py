@@ -4,8 +4,8 @@ import pytest
 
 from increment import Scope, from_definitions, from_frame, from_moments
 from increment.query import panel_sql
-from increment.workflows import export_moments, metrics
-from tests.analysis_factory import _moment_source, bound_source, held_source, view_readout
+from increment.workflows import experiment_definition, export_moments, metrics
+from tests.analysis_factory import bound_source, held_source, view_readout
 from tests.refusal_registry import walk_refusal_registries
 
 
@@ -620,24 +620,31 @@ def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_ar
     import ibis
 
     from increment.errors import CodedError
-    from tests.parity_harness.cases import _publish_and_adopt
+    from increment.evidence import BreakoutIdentity
+    from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
     from tests.test_analysis_breakout import _analysis_with_country_breakout
 
     con = ibis.duckdb.connect()
-    analysis = _publish_and_adopt(
+    adopted = _publish_and_adopt(
         con,
         _analysis_with_country_breakout(con, unbounded_retention=True),
         kinds=("breakout_dimension",),
     )
+    experiment, resolver = adopted
     try:
-        _trap_source_reads(monkeypatch, _moment_source(analysis))
-        dimension = analysis.experiment.breakouts[0].property
+        _trap_source_reads(monkeypatch, bound_source(resolver))
+        dimension = experiment_definition(experiment, resolver).breakouts[0].property
+        scope = Scope(
+            view="daily",
+            grain="daily",
+            values=method == "run_daily",
+            segment=BreakoutIdentity(dimension, None),
+        )
         with pytest.raises(CodedError) as raised:
-            getattr(analysis, method)(dimension=dimension, metrics=["unbounded"])
+            view_readout(experiment, resolver, scope, metrics=["unbounded"])
         assert raised.value.code == "breakout.retention.unbounded"
     finally:
-        analysis.close()
-        con.disconnect()
+        _close_parity_binding(adopted)
 
 
 @pytest.mark.slow
@@ -666,10 +673,11 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
 ) -> None:
     """No unit's window over an unbounded retention band ever completes, so
     `completed_windows_only=True` is contradictory on every as-of entry point. The
-    direct readout and both Analysis as-of methods raise one code before any source
+    direct readout and both as-of views of ``run`` raise one code before any source
     read, rather than each adapter's own refusal."""
     from increment import readouts
     from increment.errors import CodedError
+    from tests.parity_harness.cases import _close_parity_binding
 
     if substrate == "unit_day_artifact":
         import ibis
@@ -677,22 +685,28 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
         from tests.parity_harness.cases import _publish_and_adopt
 
         con = ibis.duckdb.connect()
-        analysis = _publish_and_adopt(
+        bound = _publish_and_adopt(
             con, _native_day_axis_analysis(tmp_path, "unbounded_retention", con=con)
         )
     else:
-        con = None
-        analysis = (
+        bound = (
             _native_day_axis_analysis(tmp_path, "unbounded_retention")
             if substrate == "definitions"
             else _frame_panel_day_axis_analysis("unbounded_retention")
         )
+    experiment, resolver = bound
     try:
-        source = _moment_source(analysis)
+        source = bound_source(resolver)
         _trap_source_reads(monkeypatch, source)
         entry_points = {
-            "Analysis.run_asof": lambda: analysis.run_asof(completed_windows_only=True),
-            "Analysis.run_asof_lift": lambda: analysis.run_asof_lift(completed_windows_only=True),
+            "run(asof values)": lambda: view_readout(
+                experiment,
+                resolver,
+                Scope(view="asof", grain="asof", values=True, completion_policy=True),
+            ),
+            "run(asof lift)": lambda: view_readout(
+                experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+            ),
             "readouts.asof_lift": lambda: readouts.asof_lift(source, completed_windows_only=True),
         }
         codes = {}
@@ -702,18 +716,15 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
             codes[name] = raised.value.code
         assert set(codes.values()) == {"breakout.retention.completion"}, codes
     finally:
-        analysis.close()
-        if con is not None:
-            con.disconnect()
+        _close_parity_binding(bound)
 
 
-# The facade guards every day-axis method (including run_asof, which the readouts serve
-# for checkpoint replay) and the readout gate backs it for direct callers, so one hazard
-# has one code per entry method; within an entry method it must not depend on the source.
+# The day-axis views of `run` and the readout gate behind them refuse one hazard with one
+# code per entry point; within an entry point it must not depend on the source.
 _WINSORIZED_DAILY_CODES = {
     "readouts.daily": "evidence.operation_unavailable",
-    "Analysis.run_daily": "evidence.operation_unavailable",
-    "Analysis.run_daily_lift": "evidence.operation_unavailable",
+    "run(daily values)": "evidence.operation_unavailable",
+    "run(daily lift)": "evidence.operation_unavailable",
 }
 
 
@@ -727,6 +738,7 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
 ) -> None:
     from increment import readouts
     from increment.errors import CodedError
+    from tests.parity_harness.cases import _close_parity_binding
 
     if substrate == "unit_day_artifact":
         import ibis
@@ -734,22 +746,26 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
         from tests.parity_harness.cases import _publish_and_adopt
 
         con = ibis.duckdb.connect()
-        analysis = _publish_and_adopt(
+        bound = _publish_and_adopt(
             con, _native_day_axis_analysis(tmp_path, "winsorized_mean", con=con)
         )
     else:
-        con = None
-        analysis = (
+        bound = (
             _native_day_axis_analysis(tmp_path, "winsorized_mean")
             if substrate == "definitions"
             else _frame_panel_day_axis_analysis("winsorized_mean")
         )
+    experiment, resolver = bound
     try:
-        source = _moment_source(analysis)
+        source = bound_source(resolver)
         _trap_source_reads(monkeypatch, source)
         entry_points = {
-            "Analysis.run_daily": analysis.run_daily,
-            "Analysis.run_daily_lift": analysis.run_daily_lift,
+            "run(daily values)": lambda: view_readout(
+                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+            ),
+            "run(daily lift)": lambda: view_readout(
+                experiment, resolver, Scope(view="daily", grain="daily")
+            ),
             "readouts.daily": lambda: readouts.daily(source),
         }
         codes = {}
@@ -759,9 +775,7 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
             codes[name] = raised.value.code
         assert codes == _WINSORIZED_DAILY_CODES
     finally:
-        analysis.close()
-        if con is not None:
-            con.disconnect()
+        _close_parity_binding(bound)
 
 
 @pytest.mark.slow

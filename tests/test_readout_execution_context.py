@@ -1153,22 +1153,25 @@ def test_snapshot_ignores_ambiguous_covariate_on_unselected_metric(tmp_path):
 @pytest.mark.integration
 def test_public_breakout_override_does_not_change_sibling_daily_lift():
     from increment import Method
-    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
+    from tests.parity_harness.views import read
 
     case = next(case for case in PARITY_CASES if case.id == "breakout_store_dimension")
-    analysis = case.build["from_definitions"]()
+    bound = case.build["from_definitions"]()
     try:
-        breakout = analysis.run_breakout(
+        breakout = read(
+            bound,
+            "breakout",
             metrics=("revenue_cuped",),
             decision_method=Method.unadjusted(name="breakout-unadjusted"),
         )
-        daily_lift = analysis.run_daily_lift(metrics=("revenue_cuped",))
+        daily_lift = read(bound, "daily_lift", metrics=("revenue_cuped",))
         assert breakout
         assert daily_lift
         assert "breakout-unadjusted" in {row.method for row in breakout}
         assert "breakout-unadjusted" not in {row.method for row in daily_lift}
     finally:
-        analysis.close()
+        _close_parity_binding(bound)
 
 
 @pytest.mark.integration
@@ -1745,18 +1748,19 @@ def test_captured_analysis_keeps_unused_experiment_id_fact_column():
 
 @pytest.mark.integration
 def test_public_unit_summary_breakout_keeps_declared_segments():
-    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
+    from tests.parity_harness.views import read
 
     case = next(case for case in PARITY_CASES if case.id == "breakout_store_dimension")
-    analysis = case.build["from_unit_summary"]()
+    bound = case.build["from_unit_summary"]()
     try:
-        breakout = analysis.run_breakout()
+        breakout = read(bound, "breakout")
         assert len(breakout) == 15
         assert breakout.metadata is not None
         assert breakout.metadata.coherence == "captured"
         assert set(breakout.metadata.effective_modes.values()) == {"captured"}
     finally:
-        analysis.close()
+        _close_parity_binding(bound)
 
 
 @pytest.mark.integration
@@ -1764,19 +1768,21 @@ def test_windowed_daily_scope_does_not_extend_past_metric_window():
     from datetime import date
 
     from tests.parity_harness import matrix, matrix_cases
+    from tests.parity_harness.cases import _close_parity_binding
+    from tests.parity_harness.views import read
 
     cell = matrix.Cell("windowed_mean", "daily", "sequential", "utc", "error")
     disposition = matrix.classify(cell)
     case = matrix_cases.build_case(cell, "values", disposition.outcomes("values"))
     expected_days = {date(2025, 1, 10), date(2025, 1, 11)}
     for ingress in ("from_definitions", "from_unit_panel"):
-        analysis = case.build[ingress]()
+        bound = case.build[ingress]()
         try:
-            rows = analysis.run_daily()
+            rows = read(bound, "daily")
             assert {row.ds for row in rows} == expected_days
             assert len(rows) == 4
         finally:
-            analysis.close()
+            _close_parity_binding(bound)
 
 
 @pytest.mark.integration

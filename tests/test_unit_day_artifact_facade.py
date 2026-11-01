@@ -320,7 +320,7 @@ def _native(
     with_pre_period: bool = False,
     with_late_returns: bool = False,
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-):
+) -> tuple[Any, tuple[Any, Any], ArtifactContext, WarehouseArtifactStore]:
     import shutil
     import weakref
 
@@ -2926,19 +2926,25 @@ def test_mixed_daily_metrics_preserve_calendar_and_cohort_axes(con, tmp_path):
             metric["threshold_days"] = (7, 14)
     definitions_path = tmp_path / "mixed-axis.yaml"
     definitions_path.write_text(yaml.safe_dump(payload))
-    native = Analysis.from_definitions("new_onboarding_v2", definitions_path, con)
+    native = from_definitions(definitions_path, con, experiment_name="new_onboarding_v2")
     metrics = [
         metric
-        for metric in native.metrics
+        for metric in workflows.metrics(*native)
         if metric.name in ("avg_session_duration", "d7_retention")
     ]
     assert {metric.name for metric in metrics} == {"avg_session_duration", "d7_retention"}
-    methods = ("run_daily", "run_daily_lift")
-    expected = {method: list(getattr(native, method)(metrics=metrics)) for method in methods}
+    scopes = {
+        "run_daily": Scope(view="daily", grain="daily", values=True),
+        "run_daily_lift": Scope(view="daily", grain="daily"),
+    }
+    expected = {
+        method: list(view_readout(*native, scope, metrics=metrics))
+        for method, scope in scopes.items()
+    }
     artifact = _publish_and_adopt(con, native)
     try:
-        for method in methods:
-            actual = list(getattr(artifact, method)(metrics=metrics))
+        for method, scope in scopes.items():
+            actual = list(view_readout(*artifact, scope, metrics=metrics))
 
             def identity(row):
                 return row.metric, row.group_id, row.ds
@@ -2961,7 +2967,7 @@ def test_mixed_daily_metrics_preserve_calendar_and_cohort_axes(con, tmp_path):
                         (expected_estimate.value, expected_estimate.lb, expected_estimate.ub)
                     )
     finally:
-        artifact.close()
+        artifact[1].close()
 
 
 def _rewritten_definitions(tmp_path: Path, name: str, edit: Any) -> Path:
