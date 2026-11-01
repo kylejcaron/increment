@@ -55,7 +55,7 @@ _TRIGGER_READS = (
     ),
     (
         "dashboard",
-        "dashboard_group_data(population=...)",
+        "prepare_dashboard() group data",
         "tests.test_analysis_trigger::test_triggered_factor_group_and_allocation_preserve_population",
     ),
     (
@@ -151,11 +151,11 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "dashboard_artifact_refused",
                     _operation,
                     "from_unit_day_artifact",
-                    "dashboard group operation is not implemented by the artifact facade",
+                    "dashboard preparation requested from an adopted artifact",
                     "refused",
                     _evidence,
-                    codes=("evidence.operation_unavailable",),
-                    reason="Artifact-backed facade does not expose dashboard grouping.",
+                    codes=("dashboard.unsupported_experiment",),
+                    reason="An adopted artifact records no primary metric, so the dashboard refuses it before any read.",
                 ),
             )
         )
@@ -417,6 +417,8 @@ for _key, _operation, _evidence in _TRIGGER_READS:
             if _suffix == "switchback"
             else "evidence.breakout_unavailable"
             if _key == "breakout"
+            else "dashboard.unsupported_experiment"
+            if _key == "dashboard"
             else "evidence.operation_unavailable"
         )
         _TRIGGER_AUXILIARY_OUTCOMES.append(

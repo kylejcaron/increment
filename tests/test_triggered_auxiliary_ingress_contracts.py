@@ -14,10 +14,10 @@ import pyarrow.parquet as pq
 import pytest
 
 from increment import from_frame, from_moments, from_switchback_frame
+from increment.dashboard import DashboardConfig, prepare_dashboard
 from increment.errors import CapabilityError
 from increment.estimators import sitewide
 from increment.workflows import breakout_summaries, export_moments, factor_summaries
-from tests.analysis_factory import bound_analysis
 from tests.capability_consumers_auxiliary import assert_expected, assert_refusal
 from tests.test_frame_switchback import _assignment, _rows
 
@@ -110,7 +110,9 @@ def _attempt(analysis: tuple[Any, Any], operation: str, metric: str) -> object:
     if operation == "factor":
         return factor_summaries(experiment, resolver)
     if operation == "dashboard":
-        return bound_analysis(resolver).dashboard_group_data(metrics=(), population="triggered")
+        return prepare_dashboard(
+            experiment, resolver, config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5})
+        )
     if operation == "sitewide":
         return sitewide(experiment, resolver, metric)
     raise AssertionError(f"unexpected operation {operation}")

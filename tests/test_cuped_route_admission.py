@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from increment import Analysis, Method, Scope, from_definitions, from_frame, from_moments
+from increment import Method, Scope, from_definitions, from_frame, from_moments
 from increment.errors import CodedError
 from increment.estimation.results import LiftEstimate
 from increment.evidence import BreakoutIdentity
@@ -35,38 +35,6 @@ from tests.test_cuped_route_evidence import (
     _sequential_source,
 )
 
-_NON_SCALAR_OPERATIONS = {
-    "allocation_history",
-    "assignment_diagnostic",
-    "breakout_summaries",
-    "build_panel_for_metric",
-    "capture_sequential",
-    "close",
-    "dashboard_breakout_reads",
-    "dashboard_group_data",
-    "dashboard_snapshot",
-    "estimate_cate",
-    "factor_summaries",
-    "from_definitions",
-    "from_switchback_panel",
-    "from_unit_day_artifact",
-    "health_check",
-    "materialize",
-    "panel_sql",
-    "planning_baseline",
-    "publish_unit_day_artifact",
-    "run_asof",
-    "run_daily",
-    "select_targeting_rule",
-    "sequential_snapshot",
-    "sitewide",
-    "srm",
-    "summary_sql",
-    "targeting_rule",
-    "trigger_rates",
-    "unit_counts",
-    "validate_cate",
-}
 _SCALAR_EXECUTION_CASES = {
     "run": "readout",
     "run_breakout": "readout",
@@ -104,23 +72,10 @@ def _frame_pair(frame: Any, *, panel: bool, **options: Any) -> tuple[Any, Any]:
 
 
 def _scalar_operation_cases(kind=None):
-    public_operations = {
-        name
-        for name, method in inspect.getmembers(Analysis)
-        if not name.startswith("_") and (inspect.isfunction(method) or inspect.ismethod(method))
-    }
-    operations = public_operations - _NON_SCALAR_OPERATIONS
-    missing = operations - _SCALAR_EXECUTION_CASES.keys()
-    assert not missing, f"Public operations without an execution case: {sorted(missing)}"
-    assert _SCALAR_EXECUTION_CASES.keys() <= operations
-    assert set(_SCALAR_EXECUTION_CASES.values()) <= {
-        "readout",
-        "export",
-        "registration",
-        "checkpoint",
-    }
     return tuple(
-        name for name in sorted(operations) if kind is None or _SCALAR_EXECUTION_CASES[name] == kind
+        name
+        for name in sorted(_SCALAR_EXECUTION_CASES)
+        if kind is None or _SCALAR_EXECUTION_CASES[name] == kind
     )
 
 
@@ -490,23 +445,29 @@ def test_explicit_raw_procedure_survives_serialized_roundtrip(tmp_path, roundtri
     assert {row.method for row in run(_sequential_source(restored))} == {"companion"}
 
 
-def test_analysis_method_operation_inventory_is_complete():
-    operations = {
-        name
-        for name, method in inspect.getmembers(Analysis, predicate=inspect.isfunction)
-        if not name.startswith("_")
-        and {"decision_method", "sensitivity_methods"}
-        <= inspect.signature(method).parameters.keys()
-    }
-    assert operations == {"run", "run_breakout", "run_asof_lift", "run_daily_lift"}
-    assert operations <= set(_scalar_operation_cases("readout"))
-    assert set(_scalar_operation_cases()) == _SCALAR_EXECUTION_CASES.keys()
+def test_public_method_operation_inventory_is_complete():
+    import importlib
 
-
-def test_new_public_operation_requires_an_execution_case(monkeypatch):
-    monkeypatch.setattr(Analysis, "future_evidence", Analysis.unit_counts, raising=False)
-    with pytest.raises(AssertionError):
-        _scalar_operation_cases()
+    operations = set()
+    for module_name in (
+        "increment",
+        "increment.workflows",
+        "increment.estimators",
+        "increment.query",
+        "increment.artifacts",
+        "increment.dashboard",
+    ):
+        module = importlib.import_module(module_name)
+        names = getattr(module, "__all__", [name for name in dir(module) if name[0] != "_"])
+        for name in names:
+            value = getattr(module, name)
+            if (
+                inspect.isfunction(value)
+                and {"decision_method", "sensitivity_methods"}
+                <= inspect.signature(value).parameters.keys()
+            ):
+                operations.add(f"{module_name}.{name}")
+    assert operations == {"increment.run"}
 
 
 @pytest.fixture

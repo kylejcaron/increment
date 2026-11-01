@@ -783,7 +783,6 @@ def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one(
 def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysis_live() -> None:
     from increment._source_operations import DashboardSnapshotPayload
     from increment.estimation.engine import Method
-    from tests.analysis_factory import bound_analysis
 
     con, native, _context, _store = _native()
     metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
@@ -817,7 +816,6 @@ def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysi
 
 @pytest.mark.slow
 def test_dashboard_snapshot_refuses_an_artifact_backed_analysis_and_it_stays_usable() -> None:
-    from tests.analysis_factory import bound_analysis
 
     _con, _native_analysis, context, store, ref = _published()
     metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
@@ -944,6 +942,7 @@ def test_refresh_preserves_artifact_identity_and_rejects_cross_context(
 
 @pytest.mark.integration
 def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
+    from increment import run
     from increment.store import ParquetResultsStore
 
     first_dir = tmp_path / "first"
@@ -967,16 +966,13 @@ def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
 
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                # `run(..., results_store=)` saves under a run registration rather than
-                # the readout spec hash these assertions read; kept on the legacy route.
-                rows = bound_analysis(resolver).run(store=store)
+                result = run(experiment, resolver, results_store=store)
             assert any(
                 isinstance(item.message, IncrementWarning)
                 and item.message.code == "analysis.cuped.covariate_unused"
                 for item in caught
             )
-            assert rows.metadata is not None
-            hashes.append(rows.metadata.analysis_spec_hash)
+            hashes.append(result.run.analysis_spec_hash)
         finally:
             resolver.close()
             con.disconnect()
@@ -986,6 +982,7 @@ def test_changed_fact_sql_changes_persisted_spec_identity(tmp_path: Path):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_fresh_artifact_generation_preserves_content_digest(tmp_path: Path):
+    from increment import run
     from increment.store import ParquetResultsStore
 
     result_store = ParquetResultsStore(tmp_path / "runs")
@@ -1000,23 +997,19 @@ def test_fresh_artifact_generation_preserves_content_digest(tmp_path: Path):
         artifact_store, second, expected_context=context
     )
     try:
-        first_rows = bound_analysis(first_resolver).run(store=result_store)
-        second_rows = bound_analysis(second_resolver).run(store=result_store)
-        first_cells = first_rows.as_cells()
-        second_cells = second_rows.as_cells()
+        first_run = run(first_experiment, first_resolver, results_store=result_store).run
+        second_run = run(second_experiment, second_resolver, results_store=result_store).run
+        first_cells = first_run.cells
+        second_cells = second_run.cells
         first_digests = {cell.identity.source_content_digest for cell in first_cells}
         second_digests = {cell.identity.source_content_digest for cell in second_cells}
-        assert first_rows.metadata is not None
-        assert second_rows.metadata is not None
-        assert first_rows.metadata.analysis_spec_hash == second_rows.metadata.analysis_spec_hash
-        assert first_rows.metadata.analysis_spec_hash is not None
-        assert second_rows.metadata.analysis_spec_hash is not None
-        assert first_rows.metadata.scope.snapshot_id != second_rows.metadata.scope.snapshot_id
+        assert first_run.metadata is not None
+        assert second_run.metadata is not None
+        assert first_run.analysis_spec_hash == second_run.analysis_spec_hash
+        assert first_run.metadata.scope.snapshot_id != second_run.metadata.scope.snapshot_id
         assert (
-            result_store.open_run(
-                "new_onboarding_v2", first_rows.metadata.analysis_spec_hash
-            ).run.run_id
-            == second_rows.metadata.run_id
+            result_store.open_run("new_onboarding_v2", first_run.analysis_spec_hash).run.run_id
+            == second_run.run_id
         )
         assert None not in first_digests
         assert None not in second_digests

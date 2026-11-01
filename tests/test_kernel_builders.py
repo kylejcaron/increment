@@ -13,7 +13,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import Analysis, MetricSpec, Randomized, RunResult, Winsorization, run
+from increment import MetricSpec, Randomized, RunResult, Winsorization, run
 from increment.builders import from_definitions, from_frame, from_moments
 from increment.errors import CodedError, IncrementWarning
 from increment.kernel.contracts import Registration, Scope
@@ -89,7 +89,7 @@ def test_package_import_does_not_require_fcntl():
         [
             sys.executable,
             "-c",
-            "import sys; sys.modules['fcntl'] = None; from increment import Analysis; Analysis",
+            "import sys; sys.modules['fcntl'] = None; from increment import from_definitions, run",
         ],
         check=True,
         capture_output=True,
@@ -164,7 +164,7 @@ def test_frame_run_matches_analysis_run():
         assert actual_cell.summary.upper == pytest.approx(expected_cell.summary.upper, rel=1e-9)
 
 
-def test_analysis_summary_facade_delegates_to_public_builder():
+def test_frame_builder_records_source_reference_fields():
 
     analysis = from_frame(
         _frame(),
@@ -261,6 +261,8 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
 
 @pytest.mark.integration
 def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_con):
+    from increment import _exploratory
+
     experiment, resolver = from_definitions(
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
@@ -269,10 +271,8 @@ def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_c
     parent_names = tuple(item.name for item in bound_resolver.binding.session._materialized)
     assert parent_names
 
-    analysis = cast(Any, Analysis.__new__(Analysis))
-    analysis._binding = bound_resolver.binding
-    added = analysis._exploratory_metrics(["aov"], caller="run")
-    exploratory = analysis._exploratory_analysis(added, caller="run")._binding
+    added = _exploratory.select_exploratory(bound_resolver.binding, ["aov"], caller="run")
+    exploratory = _exploratory.exploratory_sibling(bound_resolver.binding, added, caller="run")
 
     def resolver_with_binding(binding: Any) -> Any:
         derived_resolver = copy.copy(bound_resolver)

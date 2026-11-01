@@ -17,7 +17,6 @@ import pyarrow as pa
 import pytest
 
 from increment import (
-    Analysis,
     from_definitions,
     from_frame,
     from_moments,
@@ -206,7 +205,7 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         cast(Any, resolver).close()
 
 
-def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
+def test_mixed_assignment_refusal_repeats_for_pinned_public_runs(tmp_path):
     events = _events(n_per_arm=2)
     rows = events.to_pylist()
     control_assignment = next(
@@ -216,32 +215,27 @@ def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows, schema=events.schema))
     evidence_cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
-    analysis = Analysis.from_definitions(
-        "exp",
+    experiment, resolver = from_definitions(
         _write_defs(tmp_path),
         con,
+        experiment_name="exp",
         on_mixed_assignment="error",
         source_snapshot_evidence=SourceSnapshotEvidence(
             evidence_cutoff, {"events": evidence_cutoff}
         ),
     )
     codes = []
-
-    def read_pinned_snapshot(snapshot: Analysis) -> Any:
+    try:
         for _ in range(2):
             with pytest.raises(InvalidRequestError) as raised:
-                snapshot.unit_counts()
+                run(experiment, resolver)
             codes.append(raised.value.code)
-        return None
-
-    try:
-        analysis.dashboard_snapshot(read_pinned_snapshot, metrics=analysis.metrics)
         assert codes == [
             "query.integrity.mixed_assignment_units",
             "query.integrity.mixed_assignment_units",
         ]
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 def test_kernel_run_preserves_triggered_population_identity(tmp_path):
@@ -2349,6 +2343,7 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
 @pytest.mark.slow
 def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
     from increment._dashboard_capture import dashboard_group_data
+    from increment.dashboard import DashboardConfig, prepare_dashboard
     from increment.workflows import allocation_history
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
@@ -2439,7 +2434,9 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         for operation, outcome_id in (
             (
-                lambda: dashboard_group_data(adopted[1].binding, metrics=metrics(*adopted)),
+                lambda: prepare_dashboard(
+                    *adopted, config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5})
+                ),
                 "dashboard_artifact_refused",
             ),
             (
@@ -2452,7 +2449,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             expected_code = (
                 "evidence.assignment.identity_unavailable"
                 if outcome_id == "allocation_artifact_refused"
-                else "evidence.operation_unavailable"
+                else "dashboard.unsupported_experiment"
             )
             assert refused.value.code == expected_code
             assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")

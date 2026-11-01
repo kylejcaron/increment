@@ -56,7 +56,7 @@ tests/test_cuped_covariate_sources.py 1
 tests/test_cuped_cross_route_consistency.py 2
 tests/test_cuped_evidence.py 2
 tests/test_cuped_review_regressions.py 1
-tests/test_cuped_route_admission.py 9
+tests/test_cuped_route_admission.py 8
 tests/test_cuped_warehouse_cells.py 4
 tests/test_dashboard.py 1
 tests/test_dashboard_capture.py 2
@@ -149,7 +149,7 @@ tests/logged_policy/test_estimator.py 2
 tests/oracles/generate/gen_dml_oracle.py 1
 tests/oracles/generate/gen_winsor_positive_roots.py 1
 tests/oracles/test_winsor_positive_roots_oracle.py 1
-tests/parity_harness/cases.py 4
+tests/parity_harness/cases.py 2
 tests/power/_sequential.py 11
 tests/power/test_binomial_planning.py 27
 tests/power/test_calibration.py 1
@@ -220,6 +220,7 @@ tests/test_frame_specs.py 2
 tests/test_frame_switchback.py 3
 tests/test_frame_window_parity.py 2
 tests/test_imports.py 1
+tests/test_kernel_builders.py 1
 tests/test_moment_plan_parity.py 2
 tests/test_multiplicity_disclosure.py 1
 tests/test_plan_compatibility.py 3

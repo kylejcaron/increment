@@ -162,11 +162,13 @@ source_refs: Named source declarations to bind or verify.
 ctx: Optional execution context receiving resolved providers.
 expected_digest: Expected digest for a bound source provider.
 portable: Whether a serialized experiment must omit runtime-only values.
-args: Constructor arguments forwarded to the established Analysis builder.
-kwargs: Named constructor arguments forwarded to the established Analysis builder.
+args: Positional builder arguments forwarded to the builder for the selected frame shape.
+kwargs: Named builder arguments forwarded to the builder for the selected frame shape.
 shape: Unit-summary or unit-panel layout selected from a frame.
 estimator_id: Registered estimator whose declaration is checked.
 views: Declared experiment scopes selected for one shared execution.
 capture: Sequential checkpoint captured before a run reads its views.
 execution_context: Open shared evidence capture that a run reuses instead of reading its source again.
 experiment: Experiment declaration to execute.
+config: Dashboard display configuration supplied with an experiment.
+view: Dashboard Explore view to load from a prepared snapshot.

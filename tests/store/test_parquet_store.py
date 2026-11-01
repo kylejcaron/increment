@@ -41,17 +41,6 @@ def _analysis(*, control="control", treatment="treatment", metrics=None):
     )
 
 
-def _facade_analysis():
-    return Analysis.from_unit_summary(
-        pd.DataFrame({**_FRAME, "arm": ["control"] * 4 + ["treatment"] * 4}),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"value": "mean"},
-        experiment_id="exp",
-    )
-
-
 def test_latest_run_identity_includes_the_effective_plan(tmp_path):
     from increment.semantics.models import AnalysisPlan
 
@@ -217,29 +206,29 @@ def _run(
     )
 
 
-def test_analysis_run_persists_public_cells_without_identity_rewrites(tmp_path):
-    analysis = _facade_analysis()
+def test_saved_run_cells_keep_their_identity_and_provenance(tmp_path):
+    experiment, resolver = _analysis()
     store = ParquetResultsStore(tmp_path)
     try:
-        rows = analysis.run(store=store)
-        run = store.open_run("exp", rows.metadata.analysis_spec_hash, rows.metadata.run_id).run
+        result = run_views(experiment, resolver, results_store=store)
+        handle = store.open_run("exp", result.run.analysis_spec_hash, result.run.run_id)
+        run = handle.run
         cells = run.cells
         assert run.metadata is not None
         changed = replace(run, metadata=run.metadata.model_copy(update={"coherence": "live"}))
         assert changed.manifest_hash != run.manifest_hash
         assert cells
+        assert result.cells == cells
         assert all(cell.identity.source_snapshot_id for cell in cells)
         assert all(cell.identity.source_content_digest for cell in cells)
         assert all(
             cell.identity.source_content_digest == cell.provenance.source_content_digest
             for cell in cells
         )
-        assert store.open_run("exp", run.analysis_spec_hash, run.run_id).envelope().cells == cells
-        public_identity = rows.as_cells()[0].identity
-        handle = store.open_run("exp", run.analysis_spec_hash, run.run_id)
-        assert handle.get(public_identity)
+        assert handle.envelope().cells == cells
+        assert handle.get(result.cells[0].identity)
     finally:
-        analysis.close()
+        resolver.close()
 
 
 def test_saved_readout_json_keeps_its_persisted_cell_identity():

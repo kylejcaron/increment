@@ -1213,19 +1213,14 @@ def _dashboard_group_data_case() -> ParityCase:
                 prepare_dashboard(*bound, config=_dashboard_config())
             assert caught.value.code == "dashboard.unsupported_experiment"
             if path == "from_unit_day_artifact":
-                from increment._binding import binding_for
-                from increment._dashboard_capture import dashboard_group_data
                 from tests.capability_consumers_auxiliary import assert_expected
 
-                expected = assert_expected(
+                assert_expected(
                     "triggered_auxiliary_reads",
                     "dashboard_artifact_refused",
                     kind="refused",
-                    code="evidence.operation_unavailable",
+                    code=caught.value.code,
                 )
-                with pytest.raises(CodedError) as caught:
-                    dashboard_group_data(binding_for(*bound), metrics=workflows.metrics(*bound))
-                assert caught.value.code == expected.expected.codes[0]
             return
         connection = ds.duckdb_connection(ds.event_rows())
         try:
