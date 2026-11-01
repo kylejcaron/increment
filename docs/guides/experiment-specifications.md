@@ -342,8 +342,10 @@ only_daily = run(exp, resolver, views=(daily,))
 
 Pass `results_store=` to save a run and `decision_log=` to record its final
 family decisions; either may be used alone, and `run_id=` names the run (an ID
-is generated when it is omitted). Both are checked against the experiment's
-registration before any data is read, and a refused run writes nothing:
+is generated when it is omitted, and an empty ID refuses with
+`store.run.identity_incomplete` before any data is read). Both are checked
+against the experiment's registration before any data is read, and a refused
+run writes nothing:
 switchback contrasts refuse with `wire.procedure.contrast_context`, methods
 without a portable implementation reference with
 `wire.procedure.runtime_method`, and a registration that differs from the

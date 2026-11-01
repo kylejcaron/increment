@@ -1109,6 +1109,35 @@ def test_live_winsor_effect_preserves_unbounded_and_undefined_endpoints():
             analysis.close()
 
 
+def test_public_run_refuses_an_empty_run_id_before_reads():
+    from increment import from_frame
+    from increment.errors import CodedError
+    from tests.test_kernel_review_regressions import _frame_read_calls
+
+    experiment, resolver = from_frame(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "value": [1.0, 2.0, 2.0, 3.0],
+            }
+        ),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
+        run(experiment, resolver, run_id="")
+
+    assert (error.value.code, error.value.context["field"]) == (
+        "store.run.identity_incomplete",
+        "run_id",
+    )
+    assert reads == []
+
+
 def test_public_run_rejects_registration_that_differs_from_analysis_plan(tmp_path):
     from dataclasses import replace
 

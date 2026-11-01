@@ -32,6 +32,7 @@ from increment.kernel.ports import (
     RunRecord,
     program_store_operations,
 )
+from increment.kernel.program_refusals import refuse_store
 from increment.result_envelope import AnalysisEnvelope, ResultCell, _cell_order
 
 if TYPE_CHECKING:
@@ -1102,6 +1103,12 @@ def run(  # noqa: PLR0913
                 "Saving or identifying a run requires a resolver returned by a module builder",
                 code="kernel.run.invalid_input",
                 context={"fields": identified},
+            )
+        if run_id is not None and not run_id:
+            refuse_store(
+                "store.run.identity_incomplete",
+                "A complete run identity is required",
+                field="run_id",
             )
         if results_store is not None or decision_log is not None:
             _preflight_persistence(

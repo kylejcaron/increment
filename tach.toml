@@ -1372,5 +1372,6 @@ depends_on = [
   "increment.kernel",
   "increment.result_envelope",
   "increment.kernel.ports",
+  "increment.kernel.program_refusals",
   "increment.decide",
 ]
