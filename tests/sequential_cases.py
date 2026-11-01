@@ -19,6 +19,7 @@ from increment.estimators import (
 )
 from increment.semantics.models import InferenceSpec, MeanMetric
 from increment.sequential_state import _capture_sequential_diagnostic_snapshot
+from tests.analysis_factory import bound_source, make_binding_like
 
 
 def registration(law="bernoulli", *, cells=None, alpha=Fraction(1, 20), models=None):
@@ -211,7 +212,7 @@ def declared_plan(
 
     ``public_mean=True`` swaps the private Gaussian diagnostic for the
     public ``scalar_mean`` asymptotic law on ``mean`` metrics, so the
-    registration actually runs through ``Analysis.run()`` instead of only
+    registration actually runs through ``run()`` instead of only
     exercising the ``sequential.route.unsupported`` refusal. Only pass it
     when every declared metric is a ``mean`` metric under a fixed
     Randomized mechanism -- mixing a public asymptotic law with a private
@@ -283,11 +284,11 @@ def declared_plan(
     )
 
 
-def registered_native(analysis, *, metrics=None, public_mean=False):
-    """Bind declared models to a native fixture before requesting raw outcomes."""
-    from tests.analysis_factory import _native_source, make_analysis_like
+def registered_native(pair, *, metrics=None, public_mean=False):
+    """Bind declared models to a native ``(experiment, resolver)`` fixture before raw reads."""
 
-    source = _native_source(analysis)
+    _, resolver = pair
+    source = bound_source(resolver)
     context = source.context
     metrics = tuple(metrics if metrics is not None else context.metrics)
     plan = declared_plan(
@@ -297,4 +298,4 @@ def registered_native(analysis, *, metrics=None, public_mean=False):
         source_mapping=source._sequential_observation_mapping(),
         public_mean=public_mean,
     )
-    return make_analysis_like(analysis, list(metrics), plan=plan)
+    return make_binding_like(resolver, list(metrics), plan=plan)

@@ -9,7 +9,10 @@ from typing import cast
 
 import pytest
 
+from increment import Scope, from_definitions, run
+from increment.artifacts import publish_unit_day_artifact
 from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+from tests.analysis_factory import bound_source
 
 
 def _unit_rows(source, metric, **kwargs) -> UnitRows:
@@ -882,7 +885,6 @@ def test_definitions_source_preserves_raw_pool_and_wire(tmp_path, volatile, infe
     import narwhals as nw
     import pyarrow as pa
 
-    from increment.analysis import Analysis
     from increment.artifacts import SourceSnapshotEvidence
     from increment.estimation.winsor import raw_state_from_source
     from increment.results import LiftEstimate
@@ -965,19 +967,18 @@ experiments:
         from increment.errors import IncrementWarning
 
         with pytest.warns(IncrementWarning):
-            analysis = Analysis.from_definitions(
-                "e",
+            experiment, resolver = from_definitions(
                 definitions,
                 con,
+                experiment_name="e",
                 store="none",
                 source_snapshot_evidence=SourceSnapshotEvidence(
                     observation_cutoff_ts=datetime(2031, 1, 1, tzinfo=UTC),
                     complete_through_by_feed={"events": datetime(2031, 1, 1, tzinfo=UTC)},
                 ),
             )
-        from tests.analysis_factory import _native_source
 
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         metric = source.context.metrics[0]
         raw = raw_state_from_source(source, metric)
         assert raw.inference.method == inference_method
@@ -993,7 +994,10 @@ experiments:
         assert triggered.arm("C").values == ((2, 4) if volatile else (1, 2))
         if not volatile:
             native_results: dict[str, LiftEstimate] = {}
-            for row in analysis.run():
+            assigned_view = Scope(view="run", grain="total")
+            triggered_view = Scope(view="run", grain="total", population="triggered")
+            result = run(experiment.with_views(assigned_view, triggered_view), resolver)
+            for row in (*result.readout(assigned_view), *result.readout(triggered_view)):
                 assert isinstance(row, LiftEstimate)
                 native_results[row.analysis_population] = row
             assert set(native_results) == {"assigned", "triggered"}
@@ -1018,7 +1022,9 @@ experiments:
             loaded = load(definitions)
         context = artifact_context(loaded, loaded.experiments[0], "error")
         store = WarehouseArtifactStore(con, schema_name="artifacts")
-        reference = analysis.publish_unit_day_artifact(
+        reference = publish_unit_day_artifact(
+            experiment,
+            resolver,
             store,
             extensions=[
                 TriggerPopulationRequest(trigger_name="activated"),

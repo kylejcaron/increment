@@ -7,7 +7,14 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import (
+    AnalysisPlan,
+    MetricSpec,
+    Scope,
+    from_frame,
+    from_moments,
+    from_switchback_frame,
+)
 from increment._interpretation import (
     interpret_readout,
     readout_evidence_columns,
@@ -16,6 +23,8 @@ from increment._interpretation import (
 from increment.errors import WireFormatError
 from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.semantics.design import Randomized
+from increment.workflows import capture_sequential
+from tests.analysis_factory import view_readout
 
 
 def test_low_reliability_interval_is_qualified_in_shared_interpretation():
@@ -129,8 +138,9 @@ def _run_mean(
     plan = AnalysisPlan(primary="value", guardrails=["guard"] if guardrail else [])
     if guardrail:
         metrics.append(MetricSpec(name="guard", type="mean", preferred_direction="decrease"))
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         design=design,
@@ -139,9 +149,11 @@ def _run_mean(
         cluster=cluster,
     )
     return (
-        analysis.run(prior=prior)
+        view_readout(experiment, resolver, prior=prior)
         if sensitivity_methods is None
-        else analysis.run(sensitivity_methods=sensitivity_methods, prior=prior)
+        else view_readout(
+            experiment, resolver, sensitivity_methods=sensitivity_methods, prior=prior
+        )
     )
 
 
@@ -166,25 +178,28 @@ def test_directional_binomial_guardrail_projection_uses_its_set_alpha():
             for index in range(500)
         ]
     )
-    results = Analysis.from_unit_summary(
-        data,
-        unit="unit",
-        group="arm",
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-        metrics=[
-            MetricSpec(name="revenue", type="mean"),
-            MetricSpec(
-                name="complaints",
-                type="conversion",
-                preferred_direction="decrease",
+    results = view_readout(
+        *from_frame(
+            data,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
             ),
-        ],
-        plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
-    ).run()
+            metrics=[
+                MetricSpec(name="revenue", type="mean"),
+                MetricSpec(
+                    name="complaints",
+                    type="conversion",
+                    preferred_direction="decrease",
+                ),
+            ],
+            plan=AnalysisPlan(primary="revenue", guardrails=["complaints"]),
+        )
+    )
     guardrail = next(row for row in results if row.metric == "complaints")
     assert isinstance(guardrail, LiftEstimate)
     assert guardrail.binomial_set is not None
@@ -286,17 +301,21 @@ def test_encouragement_missing_allocation_names_its_declaration():
 
     frame = _mean_frame()
     frame["takeup"] = 0
-    results = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        design=Encouragement(
-            control_group="control",
-            uptake=UptakeSpec(fact="takeup"),
-            allocation_scheme="independent",
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            design=Encouragement(
+                control_group="control",
+                uptake=UptakeSpec(fact="takeup"),
+                allocation_scheme="independent",
+            ),
+            metrics=[MetricSpec(name="value", type="mean")],
         ),
-        metrics=[MetricSpec(name="value", type="mean")],
-    ).run(estimands=("itt",))
+        estimands=("itt",),
+    )
     interpretation = _interpret(results)
     assert interpretation.groups[0].integrity_code == "integrity.allocation_missing_or_nonconstant"
     text = render_readout_text(interpretation)
@@ -325,16 +344,18 @@ def test_advisory_context_is_immutable_after_construction_and_restore():
 def test_roster_completeness_is_distinct_from_view_partiality():
     from tests.test_analysis_moments import _legacy_fixed10_rows
 
-    results = Analysis.from_moments(
-        _legacy_fixed10_rows(),
-        metrics=[MetricSpec(name="revenue", type="mean")],
-        control="control",
-    ).run()
-    source = next(iter(cast(Any, results).metadata.scope.by_source.values()))
+    results = view_readout(
+        *from_moments(
+            _legacy_fixed10_rows(),
+            metrics=[MetricSpec(name="revenue", type="mean")],
+            control="control",
+        )
+    )
+    source = next(iter(results.metadata.scope.by_source.values()))
     roster = next(item for item in source.rosters if item.analysis_population == "assigned")
     assert source.decision_complete_by_population["assigned"] is False
     assert roster.complete is False
-    assert cast(Any, results)[0].sampling_available is True
+    assert results[0].sampling_available is True
     interpretation = _interpret(results)
     group = interpretation.groups[0]
     assert group.partial is False
@@ -386,19 +407,22 @@ def test_registered_cell_failure_renders_its_spec_explanation():
             )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        results = Analysis.from_unit_summary(
-            pd.DataFrame(rows),
-            unit="unit",
-            group="arm",
-            control="control",
-            metrics=[
-                MetricSpec(name="value", type="mean"),
-                MetricSpec(
-                    name="guard", type="mean", preferred_direction="decrease", missing="drop"
-                ),
-            ],
-            plan=AnalysisPlan(primary="value", guardrails=["guard"]),
-        ).run()
+        results = view_readout(
+            *from_frame(
+                pd.DataFrame(rows),
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[
+                    MetricSpec(name="value", type="mean"),
+                    MetricSpec(
+                        name="guard", type="mean", preferred_direction="decrease", missing="drop"
+                    ),
+                ],
+                plan=AnalysisPlan(primary="value", guardrails=["guard"]),
+            )
+        )
     interpretation = _interpret(results)
     guard = next(
         cell
@@ -411,7 +435,7 @@ def test_registered_cell_failure_renders_its_spec_explanation():
     assert expected is not None and not expected.startswith(guard.failure_code)
     assert "guard" in expected and "treatment" in expected
     assert "control" in expected and "'control'" not in expected
-    source_id = next(iter(cast(Any, results).metadata.scope.by_source))
+    source_id = next(iter(results.metadata.scope.by_source))
     columns = cast(
         Any,
         readout_evidence_columns(interpretation, guard.key, source_snapshot_id=source_id),
@@ -540,14 +564,19 @@ def test_ratio_denominator_precision_note_is_an_interpreted_advisory():
                     "sessions": 0.1 if i % 2 else 20.0,
                 }
             )
-    results = Analysis.from_unit_summary(
-        pd.DataFrame(rows),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")],
-        plan=AnalysisPlan(primary="rps"),
-    ).run()
+    results = view_readout(
+        *from_frame(
+            pd.DataFrame(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")
+            ],
+            plan=AnalysisPlan(primary="rps"),
+        )
+    )
     text = render_readout_text(_interpret(results))
     assert "ratio_denominator_precision" in text
     assert results.metadata is not None
@@ -576,16 +605,21 @@ def test_ratio_denominator_skew_advisory_survives_saving_with_warnings_suppresse
     ]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        results = Analysis.from_unit_summary(
-            pd.DataFrame(rows),
-            unit="unit",
-            group="arm",
-            control="control",
-            metrics=[
-                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")
-            ],
-            plan=AnalysisPlan(primary="rps"),
-        ).run()
+        results = view_readout(
+            *from_frame(
+                pd.DataFrame(rows),
+                shape="summary",
+                unit="unit",
+                group="arm",
+                control="control",
+                metrics=[
+                    MetricSpec(
+                        name="rps", type="ratio", numerator="revenue", denominator="sessions"
+                    )
+                ],
+                plan=AnalysisPlan(primary="rps"),
+            )
+        )
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata is not None
     codes = {advisory.code for record in restored.metadata.cells for advisory in record.advisories}
@@ -662,26 +696,28 @@ def test_switchback_contrast_is_sampling_available_and_renders_its_effect():
                             "value": float(cycle + period + step + (group == "treatment")),
                         }
                     )
-    results = Analysis.from_switchback_panel(
-        pd.DataFrame(rows),
-        unit="unit",
-        cycle="cycle",
-        period="period",
-        step="step",
-        group="group",
-        metrics={"value": "mean"},
-        identification=Randomized(
-            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-        ),
-        assignment=SwitchbackAssignment(
-            sequence=IndependentBernoulliOrder(probability_ct=0.5),
-            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-        ),
-        contrast_references={"value": UnitCycleTApproximation()},
-    ).run()
+    results = view_readout(
+        *from_switchback_frame(
+            pd.DataFrame(rows),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"value": "mean"},
+            identification=Randomized(
+                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+            ),
+            contrast_references={"value": UnitCycleTApproximation()},
+        )
+    )
     interpretation = _interpret(results)
     assert interpretation.groups[0].available_cells
-    result = cast(Any, results[0])
+    result = results[0]
     text = render_readout_text(interpretation)
     assert f"{result.estimate.value:.6g}" in text
     assert f"{result.null_abs:.6g}" in text
@@ -727,13 +763,17 @@ def test_encouragement_headlines_identify_itt_and_late():
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        results = Analysis.from_unit_summary(
-            pd.DataFrame(rows),
-            unit="unit",
-            group="arm",
-            design=design,
-            metrics=[MetricSpec(name="value", type="mean")],
-        ).run(estimands=("itt", "late"))
+        results = view_readout(
+            *from_frame(
+                pd.DataFrame(rows),
+                shape="summary",
+                unit="unit",
+                group="arm",
+                design=design,
+                metrics=[MetricSpec(name="value", type="mean")],
+            ),
+            estimands=("itt", "late"),
+        )
     headlines = [line for line in str(results).splitlines() if line.startswith("value: ")]
 
     assert any("estimand=itt" in line for line in headlines)
@@ -744,14 +784,18 @@ def test_encouragement_headlines_identify_itt_and_late():
 def test_breakout_headline_names_dimension_value():
     frame = _mean_frame()
     frame["country"] = ["US", "CA"] * (len(frame) // 2)
-    rows = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="value", type="mean")],
-        breakouts=["country"],
-    ).run_breakout()
+    rows = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="value", type="mean")],
+            breakouts=["country"],
+        ),
+        Scope(view="breakout", grain="total"),
+    )
     headlines = [line for line in str(rows).splitlines() if " → " in line]
 
     assert any("country=US" in line for line in headlines)
@@ -811,30 +855,38 @@ def test_effect_carriers_and_winsor_geometry_render_without_reinversion():
                     "converted": int(group == "treatment" and i % 2 == 0),
                 }
             )
-    binary = Analysis.from_unit_summary(
-        pd.DataFrame(binary_rows),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="converted", type="conversion")],
-        plan=AnalysisPlan(primary="converted"),
-    ).run()
-    binary_row = cast(Any, binary[0])
+    binary = view_readout(
+        *from_frame(
+            pd.DataFrame(binary_rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="converted", type="conversion")],
+            plan=AnalysisPlan(primary="converted"),
+        )
+    )
+    binary_row = binary[0]
     assert binary_row.lift is None and binary_row.binomial_set is not None
     binary_interpretation = _interpret(binary)
     assert binary_interpretation.groups[0].available_cells
     assert "binomial" in render_readout_text(binary_interpretation)
 
-    winsorized = Analysis.from_unit_summary(
-        _mean_frame(),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="value", type="mean", winsorization={"upper_percentile": 0.75})],
-        plan=AnalysisPlan(primary="value"),
-    ).run()
+    winsorized = view_readout(
+        *from_frame(
+            _mean_frame(),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(name="value", type="mean", winsorization={"upper_percentile": 0.75})
+            ],
+            plan=AnalysisPlan(primary="value"),
+        )
+    )
     winsor_text = render_readout_text(_interpret(winsorized))
-    winsor_row = cast(Any, winsorized[0])
+    winsor_row = winsorized[0]
     assert winsor_row.confidence_set.qualification in winsor_text
     assert f"{winsor_row.confidence_set.relative.lower.value:.6g}" in winsor_text
 
@@ -852,15 +904,18 @@ def test_nonpositive_mean_keeps_sampling_available_additive_interval():
                 },
             )
         )
-    results = Analysis.from_unit_summary(
-        pd.DataFrame(rows),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="value", type="mean")],
-        plan=AnalysisPlan(primary="value"),
-    ).run()
-    row = cast(Any, results[0])
+    results = view_readout(
+        *from_frame(
+            pd.DataFrame(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="value", type="mean")],
+            plan=AnalysisPlan(primary="value"),
+        )
+    )
+    row = results[0]
     assert row.lift is None
     assert row.abs_diff is not None and row.abs_lb is not None and row.abs_ub is not None
     interpreted = _interpret(results)
@@ -877,19 +932,22 @@ def test_absolute_margin_renders_tested_additive_null():
     from increment.semantics.models import ExperimentMetric
 
     frame = _mean_frame()
-    results = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[
-            MetricSpec(name="value", type="mean"),
-            MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
-        ],
-        plan=AnalysisPlan(
-            primary="value", guardrails=[ExperimentMetric(metric="guard", margin_abs=0.5)]
-        ),
-    ).run()
+    results = view_readout(
+        *from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(name="value", type="mean"),
+                MetricSpec(name="guard", type="mean", preferred_direction="decrease"),
+            ],
+            plan=AnalysisPlan(
+                primary="value", guardrails=[ExperimentMetric(metric="guard", margin_abs=0.5)]
+            ),
+        )
+    )
     guard = next(row for row in results if row.metric == "guard")
     assert guard.null_abs is not None
     text = render_readout_text(_interpret(results))
@@ -900,8 +958,9 @@ def test_constant_sensitivity_guard_does_not_create_orphan_advisory_key():
     from increment.estimation.engine import Method
 
     frame = _mean_frame(constant_guard=True)
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         frame,
+        shape="summary",
         unit="unit",
         group="arm",
         control="control",
@@ -912,7 +971,9 @@ def test_constant_sensitivity_guard_does_not_create_orphan_advisory_key():
         plan=AnalysisPlan(primary="value", guardrails=["guard"]),
     )
     with pytest.warns(Warning):
-        results = analysis.run(
+        results = view_readout(
+            experiment,
+            resolver,
             decision_method=Method(name="decision"),
             sensitivity_methods=(Method(name="sensitivity"),),
         )
@@ -924,9 +985,9 @@ def test_finalized_registered_bernoulli_does_not_get_open_ended_approximation_ad
 
     metric = MetricSpec(name="outcome", type="conversion")
     plan = _plan([metric], "bernoulli")
-    analysis = _analysis(_frame([0] * 40, [1, 0] * 20), [metric], plan)
-    analysis.capture_sequential(finalized=True)
-    results = analysis.run()
+    experiment, resolver = _analysis(_frame([0] * 40, [1, 0] * 20), [metric], plan)
+    capture_sequential(experiment, resolver, finalized=True)
+    results = view_readout(experiment, resolver)
     row = results[0]
     assert row.lift is None
     assert row.sequential_result is not None
@@ -962,8 +1023,9 @@ def test_encouragement_late_advisory_survives_suppressed_warning_and_json_restor
         one_sided=True,
         min_first_stage_z=0.001,
     )
-    analysis = Analysis.from_unit_summary(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="summary",
         unit="unit",
         group="arm",
         design=design,
@@ -973,7 +1035,7 @@ def test_encouragement_late_advisory_survives_suppressed_warning_and_json_restor
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        results = analysis.run(estimands=("late",))
+        results = view_readout(experiment, resolver, estimands=("late",))
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     late_records = [record for record in restored.metadata.cells if record.cell.estimand == "late"]
     assert late_records
@@ -996,14 +1058,18 @@ def test_posterior_unavailability_reason_is_separate_from_sampling_availability(
         for group in ("control", "treatment")
         for i in range(40)
     ]
-    results = Analysis.from_unit_summary(
-        pd.DataFrame(rows),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="converted", type="conversion")],
-        plan=AnalysisPlan(primary="converted"),
-    ).run(prior=Normal(mu=0, sigma=1))
+    results = view_readout(
+        *from_frame(
+            pd.DataFrame(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="converted", type="conversion")],
+            plan=AnalysisPlan(primary="converted"),
+        ),
+        prior=Normal(mu=0, sigma=1),
+    )
     from increment.tables import readout_table
 
     table_html = readout_table(results).gt().as_raw_html()
@@ -1083,14 +1149,17 @@ def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
         for group in ("control", "treatment")
         for i in range(40)
     ]
-    result = Analysis.from_unit_summary(
-        pd.DataFrame(rows),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="converted", type="conversion")],
-        plan=AnalysisPlan(primary="converted"),
-    ).run()[0]
+    result = view_readout(
+        *from_frame(
+            pd.DataFrame(rows),
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="converted", type="conversion")],
+            plan=AnalysisPlan(primary="converted"),
+        )
+    )[0]
     from increment.estimation.results import LiftEstimate
 
     assert isinstance(result, LiftEstimate)

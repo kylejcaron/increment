@@ -7,21 +7,24 @@ after the facade is implemented.
 from __future__ import annotations
 
 import math
+import shutil
 import warnings
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import narwhals as nw
 import numpy as np
 import pytest
 
-from increment import Analysis
+from increment import Scope, from_definitions, from_frame, from_moments, run
 from increment._frame_moments import _asof_unit_rows
 from increment.breakout.estimates import DailyLiftEstimate, DailyMetricValue
-from increment.errors import InvalidRequestError, UnsupportedRequestError
+from increment.errors import CapabilityError, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.encouragement import estimate_encouragement
+from increment.evidence import BreakoutIdentity
 from increment.frame import MetricSpec
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 from increment.semantics.models import (
@@ -31,8 +34,14 @@ from increment.semantics.models import (
     MultiplicitySpec,
     RetentionMetric,
 )
+from increment.workflows import capture_sequential, export_moments, metrics
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import held_source, make_analysis, make_analysis_like
+from tests.analysis_factory import (
+    held_source,
+    make_binding,
+    make_binding_like,
+    view_readout,
+)
 from tests.capability_consumers_scalar import UNBOUNDED_RETENTION_SEQUENTIAL, refused
 from tests.test_sequential_public_sources import gaussian_plan
 
@@ -159,7 +168,7 @@ def _analysis_with_country_breakout(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -251,7 +260,7 @@ def _analysis_with_daily_events(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -340,14 +349,15 @@ def _analysis_with_asof_events(con, *, sequential: bool = False):
             ],
         }
     )
-    return make_analysis(con, defs)
+    return make_binding(con, defs)
 
 
 @pytest.fixture(scope="module")
 def asof_events_values(con):
     """Plain ``run_asof()`` on the as-of fixture, computed once - the tests
     below assert different facets of one deterministic readout."""
-    return _analysis_with_asof_events(con).run_asof()
+    experiment, resolver = _analysis_with_asof_events(con)
+    return view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
 
 
 def test_run_asof_returns_running_total_frozen_after_window_close(asof_events_values):
@@ -390,9 +400,11 @@ def test_run_asof_differs_from_run_daily_on_the_same_data(con, asof_events_value
     in-window day, while run_asof (running total, its own internal
     masking) reports all three calendar days - the two views are not
     accidentally computing the same thing."""
-    analysis = _analysis_with_asof_events(con)
+    experiment, resolver = _analysis_with_asof_events(con)
 
-    daily_results = analysis.run_daily()
+    daily_results = view_readout(
+        experiment, resolver, Scope(view="daily", grain="daily", values=True)
+    )
     asof_results = asof_events_values
 
     assert {r.ds for r in daily_results} == {date(2025, 6, 1)}
@@ -589,11 +601,7 @@ def _analysis_with_asof_encouragement_events(
         }
     )
 
-    analysis = make_analysis(
-        con,
-        defs,
-        _design=_asof_encouragement_design(),
-    )
+    analysis = make_binding(con, defs, design=_asof_encouragement_design())
     return analysis
 
 
@@ -601,11 +609,15 @@ def test_analysis_run_native_encouragement_forwards_prior(con):
     from increment import Method
     from increment.estimation import Normal
 
-    analysis = _analysis_with_asof_encouragement_events(con)
+    experiment, resolver = _analysis_with_asof_encouragement_events(con)
     unadjusted = Method(name="unadjusted")
-    flat = analysis.run(estimands=("itt",), decision_method=unadjusted)[0]
-    shrunk = analysis.run(
-        estimands=("itt",), decision_method=unadjusted, prior=Normal(mu=0.0, sigma=0.01)
+    flat = view_readout(experiment, resolver, estimands=("itt",), decision_method=unadjusted)[0]
+    shrunk = view_readout(
+        experiment,
+        resolver,
+        estimands=("itt",),
+        decision_method=unadjusted,
+        prior=Normal(mu=0.0, sigma=0.01),
     )[0]
 
     assert flat.estimand == shrunk.estimand == "itt"
@@ -640,9 +652,11 @@ def test_run_asof_lift_reports_late_trend_for_native_encouragement_design(con):
     day 1, then freezes - a real as-of LATE *trend*, not a single
     number.
     """
-    analysis = _analysis_with_asof_encouragement_events(con)
+    experiment, resolver = _analysis_with_asof_encouragement_events(con)
 
-    results = analysis.run_asof_lift(estimands=("itt", "late"))
+    results = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof"), estimands=("itt", "late")
+    )
 
     by_day_estimand = defaultdict(list)
     for r in results:
@@ -737,8 +751,8 @@ def test_direct_asof_lift_requests_uptake_only_for_uptake_estimands(con):
     """Direct asof_lift keeps ITT-only requests independent of uptake moments."""
     from increment import readouts
 
-    analysis = _analysis_with_asof_encouragement_events(con)
-    source = cast(Any, held_source(analysis))
+    experiment, resolver = _analysis_with_asof_encouragement_events(con)
+    source = cast(Any, held_source(resolver))
 
     itt_and_late = readouts.asof_lift(source, metrics=["revenue"], estimands=("itt", "late"))
     assert {row.estimand for row in itt_and_late} == {"itt", "late"}
@@ -750,40 +764,57 @@ def test_direct_asof_lift_requests_uptake_only_for_uptake_estimands(con):
 @pytest.mark.integration
 def test_asof_completed_windows_wait_for_later_encouragement_window(con):
     """An encouragement as-of row waits for both declared windows to mature."""
-    analysis = _analysis_with_asof_encouragement_events(con)
-    analysis = make_analysis_like(
-        analysis,
-        [analysis.metrics[0].model_copy(update={"window_days": 1})],
+    experiment, resolver = _analysis_with_asof_encouragement_events(con)
+    experiment, resolver = make_binding_like(
+        resolver,
+        [metrics(experiment, resolver)[0].model_copy(update={"window_days": 1})],
         design=_asof_encouragement_design(uptake_window_days=3),
     )
 
-    assert analysis.run_asof(completed_windows_only=True) == []
-    assert analysis.run_asof_lift(estimands=("itt",), completed_windows_only=True) == []
+    assert (
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", values=True, completion_policy=True),
+        )
+        == []
+    )
+    assert (
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+            estimands=("itt",),
+        )
+        == []
+    )
 
 
 def _analysis_with_bounded_asof_encouragement_events(con, *, sequential: bool = False):
-    analysis = _analysis_with_asof_encouragement_events(
+    experiment, resolver = _analysis_with_asof_encouragement_events(
         con,
         events_table="asof_bounded_late_sequential_events"
         if sequential
         else "asof_bounded_late_events",
         sequential=sequential,
     )
-    analysis = make_analysis_like(
-        analysis,
-        [analysis.metrics[0].model_copy(update={"window_days": 1})],
+    experiment, resolver = make_binding_like(
+        resolver,
+        [metrics(experiment, resolver)[0].model_copy(update={"window_days": 1})],
         design=_asof_encouragement_design(uptake_window_days=1),
     )
-    return analysis
+    return experiment, resolver
 
 
 def test_native_encouragement_cuped_asof_late_identity(con):
     """Public as-of CUPED rows preserve the LATE/ITT-over-compliance identity."""
     from increment import Method
 
-    analysis = _analysis_with_bounded_asof_encouragement_events(con)
+    experiment, resolver = _analysis_with_bounded_asof_encouragement_events(con)
 
-    totals = analysis.run(
+    totals = view_readout(
+        experiment,
+        resolver,
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["revenue"],
         estimands=("itt", "compliance", "late"),
@@ -799,11 +830,13 @@ def test_native_encouragement_cuped_asof_late_identity(con):
         total_itt.abs_diff / total_compliance.require_lift().value
     )
 
-    asof = analysis.run_asof_lift(
+    asof = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", completion_policy=True),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["revenue"],
         estimands=("itt", "compliance", "late"),
-        completed_windows_only=True,
     )
     cuped_by_date = {ds: [row for row in asof if row.ds == ds] for ds in {r.ds for r in asof}}
     expected_dates = {date(2025, 2, 2), date(2025, 2, 3)}
@@ -827,17 +860,27 @@ def test_native_encouragement_always_valid_uses_finalized_windows(con):
     from increment.errors import CapabilityError, InvalidRequestError
     from tests.sequential_cases import registered_native
 
-    analysis = registered_native(
+    experiment, resolver = registered_native(
         _analysis_with_bounded_asof_encouragement_events(con, sequential=True)
     )
     with pytest.raises(InvalidRequestError) as unfinished:
-        analysis.run_asof_lift(estimands=("itt",))
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof"), estimands=("itt",))
     assert unfinished.value.code == "readout.encouragement.asof_completion"
     with pytest.raises(CapabilityError) as raised:
-        analysis.run_asof_lift(completed_windows_only=True, estimands=("late",))
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+            estimands=("late",),
+        )
     assert raised.value.code == "sequential.route.unsupported"
-    snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 3, 1))
-    results = analysis.run_asof_lift(completed_windows_only=True, estimands=("itt",))
+    snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 3, 1))
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", completion_policy=True),
+        estimands=("itt",),
+    )
     assert results and snapshot.records
     assert {row.estimand for row in results} == {"itt"}
     assert all(row.sequential_result is not None for row in results)
@@ -850,9 +893,9 @@ def test_run_asof_lift_returns_frozen_per_day_lift_estimates(con):
     FREEZES at day 0's value once each unit's window closes - the same
     frozen-value property as run_asof, now visible through the
     relative-lift estimator."""
-    analysis = _analysis_with_asof_events(con)
+    experiment, resolver = _analysis_with_asof_events(con)
 
-    results = analysis.run_asof_lift()
+    results = view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
 
     assert len(results) == 3  # 1 metric x 1 method x 1 treatment arm x 3 days
     for r in results:
@@ -882,9 +925,12 @@ def test_run_asof_lift_returns_the_registered_checkpoint(con):
     from tests.sequential_cases import registered_native
 
     original = _analysis_with_asof_events(con, sequential=True)
-    analysis = registered_native(original)
-    checkpoint = analysis.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
-    results = analysis.run_asof_lift(completed_windows_only=True)
+    original_experiment, original_resolver = original
+    experiment, resolver = registered_native(original)
+    checkpoint = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 7, 1))
+    results = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+    )
     assert len(results) == 1
     assert results[0].sequential_result is not None
     assert results[0].sequential_result.checkpoint.prefix_id == checkpoint.prefix_id
@@ -897,18 +943,21 @@ def test_run_asof_lift_returns_the_registered_checkpoint(con):
         for endpoint in (bounds.lower, bounds.upper)
     )
     assert "EndpointCertificate" not in rendered
-    assert {row.inference for row in original.run_asof_lift()} == {"fixed"}
+    unregistered = view_readout(
+        original_experiment, original_resolver, Scope(view="asof", grain="asof")
+    )
+    assert {row.inference for row in unregistered} == {"fixed"}
 
 
 def test_run_asof_and_run_asof_lift_empty_when_no_metrics(con):
     """Both un-broken-out as-of methods return [] when the experiment
     declares no metrics - mirrors run_daily/run_daily_lift's own
     empty-input contract."""
-    analysis = _analysis_with_daily_events(con)
-    analysis = make_analysis_like(analysis, [], plan=AnalysisPlan())
+    experiment, resolver = _analysis_with_daily_events(con)
+    experiment, resolver = make_binding_like(resolver, [], plan=AnalysisPlan())
 
-    assert analysis.run_asof() == []
-    assert analysis.run_asof_lift() == []
+    assert view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True)) == []
+    assert view_readout(experiment, resolver, Scope(view="asof", grain="asof")) == []
 
 
 def test_run_asof_completed_windows_only_raises_for_declared_unbounded_retention(con):
@@ -918,11 +967,11 @@ def test_run_asof_completed_windows_only_raises_for_declared_unbounded_retention
     contradicts it. Checked up front, before any query runs, same guard
     shape as run_daily's own. (Without the flag the same metric is
     accepted - covered separately.)"""
-    analysis = _analysis_with_daily_events(con)
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = _analysis_with_daily_events(con)
+    experiment, resolver = make_binding_like(
+        resolver,
         [
-            *analysis.metrics,
+            *metrics(experiment, resolver),
             RetentionMetric(
                 name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
             ),
@@ -930,7 +979,11 @@ def test_run_asof_completed_windows_only_raises_for_declared_unbounded_retention
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof(completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", values=True, completion_policy=True),
+        )
     assert raised.value.code == "breakout.retention.completion"
     assert raised.value.context["names"] == ("d7_retention",)
     assert raised.value.context["fn_name"] == "run_asof"
@@ -941,11 +994,11 @@ def test_run_asof_lift_completed_windows_only_raises_for_declared_unbounded_rete
     an unbounded RetentionMetric present in the experiment's
     metrics/guardrails - same up-front check as run_asof, never a
     partial-then-crash loop."""
-    analysis = _analysis_with_daily_events(con)
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = _analysis_with_daily_events(con)
+    experiment, resolver = make_binding_like(
+        resolver,
         [
-            *analysis.metrics,
+            *metrics(experiment, resolver),
             RetentionMetric(
                 name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
             ),
@@ -953,7 +1006,7 @@ def test_run_asof_lift_completed_windows_only_raises_for_declared_unbounded_rete
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift(completed_windows_only=True)
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True))
     assert raised.value.code == "breakout.retention.completion"
     assert raised.value.context["names"] == ("d7_retention",)
     assert raised.value.context["fn_name"] == "run_asof_lift"
@@ -963,38 +1016,61 @@ def test_run_asof_and_run_asof_lift_unaffected_without_retention_metric(con):
     """Neither method's new guard fires for an experiment whose declared
     metrics/guardrails contain no RetentionMetric - both still return
     their normal as-of results."""
-    analysis = _analysis_with_daily_events(con)
+    experiment, resolver = _analysis_with_daily_events(con)
 
-    assert analysis.run_asof() != []
-    assert analysis.run_asof_lift() != []
+    assert view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True)) != []
+    assert view_readout(experiment, resolver, Scope(view="asof", grain="asof")) != []
 
 
 def test_run_asof_metrics_override_excludes_retention_metric(con):
     """Passing `metrics=` scopes the call to non-Retention metrics even
     when the experiment's declared list contains a RetentionMetric."""
-    analysis = _analysis_with_daily_events(con)
+    experiment, resolver = _analysis_with_daily_events(con)
     retention = RetentionMetric(
         name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
     )
-    analysis = make_analysis_like(analysis, [*analysis.metrics, retention])
-    non_retention = [m for m in analysis.metrics if not isinstance(m, RetentionMetric)]
+    experiment, resolver = make_binding_like(resolver, [*metrics(experiment, resolver), retention])
+    non_retention = [m for m in metrics(experiment, resolver) if not isinstance(m, RetentionMetric)]
 
-    assert analysis.run_asof(metrics=non_retention) != []
-    assert analysis.run_asof_lift(metrics=non_retention) != []
+    assert (
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", values=True),
+            metrics=non_retention,
+        )
+        != []
+    )
+    assert (
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof"), metrics=non_retention)
+        != []
+    )
 
 
 @pytest.fixture(scope="module")
-def bounded_asof_values(con):
+def module_example_definitions(tmp_path_factory) -> Path:
+    """A module-wide copy so binding definitions cannot write into examples/."""
+    target = tmp_path_factory.mktemp("asof") / "example-definitions"
+    shutil.copytree(Path("examples/definitions"), target)
+    return target
+
+
+@pytest.fixture(scope="module")
+def bounded_asof_values(con, module_example_definitions):
     """``run_asof`` over the bounded d7 retention metric on new_onboarding_v2,
     computed once - shared by the bounded-band as-of tests."""
-    analysis = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    experiment, resolver = from_definitions(
+        module_example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     bounded = RetentionMetric(
         name="d7_retention_bounded",
         entity="user_id",
         fact="page_view",
         threshold_days=(7, 14),
     )
-    return analysis.run_asof(metrics=[bounded])
+    return view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof", values=True), metrics=[bounded]
+    )
 
 
 def test_run_asof_accepts_bounded_retention_metric(bounded_asof_values):
@@ -1024,20 +1100,24 @@ def test_run_asof_accepts_bounded_retention_metric(bounded_asof_values):
     assert by_key[(maturity_day, "treatment")].value.value == pytest.approx(1.0)
 
 
-def test_run_asof_lift_accepts_bounded_retention_metric(con):
-    analysis = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+def test_run_asof_lift_accepts_bounded_retention_metric(con, example_definitions):
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     bounded = RetentionMetric(
         name="d7_retention_bounded",
         entity="user_id",
         fact="page_view",
         threshold_days=(7, 14),
     )
-    estimates = analysis.run_asof_lift(metrics=[bounded])
+    estimates = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof"), metrics=[bounded]
+    )
     assert estimates
     assert all(e.ds_basis == "calendar" for e in estimates)
 
 
-def test_run_asof_accepts_unbounded_retention_metric(con):
+def test_run_asof_accepts_unbounded_retention_metric(con, example_definitions):
     """The as-of view reports an unbounded band [N, inf): the series
     opens at first exposure + threshold and each unit's value ratchets
     on its first return at or past the threshold, never freezing.
@@ -1046,12 +1126,16 @@ def test_run_asof_accepts_unbounded_retention_metric(con):
     u1/u3/u4 return inside the band -> y=1; u2 returns on day 6, before the
     band opens -> y=0. Final levels are control=0.5, treatment=1.0.
     """
-    analysis = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     unbounded = RetentionMetric(
         name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
     )
 
-    results = analysis.run_asof(metrics=[unbounded])
+    results = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof", values=True), metrics=[unbounded]
+    )
     assert results
     assert min(r.ds for r in results) == date(2025, 1, 27)
     last_day = max(r.ds for r in results)
@@ -1062,44 +1146,60 @@ def test_run_asof_accepts_unbounded_retention_metric(con):
     assert control_value.value == pytest.approx(0.5)
     assert treatment_value.value == pytest.approx(1.0)
 
-    estimates = analysis.run_asof_lift(metrics=[unbounded])
+    estimates = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof"), metrics=[unbounded]
+    )
     assert estimates
     assert all(e.ds_basis == "calendar" for e in estimates)
 
 
-def test_run_asof_completed_windows_only_rejects_unbounded_retention_metric(con):
-    analysis = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+def test_run_asof_completed_windows_only_rejects_unbounded_retention_metric(
+    con, example_definitions
+):
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     unbounded = RetentionMetric(
         name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
     )
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof(metrics=[unbounded], completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", values=True, completion_policy=True),
+            metrics=[unbounded],
+        )
     assert raised.value.code == "breakout.retention.completion"
     assert raised.value.context["names"] == ("d7_retention",)
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift(metrics=[unbounded], completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", completion_policy=True),
+            metrics=[unbounded],
+        )
     assert raised.value.code == "breakout.retention.completion"
     assert raised.value.context["names"] == ("d7_retention",)
 
 
-def test_run_asof_lift_unbounded_retention_refuses_sequential_capture(con):
+def test_run_asof_lift_unbounded_retention_refuses_sequential_capture(con, example_definitions):
     from increment.errors import CapabilityError
     from tests.sequential_cases import registered_native
 
-    original = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    original = from_definitions(example_definitions, con, experiment_name="new_onboarding_v2")
     metric = RetentionMetric(
         name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
     )
-    analysis = registered_native(original, metrics=[metric])
+    experiment, resolver = registered_native(original, metrics=[metric])
     refusal = refused(
         UNBOUNDED_RETENTION_SEQUENTIAL,
         "definitions-unbounded-observation-refused",
-        lambda: analysis.capture_sequential(finalized=True, as_of=date(2025, 3, 1)),
+        lambda: capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 3, 1)),
     )
     assert isinstance(refusal, CapabilityError)
 
 
-def test_unbounded_retention_cube_has_no_checkpoint_to_replay(con, tmp_path):
+def test_unbounded_retention_cube_has_no_checkpoint_to_replay(con, tmp_path, example_definitions):
     """A portable cube only replays a checkpoint captured upstream. The registered
     definitions route never captures one for an unbounded band, so a cube exported
     from the fixed-horizon readout finds nothing to continue and starts nothing."""
@@ -1109,40 +1209,45 @@ def test_unbounded_retention_cube_has_no_checkpoint_to_replay(con, tmp_path):
     from increment.frame import MetricSpec
     from tests.sequential_cases import registered_native
 
-    original = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    original = from_definitions(example_definitions, con, experiment_name="new_onboarding_v2")
+    _, original_resolver = original
     metric = RetentionMetric(
         name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
     )
-    registered = registered_native(original, metrics=[metric])
+    registered_experiment, registered_resolver = registered_native(original, metrics=[metric])
     with pytest.raises(CapabilityError) as unexportable:
-        registered.export(tmp_path / "registered.parquet")
-    fixed = make_analysis_like(original, [metric], plan=AnalysisPlan(primary="d7_retention"))
-    fixed.export(tmp_path / "moments.parquet")
-    cube = Analysis.from_moments(
+        export_moments(registered_experiment, registered_resolver, tmp_path / "registered.parquet")
+    fixed_experiment, fixed_resolver = make_binding_like(
+        original_resolver, [metric], plan=AnalysisPlan(primary="d7_retention")
+    )
+    export_moments(fixed_experiment, fixed_resolver, tmp_path / "moments.parquet")
+    cube_experiment, cube_resolver = from_moments(
         pq.read_table(tmp_path / "moments.parquet").to_pylist(),
         control="control",
         metrics=[MetricSpec(name="d7_retention", type="retention", threshold_days=7)],
     )
-    assert [row.metric for row in cube.run()] == ["d7_retention"]
+    assert [row.metric for row in view_readout(cube_experiment, cube_resolver)] == ["d7_retention"]
     refusal = refused(
         UNBOUNDED_RETENTION_SEQUENTIAL,
         "moments-no-checkpoint-to-replay",
-        lambda: cube.capture_sequential(finalized=True),
+        lambda: capture_sequential(cube_experiment, cube_resolver, finalized=True),
     )
     assert isinstance(refusal, CapabilityError)
     assert unexportable.value.code == refusal.code
 
 
-def test_run_asof_lift_bounded_retention_has_raw_bernoulli_checkpoint(con):
+def test_run_asof_lift_bounded_retention_has_raw_bernoulli_checkpoint(con, example_definitions):
     from tests.sequential_cases import registered_native
 
-    original = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    original = from_definitions(example_definitions, con, experiment_name="new_onboarding_v2")
     metric = RetentionMetric(
         name="d7_retention_bounded", entity="user_id", fact="page_view", threshold_days=(7, 14)
     )
-    analysis = registered_native(original, metrics=[metric])
-    snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 3, 1))
-    results = analysis.run_asof_lift(completed_windows_only=True)
+    experiment, resolver = registered_native(original, metrics=[metric])
+    snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=date(2025, 3, 1))
+    results = view_readout(
+        experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+    )
     assert results and snapshot.records
     assert all(
         row.sequential_result is not None
@@ -1152,13 +1257,15 @@ def test_run_asof_lift_bounded_retention_has_raw_bernoulli_checkpoint(con):
 
 
 def test_run_asof_completed_windows_only_starts_retention_series_at_band_close(
-    con, bounded_asof_values
+    con, bounded_asof_values, example_definitions
 ):
     """The flag threads end to end: on a bounded band [7, 14) with every
     unit exposed 2025-01-20, the default (band-open) gate opens the
     series 2025-01-27 while completed_windows_only=True opens it
     2025-02-03 - and both agree once every band has closed."""
-    analysis = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     bounded = RetentionMetric(
         name="d7_retention_bounded",
         entity="user_id",
@@ -1167,7 +1274,12 @@ def test_run_asof_completed_windows_only_starts_retention_series_at_band_close(
     )
 
     monitoring = bounded_asof_values
-    decision = analysis.run_asof(metrics=[bounded], completed_windows_only=True)
+    decision = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True, completion_policy=True),
+        metrics=[bounded],
+    )
 
     assert min(r.ds for r in monitoring) == date(2025, 1, 27)
     assert min(r.ds for r in decision) == date(2025, 2, 3)
@@ -1183,16 +1295,23 @@ def test_run_asof_completed_windows_only_starts_retention_series_at_band_close(
         assert monitoring_value.value == pytest.approx(decision_value.value, nan_ok=True)
 
 
-def test_run_asof_dimension_accepts_bounded_retention_metric(con):
+def test_run_asof_dimension_accepts_bounded_retention_metric(con, example_definitions):
     """The per-segment as-of path takes retention too."""
-    analysis = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     bounded = RetentionMetric(
         name="d7_retention_bounded",
         entity="user_id",
         fact="page_view",
         threshold_days=(7, 14),
     )
-    results = analysis.run_asof(dimension="country", metrics=[bounded])
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+        metrics=[bounded],
+    )
     assert results
     assert {r.dimension for r in results} == {"country"}
 
@@ -1208,9 +1327,13 @@ def test_run_asof_dimension_returns_per_day_per_segment_values(con):
     the per-segment WIRING (correct segment attribution, correct
     stamping), not the freeze (covered separately below on a windowed
     fixture)."""
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
 
-    results = analysis.run_asof(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+    )
 
     assert len(results) == 8  # 1 metric x 2 days x 2 arms x 2 countries
     for r in results:
@@ -1245,15 +1368,19 @@ def test_run_asof_lift_dimension_returns_per_segment_lift_estimates(con):
     control arm - US positive (10 -> 15) and CA negative (20 -> 15) on
     this deliberately opposite-signed fixture, so any cross-segment
     contamination flips a sign rather than nudging a number."""
-    analysis = _analysis_with_country_breakout(con)
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = _analysis_with_country_breakout(con)
+    experiment, resolver = make_binding_like(
+        resolver,
         plan=AnalysisPlan(
             alpha=0.02,
             view_multiplicity=MultiplicitySpec(correction="bonferroni"),
         ),
     )
-    results = analysis.run_asof_lift(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+    )
 
     # 1 metric x 2 days x 1 method x 1 arm x 2 countries: the exposure day has no purchases in its running total yet, so it comes back as a NaN row per segment instead of vanishing.
     assert len(results) == 4
@@ -1281,7 +1408,7 @@ def test_run_asof_lift_dimension_returns_per_segment_lift_estimates(con):
         assert lift is not None
         assert lift.level == pytest.approx(0.99)
 
-    undimensioned = analysis.run_asof_lift()
+    undimensioned = view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
     undimensioned_live = [
         row
         for row in undimensioned
@@ -1303,10 +1430,10 @@ def test_run_asof_without_dimension_unaffected_by_declared_breakout(con):
     numbers on the same fixture (this metric has no window_days, so the
     as-of and independent views coincide here). The
     backward-compatibility guard for the un-dimensioned call shape."""
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
 
-    values = analysis.run_asof()
-    lifts = analysis.run_asof_lift()
+    values = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
+    lifts = view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
 
     assert len(values) == 4  # 1 metric x 2 days x 2 arms, collapsed
     for r in values:
@@ -1458,7 +1585,7 @@ def _analysis_with_asof_country_breakout(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -1473,9 +1600,13 @@ def test_run_asof_dimension_freezes_each_segment_after_window_close(con):
     10 while CA control holds at 20, so a cross-segment mixup would show
     as both converging on the pooled 15.
     """
-    analysis = _analysis_with_asof_country_breakout(con)
+    experiment, resolver = _analysis_with_asof_country_breakout(con)
 
-    results = analysis.run_asof(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+    )
 
     assert len(results) == 12  # 1 metric x 3 days x 2 arms x 2 countries
     by_key = {(r.ds, r.dimension_value, r.group_id): r for r in results}
@@ -1502,9 +1633,13 @@ def test_run_asof_lift_dimension_freezes_each_segment_after_window_close(con):
     estimator: each segment's as-of lift holds at its day-0 value for
     every later day, and the two segments keep their opposite signs (US
     treatment 14 > control 10; CA treatment 14 < control 20)."""
-    analysis = _analysis_with_asof_country_breakout(con)
+    experiment, resolver = _analysis_with_asof_country_breakout(con)
 
-    results = analysis.run_asof_lift(dimension="country")
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+    )
 
     assert len(results) == 6  # 1 metric x 3 days x 1 method x 1 arm x 2 countries
     by_key = {(r.ds, r.dimension_value): r for r in results}
@@ -1527,11 +1662,11 @@ def test_run_asof_dimension_completed_windows_only_raises_for_unbounded_retentio
     same up-front contradiction guard as their un-dimensioned
     counterparts: an unbounded band never completes, per segment no more
     than pooled."""
-    analysis = _analysis_with_country_breakout(con)
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = _analysis_with_country_breakout(con)
+    experiment, resolver = make_binding_like(
+        resolver,
         [
-            *analysis.metrics,
+            *metrics(experiment, resolver),
             RetentionMetric(
                 name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
             ),
@@ -1539,12 +1674,31 @@ def test_run_asof_dimension_completed_windows_only_raises_for_unbounded_retentio
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof(dimension="country", completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+                completion_policy=True,
+            ),
+        )
     assert raised.value.code == "breakout.retention.completion"
     assert raised.value.context["names"] == ("d7_retention",)
     assert raised.value.context["fn_name"] == "run_asof"
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift(dimension="country", completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=BreakoutIdentity("country", None),
+                completion_policy=True,
+            ),
+        )
     assert raised.value.code == "breakout.retention.completion"
     assert raised.value.context["names"] == ("d7_retention",)
     assert raised.value.context["fn_name"] == "run_asof_lift"
@@ -1552,11 +1706,11 @@ def test_run_asof_dimension_completed_windows_only_raises_for_unbounded_retentio
 
 def test_run_asof_dimension_contradiction_is_publicly_refused(con):
     """The completed-window contradiction is exposed by both public methods."""
-    analysis = _analysis_with_country_breakout(con)
-    analysis = make_analysis_like(
-        analysis,
+    experiment, resolver = _analysis_with_country_breakout(con)
+    experiment, resolver = make_binding_like(
+        resolver,
         [
-            *analysis.metrics,
+            *metrics(experiment, resolver),
             RetentionMetric(
                 name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
             ),
@@ -1564,54 +1718,74 @@ def test_run_asof_dimension_contradiction_is_publicly_refused(con):
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof(dimension="country", completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+                completion_policy=True,
+            ),
+        )
     assert raised.value.code == "breakout.retention.completion"
     with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift(dimension="country", completed_windows_only=True)
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof",
+                grain="asof",
+                segment=BreakoutIdentity("country", None),
+                completion_policy=True,
+            ),
+        )
     assert raised.value.code == "breakout.retention.completion"
 
 
-def test_run_asof_unknown_dimension_raises_naming_declared_properties(con):
-    """A `dimension` matching no declared breakout is a caller error (most
-    likely a typo), not a legitimate empty result - both methods raise
+def _assert_undeclared_segment_refused_before_reads(monkeypatch, con, pair, requested, declared):
+    """Both as-of views refuse an undeclared breakout selection before any warehouse read."""
+    experiment, resolver = pair
+    for method in ("execute", "to_pyarrow", "to_pyarrow_batches"):
+        monkeypatch.setattr(
+            con, method, lambda *_a, **_k: pytest.fail("refusal must precede reads")
+        )
+    segment = BreakoutIdentity(requested, None)
+    for scope in (
+        Scope(view="asof", grain="asof", values=True, segment=segment),
+        Scope(view="asof", grain="asof", segment=segment),
+    ):
+        with pytest.raises(CapabilityError) as raised:
+            run(experiment.with_views(scope), resolver)
+        assert raised.value.code == "evidence.breakout_unavailable"
+        assert raised.value.context["requested"] == (requested,)
+        assert raised.value.context["offered"] == declared
+
+
+def test_run_asof_unknown_dimension_raises_naming_declared_properties(con, monkeypatch):
+    """A segment matching no declared breakout is a caller error (most
+    likely a typo), not a legitimate empty result - both as-of views refuse
     naming the experiment's actual declared breakout properties, and do so
     before any query runs."""
-    analysis = _analysis_with_country_breakout(con)
-
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof(dimension="platform")
-    assert raised.value.code == "facade.analysis.unknown_dimension"
-    assert raised.value.context["dimension"] == "platform"
-    assert raised.value.context["declared"] == ("country",)
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift(dimension="platform")
-    assert raised.value.code == "facade.analysis.unknown_dimension"
-    assert raised.value.context["dimension"] == "platform"
-    assert raised.value.context["declared"] == ("country",)
+    pair = _analysis_with_country_breakout(con)
+    _assert_undeclared_segment_refused_before_reads(
+        monkeypatch, con, pair, "platform", ("country",)
+    )
 
 
-def test_run_asof_unknown_dimension_raises_when_no_breakouts_declared(con):
-    """An experiment with NO declared breakouts still raises for any
-    `dimension`, naming an empty list of declared properties, rather than
-    silently returning []."""
-    analysis = _analysis_with_asof_events(con)
-
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof(dimension="country")
-    assert raised.value.code == "facade.analysis.unknown_dimension"
-    assert raised.value.context["dimension"] == "country"
-    assert raised.value.context["declared"] == ()
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.run_asof_lift(dimension="country")
-    assert raised.value.code == "facade.analysis.unknown_dimension"
-    assert raised.value.context["dimension"] == "country"
-    assert raised.value.context["declared"] == ()
+def test_run_asof_unknown_dimension_raises_when_no_breakouts_declared(con, monkeypatch):
+    """An experiment with NO declared breakouts still refuses any segment,
+    naming an empty list of declared properties, rather than silently
+    returning []."""
+    pair = _analysis_with_asof_events(con)
+    _assert_undeclared_segment_refused_before_reads(monkeypatch, con, pair, "country", ())
 
 
 def test_run_asof_dimension_allows_metric_not_declared_on_experiment(con):
     """Unlike the daily dimensioned path, as-of operations build a fresh
     panel for each requested metric, so undeclared metrics are accepted."""
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
     undeclared = MeanMetric(
         name="revenue_undeclared",
         entity="user_id",
@@ -1619,7 +1793,12 @@ def test_run_asof_dimension_allows_metric_not_declared_on_experiment(con):
         aggregation="sum",
     )
 
-    results = analysis.run_asof(dimension="country", metrics=[undeclared])
+    results = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+        metrics=[undeclared],
+    )
 
     assert len(results) == 8  # same shape as the declared metric's own call
     assert {r.metric for r in results} == {"revenue_undeclared"}
@@ -1634,12 +1813,12 @@ def test_run_asof_returns_nan_row_for_unestimable_day(con):
     This fixture's first day (2025-06-01) has zero revenue in both arms;
     before this change it produced 2 dropped rows and 2 UserWarnings.
     """
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
 
     # simplefilter("error") isn't used here because a con-backed call routes through ibis's DuckDB backend, which emits an unrelated DeprecationWarning on every query, and erroring on it crashes ibis internals.
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        results = analysis.run_asof()
+        results = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
     assert not any(issubclass(w.category, UserWarning) for w in record)
 
     assert results, "expected a dense series, not an empty result"
@@ -1651,11 +1830,11 @@ def test_run_asof_returns_nan_row_for_unestimable_day(con):
 def test_run_asof_lift_returns_nan_row_for_unestimable_day(con):
     """Same dense contract through the relative-lift estimator. This
     fixture produced 3 UserWarnings on this path before the change."""
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
 
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        results = analysis.run_asof_lift()
+        results = view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
     assert not any(issubclass(w.category, UserWarning) for w in record)
 
     assert results
@@ -1679,11 +1858,17 @@ def test_run_asof_dimension_drops_no_rows_to_sparsity(con):
     exposure. The invariant under test is "no row dropped", not "all
     segments equal".
     """
-    analysis = _analysis_with_country_breakout(con)
+    experiment, resolver = _analysis_with_country_breakout(con)
 
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        results = analysis.run_asof(dimension="country")
+        results = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)
+            ),
+        )
     assert not any(issubclass(w.category, UserWarning) for w in record)
 
     assert len(results) == 8, f"expected the full dense panel, got {len(results)}"
@@ -1796,7 +1981,7 @@ def _analysis_with_daily_ratio_metric(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -1805,9 +1990,9 @@ def test_run_daily_ratio_metric_value_is_sum_ratio_not_per_unit_mean(con):
     value as sum(numerator) / sum(denominator), not the raw numerator's
     per-unit mean - end-to-end through the real DuckDB pipeline
     (daily_group_summary -> run_daily -> VARIANCE_MODELS dispatch)."""
-    analysis = _analysis_with_daily_ratio_metric(con)
+    experiment, resolver = _analysis_with_daily_ratio_metric(con)
 
-    results = analysis.run_daily()
+    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
 
     assert len(results) == 2  # 1 metric x 1 day x 2 arms
     by_group = {r.group_id: r for r in results}
@@ -1919,7 +2104,7 @@ def _analysis_with_missing_control_day(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -1931,11 +2116,11 @@ def test_run_daily_lift_returns_nan_for_day_missing_control_arm(con):
     integration counterpart to the unit-level
     ``TestRunDailyLiftNaNRowsForUnestimableSlices.test_day_missing_control_arm_returns_nan_rows``
     in ``tests/breakout/test_daily.py``."""
-    analysis = _analysis_with_missing_control_day(con)
+    experiment, resolver = _analysis_with_missing_control_day(con)
 
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        results = analysis.run_daily_lift()
+        results = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
     assert not any(issubclass(w.category, UserWarning) for w in record)
 
     assert results != []
@@ -2091,7 +2276,7 @@ def _analysis_with_daily_ratio_metric_window_dilution(con):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_binding(con, defs)
     return analysis
 
 
@@ -2109,9 +2294,9 @@ def test_run_daily_ratio_metric_window_bound_removes_dilution(con):
     ``increment/analysis.py``); it's still applied everywhere per that
     seam's contract, and stops being redundant when ``experiment.end``
     is ``None``."""
-    analysis = _analysis_with_daily_ratio_metric_window_dilution(con)
+    experiment, resolver = _analysis_with_daily_ratio_metric_window_dilution(con)
 
-    results = analysis.run_daily()
+    results = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
 
     n_enroll_days, per_day, window_days = 6, 6, 3
 
@@ -2140,11 +2325,16 @@ def test_run_daily_ratio_metric_window_bound_removes_dilution(con):
     assert tail_date not in {r.ds for r in results}
 
 
-def test_native_asof_lift_supports_cuped(seeded_pre_period_con):
-    from increment import Analysis, Method
+def test_native_asof_lift_supports_cuped(seeded_pre_period_con, example_definitions):
+    from increment import Method
 
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    rows = analysis.run_asof_lift(
+    experiment, resolver = from_definitions(
+        example_definitions, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof"),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["purchase_rate"],
     )
@@ -2154,18 +2344,23 @@ def test_native_asof_lift_supports_cuped(seeded_pre_period_con):
 
 
 @pytest.mark.parametrize("correction", ["none", "bonferroni"])
-def test_native_dimensioned_asof_lift_supports_cuped(seeded_pre_period_con, correction):
-    from increment import Analysis, Method
+def test_native_dimensioned_asof_lift_supports_cuped(
+    seeded_pre_period_con, correction, example_definitions
+):
+    from increment import Method
 
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    analysis = make_analysis_like(
-        analysis,
-        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction=correction)),
+    experiment, resolver = from_definitions(
+        example_definitions, seeded_pre_period_con, experiment_name="new_onboarding_v2"
     )
-    rows = analysis.run_asof_lift(
+    experiment, resolver = make_binding_like(
+        resolver, plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction=correction))
+    )
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["purchase_rate"],
-        dimension="country",
     )
     assert rows
     assert {row.method for row in rows} == {"cuped"}
@@ -2177,16 +2372,27 @@ def test_native_dimensioned_asof_lift_supports_cuped(seeded_pre_period_con, corr
 @pytest.mark.slow
 def test_native_asof_retention_lift_supports_cuped_and_completed_windows(
     retention_cuped_con,
+    example_definitions,
 ):
-    from increment import Analysis, Method
+    from increment import Method
 
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", retention_cuped_con)
+    experiment, resolver = from_definitions(
+        example_definitions, retention_cuped_con, experiment_name="new_onboarding_v2"
+    )
     method = [Method(name="cuped", variance_reduction="cuped")]
-    monitoring = analysis.run_asof_lift(decision_method=method[0], metrics=["d7_retention"])
-    completed = analysis.run_asof_lift(
+    monitoring = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof"),
         decision_method=method[0],
         metrics=["d7_retention"],
-        completed_windows_only=True,
+    )
+    completed = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", completion_policy=True),
+        decision_method=method[0],
+        metrics=["d7_retention"],
     )
     assert monitoring and completed
     assert {row.method for row in monitoring} == {"cuped"}
@@ -2208,18 +2414,23 @@ def test_native_asof_retention_lift_supports_cuped_and_completed_windows(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("correction", ["none", "bonferroni"])
-def test_native_dimensioned_asof_retention_lift_supports_cuped(retention_cuped_con, correction):
-    from increment import Analysis, Method
+def test_native_dimensioned_asof_retention_lift_supports_cuped(
+    retention_cuped_con, correction, example_definitions
+):
+    from increment import Method
 
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", retention_cuped_con)
-    analysis = make_analysis_like(
-        analysis,
-        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction=correction)),
+    experiment, resolver = from_definitions(
+        example_definitions, retention_cuped_con, experiment_name="new_onboarding_v2"
     )
-    rows = analysis.run_asof_lift(
+    experiment, resolver = make_binding_like(
+        resolver, plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction=correction))
+    )
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
         decision_method=Method(name="cuped", variance_reduction="cuped"),
         metrics=["d7_retention"],
-        dimension="country",
     )
     assert rows
     assert {row.method for row in rows} == {"cuped"}
@@ -2230,7 +2441,7 @@ def test_native_dimensioned_asof_retention_lift_supports_cuped(retention_cuped_c
 
 
 def test_native_asof_value_readout_does_not_build_pre_period_stats(
-    seeded_pre_period_con, monkeypatch
+    seeded_pre_period_con, monkeypatch, example_definitions
 ):
     from increment.query import _native_day_source, native_source
 
@@ -2239,8 +2450,15 @@ def test_native_asof_value_readout_does_not_build_pre_period_stats(
 
     monkeypatch.setattr(native_source, "pre_period_stats", fail)
     monkeypatch.setattr(_native_day_source, "pre_period_stats", fail)
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    assert analysis.run_asof(metrics=["purchase_rate"])
+    experiment, resolver = from_definitions(
+        example_definitions, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
+    assert view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", values=True),
+        metrics=["purchase_rate"],
+    )
 
 
 @pytest.mark.parametrize(
@@ -2262,14 +2480,23 @@ def test_native_asof_value_readout_does_not_build_pre_period_stats(
         ),
     ],
 )
-def test_native_asof_lift_mixed_methods_preserves_matrix(request, metric, source_fixture):
+def test_native_asof_lift_mixed_methods_preserves_matrix(
+    request, metric, source_fixture, example_definitions
+):
     from increment import Method
 
     con = request.getfixturevalue(source_fixture)
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", con)
+    experiment, resolver = from_definitions(
+        example_definitions, con, experiment_name="new_onboarding_v2"
+    )
     methods = [Method(name="unadjusted"), Method(name="cuped", variance_reduction="cuped")]
-    rows = analysis.run_asof_lift(
-        decision_method=methods[0], sensitivity_methods=tuple(methods[1:]), metrics=[metric]
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof"),
+        decision_method=methods[0],
+        sensitivity_methods=tuple(methods[1:]),
+        metrics=[metric],
     )
     assert rows
 
@@ -2281,20 +2508,25 @@ def test_native_asof_lift_mixed_methods_preserves_matrix(request, metric, source
     assert all(methods == {"unadjusted", "cuped"} for methods in methods_by_slice.values())
 
 
-def test_native_asof_lift_segmented_bh_refuses_before_moments(seeded_pre_period_con):
+def test_native_asof_lift_segmented_bh_refuses_before_moments(
+    seeded_pre_period_con, example_definitions
+):
     from increment import Method
 
-    analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
-    analysis = make_analysis_like(
-        analysis,
-        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh")),
+    experiment, resolver = from_definitions(
+        example_definitions, seeded_pre_period_con, experiment_name="new_onboarding_v2"
+    )
+    experiment, resolver = make_binding_like(
+        resolver, plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh"))
     )
 
     with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.run_asof_lift(
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
             decision_method=Method(name="unadjusted"),
             metrics=["purchase_rate"],
-            dimension="country",
         )
     assert raised.value.code == "facade.analysis.bh_segmented_asof"
 
@@ -2302,9 +2534,12 @@ def test_native_asof_lift_segmented_bh_refuses_before_moments(seeded_pre_period_
 def test_native_asof_lift_preserves_ratio_cuped_refusal(con):
     from increment import Method
 
-    analysis = _analysis_with_daily_ratio_metric(con)
+    experiment, resolver = _analysis_with_daily_ratio_metric(con)
     with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.run_asof_lift(
+        view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof"),
             decision_method=Method(name="cuped", variance_reduction="cuped"),
         )
     assert raised.value.code == "estimation.engine.ratio.cuped"
@@ -2372,7 +2607,6 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
     import pandas as pd
     import pytest
 
-    from increment.analysis import Analysis
     from increment.errors import CodedError
     from increment.estimation.inference import Normal
 
@@ -2388,8 +2622,9 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
                     "revenue": int(group == "treatment"),
                 }
             )
-    analysis = Analysis.from_unit_panel(
+    experiment, resolver = from_frame(
         pd.DataFrame(rows),
+        shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
@@ -2406,10 +2641,10 @@ def test_asof_lift_refuses_a_prior_under_sequential_inference() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         with pytest.raises(CodedError) as run_refusal:
-            analysis.run(prior=prior)
+            view_readout(experiment, resolver, prior=prior)
         assert run_refusal.value.code == "sequential.route.unsupported"
         with pytest.raises(CodedError) as asof_refusal:
-            analysis.run_asof_lift(prior=prior)
+            view_readout(experiment, resolver, Scope(view="asof", grain="asof"), prior=prior)
     assert asof_refusal.value.code == "sequential.route.unsupported"
 
 
@@ -2418,9 +2653,11 @@ def test_asof_lift_native_refuses_effect_prior_before_capture(con):
     from increment.estimation.inference import Normal
     from tests.sequential_cases import registered_native
 
-    analysis = registered_native(_analysis_with_asof_events(con, sequential=True))
+    experiment, resolver = registered_native(_analysis_with_asof_events(con, sequential=True))
     with pytest.raises(CapabilityError) as raised:
-        analysis.run_asof_lift(prior=Normal(mu=0, sigma=0.1))
+        view_readout(
+            experiment, resolver, Scope(view="asof", grain="asof"), prior=Normal(mu=0, sigma=0.1)
+        )
     assert raised.value.code == "sequential.route.unsupported"
 
 
