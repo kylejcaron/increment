@@ -1627,25 +1627,25 @@ def test_workflow_capture_in_a_shared_run_borrows_its_single_capture(tmp_path, m
     """Inside a shared run, workflow capture reads the run's pinned view and validates the source."""
     from typing import Any, cast
 
-    from increment.query.native_source import DefinitionsMomentSource
     from increment.readouts import run_scoped
     from increment.workflows import capture_sequential, sequential_snapshot
     from tests.analysis_factory import held_source
 
-    pinned: list[object] = []
-    execute = DefinitionsMomentSource._pinned_source_execution
-
-    def counted(self, *args, **kwargs):
-        pinned.append(self)
-        return execute(self, *args, **kwargs)
-
-    monkeypatch.setattr(DefinitionsMomentSource, "_pinned_source_execution", counted)
     connection, _, experiment, resolver = _native_pair(tmp_path, "bernoulli")
     (tmp_path / "other").mkdir()
     other_connection, _, other_experiment, other_resolver = _native_pair(
         tmp_path / "other", "bernoulli"
     )
     analysis = cast(Any, resolver)._analysis
+    source = cast(Any, held_source(analysis))
+    execute = source._pinned_source_execution
+    pinned: list[object] = []
+
+    def counted(*args, **kwargs):
+        pinned.append(source)
+        return execute(*args, **kwargs)
+
+    monkeypatch.setattr(source, "_pinned_source_execution", counted)
     try:
         snapshot = run_scoped(
             analysis,
@@ -1654,9 +1654,7 @@ def test_workflow_capture_in_a_shared_run_borrows_its_single_capture(tmp_path, m
             ),
         )
         assert snapshot.records
-        assert [source for source in pinned if source is held_source(analysis)] == [
-            held_source(analysis)
-        ]
+        assert pinned == [held_source(analysis)]
         for operation in (
             lambda: capture_sequential(
                 other_experiment, other_resolver, finalized=True, as_of=date(2025, 1, 16)
