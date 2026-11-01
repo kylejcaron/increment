@@ -1,4 +1,4 @@
-"""Metrics added after the plan: ``Analysis.available_metrics`` and ``exploratory_metrics=``.
+"""Metrics added after the plan: ``workflows.available_metrics`` and ``exploratory_metrics=``.
 
 Real DuckDB fixtures throughout. An added metric must read exactly like the same
 metric declared in a plan of its own, never move a declared row, and be refused
@@ -10,36 +10,47 @@ from __future__ import annotations
 import copy
 import pickle
 import warnings
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from increment import Analysis
+from increment import Scope, _dashboard_capture, builders, from_frame, workflows
+from increment import run as run_views
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning
 from increment.estimation.engine import Method
+from increment.evidence import BreakoutIdentity
 from increment.plan import bind_automatic_sequential_plan
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, Definitions, MultiplicitySpec
 from increment.sequential_source import native_observation_mapping
-from tests.analysis_factory import _native_source, lift_rows, make_analysis
+from increment.workflows import available_metrics, experiment_definition
+from tests.analysis_factory import (
+    bound_source,
+    lift_rows,
+    make_binding,
+    view_readout,
+)
 from tests.parity_harness import dataset as ds
 
 ADDED = ("purchase_rate", "rps", "revenue_cuped")
 PLAN_ALPHAS = (0.05, 0.01)
 CUPED = Method(name="cuped", variance_reduction="cuped")
 UNAVAILABLE = "facade.analysis_config.exploratory_metric_unavailable"
+POPULATIONS = {
+    population: Scope(view="run", grain="total", population=population)
+    for population in ("assigned", "triggered")
+}
 
 
 def _definitions(plan: AnalysisPlan, *, breakout: bool = False) -> Definitions:
     return Definitions.model_validate(ds.definitions_dict(plan=plan, breakout=breakout))
 
 
-def _analysis(con: Any, plan: AnalysisPlan, *, breakout: bool = False) -> Analysis:
-    return make_analysis(con, _definitions(plan, breakout=breakout), experiment="exp")
+def _analysis(con: Any, plan: AnalysisPlan, *, breakout: bool = False) -> tuple[Any, Any]:
+    return make_binding(con, _definitions(plan, breakout=breakout), experiment="exp")
 
 
 def _triggered_analysis(
@@ -48,7 +59,7 @@ def _triggered_analysis(
     *,
     include_constant_metric: bool = False,
     delayed_trigger: bool = False,
-) -> Analysis:
+) -> tuple[Any, Any]:
     """Run the parity data through an explicitly declared, source-backed trigger."""
     definitions = ds.definitions_dict(plan=plan)
     trigger_fact = "trigger_signal" if delayed_trigger else "purchase"
@@ -70,7 +81,7 @@ def _triggered_analysis(
             }
         )
     defs = Definitions.model_validate(definitions)
-    return make_analysis(
+    return make_binding(
         con,
         defs,
         experiment="exp",
@@ -136,6 +147,20 @@ def _nominal_alphas(rows: Any) -> list[float]:
     return [row.lift.alpha for row in rows if row.lift is not None]
 
 
+def _by_population(experiment: Any, resolver: Any, **options: Any) -> dict[str, Any]:
+    """Whole-window rows of the assigned and triggered populations, read in one run."""
+    result = run_views(experiment.with_views(*POPULATIONS.values()), resolver, **options)
+    return {
+        population: lift_rows(result.readout(scope)) for population, scope in POPULATIONS.items()
+    }
+
+
+def _both_populations(experiment: Any, resolver: Any, **options: Any) -> list[Any]:
+    return [
+        row for rows in _by_population(experiment, resolver, **options).values() for row in rows
+    ]
+
+
 @pytest.fixture(scope="module")
 def warehouse():
     con = ds.duckdb_connection()
@@ -158,8 +183,10 @@ def triggered_warehouse_without_followup_sessions():
 
 
 def test_available_metrics_are_the_undeclared_definitions_in_definitions_order(warehouse):
-    analysis = _analysis(warehouse, AnalysisPlan(primary="purchase_rate", secondaries=["rps"]))
-    assert [m.name for m in analysis.available_metrics] == ["revenue", "revenue_cuped"]
+    experiment, resolver = _analysis(
+        warehouse, AnalysisPlan(primary="purchase_rate", secondaries=["rps"])
+    )
+    assert [m.name for m in available_metrics(experiment, resolver)] == ["revenue", "revenue_cuped"]
 
 
 @pytest.mark.parametrize("alpha", PLAN_ALPHAS)
@@ -173,11 +200,14 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
     warehouse, name, call_wide, alpha
 ):
     declared = lift_rows(
-        _analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name)).run(**call_wide)
+        view_readout(*_analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name)), **call_wide)
     )
     added = lift_rows(
-        _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue")).run(
-            metrics=[], exploratory_metrics=[name], **call_wide
+        view_readout(
+            *_analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue")),
+            metrics=[],
+            exploratory_metrics=[name],
+            **call_wide,
         )
     )
     assert declared and {row.role for row in declared} == {"primary"}
@@ -209,7 +239,8 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
 def test_unadjusted_exploratory_rows_can_reintervalize_above_plan_alpha(warehouse):
     plan = AnalysisPlan(alpha=0.05, primary="revenue")
     exploratory = lift_rows(
-        _analysis(warehouse, plan).run(
+        view_readout(
+            *_analysis(warehouse, plan),
             metrics=[],
             exploratory_metrics=["rps"],
             decision_method=Method(name="unadjusted"),
@@ -223,8 +254,9 @@ def test_unadjusted_exploratory_rows_can_reintervalize_above_plan_alpha(warehous
     assert row.reintervalize(0.1).lift is not None
 
     declared = lift_rows(
-        _analysis(warehouse, AnalysisPlan(alpha=0.05, primary="rps")).run(
-            decision_method=Method(name="unadjusted")
+        view_readout(
+            *_analysis(warehouse, AnalysisPlan(alpha=0.05, primary="rps")),
+            decision_method=Method(name="unadjusted"),
         )
     )
 
@@ -240,14 +272,14 @@ def test_run_warns_for_added_metric_with_unused_preperiod_covariate():
     definitions = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
     definitions["experiments"][0]["n_pre_periods"] = 14
     con = ds.duckdb_connection(ds.event_rows())
-    analysis = make_analysis(
-        con,
-        Definitions.model_validate(definitions),
-        experiment="exp",
+    analysis_experiment, analysis_resolver = make_binding(
+        con, Definitions.model_validate(definitions), experiment="exp"
     )
     try:
         with pytest.warns(IncrementWarning) as caught:
-            rows = analysis.run(metrics=[], exploratory_metrics=["rps"])
+            rows = view_readout(
+                analysis_experiment, analysis_resolver, metrics=[], exploratory_metrics=["rps"]
+            )
         assert rows and {row.metric for row in rows} == {"rps"}
         advisories = [
             warning.message
@@ -258,19 +290,24 @@ def test_run_warns_for_added_metric_with_unused_preperiod_covariate():
         assert len(advisories) == 1
         assert advisories[0].context["metric_names"] == ("rps",)
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
 @pytest.mark.slow
 def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         warehouse, AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1)
     )
     unadjusted = Method(name="unadjusted")
-    without = lift_rows(analysis.run(decision_method=unadjusted))
+    without = lift_rows(view_readout(experiment, resolver, decision_method=unadjusted))
     combined = lift_rows(
-        analysis.run(exploratory_metrics=["rps", "revenue_cuped"], decision_method=unadjusted)
+        view_readout(
+            experiment,
+            resolver,
+            exploratory_metrics=["rps", "revenue_cuped"],
+            decision_method=unadjusted,
+        )
     )
     assert [row.model_dump() for row in combined[: len(without)]] == [
         row.model_dump() for row in without
@@ -281,7 +318,13 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     assert {row.multiplicity_status for row in added} == {"exploratory_unadjusted"}
     assert all(row.discovery is None and row.family_axes is None for row in added)
     narrowed = lift_rows(
-        analysis.run(metrics=["revenue"], exploratory_metrics=["rps"], decision_method=unadjusted)
+        view_readout(
+            experiment,
+            resolver,
+            metrics=["revenue"],
+            exploratory_metrics=["rps"],
+            decision_method=unadjusted,
+        )
     )
     assert {row.metric for row in narrowed} == {"revenue", "rps"}
     assert _rows([row for row in narrowed if row.metric == "revenue"]) == _rows(
@@ -298,47 +341,55 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
 def test_triggered_added_metric_reports_both_populations_without_changing_declared_family(
     triggered_warehouse,
 ):
-    analysis = _triggered_analysis(
+    experiment, resolver = _triggered_analysis(
         triggered_warehouse,
         AnalysisPlan(primary="revenue"),
         delayed_trigger=True,
     )
     unadjusted = Method(name="unadjusted")
-    without = lift_rows(analysis.run(decision_method=unadjusted))
+    without = _by_population(experiment, resolver, decision_method=unadjusted)
     added_names = set(ADDED)
-    combined = lift_rows(analysis.run(exploratory_metrics=list(ADDED), decision_method=unadjusted))
-    assert combined and {row.analysis_population for row in combined} == {
+    combined = _by_population(
+        experiment, resolver, exploratory_metrics=list(ADDED), decision_method=unadjusted
+    )
+    combined_rows = [row for rows in combined.values() for row in rows]
+    assert combined_rows and {row.analysis_population for row in combined_rows} == {
         "assigned",
         "triggered",
     }
-    added_rows = [row for row in combined if row.metric in added_names]
+    added_rows = [row for row in combined_rows if row.metric in added_names]
     assert {(row.metric, row.analysis_population) for row in added_rows} == {
         (name, population) for name in ADDED for population in ("assigned", "triggered")
     }
     assert {row.role for row in added_rows} == {"exploratory"}
     assert {row.multiplicity_status for row in added_rows} == {"exploratory_unadjusted"}
-    declared_without = [row.model_dump() for row in without]
-    declared_with = [row.model_dump() for row in combined if row.metric not in added_names]
-    assert declared_with == declared_without
-    assert combined.metadata is not None and without.metadata is not None
-    declared_families = [
-        family for family in combined.metadata.scope.families if family.name != "exploratory"
-    ]
-    assert [family.model_dump() for family in declared_families] == [
-        family.model_dump()
-        for family in without.metadata.scope.families
-        if family.name != "exploratory"
-    ]
+    for population, rows in combined.items():
+        declared_without = [row.model_dump() for row in without[population]]
+        declared_with = [row.model_dump() for row in rows if row.metric not in added_names]
+        assert declared_with == declared_without
+        assert rows.metadata is not None and without[population].metadata is not None
+        declared_families = [
+            family for family in rows.metadata.scope.families if family.name != "exploratory"
+        ]
+        assert [family.model_dump() for family in declared_families] == [
+            family.model_dump()
+            for family in without[population].metadata.scope.families
+            if family.name != "exploratory"
+        ]
 
 
 def test_triggered_added_cuped_metric_returns_both_populations(triggered_warehouse):
-    analysis = _triggered_analysis(
+    experiment, resolver = _triggered_analysis(
         triggered_warehouse,
         AnalysisPlan(primary="revenue"),
         delayed_trigger=True,
     )
-    rows = lift_rows(
-        analysis.run(metrics=[], exploratory_metrics=["revenue_cuped"], decision_method=CUPED)
+    rows = _both_populations(
+        experiment,
+        resolver,
+        metrics=[],
+        exploratory_metrics=["revenue_cuped"],
+        decision_method=CUPED,
     )
     assert rows and {row.analysis_population for row in rows} == {"assigned", "triggered"}
     assert {row.metric for row in rows} == {"revenue_cuped"}
@@ -370,10 +421,12 @@ def zero_denominator_warehouse():
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_all_failed_methods_still_refuse_the_readout(zero_denominator_warehouse):
-    analysis = _analysis(zero_denominator_warehouse, AnalysisPlan(primary="revenue"))
+    experiment, resolver = _analysis(zero_denominator_warehouse, AnalysisPlan(primary="revenue"))
     with pytest.warns(IncrementWarning):
         with pytest.raises(CodedError) as refused:
-            analysis.run(
+            view_readout(
+                experiment,
+                resolver,
                 metrics=[],
                 exploratory_metrics=["rps"],
                 sensitivity_methods=[CUPED],
@@ -388,7 +441,7 @@ def test_capability_refusal_propagates_after_a_valid_sibling(request, monkeypatc
 
     con = request.getfixturevalue(source_fixture)
     plan = AnalysisPlan(primary="revenue")
-    analysis = (
+    experiment, resolver = (
         _triggered_analysis(con, plan, delayed_trigger=True)
         if source_fixture == "triggered_warehouse"
         else _analysis(con, plan)
@@ -411,7 +464,9 @@ def test_capability_refusal_propagates_after_a_valid_sibling(request, monkeypatc
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
-            analysis.run(metrics=["revenue"], exploratory_metrics=["purchase_rate"])
+            view_readout(
+                experiment, resolver, metrics=["revenue"], exploratory_metrics=["purchase_rate"]
+            )
         except CapabilityError as raised:
             assert raised.code == "estimation.binomial.exact_counts_required"
         else:
@@ -424,12 +479,12 @@ def test_capability_refusal_propagates_after_a_valid_sibling(request, monkeypatc
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_cuped_sensitivity_guard_keeps_the_decision_cell(constant_covariate_warehouse):
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         constant_covariate_warehouse,
         AnalysisPlan(primary="revenue_cuped", alternative="greater"),
     )
     with pytest.warns(IncrementWarning) as warnings:
-        rows = lift_rows(analysis.run(sensitivity_methods=[CUPED]))
+        rows = lift_rows(view_readout(experiment, resolver, sensitivity_methods=[CUPED]))
 
     assert {
         warning.message.code
@@ -463,19 +518,19 @@ def test_cuped_sensitivity_guard_keeps_the_decision_cell(constant_covariate_ware
 def test_triggered_added_bad_metric_preserves_typed_cell_identity_and_reason(
     triggered_warehouse,
 ):
-    analysis = _triggered_analysis(
+    experiment, resolver = _triggered_analysis(
         triggered_warehouse,
         AnalysisPlan(primary="revenue"),
         include_constant_metric=True,
         delayed_trigger=True,
     )
     with pytest.warns(IncrementWarning) as warnings:
-        rows = lift_rows(
-            analysis.run(
-                metrics=[],
-                exploratory_metrics=["rps", "constant_session"],
-                decision_method=Method(name="unadjusted"),
-            )
+        rows = _both_populations(
+            experiment,
+            resolver,
+            metrics=[],
+            exploratory_metrics=["rps", "constant_session"],
+            decision_method=Method(name="unadjusted"),
         )
     assert {
         warning.message.code
@@ -499,13 +554,15 @@ def test_triggered_added_bad_metric_preserves_typed_cell_identity_and_reason(
 def test_triggered_ratio_guard_keeps_its_failed_cell_and_good_metric_siblings(
     triggered_warehouse_without_followup_sessions,
 ):
-    analysis = _triggered_analysis(
+    experiment, resolver = _triggered_analysis(
         triggered_warehouse_without_followup_sessions,
         AnalysisPlan(primary="revenue"),
         delayed_trigger=True,
     )
     with pytest.warns(IncrementWarning) as warnings:
-        rows = lift_rows(analysis.run(metrics=[], exploratory_metrics=["rps", "revenue_cuped"]))
+        rows = _both_populations(
+            experiment, resolver, metrics=[], exploratory_metrics=["rps", "revenue_cuped"]
+        )
     advisory_codes = {
         warning.message.code
         for warning in warnings
@@ -551,9 +608,14 @@ def test_added_breakout_rows_equal_the_metric_declared_in_its_own_plan(
     view = MultiplicitySpec(correction=correction)
     declared_plan = AnalysisPlan(alpha=alpha, primary=name, view_multiplicity=view)
     added_plan = AnalysisPlan(alpha=alpha, primary="revenue", view_multiplicity=view)
-    declared = _analysis(warehouse, declared_plan, breakout=True).run_breakout()
-    added = _analysis(warehouse, added_plan, breakout=True).run_breakout(
-        metrics=[], exploratory_metrics=[name]
+    declared = view_readout(
+        *_analysis(warehouse, declared_plan, breakout=True), Scope(view="breakout", grain="total")
+    )
+    added = view_readout(
+        *_analysis(warehouse, added_plan, breakout=True),
+        Scope(view="breakout", grain="total"),
+        metrics=[],
+        exploratory_metrics=[name],
     )
     assert declared and {row.role for row in added} == {"exploratory"}
     expected_status = (
@@ -572,7 +634,11 @@ def test_uncorrected_secondary_breakout_has_no_family(warehouse):
         secondaries=["purchase_rate"],
         view_multiplicity=MultiplicitySpec(correction="none"),
     )
-    rows = _analysis(warehouse, plan, breakout=True).run_breakout(metrics=["purchase_rate"])
+    rows = view_readout(
+        *_analysis(warehouse, plan, breakout=True),
+        Scope(view="breakout", grain="total"),
+        metrics=["purchase_rate"],
+    )
     assert rows and rows.metadata is not None
     assert {row.role for row in rows} == {"exploratory"}
     assert {row.multiplicity_status for row in rows} == {"exploratory_unadjusted"}
@@ -589,8 +655,10 @@ def test_breakout_bh_uses_one_joint_family_for_primary_and_secondary(warehouse):
         q=0.1,
         view_multiplicity=MultiplicitySpec(correction="bh"),
     )
-    rows = _analysis(warehouse, plan, breakout=True).run_breakout(
-        metrics=["revenue", "purchase_rate"]
+    rows = view_readout(
+        *_analysis(warehouse, plan, breakout=True),
+        Scope(view="breakout", grain="total"),
+        metrics=["revenue", "purchase_rate"],
     )
     assert rows and rows.metadata is not None
     (family,) = rows.metadata.scope.families
@@ -610,9 +678,13 @@ def test_added_segmented_asof_bonferroni_rows_are_disclosed_as_family(warehouse)
         primary="revenue",
         view_multiplicity=MultiplicitySpec(correction="bonferroni"),
     )
-    analysis = _analysis(warehouse, plan, breakout=True)
-    rows = analysis.run_asof_lift(
-        metrics=[], dimension="store", exploratory_metrics=["purchase_rate"]
+    experiment, resolver = _analysis(warehouse, plan, breakout=True)
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
+        metrics=[],
+        exploratory_metrics=["purchase_rate"],
     )
     assert rows and {row.role for row in rows} == {"exploratory"}
     assert {row.multiplicity_status for row in rows} == {"exploratory_family"}
@@ -626,9 +698,10 @@ def test_asof_view_families_are_scoped_by_metric_and_look(warehouse):
         primary="revenue",
         view_multiplicity=MultiplicitySpec(correction="bonferroni"),
     )
-    results = _analysis(warehouse, plan, breakout=True).run_asof_lift(
+    results = view_readout(
+        *_analysis(warehouse, plan, breakout=True),
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
         metrics=[],
-        dimension="store",
         exploratory_metrics=["purchase_rate", "rps"],
     )
 
@@ -645,7 +718,7 @@ def test_asof_view_families_are_scoped_by_metric_and_look(warehouse):
 
 @pytest.mark.slow
 def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         warehouse,
         AnalysisPlan(
             primary="revenue",
@@ -654,8 +727,10 @@ def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
         ),
         breakout=True,
     )
-    without = analysis.run_breakout()
-    combined = analysis.run_breakout(exploratory_metrics=["rps"])
+    without = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    combined = view_readout(
+        experiment, resolver, Scope(view="breakout", grain="total"), exploratory_metrics=["rps"]
+    )
     assert [row.model_dump() for row in combined[: len(without)]] == [
         row.model_dump() for row in without
     ]
@@ -668,26 +743,36 @@ def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
 def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse, name, alpha):
     declared = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name))
     added = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
-    lift = added.run_asof_lift(metrics=[], exploratory_metrics=[name])
+    lift = view_readout(
+        *added, Scope(view="asof", grain="asof"), metrics=[], exploratory_metrics=[name]
+    )
     assert lift and {row.role for row in lift} == {"exploratory"}
     assert {row.multiplicity_status for row in lift} == {"exploratory_unadjusted"}
-    assert _rows(lift) == _rows(declared.run_asof_lift())
-    for read in ("run_asof", "run_daily"):
-        values = getattr(added, read)(metrics=[], exploratory_metrics=[name])
-        assert values and _rows(values) == _rows(getattr(declared, read)())
-    both = added.run_asof_lift(exploratory_metrics=[name])
+    assert _rows(lift) == _rows(view_readout(*declared, Scope(view="asof", grain="asof")))
+    for values_scope in (
+        Scope(view="asof", grain="asof", values=True),
+        Scope(view="daily", grain="daily", values=True),
+    ):
+        values = view_readout(*added, values_scope, metrics=[], exploratory_metrics=[name])
+        assert values and _rows(values) == _rows(view_readout(*declared, values_scope))
+    both = view_readout(*added, Scope(view="asof", grain="asof"), exploratory_metrics=[name])
     assert [row.role for row in both if row.metric == "revenue"] == [
-        row.role for row in added.run_asof_lift() if row.metric == "revenue"
+        row.role
+        for row in view_readout(*added, Scope(view="asof", grain="asof"))
+        if row.metric == "revenue"
     ]
 
 
 def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(warehouse):
-    analysis = _analysis(
+    experiment, resolver = _analysis(
         warehouse,
         AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1),
     )
 
-    for rows in (analysis.run_daily_lift(), analysis.run_asof_lift()):
+    for rows in (
+        view_readout(experiment, resolver, Scope(view="daily", grain="daily")),
+        view_readout(experiment, resolver, Scope(view="asof", grain="asof")),
+    ):
         assert rows
         assert rows.metadata is not None
         assert all(family.family is None for family in rows.metadata.scope.families)
@@ -698,12 +783,28 @@ def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(wareho
 @pytest.mark.parametrize("name", ADDED)
 @pytest.mark.parametrize("alpha", [0.01, 0.1])
 def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name, alpha):
-    analysis = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"), breakout=True)
+    experiment, resolver = _analysis(
+        warehouse, AnalysisPlan(alpha=alpha, primary="revenue"), breakout=True
+    )
     unadjusted = Method(name="unadjusted")
     reads = {
-        "run": analysis.run(metrics=[], exploratory_metrics=[name], decision_method=unadjusted),
-        "run_asof_lift": analysis.run_asof_lift(metrics=[], exploratory_metrics=[name]),
-        "run_breakout": analysis.run_breakout(metrics=[], exploratory_metrics=[name]),
+        "run": view_readout(
+            experiment, resolver, metrics=[], exploratory_metrics=[name], decision_method=unadjusted
+        ),
+        "run_asof_lift": view_readout(
+            experiment,
+            resolver,
+            Scope(view="asof", grain="asof"),
+            metrics=[],
+            exploratory_metrics=[name],
+        ),
+        "run_breakout": view_readout(
+            experiment,
+            resolver,
+            Scope(view="breakout", grain="total"),
+            metrics=[],
+            exploratory_metrics=[name],
+        ),
     }
     for view, rows in reads.items():
         nominal = _nominal_alphas(rows)
@@ -713,37 +814,53 @@ def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name
 
 @pytest.mark.parametrize("alpha", [0.01, 0.1])
 def test_a_day_source_over_an_added_metric_tests_it_at_the_plan_alpha(warehouse, alpha):
-    analysis = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
-    added = next(metric for metric in analysis.available_metrics if metric.name == "rps")
-    day = _native_source(analysis).day_source(metrics=(*analysis.metrics, added))
+    experiment, resolver = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
+    added = next(
+        metric for metric in available_metrics(experiment, resolver) if metric.name == "rps"
+    )
+    day = bound_source(resolver).day_source(
+        metrics=(*workflows.metrics(experiment, resolver), added)
+    )
     procedures = day.context.plan.procedures
     assert procedures["rps"].alpha == pytest.approx(alpha, abs=1e-12)
     assert procedures["revenue"].alpha == pytest.approx(alpha, abs=1e-12)
 
 
 def test_dimensioned_daily_reads_keep_their_refusal_of_undeclared_metrics(warehouse):
-    analysis = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
+    experiment, resolver = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
     with pytest.raises(CodedError) as refused:
-        analysis.run_daily(metrics=[], exploratory_metrics=["purchase_rate"], dimension="store")
+        view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily", grain="daily", values=True, segment=BreakoutIdentity("store", None)
+            ),
+            metrics=[],
+            exploratory_metrics=["purchase_rate"],
+        )
     assert refused.value.code == "facade.analysis.undeclared_metric_for_dimension"
 
 
 def test_dimensioned_asof_lift_serves_added_metrics_as_exploratory_rows(warehouse):
-    analysis = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
-    rows = analysis.run_asof_lift(
-        metrics=[], exploratory_metrics=["purchase_rate"], dimension="store"
+    experiment, resolver = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
+    rows = view_readout(
+        experiment,
+        resolver,
+        Scope(view="asof", grain="asof", segment=BreakoutIdentity("store", None)),
+        metrics=[],
+        exploratory_metrics=["purchase_rate"],
     )
     assert rows and {row.metric for row in rows} == {"purchase_rate"}
     assert {row.role for row in rows} == {"exploratory"}
     assert {row.dimension for row in rows} == {"store"}
 
 
-CALLS: dict[str, Callable[..., Any]] = {
-    "run": lambda analysis, names: analysis.run(exploratory_metrics=names),
-    "run_breakout": lambda analysis, names: analysis.run_breakout(exploratory_metrics=names),
-    "run_asof_lift": lambda analysis, names: analysis.run_asof_lift(exploratory_metrics=names),
-    "run_asof": lambda analysis, names: analysis.run_asof(exploratory_metrics=names),
-    "run_daily": lambda analysis, names: analysis.run_daily(exploratory_metrics=names),
+CALLS: dict[str, Scope] = {
+    "run": Scope(view="run", grain="total"),
+    "run_breakout": Scope(view="breakout", grain="total"),
+    "run_asof_lift": Scope(view="asof", grain="asof"),
+    "run_asof": Scope(view="asof", grain="asof", values=True),
+    "run_daily": Scope(view="daily", grain="daily", values=True),
 }
 
 
@@ -761,20 +878,20 @@ def test_unknown_or_declared_names_are_refused_before_any_query(method, names, u
     analysis = _analysis(con, AnalysisPlan(primary="revenue"), breakout=True)
     con.disconnect()  # any query from here on fails, so a coded refusal precedes every read
     with pytest.raises(CodedError) as refused:
-        CALLS[method](analysis, names)
+        view_readout(*analysis, CALLS[method], exploratory_metrics=names)
     assert refused.value.code == UNAVAILABLE
     assert refused.value.context["unknown_names"] == tuple(unknown)
     assert refused.value.context["declared_names"] == tuple(declared)
 
 
 def test_a_repeated_added_name_is_refused_with_the_duplicate_code(warehouse):
-    analysis = _analysis(warehouse, AnalysisPlan(primary="revenue"))
+    experiment, resolver = _analysis(warehouse, AnalysisPlan(primary="revenue"))
     with pytest.raises(CodedError) as refused:
-        analysis.run(exploratory_metrics=["rps", "rps"])
+        view_readout(experiment, resolver, exploratory_metrics=["rps", "rps"])
     assert refused.value.code == "facade.analysis_config.duplicate_metric_name"
 
 
-def _sequential_analysis(con: Any) -> Analysis:
+def _sequential_analysis(con: Any) -> tuple[Any, Any]:
     plan = AnalysisPlan(
         primary="revenue",
         inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
@@ -793,18 +910,20 @@ def _sequential_analysis(con: Any) -> Analysis:
         source_mapping=native_observation_mapping(defs, experiment, on_mixed_assignment="error"),
         pre_period_covariate=experiment.n_pre_periods > 0,
     )
-    return make_analysis(con, defs, experiment="exp", plan=bound)
+    return make_binding(con, defs, experiment="exp", plan=bound)
 
 
 def test_sequential_plans_refuse_added_metrics_and_uncorrected_segments(warehouse):
     analysis = _sequential_analysis(warehouse)
-    for call in CALLS.values():
+    for scope in CALLS.values():
         with pytest.raises(CodedError) as refused:
-            call(analysis, ["purchase_rate"])
+            view_readout(*analysis, scope, exploratory_metrics=["purchase_rate"])
         assert refused.value.code == "facade.analysis.exploratory_metrics_sequential"
-    (declared,) = analysis.experiment.breakouts
+    (declared,) = experiment_definition(*analysis).breakouts
     with pytest.raises(CodedError) as refused:
-        analysis.dashboard_breakout_reads(declared).uncorrected_segments(metrics=["revenue"])
+        _dashboard_capture.dashboard_breakout_reads(
+            analysis[1].binding, declared
+        ).uncorrected_segments(metrics=["revenue"])
     assert refused.value.code == "facade.analysis.uncorrected_segments_sequential"
 
 
@@ -818,22 +937,28 @@ def test_uncorrected_segments_are_the_unadjusted_run_breakout_rows(warehouse, co
         view_multiplicity=MultiplicitySpec(correction=correction),
     )
     analysis = _analysis(warehouse, plan, breakout=True)
-    (declared,) = analysis.experiment.breakouts
-    reads = analysis.dashboard_breakout_reads(declared)
+    (declared,) = experiment_definition(*analysis).breakouts
+    reads = _dashboard_capture.dashboard_breakout_reads(analysis[1].binding, declared)
     uncorrected = reads.uncorrected_segments(metrics=names)
-    standalone = _analysis(
-        warehouse,
-        plan.model_copy(update={"view_multiplicity": MultiplicitySpec(correction="none")}),
-        breakout=True,
-    ).run_breakout(metrics=names)
+    standalone = view_readout(
+        *_analysis(
+            warehouse,
+            plan.model_copy(update={"view_multiplicity": MultiplicitySpec(correction="none")}),
+            breakout=True,
+        ),
+        Scope(view="breakout", grain="total"),
+        metrics=names,
+    )
     assert uncorrected and _rows(uncorrected) == _rows(standalone)
     assert all(row.family_q is None and row.discovery is None for row in uncorrected)
     if correction == "none":
-        assert _rows(uncorrected) == _rows(analysis.run_breakout(metrics=names))
+        assert _rows(uncorrected) == _rows(
+            view_readout(*analysis, Scope(view="breakout", grain="total"), metrics=names)
+        )
         return
     corrected = {
         (row.metric, row.group_id, row.dimension_value): row
-        for row in analysis.run_breakout(metrics=names)
+        for row in view_readout(*analysis, Scope(view="breakout", grain="total"), metrics=names)
     }
     for row in uncorrected:
         wide = corrected[row.metric, row.group_id, row.dimension_value]
@@ -842,10 +967,10 @@ def test_uncorrected_segments_are_the_unadjusted_run_breakout_rows(warehouse, co
 
 def test_uncorrected_segments_carry_added_metrics_as_exploratory_rows(warehouse):
     analysis = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
-    (declared,) = analysis.experiment.breakouts
-    rows = analysis.dashboard_breakout_reads(declared).uncorrected_segments(
-        metrics=[], exploratory_metrics=["purchase_rate"]
-    )
+    (declared,) = experiment_definition(*analysis).breakouts
+    rows = _dashboard_capture.dashboard_breakout_reads(
+        analysis[1].binding, declared
+    ).uncorrected_segments(metrics=[], exploratory_metrics=["purchase_rate"])
     assert rows and {row.metric for row in rows} == {"purchase_rate"}
     assert all(row.role == "exploratory" and row.family_q is None for row in rows)
 
@@ -854,16 +979,21 @@ def test_uncorrected_segments_carry_added_metrics_as_exploratory_rows(warehouse)
 def test_dashboard_snapshot_pins_and_serves_added_metrics():
     con: Any = ds.duckdb_connection()
     try:
-        analysis = _analysis(con, AnalysisPlan(primary="revenue"), breakout=True)
-        (declared,) = analysis.experiment.breakouts
-        added = [metric for metric in analysis.available_metrics if metric.name == "purchase_rate"]
+        experiment, resolver = _analysis(con, AnalysisPlan(primary="revenue"), breakout=True)
+        (declared,) = experiment_definition(experiment, resolver).breakouts
+        added = [
+            metric
+            for metric in available_metrics(experiment, resolver)
+            if metric.name == "purchase_rate"
+        ]
         names = [metric.name for metric in added]
 
-        def read(source: Analysis) -> dict[str, list[dict[str, Any]]]:
-            reads = source.dashboard_breakout_reads(declared)
+        def read(binding: Any) -> dict[str, list[dict[str, Any]]]:
+            reads = _dashboard_capture.dashboard_breakout_reads(binding, declared)
             return {
                 "whole": _rows(
-                    source.run(
+                    view_readout(
+                        *builders.resolver_for(binding),
                         metrics=[],
                         exploratory_metrics=names,
                         decision_method=Method(name="unadjusted"),
@@ -873,53 +1003,61 @@ def test_dashboard_snapshot_pins_and_serves_added_metrics():
                 "asof": _rows(reads.run_asof_lift(metrics=[], exploratory_metrics=names)),
             }
 
-        baseline = read(analysis)
+        baseline = read(resolver.binding)
         assert all(baseline.values())
 
-        def read_after_mutation(isolated: Analysis) -> Any:
+        def read_after_mutation(capture: Any) -> Any:
             con.raw_sql(
                 "DELETE FROM events WHERE event = 'purchase' AND user_id LIKE 't%' "
                 "AND event_at >= timestamp '2025-01-10 09:00' "
                 "AND event_at < timestamp '2025-01-11 09:00'"
             )
-            return read(isolated)
+            return read(capture.binding)
 
-        pinned = analysis.dashboard_snapshot(
+        pinned = _dashboard_capture.capture_dashboard(
+            resolver.binding,
             read_after_mutation,
-            metrics=[*analysis.metrics, *added],
+            metrics=[*workflows.metrics(experiment, resolver), *added],
         )
         assert pinned == baseline
-        assert read(analysis)["whole"] != baseline["whole"], "the mutation must be visible unpinned"
+        assert read(resolver.binding)["whole"] != baseline["whole"], (
+            "the mutation must be visible unpinned"
+        )
     finally:
         con.disconnect()
 
 
 def _refusals_of_every_new_code(warehouse) -> list[CodedError]:
     refusals: list[CodedError] = []
-    analysis = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
+    analysis_experiment, analysis_resolver = _analysis(
+        warehouse, AnalysisPlan(primary="revenue"), breakout=True
+    )
     with pytest.raises(CodedError) as refused:
-        analysis.run(exploratory_metrics=["nope"])
+        view_readout(analysis_experiment, analysis_resolver, exploratory_metrics=["nope"])
     refusals.append(refused.value)
     sequential = _sequential_analysis(warehouse)
     with pytest.raises(CodedError) as refused:
-        sequential.run(exploratory_metrics=["purchase_rate"])
+        view_readout(*sequential, exploratory_metrics=["purchase_rate"])
     refusals.append(refused.value)
-    (declared,) = sequential.experiment.breakouts
+    (declared,) = experiment_definition(*sequential).breakouts
     with pytest.raises(CodedError) as refused:
-        sequential.dashboard_breakout_reads(declared).uncorrected_segments(metrics=["revenue"])
+        _dashboard_capture.dashboard_breakout_reads(
+            sequential[1].binding, declared
+        ).uncorrected_segments(metrics=["revenue"])
     refusals.append(refused.value)
-    seam = Analysis.from_unit_summary(
+    seam_experiment, seam_resolver = from_frame(
         _unit_summary(),
+        shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[_revenue_spec()],
     )
     with pytest.raises(CodedError) as refused:
-        seam.run(exploratory_metrics=["purchase_rate"])
+        view_readout(seam_experiment, seam_resolver, exploratory_metrics=["purchase_rate"])
     refusals.append(refused.value)
     with pytest.raises(CodedError) as refused:
-        seam.available_metrics  # noqa: B018
+        available_metrics(seam_experiment, seam_resolver)
     refusals.append(refused.value)
     return refusals
 
@@ -961,23 +1099,32 @@ def test_exploratory_metric_families_share_one_capture():
     from tests.parity_harness.comparison import nested_close
 
     con = ds.duckdb_connection()
-    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    experiment, resolver = _analysis(con, AnalysisPlan(primary="revenue"))
     context = None
     try:
 
         def run_exploratory(execution_context=None):
             with warnings.catch_warnings(record=True) as observed:
                 warnings.simplefilter("always")
-                result = analysis.run(
-                    exploratory_metrics=["rps"], _execution_context=execution_context
+                result = view_readout(
+                    experiment,
+                    resolver,
+                    exploratory_metrics=["rps"],
+                    execution_context=execution_context,
                 )
             assert any(isinstance(item.message, IncrementWarning) for item in observed)
             return result
 
         expected = run_exploratory()
-        source = _native_source(analysis)
+        source = bound_source(resolver)
         exploratory = source.exploratory_source(
-            metrics=(next(metric for metric in analysis.available_metrics if metric.name == "rps"),)
+            metrics=(
+                next(
+                    metric
+                    for metric in available_metrics(experiment, resolver)
+                    if metric.name == "rps"
+                ),
+            )
         )
         metrics = tuple(exploratory.context.metrics)
         context = EvidenceExecutionContext(
@@ -1007,7 +1154,7 @@ def test_exploratory_metric_families_share_one_capture():
     finally:
         if context is not None:
             context.close()
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 
@@ -1064,10 +1211,19 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
         ]
     )
     con: Any = ds.duckdb_connection(rows)
-    analysis = make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
-    baseline = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
+    analysis_experiment, analysis_resolver = make_binding(
+        con, Definitions.model_validate(definitions), experiment="exp"
+    )
+    baseline = view_readout(
+        analysis_experiment,
+        analysis_resolver,
+        metrics=["revenue"],
+        decision_method=Method(name="unadjusted"),
+    )
     try:
-        combined = analysis.run(
+        combined = view_readout(
+            analysis_experiment,
+            analysis_resolver,
             metrics=["revenue"],
             exploratory_metrics=["rps"],
             decision_method=Method(name="unadjusted"),
@@ -1089,7 +1245,12 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
               )
             """
         )
-        live_after = analysis.run(metrics=["revenue"], decision_method=Method(name="unadjusted"))
+        live_after = view_readout(
+            analysis_experiment,
+            analysis_resolver,
+            metrics=["revenue"],
+            decision_method=Method(name="unadjusted"),
+        )
         combined_revenue = [row for row in combined if row.metric == "revenue"]
         assert len(combined_revenue) == len(baseline) == 1
         assert _rows(combined_revenue)[0]["lift"]["value"] == pytest.approx(
@@ -1100,7 +1261,7 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
         restored = type(combined.metadata).model_validate_json(combined.metadata.model_dump_json())
         assert restored.captures == combined.metadata.captures
     finally:
-        analysis.close()
+        analysis_resolver.close()
         con.disconnect()
 
 
@@ -1108,14 +1269,14 @@ def test_declared_horizon_matches_origin_with_exploratory_metrics():
 @pytest.mark.slow
 def test_exploratory_trigger_refuses_before_shared_capture():
     con = ds.duckdb_connection()
-    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    experiment, resolver = _analysis(con, AnalysisPlan(primary="revenue"))
     con.disconnect()
     try:
         with pytest.raises(CodedError) as refused:
-            analysis.run(exploratory_metrics=["rps"], population="triggered")
+            view_readout(experiment, resolver, exploratory_metrics=["rps"], population="triggered")
         assert refused.value.code == "facade.analysis.trigger_unsupported"
     finally:
-        analysis.close()
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -1173,9 +1334,11 @@ def test_exploratory_custom_provider_keeps_per_metric_capture_metadata():
 @pytest.mark.integration
 def test_exploratory_live_results_retain_live_coherence_metadata():
     con = ds.duckdb_connection()
-    analysis = _analysis(con, AnalysisPlan(primary="revenue"))
+    experiment, resolver = _analysis(con, AnalysisPlan(primary="revenue"))
     try:
-        rows = analysis.run(
+        rows = view_readout(
+            experiment,
+            resolver,
             exploratory_metrics=["rps"],
             decision_method=Method(name="unadjusted"),
             coherence="live",
@@ -1206,7 +1369,7 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
             readout_table(rows).gt().as_raw_html()
         )
     finally:
-        analysis.close()
+        resolver.close()
         con.disconnect()
 
 

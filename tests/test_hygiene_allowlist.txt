@@ -206,14 +206,14 @@ tests/test_dashboard.py 23
 tests/test_dashboard_capture.py 1
 tests/test_dashboard_group_data.py 5
 tests/test_dashboard_group_laws.py 1
-tests/test_dashboard_group_source.py 1
+tests/test_dashboard_group_source.py 2
 tests/test_dashboard_overview.py 15
 tests/test_dashboard_population.py 6
 tests/test_dashboard_result_evidence.py 11
 tests/test_errors.py 1
 tests/test_evidence_identity_parity.py 2
 tests/test_experiment_health.py 3
-tests/test_exploratory_metrics.py 1
+tests/test_exploratory_metrics.py 2
 tests/test_frame_exact_successes.py 4
 tests/test_frame_missing.py 6
 tests/test_frame_panel.py 2
@@ -227,6 +227,7 @@ tests/test_plan_compatibility.py 3
 tests/test_plan_resolver.py 3
 tests/test_policy_alpha.py 2
 tests/test_policy_parity.py 1
+tests/test_readout_execution_context.py 1
 tests/test_readout_interpretation.py 11
 tests/test_readout_metadata.py 4
 tests/test_readout_public_scope.py 8

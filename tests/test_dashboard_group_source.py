@@ -8,8 +8,8 @@ from typing import Any, cast
 
 import pytest
 
+from increment._dashboard_capture import dashboard_group_data
 from increment.workflows import capture_sequential
-from tests.analysis_factory import bound_analysis
 
 pytestmark = pytest.mark.slow
 
@@ -190,9 +190,11 @@ def _native_groups(
 
 
 def _capture(resolver, *names):
-    live = bound_analysis(resolver)
-    metrics = [metric for metric in live.metrics if not names or metric.name in names]
-    return {(row.metric, row.group_id): row for row in live.dashboard_group_data(metrics=metrics)}
+    binding = resolver.binding
+    metrics = [metric for metric in binding.metrics if not names or metric.name in names]
+    return {
+        (row.metric, row.group_id): row for row in dashboard_group_data(binding, metrics=metrics)
+    }
 
 
 def test_running_source_without_observations_explains_missing_cutoff():
@@ -337,8 +339,8 @@ def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path)
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from tests.test_sequential_public_sources import _native_fixture
 
-    connection, definitions, analysis = _native_fixture(law)
-    analysis.close()
+    connection, definitions, (_, fixture_resolver) = _native_fixture(law)
+    fixture_resolver.close()
     try:
         path = tmp_path / "definitions.yaml"
         path.write_text(definitions.model_dump_json())
@@ -359,8 +361,8 @@ def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path)
         connection.create_table(
             "events", pa.Table.from_pylist(ghost, schema=events.schema), overwrite=True
         )
-        live = bound_analysis(resolver)
-        rows = live.dashboard_group_data(metrics=live.metrics, checkpoints=checkpoints)
+        binding = cast(Any, resolver).binding
+        rows = dashboard_group_data(binding, metrics=binding.metrics, checkpoints=checkpoints)
         assert rows == snapshot.group_data
         expected = (
             {"control": 0.25, "treatment": 0.75}
@@ -497,10 +499,10 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
         def unexpected_read(*args, **kwargs):
             pytest.fail("checkpoint validation must precede warehouse reads")
 
-        live = bound_analysis(resolver)
+        binding = resolver.binding
         monkeypatch.setattr(connection, "to_pyarrow", unexpected_read)
         with pytest.raises(CapabilityError) as caught:
-            live.dashboard_group_data(metrics=live.metrics, checkpoints=checkpoints)
+            dashboard_group_data(binding, metrics=binding.metrics, checkpoints=checkpoints)
         assert caught.value.code == code
 
 
@@ -516,8 +518,8 @@ def test_group_metric_selection_is_validated_before_source_access(kind, code, mo
     from increment.errors import InvalidRequestError
 
     with _native_groups(metric_names=("mean",)) as (connection, experiment, resolver):
-        live = bound_analysis(resolver)
-        metric = live.metrics[0]
+        binding = resolver.binding
+        metric = binding.metrics[0]
         requested = {
             "unknown": [metric.model_copy(update={"name": "undeclared"})],
             "changed": [metric.model_copy(update={"window_days": 1})],
@@ -529,5 +531,5 @@ def test_group_metric_selection_is_validated_before_source_access(kind, code, mo
 
         monkeypatch.setattr(connection, "to_pyarrow", unexpected_read)
         with pytest.raises(InvalidRequestError) as caught:
-            live.dashboard_group_data(metrics=requested)
+            dashboard_group_data(binding, metrics=requested)
         assert caught.value.code == code
