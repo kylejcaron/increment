@@ -625,3 +625,28 @@ def test_artifact_resolver_reopens_owned_snapshot_after_close():
         if resolver is not None:
             resolver.close()
         con.disconnect()
+
+
+@pytest.mark.integration
+def test_resolver_repr_names_its_source_and_state_without_reopening_a_closed_artifact():
+    from increment.builders import from_unit_day_artifact
+    from tests.test_unit_day_artifact_facade import _published
+
+    con, _native, context, store, ref = _published()
+    resolver = None
+    try:
+        experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
+        assert "closed=False" in repr(resolver)
+        resolver.close()
+        closed_source = resolver.binding.state.source
+
+        display = repr(resolver)
+
+        assert "'artifact'" in display and repr(experiment.experiment_id) in display
+        assert "closed=True" in display and "0x" not in display
+        assert resolver.binding.state.source is closed_source
+        assert getattr(closed_source, "closed", False)
+    finally:
+        if resolver is not None:
+            resolver.close()
+        con.disconnect()

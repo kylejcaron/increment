@@ -61,6 +61,47 @@ def test_experiment_round_trips_canonical_json_and_hash():
     assert restored.hash() == experiment.hash()
 
 
+@pytest.mark.parametrize(
+    ("design", "shown"),
+    (
+        ({"mechanism": "randomized"}, "randomized"),
+        ({"kind": "switchback", "identification": {"mechanism": "randomized"}}, "switchback"),
+    ),
+)
+def test_experiment_repr_is_one_bounded_line_naming_what_it_runs(design, shown):
+    metrics = {f"metric_{index}_{'x' * 120}": {"kind": "mean"} for index in range(200)}
+    experiment = Experiment(
+        experiment_id="checkout_" + "y" * 500,
+        design=design,
+        metrics=metrics,
+        registration=Registration(registration_hash="registration-hash"),
+        source_refs=(SourceReference(name="events", uri="warehouse://events"),),
+        scopes=(Scope(view="run", grain="total"), Scope(view="breakout", grain="total")),
+    )
+
+    display = repr(experiment)
+
+    assert len(display) <= 400
+    assert "\n" not in display and "mappingproxy" not in display
+    assert "checkout_" in display and repr(shown) in display
+    assert "metric_0_" in display and "metric_199_" not in display
+    assert "views=2" in display
+    assert experiment.hash()[:12] in display
+
+
+def test_experiment_repr_says_not_portable_instead_of_refusing():
+    experiment = Experiment(
+        experiment_id="checkout",
+        design={"mechanism": "randomized"},
+        metrics={"orders": {"learner": len}},
+        registration=Registration(registration_hash="registration-hash"),
+        source_refs=(SourceReference(name="events", uri="warehouse://events"),),
+        scopes=(Scope(view="run", grain="total"),),
+    )
+
+    assert "not portable" in repr(experiment)
+
+
 def test_experiment_scopes_and_nested_definitions_are_immutable():
     design = {"mechanism": "randomized"}
     experiment = Experiment(

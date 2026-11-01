@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import reprlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
@@ -24,6 +25,8 @@ from increment.kernel.contracts import (
     contract_hash,
     declared_breakouts,
 )
+
+_DISPLAY = reprlib.Repr(maxlist=5, maxstring=48)
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +313,21 @@ class Experiment:
         if not scopes or len({scope.hash() for scope in scopes}) != len(scopes):
             _refuse("kernel.request.invalid", field="empty or duplicate experiment scopes")
         return dataclasses.replace(self, scopes=tuple(scopes), operations={})
+
+    def __repr__(self) -> str:
+        """One bounded line: the experiment, its design, metrics, views and identity prefix."""
+        try:
+            identity = self.hash()[:12]
+        except CodedError as refusal:
+            if refusal.code != "kernel.method.implementation_ref_missing":
+                raise
+            identity = "not portable"
+        design = self.design.get("mechanism", self.design.get("kind"))
+        return (
+            f"Experiment(experiment_id={_DISPLAY.repr(self.experiment_id)}, "
+            f"design={_DISPLAY.repr(design)}, metrics={_DISPLAY.repr(list(self.metrics))}, "
+            f"views={len(self.scopes)}, hash={identity!r})"
+        )
 
     def hash(self) -> str:
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
