@@ -4,13 +4,15 @@ import gc
 import tracemalloc
 import warnings
 from datetime import datetime
+from typing import Any, cast
 
 import ibis
 import ibis.expr.types as ir
 import narwhals as nw
 import pytest
 
-from increment.analysis import Analysis
+from increment import from_definitions
+from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, IncrementWarning
 from increment.query.artifact_publish import artifact_context
 from increment.query.artifact_reader import ArtifactMomentSource
@@ -21,7 +23,7 @@ from increment.semantics.loader import load
 from increment.semantics.models import Breakout
 from tests._evidence_requests import _moments, _unit_rows
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import _native_source, native_connection
+from tests.analysis_factory import bound_source, native_connection
 
 pytestmark = pytest.mark.slow
 
@@ -109,19 +111,19 @@ experiments:
             )
     connection = ibis.duckdb.connect()
     connection.create_table("events", obj=events)
-    native = Analysis.from_definitions("test", definitions, connection)
+    experiment, resolver = from_definitions(definitions, connection, experiment_name="test")
     loaded = load(definitions)
     context = artifact_context(loaded, loaded.experiments[0], "error")
     store = WarehouseArtifactStore(connection, schema_name="artifacts")
-    reference = native.publish_unit_day_artifact(
-        store, extensions=[ClusterIdentityRequest(cluster_name="store_id")]
+    reference = publish_unit_day_artifact(
+        experiment, resolver, store, extensions=[ClusterIdentityRequest(cluster_name="store_id")]
     )
     adopted = open_artifact(store, reference, expected_context=context)
     try:
-        yield _native_source(native), adopted
+        yield bound_source(resolver), adopted
     finally:
         adopted.close()
-        native.close()
+        cast(Any, resolver).close()
         connection.disconnect()
 
 
@@ -259,21 +261,21 @@ experiments:
     # An unwindowed mean metric is loaded with a coded warning; the reader under
     # test is the point, not the loader's advice.
     with pytest.warns(IncrementWarning):
-        native = Analysis.from_definitions("test", definitions, connection)
+        experiment, resolver = from_definitions(definitions, connection, experiment_name="test")
     with pytest.warns(IncrementWarning):
         loaded = load(definitions)
     context = artifact_context(loaded, loaded.experiments[0], "error")
     store = WarehouseArtifactStore(connection, schema_name="artifacts")
-    reference = native.publish_unit_day_artifact(store)
+    reference = publish_unit_day_artifact(experiment, resolver, store)
     reader = ArtifactMomentSource.open(store, reference, expected_context=context)
-    return reader, native, connection
+    return reader, cast(Any, resolver), connection
 
 
 def test_plain_reader_unit_frame_agrees_with_its_own_total_moments(tmp_path):
     """unit_frame and moments(grain="total") see the same per-unit values:
     under avg_event each unit's value is its mean over events, and the
     frame's per-group mean of those values is the moments' mean."""
-    reader, native, connection = _published_plain_reader(
+    reader, resolver, connection = _published_plain_reader(
         tmp_path, n_units=8, n_days=3, aggregation="avg_event"
     )
     try:
@@ -286,7 +288,7 @@ def test_plain_reader_unit_frame_agrees_with_its_own_total_moments(tmp_path):
             assert sum(values) / len(values) == pytest.approx(mean, rel=1e-12)
     finally:
         reader.close()
-        native.close()
+        resolver.close()
         connection.disconnect()
 
 
@@ -313,9 +315,9 @@ def test_plain_reader_unit_frame_memory_does_not_grow_with_the_day_axis(tmp_path
         peak_long = _unit_frame_peak_bytes(long[0], long[0].context.metrics[0])
         assert peak_long - peak_short < 2 * 1024 * 1024, (peak_short, peak_long)
     finally:
-        for reader, native, connection in (short, long):
+        for reader, resolver, connection in (short, long):
             reader.close()
-            native.close()
+            resolver.close()
             connection.disconnect()
 
 
@@ -359,10 +361,12 @@ def test_measure_covariate_extension_matches_native_preperiod_unit_frame(tmp_pat
     assert experiment is not None
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(connection, schema_name="artifacts")
-    native_analysis = Analysis.from_definitions("cat_test", definitions_path, connection)
-    reference = native_analysis.publish_unit_day_artifact(store)
+    native_experiment, native_resolver = from_definitions(
+        definitions_path, connection, experiment_name="cat_test"
+    )
+    reference = publish_unit_day_artifact(native_experiment, native_resolver, store)
     artifact = open_artifact(store, reference, expected_context=context)
-    native = _native_source(native_analysis)
+    native = bound_source(native_resolver)
     metric = native.context.metrics[0]
     try:
         native_rows = (
@@ -405,5 +409,5 @@ def test_measure_covariate_extension_matches_native_preperiod_unit_frame(tmp_pat
         assert history["u2"]["has_preperiod_events"] is True
     finally:
         artifact.close()
-        native_analysis.close()
+        cast(Any, native_resolver).close()
         connection.disconnect()

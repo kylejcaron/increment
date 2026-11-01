@@ -23,9 +23,11 @@ from calibration.cuped_linear import (
     summarize,
     trial,
 )
+from increment import from_frame
 from increment.errors import InvalidRequestError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.cuped import fit_cuped
+from tests.analysis_factory import view_readout
 from tests.mc import nominal_band
 
 
@@ -792,7 +794,7 @@ def test_d7_declared_unrelated_metric_does_not_change_public_inference():
     import pandas as pd
 
     from calibration.cuped_linear import require_prerequisites
-    from increment import Analysis, AnalysisPlan, Method
+    from increment import AnalysisPlan, Method
     from increment.breakout.estimates import LiftEstimates
     from increment.frame import CupedCovariate, MetricSpec
 
@@ -826,10 +828,16 @@ def test_d7_declared_unrelated_metric_does_not_change_public_inference():
         plan = AnalysisPlan(
             primary="outcome", secondaries=("unrelated",) if include_unrelated else ()
         )
-        analysis = Analysis.from_unit_summary(
-            frame, unit="unit", group="arm", control="c", metrics=metrics, plan=plan
+        experiment, resolver = from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="c",
+            metrics=metrics,
+            plan=plan,
         )
-        rows = analysis.run()
+        rows = view_readout(experiment, resolver)
         assert isinstance(rows, LiftEstimates)
         (row,) = [row for row in rows if row.metric == "outcome"]
         observations.append(

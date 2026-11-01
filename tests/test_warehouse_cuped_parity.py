@@ -8,11 +8,13 @@ adjusted moments, the same interval and the same retained sequential state.
 from __future__ import annotations
 
 import math
+from typing import Any, cast
 
 import ibis
 import pytest
 import yaml
 
+from increment import from_definitions
 from increment.errors import DefinitionError
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Definitions
@@ -704,7 +706,7 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
 def test_warehouse_multicovariate_digest_tracks_covariate_only_changes(tmp_path):
     import copy
 
-    from increment import Analysis
+    from tests.analysis_factory import view_readout
     from tests.parity_harness import matrix_data
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
@@ -716,7 +718,7 @@ def test_warehouse_multicovariate_digest_tracks_covariate_only_changes(tmp_path)
             row["pre_revenue"] = 2.5 * row["pre_revenue"] + 7.0
 
     connections = [ibis.duckdb.connect(), ibis.duckdb.connect()]
-    analyses = []
+    resolvers = []
     try:
         for index, (connection, payload) in enumerate(
             zip(connections, (events, changed_events), strict=True)
@@ -724,17 +726,19 @@ def test_warehouse_multicovariate_digest_tracks_covariate_only_changes(tmp_path)
             connection.create_table("mixed_events", obj=payload)
             definitions_path = tmp_path / f"warehouse-cuped-{index}.yaml"
             definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
-            analyses.append(Analysis.from_definitions("mixed_cuped", definitions_path, connection))
+            resolvers.append(
+                from_definitions(definitions_path, connection, experiment_name="mixed_cuped")
+            )
 
         digests = []
-        for analysis in analyses:
-            rows = analysis.run(metrics=["revenue"])
+        for experiment, resolver in resolvers:
+            rows = view_readout(experiment, resolver, metrics=["revenue"])
             assert rows.metadata is not None
             assert rows.metadata.source_content_digest is not None
             digests.append(rows.metadata.source_content_digest)
         assert digests[0] != digests[1]
     finally:
-        for analysis in analyses:
-            analysis.close()
+        for _, resolver in resolvers:
+            cast(Any, resolver).close()
         for connection in connections:
             connection.disconnect()

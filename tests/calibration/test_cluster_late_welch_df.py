@@ -57,6 +57,8 @@ import numpy as np
 import pytest
 from scipy.stats import t as t_dist
 
+from increment import from_frame
+from tests.analysis_factory import view_readout
 from tests.mc import CoverageSet, mcse
 
 if TYPE_CHECKING:
@@ -237,7 +239,6 @@ def _encouragement_design():
 def late_study(cell: Cell, reps: int, seed: int) -> dict[str, float]:
     """Welch (production) vs pooled-df coverage of the additive LATE through
     ``Analysis.from_unit_summary(..., design=Encouragement, cluster=...)``."""
-    from increment import Analysis
     from tests.analysis_factory import lift_rows
 
     k_t, k_c, _ratio, _dispersion = cell
@@ -254,14 +255,18 @@ def late_study(cell: Cell, reps: int, seed: int) -> dict[str, float]:
         for _ in range(reps):
             frame, arm_c, arm_t = late_frame(rng, cell)
             results = lift_rows(
-                Analysis.from_unit_summary(
-                    frame,
-                    unit="user_id",
-                    group="variant",
-                    metrics={"y": "mean"},
-                    design=design,
-                    cluster="store_id",
-                ).run(estimands=("late",))
+                view_readout(
+                    *from_frame(
+                        frame,
+                        shape="summary",
+                        unit="user_id",
+                        group="variant",
+                        metrics={"y": "mean"},
+                        design=design,
+                        cluster="store_id",
+                    ),
+                    estimands=("late",),
+                )
             )
             z_fs = first_stage_z(arm_c, arm_t)
             lates = [r for r in results if r.estimand == "late" and r.value_scale == "absolute"]

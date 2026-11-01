@@ -6,10 +6,10 @@ from typing import Any, cast
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
+from increment import from_definitions
 from increment.errors import CodedError
 from increment.results import LiftEstimate
-from tests.analysis_factory import held_source
+from tests.analysis_factory import held_source, view_readout
 from tests.covariate_cases import categorical_defs_and_con
 
 
@@ -53,8 +53,10 @@ def test_observational_adjustment_uses_profile_stream_coherence(
         .replace("property: region, source: events", "property: region, source: profile")
     )
     defs_path.write_text(definitions)
-    analysis = Analysis.from_definitions("cat_test", defs_path, connection, store="none")
-    source = cast(Any, held_source(analysis))
+    experiment, resolver = from_definitions(
+        defs_path, connection, experiment_name="cat_test", store="none"
+    )
+    source = cast(Any, held_source(resolver))
 
     def apply_mutation():
         if mutation == "correction":
@@ -69,7 +71,7 @@ def test_observational_adjustment_uses_profile_stream_coherence(
             )
 
     try:
-        (before,) = analysis.run(coherence="captured")
+        (before,) = view_readout(experiment, resolver, coherence="captured")
         assert isinstance(before, LiftEstimate)
         captures = 0
         if coherence == "captured":
@@ -88,7 +90,7 @@ def test_observational_adjustment_uses_profile_stream_coherence(
             apply_mutation()
 
         try:
-            observed_rows = analysis.run(coherence=coherence)
+            observed_rows = view_readout(experiment, resolver, coherence=coherence)
             (observed,) = observed_rows
             assert isinstance(observed, LiftEstimate)
         except CodedError as error:
@@ -104,7 +106,7 @@ def test_observational_adjustment_uses_profile_stream_coherence(
             assert captures == 1
             assert observed.require_lift().value == pytest.approx(before.require_lift().value)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
@@ -128,11 +130,13 @@ def test_captured_observational_shared_sql_keeps_all_logical_stream_names(tmp_pa
         .replace("property: region, source: events", "property: region, source: profile")
     )
     defs_path.write_text(definitions)
-    analysis = Analysis.from_definitions("cat_test", defs_path, connection, store="none")
+    experiment, resolver = from_definitions(
+        defs_path, connection, experiment_name="cat_test", store="none"
+    )
     try:
-        rows = analysis.run(coherence="captured")
+        rows = view_readout(experiment, resolver, coherence="captured")
         assert rows
         assert rows.metadata is not None
         assert {"events", "profile"} <= set(rows.metadata.effective_modes)
     finally:
-        analysis.close()
+        cast(Any, resolver).close()
