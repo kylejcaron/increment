@@ -990,13 +990,23 @@ def _experiment_result(
 
 def _readout_overrides(**options: object) -> dict[str, object]:
     """Keep the readout options a caller set; an explicit ``prior=None`` differs from omitted."""
-    unset_defaults = {"decision_method", "sensitivity_methods", "prior"}
+    unset_defaults = {"decision_method", "sensitivity_methods", "prior", "coherence"}
     return {
         name: value
         for name, value in options.items()
         if (value is not UNSET if name in unset_defaults else value is not None)
-        and not (name == "coherence" and value == "captured")
     }
+
+
+def _coherence_override(experiment: Experiment, overrides: dict[str, object]) -> dict[str, object]:
+    """Drop a call-time coherence that equals the saved one, or ``captured`` when none is saved.
+
+    The run then keeps the identity and saving admission of an omitted coherence;
+    any other call-time value replaces the saved one.
+    """
+    if overrides.get("coherence") == experiment.request_options.get("coherence", "captured"):
+        del overrides["coherence"]
+    return overrides
 
 
 def _scope_population(experiment: Experiment, overrides: dict[str, object]) -> dict[str, object]:
@@ -1061,13 +1071,14 @@ def run(  # noqa: PLR0913
     value_scale: Mapping[str, ValueScale] | None = None,
     exploratory_metrics: Sequence[str] | None = None,
     population: Literal["assigned", "triggered"] | None = None,
-    coherence: Literal["captured", "live"] = "captured",
+    coherence: Literal["captured", "live"] | _Unset = UNSET,
 ) -> RunResult:
     """Run an experiment through its resolver.
 
     ``views`` selects declared Experiment scopes by hash, in declaration order.
     ``None`` executes all declared scopes in one capture. Only the readout
-    options set by the caller apply. A population must match every selected
+    options set by the caller apply; ``coherence`` defaults to the experiment's
+    saved value, else ``captured``. A population must match every selected
     scope, which declares it. ``results_store`` and ``decision_log`` save or log
     the run under the experiment's registration, checked before the source is
     read; ``run_id`` is generated when omitted.
@@ -1093,7 +1104,7 @@ def run(  # noqa: PLR0913
             context={},
         )
     selected = _select_views(experiment, views)
-    overrides = _scope_population(selected, overrides)
+    overrides = _coherence_override(selected, _scope_population(selected, overrides))
     persisted = {"run_id": run_id, "results_store": results_store, "decision_log": decision_log}
     identified = tuple(name for name, value in persisted.items() if value is not None)
     if identified and not isinstance(resolver, ResolverBinding):

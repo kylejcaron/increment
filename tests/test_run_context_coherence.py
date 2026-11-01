@@ -141,8 +141,18 @@ def test_run_owner_coherence_mutations_between_primary_and_breakout(tmp_path, mu
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("selection", ("primary_and_breakout", "breakout_alone"))
-def test_saved_live_coherence_reads_every_selected_view_live(tmp_path, selection):
+@pytest.mark.parametrize(
+    ("saved", "call", "selection", "expected"),
+    (
+        pytest.param("live", None, "primary_and_breakout", "live", id="saved-live"),
+        pytest.param("live", None, "breakout_alone", "live", id="saved-live-breakout-alone"),
+        pytest.param("live", "captured", "primary_and_breakout", "captured", id="call-captured"),
+        pytest.param("captured", "live", "primary_and_breakout", "live", id="call-live"),
+    ),
+)
+def test_run_coherence_is_the_call_time_value_else_the_saved_one(
+    tmp_path, saved, call, selection, expected
+):
     from dataclasses import replace
 
     from increment import Scope, run
@@ -154,14 +164,15 @@ def test_saved_live_coherence_reads_every_selected_view_live(tmp_path, selection
         tmp_path, return_binding=True, return_connection=True
     )
     _add_replication_units(con)
-    saved = replace(experiment.with_views(*views), request_options={"coherence": "live"})
+    saved_experiment = replace(experiment.with_views(*views), request_options={"coherence": saved})
+    keywords = {} if call is None else {"coherence": call}
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            metadata = run(saved, resolver).readout(breakout).metadata
+            metadata = run(saved_experiment, resolver, **keywords).readout(breakout).metadata
     finally:
         resolver.close()
 
     assert metadata is not None
-    assert metadata.coherence == "live"
-    assert set(metadata.effective_modes.values()) == {"live"}
+    assert metadata.coherence == expected
+    assert set(metadata.effective_modes.values()) == {expected}

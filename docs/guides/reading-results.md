@@ -123,7 +123,8 @@ The collection display includes retained scope even when filtering leaves no
 visible rows.
 
 Scope coherence is recorded on each scoped row as `coherence` and
-`effective_modes`. `run` defaults to `coherence="captured"` for every view: a
+`effective_modes`. `run` reads every view with the `coherence` you pass, else
+the experiment's saved value, else `"captured"`: a
 captured request asks built-in streams to pin evidence and refuses if the
 warehouse cannot create the required TEMP snapshot.
 Choose `coherence="live"` when snapshot materialization is unavailable (for
