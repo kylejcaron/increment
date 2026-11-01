@@ -262,6 +262,18 @@ def test_breakout_scope_selectors_expand_from_declared_source_capabilities():
         ).compile()
     assert raised.value.code == "evidence.breakout_unavailable"
     assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
+    with pytest.raises(CodedError) as raised:
+        experiment.with_views(
+            Scope(
+                view="breakout",
+                grain="total",
+                segment=(
+                    {"property": "unavailable", "source": None},
+                    {"property": "unavailable", "source": None},
+                ),
+            )
+        ).compile()
+    assert raised.value.code == "kernel.request.invalid"
 
 
 def test_compile_retains_explicit_breakouts_when_capabilities_are_missing():

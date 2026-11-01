@@ -183,13 +183,19 @@ def test_runnable_preserves_preflight_refusals(
             record_property("refusal_stage", "construction")
         elif not legacy_reads:
             record_property("refusal_stage", "preflight")
-            assert code in {refusal.code for refusal in status.static_refusals}
+            _assert_preflight_refusal_context(status, legacy.value)
         else:
             record_property("refusal_stage", "data")
             assert status.deferred_checks
         assert counted.loader_reads == []
     finally:
         _close_parity_analysis(analysis)
+
+
+def _assert_preflight_refusal_context(status, expected):
+    refusal = next(refusal for refusal in status.static_refusals if refusal.code == expected.code)
+    if expected.code == "evidence.breakout_unavailable":
+        assert refusal.context == expected.context
 
 
 def _assert_runners_produced_rows(

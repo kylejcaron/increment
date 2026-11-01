@@ -165,6 +165,19 @@ def declared_breakouts(
     if not scope.segment:
         return declarations if scope.view == "breakout" else ()
 
+    seen: dict[str, list[str | None]] = {}
+    for selector in scope.segment:
+        sources = seen.setdefault(selector.property, [])
+        if sources and (
+            selector.source is None
+            or any(source is None or source == selector.source for source in sources)
+        ):
+            _refuse(
+                "kernel.request.invalid",
+                field=f"duplicate breakout selection {selector.property!r}",
+            )
+        sources.append(selector.source)
+
     selected: set[BreakoutIdentity] = set()
     unresolved: list[BreakoutIdentity] = []
     for selector in scope.segment:
@@ -181,27 +194,36 @@ def declared_breakouts(
                     None,
                 )
                 constructor = (
-                    source.capabilities.kind
+                    source.constructor or source.capabilities.kind
                     if source is not None
                     else "recorded source declarations"
+                )
+                requested = (
+                    tuple(identity.property for identity in declarations)
+                    if definitions_recorded
+                    else (
+                        tuple(source.capabilities.breakouts)
+                        if source is not None
+                        else tuple(identity.property for identity in declarations)
+                    )
+                )
+                offered = (
+                    tuple(source.capabilities.breakouts)
+                    if source is not None
+                    else tuple(identity.property for identity in declarations)
                 )
                 raise CapabilityError(
                     "Recorded source declarations cannot supply the requested breakout",
                     code="evidence.breakout_unavailable",
                     context={
                         "constructor": constructor,
-                        "requested": (selector.property,),
-                        "offered": tuple(sorted({identity.property for identity in declarations})),
-                        "route": "recorded source declarations",
+                        "requested": requested,
+                        "offered": offered,
+                        "route": "use a source with the requested breakout dimensions",
                     },
                 )
             unresolved.append(selector)
             continue
-        if any(identity in selected for identity in matches):
-            _refuse(
-                "kernel.request.invalid",
-                field=f"duplicate breakout selection {selector.property!r}",
-            )
         selected.update(matches)
     return (*tuple(identity for identity in declarations if identity in selected), *unresolved)
 

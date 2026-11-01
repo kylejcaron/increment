@@ -36,6 +36,7 @@ class SourceReference:
     schema: Mapping[str, str] | None = None
     capabilities: EvidenceCapabilities | None = None
     declaration_version: int = 1
+    constructor: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.uri or self.declaration_version < 1:
@@ -59,7 +60,7 @@ class SourceReference:
             )
 
     def canonical_payload(self) -> dict[str, object]:
-        return {
+        payload = {
             "name": self.name,
             "uri": self.uri,
             "expected_digest": self.expected_digest,
@@ -67,12 +68,18 @@ class SourceReference:
             "capabilities": _capability_payload(self.capabilities),
             "declaration_version": self.declaration_version,
         }
+        if self.constructor is not None:
+            payload["constructor"] = self.constructor
+        return payload
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> SourceReference:
         raw_capabilities = payload.get("capabilities")
         expected_digest = payload.get("expected_digest")
         schema = payload.get("schema")
+        constructor = payload.get("constructor")
+        if not isinstance(constructor, str):
+            constructor = None
         return cls(
             name=str(payload["name"]),
             uri=str(payload["uri"]),
@@ -84,6 +91,7 @@ class SourceReference:
                 else None
             ),
             declaration_version=int(cast(int, payload.get("declaration_version", 1))),
+            constructor=constructor,
         )
 
 
