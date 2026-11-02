@@ -130,4 +130,4 @@ def test_unknown_base_fails_closed(repository):
     assert _run_decision(repo, "missing-base") == {"snippets": True, "strict_docs": True}
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]

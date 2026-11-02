@@ -7,7 +7,7 @@ import pytest
 
 from scripts.compile_registry_ci_changes import requires_compile_registry
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 @pytest.fixture

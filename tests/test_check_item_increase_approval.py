@@ -7,7 +7,9 @@ import pytest
 
 from scripts import check_item_increase_approval as check
 
-BASE = {"unit": 10, "fast": 20, "slow": 5, "all": 25}
+pytestmark = pytest.mark.tooling
+
+BASE = {"unit": 10, "fast": 20, "slow": 5, "tooling": 0, "all": 25}
 
 
 def test_increase_needs_a_reason_covering_its_delta() -> None:
@@ -16,6 +18,13 @@ def test_increase_needs_a_reason_covering_its_delta() -> None:
     assert check.check_increases(BASE, head, "")[0] == 1
     assert check.check_increases(BASE, head, "tests: +2 items — partial")[0] == 1
     assert check.check_increases(BASE, head, "tests: +3 items — new regressions")[0] == 0
+
+    tooling_head = {**BASE, "tooling": 3}
+    assert check.check_increases(BASE, tooling_head, "")[0] == 1
+    assert (
+        check.check_increases(BASE, tooling_head, "tests: +3 items — tooling contract tests")[0]
+        == 0
+    )
 
 
 def test_each_tier_is_matched_to_its_own_covering_reason() -> None:

@@ -7,9 +7,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from noxfile import TIER_MARKERS, _xdist_args
 from scripts.test_slots import WORKERS_PLACEHOLDER
+
+pytestmark = pytest.mark.tooling
 
 
 def test_ci_keeps_auto_workers() -> None:
@@ -63,3 +66,34 @@ def test_compile_registry_runs_only_in_its_own_tier() -> None:
 
     assert "tests/test_warehouse_compile_registry.py" not in collected("slow")
     assert collected("compile-registry") == {"tests/test_warehouse_compile_registry.py"}
+
+
+@pytest.mark.integration
+def test_tooling_job_is_conditional_and_required_by_ci_ok() -> None:
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]
+    tooling = jobs["tooling"]
+    steps = tooling["steps"]
+
+    assert tooling["needs"] == ["lint", "changes"]
+    assert tooling["if"] == "${{ needs.changes.outputs.tooling_required == 'true' }}"
+    test_step = next(step for step in steps if "make test-tier TIER=tooling" in step.get("run", ""))
+    assert "--cpu-report cpu.json" in test_step["run"]
+    cpu_upload = next(step for step in steps if step.get("name") == "Retain tooling CPU usage")
+    assert cpu_upload["if"] == "always()"
+    assert cpu_upload["uses"] == (
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+    )
+    assert cpu_upload["with"] == {
+        "name": "cpu-tooling-${{ job.check_run_id }}",
+        "path": "cpu.json",
+        "if-no-files-found": "warn",
+        "retention-days": 90,
+    }
+
+    assert "tooling_required" in jobs["changes"]["outputs"]
+    assert "tooling" in jobs["ci-ok"]["needs"]
+    gate_step = jobs["ci-ok"]["steps"][-1]
+    assert "TOOLING_REQUIRED" in gate_step["env"]
+    assert "TOOLING_RESULT" in gate_step["env"]
+    assert 'check_conditional_job "$TOOLING_REQUIRED" "$TOOLING_RESULT" tooling' in gate_step["run"]

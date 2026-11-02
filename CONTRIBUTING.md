@@ -185,16 +185,17 @@ default CI selection; the Make targets define supported tiers:
 
 | Target | Marker expression |
 | --- | --- |
-| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark` |
-| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark` |
-| `make test-fast` | Unit plus integration-fast (benchmarks excluded) |
-| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark` |
+| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling` |
+| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling` |
+| `make test-fast` | Unit plus integration-fast (tooling and benchmarks excluded) |
+| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling` |
 | `make test-tier TIER=compile-registry` | `compile_registry and not benchmark` (the warehouse compile registry; its own CI job) |
 | `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery and not benchmark` |
 | `make test-numerical-certification` | `numerical_certification and not benchmark` |
 | `make test-scientific SPLITS=N GROUP=K` | `(parameter_recovery or numerical_certification) and not benchmark` |
 | `make test-examples` | `examples and not benchmark` |
-| `make test-all` | `(slow or not slow) and not benchmark` |
+| `make test-tier TIER=tooling` | `tooling and not benchmark` (repository tooling; conditional CI job) |
+| `make test-all` | `(slow or not slow) and not benchmark` (includes tooling) |
 
 The parameter-recovery, numerical-certification, scientific and examples tests
 also carry `slow`; the marker expressions keep their purpose-specific gates

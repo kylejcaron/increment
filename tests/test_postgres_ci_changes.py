@@ -228,4 +228,4 @@ def test_non_pr_events_always_require_postgres(repository, event):
     assert _required(repo, "missing-base", event)
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]

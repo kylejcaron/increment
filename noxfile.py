@@ -104,19 +104,20 @@ DUCKDB_FLOORS: dict[str, str] = {
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
 TIER_MARKERS = {
-    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
+    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
+    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
     # The compile registry builds once in its own CI job instead of in every slow shard.
     "slow": (
         "slow and not parameter_recovery and not numerical_certification and not examples"
-        " and not compile_registry and not benchmark"
+        " and not compile_registry and not benchmark and not tooling"
     ),
     "compile-registry": "compile_registry and not benchmark",
     "parameter-recovery": "parameter_recovery and not benchmark",
     "numerical-certification": "numerical_certification and not benchmark",
     "scientific": "(parameter_recovery or numerical_certification) and not benchmark",
     "examples": "examples and not benchmark",
+    "tooling": "tooling and not benchmark",
     "all": "(slow or not slow) and not benchmark",
     "all-except-scientific": "not parameter_recovery and not numerical_certification and not benchmark",
 }

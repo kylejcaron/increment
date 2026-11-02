@@ -27,11 +27,20 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         for tier, marker in json.loads(os.environ[TIERS_ENV]).items()
     }
     counts = dict.fromkeys(expressions, 0)
+    tier_nodeids = {tier: [] for tier in expressions}
     for item in session.items:
         matcher = MarkMatcher.from_markers(item.iter_markers())
         for tier, expression in expressions.items():
-            counts[tier] += expression.evaluate(matcher)
+            if expression.evaluate(matcher):
+                counts[tier] += 1
+                tier_nodeids[tier].append(item.nodeid)
     Path(output).write_text(
-        json.dumps({"tiers": counts, "nodeids": [item.nodeid for item in session.items]}),
+        json.dumps(
+            {
+                "tiers": counts,
+                "nodeids": [item.nodeid for item in session.items],
+                "tier_nodeids": tier_nodeids,
+            }
+        ),
         encoding="utf-8",
     )
