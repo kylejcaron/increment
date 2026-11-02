@@ -522,8 +522,13 @@ job also runs the documentation snippet and strict-docs checks when changed
 paths require them. The machine-generated `.github/fast-test-durations.json`
 weights come from a complete, passing local fast run on 2026-11-01 (Python 3.13,
 four `xdist` workers); only their proportions matter, and absent weights do not
-omit tests. Refresh them from a complete passing fast run; `--clean-durations`
-drops tests that no longer exist:
+omit tests. The nightly workflow records the fast and slow weights on Python
+3.12 with four workers in their own jobs, apart from the full suite, and
+uploads the `fast-test-durations` and `slow-test-durations` artifacts only when
+every recorded part of that tier passed. Each artifact holds the merged weights,
+already normalized as below, and a `metadata.json` naming the source commit and
+run; copy the weights over the committed file. To record them locally instead,
+run the complete tier; `--clean-durations` drops tests that no longer exist:
 
 ```bash
 make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/fast-test-durations.json"
@@ -574,8 +579,8 @@ case remains selected exactly once. Both split by the recorded weights in
 a test without a weight still runs. The slow weights come from a complete,
 passing local slow run on 2026-11-01 (Python 3.13, four `xdist` workers),
 normalized like the fast weights. Proportions matter, not absolute seconds, so
-refresh the weights from a complete local run of the tier when the tier changes
-materially:
+refresh the weights from the nightly artifact or a complete local run of the
+tier when the tier changes materially:
 
 ```bash
 make test-slow WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/slow-test-durations.json"
@@ -614,7 +619,9 @@ The
 [nightly workflow](.github/workflows/nightly.yml) runs daily at 06:00 UTC or
 on dispatch on any ref. It runs the full fast and slow tiers with the full
 parity matrix, numerical certification, parameter recovery, examples, and a
-randomized-order fast run with its seed logged. A failure creates or updates a
+randomized-order fast run with its seed logged. Separate jobs record the fast
+and slow duration weights; once every part passes, it publishes them and, on
+`main`, proposes the selection-map refresh. A failure creates or updates a
 GitHub issue labelled `nightly-failure`; tagging also requires a successful
 nightly run on the exact release SHA.
 

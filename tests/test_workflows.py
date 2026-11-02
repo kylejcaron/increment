@@ -128,6 +128,27 @@ def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
     assert "git fetch --prune origin" in run
     assert "--force-with-lease=refs/heads/bot/selection-map:" in run
     assert "gh pr edit bot/selection-map" in run
+    # A map built on another ref names a base that a squash merge drops, so it arrives stale.
+    assert "github.ref == 'refs/heads/main'" in job["if"]
+    assert "needs.record-durations.result == 'success'" in job["if"]
+
+
+def test_nightly_publishes_duration_weights_only_from_every_successful_part() -> None:
+    jobs = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]
+    record = jobs["record-durations"]
+    publish = jobs["publish-durations"]
+
+    # The full suite can outlast its timeout; recording must not wait for it.
+    assert "needs" not in record
+    assert publish["needs"] == "record-durations"
+    assert "needs.record-durations.result == 'success'" in publish["if"]
+    parts: dict[str, set[tuple[int, int]]] = {}
+    for entry in record["strategy"]["matrix"]["include"]:
+        parts.setdefault(entry["tier"], set()).add((entry["group"], entry["splits"]))
+    assert set(parts) == {"fast", "slow"}
+    for tier, recorded in parts.items():
+        (splits,) = {count for _, count in recorded}
+        assert {group for group, _ in recorded} == set(range(1, splits + 1)), tier
 
 
 def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
