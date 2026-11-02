@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
@@ -58,7 +59,8 @@ def categorical_cells_source(source, metric, request: _ResolvedCupedRequest) -> 
     """Capture categorical evidence on the source's pinned warehouse relation."""
     _require_compact_request(source, metric, request.method)
     with source.cuped_relation(metric, request) as (relation, execute, scratch_factory):
-        with scratch_factory() as scratch:
+        scratch_context = scratch_factory() if scratch_factory is not None else None
+        with scratch_context if scratch_context is not None else nullcontext() as scratch:
             return categorical_cells_from_relation(
                 relation, execute, metric=metric, request=request, scratch=scratch
             )
@@ -88,7 +90,8 @@ def categorical_request_cells(
         labels = {row["group_id"] for row in _rows(execute(relation.select("group_id").distinct()))}
         arms = sorted(str(label) for label in labels if label is not None and str(label) != control)
         request = replace(request, arm_order=(control, *arms))
-        with scratch_factory() as scratch:
+        scratch_context = scratch_factory() if scratch_factory is not None else None
+        with scratch_context if scratch_context is not None else nullcontext() as scratch:
             return categorical_cells_from_relation(
                 relation, execute, metric=metric, request=request, scratch=scratch
             )
@@ -306,7 +309,8 @@ def fit_multicovariate_source(
             and not _known_cells_outcome_domain(source, metric, relation, outcomes)
         ):
             try:
-                with scratch_factory() as scratch:
+                scratch_context = scratch_factory() if scratch_factory is not None else None
+                with scratch_context if scratch_context is not None else nullcontext() as scratch:
                     fit = fit_categorical_cells(
                         categorical_cells_from_relation(
                             relation,
