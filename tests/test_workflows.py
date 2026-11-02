@@ -133,13 +133,42 @@ def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
     assert "needs.record-durations.result == 'success'" in job["if"]
 
 
+def test_nightly_refresh_jobs_do_not_wait_for_the_full_suite() -> None:
+    jobs = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]
+    assert "needs" not in jobs["record-durations"]
+    for name in ("refresh-selection-map", "record-durations"):
+        job = jobs[name]
+        needs = job.get("needs", [])
+        if isinstance(needs, str):
+            needs = [needs]
+        assert "test-all" not in needs, name
+        assert "needs.test-all" not in job.get("if", ""), name
+
+
+def test_nightly_full_suite_shards_keep_distinct_reports() -> None:
+    job = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]["test-all"]
+    assert job["strategy"]["matrix"]["group"] == [1, 2]
+    assert job["strategy"]["fail-fast"] is False
+    assert job["timeout-minutes"] <= 90
+    assert "${{ matrix.group }}" in job["name"]
+    run = next(step["run"] for step in job["steps"] if "nox -s" in step.get("run", ""))
+    assert "--splits 2 --group ${{ matrix.group }}" in run
+    report = next(
+        step for step in job["steps"] if step.get("name") == "Retain full-suite JUnit report"
+    )
+    assert report["if"] == "always()"
+    assert report["with"]["name"] == (
+        "full-suite-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}"
+        "-${{ github.run_attempt }}"
+    )
+    assert set(report["with"]["path"].splitlines()) == {"junit.xml", "junit-numerical.xml"}
+
+
 def test_nightly_publishes_duration_weights_only_from_every_successful_part() -> None:
     jobs = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]
     record = jobs["record-durations"]
     publish = jobs["publish-durations"]
 
-    # The full suite can outlast its timeout; recording must not wait for it.
-    assert "needs" not in record
     assert publish["needs"] == "record-durations"
     assert "needs.record-durations.result == 'success'" in publish["if"]
     parts: dict[str, set[tuple[int, int]]] = {}
