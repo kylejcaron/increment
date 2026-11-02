@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
+from increment._optional import require_warehouse
+
 if TYPE_CHECKING:
     from ibis.expr.types import Table
 
@@ -91,6 +93,7 @@ def build_panel_for_metric(
     """Return one native metric's live panel tuple, independent of TEMP tables."""
     from increment._binding import binding_for
 
+    require_warehouse("build_panel_for_metric")
     return _build_panel_for_metric_binding(
         binding_for(experiment, resolver), exposures, metric, population=population
     )
@@ -104,6 +107,7 @@ def panel_sql(
     """Return per-metric panel SQL without executing."""
     from increment._binding import binding_for
 
+    require_warehouse("panel_sql")
     return _panel_sql_binding(binding_for(experiment, resolver), breakouts)
 
 
@@ -115,4 +119,5 @@ def summary_sql(
     """Return per-metric group-summary SQL without executing."""
     from increment._binding import binding_for
 
+    require_warehouse("summary_sql")
     return _summary_sql_binding(binding_for(experiment, resolver), breakouts)

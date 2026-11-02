@@ -50,7 +50,7 @@ Requires **Python 3.12–3.14**. Install Increment's pre-release package and
 Polars for this example:
 
 ```bash
-pip install "increment>=0.1.0a2" polars
+pip install increment polars
 ```
 
 Start with one row per randomization unit. This example declares independent
@@ -154,6 +154,12 @@ monitor sequentially ([mean or ratio](https://getincrement.io/docs/guides/sequen
 Define sources, exposures, metrics, and experiments in YAML. Connect the
 definitions to an Ibis backend and build the experiment:
 
+Install warehouse support and your backend's driver, for example:
+
+```bash
+pip install "increment[warehouse]" "ibis-framework[snowflake]"
+```
+
 <!-- skip: next "requires a configured warehouse and project definitions" -->
 
 ```python
@@ -167,10 +173,12 @@ with resolver:
 print(render(results, "brief"))
 ```
 
-Install the Ibis backend for your warehouse separately, such as
-`pip install 'ibis-framework[snowflake]'`. The core package includes no database
-driver. DuckDB, PostgreSQL, Snowflake, and BigQuery have execution test suites;
-that does not mean every method works on every backend.
+The `warehouse` extra adds Ibis and SQLGlot but no database driver. Choose the
+Ibis backend for your warehouse, such as `ibis-framework[snowflake]` above.
+DuckDB, PostgreSQL, Snowflake, and BigQuery have execution test suites; that
+does not mean every method works on every backend. Without the extra,
+warehouse entry points refuse with `install.warehouse_extra_missing` and
+name the install command.
 
 See the [runnable warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py)
 and [data-model guide](https://getincrement.io/docs/guides/data-model/) for YAML,
@@ -180,7 +188,8 @@ query inspection, portable unit-day artifacts, and moments exports.
 
 | Install | Adds |
 |---|---|
-| `increment[demo]` | DuckDB for local examples and simulation |
+| `increment[warehouse]` | Ibis and SQLGlot for SQL warehouses; install a backend driver separately |
+| `increment[demo]` | Warehouse support and DuckDB for local examples and simulation |
 | `increment[tables]` | CoefTable and pandas for rendered readouts |
 | `increment[dashboard]` | marimo, CoefTable, and pandas for an HTML experiment dashboard |
 

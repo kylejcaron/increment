@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
+from increment._optional import require_warehouse
+
 _EXPORTS = {
     "RelationLocator": ("increment.semantics.artifact", "RelationLocator"),
     "RelationRole": ("increment.semantics.artifact", "RelationRole"),
@@ -213,6 +215,8 @@ def __getattr__(name: str) -> Any:
         module_name, attr_name = _EXPORTS[name]
     except KeyError:
         raise AttributeError(name) from None
+    if module_name == "increment.query.session":
+        require_warehouse(f"increment.artifacts.{name}")
     module = importlib.import_module(module_name)
     value = module if attr_name is None else getattr(module, attr_name)
     globals()[name] = value

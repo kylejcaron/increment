@@ -33,6 +33,11 @@ layer = "core"
 depends_on = []
 
 [[modules]]
+path = "increment._optional"
+layer = "core"
+depends_on = ["increment.errors"]
+
+[[modules]]
 path = "increment.store"
 layer = "program"
 depends_on = [
@@ -61,7 +66,7 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment.semantics"
 layer = "core"
-depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity", "increment._assignment_refusals", "increment._optional"]
 
 [[modules]]
 path = "increment._canonical"
@@ -524,6 +529,7 @@ path = "increment.query._workflows"
 layer = "core"
 depends_on = [
   "increment._binding",
+  "increment._optional",
   "increment._evidence_refusals",
   "increment._source_operations",
   "increment._source_types",
@@ -824,6 +830,7 @@ depends_on = [
   "increment._canonical",
   "increment._evidence_refusals",
   "increment._exploratory",
+  "increment._optional",
   "increment._source_operations",
   "increment._source_admission",
   "increment._source_types",
@@ -843,6 +850,7 @@ depends_on = [
   "increment._evidence_refusals",
   "increment._evidence_types",
   "increment._health",
+  "increment._optional",
   "increment._planning_baseline",
   "increment._source_admission",
   "increment._source_operations",
@@ -1011,7 +1019,7 @@ depends_on = [
 [[modules]]
 path = "increment.reporting"
 layer = "core"
-depends_on = ["increment._literals", "increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
+depends_on = ["increment._literals", "increment._optional", "increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
 
 [[modules]]
 path = "increment.logged_policy"
@@ -1051,12 +1059,12 @@ depends_on = [
 [[modules]]
 path = "increment.artifacts"
 layer = "artifacts"
-depends_on = []
+depends_on = ["increment._optional"]
 
 [[modules]]
 path = "increment.digest"
 layer = "artifacts"
-depends_on = []
+depends_on = ["increment._optional"]
 
 [[interfaces]]
 from = ["increment.compatibility"]
@@ -1321,6 +1329,7 @@ depends_on = [
 path = "increment.builders"
 layer = "core"
 depends_on = [
+  "increment._optional",
   "increment._source_resolver",
   "increment._analysis_config", "increment._binding", "increment._cuped_evidence",
   "increment._frame_validation", "increment._study",
