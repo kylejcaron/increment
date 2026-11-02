@@ -17,10 +17,13 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "diff.renames", "true"], check=True)
     (repo / "integration/warehouse_execution").mkdir(parents=True)
     (repo / "integration/warehouse_execution/_compile_dependencies.txt").write_text(
         "increment\nincrement._day_axis\n"
     )
+    (repo / "increment").mkdir()
+    (repo / "increment/_day_axis.py").write_text("DAY_AXIS = 'day'\n")
     (repo / "README.md").write_text("Initial docs\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
@@ -54,6 +57,24 @@ def test_push_and_dispatch_always_require_the_registry(repository):
 def test_change_to_a_recorded_dependency_outside_query_requires_it(repository):
     repo, _ = repository
     base, head = _change(repo, "increment/_day_axis.py")
+    assert requires_compile_registry("pull_request", base, head, repo)
+
+
+def test_new_unrecorded_python_module_requires_it(repository):
+    repo, _ = repository
+    base, head = _change(repo, "increment/_new_module.py")
+    assert requires_compile_registry("pull_request", base, head, repo)
+
+
+def test_recorded_dependency_renamed_to_documentation_requires_it(repository):
+    repo, base = repository
+    (repo / "docs").mkdir()
+    (repo / "increment/_day_axis.py").rename(repo / "docs/day-axis.md")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "move day axis"], check=True)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
     assert requires_compile_registry("pull_request", base, head, repo)
 
 

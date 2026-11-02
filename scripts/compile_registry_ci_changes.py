@@ -21,7 +21,7 @@ def _requires_compile_registry(event: str, base: str, head: str, root: Path | No
         return True
     root = root or Path.cwd()
     result = subprocess.run(
-        ["git", "diff", "--name-only", "-z", f"{base}...{head}", "--"],
+        ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...{head}", "--"],
         cwd=root,
         capture_output=True,
         check=False,
@@ -54,7 +54,6 @@ def _requires_compile_registry(event: str, base: str, head: str, root: Path | No
             module = path[:-3].replace("/", ".").removesuffix(".__init__")
             if module in dependencies:
                 return True
-            continue
         if path.endswith("conftest.py") or (
             path.startswith("tests/") and Path(path).name.startswith("_") and path.endswith(".py")
         ):
