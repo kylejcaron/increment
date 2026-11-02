@@ -202,6 +202,18 @@ also carry `slow`; the marker expressions keep their purpose-specific gates
 separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
 are no tier-level wall-clock budgets.
 
+#### Isolated core-test install
+
+The required `core-install (3.12)` job installs only the `core-test`
+dependency group, then executes the README Quickstart and a committed
+non-slow test inventory in an environment without Ibis, SQLGlot or DuckDB.
+Maintain `tests/core_modules.txt` as a static selection using the import graph
+in `tests/_selection.py`; audit its import closures and every root or nested
+`conftest.py` when changing the list. Do not include `tests/query/`, whose
+collection requires warehouse backends, or prune failing entries dynamically.
+The job retains CPU measurements from executed tests as a run-specific
+artifact; collection-only work is not measured.
+
 Ordinary test lanes pass `--benchmark-skip` because pytest-benchmark's xdist
 collection warning is fatal under the project's warning policy. Run benchmarks
 explicitly with `make benchmark`. To compare code changes against your machine,

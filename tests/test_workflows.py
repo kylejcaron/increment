@@ -227,6 +227,8 @@ import pytest
 sys.modules["duckdb"] = None
 sys.modules["ibis"] = None
 from tests import _unit_boundary as boundary
+from tests._duckdb_resources import bound_duckdb_resources
+bound_duckdb_resources()
 boundary.install_guards()
 boundary._current_unit_nodeid = "test_network_boundary"
 operations = (
@@ -240,24 +242,6 @@ for name, operation in operations:
     except Failed:
         continue
     raise AssertionError(f"{name} guard allowed the operation")
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-@pytest.mark.integration
-def test_duckdb_resource_binding_is_skipped_when_backends_are_absent() -> None:
-    script = """
-import sys
-sys.modules["ibis"] = None
-from tests._duckdb_resources import bound_duckdb_resources
-bound_duckdb_resources()
 """
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -285,6 +269,16 @@ def test_core_install_job_runs_listed_modules_without_warehouse_packages() -> No
     assert any(step.get("name") == "Verify warehouse packages are absent" for step in job["steps"])
     assert "--collect-only -q $(cat tests/core_modules.txt)" in commands
     assert '-m "not slow" $(cat tests/core_modules.txt)' in commands
+    core_test_run = next(step for step in job["steps"] if step.get("name") == "Run core tests")
+    assert "--cpu-report cpu.json" in core_test_run["run"]
+    cpu_upload = next(step for step in job["steps"] if step.get("name") == "Retain core CPU usage")
+    assert cpu_upload["if"] == "always()"
+    assert cpu_upload["continue-on-error"] is True
+    assert (
+        cpu_upload["with"]["name"]
+        == "cpu-core-${{ matrix.python-version }}-${{ job.check_run_id }}"
+    )
+    assert cpu_upload["with"]["path"] == "cpu.json"
     ci_gate = workflow["jobs"]["ci-ok"]
     assert "core-install" in ci_gate["needs"]
     gate_env = next(

@@ -546,7 +546,16 @@ jobs:
       - name: Collect core tests
         run: uv run --no-sync --python ${{ matrix.python-version }} pytest --collect-only -q $(cat tests/core_modules.txt)
       - name: Run core tests
-        run: uv run --no-sync --python ${{ matrix.python-version }} pytest -m "not slow" $(cat tests/core_modules.txt)
+        run: uv run --no-sync --python ${{ matrix.python-version }} pytest -m "not slow" $(cat tests/core_modules.txt) --cpu-report cpu.json
+      - name: Retain core CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: cpu-core-${{ matrix.python-version }}-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
 
   # Single check to require in the main-review ruleset. A matrix job reports
   # one check per entry ("test (3.12)", ...), so requiring them individually
