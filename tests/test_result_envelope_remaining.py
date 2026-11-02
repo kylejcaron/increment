@@ -154,6 +154,8 @@ def test_unavailable_breakout_reason_survives_cell_and_table_round_trip():
     assert "few_units" in html
 
 
+# All five warehouse-produced row kinds must survive detached codecs.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seeded_defs):
     import gc
@@ -259,6 +261,8 @@ def test_reopened_daily_cells_use_dates_as_table_identity(seeded_con, seeded_def
         cast(Any, resolver).close()
 
 
+# Both as-of row families retain completion policy across every collection codec.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_asof_lift_view_survives_collection_round_trips(seeded_con, seeded_defs):
     import copy
