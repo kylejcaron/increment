@@ -57,8 +57,11 @@ def _require_compact_request(source, metric, method: Method) -> None:
 def categorical_cells_source(source, metric, request: _ResolvedCupedRequest) -> CategoricalCells:
     """Capture categorical evidence on the source's pinned warehouse relation."""
     _require_compact_request(source, metric, request.method)
-    with source.cuped_relation(metric, request) as (relation, execute, _scratch):
-        return categorical_cells_from_relation(relation, execute, metric=metric, request=request)
+    with source.cuped_relation(metric, request) as (relation, execute, scratch_factory):
+        with scratch_factory() as scratch:
+            return categorical_cells_from_relation(
+                relation, execute, metric=metric, request=request, scratch=scratch
+            )
 
 
 def categorical_request_cells(
@@ -81,11 +84,14 @@ def categorical_request_cells(
         population=population,
     )
     _require_compact_request(source, metric, method)
-    with source.cuped_relation(metric, request) as (relation, execute, _scratch):
+    with source.cuped_relation(metric, request) as (relation, execute, scratch_factory):
         labels = {row["group_id"] for row in _rows(execute(relation.select("group_id").distinct()))}
         arms = sorted(str(label) for label in labels if label is not None and str(label) != control)
         request = replace(request, arm_order=(control, *arms))
-        return categorical_cells_from_relation(relation, execute, metric=metric, request=request)
+        with scratch_factory() as scratch:
+            return categorical_cells_from_relation(
+                relation, execute, metric=metric, request=request, scratch=scratch
+            )
 
 
 def resolved_multicovariate_request(
@@ -300,16 +306,18 @@ def fit_multicovariate_source(
             and not _known_cells_outcome_domain(source, metric, relation, outcomes)
         ):
             try:
-                fit = fit_categorical_cells(
-                    categorical_cells_from_relation(
-                        relation,
-                        execute,
-                        metric=metric,
-                        request=fitted_request,
-                        magnitude_checked=True,
-                    ),
-                    control=fitted_request.control,
-                )
+                with scratch_factory() as scratch:
+                    fit = fit_categorical_cells(
+                        categorical_cells_from_relation(
+                            relation,
+                            execute,
+                            metric=metric,
+                            request=fitted_request,
+                            magnitude_checked=True,
+                            scratch=scratch,
+                        ),
+                        control=fitted_request.control,
+                    )
                 return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
             except CodedError as exc:
                 if exc.code not in CELL_REFUSALS:

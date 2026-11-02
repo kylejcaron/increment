@@ -665,7 +665,13 @@ def _rename_scratch_inputs(relation, names, components):
 
 
 def categorical_cells_from_relation(
-    relation, execute, *, metric, request: _ResolvedCupedRequest, magnitude_checked=False
+    relation,
+    execute,
+    *,
+    metric,
+    request: _ResolvedCupedRequest,
+    magnitude_checked=False,
+    scratch=None,
 ) -> CategoricalCells:
     declarations = request.method.covariates or ()
     if any(item.kind != "categorical" for item in declarations):
@@ -690,6 +696,8 @@ def categorical_cells_from_relation(
             ),
             execute=execute,
         )
+    if scratch is not None:
+        relation = scratch.materialize_input(relation, label="categorical")
     cells = _cell_relation(relation, query_names, outcomes)
     preflight = _rows(execute(_preflight(cells, query_names, len(outcomes), request, metric)))[0]
     count = int(preflight["cell_count"])
