@@ -755,13 +755,21 @@ def test_cuped(metric_type, request):
     )
 
 
-@pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_cluster(metric_type, native):
+# Retention alone needs the native fit; the other cluster cells stay on summary frames.
+@pytest.mark.parametrize(
+    "metric_type",
+    [
+        pytest.param(kind, marks=pytest.mark.slow) if kind == "retention" else kind
+        for kind in METRIC_TYPES
+    ],
+)
+def test_cluster(metric_type, request):
     cell = _cell("cluster", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
         return
     if metric_type == "retention":
+        native = request.getfixturevalue("native")
         rows = [e for e in native.cluster_run if e.metric == "d1"]
         assert rows and rows[0].n_clusters == 48
         _assert_sane_lift(list(native.cluster_run), "d1")
