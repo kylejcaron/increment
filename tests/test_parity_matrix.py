@@ -64,101 +64,122 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         metafunc.parametrize("cell", _params(cells()))
 
 
+def _preflight_refusal_params() -> list:
+    groups: dict[tuple[matrix.Cell, str], list[tuple[str, str]]] = {}
+    for cell, method, ingress, code in matrix.iter_request_refusals():
+        groups.setdefault((cell, ingress), []).append((method, code))
+    return [
+        pytest.param(cell, ingress, requests, id=f"{cell.id}-{ingress}")
+        for (cell, ingress), requests in groups.items()
+    ]
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.grid("Every request-stage refusal in the enumerated parity matrix")
-@pytest.mark.parametrize(
-    ("cell", "method", "ingress", "code"),
-    [
-        pytest.param(cell, method, ingress, code, id=f"{cell.id}-{method}-{ingress}")
-        for cell, method, ingress, code in matrix.iter_request_refusals()
-    ],
-)
+@pytest.mark.parametrize(("cell", "ingress", "requests"), _preflight_refusal_params())
 def test_runnable_preserves_preflight_refusals(
-    cell, method, ingress, code, monkeypatch, record_property
+    cell, ingress, requests, monkeypatch, record_property
+):
+    from increment.errors import CodedError
+    from tests.parity_harness.cases import _close_parity_binding
+
+    build_case = (
+        matrix_cases.build_switchback_case
+        if ingress == "from_switchback_panel"
+        else matrix_cases.build_case
+    )
+    disposition = matrix.classify(cell)
+    cases = [
+        (method, code, build_case(cell, method, disposition.outcomes(method)))
+        for method, code in requests
+    ]
+    try:
+        bound = cases[0][2].build[ingress]()
+    except CodedError as error:
+        for method, code, _ in cases:
+            assert error.code == code, method
+            record_property(f"refusal_stage_{method}", "declaration")
+        return
+    try:
+        for method, code, case in cases:
+            with monkeypatch.context() as method_patch:
+                _assert_runnable_refusal(
+                    bound, cell, method, ingress, code, case, method_patch, record_property
+                )
+    finally:
+        _close_parity_binding(bound)
+
+
+def _assert_runnable_refusal(
+    bound, cell, method, ingress, code, case, monkeypatch, record_property
 ):
     from increment import Experiment, runnable, workflows
+    from increment.errors import CodedError
     from increment.evidence import BreakoutIdentity
     from increment.kernel.contracts import Scope
     from tests.analysis_factory import held_source
-    from tests.parity_harness.cases import _capture_kwargs, _close_parity_binding
+    from tests.parity_harness.cases import _capture_kwargs
+    from tests.parity_harness.runner import _read
     from tests.test_metric_evidence import _CountingSource
 
-    outcomes = matrix.classify(cell).outcomes(method)
-    case = (
-        matrix_cases.build_switchback_case(cell, method, outcomes)
-        if ingress == "from_switchback_panel"
-        else matrix_cases.build_case(cell, method, outcomes)
+    experiment, resolver = bound
+    scope = Scope(
+        view=cell.view,
+        grain=cell.view if cell.view in {"daily", "asof"} else "total",
+        values=method == "values",
+        segment=(BreakoutIdentity("store", None),) if cell.view == "breakout" else (),
     )
-    from increment.errors import CodedError
-    from tests.parity_harness.runner import _read
+    experiment = experiment.with_views(scope)
+    counted = _CountingSource(held_source(resolver))
+    counted.loader_reads.clear()
+    for name in (
+        "moments",
+        "unit_frame",
+        "unit_counts",
+        "cluster_counts",
+        "assignment_counts",
+        "triggered_counts",
+        "contrast_stats",
+        "breakout_moments_for_method",
+        "_ensure",
+        "fit_cuped_multicovariate",
+        "compliance_summary",
+        "moments_for_method",
+        "_bounded_day_panel",
+        "_day_identity",
+    ):
+        owner = type(counted.source)
+        original = getattr(owner, name, None)
+        if original is not None:
 
-    try:
-        bound = case.build[ingress]()
-    except CodedError as error:
-        assert error.code == code
-        record_property("refusal_stage", "declaration")
-        return
-    try:
-        experiment, resolver = bound
-        scope = Scope(
-            view=cell.view,
-            grain=cell.view if cell.view in {"daily", "asof"} else "total",
-            values=method == "values",
-            segment=(BreakoutIdentity("store", None),) if cell.view == "breakout" else (),
-        )
-        experiment = experiment.with_views(scope)
-        counted = _CountingSource(held_source(resolver))
-        counted.loader_reads.clear()
-        for name in (
-            "moments",
-            "unit_frame",
-            "unit_counts",
-            "cluster_counts",
-            "assignment_counts",
-            "triggered_counts",
-            "contrast_stats",
-            "breakout_moments_for_method",
-            "_ensure",
-            "fit_cuped_multicovariate",
-            "compliance_summary",
-            "moments_for_method",
-            "_bounded_day_panel",
-            "_day_identity",
-        ):
-            owner = type(counted.source)
-            original = getattr(owner, name, None)
-            if original is not None:
+            def track(instance, *args, _name=name, _original=original, **kwargs):
+                counted.loader_reads.append(_name)
+                return _original(instance, *args, **kwargs)
 
-                def track(instance, *args, _name=name, _original=original, **kwargs):
-                    counted.loader_reads.append(_name)
-                    return _original(instance, *args, **kwargs)
-
-                monkeypatch.setattr(owner, name, track)
-        with pytest.raises(CodedError) as executed:
-            if case.sequential:
-                workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
-            _read(bound, ingress, case)
-        assert executed.value.code == code
-        executed_reads = tuple(counted.loader_reads)
-        counted.loader_reads.clear()
-        estimator = (
-            "observational.iptw"
-            if cell.option == "observational"
-            else ("randomized.cuped" if cell.option == "cuped" else "randomized.unadjusted")
-        )
-        status = runnable(Experiment.from_json(experiment.to_json()), "m")[estimator]
+            monkeypatch.setattr(owner, name, track)
+    with pytest.raises(CodedError) as executed:
         if case.sequential:
-            record_property("refusal_stage", "construction")
-        elif not executed_reads:
-            record_property("refusal_stage", "preflight")
-            _assert_preflight_refusal(status, executed.value, scope)
-        else:
-            record_property("refusal_stage", "data")
-            assert status.deferred_checks
-        assert counted.loader_reads == []
-    finally:
-        _close_parity_binding(bound)
+            workflows.capture_sequential(*bound, finalized=True, **_capture_kwargs(bound))
+        _read(bound, ingress, case)
+    assert executed.value.code == code, method
+    executed_reads = tuple(counted.loader_reads)
+    counted.loader_reads.clear()
+    estimator = (
+        "observational.iptw"
+        if cell.option == "observational"
+        else ("randomized.cuped" if cell.option == "cuped" else "randomized.unadjusted")
+    )
+    status = runnable(Experiment.from_json(experiment.to_json()), "m")[estimator]
+    if case.sequential:
+        record_property(f"refusal_stage_{method}", "construction")
+    elif not executed_reads:
+        record_property(f"refusal_stage_{method}", "preflight")
+        _assert_preflight_refusal(status, executed.value, scope)
+    else:
+        record_property(f"refusal_stage_{method}", "data")
+        assert status.deferred_checks
+    assert counted.loader_reads == []
 
 
 def _assert_preflight_refusal(status, expected, scope):
