@@ -39,8 +39,6 @@ from tests.estimation._sequential_proof_oracle import (
     reveal_support,
 )
 
-pytestmark = pytest.mark.slow
-
 ALTERNATIVES = ("two-sided", "greater", "less")
 Q = F(1, 3)
 MIXED_Q = F(3, 5)
@@ -239,6 +237,8 @@ def _public_family(n, control_successes, first_successes, second_successes, alte
     return registration, policy, bundle, cells
 
 
+@pytest.mark.slow
+@pytest.mark.numerical_certification
 def test_public_singleton_replay_is_conservative_against_exact_witness():
     """Every bounded pair sufficient state crosses the public raw-record seam."""
     for alternative in ALTERNATIVES:
@@ -261,6 +261,8 @@ def test_public_singleton_replay_is_conservative_against_exact_witness():
                         assert public_decision == exact_decision
 
 
+@pytest.mark.slow
+@pytest.mark.numerical_certification
 def test_public_shared_control_family_retains_missing_cell_and_m3_selection():
     """Every bounded shared-control state uses the three-cell retained roster."""
     for alternative in ALTERNATIVES:
@@ -311,6 +313,8 @@ def test_public_shared_control_family_retains_missing_cell_and_m3_selection():
                             }
 
 
+@pytest.mark.slow
+@pytest.mark.numerical_certification
 @pytest.mark.parametrize("opening", OPENINGS)
 @pytest.mark.parametrize("alternative", ALTERNATIVES)
 def test_public_adaptive_frozen_stop_and_family_match_the_oracle_on_every_path(
@@ -493,6 +497,8 @@ def test_mixed_family_first_discovery_uses_public_continuation(path, expected_lo
     assert all(row.require_sequential_result().checkpoint.control.n == look for _, row in rows)
 
 
+@pytest.mark.slow
+@pytest.mark.numerical_certification
 def test_public_mixed_family_predictable_stop_bounds_stopped_fdr_and_fcr():
     """Stopped mixed-null FDP and selected-set noncoverage cross the public route."""
     groups = ("first", "second")

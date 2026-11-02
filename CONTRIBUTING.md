@@ -83,9 +83,10 @@ testing. Pushes MAY use `git push --no-verify`; CI is the required PR gate.
 Numerical certification is selected from the certified modules' transitive
 `tach.toml` import graph, certification-test changes and CI/build configuration;
 unrelated module changes such as `increment/dashboard/_html.py` do not select it.
-The parity-harness certification case runs nightly; its facade is not a
-certification root because the other harness cases exercise those ingress paths
-on every PR.
+The bounded sequential public proof is a certification root; its small
+continuation witnesses remain in the fast tier. Changes to frame moments,
+query builders, artifact reading or sources also select certification so the
+former-arm-ceiling capacity cases run when their ingress calculations change.
 The PostgreSQL gate is selected for query dependency, warehouse-execution,
 PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
 PRs skip it. PostgreSQL runs nightly on main; numerical certification runs
@@ -208,6 +209,10 @@ make benchmark BENCHMARK_BASELINE=/path/to/baseline.json
 
 The plugin writes the baseline JSON under `.benchmarks/`; pass that generated
 path to `BENCHMARK_BASELINE`.
+
+The nightly benchmark job also runs `tests/test_kernel_context_measurement.py`
+with `-m benchmark -n 0` in a separate step, without `--benchmark-only`.
+Those context measurements do not use the pytest-benchmark fixture.
 
 The committed `tests/fixtures/benchmarks/step4-pre-kernel.json` is a
 reference-machine diagnostic, not a portable performance gate. `make benchmark`
