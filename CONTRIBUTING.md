@@ -350,7 +350,8 @@ Check with `--collect-only -q` on the changed file.
 Preflight parity checks build each `(cell, source)` once and exercise every
 recorded refused method against that binding. Keep each method's refusal code,
 context checks and no-read assertion; isolate its read tracking so one method
-cannot affect the next.
+cannot affect the next. A failure anywhere in a method's checks must identify
+the cell, source and failing method while preserving the original traceback.
 
 Red check: every new test is observed failing before it is accepted. For a
 bugfix, run it against the pre-change code; for new code, introduce a

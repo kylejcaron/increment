@@ -103,10 +103,16 @@ def test_runnable_preserves_preflight_refusals(
         return
     try:
         for method, code, case in cases:
-            with monkeypatch.context() as method_patch:
-                _assert_runnable_refusal(
-                    bound, cell, method, ingress, code, case, method_patch, record_property
+            try:
+                with monkeypatch.context() as method_patch:
+                    _assert_runnable_refusal(
+                        bound, cell, method, ingress, code, case, method_patch, record_property
+                    )
+            except BaseException as error:
+                error.add_note(
+                    f"Preflight refusal check: cell={cell.id}, source={ingress}, method={method}"
                 )
+                raise
     finally:
         _close_parity_binding(bound)
 
