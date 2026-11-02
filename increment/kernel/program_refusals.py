@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import NoReturn
 
 from increment.errors import InvalidRequestError, RefusalSpec, refusals, refuse
@@ -37,5 +38,21 @@ _REFUSALS = refusals(
 )
 
 
+def _render_manifest_unsupported(*, found: Sequence[str], supported: Sequence[str]) -> str:
+    return (
+        f"This saved run uses format {', '.join(found)}, which this version of Increment "
+        f"cannot read; it reads {', '.join(supported)}. Upgrade Increment to open the run."
+    )
+
+
+_MANIFEST_UNSUPPORTED = RefusalSpec(
+    "store.run.manifest_unsupported", InvalidRequestError, render=_render_manifest_unsupported
+)
+
+
 def refuse_store(code: str, message: str, **context: object) -> NoReturn:
     refuse(_REFUSALS[code], message=message, **context)
+
+
+def refuse_unsupported_run_manifest(found: Sequence[str], supported: Sequence[str]) -> NoReturn:
+    refuse(_MANIFEST_UNSUPPORTED, found=list(found), supported=list(supported))

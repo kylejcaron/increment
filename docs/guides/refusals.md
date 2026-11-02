@@ -44,6 +44,12 @@ similar codes can mean different things.
 persist. Select at least one metric before saving the run; an empty result may
 still be inspected in memory.
 
+`store.run.manifest_unsupported` means a saved run was written by a newer
+release; its context lists the versions `found` in the file and the versions
+this release reads (`supported`). Upgrade Increment to open it. The
+[saved-format table](../reference/saved-formats.md) lists the versions each
+reader accepts.
+
 `kernel.request.capture_not_supported` means sequential capture or checkpoint
 adoption was placed in saved request options. Call
 `increment.workflows.capture_sequential(experiment, resolver, ...)` with the

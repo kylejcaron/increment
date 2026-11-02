@@ -320,8 +320,9 @@ trend = result.readout(asof_lift)  # was analysis.run_asof_lift()
 ### Persisted formats
 
 Persisted files use versioned formats; they are not upgraded silently. Re-export
-legacy artifacts from trusted definitions. The details below document supported
-moments, artifact, and checkpoint formats.
+legacy artifacts from trusted definitions. The [saved-format table](reference/saved-formats.md)
+lists the version each writer produces and the versions each reader accepts. The
+details below document supported moments, artifact, and checkpoint formats.
 
 ### Portable result cells
 
