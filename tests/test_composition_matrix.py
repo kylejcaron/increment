@@ -696,12 +696,13 @@ def test_matrix_statuses_are_well_formed():
 
 @pytest.mark.slow
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_estimate(metric_type, native):
+def test_estimate(metric_type, request):
     cell = _cell("estimate", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
         return
     if metric_type == "retention":
+        native = request.getfixturevalue("native")
         _assert_sane_lift(list(native.run), "d1")
         return
     spec = _frame_spec(metric_type)
@@ -787,12 +788,13 @@ def test_cluster(metric_type, request):
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_sequential(metric_type, native):
+def test_sequential(metric_type, request):
     cell = _cell("sequential", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
         return
     if metric_type == "retention":
+        native = request.getfixturevalue("native")
         _assert_sane_lift(list(native.seq_run), "d1")
         return
     from increment.estimation.results import LiftEstimate
@@ -916,7 +918,7 @@ def test_cate(metric_type):
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_breakout(metric_type, native):
+def test_breakout(metric_type, request):
     cell = _cell("breakout", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
@@ -927,6 +929,7 @@ def test_breakout(metric_type, native):
             cell, lambda: readouts.run(_summary_source(spec, design=_RANDOMIZED), by=["seg"])
         )
         return
+    native = request.getfixturevalue("native")
     name = _REPORT_METRIC[metric_type]
     rows = [e for e in native.breakout if e.metric == name]
     segments = {e.dimension_value for e in rows}
@@ -936,12 +939,13 @@ def test_breakout(metric_type, native):
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_daily_asof(metric_type, native):
+def test_daily_asof(metric_type, request):
     cell = _cell("daily_asof", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
         return
     if metric_type == "retention":
+        native = request.getfixturevalue("native")
         rows = [e for e in native.asof if e.metric == "d1"]
         assert rows and all(e.ds is not None for e in rows)
         _assert_sane_lift(rows, "d1")
@@ -1064,7 +1068,7 @@ def test_from_moments(metric_type, native):
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_export(metric_type, native, tmp_path):
+def test_export(metric_type, request, tmp_path):
     cell = _cell("export", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
@@ -1075,6 +1079,7 @@ def test_export(metric_type, native, tmp_path):
             cell, lambda: export_moments(experiment, resolver, tmp_path / "unreachable.parquet")
         )
         return
+    native = request.getfixturevalue("native")
     name = _REPORT_METRIC[metric_type]
     assert name in native.export_metrics
     exported = next(e for e in native.run if e.metric == name)
@@ -1084,7 +1089,7 @@ def test_export(metric_type, native, tmp_path):
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
 @pytest.mark.slow
-def test_sitewide(metric_type, native, tmp_path):
+def test_sitewide(metric_type, request, tmp_path):
     cell = _cell("sitewide", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
@@ -1095,6 +1100,7 @@ def test_sitewide(metric_type, native, tmp_path):
         if metric_type == "quantile":
             experiment, resolver = _quantile_experiment_analysis(tmp_path)
             return sitewide(experiment, resolver, "bad_metric")
+        native = request.getfixturevalue("native")
         experiment, resolver = native.sitewide_analysis
         return sitewide(experiment, resolver, name)
 
@@ -1118,7 +1124,7 @@ def test_sitewide_refuses_windowed_metrics(metric_name, native):
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_rollout(metric_type, native):
+def test_rollout(metric_type, request):
     from increment.estimators import segment_rollout_recommendation
 
     cell = _cell("rollout", metric_type)
@@ -1135,6 +1141,7 @@ def test_rollout(metric_type, native):
         else:
             _assert_report_layer_unreachable(metric_type)
         return
+    native = request.getfixturevalue("native")
     name = _REPORT_METRIC[metric_type]
     recommendations, segments = segment_rollout_recommendation(native.breakout)
     rows = [r for r in recommendations if r.metric == name]
@@ -1155,7 +1162,7 @@ def test_rollout(metric_type, native):
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("pair", sorted(PAIRS), ids=lambda p: f"{p[0]}-{p[1]}")
-def test_capability_pairs(pair, native):
+def test_capability_pairs(pair, request):
     from increment.estimation.inference import Normal
 
     cell = PAIRS[pair]
@@ -1184,8 +1191,15 @@ def test_capability_pairs(pair, native):
     def clustered_src(**kw: Any):
         return _summary_source(mean, table=_clustered_table(), cluster="store", **kw)
 
-    clustered_experiment, clustered_resolver = native.clustered_analysis
-    sitewide_experiment, sitewide_resolver = native.sitewide_clustered_analysis
+    def cluster_export_probe():
+        native = request.getfixturevalue("native")
+        experiment, resolver = native.clustered_analysis
+        return export_moments(experiment, resolver, "unreachable.parquet")
+
+    def cluster_sitewide_probe():
+        native = request.getfixturevalue("native")
+        experiment, resolver = native.sitewide_clustered_analysis
+        return sitewide(experiment, resolver, "revenue")
 
     probes: dict[tuple[str, str], Callable[[], Any]] = {
         ("cluster", "cuped"): lambda: _summary_source(
@@ -1215,12 +1229,8 @@ def test_capability_pairs(pair, native):
             metrics=[mean],
             cluster="seg",
         ),
-        ("cluster", "export"): lambda: export_moments(
-            clustered_experiment, clustered_resolver, "unreachable.parquet"
-        ),
-        ("cluster", "sitewide"): lambda: sitewide(
-            sitewide_experiment, sitewide_resolver, "revenue"
-        ),
+        ("cluster", "export"): cluster_export_probe,
+        ("cluster", "sitewide"): cluster_sitewide_probe,
         ("cluster", "encouragement"): lambda: readouts.run(
             clustered_src(uptake="uptake", design=_ENCOURAGEMENT)
         ),
@@ -1275,6 +1285,8 @@ def test_capability_pairs(pair, native):
         _expect_refusal(cell, probe)
         return
     if pair == ("cluster", "sitewide"):
+        # Fixture setup has an unrelated warning; capture only the probe's warning.
+        request.getfixturevalue("native")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             result = probe()
