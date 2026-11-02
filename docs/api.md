@@ -225,9 +225,10 @@ change without notice.
   artifact publication, metric trends, and warehouse-only workflows, install
   `pip install "increment[warehouse]"` plus your Ibis backend driver, such as
   `"ibis-framework[snowflake]"`. The `demo` extra includes warehouse support
-  and DuckDB. Without warehouse support, those entry points refuse with
+  and DuckDB. Without warehouse support, those entry points and direct imports
+  from `increment.query.session` or `increment.query.artifact_digest` refuse with
   `install.warehouse_extra_missing`; its `feature` and `install` context fields
-  identify the requested feature and the install command.
+  identify the requested feature or module and the install command.
 - Compatibility policy is the same across methods; guarantees and evidence
   differ. See [Evidence status](validation.md#evidence-status).
 

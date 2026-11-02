@@ -48,23 +48,60 @@ PUBLIC_NAMESPACES = (
     "increment.workflows",
 )
 
-# Resolves every public name with Ibis and SQLGlot unimportable.
+# Resolves public names and documented direct imports in a fresh interpreter.
 _PUBLIC_NAMES_PROBE = """
-import importlib, json, sys
-sys.modules["ibis"] = None
-sys.modules["sqlglot"] = None
+import importlib, importlib.abc, importlib.util, json, sys
 from increment.errors import CodedError
 
-missing, *namespaces = sys.argv[1:]
+dependency, missing, install, *namespaces = sys.argv[1:]
+if dependency == "broken":
+    class BrokenWarehouseImport(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "ibis":
+                return importlib.util.spec_from_loader(fullname, self)
+        def create_module(self, spec):
+            return None
+        def exec_module(self, module):
+            raise ModuleNotFoundError(name="warehouse_dependency_failure")
+    sys.meta_path.insert(0, BrokenWarehouseImport())
+else:
+    sys.modules[dependency] = None
+
 failures = {}
-for namespace in namespaces:
+for namespace, name in (
+    ("increment.query.session", "WarehouseArtifactStore"),
+    ("increment.query.artifact_digest", "ArtifactDigestError"),
+):
+    route = f"{namespace}.{name}"
+    try:
+        getattr(importlib.import_module(namespace), name)
+    except CodedError as exc:
+        expected = {"feature": namespace, "install": install}
+        if dependency == "broken" or exc.code != missing or dict(exc.context) != expected:
+            failures[route] = [exc.code, dict(exc.context)]
+    except ModuleNotFoundError as exc:
+        if dependency != "broken" or exc.name != "warehouse_dependency_failure":
+            failures[route] = [type(exc).__name__, exc.name]
+    except Exception as exc:
+        failures[route] = type(exc).__name__
+    else:
+        failures[route] = "missing refusal"
+
+for namespace, name in (
+    ("increment.query.artifact_contract", "open_trusted_manifest_snapshot"),
+    ("increment.query.artifact_ports", "ArtifactQueryPorts"),
+):
+    getattr(importlib.import_module(namespace), name)
+
+for namespace in namespaces if dependency != "broken" else ():
     module = importlib.import_module(namespace)
     for name in module.__all__:
         try:
             getattr(module, name)
         except CodedError as exc:
-            if exc.code != missing:
-                failures[f"{namespace}.{name}"] = exc.code
+            expected = {"feature": f"{namespace}.{name}", "install": install}
+            if exc.code != missing or dict(exc.context) != expected:
+                failures[f"{namespace}.{name}"] = [exc.code, dict(exc.context)]
         except Exception as exc:
             failures[f"{namespace}.{name}"] = type(exc).__name__
 print(json.dumps(failures))
@@ -116,16 +153,25 @@ def test_definition_sql_without_the_warehouse_extra_refuses_with_the_install_rou
 def test_public_names_resolve_or_refuse_with_the_install_route_without_the_warehouse_extra() -> (
     None
 ):
-    result = subprocess.run(
-        [sys.executable, "-c", _PUBLIC_NAMES_PROBE, MISSING, *PUBLIC_NAMESPACES],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        check=False,
-    )
+    for dependency in ("ibis", "sqlglot", "broken"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _PUBLIC_NAMES_PROBE,
+                dependency,
+                MISSING,
+                INSTALL,
+                *PUBLIC_NAMESPACES,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            check=False,
+        )
 
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {}
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {}, dependency
 
 
 @pytest.mark.integration

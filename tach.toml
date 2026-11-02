@@ -512,6 +512,7 @@ layer = "core"
 depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._cuped_evidence", "increment._evidence_types", "increment._immutable", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
   "increment._evidence_refusals",
+  "increment._optional",
   "increment._source_operations", "increment._source_types",
   "increment.winsor",
   "increment.breakout.estimates",
@@ -547,6 +548,7 @@ path = "increment.query.artifact_digest"
 layer = "artifacts"
 depends_on = [
   "increment._artifact_identity", "increment._canonical", "increment.errors",
+  "increment._optional",
   "increment.query", "increment.query.artifact_ports",
 ]
 
