@@ -13,24 +13,28 @@ env:
 
 jobs:
   test-all-floor:
-    name: full suite at dependency floors (${{ matrix.python-version }})
+    name: full suite at dependency floors (${{ matrix.python-version }}, part ${{ matrix.group }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
+        group: [1, 2, 3]
+    env:
+      INCREMENT_FLOOR_PART: ${{ matrix.group }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
-      - run: uv run --with nox nox -s "tests_floor_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
+      - run: jq -s add .github/fast-test-durations.json .github/slow-test-durations.json > floor-test-durations.json
+      - run: uv run --with nox nox -s "tests_floor_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup --splits 3 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path floor-test-durations.json
       - name: Retain floor-suite JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: floor-suite-junit-${{ matrix.python-version }}-${{ github.run_attempt }}
+          name: floor-suite-junit-${{ matrix.python-version }}-part-${{ matrix.group }}-${{ github.run_attempt }}
           path: |
             junit.xml
             junit-numerical.xml
