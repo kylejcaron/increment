@@ -151,8 +151,16 @@ def test_nightly_full_suite_shards_keep_distinct_reports() -> None:
     assert job["strategy"]["fail-fast"] is False
     assert job["timeout-minutes"] <= 90
     assert "${{ matrix.group }}" in job["name"]
-    run = next(step["run"] for step in job["steps"] if "nox -s" in step.get("run", ""))
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert any(
+        "jq -s add .github/fast-test-durations.json .github/slow-test-durations.json" in run
+        and "> floor-test-durations.json" in run
+        for run in runs
+    )
+    run = next(run for run in runs if "nox -s" in run)
     assert "--splits 2 --group ${{ matrix.group }}" in run
+    assert "--splitting-algorithm least_duration" in run
+    assert "--durations-path floor-test-durations.json" in run
     report = next(
         step for step in job["steps"] if step.get("name") == "Retain full-suite JUnit report"
     )

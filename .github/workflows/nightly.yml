@@ -66,7 +66,8 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
-      - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml --cpu-report cpu.json -n auto --dist loadgroup --splits 2 --group ${{ matrix.group }}
+      - run: jq -s add .github/fast-test-durations.json .github/slow-test-durations.json > floor-test-durations.json
+      - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml --cpu-report cpu.json -n auto --dist loadgroup --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path floor-test-durations.json
       - name: Retain full-suite JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -83,7 +84,7 @@ jobs:
         continue-on-error: true
         with:
           # The trailing job ID ties the record to one job execution (scripts/ci_cost_report.py).
-          name: cpu-full-suite-${{ matrix.python-version }}-${{ github.run_attempt }}-${{ job.check_run_id }}
+          name: cpu-full-suite-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}-${{ job.check_run_id }}
           path: cpu*.json
           if-no-files-found: warn
           retention-days: 90

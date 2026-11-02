@@ -646,10 +646,12 @@ The
 on dispatch on any ref. It runs the full fast and slow tiers with the full
 parity matrix, numerical certification, parameter recovery, examples, and a
 randomized-order fast run with its seed logged. The full-suite matrix uses two
-shards per Python version, each retaining its own JUnit artifact under a
-90-minute limit. Separate jobs record the fast and slow duration weights
-without waiting for the full-suite shards; once every recording part passes,
-it publishes them and, on `main`, proposes the selection-map refresh.
+duration-balanced shards per Python version: each combines the nightly fast
+and slow weights for `pytest-split`'s `least_duration` algorithm, and retains
+its own JUnit artifact under a 90-minute limit. Separate jobs record the fast
+and slow duration weights without waiting for the full-suite shards; once every
+recording part passes, it publishes them and, on `main`, proposes the
+selection-map refresh.
 A failure creates or updates a GitHub issue labelled `nightly-failure`;
 tagging also requires a successful nightly run on the exact release SHA.
 
