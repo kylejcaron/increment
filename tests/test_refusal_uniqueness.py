@@ -834,6 +834,7 @@ def test_no_published_page_cites_a_retired_code() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
+    generated_catalogue = root / "docs/reference/error-codes.md"
     published = [root / "README.md"]
     for directory in (root / "docs", root / "examples"):
         published.extend(
@@ -843,6 +844,7 @@ def test_no_published_page_cites_a_retired_code() -> None:
             and path.suffix.lower() in {".md", ".mdx", ".html", ".py", ".ipynb"}
             and "docs/superpowers/" not in path.as_posix()
             and "release-notes" not in path.as_posix().lower()
+            and path != generated_catalogue
         )
     stale = {
         code: [path.relative_to(root).as_posix() for path in published if code in path.read_text()]
