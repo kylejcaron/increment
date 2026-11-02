@@ -1,6 +1,6 @@
 {
-  "base_sha": "0f211cfcfaf04fb0468975dd10338ec3b65e5a5e",
-  "generated_at": "2026-11-01T17:55:13.701511+00:00",
+  "base_sha": "314f60c7056e5e597634565696e3b8c98e69963e",
+  "generated_at": "2026-11-02T00:25:47.686768+00:00",
   "modules": {
     "increment": [
       "tests/test_analysis_frame_sources.py",
@@ -358,7 +358,6 @@
       "tests/estimation/test_sampling_posterior.py",
       "tests/oracles/test_welch_oracle.py",
       "tests/power/test_core.py",
-      "tests/power/test_unit_cycle_power.py",
       "tests/query/test_builders.py",
       "tests/query/test_fact_resolution.py",
       "tests/query/test_native_exposure.py",
@@ -508,7 +507,8 @@
       "tests/test_warehouse_cuped_parity.py",
       "tests/test_warehouse_cuped_qr.py",
       "tests/test_warehouse_cuped_qr_edges.py",
-      "tests/test_weight_diagnostic_parity.py"
+      "tests/test_weight_diagnostic_parity.py",
+      "tests/test_workflows.py"
     ],
     "increment._breakout_readouts": [
       "tests/test_analysis_breakout.py",
@@ -530,6 +530,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_definitions_source.py",
       "tests/test_evidence_capabilities.py",
@@ -849,7 +850,6 @@
       "tests/test_warehouse_cuped_qr_edges.py"
     ],
     "increment._dashboard_capture": [
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_exploratory_metrics.py",
@@ -2735,6 +2735,7 @@
       "tests/acceptance/test_example_definitions.py",
       "tests/test_analysis_moments.py",
       "tests/test_cuped_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_experiment_health.py",
       "tests/test_readout_public_scope.py"
@@ -5777,9 +5778,9 @@
       "tests/simulate/test_switchback.py",
       "tests/simulate/test_unit_cycle_calibration.py",
       "tests/test_analysis_planning_baseline.py",
+      "tests/test_analysis_trigger.py",
       "tests/test_frame_switchback.py",
       "tests/test_kernel_review_regressions.py",
-      "tests/test_parity_harness.py",
       "tests/test_readouts_switchback.py",
       "tests/test_shared_capture.py",
       "tests/test_switchback_execution_context.py",
@@ -5941,11 +5942,11 @@
       "tests/test_cuped_route_admission.py"
     ],
     "increment.artifacts._query": [
+      "tests/query/test_ratio_query.py",
+      "tests/query/test_source.py",
       "tests/test_composition_matrix.py",
       "tests/test_owned_refusal_scenarios.py",
-      "tests/test_provider_forwarding_parity.py",
-      "tests/test_unit_day_artifact_parity.py",
-      "tests/test_warehouse_cuped_parity.py"
+      "tests/test_unit_day_artifact_parity.py"
     ],
     "increment.breakout.estimates": [
       "tests/benchmarks/test_analysis_benchmark.py",
@@ -6568,15 +6569,13 @@
       "tests/test_weight_diagnostic_parity.py"
     ],
     "increment.dashboard": [
-      "tests/test_confounding_sensitivity_public.py"
+      "tests/test_dashboard.py"
     ],
     "increment.dashboard._app": [
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_population.py"
     ],
     "increment.dashboard._data": [
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_group_data.py",
       "tests/test_dashboard_overview.py",
@@ -6587,14 +6586,12 @@
     ],
     "increment.dashboard._format": [
       "tests/estimation/test_results.py",
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_overview.py",
       "tests/test_dashboard_population.py",
       "tests/test_dashboard_result_evidence.py"
     ],
     "increment.dashboard._html": [
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_overview.py",
       "tests/test_dashboard_population.py",
@@ -6602,13 +6599,11 @@
       "tests/test_dashboard_theme.py"
     ],
     "increment.dashboard._native": [
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_overview.py",
       "tests/test_dashboard_population.py"
     ],
     "increment.dashboard._theme": [
-      "tests/test_confounding_sensitivity_public.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_group_data.py",
       "tests/test_dashboard_overview.py",
@@ -8111,9 +8106,9 @@
       "tests/test_confounding_sensitivity_public.py",
       "tests/test_conversion_family_readout.py",
       "tests/test_dashboard.py",
-      "tests/test_dashboard_result_evidence.py",
       "tests/test_decision_wire.py",
       "tests/test_evidence_identity_parity.py",
+      "tests/test_kernel_builders.py",
       "tests/test_readout_interpretation.py",
       "tests/test_readouts_observational.py",
       "tests/test_readouts_plan.py",
@@ -8280,6 +8275,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -8614,6 +8610,7 @@
       "tests/test_cuped_route_evidence.py",
       "tests/test_cuped_warehouse_cells.py",
       "tests/test_daily_regressions.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_dashboard_result_evidence.py",
       "tests/test_day_axis.py",
@@ -9025,6 +9022,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_decision_wire.py",
@@ -9614,6 +9612,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -10143,8 +10142,7 @@
       "tests/test_readouts_observational.py"
     ],
     "increment.estimation.cuped": [
-      "tests/test_imports.py",
-      "tests/test_warehouse_cuped_qr.py"
+      "tests/test_imports.py"
     ],
     "increment.estimation.cuped._numeric": [
       "tests/calibration/test_cuped_linear.py",
@@ -10266,6 +10264,7 @@
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
       "tests/test_cuped_warehouse_cells.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_decision_wire.py",
@@ -11260,6 +11259,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_evidence_identity_parity.py",
@@ -12650,6 +12650,7 @@
       "tests/test_shared_capture.py"
     ],
     "increment.estimators": [
+      "tests/power/test_switchback.py",
       "tests/test_analysis_breakout.py",
       "tests/test_analysis_moments.py",
       "tests/test_cate.py",
@@ -13463,11 +13464,11 @@
       "tests/test_weight_diagnostic_parity.py"
     ],
     "increment.kernel.ports": [
+      "tests/calibration/test_cuped_linear.py",
+      "tests/query/test_ratio_query.py",
       "tests/simulate/test_end_to_end.py",
-      "tests/test_composition_matrix.py",
-      "tests/test_provider_forwarding_parity.py",
-      "tests/test_result_envelope_remaining.py",
-      "tests/test_warehouse_cuped_parity.py"
+      "tests/test_analysis_asof.py",
+      "tests/test_composition_matrix.py"
     ],
     "increment.kernel.program_refusals": [
       "tests/store/test_decision_log.py",
@@ -14157,6 +14158,7 @@
     ],
     "increment.query._native_dashboard": [
       "tests/acceptance/test_example_definitions.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py"
     ],
     "increment.query._native_day_source": [
@@ -14350,9 +14352,9 @@
       "tests/test_analysis_trigger.py",
       "tests/test_artifact_covariates.py",
       "tests/test_assignment_evidence.py",
+      "tests/test_compliance_summary.py",
       "tests/test_composition_matrix.py",
       "tests/test_cuped_covariate_sources.py",
-      "tests/test_cuped_identity.py",
       "tests/test_dashboard_population.py",
       "tests/test_errors.py",
       "tests/test_evidence_capabilities.py",
@@ -14361,6 +14363,8 @@
       "tests/test_experiment_health.py",
       "tests/test_kernel_builders.py",
       "tests/test_native_encouragement_declaration.py",
+      "tests/test_native_pipeline_parity.py",
+      "tests/test_native_source_materialization.py",
       "tests/test_parity_harness.py",
       "tests/test_provider_forwarding_parity.py",
       "tests/test_quantile_export_parity.py",
@@ -14370,10 +14374,9 @@
       "tests/test_readouts.py",
       "tests/test_readouts_encouragement.py",
       "tests/test_readouts_observational.py",
-      "tests/test_readouts_plan.py",
       "tests/test_readouts_switchback.py",
       "tests/test_refusal_uniqueness.py",
-      "tests/test_result_envelope.py",
+      "tests/test_render_capability_table.py",
       "tests/test_sequential_public_sources.py",
       "tests/test_shared_capture.py",
       "tests/test_source_capabilities.py",
@@ -15075,7 +15078,6 @@
       "tests/estimation/test_adjust_cluster.py",
       "tests/estimation/test_encouragement_calibration.py",
       "tests/estimation/test_late_cluster.py",
-      "tests/power/test_unit_cycle_power.py",
       "tests/query/test_builders.py",
       "tests/query/test_fact_resolution.py",
       "tests/query/test_native_exposure.py",
@@ -15166,8 +15168,10 @@
       "tests/test_unit_day_artifact_parity.py",
       "tests/test_unit_day_artifact_production.py",
       "tests/test_warehouse_cuped_parity.py",
+      "tests/test_warehouse_cuped_qr.py",
       "tests/test_warehouse_cuped_qr_edges.py",
-      "tests/test_weight_diagnostic_parity.py"
+      "tests/test_weight_diagnostic_parity.py",
+      "tests/test_workflows.py"
     ],
     "increment.query.schemas": [
       "tests/acceptance/test_example_definitions.py"
@@ -15194,7 +15198,6 @@
       "tests/estimation/test_adjust_cluster.py",
       "tests/estimation/test_encouragement_calibration.py",
       "tests/estimation/test_late_cluster.py",
-      "tests/power/test_unit_cycle_power.py",
       "tests/query/test_builders.py",
       "tests/query/test_fact_resolution.py",
       "tests/query/test_native_exposure.py",
@@ -15228,7 +15231,6 @@
       "tests/test_cuped_breakout_review.py",
       "tests/test_cuped_covariate_sources.py",
       "tests/test_cuped_cross_route_consistency.py",
-      "tests/test_cuped_identity.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
       "tests/test_daily_regressions.py",
@@ -15269,7 +15271,6 @@
       "tests/test_readouts.py",
       "tests/test_readouts_encouragement.py",
       "tests/test_readouts_observational.py",
-      "tests/test_readouts_plan.py",
       "tests/test_readouts_switchback.py",
       "tests/test_refusal_uniqueness.py",
       "tests/test_reporting.py",
@@ -15292,7 +15293,8 @@
       "tests/test_warehouse_cuped_qr.py",
       "tests/test_warehouse_cuped_qr_edges.py",
       "tests/test_warehouse_cuped_qr_regressions.py",
-      "tests/test_weight_diagnostic_parity.py"
+      "tests/test_weight_diagnostic_parity.py",
+      "tests/test_workflows.py"
     ],
     "increment.query.source": [
       "tests/query/test_artifact_contract.py",
@@ -15366,6 +15368,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_definitions_source.py",
       "tests/test_evidence_identity_parity.py",
@@ -16224,6 +16227,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_decision_wire.py",
@@ -16678,6 +16682,7 @@
       "tests/test_cuped_review_followups.py",
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -16955,6 +16960,7 @@
       "tests/test_cuped_review_followups.py",
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -17068,6 +17074,7 @@
       "tests/test_cuped_review_followups.py",
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -17196,6 +17203,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_day_axis_identity_stability.py",
       "tests/test_decision_wire.py",
@@ -17342,6 +17350,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -17849,6 +17858,7 @@
       "tests/test_cuped_review_regressions.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_dashboard.py",
       "tests/test_dashboard_population.py",
       "tests/test_decision_wire.py",
       "tests/test_estimator_registry.py",
@@ -19546,11 +19556,11 @@
       "tests/test_weight_diagnostic_parity.py"
     ],
     "increment.store": [
+      "tests/calibration/test_cuped_linear.py",
+      "tests/query/test_ratio_query.py",
       "tests/store/test_decision_log.py",
-      "tests/test_composition_matrix.py",
-      "tests/test_provider_forwarding_parity.py",
-      "tests/test_result_envelope_remaining.py",
-      "tests/test_warehouse_cuped_parity.py"
+      "tests/test_analysis_asof.py",
+      "tests/test_composition_matrix.py"
     ],
     "increment.store.base": [
       "tests/store/test_decision_log.py"

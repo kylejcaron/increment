@@ -66,25 +66,6 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
       - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
-      - name: Record fast-test durations
-        id: record-fast-durations
-        if: matrix.python-version == '3.12'
-        run: |
-          uv sync --group dev --extra demo --extra tables --extra dashboard
-          make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
-      - name: Upload fast-test durations
-        if: matrix.python-version == '3.12' && steps.record-fast-durations.outcome == 'success'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: fast-test-durations
-          path: .github/fast-test-durations.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Measure fast-test selection
-        if: matrix.python-version == '3.12'
-        run: uv run --no-sync python scripts/selection_probe.py --summary --no-timing
-        continue-on-error: true
       - name: Retain full-suite JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -95,10 +76,130 @@ jobs:
             junit-numerical.xml
           if-no-files-found: warn
           retention-days: 30
+  record-durations:
+    if: github.event_name != 'pull_request'
+    name: record ${{ matrix.tier }}-test durations (part ${{ matrix.group }}/${{ matrix.splits }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The slow tier records in parts so each finishes well inside the timeout on a hosted runner.
+        include:
+          - {tier: fast, group: 1, splits: 1}
+          - {tier: slow, group: 1, splits: 4}
+          - {tier: slow, group: 2, splits: 4}
+          - {tier: slow, group: 3, splits: 4}
+          - {tier: slow, group: 4, splits: 4}
+    env:
+      TIER: ${{ matrix.tier }}
+      GROUP: ${{ matrix.group }}
+      SPLITS: ${{ matrix.splits }}
+      WORKERS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      # The committed weights split the parts; --clean-durations keeps only the tests this part ran.
+      - name: Record ${{ matrix.tier }}-test durations
+        run: make "test-$TIER" WORKERS="$WORKERS" PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/$TIER-test-durations.json --splits $SPLITS --group $GROUP --splitting-algorithm least_duration"
+      - name: Describe the recorded part
+        run: |
+          mkdir durations-part
+          cp ".github/$TIER-test-durations.json" durations-part/
+          uv run --no-sync python - <<'PY'
+          import json
+          import os
+          import platform
+          from pathlib import Path
+
+          metadata = {
+              "tier": os.environ["TIER"],
+              "group": int(os.environ["GROUP"]),
+              "splits": int(os.environ["SPLITS"]),
+              "workers": int(os.environ["WORKERS"]),
+              "python": platform.python_version(),
+              "source_sha": os.environ["GITHUB_SHA"],
+              "ref": os.environ["GITHUB_REF"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+          }
+          Path("durations-part/metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+          PY
+      - name: Upload the recorded part
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.tier }}-test-durations-part-${{ matrix.group }}
+          path: durations-part/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Measure fast-test selection
+        if: matrix.tier == 'fast'
+        run: uv run --no-sync python scripts/selection_probe.py --summary --no-timing
+        continue-on-error: true
+  publish-durations:
+    if: ${{ github.event_name != 'pull_request' && needs.record-durations.result == 'success' }}
+    name: publish test-duration weights
+    needs: record-durations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: "*-test-durations-part-*"
+          path: parts
+      - name: Merge every part of each tier
+        run: |
+          python3 - <<'PY'
+          import json
+          from collections import defaultdict
+          from pathlib import Path
+
+          parts = defaultdict(list)
+          for path in sorted(Path("parts").glob("*/metadata.json")):
+              metadata = json.loads(path.read_text())
+              durations = json.loads((path.parent / f"{metadata['tier']}-test-durations.json").read_text())
+              parts[metadata["tier"]].append((metadata, durations))
+          for tier, recorded in sorted(parts.items()):
+              splits = {metadata["splits"] for metadata, _ in recorded}
+              groups = sorted(metadata["group"] for metadata, _ in recorded)
+              if len(splits) != 1 or groups != list(range(1, max(splits) + 1)):
+                  raise SystemExit(f"{tier}: recorded parts {groups} do not cover splits {sorted(splits)}")
+              durations = {}
+              for _, part in recorded:
+                  durations.update(part)
+              # Sharded runs weigh an xdist_group test as <node ID>@<group>; selection prediction looks up the bare ID.
+              for nodeid, seconds in list(durations.items()):
+                  bare, _, group = nodeid.rpartition("@")
+                  if bare and "]" not in group and "::" not in group:
+                      durations[bare] = seconds
+              output = Path("weights") / tier
+              output.mkdir(parents=True)
+              rounded = {nodeid: round(seconds, 3) for nodeid, seconds in durations.items()}
+              (output / f"{tier}-test-durations.json").write_text(json.dumps(rounded, indent=4, sort_keys=True) + "\n")
+              metadata = {key: value for key, value in recorded[0][0].items() if key != "group"}
+              (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+          PY
+      - name: Upload fast-test durations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fast-test-durations
+          path: weights/fast/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload slow-test durations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: slow-test-durations
+          path: weights/slow/
+          if-no-files-found: error
+          retention-days: 30
   refresh-selection-map:
-    if: ${{ github.event_name != 'pull_request' && needs.test-all.result == 'success' }}
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.record-durations.result == 'success' }}
     name: refresh fast selection map
-    needs: test-all
+    needs: record-durations
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -227,7 +328,7 @@ jobs:
   report-failure:
     name: report a failed nightly gate
     runs-on: ubuntu-latest
-    needs: [test-all, test-scientific, randomized-fast, mutation-evidence, warehouse-postgres, benchmark]
+    needs: [test-all, record-durations, publish-durations, test-scientific, randomized-fast, mutation-evidence, warehouse-postgres, benchmark]
     if: github.event_name != 'pull_request' && failure()
     timeout-minutes: 10
     permissions:
