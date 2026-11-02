@@ -9,6 +9,7 @@
   "increment.Encouragement": {},
   "increment.EvidenceProvider": {
     "capture_sequential.return": 1,
+    "moments.return": 1,
     "unit_rows.return": 1
   },
   "increment.ExclusionRestriction": {},
@@ -234,6 +235,7 @@
     "model_dump.parameter:kwargs": 1,
     "model_dump.return": 1,
     "model_dump_json.parameter:kwargs": 1,
+    "probabilities.field": 2,
     "probability.parameter:context": 1
   },
   "increment.estimators.UnitCycleReference": {},
@@ -330,6 +332,7 @@
   },
   "increment.evidence.EvidenceProvider": {
     "capture_sequential.return": 1,
+    "moments.return": 1,
     "unit_rows.return": 1
   },
   "increment.evidence.EvidenceScope": {
@@ -399,10 +402,16 @@
   },
   "increment.from_definitions": {},
   "increment.from_frame": {
+    "overload:1.parameter:metrics": 1,
+    "overload:2.parameter:metrics": 1,
     "parameter:kwargs": 1
   },
-  "increment.from_moments": {},
-  "increment.from_switchback_frame": {},
+  "increment.from_moments": {
+    "parameter:metrics": 1
+  },
+  "increment.from_switchback_frame": {
+    "parameter:metrics": 1
+  },
   "increment.from_unit_day_artifact": {},
   "increment.power.ArmPlanningProcedure": {},
   "increment.power.Baseline": {},

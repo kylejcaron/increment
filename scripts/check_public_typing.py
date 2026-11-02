@@ -35,6 +35,7 @@ _LEGACY_NAMESPACES = (
 )
 _TYPING = {"typing", "typing_extensions"}
 _EXPORT_MAPS = {"__all__", "_EXPORTS", "_LAZY_IMPORTS"}
+_TYPING_NAMES = {"Any", "Annotated", "Literal", "TypeAlias", "overload"}
 
 
 @dataclass(frozen=True)
@@ -49,25 +50,28 @@ class _Module:
     bindings: dict[str, ast.AST | _Reference] = field(default_factory=dict)
     values: dict[str, ast.expr] = field(default_factory=dict)
     stars: list[str] = field(default_factory=list)
+    functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
 
 
 def _statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
     for node in body:
         yield node
-        if isinstance(node, (ast.If, ast.Try)):
-            yield from _statements(node.body)
-            type_checking = isinstance(node, ast.If) and (
-                isinstance(node.test, ast.Name)
-                and node.test.id == "TYPE_CHECKING"
-                or isinstance(node.test, ast.Attribute)
-                and node.test.attr == "TYPE_CHECKING"
-            )
-            if not type_checking:
-                yield from _statements(node.orelse)
-            if isinstance(node, ast.Try):
-                for handler in node.handlers:
-                    yield from _statements(handler.body)
-                yield from _statements(node.finalbody)
+        if isinstance(node, (*_FUNCTION, ast.ClassDef)):
+            continue
+        type_checking = isinstance(node, ast.If) and (
+            isinstance(node.test, ast.Name)
+            and node.test.id == "TYPE_CHECKING"
+            or isinstance(node.test, ast.Attribute)
+            and node.test.attr == "TYPE_CHECKING"
+        )
+        for name, children in ast.iter_fields(node):
+            if not isinstance(children, list) or (name == "orelse" and type_checking):
+                continue
+            for child in children:
+                if isinstance(child, ast.stmt):
+                    yield from _statements([child])
+                elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
+                    yield from _statements(child.body)
 
 
 class _Source:
@@ -95,6 +99,8 @@ class _Source:
         for node in _statements(module.tree.body):
             if isinstance(node, (*_FUNCTION, ast.ClassDef)):
                 module.bindings[node.name] = node
+                if isinstance(node, _FUNCTION):
+                    module.functions.setdefault(node.name, []).append(node)
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     module.bindings[alias.asname or alias.name.split(".")[0]] = _Reference(
@@ -125,11 +131,21 @@ class _Source:
                     module.values[node.target.id] = node.value
             elif isinstance(node, ast.TypeAlias):
                 module.bindings[node.name.id] = node
-            elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-                if isinstance(node.op, ast.Add) and node.target.id in module.values:
-                    module.values[node.target.id] = ast.BinOp(
-                        left=module.values[node.target.id], op=ast.Add(), right=node.value
+            elif isinstance(node, ast.AugAssign):
+                target = node.target
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id in module.values
+                    and isinstance(node.op, (ast.Add, ast.BitOr))
+                ):
+                    module.values[target.id] = ast.BinOp(
+                        left=module.values[target.id], op=node.op, right=node.value
                     )
+                elif any(
+                    isinstance(part, ast.Name) and part.id in _EXPORT_MAPS
+                    for part in ast.walk(target)
+                ):
+                    raise ValueError(f"Unsupported export mutation in {name}")
             elif (
                 isinstance(node, ast.Expr)
                 and isinstance(node.value, ast.Call)
@@ -177,10 +193,16 @@ class _Source:
                 else:
                     result[self.literal(name, key, seen)] = self.literal(name, value, seen)
             return result
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        if isinstance(node, ast.BinOp):
             left, right = self.literal(name, node.left, seen), self.literal(name, node.right, seen)
-            if isinstance(left, list) and isinstance(right, list):
+            if isinstance(node.op, ast.Add) and isinstance(left, list) and isinstance(right, list):
                 return left + right
+            if (
+                isinstance(node.op, ast.BitOr)
+                and isinstance(left, dict)
+                and isinstance(right, dict)
+            ):
+                return left | right
         if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
             if isinstance(node.func, ast.Name) and node.func.id in {"list", "tuple", "sorted"}:
                 value = self.literal(name, node.args[0], seen)
@@ -207,9 +229,26 @@ class _Source:
             raise ValueError(f"Invalid __all__ in {name}")
         return cast(list[str], names)
 
-    def reference(self, module: str, node: ast.AST) -> _Reference | None:
+    def lookup(self, module: str, name: str) -> ast.AST | _Reference | None:
+        source = self.module(module)
+        if name in source.bindings:
+            return source.bindings[name]
+        for star in reversed(source.stars):
+            if star in _TYPING:
+                if name in _TYPING_NAMES:
+                    return _Reference(star, name)
+            elif name in self.exports(star):
+                return _Reference(star, name)
+        return None
+
+    def reference(self, module: str, node: ast.AST | None) -> _Reference | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                return self.reference(module, ast.parse(node.value, mode="eval").body)
+            except SyntaxError as exc:
+                raise ValueError(f"Invalid annotation in {module}: {node.value}") from exc
         if isinstance(node, ast.Name):
-            binding = self.module(module).bindings.get(node.id)
+            binding = self.lookup(module, node.id)
             return binding if isinstance(binding, _Reference) else _Reference(module, node.id)
         if isinstance(node, ast.Attribute):
             parent = self.reference(module, node.value)
@@ -242,7 +281,11 @@ class _Source:
                         raise ValueError(f"Invalid lazy export {module}.{name}")
                     binding = _Reference(target[0], target[1])
         if binding is None:
-            for star in source.stars:
+            for star in reversed(source.stars):
+                if star in _TYPING:
+                    if name in _TYPING_NAMES:
+                        raise ValueError(f"No Python source for public export {star}.{name}")
+                    continue
                 if name in self.exports(star):
                     return self.resolve(star, name, seen)
             if self.path(f"{module}.{name}") is not None:
@@ -275,35 +318,54 @@ class _Source:
                 return ref.name
             if ref.name is None or self.path(ref.module) is None:
                 return None
-            binding = self.module(ref.module).bindings.get(ref.name)
-            ref = (
-                binding
-                if isinstance(binding, _Reference)
-                else self.reference(ref.module, binding)
-                if isinstance(binding, ast.expr)
-                else None
-            )
+            binding = self.lookup(ref.module, ref.name)
+            value = self.type_value(ref.module, binding)
+            ref = binding if isinstance(binding, _Reference) else self.reference(ref.module, value)
+        if ref is not None:
+            raise ValueError(f"Cyclic annotation alias: {ref.module}.{ref.name}")
         return None
 
-    def annotation(self, module: str, node: ast.AST | None) -> int:
+    def type_value(self, module: str, binding: ast.AST | _Reference | None) -> ast.expr | None:
+        if isinstance(binding, ast.TypeAlias):
+            return binding.value
+        if isinstance(binding, ast.AnnAssign):
+            if self.typing_name(self.reference(module, binding.annotation)) == "TypeAlias":
+                return binding.value
+            return None
+        return binding if isinstance(binding, ast.expr) else None
+
+    def annotation(
+        self, module: str, node: ast.AST | None, seen: frozenset[_Reference] = frozenset()
+    ) -> int:
         if node is None:
             return 0
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             try:
-                return self.annotation(module, ast.parse(node.value, mode="eval").body)
+                return self.annotation(module, ast.parse(node.value, mode="eval").body, seen)
             except SyntaxError as exc:
                 raise ValueError(f"Invalid annotation in {module}: {node.value}") from exc
         ref = self.reference(module, node)
         if self.typing_name(ref) == "Any":
             return 1
+        if ref is not None and ref.name is not None and self.path(ref.module) is not None:
+            if ref in seen:
+                raise ValueError(f"Cyclic annotation alias: {ref.module}.{ref.name}")
+            binding = self.lookup(ref.module, ref.name)
+            if isinstance(binding, _Reference) and binding.name is not None:
+                if self.path(binding.module) is None:
+                    return 0
+                return self.annotation(binding.module, ast.Name(id=binding.name), seen | {ref})
+            value = self.type_value(ref.module, binding)
+            if value is not None:
+                return self.annotation(ref.module, value, seen | {ref})
         if isinstance(node, ast.Subscript):
             kind = self.typing_name(self.reference(module, node.value))
             if kind == "Literal":
                 return 0
             if kind == "Annotated":
                 first = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) else node.slice
-                return self.annotation(module, first)
-        return sum(self.annotation(module, child) for child in ast.iter_child_nodes(node))
+                return self.annotation(module, first, seen)
+        return sum(self.annotation(module, child, seen) for child in ast.iter_child_nodes(node))
 
     def signature(
         self, module: str, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -318,11 +380,30 @@ class _Source:
 
     def sites(self, module: str, node: ast.AST) -> dict[str, int]:
         if isinstance(node, _FUNCTION):
-            return self.signature(module, node)
+            sites = self.signature(module, node)
+            if self.module(module).bindings.get(node.name) is node:
+                overloads = [
+                    definition
+                    for definition in self.module(module).functions[node.name]
+                    if definition is not node
+                    and any(
+                        self.typing_name(self.reference(module, decorator)) == "overload"
+                        for decorator in definition.decorator_list
+                    )
+                ]
+                for index, definition in enumerate(overloads, 1):
+                    sites.update(
+                        {
+                            f"overload:{index}.{site}": count
+                            for site, count in self.signature(module, definition).items()
+                        }
+                    )
+            return sites
         if isinstance(node, ast.AnnAssign):
             # TypeAlias's value is itself an annotation, not an implementation value.
-            ref = self.reference(module, node.annotation)
-            annotation = node.value if ref and ref.name == "TypeAlias" else node.annotation
+            annotation = self.type_value(module, node)
+            if annotation is None:
+                annotation = node.annotation
             return {"field": self.annotation(module, annotation)}
         if isinstance(node, ast.TypeAlias):
             return {"alias": self.annotation(module, node.value)}
@@ -333,22 +414,10 @@ class _Source:
         for member in _statements(node.body):
             if isinstance(member, (*_FUNCTION, ast.ClassDef)):
                 name = member.name
-            elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
-                name = member.target.id
-            else:
-                continue
-            if not name.startswith("_") or (name.startswith("__") and name.endswith("__")):
-                members.setdefault(name, []).append(member)
-        for name, definitions in members.items():
-            for member in definitions:
-                for site, count in self.sites(module, member).items():
-                    label = f"{name}.{site}"
-                    sites[label] = sites.get(label, 0) + count
                 if isinstance(member, _FUNCTION) and not any(
                     isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
                     for decorator in member.decorator_list
                 ):
-                    # Instance fields are public too; locals and nested functions are not.
                     positional = [*member.args.posonlyargs, *member.args.args]
                     receiver = positional[0].arg if positional else "self"
                     for statement in _statements(member.body):
@@ -364,6 +433,17 @@ class _Source:
                                 sites[label] = sites.get(label, 0) + self.annotation(
                                     module, statement.annotation
                                 )
+            elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
+                name = member.target.id
+            else:
+                continue
+            if not name.startswith("_") or (name.startswith("__") and name.endswith("__")):
+                members.setdefault(name, []).append(member)
+        for name, definitions in members.items():
+            for member in definitions:
+                for site, count in self.sites(module, member).items():
+                    label = f"{name}.{site}"
+                    sites[label] = sites.get(label, 0) + count
         return sites
 
 

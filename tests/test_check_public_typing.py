@@ -52,6 +52,74 @@ def test_counts_any_in_function_signatures(tmp_path: Path) -> None:
     }
 
 
+def test_overloads_keep_independent_annotation_allowances(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, overload as variant
+                __all__ = ["convert"]
+                @variant
+                def convert(value: Any) -> str: ...
+                @variant
+                def convert(value: str) -> Any: ...
+                def convert(value: object) -> object: ...
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.convert": 2}
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("value: Any) -> str", "value: str) -> Any"))
+    assert main(args) == 1
+
+
+def test_annotation_aliases_unwrap_declared_and_quoted_types(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from .types import Declared, Modern, Quoted
+                __all__ = ["convert"]
+                def convert(value: Declared, extra: "Modern") -> Quoted: ...
+            """,
+            "types.py": """
+                from typing import Any, TypeAlias as Alias
+                Declared: Alias = Any
+                type Modern = list[Declared]
+                Quoted: Alias = "Modern"
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.convert": 3}
+
+
+def test_star_imports_resolve_typing_and_explicit_local_exports(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import *
+                from .bridge import *
+                __all__ = ["convert", "forward"]
+                def convert(value: Any) -> Any: ...
+            """,
+            "bridge.py": """
+                from .types import *
+                __all__ = ["forward"]
+                def forward(value: Dynamic) -> Dynamic: ...
+            """,
+            "types.py": """
+                from typing_extensions import Any as Dynamic
+                __all__ = ["Dynamic"]
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.convert": 2, "sample.forward": 2}
+
+
 def test_counts_any_in_public_fields_not_private_ones(tmp_path: Path) -> None:
     root = _package(
         tmp_path,
@@ -74,17 +142,55 @@ def test_counts_any_in_public_fields_not_private_ones(tmp_path: Path) -> None:
                         self.value: str = ""
                         self._secret: Any = value
                         local: Any = value
+                        self._populate(value)
                     def read(self, key: str) -> str: ...
                     def save(self) -> None:
                         self.later: Any = None
                     @property
                     def payload(self) -> Any: ...
-                    def _helper(self, key: Any) -> Any: ...
+                    def _populate(self, key: Any) -> Any:
+                        self.populated: Any = key
             """,
         },
     )
 
-    assert public_any(root, ["sample"]) == {"sample.Record": 5}
+    assert public_any(root, ["sample"]) == {"sample.Record": 6}
+
+
+def test_receiver_fields_in_compound_bodies_exclude_nested_scopes(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Record"]
+                class Record:
+                    def __init__(self) -> None:
+                        with context():
+                            self.opened: Any = None
+                        for item in ():
+                            self.iterated: Any = item
+                        else:
+                            self.exhausted: Any = None
+                        while condition():
+                            self.repeated: Any = None
+                        match value():
+                            case _:
+                                self.matched: Any = None
+                        try:
+                            self.tried: Any = None
+                        except Exception:
+                            self.caught: Any = None
+                        finally:
+                            self.finished: Any = None
+                        def nested():
+                            self.hidden: Any = None
+                        class Nested:
+                            self.hidden_too: Any = None
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.Record": 8}
 
 
 def test_follows_lazy_exports_and_reexports(tmp_path: Path) -> None:
@@ -94,8 +200,8 @@ def test_follows_lazy_exports_and_reexports(tmp_path: Path) -> None:
             "__init__.py": """
                 raise RuntimeError("must not import this package")
                 _EXTRA = {"fresh": ("sample.bridge", "forward")}
-                _EXPORTS = {"renamed": ("sample.bridge", "forward"),
-                            "tools": ("sample.tools", None), **_EXTRA}
+                _EXPORTS = {"renamed": ("sample.bridge", "forward"), **_EXTRA}
+                _EXPORTS |= {"tools": ("sample.tools", None)}
                 __all__ = list(_EXPORTS)
                 def __getattr__(name): ...
             """,
@@ -129,8 +235,18 @@ def test_follows_lazy_exports_and_reexports(tmp_path: Path) -> None:
             "cycle.py": "from . import missing",
         },
         {"__init__.py": "__all__ = compute_exports()"},
+        {
+            "__init__.py": """
+                from typing import TypeAlias
+                __all__ = ["convert"]
+                First: TypeAlias = "Second"
+                type Second = First
+                def convert(value: First) -> None: ...
+            """,
+        },
+        {"__init__.py": '__all__ = ["value"]\n__all__ *= 2\nvalue = 1'},
     ],
-    ids=["missing-export", "cyclic-reexport", "dynamic-exports"],
+    ids=["missing-export", "cyclic-reexport", "dynamic-exports", "cyclic-alias", "mutation"],
 )
 def test_unresolved_exports_fail_closed(tmp_path: Path, files: dict[str, str]) -> None:
     root = _package(tmp_path, **files)
@@ -187,6 +303,12 @@ def test_existing_counts_cannot_hide_new_names_or_annotations(tmp_path: Path) ->
     assert main(args) == 1
     path.write_text('__all__ = ["convert"]\ndef convert(value: str) -> str: ...\n')
     assert main(args) == 0
+    path.write_text(
+        '_EXPORTS = {"convert": ("sample.impl", "convert")}\n'
+        '_EXPORTS |= {"new": ("sample.impl", "new")}\n__all__ = list(_EXPORTS)\n'
+    )
+    (root / "sample/impl.py").write_text("def convert(value: str) -> str: ...\nnew = 1\n")
+    assert main(args) == 1
 
 
 def test_default_namespaces_use_manifest_headers_and_source_names(tmp_path: Path) -> None:
