@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from increment import from_frame
@@ -747,6 +748,74 @@ def test_malformed_run_manifest_is_reported_during_discovery(tmp_path, manifest_
         assert error.value.code == "store.run.corrupt"
     finally:
         resolver.close()
+
+
+def _saved_run_path(tmp_path: Path) -> Path:
+    experiment, resolver = _analysis()
+    try:
+        rows = view_readout(experiment, resolver)
+        cells, scope = _cells(rows)
+        ParquetResultsStore(tmp_path).put(_run(rows, cells, scope))
+    finally:
+        resolver.close()
+    return next(tmp_path.glob("*.parquet"))
+
+
+def _save_run_under_manifest_v3(tmp_path: Path) -> None:
+    path = _saved_run_path(tmp_path)
+    table = pq.read_table(path)
+    metadata = dict(table.schema.metadata or {})
+    metadata[b"increment.run_manifest.v3"] = metadata.pop(b"increment.run_manifest.v2")
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+
+
+_UNSUPPORTED_MANIFEST_CONTEXT = {
+    "found": ("increment.run_manifest.v3",),
+    "supported": ("increment.run_manifest.v2",),
+}
+
+
+def test_open_run_by_id_with_an_unknown_manifest_version_refuses_with_code(tmp_path):
+    _save_run_under_manifest_v3(tmp_path)
+
+    with pytest.raises(CodedError) as error:
+        ParquetResultsStore(tmp_path).open_run("exp", "spec", "run-1")
+    assert error.value.code == "store.run.manifest_unsupported"
+    assert dict(error.value.context) == _UNSUPPORTED_MANIFEST_CONTEXT
+
+
+def test_open_run_scan_with_an_unknown_manifest_version_refuses_with_code(tmp_path):
+    _save_run_under_manifest_v3(tmp_path)
+
+    with pytest.raises(CodedError) as error:
+        ParquetResultsStore(tmp_path).open_run("exp", "spec")
+    assert error.value.code == "store.run.manifest_unsupported"
+    assert dict(error.value.context) == _UNSUPPORTED_MANIFEST_CONTEXT
+
+
+def test_open_run_with_a_future_result_kind_refuses_with_the_results_code(tmp_path):
+    path = _saved_run_path(tmp_path)
+    table = pq.read_table(path)
+    rows = table.to_pylist()
+    for row in rows:
+        row.update(
+            row_kind="harm_bounds",
+            row_payload=json.dumps({"payload_version": 1, "data": {}}),
+            retained_row=None,
+        )
+        for component in ("sampling", "posterior", "sequential"):
+            row[component] = {**row[component], "construction": None, "kind": None, "supports": []}
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    store = ParquetResultsStore(tmp_path)
+
+    for operation in (
+        lambda: store.open_run("exp", "spec", "run-1"),
+        lambda: store.open_run("exp", "spec"),
+    ):
+        with pytest.raises(CodedError) as error:
+            operation()
+        assert error.value.code == "results.cell.schema_unsupported"
+        assert error.value.context["row_kind"] == "harm_bounds"
 
 
 def test_run_commit_time_cannot_precede_capture_time():

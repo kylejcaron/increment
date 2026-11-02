@@ -92,6 +92,7 @@ nav:
       - Validation: validation.md
       - Capabilities by Entry Point: reference/capabilities-by-entry-point.md
       - Method Compatibility Reference: guides/compatibility.md
+      - Saved Formats: reference/saved-formats.md
   - Development:
       - Extending Estimators and Evidence: development/adding-an-estimator.md
   - API Reference: api.md

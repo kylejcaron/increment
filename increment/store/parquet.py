@@ -5,14 +5,17 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any, NoReturn
 
 import pyarrow.parquet as pq
 
 from increment._canonical import canonical_json_bytes
+from increment.errors import CodedError
 from increment.kernel.contracts import CellIdentity, CompiledPlanBinding
-from increment.kernel.program_refusals import refuse_store
+from increment.kernel.program_refusals import refuse_store, refuse_unsupported_run_manifest
 from increment.result_envelope import AnalysisEnvelope
 from increment.store.types import (
     HistorySelector,
@@ -25,16 +28,52 @@ from increment.store.types import (
 )
 
 
-def _read_manifest(path: Path) -> dict[str, object]:
-    try:
-        manifest = json.loads(pq.read_schema(path).metadata[b"increment.run_manifest.v2"])
-    except Exception as exc:
+def _read_manifest_v2(encoded: bytes) -> Any:
+    return json.loads(encoded)
+
+
+_MANIFEST_KEY_PREFIX = b"increment.run_manifest."
+# Readable saved-run manifests, by the schema-metadata key that holds each version.
+_MANIFEST_READERS: dict[bytes, Callable[[bytes], Any]] = {
+    b"increment.run_manifest.v2": _read_manifest_v2,
+}
+# A format this release cannot read keeps its own code rather than reporting corruption.
+_UNSUPPORTED_FORMAT_CODES = frozenset(
+    {"store.run.manifest_unsupported", "results.cell.schema_unsupported"}
+)
+
+
+def _refuse_unreadable(run_id: str, exc: Exception) -> NoReturn:
+    if isinstance(exc, CodedError) and exc.code in _UNSUPPORTED_FORMAT_CODES:
+        raise exc
+    refuse_store(
+        "store.run.corrupt",
+        "Committed run record is unreadable or inconsistent",
+        run_id=run_id,
+        error=type(exc).__name__,
+    )
+
+
+def _read_manifest(metadata: Mapping[bytes, bytes] | None, *, run_id: str) -> dict[str, Any]:
+    """Decode a saved run's manifest with the reader for its stored version."""
+    stored = metadata or {}
+    version = next((key for key in _MANIFEST_READERS if key in stored), None)
+    if version is None:
+        found = sorted(
+            key.decode(errors="replace") for key in stored if key.startswith(_MANIFEST_KEY_PREFIX)
+        )
+        if found:
+            refuse_unsupported_run_manifest(found, [key.decode() for key in _MANIFEST_READERS])
         refuse_store(
             "store.run.corrupt",
             "Committed run record is unreadable or inconsistent",
-            run_id=path.stem,
-            error=type(exc).__name__,
+            run_id=run_id,
+            error="KeyError",
         )
+    try:
+        manifest = _MANIFEST_READERS[version](stored[version])
+    except Exception as exc:
+        _refuse_unreadable(run_id, exc)
     if not isinstance(manifest, dict) or any(
         not isinstance(manifest.get(field), str) or not manifest[field]
         for field in ("experiment_id", "analysis_spec_hash", "run_id")
@@ -42,9 +81,18 @@ def _read_manifest(path: Path) -> dict[str, object]:
         refuse_store(
             "store.run.corrupt",
             "Committed run record is unreadable or inconsistent",
-            run_id=path.stem,
+            run_id=run_id,
             error="ValueError",
         )
+    return manifest
+
+
+def _read_routed_manifest(path: Path) -> dict[str, Any]:
+    try:
+        metadata = pq.read_schema(path).metadata
+    except Exception as exc:
+        _refuse_unreadable(path.stem, exc)
+    manifest = _read_manifest(metadata, run_id=path.stem)
     if path.stem != run_record_key(
         manifest["experiment_id"], manifest["analysis_spec_hash"], manifest["run_id"]
     ):
@@ -118,7 +166,7 @@ class ParquetResultsStore:
 
     def _load(self, path: Path) -> Run:
         table = pq.read_table(path)
-        manifest = json.loads(table.schema.metadata[b"increment.run_manifest.v2"])
+        manifest = _read_manifest(table.schema.metadata, run_id=path.stem)
         encoded_metadata = (table.schema.metadata or {}).get(b"increment.readout_metadata")
         stored_metadata_sha256 = (
             None
@@ -179,12 +227,7 @@ class ParquetResultsStore:
         try:
             return self._load(path)
         except Exception as exc:
-            refuse_store(
-                "store.run.corrupt",
-                "Committed run record is unreadable or inconsistent",
-                run_id=path.stem,
-                error=type(exc).__name__,
-            )
+            _refuse_unreadable(path.stem, exc)
 
     def open_run(
         self, experiment_id: str, analysis_spec_hash: str, run_id: str | None = None
@@ -211,7 +254,7 @@ class ParquetResultsStore:
             for path in self.path.glob("*.parquet"):
                 if not self._is_committed_path(path):
                     continue
-                manifest = _read_manifest(path)
+                manifest = _read_routed_manifest(path)
                 if (
                     manifest.get("experiment_id") != experiment_id
                     or manifest.get("analysis_spec_hash") != analysis_spec_hash
@@ -236,7 +279,7 @@ class ParquetResultsStore:
         for path in self.path.glob("*.parquet"):
             if not self._is_committed_path(path):
                 continue
-            if _read_manifest(path).get("experiment_id") != experiment_id:
+            if _read_routed_manifest(path).get("experiment_id") != experiment_id:
                 continue
             run = self._load_committed(path)
             found = [
