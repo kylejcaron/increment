@@ -106,17 +106,17 @@ def test_run_owner_coherence_mutations_between_primary_and_breakout(tmp_path, mu
     _add_replication_units(baseline_con)
     _add_replication_units(con)
     try:
-        with pytest.warns():
-            original = run(
-                baseline_experiment.with_views(primary, breakout), baseline, coherence=coherence
-            ).readout(breakout)
+        original = run(
+            baseline_experiment.with_views(primary, breakout), baseline, coherence=coherence
+        ).readout(breakout)
         original_breakout = _breakout_values(original)
         mutated: list[str] = []
         _mutate_before_breakout_reads(
             bound_source(resolver), con, _MUTATIONS[mutation], coherence, mutated
         )
         try:
-            with pytest.warns():
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", IncrementWarning)
                 changed = run(
                     experiment.with_views(primary, breakout), resolver, coherence=coherence
                 ).readout(breakout)

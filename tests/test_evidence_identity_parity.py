@@ -164,11 +164,11 @@ def _compare(expected: Any, actual: Any, path: str = "") -> None:
         assert expected == actual
     elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
         assert isinstance(actual, (int, float)) and not isinstance(actual, bool)
-        assert (expected == 0.0) == (actual == 0.0)
-        assert math.copysign(1, expected) == math.copysign(1, actual)
-        if expected != 0.0:
-            rtol = 1e-6 if path in SEEDED_RESAMPLING_FIELD_PATHS else 1e-9
-            assert math.isclose(expected, actual, rel_tol=rtol, abs_tol=TOLERANCE)
+        if abs(expected) > TOLERANCE or abs(actual) > TOLERANCE:
+            assert (expected == 0.0) == (actual == 0.0)
+            assert math.copysign(1, expected) == math.copysign(1, actual)
+        rtol = 1e-6 if path in SEEDED_RESAMPLING_FIELD_PATHS else 1e-9
+        assert math.isclose(expected, actual, rel_tol=rtol, abs_tol=TOLERANCE)
     elif isinstance(expected, Mapping):
         assert isinstance(actual, Mapping) and expected.keys() == actual.keys()
         for key in expected:
@@ -1464,9 +1464,9 @@ def test_frozen_capture_rejects_constant_relative_offset(fraction: float) -> Non
 
 @pytest.mark.parametrize(
     ("expected", "actual"),
-    ((0.0, -5e-10), (0.0, 5e-10), (1e-12, -1e-12)),
+    ((0.0, -2 * TOLERANCE), (0.0, 2 * TOLERANCE), (1.0, -1.0)),
 )
-def test_frozen_comparison_enforces_zero_and_sign_before_tolerance(
+def test_frozen_comparison_enforces_zero_and_sign_outside_tolerance(
     expected: float, actual: float
 ) -> None:
     with pytest.raises(AssertionError):

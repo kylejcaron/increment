@@ -170,3 +170,25 @@ def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
         if step.get("name") == "Merge predictions and report misses"
     )
     assert "incomplete evidence: no base" in report["run"]
+
+
+def test_weekly_floor_parts_cover_each_interpreter_with_distinct_reports() -> None:
+    job = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]["test-all-floor"]
+    matrix = job["strategy"]["matrix"]
+    assert matrix["python-version"] == ["3.12", "3.13", "3.14"]
+    assert matrix["group"] == [1, 2, 3]
+    assert job["timeout-minutes"] == 90
+    assert "part ${{ matrix.group }}/3)" in job["name"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "jq -s add .github/fast-test-durations.json .github/slow-test-durations.json" in commands
+    assert "--splits 3 --group ${{ matrix.group }}" in commands
+    assert (
+        "--splitting-algorithm least_duration --durations-path floor-test-durations.json"
+        in commands
+    )
+    assert job["env"]["INCREMENT_FLOOR_PART"] == "${{ matrix.group }}"
+    upload = next(
+        step for step in job["steps"] if step.get("name") == "Retain floor-suite JUnit report"
+    )
+    assert "-part-${{ matrix.group }}-" in upload["with"]["name"]
+    assert upload["if"] == "always()"
