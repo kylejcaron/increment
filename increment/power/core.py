@@ -2931,7 +2931,12 @@ def _search_binomial_mde(
     model = replace(
         model,
         geometry=RejectionGeometry(
-            model.key, geometry.route, geometry.max_cells, geometry.routing, geometry.store
+            model.key,
+            geometry.route,
+            geometry.max_cells,
+            geometry.routing,
+            geometry.store,
+            geometry.pmf_cache,
         ),
     )
     search = _BinomialMdeSearch.of(
