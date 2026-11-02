@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
+from increment._optional import require_warehouse
+
 _EXPORTS = {
     "ArtifactDigestError": ("increment.query.artifact_digest", "ArtifactDigestError"),
     "DigestType": ("increment.query.artifact_digest", "DigestType"),
@@ -86,6 +88,7 @@ def __getattr__(name: str) -> Any:
         module_name, attr_name = _EXPORTS[name]
     except KeyError:
         raise AttributeError(name) from None
+    require_warehouse(f"increment.digest.{name}")
     module = importlib.import_module(module_name)
     value = module if attr_name is None else getattr(module, attr_name)
     globals()[name] = value

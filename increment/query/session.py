@@ -2,6 +2,9 @@
 mechanics, shared by the definitions builder and `MetricTrends`.
 """
 
+# Warehouse availability must be checked before importing optional dependencies.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import copy
@@ -16,6 +19,10 @@ from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Protocol, cast
+
+from increment._optional import require_warehouse
+
+require_warehouse("increment.query.session")
 
 import ibis
 import ibis.expr.types as ir

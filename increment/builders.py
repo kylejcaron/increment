@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 
 from increment._binding import SourceBinding, _ArtifactOpenSpec
+from increment._optional import require_warehouse
 from increment._source_resolver import SourceResolver, resolver_for
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.kernel.contracts import _refuse
@@ -731,6 +732,7 @@ def from_definitions(
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
 ) -> tuple[Experiment, SourceResolver | _OfflineResolver]:
     """Build from definitions, using a bound versioned catalog when offline."""
+    require_warehouse("from_definitions")
     path = Path(definitions_path)
     if con is None:
         catalog_path = _catalog_path(path)
@@ -791,6 +793,7 @@ def from_unit_day_artifact(
     expected_context: ArtifactContext,
     verification: Literal["lazy_digest"] = "lazy_digest",
 ) -> tuple[Experiment, SourceResolver]:
+    require_warehouse("from_unit_day_artifact")
     return resolver_for(
         _bind_artifact(store, ref, expected_context=expected_context, verification=verification)
     )

@@ -8,19 +8,25 @@ Requires Python 3.12, 3.13, or 3.14.
 
 ## Install
 
-`increment` core has no bundled database driver — you bring your own
-[ibis](https://ibis-project.org) backend:
+Install the core package for dataframe analysis:
 
 ```bash
 pip install increment
-pip install 'ibis-framework[duckdb]'    # or [snowflake], [bigquery], [postgres], ...
+```
+
+For SQL warehouses, add warehouse support and your
+[Ibis](https://ibis-project.org) backend:
+
+```bash
+pip install "increment[warehouse]" "ibis-framework[duckdb]"  # or [snowflake], [bigquery], [postgres], ...
 ```
 
 | Extra | Adds | For |
 |---|---|---|
-| `increment` (core) | ibis, pydantic, numpy, scipy, sqlglot, narwhals, pyyaml | Always required; no backend included |
+| `increment` (core) | pydantic, numpy, scipy, Arrow, narwhals, pyyaml | Dataframe and moments analysis |
+| `increment[warehouse]` | Ibis, SQLGlot | SQL warehouses; install a backend driver separately |
 | `ibis-framework[<backend>]` | your chosen driver | Connecting to DuckDB, Snowflake, BigQuery, Postgres, etc. |
-| `increment[demo]` | `ibis-framework[duckdb]` | Local DuckDB backend for demos, examples, and simulation |
+| `increment[demo]` | Warehouse support and `ibis-framework[duckdb]` | Local DuckDB backend for demos, examples, and simulation |
 | `increment[tables]` | `coeftable`, `pandas` | CoefTable-based experiment and metric trend tables |
 | `increment[dashboard]` | `marimo`, `coeftable`, `pandas` | Reusable HTML dashboard over one bound experiment; see the [dashboard guide](guides/dashboard.md) |
 

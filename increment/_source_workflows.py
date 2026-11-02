@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from increment._binding import SourceBinding, binding_for
 from increment._canonical import canonical_json_bytes
 from increment._exploratory import available_metrics as _available_metrics
+from increment._optional import require_warehouse
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import ExportMomentsOperation, MaterializeOperation
 from increment._source_types import declared_evidence
@@ -65,6 +66,7 @@ def _artifact_context_binding(binding: SourceBinding) -> ArtifactContext:
 
 def artifact_context(experiment: KernelExperiment, resolver: Resolver) -> ArtifactContext:
     """Return the trusted publication context for a definitions-backed experiment."""
+    require_warehouse("artifact_context")
     return _artifact_context_binding(binding_for(experiment, resolver))
 
 
@@ -146,6 +148,7 @@ def publish_unit_day_artifact(
     refresh_of: UnitDayArtifactRef | None = None,
 ) -> UnitDayArtifactRef:
     """Publish a definitions-backed experiment as an immutable unit-day artifact."""
+    require_warehouse("publish_unit_day_artifact")
     return _publish_unit_day_artifact_binding(
         binding_for(experiment, resolver), store, extensions=extensions, refresh_of=refresh_of
     )
@@ -168,6 +171,7 @@ def _materialize_binding(binding: SourceBinding) -> None:
 
 def materialize(experiment: KernelExperiment, resolver: Resolver) -> None:
     """Refresh the source-owned materialized tables from current warehouse data."""
+    require_warehouse("materialize")
     _materialize_binding(_arm_binding(experiment, resolver, "materialize"))
 
 
@@ -192,6 +196,7 @@ def _experiment_definition_binding(binding: SourceBinding) -> Experiment:
 
 def experiment_definition(experiment: KernelExperiment, resolver: Resolver) -> Experiment:
     """Return the semantic experiment declaration carried by the source."""
+    require_warehouse("experiment_definition")
     return _experiment_definition_binding(binding_for(experiment, resolver))
 
 
@@ -223,6 +228,7 @@ def compiled_decision_plan(
 
 def available_metrics(experiment: KernelExperiment, resolver: Resolver) -> list[Metric]:
     """Return eligible saved metrics not declared by the experiment, in catalog order."""
+    require_warehouse("available_metrics")
     return _available_metrics(binding_for(experiment, resolver))
 
 
@@ -233,6 +239,7 @@ def breakout_summaries(
     metrics: Sequence[str | Metric] | None = None,
 ) -> dict[str, dict[str, pa.Table]]:
     """Return per-breakout moment tables for the selected declared metrics."""
+    require_warehouse("breakout_summaries")
     return _breakout_summaries_binding(binding_for(experiment, resolver), metrics)
 
 
@@ -312,6 +319,7 @@ def _breakout_summaries_binding(
 
 def factor_summaries(experiment: KernelExperiment, resolver: Resolver) -> dict[str, pa.Table]:
     """Return per-factor-level and arm moment tables for declared factors."""
+    require_warehouse("factor_summaries")
     return _factor_summaries_binding(binding_for(experiment, resolver))
 
 

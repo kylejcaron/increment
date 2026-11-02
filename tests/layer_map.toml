@@ -1,6 +1,7 @@
 core = [
   "increment",
   "increment._*",
+  "increment._optional",
   "increment.semantics*",
   "increment.estimation*",
   "increment.estimators*",
