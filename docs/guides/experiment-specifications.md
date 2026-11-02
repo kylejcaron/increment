@@ -50,8 +50,8 @@ experiment, resolver = from_frame(
     metrics={"value": "mean"},
     observation_end="2025-01-02",
 )
-daily_lift = Scope(view="daily", grain="daily")
-daily_values = Scope(view="daily", grain="daily", values=True)
+daily_lift = Scope.daily()
+daily_values = Scope.daily(values=True)
 experiment = experiment.with_views(daily_lift, daily_values)
 ```
 
@@ -110,8 +110,9 @@ horizon when required by the source. `run(experiment, resolver,
 capture=SequentialCaptureRequest(...))` instead takes the capture inside the
 run's own shared evidence capture, before any view reads.
 Specifications containing `capture` refuse with
-`kernel.request.capture_not_supported`. Population is declared on `Scope` via
-`Scope(population=...)`; a request option named `population` refuses with
+`kernel.request.capture_not_supported`. Population is declared on a view
+constructor, such as `Scope.daily(population=...)`; a request option named
+`population` refuses with
 `kernel.request.population_scope_only`, as does a `run(population=...)` that
 differs from a selected scope's population.
 
@@ -312,7 +313,8 @@ bound source.
 `value_scale`, `exploratory_metrics`, `population` and `coherence`. Only the
 options you pass apply, so `prior=None` removes the registered prior while an
 omitted `prior` keeps it. A `population` must match every selected scope;
-declare a different population with `Scope(population=...)`.
+declare a different population with the matching view constructor, such as
+`Scope.daily(population=...)`.
 `result.readout(scope)` returns the `LiftEstimates`, `ContrastResults` or
 other typed collection one scope produced.
 
@@ -342,8 +344,8 @@ exp, resolver = from_frame(
     control="control",
     metrics={"revenue": "mean"},
 )
-total = Scope(view="run", grain="total")
-daily = Scope(view="daily", grain="daily")
+total = Scope.run()
+daily = Scope.daily()
 exp = replace(exp, scopes=(total, daily))
 combined = run(exp, resolver)  # One capture, both scopes.
 only_daily = run(exp, resolver, views=(daily,))

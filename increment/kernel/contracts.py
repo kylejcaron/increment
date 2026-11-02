@@ -73,7 +73,7 @@ class _ContractModel(CodedModel, BaseModel):
 
 class Scope(_ContractModel):
     view: Literal["run", "daily", "asof", "breakout", "switchback"]
-    grain: Literal["total", "daily", "asof"]
+    grain: Literal["total", "daily", "asof"] = "total"
     values: bool = Field(default=False, exclude_if=lambda value: not value)
     through_day: date | None = None
     day_domain: tuple[date, ...] = ()
@@ -82,6 +82,85 @@ class Scope(_ContractModel):
     completion_policy: bool = False
     segment: tuple[BreakoutIdentity, ...] = ()
     metrics: tuple[Metric, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_grain(cls, value: object) -> object:
+        if isinstance(value, Mapping) and "grain" not in value:
+            view = value.get("view")
+            grain = (
+                "daily"
+                if view == "daily"
+                else "asof"
+                if view == "asof"
+                else "total"
+                if view in ("run", "breakout", "switchback")
+                else None
+            )
+            if grain is not None:
+                value = {**value, "grain": grain}
+        return value
+
+    @classmethod
+    def run(cls, *, population: Literal["assigned", "triggered"] = "assigned") -> Scope:
+        return cls(view="run", population=population)
+
+    @classmethod
+    def daily(
+        cls,
+        *,
+        through_day: date | None = None,
+        day_domain: tuple[date, ...] = (),
+        values: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
+        time_basis: Literal["calendar", "cohort"] = "calendar",
+        segment: tuple[BreakoutIdentity, ...] = (),
+    ) -> Scope:
+        return cls(
+            view="daily",
+            through_day=through_day,
+            day_domain=day_domain,
+            values=values,
+            population=population,
+            time_basis=time_basis,
+            segment=segment,
+        )
+
+    @classmethod
+    def asof(
+        cls,
+        *,
+        through_day: date | None = None,
+        day_domain: tuple[date, ...] = (),
+        values: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
+        time_basis: Literal["calendar", "cohort"] = "calendar",
+        completion_policy: bool = False,
+        segment: tuple[BreakoutIdentity, ...] = (),
+    ) -> Scope:
+        return cls(
+            view="asof",
+            through_day=through_day,
+            day_domain=day_domain,
+            values=values,
+            population=population,
+            time_basis=time_basis,
+            completion_policy=completion_policy,
+            segment=segment,
+        )
+
+    @classmethod
+    def breakout(
+        cls,
+        segment: tuple[BreakoutIdentity, ...],
+        *,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> Scope:
+        return cls(view="breakout", segment=segment, population=population)
+
+    @classmethod
+    def switchback(cls, *, metrics: tuple[Metric, ...] = ()) -> Scope:
+        return cls(view="switchback", metrics=metrics)
 
     @field_validator("segment", mode="before")
     @classmethod

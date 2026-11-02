@@ -360,6 +360,36 @@ def test_temporal_scopes_allow_multiple_sources_of_one_breakout_only():
     assert raised.value.code == "kernel.scope.invalid"
 
 
+def test_constructors_match_direct_construction():
+    constructors = (
+        (Scope.run(), Scope(view="run", grain="total")),
+        (Scope.daily(), Scope(view="daily", grain="daily")),
+        (Scope.asof(), Scope(view="asof", grain="asof")),
+        (Scope.breakout(()), Scope(view="breakout", grain="total")),
+        (Scope.switchback(), Scope(view="switchback", grain="total")),
+    )
+
+    def scope_key(scope):
+        return scope.model_copy(
+            update={"through_day": None, "segment": (), "population": "assigned"}
+        ).hash()
+
+    for constructed, direct in constructors:
+        assert constructed == direct
+        assert constructed.hash() == direct.hash()
+        assert scope_key(constructed) == scope_key(direct)
+
+
+def test_grain_is_derived_from_view():
+    assert Scope(view="asof").grain == "asof"
+
+
+def test_a_mismatched_grain_still_refuses():
+    with pytest.raises(CodedError) as raised:
+        Scope(view="daily", grain="total")
+    assert raised.value.code == "kernel.scope.invalid"
+
+
 @pytest.mark.integration
 def test_contracts_import_stays_inside_the_permitted_set():
     code = "import sys, increment.kernel.contracts; print('\\n'.join(sorted(m for m in sys.modules if m.startswith('increment'))))"
