@@ -17,8 +17,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from increment import Experiment, Scope, run
+from increment._evidence_types import DayAxisRows, MetricEvidence
 from increment.errors import CodedError
-from increment.evidence import DayAxisRows, MetricEvidence
 from increment.kernel.contracts import contract_hash, method_estimator_id
 from increment.kernel.resolver import Resolver
 

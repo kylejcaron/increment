@@ -81,6 +81,10 @@ tests/test_warehouse_cuped_qr.py 5
 # Narrow allowances for tests of the internal compound evidence-acquisition
 # request boundary. Primitive custom-provider requests and EvidenceProvider
 # remain covered by the public evidence API contract.
+# Test-only evidence-fixture inspection of retired internal acquisition envelopes.
+tests/evidence_fixtures/capture.py 2
+# Direct construction of retired compound requests/envelopes for evidence-fixture contracts.
+tests/test_evidence_level_parity.py 3
 tests/test_analysis_breakout.py 3
 # These counts cover breakout, day-axis, and metric-evidence request tests.
 tests/test_evidence_provider.py 11

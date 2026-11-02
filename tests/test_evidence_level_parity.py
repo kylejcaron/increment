@@ -11,8 +11,8 @@ import pyarrow as pa
 import pytest
 
 from increment import Method, MetricSpec, Scope, from_frame
+from increment._evidence_types import DayAxisRequest, DayAxisRows
 from increment.errors import IncrementWarning
-from increment.evidence import DayAxisRequest, DayAxisRows
 from increment.semantics.models import MeanMetric
 from tests.evidence_fixtures import (
     CaptureKey,
@@ -218,7 +218,8 @@ def test_day_axis_capture_keeps_slice_source_identity():
 
 
 def test_method_fit_comparison_ignores_source_provenance_only():
-    from increment.evidence import MethodFitAnswer, MethodFitRequest, MetricEvidence
+    from increment._evidence_types import MetricEvidence
+    from increment.evidence import MethodFitAnswer, MethodFitRequest
     from tests.evidence_fixtures.capture import _Capture
 
     metric = MeanMetric(name="revenue", entity="user", fact="revenue")
