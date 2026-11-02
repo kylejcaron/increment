@@ -1748,7 +1748,8 @@ def _identity_order(cells):
 @pytest.mark.integration
 def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp_path):
     from increment import run
-    from increment.evidence import BreakoutSlicesRequest, evidence_provider, request_evidence
+    from increment._evidence_types import BreakoutSlicesRequest
+    from increment.evidence import evidence_provider, request_evidence
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
     source = resolver.binding.source
@@ -2094,9 +2095,9 @@ def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path)
 def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
     from contextlib import contextmanager
 
+    from increment._evidence_types import BreakoutSlicesRequest
     from increment.errors import CodedError
     from increment.evidence import (
-        BreakoutSlicesRequest,
         EvidenceScope,
         EvidenceScopeResult,
         evidence_provider,
@@ -2181,9 +2182,9 @@ def test_custom_breakout_scope_rechecks_scoped_unit_row_capability(tmp_path):
     from contextlib import contextmanager
     from dataclasses import replace
 
+    from increment._evidence_types import BreakoutSlicesRequest
     from increment.errors import CodedError
     from increment.evidence import (
-        BreakoutSlicesRequest,
         EvidenceScopeResult,
         UnitRowsRequest,
         evidence_provider,

@@ -38,11 +38,11 @@ import warnings
 from increment import from_definitions, from_unit_day_artifact
 from increment.artifacts import (
     SourceSnapshotEvidence,
+    WarehouseArtifactStore,
     artifact_context,
     publish_unit_day_artifact,
     unit_day_artifact_extension_catalog,
 )
-from increment.query.session import WarehouseArtifactStore
 from increment.estimators import IncrementWarning, sitewide
 
 Path("triggered-definitions").mkdir(exist_ok=True)

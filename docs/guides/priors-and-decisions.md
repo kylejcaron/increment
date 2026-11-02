@@ -8,8 +8,7 @@
 import numpy as np
 import polars as pl
 from increment import MetricSpec, from_frame, run
-from increment.estimators import Normal
-from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimators import MixturePrior, Normal, StudentTPrior
 
 rng = np.random.default_rng(6)
 n = 2500

@@ -81,8 +81,7 @@ Triggered daily and as-of readouts need two separate kinds of evidence:
 trigger observation edges for each metric, and the experiment reconstruction
 metadata used to build the complete day axis (including zero-population early
 look cells). The provider must expose that metadata as `experiment` or
-`artifact_experiment`, or pass it as `DayAxisRequest.experiment` when serving a
-request. Supply the complete experiment metadata, including `trigger`, `unit`,
+`artifact_experiment`. Supply the complete experiment metadata, including `trigger`, `unit`,
 `exposure`, `start`, `control_group`, plan, and breakouts for requested
 dimensions. The provider must also implement `triggered_observation_edges(metric)`
 and declare the triggered population. Missing reconstruction metadata or trigger
@@ -95,11 +94,10 @@ provided like this:
 from datetime import date, datetime
 from types import SimpleNamespace
 
-from increment import AnalysisPlan
-from increment.semantics.models import Experiment
+from increment import AnalysisPlan, ExperimentDefinition
 
 provider = SimpleNamespace()
-provider.experiment = Experiment(
+provider.experiment = ExperimentDefinition(
     name="trial",
     exposure="assigned",
     trigger="seen",

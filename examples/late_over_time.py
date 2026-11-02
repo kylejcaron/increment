@@ -28,11 +28,11 @@ def _():
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
+        frame_observation_mapping,
         sequential_definition_id,
+        synthesise_metric,
     )
-    from increment.frame import synthesise_metric
-    from increment.sequential_source import frame_observation_mapping
-    from increment.simulate.dgp import Scenario, simulate_raw_logs
+    from increment.simulate import Scenario, simulate_raw_logs
     from increment.workflows import capture_sequential
 
     return (
@@ -85,7 +85,7 @@ def _(mo):
     mo.md(r"""
     ## Simulate a staggered encouragement panel
 
-    `increment.simulate.dgp.simulate_raw_logs` draws a raw event log: one
+    `increment.simulate.simulate_raw_logs` draws a raw event log: one
     `exposure` row per unit, plus `uptake`/`outcome` rows at a random day
     offset in `[0, n_days)` for each unit. `W` bounds both the outcome
     window and the uptake window, so every simulated event lands strictly

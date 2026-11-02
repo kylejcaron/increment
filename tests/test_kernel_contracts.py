@@ -899,10 +899,10 @@ def test_analysis_request_json_encodes_uuid_breakout_values():
 
 
 def test_analysis_request_admits_observational_breakout_and_sequential_requests():
+    from increment._evidence_types import BreakoutUnitRowsRequest
     from increment.declarations import Method
     from increment.evidence import (
         BreakoutIdentity,
-        BreakoutUnitRowsRequest,
         MethodFitRequest,
         SequentialCaptureRequest,
         UnitRowsRequest,
@@ -944,14 +944,16 @@ def test_analysis_request_admits_observational_breakout_and_sequential_requests(
 @pytest.mark.parametrize("case_index", range(9))
 @given(agrees=st.booleans())
 def test_request_scope_a3_axes(case_index: int, agrees: bool) -> None:
+    from increment._evidence_types import (
+        BreakoutSlicesRequest,
+        BreakoutUnitRowsRequest,
+        DayAxisRequest,
+    )
     from increment.evidence import (
         BreakoutCell,
         BreakoutIdentity,
         BreakoutMethodMomentsRequest,
-        BreakoutSlicesRequest,
-        BreakoutUnitRowsRequest,
         CountsRequest,
-        DayAxisRequest,
         MethodFitRequest,
         MomentsRequest,
     )

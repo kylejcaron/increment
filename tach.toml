@@ -1250,7 +1250,7 @@ depends_on = [
 [[modules]]
 path = "increment.estimators"
 layer = "core"
-depends_on = ["increment.estimators.registry"]
+depends_on = []
 
 [[modules]]
 path = "increment.estimators.registry"

@@ -6,11 +6,12 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 _EXPORTS = {
-    "resolve": ("increment.kernel.resolver", "resolve"),
     "impute": ("increment.impute", None),
     "moments_from_summaries": ("increment.summaries", "moments_from_summaries"),
     "MetricTrends": ("increment.reporting", "MetricTrends"),
     "Normal": ("increment.estimation.inference", "Normal"),
+    "MixturePrior": ("increment.estimation.priors", "MixturePrior"),
+    "StudentTPrior": ("increment.estimation.priors", "StudentTPrior"),
     "AsymptoticMean": ("increment.estimation.sequential", "AsymptoticMean"),
     "AsymptoticSequentialResult": (
         "increment.estimation.sequential_result",
@@ -27,6 +28,7 @@ _EXPORTS = {
         "fit_predeclared_adjustment",
     ),
     "AlwaysValid": ("increment.estimation.sequential", "AlwaysValid"),
+    "FixedInference": ("increment.estimation.decision_types", "FixedInference"),
     "PredictivePrior": ("increment.semantics.sequential", "PredictivePrior"),
     "SequentialModel": ("increment.semantics.sequential", "SequentialModel"),
     "JointReveal": ("increment.semantics.sequential", "JointReveal"),
@@ -39,6 +41,8 @@ _EXPORTS = {
     "snapshot_from_json": ("increment.sequential_state", "snapshot_from_json"),
     "estimate_sequential": ("increment.estimation.sequential_runtime", "estimate_sequential"),
     "sequential_definition_id": ("increment.sequential_source", "sequential_definition_id"),
+    "synthesise_metric": ("increment.frame", "synthesise_metric"),
+    "frame_observation_mapping": ("increment.sequential_source", "frame_observation_mapping"),
     "Covariate": ("increment.estimation.cate", "Covariate"),
     "ClusterBootstrap": ("increment.estimation.targeting", "ClusterBootstrap"),
     "SummaryStats": ("increment.estimation.armstats", "SummaryStats"),
@@ -84,6 +88,11 @@ _EXPORTS = {
         "increment.breakout.rollout",
         "segment_rollout_recommendation",
     ),
+    "select_exploratory_family": ("increment.estimation.family", "select_exploratory_family"),
+    "exploratory_family_exclusion": (
+        "increment.estimation.family",
+        "exploratory_family_exclusion",
+    ),
     "estimate_policy_contrast": ("increment.logged_policy", "estimate_policy_contrast"),
     "LoggedTrace": ("increment.logged_policy", "LoggedTrace"),
     "PolicyRegistry": ("increment.logged_policy", "PolicyRegistry"),
@@ -99,10 +108,7 @@ _EXPORTS = {
     "InvalidRequestError": ("increment.errors", "InvalidRequestError"),
     "RefusalSpec": ("increment.errors", "RefusalSpec"),
     "UnsupportedRequestError": ("increment.errors", "UnsupportedRequestError"),
-    "WarningSpec": ("increment.errors", "WarningSpec"),
     "WireFormatError": ("increment.errors", "WireFormatError"),
-    "refuse": ("increment.errors", "refuse"),
-    "warn": ("increment.errors", "warn"),
     "Assignment": ("increment.semantics.assignment", "Assignment"),
     "ParallelAssignment": ("increment.semantics.assignment", "ParallelAssignment"),
     "IndependentBernoulliOrder": ("increment.semantics.assignment", "IndependentBernoulliOrder"),
@@ -180,16 +186,7 @@ if TYPE_CHECKING:
         UnsupportedRequestError as UnsupportedRequestError,
     )
     from increment.errors import (
-        WarningSpec as WarningSpec,
-    )
-    from increment.errors import (
         WireFormatError as WireFormatError,
-    )
-    from increment.errors import (
-        refuse as refuse,
-    )
-    from increment.errors import (
-        warn as warn,
     )
     from increment.estimation._adjust.overlap import IdentificationError as IdentificationError
     from increment.estimation.armstats import SummaryStats as SummaryStats
@@ -198,13 +195,22 @@ if TYPE_CHECKING:
     from increment.estimation.decision_types import (
         AsymptoticSequentialEvidence as AsymptoticSequentialEvidence,
     )
+    from increment.estimation.decision_types import FixedInference as FixedInference
     from increment.estimation.diagnostics import (
         allocation_posterior_bands as allocation_posterior_bands,
     )
     from increment.estimation.diagnostics import (
         sample_ratio_mismatch as sample_ratio_mismatch,
     )
+    from increment.estimation.family import (
+        exploratory_family_exclusion as exploratory_family_exclusion,
+    )
+    from increment.estimation.family import (
+        select_exploratory_family as select_exploratory_family,
+    )
     from increment.estimation.inference import Normal as Normal
+    from increment.estimation.priors import MixturePrior as MixturePrior
+    from increment.estimation.priors import StudentTPrior as StudentTPrior
     from increment.estimation.sequential import (
         AlwaysValid as AlwaysValid,
     )
@@ -216,25 +222,7 @@ if TYPE_CHECKING:
     )
     from increment.estimation.sequential_runtime import estimate_sequential as estimate_sequential
     from increment.estimation.targeting import ClusterBootstrap as ClusterBootstrap
-    from increment.estimators.registry import (
-        ESTIMATORS as ESTIMATORS,
-    )
-    from increment.estimators.registry import (
-        estimator_id as estimator_id,
-    )
-    from increment.estimators.registry import (
-        load as load,
-    )
-    from increment.estimators.registry import (
-        observational_estimator_id as observational_estimator_id,
-    )
-    from increment.estimators.registry import (
-        randomized_estimator_id as randomized_estimator_id,
-    )
-    from increment.estimators.registry import (
-        routes as routes,
-    )
-    from increment.kernel.resolver import resolve as resolve
+    from increment.frame import synthesise_metric as synthesise_metric
     from increment.logged_policy import (
         LoggedTrace as LoggedTrace,
     )
@@ -335,6 +323,7 @@ if TYPE_CHECKING:
     from increment.semantics.unit_cycle import (
         UnitCycleVarianceEnvelope as UnitCycleVarianceEnvelope,
     )
+    from increment.sequential_source import frame_observation_mapping as frame_observation_mapping
     from increment.sequential_source import sequential_definition_id as sequential_definition_id
     from increment.sequential_state import (
         SequentialSnapshot as SequentialSnapshot,
@@ -358,40 +347,20 @@ def __getattr__(name: str) -> Any:
         value = module if attr_name is None else getattr(module, attr_name)
         globals()[name] = value
         return value
-    if name in {
-        "ESTIMATORS",
-        "estimator_id",
-        "load",
-        "observational_estimator_id",
-        "randomized_estimator_id",
-        "routes",
-    }:
-        from increment.estimators import registry
-
-        return getattr(registry, name)
     raise AttributeError(name)
 
 
 def __dir__() -> list[str]:
-    return sorted(
-        set(__all__)
-        | {
-            "ESTIMATORS",
-            "estimator_id",
-            "load",
-            "observational_estimator_id",
-            "randomized_estimator_id",
-            "routes",
-        }
-    )
+    return sorted(__all__)
 
 
 __all__ = [
-    "resolve",
     "impute",
     "moments_from_summaries",
     "MetricTrends",
     "Normal",
+    "MixturePrior",
+    "StudentTPrior",
     "AsymptoticMean",
     "AsymptoticSequentialResult",
     "AsymptoticSequentialEvidence",
@@ -399,6 +368,7 @@ __all__ = [
     "PredeclaredAdjustment",
     "fit_predeclared_adjustment",
     "AlwaysValid",
+    "FixedInference",
     "PredictivePrior",
     "SequentialModel",
     "JointReveal",
@@ -411,6 +381,8 @@ __all__ = [
     "snapshot_from_json",
     "estimate_sequential",
     "sequential_definition_id",
+    "synthesise_metric",
+    "frame_observation_mapping",
     "Covariate",
     "ClusterBootstrap",
     "SummaryStats",
@@ -441,6 +413,8 @@ __all__ = [
     "segment_heterogeneity",
     "segment_contrast",
     "segment_rollout_recommendation",
+    "select_exploratory_family",
+    "exploratory_family_exclusion",
     "estimate_policy_contrast",
     "LoggedTrace",
     "PolicyRegistry",
@@ -456,10 +430,7 @@ __all__ = [
     "InvalidRequestError",
     "RefusalSpec",
     "UnsupportedRequestError",
-    "WarningSpec",
     "WireFormatError",
-    "refuse",
-    "warn",
     "Assignment",
     "ParallelAssignment",
     "IndependentBernoulliOrder",
@@ -469,10 +440,4 @@ __all__ = [
     "ParallelStudyEnvelope",
     "SwitchbackStudyEnvelope",
     "StudyEnvelope",
-    "ESTIMATORS",
-    "estimator_id",
-    "load",
-    "observational_estimator_id",
-    "randomized_estimator_id",
-    "routes",
 ]

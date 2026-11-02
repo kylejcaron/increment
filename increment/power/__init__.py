@@ -30,7 +30,14 @@ declaration object -- it builds ``GaussianScoreMixture`` internally, tuned
 identically to the runtime's own boundary at every information fraction.
 """
 
-from increment.estimation.arm_contract import ArmPlanningProcedure
+from increment.estimation.arm_contract import (
+    AnalysisAxes,
+    ArmPlanningProcedure,
+    FamilyPolicy,
+    MetricCapabilities,
+    PlanningFamilyExpansion,
+    RelativeDecisionPolicy,
+)
 from increment.power.core import (
     Baseline,
     PowerDesign,
@@ -69,6 +76,11 @@ __all__ = [
     "unit_cycle_power_lower_bound",
     "Baseline",
     "ArmPlanningProcedure",
+    "AnalysisAxes",
+    "FamilyPolicy",
+    "MetricCapabilities",
+    "PlanningFamilyExpansion",
+    "RelativeDecisionPolicy",
     "PowerDesign",
     "PowerResult",
     "PowerCurvePoint",

@@ -57,10 +57,7 @@ _EXPORTS = {
     "ArtifactPublication": ("increment.query.artifact_contract", "ArtifactPublication"),
     "ArtifactSnapshot": ("increment.query.artifact_contract", "ArtifactSnapshot"),
     "ArtifactStore": ("increment.query.artifact_contract", "ArtifactStore"),
-    "compile_unit_day_artifact_context": (
-        "increment.query.artifact_contract",
-        "compile_unit_day_artifact_context",
-    ),
+    "WarehouseArtifactStore": ("increment.query.session", "WarehouseArtifactStore"),
     "unit_day_artifact_extension_catalog": (
         "increment.query.artifact_contract",
         "unit_day_artifact_extension_catalog",
@@ -83,12 +80,10 @@ if TYPE_CHECKING:
         ArtifactStore as ArtifactStore,
     )
     from increment.query.artifact_contract import (
-        compile_unit_day_artifact_context as compile_unit_day_artifact_context,
-    )
-    from increment.query.artifact_contract import (
         unit_day_artifact_extension_catalog as unit_day_artifact_extension_catalog,
     )
     from increment.query.session import SourceSnapshotEvidence as SourceSnapshotEvidence
+    from increment.query.session import WarehouseArtifactStore as WarehouseArtifactStore
     from increment.semantics.artifact import (
         ArtifactContext as ArtifactContext,
     )
@@ -266,7 +261,7 @@ __all__ = [
     "ArtifactPublication",
     "ArtifactSnapshot",
     "ArtifactStore",
-    "compile_unit_day_artifact_context",
+    "WarehouseArtifactStore",
     "unit_day_artifact_extension_catalog",
     "SourceSnapshotEvidence",
     "artifact_context",

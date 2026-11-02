@@ -1,4 +1,4 @@
-"""Mechanical checks for user-facing vocabulary and the package root API."""
+"""Mechanical checks for user-facing vocabulary and the promised public API."""
 
 from __future__ import annotations
 
@@ -7,13 +7,15 @@ import importlib
 import inspect
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import FunctionType
 from typing import Protocol
 
 import pytest
+from sybil import Document
 
+from conftest import PythonOutputBlockParser
 from increment.errors import CodedError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,41 +23,143 @@ PUBLIC_PARAMETERS = ROOT / "tests" / "public_parameters.txt"
 EXPORTS = ROOT / "tests" / "public_exports.txt"
 TERMS = ROOT / "tests" / "consumer_jargon.txt"
 BASELINE = ROOT / "tests" / "consumer_jargon_baseline.txt"
+PROMISED_NAMESPACES = {
+    "increment",
+    "increment.artifacts",
+    "increment.dashboard",
+    "increment.digest",
+    "increment.errors",
+    "increment.estimators",
+    "increment.evidence",
+    "increment.power",
+    "increment.query",
+    "increment.results",
+    "increment.simulate",
+    "increment.store",
+    "increment.tables",
+    "increment.workflows",
+}
 
 
-def _export_justifications(path: Path) -> dict[str, str]:
-    entries: dict[str, str] = {}
+def _manifest(path: Path) -> dict[str, dict[str, str]]:
+    sections: dict[str, dict[str, str]] = {}
+    entries: dict[str, str] | None = None
     for number, raw in enumerate(path.read_text().splitlines(), 1):
-        if not raw.strip() or raw.lstrip().startswith("#"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
             continue
-        name, separator, reason = raw.partition(":")
-        if not separator or not name.strip() or not reason.strip():
-            raise AssertionError(f"{path}:{number}: expected name: user-task justification")
+        if line.startswith("[") and line.endswith("]"):
+            namespace = line[1:-1]
+            if namespace in sections:
+                raise AssertionError(f"{path}:{number}: duplicate namespace {namespace!r}")
+            entries = sections[namespace] = {}
+            continue
+        name, separator, reason = line.partition(":")
+        if entries is None or not separator or not name.strip() or not reason.strip():
+            raise AssertionError(f"{path}:{number}: expected [namespace], then name: user task")
         if name.strip() in entries:
             raise AssertionError(f"{path}:{number}: duplicate export {name.strip()!r}")
         entries[name.strip()] = reason.strip()
-    return entries
+    return sections
 
 
-def test_each_root_export_has_a_user_task_justification() -> None:
-    exports = set(importlib.import_module("increment").__all__)
-    entries = _export_justifications(EXPORTS)
-    missing = sorted(exports - entries.keys())
-    stale = sorted(entries.keys() - exports)
-    assert not missing and not stale, (
-        f"Root export justifications differ from increment.__all__; "
-        f"add a user-task justification or keep the name out of the root: "
-        f"missing={missing}, stale={stale}"
+@pytest.mark.integration
+def test_each_promised_namespace_exports_exactly_its_manifest() -> None:
+    manifest = _manifest(EXPORTS)
+    assert manifest.keys() == PROMISED_NAMESPACES
+    differences: dict[str, dict[str, list[str]]] = {}
+    for namespace, entries in manifest.items():
+        exports: set[str] = set(getattr(importlib.import_module(namespace), "__all__", ()))
+        unlisted = sorted(exports - entries.keys())
+        unexported = sorted(entries.keys() - exports)
+        if unlisted or unexported:
+            differences[namespace] = {"unlisted": unlisted, "unexported": unexported}
+    assert not differences, (
+        "Exports differ from tests/public_exports.txt; give each promised name a "
+        f"user task or keep it out of __all__: {differences}"
     )
     task_terms = {
         "Observational": {"non-randomized", "comparison"},
         "Encouragement": {"random encouragement", "uptake"},
     }
     for name, terms in task_terms.items():
-        justification = entries[name].lower()
+        justification = manifest["increment"][name].lower()
         assert all(term in justification for term in terms), (
             f"{name} justification should describe its documented user task"
         )
+
+
+def _documentation_python(path: Path) -> Iterator[tuple[int, str]]:
+    if path.suffix == ".py":
+        yield 1, path.read_text()
+        return
+    text = path.read_text()
+    for region in PythonOutputBlockParser()(Document(text, str(path))):
+        yield text.count("\n", 0, region.start) + 2, str(region.parsed)
+
+
+def _increment_references(source: str) -> Iterator[tuple[int, str]]:
+    """Yield every dotted ``increment`` path a snippet imports or reads from an import."""
+    tree = ast.parse(source)
+    bound: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "increment":
+                    yield node.lineno, alias.name
+                    bound[alias.asname or "increment"] = alias.name if alias.asname else "increment"
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] == "increment":
+                for alias in node.names:
+                    yield node.lineno, f"{node.module}.{alias.name}"
+                    bound[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def dotted(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            return bound.get(node.id)
+        if isinstance(node, ast.Attribute):
+            base = dotted(node.value)
+            return None if base is None else f"{base}.{node.attr}"
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and (path := dotted(node)) is not None:
+            yield node.lineno, path
+
+
+def _is_promised(path: str, manifest: dict[str, dict[str, str]]) -> bool:
+    parts = path.split(".")
+    for end in range(len(parts), 0, -1):
+        namespace = ".".join(parts[:end])
+        if namespace in manifest:
+            return end == len(parts) or parts[end] in manifest[namespace]
+    return False
+
+
+@pytest.mark.integration
+def test_documentation_imports_only_promised_names() -> None:
+    manifest = _manifest(EXPORTS)
+    documents = [
+        ROOT / "README.md",
+        *sorted((ROOT / "docs").rglob("*.md")),
+        *sorted((ROOT / "examples").glob("*.py")),
+    ]
+    unpromised: list[str] = []
+    for document in documents:
+        relative = document.relative_to(ROOT)
+        for start, source in _documentation_python(document):
+            for line, path in _increment_references(source):
+                if not _is_promised(path, manifest):
+                    unpromised.append(f"{relative}:{start + line - 1}: {path}")
+        if document.suffix == ".md":
+            for number, raw in enumerate(document.read_text().splitlines(), 1):
+                directive = re.match(r"\s*::: (\S+)", raw)
+                if directive and not _is_promised(directive.group(1), manifest):
+                    unpromised.append(f"{relative}:{number}: {directive.group(1)}")
+    assert not unpromised, (
+        "Documentation teaches names outside tests/public_exports.txt; import them "
+        "from their promised namespace:\n" + "\n".join(unpromised)
+    )
 
 
 def _display_string_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:

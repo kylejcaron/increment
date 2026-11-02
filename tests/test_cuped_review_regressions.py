@@ -6,12 +6,12 @@ import pyarrow as pa
 import pytest
 
 from increment import AnalysisPlan, Method, MetricSpec, Scope, from_frame
+from increment._evidence_types import EvidenceSource
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import IncrementWarning
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
-from increment.evidence import EvidenceSource
 from increment.frame import CupedCovariate
 from increment.semantics.models import ExperimentMetric
 from tests.analysis_factory import view_readout

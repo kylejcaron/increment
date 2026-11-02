@@ -20,6 +20,13 @@ are in `increment.power`.
 
 `increment.__version__` reports the installed package version.
 
+`Experiment` is the immutable execution specification. `ExperimentDefinition`
+is the experiment declaration written in definitions and returned by
+`increment.workflows.experiment_definition`; custom evidence providers use it
+for experiment metadata.
+
+::: increment.ExperimentDefinition
+
 ## Pre-1.0 compatibility
 
 Increment is pre-release software. This section covers compatibility between
@@ -31,18 +38,20 @@ runs on each entry point.
 
 ### Promised surface
 
-The policy covers:
+The machine-checked [public manifest](https://github.com/kylejcaron/increment/blob/main/tests/public_exports.txt)
+is the import promise. It lists one user task per name, grouped by namespace:
 
-- documented workflow and configuration imports from `increment`;
-- documented result types in `increment.results` and solvers in `increment.power`;
-- stable artifact, digest, estimator, and evidence exports from
-  `increment.artifacts`, `increment.digest`, `increment.estimators`, and
-  `increment.evidence`. Existing family namespaces such as `increment.power`
-  remain available;
-- `increment.query` promises only `build_panel_for_metric`, `panel_sql`, and
-  `summary_sql`. Each operates on an `(experiment, resolver)` pair; SQL
-  previews preserve their optional-breakout defaults and use adopted SQL as
-  the summary fallback.
+- `increment` for workflow entry points and caller-authored declarations;
+- `increment.estimators`, `increment.power`, `increment.results`, and
+  `increment.evidence` for estimation, planning, received results, and custom providers;
+- `increment.artifacts`, `increment.digest`, and `increment.store` for
+  artifact publication, integrity verification, and saving and reopening runs;
+- `increment.dashboard`, `increment.tables`, and `increment.simulate` for
+  presentation and synthetic data;
+- `increment.errors` for errors and warnings callers catch;
+- `increment.query` for `build_panel_for_metric`, `panel_sql`, and `summary_sql`.
+  Each operates on an `(experiment, resolver)` pair; SQL previews preserve
+  their optional-breakout defaults and use adopted SQL as the summary fallback.
 - `increment.workflows` promises only `materialize`, `export_moments`,
   `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
   `compiled_decision_plan`, `available_metrics`, `unit_counts`, `srm`,
@@ -54,9 +63,10 @@ The policy covers:
   kernel execution request. A sequential capture is kept by the resolver's
   source, so the next `run(experiment, resolver)` and `export_moments` with
   that resolver read it.
-- `increment.artifacts` promises only `artifact_context` and
-  `publish_unit_day_artifact`; each operates on an `(experiment, resolver)`
-  pair, and publication retains trusted extension selection and refresh semantics.
+- `increment.artifacts.artifact_context` and `publish_unit_day_artifact`
+  operate on an `(experiment, resolver)` pair; publication retains trusted
+  extension selection and refresh semantics. `WarehouseArtifactStore`
+  implements the artifact store contract for warehouse publication.
 - `increment.estimators` conditional-effect operations `estimate_cate`,
   `validate_cate`, `targeting_rule`, and `select_targeting_rule`, and the
   whole-site estimate `sitewide`, operate on an `(experiment, resolver)` pair;
@@ -68,8 +78,9 @@ The policy covers:
 - stable refusal codes and named context fields;
 - each versioned portable or artifact format listed below.
 
-Underscore modules and private research kernels are not public APIs and may
-change without notice.
+Only names listed in the manifest are promised, including re-exports. Other
+modules, underscore names, registry and dispatch helpers, and private research
+kernels are internal and may change without notice.
 
 ### Alpha semantics
 
@@ -82,6 +93,30 @@ change without notice.
   directly and document their replacements without deprecation warnings.
 - A bug fix may change a previously incorrect numerical answer. Release notes
   describe the correction; compatibility does not preserve wrong values.
+
+- Release note (breaking API cutover): the public manifest now covers every
+  promised namespace, including `errors`, `tables`, `store`, `simulate`, and
+  the three `query` workflows. The following names leave the import promise;
+  their defining modules continue to serve library internals. No refusal
+  codes, structured context keys, validation order, saved formats, or identity
+  hashes change.
+
+    | Namespace | Names no longer promised | Criterion and supported route |
+    | --- | --- | --- |
+    | `increment.estimators` | `ESTIMATORS`, `estimator_id`, `load`, `observational_estimator_id`, `randomized_estimator_id`, `routes`, `resolve` | Registry and dispatch plumbing; use `runnable` for offline preflight and `Method` for method selection. |
+    | `increment.estimators` | `refuse`, `warn`, `WarningSpec` | Refusal/warning emission plumbing; catch `CodedError` or filter `IncrementWarning` instead. Custom providers may return `RefusalSpec` with their breakout rows. |
+    | `increment.artifacts` | `compile_unit_day_artifact_context` | Context-compilation plumbing; use `artifact_context(experiment, resolver)`. |
+    | `increment.evidence` | `BreakoutRoute`, `BreakoutSlice`, `BreakoutSlices`, `BreakoutSlicesRequest`, `BreakoutUnitRows`, `BreakoutUnitRowsRequest`, `DayAxisRequest`, `DayAxisRoute`, `DayAxisRows`, `MetricEvidence`, `MetricEvidenceRequest`, `PreparedMulticovariateFit`, `EvidenceSource`, `warehouse_cuped_fit_evidence` | Compound-request and acquisition plumbing; custom providers implement the primitive `EvidenceProvider` requests. |
+    | `increment.errors` | `CodedValidationMixin`, `MODEL_FIELD_REFUSALS`, `PACKAGE_FRAMES`, `WarningSpec`, `raiser`, `refusals`, `refuse`, `warn`, `unwrap_coded_serialization` | Model-validation, registry, and emission plumbing; use catchable errors and warnings, `CodedModel`, and `unwrap_coded`. |
+
+- Release note (API addition): import priors, fixed inference, dataframe
+  sequential-registration helpers, and exploratory-family operations from
+  `increment.estimators`; saved readout decoders and `AnalysisEnvelope` from
+  `increment.results`; `WarehouseArtifactStore` from `increment.artifacts`;
+  planning-procedure field types from `increment.power`; and `ComplianceArm`
+  from `increment.evidence`. `ExperimentDefinition` at the root names the
+  semantic declaration separately from the execution `Experiment`.
+  These are re-exports of the existing objects, not new statistical behavior.
 
 - Release note (breaking API cutover): specialist names are no longer exported
   from the package root. Import artifact, digest, estimator, and evidence names
@@ -335,7 +370,7 @@ Serialize the collection and reopen it with its dedicated decoder:
 import polars as pl
 
 from increment import MetricSpec, Randomized, from_frame, run
-from increment.estimation.readout_types import ReadoutResults
+from increment.results import ReadoutResults
 
 frame = pl.DataFrame(
     {
@@ -400,7 +435,8 @@ envelope to render its table or text report:
 ```python
 import json
 
-from increment.result_envelope import AnalysisEnvelope, render
+from increment import render
+from increment.results import AnalysisEnvelope
 from increment.tables import readout_table
 
 envelope = AnalysisEnvelope(tuple(rows.as_cells()), rows.metadata)
@@ -736,6 +772,12 @@ sequential plans refuse with `facade.analysis.exploratory_metrics_sequential`.
 
 ::: increment.Method
 
+::: increment.estimators.MixturePrior
+
+::: increment.estimators.StudentTPrior
+
+::: increment.estimators.moments_from_summaries
+
 ::: increment.estimators.Normal
 
 ## Dataframe entry points
@@ -811,8 +853,8 @@ and digest helpers.
 | `ArtifactExtensionRef` | Tagged union of the eleven concrete extension references. |
 | `ArtifactExtensionRequest` | Tagged union of the eleven concrete extension requests. |
 
-These are Pydantic models and tagged unions importable from `increment`; see
-`increment.semantics.artifact` for full field detail.
+These models and tagged unions are importable from `increment.artifacts`.
+They describe the published format without exposing source-loading machinery.
 
 ::: increment.artifacts.RelationLocator
 
@@ -885,7 +927,13 @@ authorized artifact store.
 
 ::: increment.artifacts.ArtifactStore
 
-::: increment.artifacts.compile_unit_day_artifact_context
+::: increment.artifacts.WarehouseArtifactStore
+
+::: increment.artifacts.artifact_context
+
+::: increment.artifacts.publish_unit_day_artifact
+
+::: increment.artifacts.ArtifactExtensionCatalogEntry
 
 ::: increment.artifacts.unit_day_artifact_extension_catalog
 
@@ -894,7 +942,7 @@ authorized artifact store.
 Canonical encodings and SHA-256 helpers keep artifact identities deterministic
 across publication and requests.
 
-::: increment.query.artifact_digest.ArtifactDigestError
+::: increment.digest.ArtifactDigestError
 
 ::: increment.digest.DigestType
 
@@ -950,9 +998,9 @@ same for either route.
 
 ## Switchback results
 
-::: increment.estimation.contrast_results.ContrastResult
+::: increment.results.ContrastResult
 
-::: increment.estimation.contrast_results.ContrastResults
+::: increment.results.ContrastResults
 
 ## Declared analysis policy
 
@@ -1007,6 +1055,14 @@ for assumptions, finalization, and the qualified asymptotic guarantee.
 ::: increment.estimators.SequentialSnapshot
 
 ::: increment.estimators.snapshot_from_json
+
+For a dataframe registration, `synthesise_metric` derives a metric from its
+`MetricSpec`, and `frame_observation_mapping` records the physical column roles
+passed to `sequential_definition_id`. Declare this binding before reading outcomes.
+
+::: increment.estimators.synthesise_metric
+
+::: increment.estimators.frame_observation_mapping
 
 ::: increment.estimators.capture_sequential_snapshot
 
@@ -1071,7 +1127,19 @@ different approximations and limits.
     `increment.semantics.unit_cycle` and `increment.power.unit_cycle`, outside
     the package-root and ordinary power-planning exports.
 
-::: increment.estimation.arm_contract.ArmPlanningProcedure
+::: increment.power.ArmPlanningProcedure
+
+::: increment.power.AnalysisAxes
+
+::: increment.power.FamilyPolicy
+
+::: increment.power.MetricCapabilities
+
+::: increment.power.PlanningFamilyExpansion
+
+::: increment.power.RelativeDecisionPolicy
+
+::: increment.estimators.FixedInference
 
 ::: increment.estimators.SummaryStats
 
@@ -1315,7 +1383,7 @@ results together. It accepts only uncorrected fixed-horizon decision rows.
     | Quantile, percentile-winsorized, and additive-scale rows | Unfinished; refused with `estimation.family.exploratory_construction` because intervals cannot be reissued without approximation. |
     | Already-corrected, sensitivity, or day-axis rows | Refused with `estimation.family.exploratory_pre_corrected`, `estimation.family.exploratory_non_decision`, or `estimation.family.exploratory_row`. |
 
-::: increment.estimation.family.select_exploratory_family
+::: increment.estimators.select_exploratory_family
 
 `exploratory_family_exclusion` applies the same admissibility test to one row and
 returns the reason it cannot join the family, or `None`. Exclude ineligible rows
@@ -1324,7 +1392,7 @@ context uses the same values in `reasons` or `constructions`.
 One-sided (`greater`/`less`) Wald, exact binomial and Fieller rows are reissued
 exactly, with their one-sided geometry, and are not excluded.
 
-::: increment.estimation.family.exploratory_family_exclusion
+::: increment.estimators.exploratory_family_exclusion
 
 ## Errors
 
@@ -1359,8 +1427,8 @@ outcomes. `InvalidRequestError` codes and their `context`:
 
 ::: increment.estimators.CodedError
 
-`CodedModel`, `CodedValidationMixin` and `unwrap_coded` are public from
-`increment.errors`, not the root `increment` namespace.
+`CodedModel` and `unwrap_coded` are public from `increment.errors`, not the
+root `increment` namespace.
 
 `CodedModel` and every public input model that inherits it surface known
 field-validation failures from direct construction and direct `model_validate`,
@@ -1418,12 +1486,6 @@ except ValidationError as exc:
 
 ::: increment.estimators.WireFormatError
 
-::: increment.estimators.refuse
-
-::: increment.errors.refusals
-
-::: increment.errors.raiser
-
 ::: increment.errors.unwrap_coded
 
 ### Warnings
@@ -1461,10 +1523,6 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 ::: increment.errors.IncrementRuntimeWarning
 
 ::: increment.errors.IncrementDeprecationWarning
-
-::: increment.errors.WarningSpec
-
-::: increment.errors.warn
 
 ## Results (`increment.results`)
 
@@ -1504,6 +1562,52 @@ sampling or interval reasons.
 
 ::: increment.results.LiftEstimate
 
+::: increment.results.BinomialConfidenceSet
+
+::: increment.results.WinsorConfidenceSet
+
+::: increment.results.WinsorInferenceSpec
+
+::: increment.results.BootstrapReference
+
+::: increment.results.InfluenceReference
+
+::: increment.results.RankReference
+
+::: increment.results.WinsorPermutationTest
+
+::: increment.results.IndependentMeanComponent
+
+::: increment.results.IndependentMeanReference
+
+::: increment.results.SetEndpoint
+
+::: increment.results.SetInterval
+
+::: increment.results.SwitchbackAssignmentDiagnostic
+
+::: increment.results.SwitchbackPowerResult
+
+::: increment.results.UnitCycleFailureCount
+
+::: increment.results.UnitCycleLawMoments
+
+::: increment.results.UnitCyclePowerLowerBoundResult
+
+::: increment.results.UnitCycleModelPowerResult
+
+::: increment.results.UnitCycleModelMdeResult
+
+::: increment.results.UnitCycleModelRequiredUnitsResult
+
+::: increment.results.AllocationBalance
+
+::: increment.results.PolicyValueContrast
+
+::: increment.results.AnalysisEnvelope
+
+::: increment.results.ReadoutResults
+
 Binomial rows persist `binomial_set.numerical_qualification`:
 `scipy_special_function_error_model_conditional_v1` states the finite-sample
 arithmetic qualification conditional on the deployed SciPy/Boost special-function
@@ -1511,9 +1615,9 @@ error model, not a cross-build proof. Supported rows saved before this field was
 introduced load as `legacy_unrecorded_v1`, which makes no arithmetic qualification
 claim.
 
-::: increment.estimation.results.JointContrastReference
+::: increment.results.JointContrastReference
 
-::: increment.estimation.results.RelativeConfidenceSet
+::: increment.results.RelativeConfidenceSet
 
 ::: increment.results.LiftEstimates
 
@@ -1619,9 +1723,87 @@ points:
 
 ## Compliance sufficient state
 
-::: increment.sources.ComplianceArm
+::: increment.evidence.ComplianceArm
 
-::: increment.sources.ComplianceSummary
+::: increment.evidence.ComplianceSummary
+
+## Custom evidence providers (`increment.evidence`)
+
+Implement the primitive requests in the [provider guide](development/adding-an-estimator.md#custom-evidence-providers).
+Capabilities are declared before reads; compound readout acquisition remains internal.
+
+::: increment.evidence.BreakoutCell
+
+::: increment.evidence.MomentRows
+
+::: increment.evidence.ScalarEvidenceDeclaration
+
+::: increment.evidence.EvidenceExecutionContext
+
+## Saved runs (`increment.store`)
+
+Use `ParquetResultsStore` for the
+[save-and-reopen journey](guides/experiment-specifications.md), or
+`WarehouseResultsStore` for warehouse-backed runs.
+
+::: increment.store.ParquetResultsStore
+
+::: increment.store.WarehouseResultsStore
+
+::: increment.store.ResultsStore
+
+::: increment.store.Run
+
+::: increment.store.RunHandle
+
+::: increment.store.HistorySelector
+
+::: increment.store.DecisionLog
+
+::: increment.store.DecisionEvent
+
+::: increment.store.DecisionReference
+
+## Tables (`increment.tables`)
+
+::: increment.tables.readout_table
+
+::: increment.tables.estimates_to_readout
+
+::: increment.tables.contrast_results_to_readout
+
+::: increment.tables.trend_table
+
+## Synthetic data (`increment.simulate`)
+
+Generate example data or a logged policy trace without a warehouse.
+These generators do not certify an analysis method's assumptions.
+
+::: increment.simulate.Scenario
+
+::: increment.simulate.simulate_raw_logs
+
+::: increment.simulate.SwitchbackScenario
+
+::: increment.simulate.simulate_switchback_panel
+
+::: increment.simulate.simulate_logged_run
+
+::: increment.simulate.simulate_logged_trace
+
+::: increment.simulate.LoggedRun
+
+::: increment.simulate.RewardModel
+
+::: increment.simulate.true_policy_value
+
+::: increment.simulate.run_end_to_end
+
+::: increment.simulate.EvalResult
+
+::: increment.simulate.run_switchback_end_to_end
+
+::: increment.simulate.SwitchbackEvalResult
 
 ## Optional dashboard (`increment.dashboard`)
 
