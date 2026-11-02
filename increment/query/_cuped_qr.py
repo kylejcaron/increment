@@ -2345,7 +2345,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
             )
         )
         actual_denominator_means = _stable_arm_means(relation, denominator, execute=execute)
-        support_rows = []
+        support_by_arm = {}
         for row in moments:
             arm = str(row["group_id"])
             if not bool(row["_qr_den_positive"]):
@@ -2362,8 +2362,8 @@ def fit_warehouse_qr(  # noqa: PLR0915
                 / math.sqrt(n - 1)
                 / float(row["_qr_den_mean"])
             )
-            support_rows.append((arm, precision))
-        denominator_support = tuple(support_rows)
+            support_by_arm[arm] = precision
+        denominator_support = tuple((arm, support_by_arm[arm]) for arm in arms)
     state = FitState(
         identity=request.identity,
         eligible_arms=arms,
