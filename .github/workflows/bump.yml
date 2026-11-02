@@ -37,7 +37,7 @@ on:
         default: false
         type: boolean
       force:
-        description: "Explicitly bypass the CI gate (not recommended)"
+        description: "Skip the CI gate for a prerelease (not recommended); refused for a stable version"
         required: false
         default: false
         type: boolean
@@ -84,62 +84,22 @@ jobs:
           printf '### Release version\n\nBaseline: %s\nSelected: %s\n' \
             "$baseline" "$version" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Refuse force for a stable version
+        if: ${{ inputs.force }}
+        env:
+          SHA: ${{ github.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: scripts/release_gate.sh
+
       - name: Require green checks on this commit
         if: ${{ !inputs.force }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/
-        run: |
-          set -euo pipefail
-
-          # Include every page, but not this bump run: its tag job is running
-          # while this gate executes. Other unfinished checks must block release.
-          runs=$(gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100&filter=latest" \
-            | jq --arg run_url "$RUN_URL" \
-              '[.[].check_runs[] | select((.app.slug == "github-actions" and
-                ((.details_url // "") | startswith($run_url))) | not)]')
-
-          if ! printf '%s' "$runs" | jq -e --arg sha "$SHA" \
-            'any(.[]; .name == "ci-ok" and .app.slug == "github-actions" and
-              .head_sha == $sha and .status == "completed" and .conclusion == "success")' >/dev/null; then
-            echo "::error::ci-ok must finish successfully on $SHA before release"
-            exit 1
-          fi
-
-          nightlies=$(gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?head_sha=${SHA}&status=completed&per_page=100")
-          if ! printf '%s' "$nightlies" | jq -e --arg sha "$SHA" \
-            '[.[] | .workflow_runs[] | select(.head_sha == $sha and .status == "completed" and .conclusion == "success")] | length > 0' >/dev/null; then
-            echo "::error::a successful nightly run is required on $SHA before release"
-            printf '::error::run `gh workflow run nightly.yml --ref main` while main is at %s, or wait for the scheduled run\n' "$SHA"
-            exit 1
-          fi
-
-          bad=$(printf '%s' "$runs" | jq -r \
-            '.[] | select(.status != "completed" or
-              (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")) | .name')
-          if [ -n "$bad" ]; then
-            echo "::error::these checks are unfinished or did not pass on $SHA:"
-            printf '%s\n' "$bad"
-            exit 1
-          fi
-
-          # Legacy statuses are independent of check runs; an absent status is
-          # fine, but an existing pending or failed status is not.
-          status_json=$(gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status?per_page=100")
-          status_total=$(printf '%s' "$status_json" | jq '[.[].statuses[]] | length')
-          if [ "$status_total" -gt 0 ] && printf '%s' "$status_json" \
-            | jq -e 'any(.[]; .state != "success")' >/dev/null; then
-            echo "::error::legacy commit statuses are not all successful on $SHA"
-            printf '%s' "$status_json" | jq -r \
-              '.[].statuses[] | select(.state != "success") | .context'
-            exit 1
-          fi
-          checks_total=$(printf '%s' "$runs" | jq 'length')
-          echo "$checks_total check run(s), $status_total commit status(es), all green"
+        run: scripts/release_gate.sh
 
       - name: Report preview
         if: ${{ inputs.dry_run }}
