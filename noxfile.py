@@ -1,5 +1,6 @@
 """Test, lint, and typecheck sessions."""
 
+import argparse
 import os
 import sys
 from collections.abc import Mapping
@@ -219,6 +220,14 @@ def tests_full(session: nox.Session) -> None:
     )
     if tier == "focused":
         return
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--cpu-report", type=Path)
+    args, _ = parser.parse_known_args(session.posargs)
+    numerical_cpu_args = (
+        ("--cpu-report", str(args.cpu_report.with_stem(f"{args.cpu_report.stem}-numerical")))
+        if args.cpu_report is not None
+        else ()
+    )
     # Retain the numerical cases previously covered by this matrix.
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"
@@ -231,6 +240,7 @@ def tests_full(session: nox.Session) -> None:
         *PYTEST_ARGS,
         "--durations=25",
         "--junitxml=junit-numerical.xml",
+        *numerical_cpu_args,
         f"{selector}[central]",
         f"{selector}[rare]",
         "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",

@@ -66,6 +66,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="fail unit-selected tests above the CPU-time budget",
     )
+    parser.addoption(
+        "--cpu-report",
+        metavar="PATH",
+        help="write the session's CPU seconds, including xdist workers, to PATH as JSON",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -259,6 +264,47 @@ def pytest_testnodedown(node, error) -> None:
     seconds = workeroutput.get("increment_unit_cpu_warmup")
     if seconds is not None:
         _unit_cpu_warmups[node.gateway.id] = float(seconds)
+
+
+_CPU_REPORT_STARTED = pytest.StashKey[float]()
+
+
+@pytest.hookimpl(specname="pytest_sessionstart")
+def pytest_cpu_report_sessionstart(session: pytest.Session) -> None:
+    session.config.stash[_CPU_REPORT_STARTED] = _time.perf_counter()
+
+
+def _xdist_workers(config: pytest.Config) -> int:
+    if config.getoption("dist", default="no") == "no":
+        return 0
+    return len(config.getoption("tx", default=None) or ())
+
+
+@pytest.hookimpl(trylast=True, specname="pytest_sessionfinish")
+def pytest_cpu_report_sessionfinish(session: pytest.Session) -> None:
+    """Write the controller's CPU after xdist has reaped its workers.
+
+    ``RUSAGE_CHILDREN`` counts terminated, waited-for descendants: the workers
+    and every subprocess they waited for.
+    """
+    config = session.config
+    target = config.getoption("--cpu-report")
+    if target is None or hasattr(config, "workerinput"):
+        return
+    import resource
+
+    own = resource.getrusage(resource.RUSAGE_SELF)
+    children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    usage = {
+        "user_s": own.ru_utime,
+        "system_s": own.ru_stime,
+        "children_user_s": children.ru_utime,
+        "children_system_s": children.ru_stime,
+        "wall_s": _time.perf_counter() - config.stash[_CPU_REPORT_STARTED],
+        "workers": _xdist_workers(config),
+    }
+    path = config.invocation_params.dir / target
+    path.write_text(json.dumps(usage, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _pytest_environment_controls() -> dict[str, str]:
