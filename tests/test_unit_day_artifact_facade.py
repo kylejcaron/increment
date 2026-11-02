@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -45,7 +45,7 @@ from increment.semantics.loader import load
 from increment.semantics.models import Definitions
 from increment.workflows import experiment_definition, export_moments, srm
 from tests._shared_cache import fixture_cache_key, get_or_build
-from tests.analysis_factory import bound_source, lift_rows, view_readout
+from tests.analysis_factory import bound_source, lift_rows, make_binding_like, view_readout
 
 
 def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> pa.Table:
@@ -376,6 +376,107 @@ def _published(
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return con, native, context, store, ref
+
+
+def _publication_digest(con, store, ref):
+    from increment.query.artifact_digest import digest_relation_sql_v2
+    from increment.query.schemas import UNIT_DAY_ARTIFACT_RELATION_SCHEMAS
+
+    with store.open_snapshot(ref) as snapshot:
+        manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+    relations = (
+        manifest.base.exposures,
+        manifest.base.measure_stats,
+        *(extension.relation for extension in manifest.extensions),
+    )
+    return (
+        manifest.model_dump_json(),
+        tuple(
+            digest_relation_sql_v2(
+                con,
+                con.table(relation.relation.name, database=relation.relation.schema_name),
+                relation.role,
+                UNIT_DAY_ARTIFACT_RELATION_SCHEMAS[relation.role],
+                primary_key=relation.primary_key,
+                digest_format=relation.digest_format,
+            ).content_sha256
+            for relation in relations
+        ),
+    )
+
+
+@pytest.fixture(scope="module")
+def _shared_publications():
+    publications = {}
+
+    def publication(
+        *,
+        definitions="examples/definitions",
+        extensions=(),
+        with_pre_period=False,
+        with_late_returns=False,
+        source_snapshot_evidence=None,
+    ):
+        snapshot_key = (
+            None
+            if source_snapshot_evidence is None
+            else (
+                source_snapshot_evidence.observation_cutoff_ts,
+                tuple(sorted(source_snapshot_evidence.complete_through_by_feed.items())),
+            )
+        )
+        key = (
+            load(definitions).model_dump_json(),
+            tuple(request.model_dump_json() for request in extensions),
+            with_pre_period,
+            with_late_returns,
+            snapshot_key,
+        )
+        if key not in publications:
+            con, native, context, store = _native(
+                definitions=definitions,
+                with_pre_period=with_pre_period,
+                with_late_returns=with_late_returns,
+                source_snapshot_evidence=source_snapshot_evidence,
+            )
+            try:
+                ref = publish_unit_day_artifact(*native, store, extensions=extensions)
+                value = con, native, context, store, ref
+                publications[key] = value, _publication_digest(con, store, ref)
+            finally:
+                native[1].close()
+        return publications[key][0]
+
+    yield publication
+    with ExitStack() as cleanup:
+        for (con, _native_pair, _context, store, ref), before in publications.values():
+            cleanup.callback(con.disconnect)
+            assert _publication_digest(con, store, ref) == before
+
+
+@pytest.fixture
+def readonly_publications(_shared_publications):
+    with ExitStack() as cleanup:
+
+        def publication(**options):
+            con, recipe, context, store, ref = _shared_publications(**options)
+            native = make_binding_like(recipe[1])
+            cleanup.callback(native[1].close)
+            return con, native, context, store, ref
+
+        yield publication
+
+
+@pytest.mark.slow
+@pytest.mark.xdist_group("artifact_facade_readonly")
+def test_shared_publication_is_unchanged_after_module(readonly_publications, request):
+    con, _native_pair, _context, store, ref = readonly_publications()
+    before = _publication_digest(con, store, ref)
+
+    def unchanged():
+        assert _publication_digest(con, store, ref) == before
+
+    request.node.parent.addfinalizer(unchanged)
 
 
 def _extensions(context, *kinds: str):
@@ -744,8 +845,9 @@ def _population_readouts(
 
 
 @pytest.mark.integration
-def test_artifact_run_is_effectively_captured_when_live_is_requested() -> None:
-    con, native, context, store, ref = _published()
+@pytest.mark.xdist_group("artifact_facade_readonly")
+def test_artifact_run_is_effectively_captured_when_live_is_requested(readonly_publications) -> None:
+    _con, native, context, store, ref = readonly_publications()
     try:
         experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
         with resolver:
@@ -759,7 +861,6 @@ def test_artifact_run_is_effectively_captured_when_live_is_requested() -> None:
             assert set(results.metadata.effective_modes.values()) == {"captured"}
     finally:
         native[1].close()
-        con.disconnect()
 
 
 @pytest.mark.slow
@@ -846,13 +947,14 @@ def test_public_extension_selection_uses_the_immutable_catalog() -> None:
         )
 
 
-def test_artifact_reader_and_source_openers_share_hydrated_contract() -> None:
+@pytest.mark.xdist_group("artifact_facade_readonly")
+def test_artifact_reader_and_source_openers_share_hydrated_contract(readonly_publications) -> None:
     from increment.query.artifact_reader import open_artifact as reader_open
     from increment.query.source import open_artifact as facade_open
 
-    _con, (experiment, resolver), context, store = _native()
+    context = _expected_context("examples/definitions")
     request = _extensions(context, "breakout_dimension")[0]
-    ref = publish_unit_day_artifact(experiment, resolver, store, extensions=[request])
+    _con, _native_pair, context, store, ref = readonly_publications(extensions=(request,))
 
     with (
         reader_open(store, ref, expected_context=context) as reader,
