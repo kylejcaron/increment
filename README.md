@@ -203,6 +203,10 @@ query inspection, portable unit-day artifacts, and moments exports.
 | Build an experiment dashboard | [Dashboard](https://getincrement.io/docs/guides/dashboard/) |
 | Look up public APIs | [API reference](https://getincrement.io/docs/api/) |
 
+The [public manifest](https://github.com/kylejcaron/increment/blob/main/tests/public_exports.txt)
+lists the promised imports in each namespace. Guides and examples use only those
+paths; other modules and underscore names are internal.
+
 The [`examples/`](https://github.com/kylejcaron/increment/tree/main/examples)
 directory has runnable marimo notebooks for warehouse and dataframe analyses,
 power, CUPED, causal inference, and reporting. Use the

@@ -1,6 +1,8 @@
-# Export name: one-line user task served by the root import.
-# Keep this inventory in exact parity with increment.__all__; the check rejects
-# both unjustified root names and entries for names no longer exported.
+# Promised public names, one section per namespace: `[namespace]`, then one
+# `name: user task` line per name. Each section is in exact parity with that
+# namespace's __all__; names outside this file are not promised.
+
+[increment]
 Definitions: Load experiment and metric definitions from YAML.
 Metric: Select a metric definition from the supported metric types.
 MetricSpec: Define a metric to estimate from a dataframe column.
@@ -26,6 +28,7 @@ EvidenceProvider: Implement typed statistical evidence for a custom data source.
 RunResult: Return stored result cells, effects, and final decision verdicts from an analysis run.
 run: Register an analysis before execution, persist its result cells, then decide from the validated run.
 Experiment: Describe an immutable analysis, its evidence references, and its selected scopes.
+ExperimentDefinition: Declare an experiment as written in definitions, for a custom provider or inspection.
 Scope: Select a result view and its coordinates, population, and metrics.
 SourceReference: Record a named evidence source, its expected digest, schema, and capabilities.
 Resolver: Bind declared evidence sources to providers before analysis.
@@ -38,3 +41,384 @@ from_unit_day_artifact: Build an experiment from a unit-day artifact.
 from_switchback_frame: Build an experiment from a switchback panel.
 from_moments: Build an experiment from retained moments.
 render: Display qualified result cells for review.
+
+[increment.artifacts]
+RelationLocator: Name an artifact relation inside a store namespace.
+RelationRole: Type an artifact relation's semantic role.
+UnitDayArtifactRef: Pin one immutable artifact generation to read.
+ArtifactRelationRef: Bind a relation and its digests to an artifact generation.
+BaseRelations: Read the required base relations of an artifact.
+Freshness: Read an artifact measure's freshness.
+MeasureManifest: Read an artifact measure's provenance and freshness.
+SimpleMetricMeasure: Read a simple metric's artifact measure binding.
+RatioMetricMeasure: Read a ratio metric's artifact measure binding.
+MetricMeasure: Type either artifact measure binding.
+ArtifactContext: Pin the trusted context an artifact was published from.
+UnitDayArtifactManifest: Read a published artifact's complete manifest.
+ExtensionRefBase: Read the fields every artifact extension reference carries.
+BreakoutDimensionExtension: Read a published breakout-dimension extension.
+FactorDimensionExtension: Read a published factor-dimension extension.
+ClusterIdentityExtension: Read a published cluster-identity extension.
+CupedPreperiodExtension: Read a published CUPED pre-period extension.
+AssignmentCountsExtension: Read a published assignment-counts extension.
+TriggerPopulationExtension: Read a published trigger-membership extension.
+TriggerMeasureStatsExtension: Read a published triggered-outcome extension.
+EncouragementUptakeExtension: Read a published encouragement-uptake extension.
+SiteVolumeExtension: Read a published site-volume extension.
+UnitCovariateExtension: Read a published numeric covariate extension.
+UnitCovariateLevelExtension: Read a published categorical covariate extension.
+ArtifactExtensionRef: Type any published extension reference.
+ExtensionRequestBase: Read the fields every extension request carries.
+BreakoutDimensionRequest: Request a breakout dimension in a published artifact.
+FactorDimensionRequest: Request a factor dimension in a published artifact.
+ClusterIdentityRequest: Request cluster identities in a published artifact.
+CupedPreperiodRequest: Request a CUPED pre-period measure in a published artifact.
+AssignmentCountsRequest: Request assignment counts in a published artifact.
+TriggerPopulationRequest: Request trigger membership in a published artifact.
+TriggerMeasureStatsRequest: Request triggered outcomes in a published artifact.
+EncouragementUptakeRequest: Request encouragement uptake in a published artifact.
+SiteVolumeRequest: Request site volume in a published artifact.
+UnitCovariateRequest: Request a numeric covariate in a published artifact.
+UnitCovariateLevelRequest: Request a categorical covariate in a published artifact.
+ArtifactExtensionRequest: Type any extension request.
+ArtifactExtensionCatalogEntry: Read one extension a context can publish.
+ArtifactPublication: Implement the publication handle of a custom artifact store.
+ArtifactSnapshot: Implement the read handle of a custom artifact store.
+ArtifactStore: Implement a custom artifact store.
+WarehouseArtifactStore: Publish and read artifacts in a warehouse namespace.
+unit_day_artifact_extension_catalog: List the extensions an artifact context can publish.
+SourceSnapshotEvidence: Declare a source's event-time cutoff and certified feed completeness.
+artifact_context: Compute the trusted publication context of a definitions-backed experiment.
+publish_unit_day_artifact: Publish a definitions-backed experiment as an immutable artifact.
+
+[increment.dashboard]
+MIDNIGHT: Apply the dark dashboard theme.
+DashboardCharts: Adjust dashboard chart dimensions.
+DashboardLayout: Adjust dashboard widths, spacing and corners.
+DashboardPalette: Adjust dashboard colors.
+DashboardPrint: Adjust printed dashboard text size.
+DashboardTheme: Build a custom dashboard theme.
+DashboardTypography: Adjust dashboard fonts and text sizes.
+DashboardConfig: Configure how a dashboard displays an experiment.
+DashboardSnapshot: Hold one prepared dashboard reading of an experiment.
+ExploreView: Type the advanced dashboard views.
+dashboard_styles: Embed the dashboard stylesheet.
+group_data_csv: Export a dashboard's group data as CSV.
+load_explore: Load one advanced dashboard view.
+prepare_dashboard: Run an experiment's headline readout for a dashboard.
+readout_csv: Export a dashboard's headline rows as CSV.
+render_dashboard: Render the complete interactive dashboard.
+render_details: Render a dashboard's declared policy and provenance.
+render_explore: Render one advanced dashboard view.
+render_header: Render a dashboard's experiment header.
+render_health: Render a dashboard's allocation and health section.
+render_metric_details: Render one metric's dashboard details.
+render_results: Render a dashboard's results table and disclosures.
+
+[increment.digest]
+ArtifactDigestError: Catch a canonical digest refusal.
+DigestType: Tag a column's canonical digest type.
+FieldSpec: Describe one column of a digested relation.
+RelationDigests: Read a relation's schema and content digests.
+canonical_schema_bytes: Encode a relation schema canonically.
+canonical_row_bytes: Encode one row canonically.
+canonical_rows_bytes: Encode rows canonically in primary-key order.
+canonical_json_bytes: Encode a JSON value canonically.
+schema_sha256: Hash a relation schema.
+content_sha256: Hash a relation's content.
+digest_relation: Compute a relation's schema and content digests.
+manifest_sha256: Hash an artifact manifest.
+context_sha256: Hash an artifact context.
+request_sha256: Hash an extension request.
+extension_definition_sha256: Hash an extension definition.
+extension_source_provenance_sha256: Hash an extension's source provenance.
+
+[increment.errors]
+CapabilityError: Catch a source that cannot provide a requested capability.
+CodedError: Catch any coded refusal and branch on its code and context.
+CodedModel: Recognize input models whose field failures raise coded refusals.
+DefinitionError: Catch a definitions parse, validation or reference failure.
+IncrementDeprecationWarning: Filter coded deprecation advisories.
+IncrementRuntimeWarning: Filter coded runtime advisories.
+IncrementWarning: Filter or assert on any coded library advisory.
+InvalidRequestError: Catch an invalid public request.
+RETIRED_CODES: Map a retired refusal code to its replacement.
+RefusalSpec: Declare the refusals a custom provider returns with breakout rows.
+UnsupportedRequestError: Catch a recognized request that is not supported.
+WireFormatError: Catch serialized data with an invalid wire format.
+unwrap_coded: Recover a coded refusal from a pydantic validation error.
+
+[increment.estimators]
+impute: Choose an explicit missing-value repair for a dataframe metric or covariate.
+moments_from_summaries: Build moment rows from hand-authored per-arm summaries.
+MetricTrends: Evaluate governed metrics over calendar time without an experiment.
+Normal: Declare a normal prior on a metric's lift.
+MixturePrior: Declare a normal-mixture prior on the log relative lift.
+StudentTPrior: Declare a heavy-tailed Student-t prior on the lift.
+AsymptoticMean: Register asymptotic sequential monitoring of continuous means.
+AsymptoticSequentialResult: Read a stopped sequential state's asymptotic evidence and confidence set.
+AsymptoticSequentialEvidence: Read the set-exclusion evidence behind an asymptotic sequential decision.
+ScalarMeanModel: Declare the count-clock assumptions for a sequential mean before outcomes arrive.
+PredeclaredAdjustment: Fix a sequential CUPED coefficient and centre before any outcome is read.
+fit_predeclared_adjustment: Fit a sequential CUPED adjustment from pre-period data.
+AlwaysValid: Register anytime-valid sequential inference with a committed model and roster.
+FixedInference: Select fixed-horizon inference for a planning procedure.
+PredictivePrior: Declare the proper prior of a registered sequential model.
+SequentialModel: Declare one metric's observation law and priors for sequential monitoring.
+JointReveal: State how finalized outcomes are revealed to a sequential analysis.
+SequentialCell: Register one metric and arm cell for sequential monitoring.
+SequentialRegistration: Commit a sequential analysis before reading any observation.
+SequentialCompliancePolicy: Set the design-level testing policy for sequential uptake.
+SequentialSnapshot: Hold an exact sequential checkpoint between looks.
+capture_sequential_snapshot: Capture a sequential checkpoint from finalized records.
+declare_sequential_freeze: Stop monitoring named metrics at the current look.
+snapshot_from_json: Reopen a saved sequential checkpoint from JSON.
+estimate_sequential: Evaluate a sequential checkpoint against its registered policy.
+sequential_definition_id: Bind metrics, windows, assignment and population before data arrive.
+synthesise_metric: Derive the metric definition a dataframe metric specification registers.
+frame_observation_mapping: Name a dataframe's observation columns for a sequential registration.
+Covariate: Name a pre-exposure column to model effect heterogeneity on.
+ClusterBootstrap: Resample whole clusters in honest CATE validation.
+SummaryStats: Summarize one arm's raw moments for planning.
+SwitchbackBaseline: Supply switchback planning variance and correlation assumptions.
+ProspectiveAssumptionProvenance: Record where prospective switchback assumptions came from.
+UnitCycleVarianceEnvelope: Bound unit-cycle variance prospectively for certified switchback planning.
+UnitCycleTApproximation: Select the Student-t unit-cycle switchback reference.
+UnitCycleReference: Choose the reference a unit-cycle switchback contrast reports.
+switchback_achieved_power: Compute achieved power for a switchback design.
+switchback_minimum_detectable_effect: Compute the minimum detectable effect of a switchback design.
+switchback_required_blocks_or_units: Size a switchback design in blocks or units.
+unit_cycle_power_lower_bound: Bound unit-cycle switchback power under a variance envelope.
+Baseline: State control-arm assumptions for power planning.
+PowerDesign: Set power-solver targets and numeric controls.
+required_sample_size: Size an experiment to detect a target lift.
+achieved_power: Compute power at a fixed arm size.
+minimum_detectable_effect: Compute the smallest detectable lift at a fixed arm size.
+power_curve: Evaluate power or minimum detectable effect over a grid.
+sample_ratio_mismatch: Test assignment counts for sample-ratio mismatch.
+allocation_posterior_bands: Plot posterior bands on each arm's allocation share.
+absorb_factor: Sharpen a treatment effect by absorbing a pre-exposure factor.
+confounding_sensitivity: Find how much confounding would tip an observational conversion result.
+estimate_cate: Estimate how a treatment effect varies with user characteristics.
+validate_cate: Validate a fitted CATE model on a held-out split.
+select_targeting_rule: Choose an honest share of units to target.
+targeting_rule: Decide whether to target the top fraction of units.
+sitewide: Estimate the whole-site impact of shipping a lift.
+segment_heterogeneity: Test whether a lift differs across segments.
+segment_contrast: Contrast one segment's lift against another's.
+segment_rollout_recommendation: Recommend which segments to roll out and price the rollout.
+select_exploratory_family: Correct whole-window and segment rows as one exploratory family.
+exploratory_family_exclusion: Find why a row cannot join an exploratory family.
+estimate_policy_contrast: Compare two policies offline from a logged decision trace.
+LoggedTrace: Record logged decisions, propensities and rewards for policy evaluation.
+PolicyRegistry: Look up the registered policy versions behind a logged trace.
+TabularPolicy: Declare a policy as a table of action probabilities.
+to_frame: Convert result rows to a dataframe.
+IdentificationError: Catch an identification gate refusal for an observational estimand.
+CapabilityError: Catch a source that cannot provide a requested capability.
+CodedError: Catch any coded refusal and branch on its code and context.
+DefinitionError: Catch a definitions parse, validation or reference failure.
+IncrementDeprecationWarning: Filter coded deprecation advisories.
+IncrementRuntimeWarning: Filter coded runtime advisories.
+IncrementWarning: Filter or assert on any coded library advisory.
+InvalidRequestError: Catch an invalid public request.
+RefusalSpec: Declare the refusals a custom provider returns with breakout rows.
+UnsupportedRequestError: Catch a recognized request that is not supported.
+WireFormatError: Catch serialized data with an invalid wire format.
+Assignment: Type the assignment declaration accepted by planning and switchback inputs.
+ParallelAssignment: Declare ordinary parallel-arm assignment for planning.
+IndependentBernoulliOrder: Declare independent per-unit switchback orders.
+SharedScheduleOrder: Declare one switchback schedule shared by every unit.
+SwitchbackWindow: Declare a switchback washout and observation window.
+SwitchbackAssignment: Declare a switchback assignment mechanism.
+ParallelStudyEnvelope: Bind a parallel design to its study identity.
+SwitchbackStudyEnvelope: Bind a switchback design to its study identity.
+StudyEnvelope: Type either study envelope.
+
+[increment.evidence]
+BreakoutCell: Read one requested cell of a breakout in a provider request.
+BreakoutIdentity: Identify a declared breakout dimension and its source.
+AssignmentEvidence: Return reduced assignment evidence from a custom provider.
+FrameLedger: Validate identity-bearing assignment rows from a dataframe.
+AssignmentRequest: Request one experiment's assignment evidence.
+ComplianceRequest: Serve a design-level compliance request from a custom provider.
+ComplianceSeriesRequest: Serve a compliance series request from a custom provider.
+ComplianceSummary: Return design-level compliance state from a custom provider.
+ComplianceArm: Return one arm's uptake state from a custom provider.
+CountEvidence: Return population counts from a custom provider.
+CountsRequest: Serve a counts request from a custom provider.
+ScalarEvidenceDeclaration: Declare the scalar evidence a custom source retains.
+EvidenceCapabilities: Declare what a custom source can provide before any read.
+EvidenceProvider: Implement typed statistical evidence for a custom data source.
+EvidenceScope: Serve a scoped source view from a custom provider.
+EvidenceScopeResult: Return a scoped source view from a custom provider.
+MethodFitAnswer: Return method-fit evidence from a custom provider.
+MethodFitRequest: Serve a method-fit request from a custom provider.
+MomentRows: Type the moment rows a custom provider returns.
+BreakoutMethodMomentsRequest: Serve a breakout method-moments request from a custom provider.
+ScalarBreakoutRows: Return breakout method moments and refusals from a custom provider.
+MomentsRequest: Serve an aggregate moments request from a custom provider.
+SequentialCapture: Type the sequential capture a custom provider returns.
+SequentialSnapshotRequest: Serve a current-checkpoint request from a custom provider.
+SequentialCaptureRequest: Serve a sequential capture request from a custom provider.
+SourceContext: Carry a custom provider's statistical construction state.
+UnitRows: Type the per-unit rows a custom provider returns.
+UnitRowsRequest: Serve a per-unit rows request from a custom provider.
+replay: Replay an assignment specification into an identity ledger.
+evidence_provider: Obtain the evidence provider behind a source.
+request_evidence: Request evidence with the shared capability checks.
+require_evidence: Refuse an undeclared operation inside a custom provider before reading.
+EvidenceExecutionContext: Hold one pinned evidence scope across a run.
+
+[increment.power]
+SwitchbackBaseline: Supply switchback planning variance and correlation assumptions.
+SwitchbackPowerResult: Read a switchback power solver's answer.
+switchback_achieved_power: Compute achieved power for a switchback design.
+switchback_minimum_detectable_effect: Compute the minimum detectable effect of a switchback design.
+switchback_required_blocks_or_units: Size a switchback design in blocks or units.
+UnitCyclePowerLowerBoundResult: Read a certified unit-cycle power lower bound.
+unit_cycle_power_lower_bound: Bound unit-cycle switchback power under a variance envelope.
+Baseline: State control-arm assumptions for power planning.
+ArmPlanningProcedure: Declare the decision procedure a power plan targets.
+AnalysisAxes: Declare the analysis view, population and adjustment a power plan targets.
+FamilyPolicy: Declare the multiplicity family a power plan targets.
+MetricCapabilities: Declare the metric type and value scale a power plan targets.
+PlanningFamilyExpansion: Declare how a power plan expands its family.
+RelativeDecisionPolicy: Declare the relative-lift decision rule a power plan targets.
+PowerDesign: Set power-solver targets and numeric controls.
+PowerResult: Read a power solver's answer.
+PowerCurvePoint: Read one point of a power curve.
+PowerCurve: Read a power or detectable-effect curve.
+power_curve: Evaluate power or minimum detectable effect over a grid.
+required_sample_size: Size an experiment to detect a target lift.
+achieved_power: Compute power at a fixed arm size.
+minimum_detectable_effect: Compute the smallest detectable lift at a fixed arm size.
+segment_pairwise_required_sample_size: Size an experiment to detect a difference between two segments.
+segment_pairwise_achieved_power: Compute power to detect a difference between two segments.
+segment_pairwise_minimum_detectable_effect: Compute the smallest detectable difference between two segments.
+joint_q_power_fixed: Compute power to detect fixed per-segment deviations.
+joint_q_power_random: Compute power to detect random segment spread.
+
+[increment.query]
+build_panel_for_metric: Build one metric's live warehouse panel.
+panel_sql: Preview a metric's panel SQL without executing it.
+summary_sql: Preview a metric's group-summary SQL without executing it.
+
+[increment.results]
+Estimate: Read a number with its quantified uncertainty.
+BinomialConfidenceSet: Read the exact binomial relative-lift confidence set of a conversion row.
+WinsorConfidenceSet: Read a winsorized mean's confidence region and its reference contract.
+WinsorInferenceSpec: Read the inference law registered for a winsorized metric.
+BootstrapReference: Read the bootstrap reference behind a winsorized interval.
+InfluenceReference: Read the influence-function reference behind a winsorized interval.
+RankReference: Read the rank reference behind a winsorized interval.
+WinsorPermutationTest: Read a winsorized metric's sharp-null permutation test.
+IndependentMeanComponent: Read one arm's independent mean component of a Welch reference.
+IndependentMeanReference: Read the Welch components behind a mean lift.
+SetEndpoint: Read one endpoint of a confidence-set interval.
+SetInterval: Read one interval of a confidence set.
+JointContrastReference: Read the joint numerator and denominator reference of a ratio lift.
+RelativeConfidenceSet: Read the Fieller confidence set of a relative lift.
+LiftEstimate: Read one metric, method and arm's lift with its inference.
+LiftEstimates: Read a run's whole-window lift rows.
+ContrastResult: Read one switchback contrast.
+ContrastResults: Read a run's switchback contrasts.
+SwitchbackAssignmentDiagnostic: Check switchback schedule and assignment integrity.
+BreakoutEstimate: Read one segment's lift.
+BreakoutEstimates: Read a run's segment lift rows.
+DailyMetricValue: Read one arm's metric value for one day.
+DailyMetricValues: Read a run's daily metric values.
+DailyLiftEstimate: Read one day's lift.
+DailyLiftEstimates: Read a run's daily lift rows.
+HeterogeneitySummary: Read one segment-heterogeneity test.
+HeterogeneitySummaries: Read every segment-heterogeneity test.
+SegmentEstimate: Read one segment's shrunk heterogeneity estimate.
+SegmentEstimates: Read every segment's shrunk heterogeneity estimate.
+SegmentRolloutResult: Read a segment rollout recommendation and its per-segment rows.
+RolloutRecommendation: Read which segments to roll out for one key.
+RolloutRecommendations: Read every rollout recommendation.
+RolloutSegment: Read one segment's rollout evidence.
+RolloutSegments: Read every segment's rollout evidence.
+PowerResult: Read a power solver's answer.
+SwitchbackPowerResult: Read a switchback power solver's answer.
+UnitCycleFailureCount: Read Monte Carlo failure counts of a unit-cycle power model.
+UnitCycleLawMoments: Read the population moments of a unit-cycle law.
+UnitCyclePowerLowerBoundResult: Read a certified unit-cycle power lower bound.
+UnitCycleModelPowerResult: Read a unit-cycle model's power bounds.
+UnitCycleModelMdeResult: Read a unit-cycle model's detectable-effect bracket.
+UnitCycleModelRequiredUnitsResult: Read a unit-cycle model's required units.
+PowerCurvePoint: Read one point of a power curve.
+PowerCurve: Read a power or detectable-effect curve.
+SRMResult: Read a sample-ratio-mismatch check.
+AllocationBand: Read one arm's allocation posterior band.
+NotApplicable: Read why a diagnostic does not apply to a design.
+AbsorptionResult: Read a factor-absorbed treatment effect.
+ConfoundingSensitivity: Read an observational result's confounding tipping point.
+CateResult: Read a fitted CATE model.
+CateScoreState: Score new units with a fitted CATE model.
+ClusterScore: Read a CATE score pooled by cluster.
+CateValidation: Read what a held-out split says about a CATE model.
+TargetingRule: Read a targeting rule and its honest-split gate.
+TargetingSelection: Read a chosen targeting share and its test verdict.
+CateEvaluationPopulation: Read the evaluation roster and weights behind a CATE report.
+MetricTrend: Read one metric's calendar trend.
+SitewideImpact: Read a whole-site impact estimate.
+SitewideRatioImpact: Read a ratio metric's whole-site impact estimate.
+AllocationBalance: Read triggered-population allocation-balance evidence of a sitewide estimate.
+PolicyValueContrast: Read an offline policy-value contrast.
+ExperimentHealth: Read an experiment's health checks.
+HealthCheck: Read one source-health observation.
+AnalysisEnvelope: Save and reopen a run's result cells for rendering.
+ResultCell: Save and reopen one result's identity, outcome and supported operations.
+ReadoutResults: Reopen a saved readout collection.
+
+[increment.simulate]
+true_policy_value: Compute a policy's exact value under a simulated reward law.
+EvalResult: Read a synthetic A/B evaluation's recovered effects and coverage.
+SwitchbackEvalResult: Read a synthetic switchback evaluation's recovered effects and coverage.
+run_end_to_end: Evaluate an A/B analysis on synthetic data across replications.
+run_switchback_end_to_end: Evaluate a switchback analysis on synthetic panels across replications.
+LoggedRun: Read a simulated logged trace with its policy registry.
+RewardModel: Read the reward law of a simulated logged trace.
+simulate_logged_run: Simulate a logged decision trace with its policy registry.
+simulate_logged_trace: Simulate a logged decision trace.
+Scenario: Configure a synthetic A/B experiment.
+SwitchbackScenario: Configure a synthetic switchback panel.
+simulate_raw_logs: Generate a synthetic A/B event log.
+simulate_switchback_panel: Generate a synthetic switchback panel.
+
+[increment.store]
+DecisionEvent: Read one logged fixed-family decision.
+DecisionLog: Record and replay fixed-family decisions after a run.
+DecisionReference: Read the result cell a logged decision cites.
+HistorySelector: Select saved cells across runs.
+ParquetResultsStore: Save and reopen runs in a local directory.
+ResultsStore: Type a store that saves and reopens runs.
+Run: Read a saved run's identity and registration.
+RunHandle: Read a saved run's cells.
+WarehouseResultsStore: Save and reopen runs in a warehouse.
+
+[increment.tables]
+contrast_results_to_readout: Convert switchback contrasts to readout table rows.
+estimates_to_readout: Convert lift estimates to readout table rows.
+readout_table: Render a readout table.
+trend_table: Render calendar metric trends as a table.
+
+[increment.workflows]
+allocation_history: Read daily and cumulative enrollment for a population.
+assignment_diagnostic: Check a switchback experiment's assignment integrity.
+available_metrics: List saved metrics an experiment could add.
+breakout_summaries: Read per-breakout moment tables.
+capture_sequential: Capture a registered sequential look.
+compiled_decision_plan: Inspect an experiment's compiled decision plan.
+experiment_definition: Inspect the experiment declaration behind a source.
+export_moments: Export portable per-metric moments to parquet.
+factor_summaries: Read per-factor-level moment tables.
+health_check: Report assignment balance and trigger evidence.
+materialize: Refresh a warehouse source's materialized tables.
+metrics: List an experiment's declared metrics and guardrails.
+planning_baseline: Compute power-planning inputs from an experiment's data.
+sequential_snapshot: Retrieve a source's current sequential checkpoint.
+srm: Check assignment counts against the declared allocation.
+trigger_rates: Read each arm's observed trigger rate.
+unit_counts: Read enrolled unit counts by group.

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         MultiplicitySpec,
         Winsorization,
     )
+    from increment.semantics.models import Experiment as ExperimentDefinition
 
 try:
     __version__ = version("increment")
@@ -51,6 +52,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without an instal
 
 __all__ = [
     "Experiment",
+    "ExperimentDefinition",
     "SourceReference",
     "Scope",
     "Resolver",
@@ -119,6 +121,7 @@ _LAZY_IMPORTS = {
     "IdentificationGate": ("increment.semantics.design", "IdentificationGate"),
     "Method": ("increment.estimation.engine", "Method"),
     "Definitions": ("increment.semantics.models", "Definitions"),
+    "ExperimentDefinition": ("increment.semantics.models", "Experiment"),
     "ExperimentMetric": ("increment.semantics.models", "ExperimentMetric"),
     "Metric": ("increment.semantics.models", "Metric"),
     "Winsorization": ("increment.semantics.models", "Winsorization"),

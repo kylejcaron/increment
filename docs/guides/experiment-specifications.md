@@ -57,7 +57,7 @@ remains usable in memory, while storing or serializing it refuses with
 
 `Experiment.compile()` returns one run-wide `EvidenceScope` inventory and one `AnalysisRequest` for each selected scope. Both contain the declared metrics, with any switchback scope-specific selection applied. Each request retains its scope, registration hash, and source-reference name.
 
-`runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. `resolve(estimator_id, experiment, metric)` returns static refusals only when an incompatibility is known.
+`runnable(experiment, metric)` is an offline preflight. It does not open a source. If a source has no recorded capabilities, the returned estimator entries name those capabilities as `unknown`; known data-dependent conditions such as usable denominators and sample floors remain deferred until execution. Its `static_refusals` contain only known incompatibilities.
 
 An unknown source declaration does not erase refusals already established by
 another source. Alternative evidence routes include their count and named
@@ -315,8 +315,7 @@ and daily views together:
 from dataclasses import replace
 import pandas as pd
 
-from increment import from_frame, run
-from increment.kernel.contracts import Scope
+from increment import Scope, from_frame, run
 
 panel = pd.DataFrame(
     {
@@ -404,12 +403,11 @@ at `verify()` and refuses a changed or unavailable recorded digest with
 `kernel.resolver.digest_mismatch`. It does not hash live rows: snapshot and
 content digests belong to the runtime evidence, not the saved specification.
 
-Use `resolve` when a caller needs the static refusal codes, and inspect all
+Use `runnable` when a caller needs the static refusal codes, and inspect all
 three `Runnable` fields rather than treating unknown requirements as supported:
 
 ```python
 from increment import runnable
-from increment.estimators import resolve
 
 status = runnable(restored, "revenue")["randomized.unadjusted"]
 if status.unknown:
