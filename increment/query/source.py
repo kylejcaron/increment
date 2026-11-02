@@ -29,7 +29,7 @@ import narwhals as nw
 from increment._analysis_config import effective_methods
 from increment._frame_validation import _reject_windowed_specs
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synthesise_metric
-from increment.errors import CapabilityError, refuse
+from increment.errors import CapabilityError, CodedError, refuse
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
@@ -528,7 +528,11 @@ def _artifact_source_context(
     from pydantic import TypeAdapter
 
     from increment.query.artifact_contract import validate_artifact_context
-    from increment.semantics.design import Encouragement
+    from increment.semantics.design import (
+        SUPPORTED_DESIGN_MECHANISMS,
+        Encouragement,
+        parse_design,
+    )
     from increment.semantics.models import EncouragementDeclaration, _with_inherited_day_boundary
 
     validate_artifact_context(expected_context)
@@ -580,19 +584,27 @@ def _artifact_source_context(
             legacy_plan.pop("q")
             experiment_payload["plan"] = legacy_plan
         effective_design = None
-        if (experiment_payload.get("design") or {}).get("mechanism") == "encouragement":
-            # The context carries the full effective design; Experiment.design keeps only
-            # the declaration-shaped part of it.
-            effective_design = Encouragement.model_validate(experiment_payload["design"])
-            experiment_payload["design"] = EncouragementDeclaration(
-                uptake=effective_design.uptake,
-                one_sided=effective_design.one_sided,
-                exclusion_restriction=effective_design.exclusion_restriction,
-            )
+        design_payload = experiment_payload.get("design")
+        if isinstance(design_payload, Mapping):
+            mechanism = design_payload.get("mechanism")
+            if mechanism == "encouragement" or (
+                mechanism is not None and mechanism not in SUPPORTED_DESIGN_MECHANISMS
+            ):
+                effective_design = parse_design(design_payload)
+                if isinstance(effective_design, Encouragement):
+                    # The context carries the full effective design; Experiment.design keeps only
+                    # the declaration-shaped part of it.
+                    experiment_payload["design"] = EncouragementDeclaration(
+                        uptake=effective_design.uptake,
+                        one_sided=effective_design.one_sided,
+                        exclusion_restriction=effective_design.exclusion_restriction,
+                    )
         experiment = Experiment.model_validate(experiment_payload)
         experiment = _with_inherited_day_boundary(experiment, definitions_payload["day_boundary"])
         experiment_name = str(payload["experiment_name"])
     except (TypeError, ValueError, AttributeError) as exc:
+        if isinstance(exc, CodedError) and exc.code == "design.mechanism_unsupported":
+            raise
         raise ArtifactContractError(
             "artifact.context.mismatch",
             "artifact context does not contain a valid typed experiment",

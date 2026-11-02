@@ -15,7 +15,7 @@ import pytest
 
 from increment import Scope, from_definitions, from_moments, from_unit_day_artifact, workflows
 from increment.artifacts import publish_unit_day_artifact
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, InvalidRequestError
 from increment.frame import MetricSpec
 from increment.query.artifact_contract import (
     ArtifactContractError,
@@ -347,6 +347,77 @@ def test_direct_source_refuses_invalid_or_off_roster_metric_declarations(
         assert raised.value.code == "artifact.context.mismatch"
     finally:
         source.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "reader,mismatch_context",
+    [
+        ("builder", {}),
+        (
+            "direct",
+            {
+                "message": "artifact context metric declarations must be valid, unique and "
+                "match the experiment's metric roster"
+            },
+        ),
+    ],
+    ids=["builder", "direct"],
+)
+@pytest.mark.parametrize(
+    "experiment_update,error_type,code,context",
+    [
+        ({"n_pre_periods": True}, ArtifactContractError, "artifact.context.mismatch", {}),
+        (
+            {"design": {"mechanism": "stepped_wedge"}},
+            InvalidRequestError,
+            "design.mechanism_unsupported",
+            {
+                "mechanism": "stepped_wedge",
+                "supported": ("randomized", "encouragement", "observational"),
+            },
+        ),
+    ],
+    ids=["invalid_count", "unknown_design"],
+)
+def test_artifact_readers_preserve_typed_context_refusals(
+    reader_snapshot,
+    monkeypatch,
+    reader,
+    mismatch_context,
+    experiment_update,
+    error_type,
+    code,
+    context,
+) -> None:
+    manifest, ref, snapshot, store = reader_snapshot
+    payload = json.loads(manifest.context.canonical_json)
+    payload["experiment"].update(experiment_update)
+    raw = canonical_json(payload)
+    expected_context = ArtifactContext(canonical_json=raw, sha256=context_digest(raw))
+    manifest = manifest.model_copy(update={"context": expected_context})
+    manifest = manifest.model_copy(update={"manifest_sha256": manifest_sha256(manifest)})
+    ref = ref.model_copy(update={"manifest_sha256": manifest.manifest_sha256})
+    monkeypatch.setattr(snapshot, "read_manifest", lambda *args, **kwargs: manifest)
+
+    with pytest.raises(error_type) as raised:
+        if reader == "builder":
+            _, resolver = from_unit_day_artifact(store, ref, expected_context=expected_context)
+            resolver.close()
+        else:
+            source = ArtifactMomentSource.open(store, ref, expected_context=expected_context)
+            try:
+                _ = source.context
+            finally:
+                source.close()
+
+    if code == "artifact.context.mismatch":
+        context = mismatch_context
+    assert type(raised.value) is error_type
+    assert raised.value.code == code
+    assert raised.value.context == context
+    assert snapshot.calls == {"exposures": 0, "measure_stats": 0}
+    assert snapshot.executions == []
 
 
 _ARTIFACT_FIRST_DS = date(2025, 1, 1)

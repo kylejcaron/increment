@@ -103,6 +103,39 @@ def test_experiment_declares_distinct_values_and_lift_views_without_changing_lif
     assert raised.value.code == "kernel.request.invalid"
 
 
+def test_scope_and_experiment_identity_hashes_are_pinned():
+    from increment import Experiment, SourceReference
+
+    scope_hashes = {
+        "run": "39777d73ddc96dd3cea1e6fe28b4eeee153b983c18b50af422b33a9b1ed5161e",
+        "switchback": "f343ef9b4114e868812faef62b1dbe240095498393597e83de56efc0873df1b6",
+        "daily": "ca8dd0beb151c78a6ca4bc73abbae0280268479e0f33cc03d3fab34fcbedd672",
+        "asof": "1b21975ed8e30ebfa525e7945cae98190e2449b9da3bfd2a68cd387d9fedfff0",
+        "breakout": "45a298d52da093d44fe29946c22d7fdaea4cd16ad49b754ff343ea66c67b39df",
+    }
+    scopes = tuple(
+        Scope(view=view, grain=grain)
+        for view, grain in (
+            ("run", "total"),
+            ("switchback", "total"),
+            ("daily", "daily"),
+            ("asof", "asof"),
+            ("breakout", "total"),
+        )
+    )
+    assert {scope.view: scope.hash() for scope in scopes} == scope_hashes
+
+    experiment = Experiment(
+        experiment_id="contract-evolution",
+        design={"mechanism": "randomized"},
+        metrics={},
+        registration=Registration(registration_hash="registration"),
+        source_refs=(SourceReference(name="source", uri="memory://source"),),
+        scopes=scopes,
+    )
+    assert experiment.hash() == "83803aa74c52fd86efbbf4821c21e87f397ba04ed158332e1bc5ccef6653814a"
+
+
 def test_daily_day_and_cumulative_through_day_have_different_scope_hashes():
     day = date(2026, 1, 5)
     daily = Scope(view="daily", grain="daily", through_day=day)
