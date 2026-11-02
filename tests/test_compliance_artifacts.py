@@ -32,9 +32,11 @@ from tests.analysis_factory import (
     bound_source,
     lift_rows,
     make_binding,
+    make_binding_like,
     view_readout,
 )
 from tests.test_compliance_summary import design
+from tests.test_unit_day_artifact_facade import _publication_digest
 from tests.warning_codes import warning_codes
 
 pytestmark = pytest.mark.slow
@@ -252,11 +254,103 @@ def native_fixture(
     return con, analysis, context, store, panel
 
 
+@pytest.fixture(scope="module")
+def _shared_compliance_publications():
+    publications = {}
+
+    def publication(
+        order=("full", "drop"),
+        *,
+        clustered=False,
+        separate_uptake=False,
+        triggered=False,
+        staggered=False,
+        outcome=(8, "sum", 7),
+        timing=None,
+        open_ended=False,
+        outcome_state="present",
+        declared=False,
+        source_snapshot_evidence=None,
+    ):
+        timing = timing or ClickTiming()
+        snapshot_key = (
+            None
+            if source_snapshot_evidence is None
+            else (
+                source_snapshot_evidence.observation_cutoff_ts,
+                tuple(sorted(source_snapshot_evidence.complete_through_by_feed.items())),
+            )
+        )
+        key = (
+            tuple(order),
+            clustered,
+            separate_uptake,
+            triggered,
+            staggered,
+            tuple(outcome),
+            timing.uptake_window,
+            None if timing.boundary_click_offsets is None else tuple(timing.boundary_click_offsets),
+            timing.exposure_hour,
+            timing.day_boundary,
+            open_ended,
+            outcome_state,
+            declared,
+            snapshot_key,
+        )
+        if key not in publications:
+            con, native, context, store, panel = native_fixture(
+                order,
+                clustered=clustered,
+                separate_uptake=separate_uptake,
+                triggered=triggered,
+                staggered=staggered,
+                outcome=outcome,
+                timing=timing,
+                open_ended=open_ended,
+                outcome_state=outcome_state,
+                declared=declared,
+                source_snapshot_evidence=source_snapshot_evidence,
+            )
+            try:
+                experiment, resolver = native
+                ref = publish_unit_day_artifact(experiment, resolver, store)
+                value = con, native, context, store, panel, ref
+                publications[key] = value, _publication_digest(con, store, ref)
+            finally:
+                native[1].close()
+        return publications[key][0]
+
+    yield publication
+    with ExitStack() as cleanup:
+        for (con, _native_pair, _context, store, _panel, ref), before in publications.values():
+            cleanup.callback(con.disconnect)
+            assert _publication_digest(con, store, ref) == before
+
+
+@pytest.fixture
+def readonly_compliance_publications(_shared_compliance_publications):
+    with ExitStack() as cleanup:
+
+        def publication(*args, **options):
+            con, recipe, context, store, panel, ref = _shared_compliance_publications(
+                *args, **options
+            )
+            native = make_binding_like(recipe[1])
+            cleanup.callback(native[1].close)
+            return con, native, context, store, [dict(row) for row in panel], ref
+
+        yield publication
+
+
 @pytest.mark.parametrize("order", [("full", "drop"), ("drop", "full"), ("drop",)])
-def test_native_artifact_original_witness_and_matching_late(order):
-    con, (experiment, resolver), context, store, _panel = native_fixture(order)
+@pytest.mark.xdist_group("compliance_readonly")
+def test_native_artifact_original_witness_and_matching_late(
+    order, readonly_compliance_publications
+):
+    con, (experiment, resolver), context, store, _panel, ref = readonly_compliance_publications(
+        order
+    )
     try:
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             for source in (bound_source(resolver), artifact):
                 results = readouts.run(source, estimands=["compliance", "late"])
@@ -279,22 +373,25 @@ def test_native_artifact_original_witness_and_matching_late(order):
                     assert late.require_lift().value == pytest.approx(itt / stage)
     finally:
         resolver.close()
-        con.disconnect()
 
 
 @pytest.mark.parametrize("declared", [False, True], ids=["supplied-design", "declared-design"])
-def test_native_and_artifact_agree_for_each_supported_design_form(declared):
+@pytest.mark.xdist_group("compliance_readonly")
+def test_native_and_artifact_agree_for_each_supported_design_form(
+    declared, readonly_compliance_publications
+):
     """Both input forms keep the full typed design, every compliance row and interval,
     and one shared sequential source recipe and definition identity."""
     from increment.query.source import _artifact_source_context
     from increment.semantics.design import Encouragement
     from increment.sequential_source import sequential_definition_id
 
-    con, (experiment, resolver), context, store, _panel = native_fixture(declared=declared)
+    con, (experiment, resolver), context, store, _panel, ref = readonly_compliance_publications(
+        declared=declared
+    )
     try:
         native = bound_source(resolver)
         assert isinstance(native.context.design, Encouragement)
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             _, rehydrated = _artifact_source_context(context)
             assert rehydrated.design == native.context.design
@@ -326,11 +423,15 @@ def test_native_and_artifact_agree_for_each_supported_design_form(declared):
             assert len(identities) == 1
     finally:
         resolver.close()
-        con.disconnect()
 
 
-def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
-    con, (experiment, resolver), context, store, panel = native_fixture(("full",))
+@pytest.mark.xdist_group("compliance_readonly")
+def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact(
+    readonly_compliance_publications,
+):
+    con, (experiment, resolver), context, store, panel, ref = readonly_compliance_publications(
+        ("full",)
+    )
     frame = from_unit_panel(
         pa.Table.from_pylist(panel),
         unit="unit",
@@ -343,7 +444,6 @@ def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
         experiment_id="uptake_test",
     )
     try:
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             native_day = bound_source(resolver).day_source(
                 metrics=bound_source(resolver).context.metrics
@@ -365,7 +465,6 @@ def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
             assert mismatch.value.code == "source.compliance_summary.design_mismatch"
     finally:
         resolver.close()
-        con.disconnect()
 
 
 @pytest.mark.parametrize("legacy_coverage", [False, True], ids=["declared", "legacy"])
@@ -417,9 +516,12 @@ def test_uptake_after_outcome_day_extends_native_and_artifact_spine(legacy_cover
         con.disconnect()
 
 
-def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned():
+@pytest.mark.xdist_group("compliance_readonly")
+def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned(
+    readonly_compliance_publications,
+):
     """Pinned native and artifact spines include the same cutoff day and divisors."""
-    con, (experiment, resolver), context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel, ref = readonly_compliance_publications(
         ("full",),
         timing=ClickTiming(
             uptake_window=1,
@@ -431,7 +533,6 @@ def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned(
         source_snapshot_evidence=SourceSnapshotEvidence(datetime(2025, 1, 3, 23, 59, tzinfo=UTC)),
     )
     try:
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             sources = (bound_source(resolver), artifact)
             asof_rows = []
@@ -454,27 +555,28 @@ def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned(
                     assert native[day][field] == pytest.approx(published[day][field])
     finally:
         resolver.close()
-        con.disconnect()
 
 
-def test_published_uptake_respects_certified_local_day_edge():
+@pytest.mark.xdist_group("compliance_readonly")
+def test_published_uptake_respects_certified_local_day_edge(readonly_compliance_publications):
     """Assigned uptake events beyond the certified edge are absent in both sources."""
-    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
-        ("full",),
-        timing=ClickTiming(
-            uptake_window=5,
-            boundary_click_offsets=[timedelta(days=2)] * 9 + [timedelta(days=4)],
-            exposure_hour=12,
-        ),
-        outcome=(0, "sum", 7),
-        open_ended=True,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            datetime(2025, 1, 10, 12, tzinfo=UTC),
-            {"events": datetime(2025, 1, 4, 0, tzinfo=UTC)},
-        ),
+    con, (analysis_experiment, analysis_resolver), context, store, _panel, ref = (
+        readonly_compliance_publications(
+            ("full",),
+            timing=ClickTiming(
+                uptake_window=5,
+                boundary_click_offsets=[timedelta(days=2)] * 9 + [timedelta(days=4)],
+                exposure_hour=12,
+            ),
+            outcome=(0, "sum", 7),
+            open_ended=True,
+            source_snapshot_evidence=SourceSnapshotEvidence(
+                datetime(2025, 1, 10, 12, tzinfo=UTC),
+                {"events": datetime(2025, 1, 4, 0, tzinfo=UTC)},
+            ),
+        )
     )
     try:
-        ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             native = bound_source(analysis_resolver)
             sources = (native, artifact)
@@ -535,7 +637,6 @@ def test_published_uptake_respects_certified_local_day_edge():
                 assert native_result.lift.value == pytest.approx(artifact_result.lift.value)
     finally:
         analysis_resolver.close()
-        con.disconnect()
 
 
 @pytest.mark.integration
@@ -1182,14 +1283,14 @@ def test_uptake_coverage_cannot_supply_outcome_observations(outcome_day):
     check_uptake_outcome_coverage(outcome_day)
 
 
-def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries():
+@pytest.mark.xdist_group("compliance_readonly")
+def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries(readonly_compliance_publications):
     offsets = [timedelta(0), timedelta(hours=21), timedelta(days=1)]
-    con, (experiment, resolver), context, store, _panel = native_fixture(
+    con, (experiment, resolver), context, store, _panel, ref = readonly_compliance_publications(
         ("full",),
         timing=ClickTiming(uptake_window=1, boundary_click_offsets=offsets, exposure_hour=12),
     )
     try:
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             for source in (bound_source(resolver), artifact):
                 summary = _compliance(source, design(1))
@@ -1210,22 +1311,21 @@ def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries():
                 ] == pytest.approx(5 / 20)
     finally:
         resolver.close()
-        con.disconnect()
 
 
 @pytest.mark.parametrize("clustered", [False, True])
 @pytest.mark.parametrize("metric_free", [False, True])
 @pytest.mark.integration
+@pytest.mark.xdist_group("compliance_readonly")
 def test_new_native_artifact_export_reload_preserves_available_uncertainty(
-    tmp_path, clustered, metric_free
+    tmp_path, clustered, metric_free, readonly_compliance_publications
 ):
     import pyarrow.parquet as pq
 
-    con, (analysis_experiment, analysis_resolver), context, store, _panel = native_fixture(
-        () if metric_free else ("full",), clustered=clustered
+    con, (analysis_experiment, analysis_resolver), context, store, _panel, ref = (
+        readonly_compliance_publications(() if metric_free else ("full",), clustered=clustered)
     )
     try:
-        ref = publish_unit_day_artifact(analysis_experiment, analysis_resolver, store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             native_summary = _compliance(bound_source(analysis_resolver), design(7))
             with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext() as rec:
@@ -1295,7 +1395,6 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
             )
     finally:
         analysis_resolver.close()
-        con.disconnect()
 
 
 def test_legacy_artifact_is_identified_before_any_relation_execution(monkeypatch):
@@ -1328,20 +1427,22 @@ def test_legacy_artifact_is_identified_before_any_relation_execution(monkeypatch
         con.disconnect()
 
 
-def test_base_artifact_reader_implements_compliance_protocol():
-    con, (experiment, resolver), context, store, _panel = native_fixture(("full",))
+@pytest.mark.xdist_group("compliance_readonly")
+def test_base_artifact_reader_implements_compliance_protocol(readonly_compliance_publications):
+    con, (experiment, resolver), context, store, _panel, ref = readonly_compliance_publications(
+        ("full",)
+    )
     try:
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         with ArtifactMomentSource.open(store, ref, expected_context=context) as source:
             expected = _compliance(bound_source(resolver), design(7))
             assert _compliance(source, design(7)) == expected
     finally:
         resolver.close()
-        con.disconnect()
 
 
-def test_public_asof_api_reports_one_design_level_row_per_day():
-    con, (experiment, resolver), context, store, panel = native_fixture()
+@pytest.mark.xdist_group("compliance_readonly")
+def test_public_asof_api_reports_one_design_level_row_per_day(readonly_compliance_publications):
+    con, (experiment, resolver), context, store, panel, ref = readonly_compliance_publications()
     frame_experiment, frame_resolver = from_frame(
         pa.Table.from_pylist(panel),
         shape="panel",
@@ -1354,7 +1455,6 @@ def test_public_asof_api_reports_one_design_level_row_per_day():
         experiment_id="uptake_test",
     )
     try:
-        ref = publish_unit_day_artifact(experiment, resolver, store)
         adopted_experiment, adopted_resolver = from_unit_day_artifact(
             store, ref, expected_context=context
         )
@@ -1384,7 +1484,6 @@ def test_public_asof_api_reports_one_design_level_row_per_day():
     finally:
         frame_resolver.close()
         resolver.close()
-        con.disconnect()
 
 
 def test_current_artifact_rejects_contradictory_uptake_state(monkeypatch):
@@ -2344,16 +2443,21 @@ def _asof_lift(experiment, resolver):
 @pytest.mark.parametrize("outcome_window", [7, 9])
 @pytest.mark.parametrize("observed", [True, False])
 @pytest.mark.parametrize("metric_name", ["full", "drop"])
+@pytest.mark.xdist_group("compliance_readonly")
 def test_native_artifact_completed_compliance_staggered_enrollment(
-    path, outcome_window, observed, metric_name
+    path, outcome_window, observed, metric_name, readonly_compliance_publications
 ):
-    con, (experiment, resolver), context, store, _panel = native_fixture(
-        (metric_name,), staggered=True, outcome=(8, "sum", outcome_window)
-    )
-    if not observed:
+    if observed:
+        con, (experiment, resolver), context, store, _panel, ref = readonly_compliance_publications(
+            (metric_name,), staggered=True, outcome=(8, "sum", outcome_window)
+        )
+    else:
+        con, (experiment, resolver), context, store, _panel = native_fixture(
+            (metric_name,), staggered=True, outcome=(8, "sum", outcome_window)
+        )
         con.raw_sql(f"DELETE FROM events WHERE event = '{metric_name}_event'")
-    try:
         ref = publish_unit_day_artifact(experiment, resolver, store)
+    try:
         with open_artifact(store, ref, expected_context=context) as artifact:
             adopted_experiment, adopted_resolver = from_unit_day_artifact(
                 store, ref, expected_context=context
@@ -2382,7 +2486,8 @@ def test_native_artifact_completed_compliance_staggered_enrollment(
                 adopted_resolver.close()
     finally:
         resolver.close()
-        con.disconnect()
+        if not observed:
+            con.disconnect()
 
 
 @pytest.mark.parametrize("outcome_state", ["present", "absent", "null", "filtered"])
