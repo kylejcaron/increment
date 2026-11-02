@@ -326,4 +326,4 @@ def test_gate_runs_outside_a_workflow_run(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]

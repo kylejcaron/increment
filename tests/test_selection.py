@@ -14,7 +14,7 @@ import pytest
 from scripts.selection_map import SelectionMap, is_stale
 from tests._selection import AffectedHandler, SelectionGraph, kept_test_files
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 class _Tach:
@@ -140,7 +140,7 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
             "-m",
             "pytest",
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
             "-q",
             "--tach-base",
             base,

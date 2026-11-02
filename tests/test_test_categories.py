@@ -6,10 +6,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 def _collect_and_run(tmp_path: Path, source: str) -> subprocess.CompletedProcess[str]:
@@ -106,3 +107,23 @@ def test_unit_exclusions_match_unit_selector() -> None:
     markers = {part.strip() for part in TIER_MARKERS["unit"].split("and")}
     excluded = {part[4:].strip() for part in markers if part.strip().startswith("not ")}
     assert excluded == UNIT_EXCLUDING_MARKERS
+
+
+def test_tooling_is_excluded_from_product_tiers_and_kept_in_all() -> None:
+    from noxfile import TIER_MARKERS
+
+    for tier in ("unit", "fast", "integration-fast", "slow"):
+        assert "not tooling" in TIER_MARKERS[tier]
+    assert TIER_MARKERS["tooling"] == "tooling and not benchmark"
+    assert "not tooling" not in TIER_MARKERS["all"]
+
+
+def test_tooling_tests_are_not_unit_selected() -> None:
+    from tests._unit_boundary import is_unit_selected
+
+    class ToolingItem:
+        @staticmethod
+        def get_closest_marker(name: str):
+            return object() if name == "tooling" else None
+
+    assert not is_unit_selected(cast(pytest.Item, ToolingItem()))

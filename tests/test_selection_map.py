@@ -12,7 +12,7 @@ from coverage import CoverageData
 
 from scripts.selection_map import SelectionMap, build, is_stale
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 def test_build_maps_each_module_to_executing_test_file(tmp_path: Path) -> None:
