@@ -35,7 +35,14 @@ if TYPE_CHECKING:
     from increment.estimation.contrast_results import ContrastResult, ContrastResults
     from increment.estimation.diagnostics import AllocationBand, NotApplicable, SRMResult
     from increment.estimation.health import ExperimentHealth, HealthCheck
-    from increment.estimation.results import BinomialConfidenceSet, Estimate, LiftEstimate
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.estimation.results import (
+        BinomialConfidenceSet,
+        Estimate,
+        JointContrastReference,
+        LiftEstimate,
+        RelativeConfidenceSet,
+    )
     from increment.estimation.sitewide import AllocationBalance, SitewideImpact, SitewideRatioImpact
     from increment.estimation.targeting import (
         CateEvaluationPopulation,
@@ -59,6 +66,7 @@ if TYPE_CHECKING:
         UnitCyclePowerLowerBoundResult,
     )
     from increment.reporting import MetricTrend
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
     from increment.switchback import SwitchbackAssignmentDiagnostic
     from increment.winsor import (
         BootstrapReference,
@@ -84,6 +92,8 @@ __all__ = [
     "IndependentMeanReference",
     "SetEndpoint",
     "SetInterval",
+    "JointContrastReference",
+    "RelativeConfidenceSet",
     "LiftEstimate",
     "LiftEstimates",
     "ContrastResult",
@@ -133,6 +143,9 @@ __all__ = [
     "PolicyValueContrast",
     "ExperimentHealth",
     "HealthCheck",
+    "AnalysisEnvelope",
+    "ResultCell",
+    "ReadoutResults",
 ]
 
 _LAZY_IMPORTS = {
@@ -149,6 +162,8 @@ _LAZY_IMPORTS = {
     "SetEndpoint": ("increment.winsor", "SetEndpoint"),
     "SetInterval": ("increment.winsor", "SetInterval"),
     "LiftEstimate": ("increment.estimation.results", "LiftEstimate"),
+    "JointContrastReference": ("increment.estimation.results", "JointContrastReference"),
+    "RelativeConfidenceSet": ("increment.estimation.results", "RelativeConfidenceSet"),
     "ConfoundingSensitivity": ("increment.estimation.confounding", "ConfoundingSensitivity"),
     "LiftEstimates": ("increment.breakout.estimates", "LiftEstimates"),
     "ContrastResult": ("increment.estimation.contrast_results", "ContrastResult"),
@@ -203,6 +218,9 @@ _LAZY_IMPORTS = {
     "PolicyValueContrast": ("increment.logged_policy", "PolicyValueContrast"),
     "ExperimentHealth": ("increment.estimation.health", "ExperimentHealth"),
     "HealthCheck": ("increment.estimation.health", "HealthCheck"),
+    "AnalysisEnvelope": ("increment.result_envelope", "AnalysisEnvelope"),
+    "ResultCell": ("increment.result_envelope", "ResultCell"),
+    "ReadoutResults": ("increment.estimation.readout_types", "ReadoutResults"),
 }
 
 

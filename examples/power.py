@@ -8,17 +8,10 @@ app = marimo.App(width="medium")
 def _():
     import marimo as mo
 
-    from increment import InferenceSpec
-    from increment.decision import FixedInference
-    from increment.estimation.arm_contract import (
-        AnalysisAxes,
-        FamilyPolicy,
-        MetricCapabilities,
-        PlanningFamilyExpansion,
-        RelativeDecisionPolicy,
-    )
+    from increment import InferenceSpec, MethodSpec
     from increment.estimators import (
         Baseline,
+        FixedInference,
         ParallelAssignment,
         PowerDesign,
         achieved_power,
@@ -26,8 +19,14 @@ def _():
         power_curve,
         required_sample_size,
     )
-    from increment.power import ArmPlanningProcedure
-    from increment.semantics.models import MethodSpec
+    from increment.power import (
+        AnalysisAxes,
+        ArmPlanningProcedure,
+        FamilyPolicy,
+        MetricCapabilities,
+        PlanningFamilyExpansion,
+        RelativeDecisionPolicy,
+    )
 
     return (
         AnalysisAxes,

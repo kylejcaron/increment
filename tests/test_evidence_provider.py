@@ -7,16 +7,14 @@ from typing import Any, Literal, cast
 import pytest
 
 from increment import Method, Scope, from_definitions, from_frame, from_moments, run, workflows
+from increment._evidence_types import BreakoutSlicesRequest, BreakoutUnitRowsRequest, DayAxisRequest
 from increment.errors import CapabilityError, CodedError
 from increment.evidence import (
     BreakoutIdentity,
-    BreakoutSlicesRequest,
-    BreakoutUnitRowsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
     CountEvidence,
     CountsRequest,
-    DayAxisRequest,
     EvidenceCapabilities,
     EvidenceProvider,
     EvidenceScope,
@@ -1245,7 +1243,7 @@ def test_scoped_breakout_moments_reject_another_source_before_reading(
 
 @pytest.mark.integration
 def test_scoped_breakout_unit_rows_reject_another_source(tmp_path) -> None:
-    from increment.evidence import BreakoutUnitRowsRequest
+    from increment._evidence_types import BreakoutUnitRowsRequest
     from tests.analysis_factory import held_source
     from tests.source_conformance import definitions_source
 
@@ -1303,11 +1301,8 @@ def test_legacy_source_without_evidence_refuses_before_reading() -> None:
 def test_refusals_precede_population_or_source_reads(
     tmp_path, kind, expected_code, monkeypatch
 ) -> None:
-    from increment.evidence import (
-        BreakoutMethodMomentsRequest,
-        BreakoutSlicesRequest,
-        BreakoutUnitRowsRequest,
-    )
+    from increment._evidence_types import BreakoutSlicesRequest, BreakoutUnitRowsRequest
+    from increment.evidence import BreakoutMethodMomentsRequest
 
     (_, resolver), declared_breakout = definitions_source(
         tmp_path, trigger=True, partial_trigger=True, return_binding=True
@@ -1665,7 +1660,7 @@ def test_triggered_multicovariate_fallback_reads_triggered_unit_rows() -> None:
             return EvidenceScopeResult(scoped(), request)
 
     from increment import CupedCovariate, Method
-    from increment.evidence import MetricEvidenceRequest
+    from increment._evidence_types import MetricEvidenceRequest
 
     method = Method.cuped_multicovariate(
         covariates=(CupedCovariate(name="segment", kind="categorical"),)
@@ -1685,7 +1680,7 @@ def test_triggered_multicovariate_fallback_reads_triggered_unit_rows() -> None:
 
 @pytest.mark.integration
 def test_builtin_breakout_unit_rows_respect_triggered_population(tmp_path) -> None:
-    from increment.evidence import BreakoutUnitRowsRequest
+    from increment._evidence_types import BreakoutUnitRowsRequest
 
     source, identity = definitions_source(tmp_path, trigger=True, partial_trigger=True)
     metric = source.context.metrics[0]
@@ -2769,7 +2764,8 @@ def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
     from types import SimpleNamespace
 
     from increment import CupedCovariate, Method
-    from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
+    from increment._evidence_types import MetricEvidenceRequest
+    from increment.evidence import MethodFitAnswer, request_evidence
 
     analysis = _categorical_cuped_analysis()
     source = cast(Any, held_source(analysis[1]))
@@ -2847,7 +2843,8 @@ def test_warehouse_fit_input_digest_uses_declared_unit_rows():
     from types import SimpleNamespace
 
     from increment import CupedCovariate, Method
-    from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
+    from increment._evidence_types import MetricEvidenceRequest
+    from increment.evidence import MethodFitAnswer, request_evidence
 
     analysis = _categorical_cuped_analysis()
     source = cast(Any, held_source(analysis[1]))
@@ -2933,7 +2930,8 @@ def test_local_cuped_fallback_preserves_retained_categorical_components() -> Non
     from types import SimpleNamespace
 
     from increment import CupedCovariate, Method
-    from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
+    from increment._evidence_types import MetricEvidenceRequest
+    from increment.evidence import MethodFitAnswer, request_evidence
 
     analysis = _categorical_cuped_analysis()
     source = cast(Any, held_source(analysis[1]))

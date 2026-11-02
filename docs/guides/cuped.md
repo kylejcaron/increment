@@ -835,8 +835,7 @@ must be strings (encode a Boolean as labels such as `"new"` and `"returning"`).
 ```python
 import numpy as np
 import polars as pl
-from increment import Method, MetricSpec, from_frame, run
-from increment.semantics.models import CupedCovariate
+from increment import CupedCovariate, Method, MetricSpec, from_frame, run
 
 rng = np.random.default_rng(20261013)
 n = 4_000

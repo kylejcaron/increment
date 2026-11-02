@@ -1396,7 +1396,7 @@ def test_from_definitions_auto_binding_preserves_omitted_q(tmp_path):
             assert bound_plan.inference is not None
             assert bound_plan.inference.registration is not None
             assert "q" not in bound_plan.model_fields_set
-            from increment.artifacts import compile_unit_day_artifact_context
+            from increment.query.artifact_contract import compile_unit_day_artifact_context
 
             context = compile_unit_day_artifact_context("experiment", auto_defs)
             assert "plan_q_explicit" not in json.loads(context.canonical_json)

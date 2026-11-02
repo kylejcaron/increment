@@ -78,6 +78,16 @@ tests/test_unit_day_artifact_parity.py 5
 tests/test_warehouse_cuped_parity.py 2
 tests/test_warehouse_cuped_qr.py 5
 # H4: imports of increment private modules or names
+# Narrow allowances for tests of the internal compound evidence-acquisition
+# request boundary. Primitive custom-provider requests and EvidenceProvider
+# remain covered by the public evidence API contract.
+tests/test_analysis_breakout.py 3
+# These counts cover breakout, day-axis, and metric-evidence request tests.
+tests/test_evidence_provider.py 11
+# Day-axis acquisition request coverage for the custom-provider example.
+tests/test_examples_custom_provider.py 1
+# Compound request encoding and scope-compatibility contract coverage.
+tests/test_kernel_contracts.py 4
 tests/binary_sequential_cases.py 1
 tests/breakout/test_daily.py 3
 tests/breakout/test_estimates.py 3

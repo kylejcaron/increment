@@ -94,15 +94,15 @@ every loader.
   sampling inference.
 - User-facing strings — refusal templates, reprs, warnings, README, guides —
   are written for an analyst who has not read the guides; internal vocabulary
-  stays internal; a term is allowed only where a guide defines it. Root exports
-  are listed with a one-line user task in `tests/public_exports.txt` (and public
-  parameter spellings in `tests/public_parameters.txt` where that inventory
-  exists); `tests/test_consumer_standard.py` enforces the inventories and the
+  stays internal; a term is allowed only where a guide defines it. Every promised
+  namespace has a section with one user task per name in `tests/public_exports.txt`
+  (and public parameter spellings in `tests/public_parameters.txt` where that
+  inventory exists); `tests/test_consumer_standard.py` enforces the inventories and the
   vocabulary check. A term a guide defines for users is listed with that
   guide in `tests/consumer_jargon.txt`; existing occurrences are counted per
   file in `tests/consumer_jargon_baseline.txt`, and those counts may fall but
-  never grow. A root-export change is an API cutover recorded in
-  release notes.
+  never grow. A change to a promised export is an API cutover recorded in
+  release notes; documentation imports only names in that manifest.
 
 ## Numbers
 

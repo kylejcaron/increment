@@ -8,10 +8,10 @@ import pytest
 from pydantic import TypeAdapter
 
 from increment import Metric
+from increment._evidence_types import DayAxisRequest
 from increment.estimation.engine import estimate_lift
 from increment.estimators import CapabilityError
 from increment.evidence import (
-    DayAxisRequest,
     EvidenceProvider,
     EvidenceScope,
     EvidenceScopeResult,

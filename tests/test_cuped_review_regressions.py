@@ -11,7 +11,7 @@ from increment.errors import IncrementWarning
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
-from increment.evidence import EvidenceSource
+from increment.evidence import EvidenceProvider
 from increment.frame import CupedCovariate
 from increment.semantics.models import ExperimentMetric
 from tests.analysis_factory import view_readout
@@ -206,9 +206,9 @@ def test_unavailable_linear_override_refuses_before_evidence_acquisition(overrid
     )
     with pytest.raises(CodedError) as raised:
         if override == "decision":
-            run(cast(EvidenceSource, source), decision_method=linear)
+            run(cast(EvidenceProvider, source), decision_method=linear)
         else:
-            run(cast(EvidenceSource, source), sensitivity_methods=[linear])
+            run(cast(EvidenceProvider, source), sensitivity_methods=[linear])
     assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
     assert source.read_calls == 0
 

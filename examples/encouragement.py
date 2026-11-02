@@ -372,10 +372,10 @@ def _(
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
+        frame_observation_mapping,
         sequential_definition_id,
+        synthesise_metric,
     )
-    from increment.frame import synthesise_metric
-    from increment.sequential_source import frame_observation_mapping
 
     _window_days = 7
     _design = Encouragement(
@@ -494,17 +494,11 @@ def _(
 
 @app.cell(hide_code=True)
 def _(uptake_trend, pd):
-    from increment._display import format_interval
-
     uptake_table = pd.DataFrame(
         {
             "ds": r.ds,
             "uptake_lift": None if r.lift is None else f"{r.lift.value:.4g}",
-            "ratio_interval": format_interval(
-                r.sequential_result.bounds.lower,
-                r.sequential_result.bounds.upper,
-                empty=r.sequential_result.bounds.empty,
-            ),
+            "ratio_interval": str(r.sequential_result.bounds),
             "status": r.sequential_result.bounds.status,
             "inference": r.inference,
         }

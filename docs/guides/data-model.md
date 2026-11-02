@@ -185,17 +185,19 @@ boundary and return only immutable `AssignmentEvidence`.
 
 ```python
 import pandas as pd
+from increment import from_frame
 from increment.evidence import AssignmentRequest, evidence_provider, request_evidence
-from increment.frame import from_unit_summary
 
-source = from_unit_summary(
+experiment, resolver = from_frame(
     pd.DataFrame({"unit": ["u1", "u2"], "arm": ["control", "treatment"], "value": [1.0, 2.0]}),
+    shape="summary",
     unit="unit",
     group="arm",
     control="control",
     metrics={"value": "mean"},
     experiment_id="checkout",
 )
+source = resolver.resolve(experiment.source_refs)
 evidence = request_evidence(
     evidence_provider(source),
     AssignmentRequest(experiment="checkout", population="assigned"),
@@ -512,9 +514,9 @@ the same window. At `day_boundary: UTC-05:00`:
 
 ```python
 from datetime import date
-from increment.semantics.models import Experiment
+from increment import ExperimentDefinition
 
-exp = Experiment.model_validate(
+exp = ExperimentDefinition.model_validate(
     {
         "name": "demo",
         "exposure": "enrolled",
