@@ -20,6 +20,11 @@ with `results.readout.scope_unknown`. A result restored by
 `readout()` refuses with `results.readout.not_retained`; its `to_frame()`,
 `render` and `readout_table` still read the saved cells.
 
+Portable result cells have a closed set of row kinds. Readers refuse an
+unrecognized `row_kind` with `results.cell.schema_unsupported`; they never
+guess how to decode a new kind. Add a row kind as an explicit compatible
+extension, and older readers continue to refuse it.
+
 ```python
 import polars as pl
 

@@ -24,6 +24,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
     field_serializer,
     field_validator,
     model_validator,
@@ -62,6 +63,14 @@ RETENTION_UNDER_ENCOURAGEMENT = RefusalSpec(
     template="retention metric(s) {names!r} are not supported under an encouragement design; its maturity gate changes the first-stage population by outcome metric",
 )
 
+
+_DESIGN_MECHANISM_UNSUPPORTED = RefusalSpec(
+    "design.mechanism_unsupported",
+    InvalidRequestError,
+    template="design mechanism {mechanism!r} is unsupported; supported mechanisms are {supported}",
+    keys=frozenset({"mechanism", "supported"}),
+)
+
 _REFUSALS = refusals(
     InvalidRequestError,
     {
@@ -74,6 +83,7 @@ _REFUSALS = refusals(
             ),
         ),
         "design.allocation_scheme.incompatible": ALLOCATION_SCHEME_INCOMPATIBLE,
+        "design.mechanism_unsupported": _DESIGN_MECHANISM_UNSUPPORTED,
     },
 )
 _raise = raiser(_REFUSALS)
@@ -344,6 +354,21 @@ class Observational(CodedModel, BaseModel):
 
 
 Design = Annotated[Randomized | Encouragement | Observational, Field(discriminator="mechanism")]
+
+SUPPORTED_DESIGN_MECHANISMS = ("randomized", "encouragement", "observational")
+_DESIGN_ADAPTER = TypeAdapter(Design)
+
+
+def parse_design(payload: Mapping[str, object]) -> Design:
+    """Parse a design payload, refusing unknown mechanisms with a stable code."""
+    mechanism = payload.get("mechanism")
+    if mechanism is not None and mechanism not in SUPPORTED_DESIGN_MECHANISMS:
+        refuse(
+            _DESIGN_MECHANISM_UNSUPPORTED,
+            mechanism=str(mechanism),
+            supported=SUPPORTED_DESIGN_MECHANISMS,
+        )
+    return _DESIGN_ADAPTER.validate_python(payload)
 
 
 READOUT_ENCOURAGEMENT_RETENTION = RETENTION_UNDER_ENCOURAGEMENT
