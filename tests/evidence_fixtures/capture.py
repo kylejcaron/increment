@@ -40,7 +40,6 @@ PRODUCERS = (
     ("increment._evidence_loaders", "load_moments"),
     ("increment._evidence_loaders", "load_unit_rows"),
     ("increment._evidence_loaders", "load_contrast_stats"),
-    ("increment.estimation.cuped.prepare", "prepare_multicovariate_fit"),
 )
 
 
@@ -99,6 +98,17 @@ def _json(value: Any) -> Any:
 
 def _encoded(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _frame_rows(frame: Any) -> list[dict[str, Any]]:
+    import narwhals as nw
+
+    native = nw.from_native(frame, eager_only=True)
+    if hasattr(native, "to_dicts"):
+        return native.to_dicts()
+    columns = native.to_dict(as_series=False)
+    names = tuple(columns)
+    return [dict(zip(names, values, strict=True)) for values in zip(*columns.values(), strict=True)]
 
 
 @dataclass(init=False)
@@ -279,7 +289,17 @@ class _Capture:
                     for row in item.rows:
                         metric_name = str(row.get("metric", item.metrics[0].name))
                         self.add(
-                            key("day_axis", None, metric_name, str(row["group_id"]), row),
+                            _capture_key(
+                                scope,
+                                request,
+                                {**values, "source_name": item.source_name},
+                                coordinates,
+                                "day_axis",
+                                None,
+                                metric_name,
+                                str(row["group_id"]),
+                                row,
+                            ),
                             {
                                 "moments": {field: row.get(field) for field in _MOMENTS},
                                 "observation_edges": item.observation_edges,
@@ -325,15 +345,11 @@ class _Capture:
                 self.add(key(name, None, "", ""), [item.identity for item in result.slices])
             else:
                 assert metric is not None
-                import narwhals as nw
-
-                frame = nw.from_native(result.frame, eager_only=True).to_dicts()
+                frame = _frame_rows(result.frame)
                 self.add(key(name, None, metric.name, ""), sorted(frame, key=_encoded))
             return result
         if name == "load_unit_rows":
-            import narwhals as nw
-
-            result_payload = nw.from_native(result, eager_only=True).to_dicts()
+            result_payload = _frame_rows(result)
         else:
             result_payload = result
         self.add(key(name, method, "" if metric is None else metric.name, ""), result_payload)
@@ -376,7 +392,14 @@ class _Capture:
             for row in rows:
                 payload = {"moments": {field: row.get(field) for field in _MOMENTS}}
                 fits = [
-                    answer
+                    {
+                        "request": fit_request,
+                        "evidence": {
+                            "envelope": answer.envelope,
+                            "cells": answer.cells,
+                            "failure": answer.failure,
+                        },
+                    }
                     for fit_request, answer in result.method_fit_answers
                     if fit_request.method == method
                 ]
@@ -396,9 +419,7 @@ class _Capture:
                     payload,
                 )
             if result.unit_frame is not None:
-                import narwhals as nw
-
-                units = nw.from_native(result.unit_frame, eager_only=True).to_dicts()
+                units = _frame_rows(result.unit_frame)
                 for arm in sorted(result.observed_arms):
                     selected = [row for row in units if str(row["group_id"]) == arm]
                     self.add(

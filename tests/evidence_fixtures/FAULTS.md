@@ -30,6 +30,14 @@ that normalization. Source-qualified breakout dimensions retain their qualifier
 in segment coordinates. Acquisitions shared before several views execute are
 recorded under each consuming scope.
 
+Day-axis segment coordinates use each consumed `DayAxisSlice.source_name`, not
+the request's or row's source context, so equal property/day/value rows from two
+fact sources remain distinct. Method-fit records retain the full
+`MethodFitRequest` and numerical `envelope`, `cells`, or `failure`; source-varying
+`origin`, `fit_identity`, and `evidence_sha256` are excluded from parity. The
+full method declaration remains in the key and the full request remains in the
+payload, so changing fitted numerical values still fails comparison.
+
 ## Producer inventory
 
 The wrapper inventory is `capture.PRODUCERS`. Aliases already imported by readouts
@@ -37,13 +45,16 @@ are wrapped too; aliases imported during `run` are restored on exit. Nested
 acquisitions are represented by the enclosing terminal envelope rather than
 recording the same observations twice. Lazy day-axis slices are recorded as they
 are consumed, without materializing them outside the owning source lifetime.
+`prepare_multicovariate_fit` is a pure consumer of the acquired method-fit answers,
+not an acquisition boundary: its FCR re-estimation passes share one captured
+`MethodFitAnswer` inside `MetricEvidence`.
 
 | Readout / evidence | Producers covered by the wrapper | Reduced implementations underneath |
 | --- | --- | --- |
 | Run, scalar CUPED, quantile, percentile winsorization | `_metric_rows.load_metric_evidence` covers `_load_metric_evidence` and `_load_percentile_winsor_evidence`, all seven run `MetricEvidence` construction branches | `_evidence_loaders.load_moments`, `load_unit_rows`; dataframe / warehouse / artifact / moments |
 | Breakout | `_metric_rows._load_breakout_metric_rows` (the eighth `_metric_rows` constructor); `_evidence.load_breakout_evidence`, `load_breakout_method_moments` | `BreakoutSlices`, `BreakoutSlice`, `BreakoutUnitRows`; `frame.FramePanelSource.breakout_moments_for_method`, `sources.BreakoutMomentsSource.breakout_moments_for_method` produce `ScalarBreakoutRows` |
 | Daily and as-of values/lifts | `_evidence.load_day_axis_rows` covers `_load_day_axis_rows` and its custom-provider branch; `_asof._asof_metric_rows` | `DayAxisRows` / `DayAxisSlice` from `_NativeDayAxis`, `_ArtifactDayAxis`, `_MomentsDayAxis`; lower `load_builtin_day_moments` delegates back to this boundary |
-| Multicovariate CUPED | `_evidence.load_method_fit`; `estimation.cuped.prepare.prepare_multicovariate_fit` | `MethodFitAnswer`, `PreparedMulticovariateFit`, `warehouse_cuped_fit_evidence` / `_WarehouseCupedFitEvidence`; retained categorical cells or fitted/local inputs |
+| Multicovariate CUPED | `_evidence.load_method_fit`; the `prepare_multicovariate_fit` consumer selects a captured answer | `MethodFitAnswer`, `PreparedMulticovariateFit`, `warehouse_cuped_fit_evidence` / `_WarehouseCupedFitEvidence`; retained categorical cells or fitted/local inputs |
 | Sequential run, daily/as-of and breakout | `_evidence.load_sequential_capture`, `current_source_snapshot` | `loader_snapshot`, `retained_sequential_capture`, `retained_sequential_snapshot` delegate to those boundaries; source-owned `SequentialCapture` snapshots |
 | Switchback | `_evidence_loaders.load_contrast_stats`; `_evidence.load_assignment` | `acquire_contrast_stats`; assignment results from `switchback`, `query.native_source`, `query.artifact_reader`, or the custom provider |
 | Arm roster / integrity | `_evidence.load_counts`, `load_assignment` | `CountEvidence`, `AssignmentEvidence`; nested assignment counts are retained inside the assignment envelope |
