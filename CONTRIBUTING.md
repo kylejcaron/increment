@@ -610,9 +610,10 @@ workers and the subprocesses they waited for), its wall seconds and its worker
 count. The nightly full suite records both its main pytest invocation and the
 trailing numerical cases; the report sums their CPU and wall seconds and keeps
 the largest worker count. Wall seconds cover pytest sessions only; runner-minutes
-come from each job's start and completion timestamps. To see what runs cost,
-print each job's runner-minutes and CPU-minutes with per-run totals; a job
-without a CPU artifact is unavailable, not zero:
+come from each job's start and completion timestamps. Queued jobs cancelled before
+runner allocation do not consume runner-minutes; cancellations after work starts
+still count. To see what runs cost, print each job's runner-minutes and CPU-minutes
+with per-run totals; a job without a CPU artifact is unavailable, not zero:
 
 ```bash
 uv run --no-sync python scripts/ci_cost_report.py --run <run ID> [--run <run ID> ...]

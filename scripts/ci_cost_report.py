@@ -123,6 +123,13 @@ def load_jobs(run_id: int) -> list[JobTiming]:
             raise SystemExit(f"run {run_id}: job {job['name']!r} is {job['status']}")
         if job["conclusion"] == "skipped":
             continue
+        if (
+            job["conclusion"] == "cancelled"
+            and job.get("runner_id") == 0
+            and job.get("runner_name") == ""
+            and job.get("steps") == []
+        ):
+            continue
         timing = JobTiming(
             id=job["id"],
             name=job["name"],

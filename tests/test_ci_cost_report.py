@@ -67,3 +67,44 @@ def test_job_cpu_totals_every_pytest_invocation(monkeypatch: pytest.MonkeyPatch)
     cpu = ci_cost_report.load_cpu(1)
     assert cpu == {"1": CpuUsage(30, 20, 30, 40, 70, 2)}
     assert build_report([_job(1, 5)], cpu).cpu_minutes == 2.0
+
+
+def test_load_jobs_excludes_unallocated_cancelled_jobs_but_counts_spent_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = (
+        {
+            "id": 125089107008,
+            "name": "fast",
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "cancelled",
+            "started_at": "2026-11-02T04:07:56Z",
+            "completed_at": "2026-11-02T04:33:06Z",
+            "runner_id": 0,
+            "runner_name": "",
+            "steps": [],
+        },
+        {
+            "id": 125082052399,
+            "name": "snowflake",
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "cancelled",
+            "started_at": "2026-11-02T04:29:44Z",
+            "completed_at": "2026-11-02T04:33:14Z",
+            "runner_id": 1000027651,
+            "runner_name": "GitHub Actions 1000027651",
+            "steps": [{"name": "Set up job", "status": "completed", "conclusion": "success"}],
+        },
+    )
+    monkeypatch.setattr(
+        ci_cost_report,
+        "_gh",
+        lambda *_args: "".join(json.dumps(job) + "\n" for job in jobs),
+    )
+
+    loaded = ci_cost_report.load_jobs(41384180605)
+
+    assert [job.id for job in loaded] == [125082052399]
+    assert loaded[0].runner_minutes == 3.5
