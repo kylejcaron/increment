@@ -8,15 +8,17 @@ import sys
 import textwrap
 import time
 import warnings
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import ibis
+import ibis.expr.types as ir
 import pytest
 
-from increment.errors import IncrementWarning, InvalidRequestError
+from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.query.artifact_contract import ARTIFACT_DOMAIN_ROOT, ArtifactContractError
 from increment.query.artifact_digest import manifest_sha256
 from increment.query.session import (
@@ -512,15 +514,14 @@ def test_snapshot_arrow_cache_skips_raw_sql_views_over_captured_relations():
         con.disconnect()
 
 
-@pytest.mark.integration
+@pytest.mark.slow
 def test_snapshot_arrow_cache_skips_results_over_per_result_budget(monkeypatch):
-    from increment.query import session as session_module
-
-    monkeypatch.setattr(session_module, "_MAX_ARROW_RESULT_BYTES", 8, raising=False)
-    monkeypatch.setattr(session_module, "_MAX_ARROW_CACHE_BYTES", 128, raising=False)
     con, session = _session()
     snapshot = session.pin_sources(("select x from t",))
-    expression = snapshot.source_sql("select x from t")
+    captured = snapshot.source_sql("select x from t")
+    expression = captured.filter(captured.x == 1).select(
+        payload=cast("ir.StringScalar", ibis.literal("a")).repeat(16 * 1024 * 1024)
+    )
     original_to_pyarrow = con.to_pyarrow
     executions = 0
 
@@ -533,7 +534,8 @@ def test_snapshot_arrow_cache_skips_results_over_per_result_budget(monkeypatch):
     try:
         first = snapshot.fetch_arrow(expression)
         second = snapshot.fetch_arrow(expression)
-        assert first.nbytes > session_module._MAX_ARROW_RESULT_BYTES
+        assert first.nbytes > 16 * 1024 * 1024
+        assert first.column("payload")[0].as_py() == "a" * (16 * 1024 * 1024)
         assert second.equals(first)
         assert executions == 2
     finally:
@@ -541,17 +543,23 @@ def test_snapshot_arrow_cache_skips_results_over_per_result_budget(monkeypatch):
         con.disconnect()
 
 
-@pytest.mark.integration
+@pytest.mark.slow
 def test_snapshot_arrow_cache_stops_at_total_byte_budget(monkeypatch):
-    from increment.query import session as session_module
-
-    monkeypatch.setattr(session_module, "_MAX_ARROW_RESULT_BYTES", 128, raising=False)
-    monkeypatch.setattr(session_module, "_MAX_ARROW_CACHE_BYTES", 9, raising=False)
     con, session = _session()
     snapshot = session.pin_sources(("select x from t",))
     captured = snapshot.source_sql("select x from t")
-    small = captured.filter(captured.x == 1).select("x")
+    chunk_bytes = 16 * 1024 * 1024
+    total_bytes = 128 * 1024 * 1024
     original_to_pyarrow = con.to_pyarrow
+
+    def payload_expression(index, length):
+        return captured.filter(captured.x == 1).select(
+            payload=cast("ir.StringScalar", ibis.literal(str(index))).repeat(length)
+        )
+
+    overhead = original_to_pyarrow(payload_expression(0, 1)).nbytes - 1
+    payload_chars = chunk_bytes - overhead
+    expressions = [payload_expression(index, payload_chars) for index in range(9)]
     executions = 0
 
     def counted_to_pyarrow(expr, *args, **kwargs):
@@ -561,13 +569,29 @@ def test_snapshot_arrow_cache_stops_at_total_byte_budget(monkeypatch):
 
     monkeypatch.setattr(con, "to_pyarrow", counted_to_pyarrow)
     try:
-        first_small = snapshot.fetch_arrow(small)
-        assert first_small.nbytes == session_module._MAX_ARROW_CACHE_BYTES
-        assert snapshot.fetch_arrow(small).equals(first_small)
-        large = snapshot.fetch_arrow(captured)
-        assert large.nbytes > session_module._MAX_ARROW_CACHE_BYTES
-        assert snapshot.fetch_arrow(captured).equals(large)
-        assert executions == 3
+        admitted_bytes = 0
+        for index, expression in enumerate(expressions[:8]):
+            result = snapshot.fetch_arrow(expression)
+            assert result.nbytes == chunk_bytes
+            admitted_bytes += result.nbytes
+            assert result.column("payload")[0].as_py() == str(index) * payload_chars
+            assert snapshot.fetch_arrow(expression).equals(result)
+        assert admitted_bytes == total_bytes
+        assert executions == 8
+        for index, expression in enumerate(expressions[:8]):
+            assert snapshot.fetch_arrow(expression).column("payload")[0].as_py() == (
+                str(index) * payload_chars
+            )
+        assert executions == 8
+        uncached = snapshot.fetch_arrow(expressions[8])
+        assert uncached.nbytes == chunk_bytes
+        assert snapshot.fetch_arrow(expressions[8]).equals(uncached)
+        assert executions == 10
+        for index, expression in enumerate(expressions[:8]):
+            assert snapshot.fetch_arrow(expression).column("payload")[0].as_py() == (
+                str(index) * payload_chars
+            )
+        assert executions == 10
     finally:
         snapshot.drop_materialized()
         con.disconnect()
@@ -743,6 +767,317 @@ def test_materialize_table_creates_temp_and_tracks_name():
     assert s.materialized_names == []
 
 
+@pytest.mark.integration
+def test_failed_insert_during_temp_materialization_is_cleaned_up():
+    con, session = _session()
+    name = session.temp_name("bad_materialization")
+    source_rows = con.table("t").to_pyarrow().to_pylist()
+    expression = ibis.literal("not-an-int").cast("int64").as_table()
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            session.materialize_table(name, expression, required=True)
+        assert raised.value.code == "query.session.snapshot.materialization_failed"
+        assert name not in con.list_tables(database=("temp", "main"))
+        assert con.table("t").to_pyarrow().to_pylist() == source_rows
+        assert session.materialized_names == []
+    finally:
+        session.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.parametrize("owner_kind", ["session", "artifact_qr"])
+def test_temp_catalog_probe_failure_retains_locator_for_retry(monkeypatch, owner_kind):
+    from contextlib import nullcontext
+
+    con, session = _session()
+    store = WarehouseArtifactStore(con)
+    expression = ibis.literal("not-an-int").cast("int64").as_table()
+    create = con.create_table
+    list_tables = con.list_tables
+    created_names = []
+    failed_probe = False
+
+    def failed_create(name, *args, **kwargs):
+        try:
+            return create(name, *args, **kwargs)
+        except Exception:
+            created_names.append(name)
+            raise
+
+    def unavailable_catalog(*args, **kwargs):
+        nonlocal failed_probe
+        if created_names and not failed_probe and kwargs.get("database") == ("temp", "main"):
+            failed_probe = True
+            raise RuntimeError("temporary catalog unavailable")
+        return list_tables(*args, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", failed_create)
+    monkeypatch.setattr(con, "list_tables", unavailable_catalog)
+    scope = store.qr_scratch() if owner_kind == "artifact_qr" else nullcontext(session)
+    try:
+        with scope as owner:
+            with pytest.raises(CapabilityError) as raised:
+                if owner_kind == "artifact_qr":
+                    owner.materialize_input(expression)
+                else:
+                    owner.materialize_table(
+                        session.temp_name("probe_retry"), expression, required=True
+                    )
+            assert raised.value.code == "query.session.snapshot.materialization_failed"
+            assert failed_probe
+            assert len(created_names) == 1
+            name = created_names[0]
+            assert name in con.list_tables(database=("temp", "main"))
+            if owner_kind == "artifact_qr":
+                assert owner.leftovers == (("temp", "main", name),)
+                owner.close()
+                assert owner.leftovers == ()
+            else:
+                assert owner.materialized_names == [name]
+                owner.drop_materialized()
+                assert owner.materialized_names == []
+            assert name not in con.list_tables(database=("temp", "main"))
+    finally:
+        session.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_existing_temp_name_is_not_dropped_after_materialization_refusal():
+    con, session = _session()
+    name = session.temp_name("reserved_temp")
+    con.raw_sql(f'CREATE TEMP TABLE "{name}" (x INTEGER)')
+    con.raw_sql(f'INSERT INTO "{name}" VALUES (99)')
+    source_rows = con.table("t").to_pyarrow().to_pylist()
+    expression = ibis.literal("not-an-int").cast("int64").as_table()
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            session.materialize_table(name, expression, required=True)
+        assert raised.value.code == "query.session.snapshot.materialization_failed"
+        assert con.table(name).to_pyarrow().to_pylist() == [{"x": 99}]
+        assert con.table("t").to_pyarrow().to_pylist() == source_rows
+        assert session.materialized_names == []
+    finally:
+        session.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_drop_materialized_retries_after_storage_boundary_failure(monkeypatch):
+    con, session = _session()
+    name = session.temp_name("retry_cleanup")
+    source_rows = con.table("t").to_pyarrow().to_pylist()
+    session.materialize_table(name, con.table("t"), required=True)
+    raw_sql = con.raw_sql
+    failed = False
+
+    def fail_first_drop(statement, *args, **kwargs):
+        nonlocal failed
+        if not failed and str(statement).startswith("DROP TABLE IF EXISTS") and name in statement:
+            failed = True
+            raise RuntimeError("transient storage cleanup failure")
+        return raw_sql(statement, *args, **kwargs)
+
+    monkeypatch.setattr(con, "raw_sql", fail_first_drop)
+    try:
+        session.drop_materialized()
+        assert failed
+        assert name in con.list_tables(database=("temp", "main"))
+        assert session.materialized_names == [name]
+        session.drop_materialized()
+        assert name not in con.list_tables(database=("temp", "main"))
+        assert con.table("t").to_pyarrow().to_pylist() == source_rows
+    finally:
+        session.drop_materialized()
+        con.disconnect()
+
+
+class _ScopedPostgresConnection:
+    def __init__(self, *, fail_drop: bool = False):
+        self.tables = {"owned"}
+        self.committed_tables = set(self.tables)
+        self.unrelated_changes = 0
+        self.committed_unrelated_changes = 0
+        self.in_transaction = False
+        self.fail_drop = fail_drop
+
+    def cursor(self):
+        return _ScopedPostgresCursor(self)
+
+    @contextmanager
+    def transaction(self):
+        outermost = not self.in_transaction
+        previous = (set(self.tables), self.unrelated_changes)
+        if outermost:
+            self.in_transaction = True
+        try:
+            yield
+        except BaseException:
+            self.tables, self.unrelated_changes = previous
+            if outermost:
+                self.in_transaction = False
+            raise
+        else:
+            if outermost:
+                self.committed_tables = set(self.tables)
+                self.committed_unrelated_changes = self.unrelated_changes
+                self.in_transaction = False
+
+    def rollback(self):
+        if self.in_transaction:
+            self.tables = set(self.committed_tables)
+            self.unrelated_changes = self.committed_unrelated_changes
+            self.in_transaction = False
+
+
+class _ScopedPostgresCursor:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return None
+
+    def execute(self, statement):
+        if not self.connection.in_transaction:
+            self.connection.in_transaction = True
+        if statement.startswith("DROP TABLE"):
+            if self.connection.fail_drop:
+                raise RuntimeError("injected PostgreSQL DROP failure")
+            self.connection.tables.discard("owned")
+        elif statement == "INSERT unrelated":
+            self.connection.unrelated_changes += 1
+
+    def close(self):
+        pass
+
+
+class _ScopedPostgresBackend:
+    name = "postgres"
+
+    def __init__(self, connection):
+        self.con = connection
+
+    @contextmanager
+    def _safe_raw_sql(self, statement):
+        with self.con.cursor() as cursor, self.con.transaction():
+            yield cursor.execute(statement)
+
+    def raw_sql(self, statement):
+        cursor = self.con.cursor()
+        try:
+            cursor.execute(statement)
+        except Exception:
+            cursor.close()
+            self.con.rollback()
+            raise
+        return cursor
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fail_drop", [False, True])
+def test_postgres_owned_drop_uses_scoped_transaction(fail_drop):
+    from increment.query import session as module
+
+    connection = _ScopedPostgresConnection(fail_drop=fail_drop)
+    owner = WarehouseSession(cast(Any, _ScopedPostgresBackend(connection)), defs=cast(Any, None))
+    owner._materialized.append(module._MaterializedRelation("owned", "owned", None, "pg_temp"))
+
+    if fail_drop:
+        with connection.transaction():
+            cursor = connection.cursor()
+            cursor.execute("INSERT unrelated")
+            cursor.close()
+            owner.drop_materialized()
+            assert connection.unrelated_changes == 1
+            assert owner.materialized_names == ["owned"]
+
+        assert connection.committed_unrelated_changes == 1
+        assert "owned" in connection.committed_tables
+        connection.fail_drop = False
+        owner.drop_materialized()
+        assert "owned" not in connection.tables
+        return
+
+    owner.drop_materialized()
+
+    assert owner.materialized_names == []
+    assert not connection.in_transaction
+    assert "owned" not in connection.committed_tables
+    connection.rollback()
+    assert "owned" not in connection.tables
+
+
+@pytest.mark.integration
+def test_snowflake_batch_owned_drop_closes_cursors():
+    from contextlib import closing, contextmanager
+
+    from increment.query import session as module
+
+    class Cursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class Backend:
+        name = "snowflake"
+
+        def __init__(self):
+            self.tables = {"owned_a", "owned_b"}
+            self.cursors = []
+
+        def raw_sql(self, statement):
+            for name in tuple(self.tables):
+                if f'"{name}"' in statement:
+                    self.tables.remove(name)
+            cursor = Cursor()
+            self.cursors.append(cursor)
+            return cursor
+
+        @contextmanager
+        def _safe_raw_sql(self, statement):
+            with closing(self.raw_sql(statement)) as cursor:
+                yield cursor
+
+    backend = Backend()
+    relations = tuple(
+        module._MaterializedRelation(name, name, "catalog", "schema")
+        for name in ("owned_a", "owned_b")
+    )
+
+    module._drop_materialized_relations(cast(Any, backend), relations)
+
+    assert backend.tables == set()
+    assert len(backend.cursors) == 2
+    assert all(cursor.closed for cursor in backend.cursors)
+
+
+@pytest.mark.integration
+def test_duckdb_batch_owned_drop_keeps_borrowed_connection_open():
+    from increment.query import session as module
+
+    con = ibis.duckdb.connect()
+    names = ("owned_batch_a", "owned_batch_b")
+    try:
+        for name in names:
+            con.raw_sql(f'CREATE TEMP TABLE "{name}" (x INTEGER)')
+        relations = tuple(
+            module._MaterializedRelation(name, name, "temp", "main") for name in names
+        )
+
+        module._drop_materialized_relations(con, relations)
+
+        assert set(names).isdisjoint(con.list_tables(database=("temp", "main")))
+        assert con.to_pyarrow(con.sql("SELECT 42 AS value")).to_pylist() == [{"value": 42}]
+    finally:
+        con.disconnect()
+
+
 @pytest.mark.parametrize(
     ("physical_name", "remove_before_cleanup"),
     [("owned", False), ("renamed", False), ("owned", True)],
@@ -762,7 +1097,11 @@ def test_cleanup_preserves_other_namespace_data(monkeypatch, physical_name, remo
         relation = session.materialize_table("owned", con.table("t"))
         assert relation.to_pyarrow().to_pylist() == [{"x": 1}, {"x": 2}, {"x": 3}]
         if remove_before_cleanup:
-            con.drop_table(physical_name, database="materialized")
+            import sqlglot
+
+            schema_name = sqlglot.exp.to_identifier("materialized", quoted=True).sql("duckdb")
+            table_name = sqlglot.exp.to_identifier(physical_name, quoted=True).sql("duckdb")
+            con.raw_sql(f"DROP TABLE IF EXISTS {schema_name}.{table_name}")
         session.drop_materialized()
         assert physical_name not in con.list_tables(database="materialized")
         assert con.table(physical_name, database="main").to_pyarrow().to_pylist() == sentinel
@@ -781,22 +1120,27 @@ def test_unresolved_materialization_is_cleaned_up(
     sentinel = [{"sentinel": 314159}]
     con.create_table("owned", ibis.memtable(sentinel))
     expr = con.table("t")
-    drop_table = con.drop_table
 
     def unresolved(*args):
         if resolution_raises:
             raise RuntimeError("namespace metadata unavailable")
         return None
 
-    def drop_once(*args, **kwargs):
+    raw_sql = con.raw_sql
+
+    def drop_once(statement, *args, **kwargs):
         nonlocal cleanup_fails_once
-        if cleanup_fails_once:
+        if (
+            cleanup_fails_once
+            and str(statement).startswith("DROP TABLE IF EXISTS")
+            and "owned" in str(statement)
+        ):
             cleanup_fails_once = False
             raise RuntimeError("temporary cleanup failure")
-        return drop_table(*args, **kwargs)
+        return raw_sql(statement, *args, **kwargs)
 
     monkeypatch.setattr(session, "_materialized_relation", unresolved)
-    monkeypatch.setattr(con, "drop_table", drop_once)
+    monkeypatch.setattr(con, "raw_sql", drop_once)
     try:
         for _ in range(2):
             deferred_cleanup = cleanup_fails_once
@@ -817,6 +1161,8 @@ def test_unresolved_materialization_is_cleaned_up(
 def test_unresolved_backend_namespace_cleanup_survives_namespace_switch(
     monkeypatch, backend, resolution_raises
 ):
+    from contextlib import nullcontext
+
     con, session = _session()
     con.create_database("materialized")
     con.create_database("other")
@@ -836,17 +1182,36 @@ def test_unresolved_backend_namespace_cleanup_survives_namespace_switch(
         # These backends can return an expression without namespace metadata.
         return created.op().copy(namespace=type(created.op().namespace)()).to_expr()
 
-    def drop_table(name, *, database, force):
-        expected = "pg_temp" if backend == "postgres" else physical_database
-        assert database == expected
-        con.drop_table(name, database=physical_database, force=force)
+    def list_tables(*, database=None):
+        if backend == "postgres" and database == "pg_temp":
+            database = physical_database
+        elif backend == "snowflake" and database == ("memory", "materialized"):
+            database = physical_database
+        return con.list_tables(database=database)
+
+    def raw_sql(statement):
+        import sqlglot
+
+        drop = sqlglot.parse_one(statement, read=backend)
+        targets = drop.args.get("tables") or [drop.this]
+        expected = "pg_temp" if backend == "postgres" else "materialized"
+        assert len(targets) == 1
+        assert targets[0].name == "renamed"
+        assert targets[0].db == expected
+        assert targets[0].catalog == ("memory" if backend == "snowflake" else "")
+        con.drop_table("renamed", database=physical_database, force=True)
+
+    def safe_raw_sql(statement):
+        return nullcontext(raw_sql(statement))
 
     adapter = SimpleNamespace(
         name=backend,
         current_catalog="memory",
         current_database="materialized",
         create_table=create_table,
-        drop_table=drop_table,
+        list_tables=list_tables,
+        raw_sql=raw_sql,
+        _safe_raw_sql=safe_raw_sql,
     )
 
     def unresolved(*args):
@@ -888,6 +1253,84 @@ def test_snowflake_unknown_creation_namespace_does_not_create(monkeypatch):
         assert "query.session.materialization_degraded" in warning_codes(rec)
         assert con.list_tables(database=("temp", "main")) == before
     finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("backend", ["postgres", "snowflake", "bigquery"])
+def test_non_duckdb_partial_temp_create_is_cleaned_in_creation_namespace(backend):
+    from contextlib import nullcontext
+
+    con, session = _session()
+    con.create_database("materialized")
+    con.create_database("other")
+    name = session.temp_name("partial_backend")
+    sentinel = [{"sentinel": 314159}]
+    con.create_table(name, ibis.memtable(sentinel), database="other")
+    physical_database = ("memory", "materialized") if backend == "snowflake" else ("temp", "main")
+
+    def create_table(relation_name, obj, *, temp, database=None):
+        if backend == "snowflake":
+            assert database == '"memory"."materialized"'
+            database = physical_database
+        con.create_table(
+            relation_name,
+            obj,
+            temp=temp and backend in {"postgres", "bigquery"},
+            database=database,
+        )
+        raise RuntimeError("create response lost after commit")
+
+    def list_tables(*, database=None):
+        if backend == "postgres" and database == "pg_temp":
+            database = physical_database
+        elif backend == "snowflake" and database == ("memory", "materialized"):
+            database = physical_database
+        elif backend == "bigquery" and database == ("memory", "session_dataset"):
+            database = physical_database
+        return con.list_tables(database=database)
+
+    def raw_sql(statement):
+        import sqlglot
+
+        drop = sqlglot.parse_one(statement, read=backend)
+        targets = drop.args.get("tables") or [drop.this]
+
+        expected_schema = {
+            "postgres": "pg_temp",
+            "snowflake": "materialized",
+            "bigquery": "session_dataset",
+        }[backend]
+        expected_catalog = "memory" if backend != "postgres" else ""
+        assert len(targets) == 1
+        assert targets[0].name == name
+        assert targets[0].db == expected_schema
+        assert targets[0].catalog == expected_catalog
+        con.drop_table(name, database=physical_database, force=True)
+
+    def safe_raw_sql(statement):
+        return nullcontext(raw_sql(statement))
+
+    adapter = SimpleNamespace(
+        name=backend,
+        current_catalog="memory",
+        current_database="materialized",
+        _session_dataset=SimpleNamespace(project="memory", dataset_id="session_dataset"),
+        create_table=create_table,
+        list_tables=list_tables,
+        raw_sql=raw_sql,
+        _safe_raw_sql=safe_raw_sql,
+    )
+    session = WarehouseSession(adapter, defs=None)  # type: ignore[ty:invalid-argument-type]
+    expression = con.table("t")
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            session.materialize_table(name, expression, required=True)
+        assert raised.value.code == "query.session.snapshot.materialization_failed"
+        assert name not in con.list_tables(database=physical_database)
+        assert con.table(name, database="other").to_pyarrow().to_pylist() == sentinel
+    finally:
+        session.drop_materialized()
         con.disconnect()
 
 
@@ -1386,26 +1829,73 @@ def test_streaming_snapshot_isolates_post_verification_external_mutation():
 
 @pytest.mark.slow
 def test_streaming_store_failed_write_drops_unregistered_relation(monkeypatch):
-    """Format-4 SQL digesting is one function call (no separate fetch-and-hash
-    stages to fail independently), so a single injection point
-    stands in for the old fetch/digest split: any exception raised while
-    computing the digest must still drop the newly created table and leave
-    no visible manifest."""
-    from increment.query import session as module
-
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     before = set(con.list_tables(database="artifacts"))
+    create = con.create_table
+    fetch = con.to_pyarrow
+    written = []
+    failed = False
 
-    def broken(*args, **kwargs):
-        raise RuntimeError("stream failure")
+    def track_write(name, *args, **kwargs):
+        result = create(name, *args, **kwargs)
+        if str(name).endswith("_exposures"):
+            written.append(name)
+        return result
 
-    monkeypatch.setattr(module, "digest_relation_sql_v2", broken)
+    def broken(expression, *args, **kwargs):
+        nonlocal failed
+        if written and not failed:
+            failed = True
+            raise RuntimeError("stream failure")
+        return fetch(expression, *args, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", track_write)
+    monkeypatch.setattr(con, "to_pyarrow", broken)
     try:
         with pytest.raises(RuntimeError, match="stream failure"):
             _publish_in(store, unit_id="u")
+        assert failed and written
         assert set(con.list_tables(database="artifacts")) == before
         assert store.visible_manifests == ()
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_publication_collision_does_not_drop_existing_relation():
+    con = ibis.duckdb.connect()
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    try:
+        with store.begin_publication(expected_context=_artifact_context()) as publication:
+            name = (
+                f"ud_{publication.artifact_id.hex[:12]}_"
+                f"{publication.generation_id.hex[:12]}_exposures"
+            )
+            con.raw_sql(f'CREATE TABLE artifacts."{name}" (sentinel INTEGER)')
+            con.raw_sql(f'INSERT INTO artifacts."{name}" VALUES (314159)')
+            source = ibis.table({"sentinel": "int64"}, name="not_materialized")
+
+            with pytest.raises(CapabilityError) as raised:
+                publication.write_relation("exposures", source)
+            assert raised.value.code == "query.relation.name_occupied"
+            assert set(raised.value.context) == {"backend", "catalog", "schema", "name", "route"}
+            assert {
+                key: value for key, value in raised.value.context.items() if key != "route"
+            } == {
+                "backend": "duckdb",
+                "catalog": None,
+                "schema": "artifacts",
+                "name": name,
+            }
+            assert isinstance(raised.value.context["route"], str)
+            with pytest.raises(TypeError):
+                raised.value.context["name"] = "different"  # type: ignore[ty:invalid-assignment]
+
+            assert name in con.list_tables(database="artifacts")
+            assert con.table(name, database="artifacts").to_pyarrow().to_pylist() == [
+                {"sentinel": 314159}
+            ]
     finally:
         con.disconnect()
 
@@ -1447,17 +1937,15 @@ def test_empty_snapshot_refuses_incorrect_column_types(monkeypatch, reopen, colu
 @pytest.mark.slow
 @pytest.mark.parametrize("failure", ["digest", "mismatch", "body"])
 def test_streaming_snapshot_failure_cleans_private_tables(monkeypatch, failure):
-    """Format-4 SQL digesting is one function call, so "fetch" and "digest"
-    collapse into one injection point (patching digest_relation_sql_v2)."""
     from duckdb import CatalogException
-
-    from increment.query import session as module
 
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     ref, measure = _publish_in(store, unit_id="u")
     private_tables = []
     create = con.create_table
+    fetch = con.to_pyarrow
+    failed_digest = False
 
     def tracked(*args, **kwargs):
         result = create(*args, **kwargs)
@@ -1465,18 +1953,18 @@ def test_streaming_snapshot_failure_cleans_private_tables(monkeypatch, failure):
             private_tables.append(result)
         return result
 
-    def broken(*args, **kwargs):
-        raise RuntimeError("stream failure")
+    def broken(expression, *args, **kwargs):
+        nonlocal failed_digest
+        if private_tables and not failed_digest:
+            failed_digest = True
+            raise RuntimeError("stream failure")
+        return fetch(expression, *args, **kwargs)
 
     monkeypatch.setattr(con, "create_table", tracked)
     if failure == "digest":
-        monkeypatch.setattr(module, "digest_relation_sql_v2", broken)
+        monkeypatch.setattr(con, "to_pyarrow", broken)
     if failure == "mismatch":
         con.raw_sql(f'UPDATE artifacts."{measure.relation.name}" SET sum_value = 99')
-    # "digest" replaces digest_relation_sql_v2 outright, so its own scratch
-    # temp table (incr_digest_*) is never created; every other case runs the
-    # real digest, which creates and drops that scratch table itself, on top
-    # of the outer snapshot copy.
     expected_private_tables = 1 if failure == "digest" else 2
     try:
         with pytest.raises((RuntimeError, ArtifactContractError)):
@@ -1484,11 +1972,178 @@ def test_streaming_snapshot_failure_cleans_private_tables(monkeypatch, failure):
                 snapshot.verify_relation(measure, expected_role="measure_stats")
                 if failure == "body":
                     raise RuntimeError("body failure")
+        assert failed_digest is (failure == "digest")
         assert len(private_tables) == expected_private_tables
         for private in private_tables:
             with pytest.raises(CatalogException):
                 con.to_pyarrow(private)
     finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure", ("drop", "catalog_probe"))
+def test_snapshot_partial_create_cleanup_failure_is_retried(monkeypatch, failure):
+    con = ibis.duckdb.connect()
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref, measure = _publish_in(store, unit_id=f"snapshot-retry-{failure}")
+    before_temp = set(con.list_tables(database=("temp", "main")))
+    create = con.create_table
+    raw_sql = con.raw_sql
+    list_tables = con.list_tables
+    snapshot_names = []
+    failed_drop = False
+    failed_probe = False
+
+    def create_then_raise(name, obj=None, **kwargs):
+        result = create(name, obj, **kwargs)
+        if str(name).startswith("ud_snap_"):
+            snapshot_names.append(str(name))
+            raise RuntimeError("lost snapshot create response")
+        return result
+
+    def fail_first_snapshot_drop(statement, *args, **kwargs):
+        nonlocal failed_drop
+        if snapshot_names and snapshot_names[-1] in str(statement) and not failed_drop:
+            failed_drop = True
+            raise RuntimeError("transient snapshot cleanup failure")
+        return raw_sql(statement, *args, **kwargs)
+
+    def fail_snapshot_catalog_probe(*args, **kwargs):
+        nonlocal failed_probe
+        if snapshot_names and not failed_probe and kwargs.get("database") == ("temp", "main"):
+            failed_probe = True
+            raise RuntimeError("transient snapshot catalog probe failure")
+        return list_tables(*args, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", create_then_raise)
+    if failure == "drop":
+        monkeypatch.setattr(con, "raw_sql", fail_first_snapshot_drop)
+    else:
+        monkeypatch.setattr(con, "list_tables", fail_snapshot_catalog_probe)
+    try:
+        with store.open_snapshot(ref) as snapshot:
+            with pytest.raises(RuntimeError, match="lost snapshot create response"):
+                snapshot.verify_relation(measure, expected_role="measure_stats")
+        assert failed_drop is (failure == "drop")
+        assert failed_probe is (failure == "catalog_probe")
+        assert snapshot_names
+        assert snapshot_names[-1] in con.list_tables(database=("temp", "main"))
+        assert set(con.list_tables(database=("temp", "main"))) == before_temp | set(snapshot_names)
+
+        with store.open_snapshot(ref):
+            pass
+        assert snapshot_names[-1] not in con.list_tables(database=("temp", "main"))
+        assert con.table(measure.relation.name, database="artifacts") is not None
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_digest_cleanup_failure_is_retained_for_retry(monkeypatch):
+    con = ibis.duckdb.connect()
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref, measure = _publish_in(store, unit_id="digest-retry")
+    before_temp = set(con.list_tables(database=("temp", "main")))
+    create = con.create_table
+    created_hashes = []
+    raw_sql = con.raw_sql
+    failed_drop = False
+
+    def track_hash_table(name, *args, **kwargs):
+        result = create(name, *args, **kwargs)
+        if str(name).startswith("incr_digest_"):
+            created_hashes.append(str(name))
+        return result
+
+    def fail_first_digest_drop(statement, *args, **kwargs):
+        nonlocal failed_drop
+        if (
+            not failed_drop
+            and str(statement).startswith("DROP TABLE IF EXISTS")
+            and "incr_digest_" in str(statement)
+        ):
+            failed_drop = True
+            raise RuntimeError("transient digest cleanup failure")
+        return raw_sql(statement, *args, **kwargs)
+
+    monkeypatch.setattr(con, "raw_sql", fail_first_digest_drop)
+    monkeypatch.setattr(con, "create_table", track_hash_table)
+    try:
+        with store.open_snapshot(ref) as snapshot:
+            with pytest.raises(RuntimeError, match="transient digest cleanup failure"):
+                snapshot.verify_relation(measure, expected_role="measure_stats")
+        assert failed_drop
+        assert len(created_hashes) == 1
+        name = created_hashes[0]
+        assert set(con.list_tables(database=("temp", "main"))) == before_temp | {name}
+
+        with store.qr_scratch():
+            pass
+        assert name not in con.list_tables(database=("temp", "main"))
+    finally:
+        with store.qr_scratch():
+            pass
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_digest_body_error_remains_primary_when_cleanup_also_fails(monkeypatch):
+    con = ibis.duckdb.connect()
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref, measure = _publish_in(store, unit_id="digest-primary-error")
+    before_temp = set(con.list_tables(database=("temp", "main")))
+    raw_sql = con.raw_sql
+    fetch = con.to_pyarrow
+    create_table = con.create_table
+    created_hashes = []
+    failed_drop = False
+    failed_body = False
+
+    def track_hash_table(name, obj=None, **kwargs):
+        result = create_table(name, obj, **kwargs)
+        if str(name).startswith("incr_digest_"):
+            created_hashes.append(str(name))
+        return result
+
+    def fail_digest_body(expression, *args, **kwargs):
+        nonlocal failed_body
+        if created_hashes and not failed_body:
+            failed_body = True
+            raise RuntimeError("primary digest computation failure")
+        return fetch(expression, *args, **kwargs)
+
+    def fail_digest_cleanup(statement, *args, **kwargs):
+        nonlocal failed_drop
+        if (
+            not failed_drop
+            and str(statement).startswith("DROP TABLE IF EXISTS")
+            and "incr_digest_" in str(statement)
+        ):
+            failed_drop = True
+            raise RuntimeError("digest cleanup failure")
+        return raw_sql(statement, *args, **kwargs)
+
+    monkeypatch.setattr(con, "create_table", track_hash_table)
+    monkeypatch.setattr(con, "raw_sql", fail_digest_cleanup)
+    monkeypatch.setattr(con, "to_pyarrow", fail_digest_body)
+    try:
+        with store.open_snapshot(ref) as snapshot:
+            with pytest.raises(RuntimeError, match="primary digest computation failure") as raised:
+                snapshot.verify_relation(measure, expected_role="measure_stats")
+        assert failed_drop
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "digest cleanup failure"
+        assert created_hashes
+        assert set(con.list_tables(database=("temp", "main"))) == before_temp | set(created_hashes)
+
+        with store.qr_scratch():
+            pass
+        assert created_hashes[0] not in con.list_tables(database=("temp", "main"))
+        assert con.table(measure.relation.name, database="artifacts") is not None
+    finally:
+        with store.qr_scratch():
+            pass
         con.disconnect()
 
 
@@ -1562,6 +2217,571 @@ def test_hosted_metadata_creation_targets_the_explicit_catalog(
         ) == [sentinel]
     finally:
         real.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("catalog", "schema", "project", "dataset"),
+    [
+        (None, None, "data-project", "default_dataset"),
+        ("catalog-only", None, "data-project", "default_dataset"),
+        (None, "explicit_dataset", "billing-project", "explicit_dataset"),
+        ("quoted-project", "explicit_dataset", "quoted-project", "explicit_dataset"),
+    ],
+)
+def test_bigquery_store_creation_uses_effective_hosted_sql_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: str | None,
+    schema: str | None,
+    project: str,
+    dataset: str,
+) -> None:
+    sqlglot = pytest.importorskip("sqlglot")
+    module = pytest.importorskip("ibis.backends.bigquery")
+    backend = module.Backend()
+    backend.billing_project = "billing-project"
+    backend.data_project = "data-project"
+    backend.dataset = "default_dataset"
+    real = ibis.duckdb.connect()
+    try:
+        quoted_project = sqlglot.exp.to_identifier(project, quoted=True).sql("duckdb")
+        quoted_dataset = sqlglot.exp.to_identifier(dataset, quoted=True).sql("duckdb")
+        real.raw_sql(f"ATTACH ':memory:' AS {quoted_project}")
+        real.raw_sql(f"CREATE SCHEMA {quoted_project}.{quoted_dataset}")
+
+        hosted_targets: list[tuple[str | None, str | None]] = []
+
+        def execute_hosted_sql(query: str):
+            statement = sqlglot.parse_one(query, read="bigquery")
+            target = statement.this.this
+            hosted_targets.append((target.catalog, target.db))
+            cursor = real.con.cursor()
+            try:
+                cursor.execute(statement.sql("duckdb"))
+            except BaseException:
+                cursor.close()
+                raise
+            cursor.close()
+            return None
+
+        monkeypatch.setattr(backend, "raw_sql", execute_hosted_sql)
+        for operation in ("table", "list_tables", "insert", "drop_table", "execute", "to_pyarrow"):
+            monkeypatch.setattr(backend, operation, getattr(real, operation))
+        WarehouseArtifactStore(backend, catalog=catalog, schema_name=schema)
+        assert hosted_targets == [(project, dataset), (project, dataset)]
+        assert "ud_manifest_index" in real.list_tables(database=(project, dataset))
+        assert "ud_manifest_dropped" in real.list_tables(database=(project, dataset))
+    finally:
+        real.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("catalog", "schema", "expected_project", "expected_dataset"),
+    [
+        (None, None, "data-project", "default_dataset"),
+        ("catalog-only", None, "data-project", "default_dataset"),
+        (None, "explicit_dataset", "billing-project", "explicit_dataset"),
+        ("quoted-project", "explicit_dataset", "quoted-project", "explicit_dataset"),
+    ],
+)
+def test_bigquery_publication_abort_drops_in_effective_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: str | None,
+    schema: str | None,
+    expected_project: str,
+    expected_dataset: str,
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    try:
+        boundary.backend.create_table(
+            "source",
+            ibis.memtable([{"value": "preserve"}]),
+            database=(expected_project, expected_dataset),
+        )
+        store = WarehouseArtifactStore(boundary.backend, catalog=catalog, schema_name=schema)
+        names: tuple[str, ...] = ()
+        with pytest.raises(RuntimeError, match="abort publication"):
+            with store.begin_publication(expected_context=_artifact_context()) as publication:
+                exposure, measure = _open_exposure_and_measure(publication)
+                names = (exposure.relation.name, measure.relation.name)
+                raise RuntimeError("abort publication")
+
+        assert names
+        assert all(
+            name not in boundary.backend.list_tables(database=(expected_project, expected_dataset))
+            for name in names
+        )
+        assert boundary.backend.to_pyarrow(
+            boundary.backend.table("source", database=(expected_project, expected_dataset))
+        ).to_pylist() == [{"value": "preserve"}]
+        assert boundary.drop_targets[-len(names) :] == [
+            (expected_project, expected_dataset, name) for name in names
+        ]
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("catalog", "schema", "project", "dataset"),
+    [
+        (None, None, "data-project", "default_dataset"),
+        ("catalog-only", None, "data-project", "default_dataset"),
+        (None, "explicit_dataset", "billing-project", "explicit_dataset"),
+        ("quoted-project", "explicit_dataset", "quoted-project", "explicit_dataset"),
+    ],
+)
+def test_bigquery_pinned_namespace_publishes_persists_locators_and_deletes(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: str | None,
+    schema: str | None,
+    project: str,
+    dataset: str,
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    switched = ("billing-project", "switched_dataset")
+    try:
+        store = WarehouseArtifactStore(boundary.backend, catalog=catalog, schema_name=schema)
+        boundary.backend.set_database(switched[1])
+        ref, _ = _publish_in(store, unit_id="namespace-owner")
+        assert (ref.manifest.catalog, ref.manifest.schema_name) == (project, dataset)
+        physical_database = boundary._ensure_database(project, dataset)
+        row = (
+            boundary.real.table("ud_manifest_index", database=physical_database)
+            .execute()
+            .to_dict("records")[0]
+        )
+        manifest = UnitDayArtifactManifest.model_validate_json(row["manifest_json"])
+        relation_names = (
+            manifest.base.exposures.relation.name,
+            manifest.base.measure_stats.relation.name,
+        )
+        assert all(
+            (relation.catalog, relation.schema_name) == (project, dataset)
+            for relation in (
+                manifest.base.exposures.relation,
+                manifest.base.measure_stats.relation,
+            )
+        )
+        boundary.backend.create_table(
+            relation_names[0],
+            ibis.memtable([{"value": "unrelated"}]),
+            database=switched,
+        )
+
+        reopened = WarehouseArtifactStore(boundary.backend, catalog=project, schema_name=dataset)
+        assert reopened.visible_manifests == (ref,)
+        reopened.drop_generation(ref.artifact_id, ref.generation_id)
+        reopened.drop_generation(ref.artifact_id, ref.generation_id)
+        assert reopened.visible_manifests == ()
+        assert not set(relation_names) & set(
+            boundary.backend.list_tables(database=(project, dataset))
+        )
+        assert boundary.backend.table(relation_names[0], database=switched).execute().to_dict(
+            "records"
+        ) == [{"value": "unrelated"}]
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("catalog", "schema", "project", "dataset"),
+    [
+        (None, None, "data-project", "default_dataset"),
+        ("catalog-only", None, "data-project", "default_dataset"),
+        (None, "explicit_dataset", "billing-project", "explicit_dataset"),
+        ("quoted-project", "explicit_dataset", "quoted-project", "explicit_dataset"),
+    ],
+)
+def test_bigquery_post_manifest_abort_invalidates_and_erases(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog: str | None,
+    schema: str | None,
+    project: str,
+    dataset: str,
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    try:
+        store = WarehouseArtifactStore(boundary.backend, catalog=catalog, schema_name=schema)
+        names: tuple[str, ...] = ()
+        with pytest.raises(RuntimeError, match="abort after manifest"):
+            with store.begin_publication(expected_context=_artifact_context()) as publication:
+                exposure, measure = _open_exposure_and_measure(publication)
+                names = (exposure.relation.name, measure.relation.name)
+                body = _manifest_body(
+                    _artifact_context(),
+                    exposure,
+                    measure,
+                    artifact_id=publication.artifact_id,
+                    generation_id=publication.generation_id,
+                )
+                publication.publish_manifest(_sealed_manifest(body))
+                raise RuntimeError("abort after manifest")
+        assert store.visible_manifests == ()
+        assert names
+        assert not set(names) & set(boundary.backend.list_tables(database=(project, dataset)))
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+def test_bigquery_legacy_ambiguous_receipt_refuses_before_tombstone_or_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    original = ("data-project", "default_dataset")
+    current = ("billing-project", "switched_dataset")
+    try:
+        original_store = WarehouseArtifactStore(boundary.backend)
+        ref, _ = _publish_in(original_store, unit_id="legacy-owner")
+        row = (
+            boundary.real.table("ud_manifest_index", database=boundary._ensure_database(*original))
+            .execute()
+            .to_dict("records")[0]
+        )
+        manifest = UnitDayArtifactManifest.model_validate_json(row["manifest_json"])
+        relation_names = (
+            manifest.base.exposures.relation.name,
+            manifest.base.measure_stats.relation.name,
+        )
+        base = manifest.base.model_copy(
+            update={
+                role: getattr(manifest.base, role).model_copy(
+                    update={
+                        "relation": getattr(manifest.base, role).relation.model_copy(
+                            update={"catalog": None, "schema_name": None}
+                        )
+                    }
+                )
+                for role in ("exposures", "measure_stats")
+            }
+        )
+        legacy_unsealed = manifest.model_copy(update={"base": base, "manifest_sha256": ""})
+        legacy_manifest = legacy_unsealed.model_copy(
+            update={"manifest_sha256": manifest_sha256(legacy_unsealed)}
+        )
+        row["manifest_json"] = legacy_manifest.model_dump_json()
+        row["manifest_sha256"] = legacy_manifest.manifest_sha256
+
+        boundary.backend.set_database(current[1])
+        current_store = WarehouseArtifactStore(boundary.backend)
+        boundary.backend.create_table(
+            relation_names[0],
+            ibis.memtable([{"value": "unrelated"}]),
+            database=current,
+        )
+        boundary.backend.insert("ud_manifest_index", ibis.memtable([row]), database=current)
+
+        assert current_store.visible_manifests
+        with pytest.raises(ArtifactContractError) as refused:
+            current_store.drop_generation(ref.artifact_id, ref.generation_id)
+        assert refused.value.code == "artifact.identifier.unsafe"
+        assert current_store.visible_manifests
+        assert boundary.backend.table(relation_names[0], database=current).execute().to_dict(
+            "records"
+        ) == [{"value": "unrelated"}]
+        assert set(relation_names) <= set(boundary.backend.list_tables(database=original))
+        tombstones = boundary.backend.to_pyarrow(
+            boundary.backend.table("ud_manifest_dropped", database=current)
+        ).to_pylist()
+        assert not any(
+            entry["artifact_id"] == str(ref.artifact_id)
+            and entry["generation_id"] == str(ref.generation_id)
+            for entry in tombstones
+        )
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("missing_field", ["catalog", "schema_name"])
+def test_bigquery_partial_data_locator_refuses_before_snapshot_data_access(
+    monkeypatch: pytest.MonkeyPatch, missing_field: str
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    namespace = ("data-project", "default_dataset")
+    try:
+        publisher = WarehouseArtifactStore(boundary.backend)
+        ref, _ = _publish_in(publisher, unit_id="partial-data-locator")
+        metadata = boundary.backend.table("ud_manifest_index", database=namespace)
+        row = boundary.backend.to_pyarrow(metadata).to_pylist()[0]
+        manifest = UnitDayArtifactManifest.model_validate_json(row["manifest_json"])
+        exposure = manifest.base.exposures.model_copy(
+            update={
+                "relation": manifest.base.exposures.relation.model_copy(
+                    update={missing_field: None}
+                )
+            }
+        )
+        unsealed = manifest.model_copy(
+            update={
+                "base": manifest.base.model_copy(update={"exposures": exposure}),
+                "manifest_sha256": "",
+            }
+        )
+        receipt = unsealed.model_copy(update={"manifest_sha256": manifest_sha256(unsealed)})
+        assert receipt.base.exposures.digest_format == receipt.base.measure_stats.digest_format == 4
+        assert receipt.base.measure_stats.relation.catalog == namespace[0]
+        assert receipt.base.measure_stats.relation.schema_name == namespace[1]
+        assert (ref.manifest.catalog, ref.manifest.schema_name) == namespace
+        row["manifest_json"] = receipt.model_dump_json()
+        row["manifest_sha256"] = receipt.manifest_sha256
+        physical = boundary._ensure_database(*namespace)
+        boundary.real.raw_sql(f'DELETE FROM "{physical}"."ud_manifest_index"')
+        boundary.backend.insert("ud_manifest_index", ibis.memtable([row]), database=namespace)
+        trusted = ref.model_copy(update={"manifest_sha256": receipt.manifest_sha256})
+        reader = WarehouseArtifactStore(boundary.backend)
+        table = boundary.backend.table
+        create_table = boundary.backend.create_table
+        data_names = {exposure.relation.name, receipt.base.measure_stats.relation.name}
+        data_reads = []
+        temporary_creates = []
+        before_drops = tuple(boundary.drop_targets)
+
+        def record_table(name, *, database=None):
+            if name in data_names:
+                data_reads.append((name, database))
+            return table(name, database=database)
+
+        def record_create(name, obj=None, **kwargs):
+            if kwargs.get("temp"):
+                temporary_creates.append(name)
+            return create_table(name, obj, **kwargs)
+
+        monkeypatch.setattr(boundary.backend, "table", record_table)
+        monkeypatch.setattr(boundary.backend, "create_table", record_create)
+        with pytest.raises(ArtifactContractError) as refused:
+            with reader.open_snapshot(trusted) as snapshot:
+                loaded = snapshot.read_manifest(
+                    trusted.manifest, expected_sha256=trusted.manifest_sha256
+                )
+                assert loaded == receipt
+                snapshot.verify_relation(loaded.base.exposures, expected_role="exposures")
+        assert refused.value.code == "artifact.identifier.unsafe"
+        assert dict(refused.value.context) == {
+            "namespace": namespace[1],
+            "expected_catalog": namespace[0],
+            "rejected_catalog": exposure.relation.catalog,
+            "rejected_schema": exposure.relation.schema_name,
+        }
+        assert data_reads == []
+        assert temporary_creates == []
+        assert tuple(boundary.drop_targets) == before_drops
+        assert reader.visible_manifests == (trusted,)
+        assert data_names <= set(boundary.backend.list_tables(database=namespace))
+        tombstones = boundary.backend.to_pyarrow(
+            boundary.backend.table("ud_manifest_dropped", database=namespace)
+        ).to_pylist()
+        assert tombstones == []
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+def test_bigquery_publication_abort_uses_creation_namespace_after_default_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    original = ("data-project", "default_dataset")
+    switched = ("billing-project", "switched_dataset")
+    try:
+        store = WarehouseArtifactStore(boundary.backend)
+        names: tuple[str, ...] = ()
+        with pytest.raises(RuntimeError, match="abort publication"):
+            with store.begin_publication(expected_context=_artifact_context()) as publication:
+                exposure, measure = _open_exposure_and_measure(publication)
+                names = (exposure.relation.name, measure.relation.name)
+                boundary.backend.set_database(switched[1])
+                boundary.backend.create_table(
+                    names[0],
+                    ibis.memtable([{"value": "unrelated"}]),
+                    database=switched,
+                )
+                raise RuntimeError("abort publication")
+
+        assert names
+        assert all(name not in boundary.backend.list_tables(database=original) for name in names)
+        assert names[0] in boundary.backend.list_tables(database=switched)
+        assert boundary.backend.to_pyarrow(
+            boundary.backend.table(names[0], database=switched)
+        ).to_pylist() == [{"value": "unrelated"}]
+        assert boundary.drop_targets[-len(names) :] == [(*original, name) for name in names]
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+def test_bigquery_missing_default_dataset_refuses_before_metadata_ddl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    boundary.backend.dataset = ""
+    try:
+        with pytest.raises(CapabilityError) as refused:
+            WarehouseArtifactStore(boundary.backend)
+
+        assert refused.value.code == "artifact.store.namespace"
+        assert {key: value for key, value in refused.value.context.items() if key != "message"} == {
+            "catalog": None,
+            "schema": None,
+            "table": "ud_manifest_index",
+        }
+        assert boundary.executed_ddl == []
+    finally:
+        boundary.real.disconnect()
+
+
+class _DuckDBBigQueryResult:
+    def __init__(self, cursor) -> None:
+        self._cursor = cursor
+
+    def to_arrow(self, **_kwargs):
+        return self._cursor.to_arrow_table()
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+class _BigQueryNetworkBoundary:
+    """Apply BigQuery SQL to an isolated DuckDB-backed dataset service."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.sqlglot = pytest.importorskip("sqlglot")
+        module = pytest.importorskip("ibis.backends.bigquery")
+        self.backend = module.Backend()
+        self.backend.billing_project = "billing-project"
+        self.backend.data_project = "data-project"
+        self.backend.dataset = "default_dataset"
+        self.real = ibis.duckdb.connect()
+        duckdb = pytest.importorskip("duckdb")
+        self.real.con.create_function(
+            "IEEE_DIVIDE",
+            lambda numerator, denominator: numerator / denominator if denominator else float("nan"),
+            [duckdb.sqltypes.DOUBLE, duckdb.sqltypes.DOUBLE],
+            duckdb.sqltypes.DOUBLE,
+        )
+        self.initialized: set[str] = set()
+        self.executed_ddl: list[str] = []
+        self.drop_targets: list[tuple[str, str, str]] = []
+        for name, method in {
+            "create_database": self.create_database,
+            "raw_sql": self.raw_sql,
+            "create_table": self.create_table,
+            "table": self.table,
+            "list_tables": self.list_tables,
+            "insert": self.insert,
+            "drop_table": self.drop_table,
+            "execute": self.real.execute,
+            "to_pyarrow": self.to_pyarrow,
+        }.items():
+            monkeypatch.setattr(self.backend, name, method)
+
+    def to_pyarrow(self, expr):
+        return self.raw_sql(self.backend.compile(expr)).to_arrow()
+
+    def create_table(
+        self, name, obj=None, *, schema=None, database=None, overwrite=False, **kwargs
+    ):
+        self.executed_ddl.append("CREATE TABLE")
+        if kwargs.get("temp") and obj is not None:
+            compiled = self.backend.compile(obj)
+            parsed = self.sqlglot.parse_one(compiled, read="bigquery")
+            for padding in parsed.find_all(self.sqlglot.exp.Pad):
+                padding.set(
+                    "expression",
+                    self.sqlglot.exp.Cast(
+                        this=padding.args["expression"],
+                        to=self.sqlglot.exp.DataType.build("INT"),
+                    ),
+                )
+            query = parsed.sql("duckdb")
+            self.real.con.execute(f'CREATE TEMP TABLE "{name}" AS {query}')
+            return self.real.table(name)
+        table = self.sqlglot.parse_one(name, into=self.sqlglot.exp.Table, read="bigquery")
+        project, dataset = self._resolve_location(database)
+        return self.real.create_table(
+            table.name,
+            obj,
+            schema=schema,
+            database=self._ensure_database(table.catalog or project, table.db or dataset),
+            overwrite=overwrite,
+        )
+
+    def _physical_database(self, project: str, dataset: str) -> str:
+        return f"bq_{project.replace('-', '_')}__{dataset}"
+
+    def _resolve_location(self, database: Any) -> tuple[str, str]:
+        if isinstance(database, tuple):
+            return database
+        return self.backend._parse_project_and_dataset(database)
+
+    def _ensure_database(self, project: str, dataset: str) -> str:
+        physical = self._physical_database(project, dataset)
+        if physical not in self.initialized:
+            self.real.create_database(physical)
+            self.initialized.add(physical)
+        return physical
+
+    def create_database(self, name, *, catalog=None, **kwargs):
+        self.executed_ddl.append("CREATE DATABASE")
+        return self._ensure_database(catalog or self.backend.billing_project, name)
+
+    def table(self, name, *, database=None):
+        project, dataset = self._resolve_location(database)
+        return self.real.table(name, database=self._ensure_database(project, dataset))
+
+    def list_tables(self, *, database=None, **kwargs):
+        project, dataset = self._resolve_location(database)
+        return self.real.list_tables(database=self._ensure_database(project, dataset), **kwargs)
+
+    def insert(self, name, obj, *, database=None, **kwargs):
+        project, dataset = self._resolve_location(database)
+        return self.real.insert(
+            name, obj, database=self._ensure_database(project, dataset), **kwargs
+        )
+
+    def drop_table(self, name, *, database=None, force=False):
+        project, dataset = self._resolve_location(database)
+        return self.real.drop_table(
+            name,
+            database=self._ensure_database(project, dataset),
+            force=force,
+        )
+
+    def raw_sql(self, statement):
+        query = self.sqlglot.parse_one(statement, read="bigquery")
+        if not isinstance(query, (self.sqlglot.exp.Create, self.sqlglot.exp.Drop)):
+            self.real.con.execute(query.sql("duckdb"))
+            return _DuckDBBigQueryResult(self.real.con)
+        target = (
+            query.this.this
+            if isinstance(query, self.sqlglot.exp.Create)
+            else (query.args.get("tables") or [query.this])[0]
+        )
+        if not target.db:
+            if isinstance(query, self.sqlglot.exp.Drop):
+                self.real.raw_sql(query.sql("duckdb"))
+                return None
+            raise RuntimeError("BigQuery query has no default dataset")
+        project = target.catalog or self.backend.billing_project
+        dataset = target.db
+        physical = self._ensure_database(project, dataset)
+        if isinstance(query, self.sqlglot.exp.Drop):
+            self.drop_targets.append((project, dataset, target.name))
+        target.set("catalog", self.sqlglot.exp.to_identifier(physical, quoted=True))
+        target.set("db", None)
+        cursor = self.real.con.cursor()
+        try:
+            cursor.execute(query.sql("duckdb"))
+        except BaseException:
+            cursor.close()
+            raise
+        if isinstance(query, self.sqlglot.exp.Drop):
+            cursor.close()
+            return None
+        return cursor
 
 
 def test_locator_refusals_carry_the_rejected_value_in_their_context() -> None:

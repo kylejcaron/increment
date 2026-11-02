@@ -65,12 +65,15 @@ warehouse = [
     # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
     # exposes that module and ships CPython 3.14 wheels exists.
     "ibis-framework>=11.0.0; python_version >= '3.14'",
-    # SQLGlot 30.24 emits `DROP VIEW IF EXISTS` without a target in DuckDB.
-    # Hold at 30.14 until its generator produces valid DROP statements again (2026-10-28).
-    "sqlglot>=30.14,<30.15",
+    # Ibis 12 emits Drop(this=...), while SQLGlot 30.18–30.27 reads Drop.targets from `tables`.
+    # Reassess these SDK-incompatible releases when a stable Ibis fix is published.
+    "sqlglot>=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0",
 ]
 demo   = [
     "increment[warehouse]",
+    # Ibis 12 still calls DuckDB's removed `fetch_arrow_table()` method.
+    # Reassess this exact release exclusion after the upstream adapter is updated.
+    "duckdb!=2.0.0",
     "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",
     "ibis-framework[duckdb]>=12.0.0; python_version >= '3.14'",
 ]
@@ -117,7 +120,8 @@ dev = [
     "pytest-timeout>=2.4",
     "filelock>=4.2.4",
     "pytest-split>=0.11.0",
-    "mutmut>=3.8,<3.9",
+    # The mutation runner intentionally depends on mutmut's internal 3.8.0 API.
+    "mutmut==3.8.0",
     "pydoclint>=0.11.1",
     "complexipy==8.1.0",
     "pytest-benchmark>=5.3.0",

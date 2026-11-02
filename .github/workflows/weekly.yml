@@ -4,7 +4,16 @@ on:
   schedule:
     - cron: "0 8 * * 0" # Sunday, 08:00 UTC
   workflow_dispatch:
-
+    inputs:
+      target:
+        description: Validation scope to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - dependency-floors
+          - newest-dependencies
 permissions:
   contents: read
 
@@ -13,6 +22,7 @@ env:
 
 jobs:
   test-all-floor:
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == 'dependency-floors' }}
     name: full suite at dependency floors (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -39,12 +49,14 @@ jobs:
 
 
   warehouse-backends:
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'all' }}
     name: warehouse backends
     uses: ./.github/workflows/warehouse-backends.yml
     with: {backend_mode: all}
     secrets: inherit
 
   parity-matrix-10x:
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'all' }}
     name: full parity matrix at tenfold data size
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -61,8 +73,8 @@ jobs:
   report-failure:
     name: report a failed weekly gate
     runs-on: ubuntu-latest
-    needs: [test-all-floor, warehouse-backends, parity-matrix-10x]
-    if: failure()
+    needs: [test-all-floor, warehouse-backends, parity-matrix-10x, newest-dependencies]
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.target == 'all') && contains(needs.*.result, 'failure') }}
     timeout-minutes: 10
     permissions:
       issues: write
@@ -100,3 +112,23 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  newest-dependencies:
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == 'newest-dependencies' }}
+    name: newest dependencies (3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UV_LOCKED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv lock --upgrade
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Record resolved versions and source roots
+        run: |
+          uv run --no-sync python -c 'from importlib.metadata import version; import increment, sqlglot; print("ibis-framework", version("ibis-framework")); print("sqlglot", sqlglot.__version__, sqlglot.__file__); print("increment", increment.__file__)'
+      - run: make test-fast WORKERS=auto
+      - run: make test-slow WORKERS=auto
+      - run: make test-tier TIER=compile-registry WORKERS=auto

@@ -687,30 +687,9 @@ def _make_event_log_table(con, extra_rows: list[dict] | None = None):
         rows += extra_rows
 
     tbl = pa.Table.from_pylist(rows)
+
     con.raw_sql("CREATE SCHEMA IF NOT EXISTS analytics")
-    col_defs = []
-    for field in tbl.schema:
-        dtype = str(field.type).upper()
-        if "TIMESTAMP" in dtype or "DATE" in dtype:
-            col_defs.append(f'"{field.name}" TIMESTAMP')
-        elif "INT" in dtype or "INT64" in dtype:
-            col_defs.append(f'"{field.name}" BIGINT')
-        elif "FLOAT" in dtype or "DOUBLE" in dtype:
-            col_defs.append(f'"{field.name}" DOUBLE')
-        elif "BOOL" in dtype:
-            col_defs.append(f'"{field.name}" BOOLEAN')
-        else:
-            col_defs.append(f'"{field.name}" VARCHAR')
-    con.raw_sql(f"CREATE TABLE analytics.event_log ({', '.join(col_defs)})")
-    # Name the columns instead of relying on each dict's key order: rows come from several builders and a positional INSERT would bind a differently-ordered dict's values to the wrong columns.
-    names = tbl.schema.names
-    cols = ", ".join(f'"{name}"' for name in names)
-    ph = ", ".join(["?"] * len(names))
-    for row in rows:
-        con.raw_sql(
-            f"INSERT INTO analytics.event_log ({cols}) VALUES ({ph})",
-            parameters=[row[name] for name in names],
-        )
+    con.create_table("event_log", obj=tbl, database="analytics")
 
 
 def _defs_and_con_for_session_tests() -> tuple[Definitions, SQLBackend]:

@@ -44,6 +44,7 @@ from increment.query.artifact_digest import (
 def test_digest_scratch_cleanup_targets_created_namespace(
     backend, namespace, current_catalog, current_database, expected_database
 ):
+    from contextlib import contextmanager
     from types import SimpleNamespace
     from typing import Any, cast
 
@@ -63,13 +64,41 @@ def test_digest_scratch_cleanup_targets_created_namespace(
             self.current_catalog = current_catalog
             self.current_database = current_database
             self.dropped = []
+            self.raw_statements = []
+            self.safe_statements = []
 
         def drop_table(self, name, **kwargs):
             self.dropped.append((name, kwargs))
 
+        def raw_sql(self, statement):
+            self.raw_statements.append(statement)
+
+        @contextmanager
+        def _safe_raw_sql(self, statement):
+            self.safe_statements.append(statement)
+            yield None
+
     con = Connection()
     _drop_sql_digest_hash_table(con, cast(Any, relation))
-    assert con.dropped == [("digest_scratch", {"database": expected_database, "force": True})]
+    import sqlglot
+    from sqlglot import exp
+
+    assert con.dropped == []
+    assert con.raw_statements == []
+    assert len(con.safe_statements) == 1
+    statement = sqlglot.parse_one(con.safe_statements[0], read=backend)
+    assert isinstance(statement, exp.Drop)
+    tables = statement.args.get("tables") or [statement.this]
+    assert len(tables) == 1
+    target = tables[0]
+    assert isinstance(target, exp.Table)
+    assert target.name == "digest_scratch"
+    if isinstance(expected_database, tuple):
+        expected_catalog, expected_schema = expected_database
+    else:
+        expected_catalog, expected_schema = None, expected_database
+    assert (target.catalog or None) == expected_catalog
+    assert target.db == expected_schema
 
 
 def test_bigquery_digest_fetch_disables_storage_api():
