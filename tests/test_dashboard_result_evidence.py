@@ -31,12 +31,9 @@ from increment.estimation.results import (
 )
 from increment.tables import estimates_to_readout
 from tests import test_dashboard as dashboard_tests
+from tests.dashboard_snapshots import binomial_region
 
-# The dashboard suite's real DuckDB-backed fixtures, shared by name.
-dashboard_con = dashboard_tests.dashboard_con
-dashboard_definitions = dashboard_tests.dashboard_definitions
 storefront = dashboard_tests.storefront
-_guardrail_snapshot = dashboard_tests._guardrail_snapshot
 
 
 PRIMARY, SECONDARY, GUARDRAIL = "checkout_conversion", "revenue_per_user", "session_seconds"
@@ -87,6 +84,14 @@ def _fieller(a: float, c: float, *, alternative: str = "two-sided", cov: float =
 @pytest.mark.integration
 def test_binomial_qualification_is_in_the_metric_inspector_interval_fold(storefront):
     from increment.dashboard._html import render_metric_details
+
+    storefront = dataclasses.replace(
+        storefront,
+        readout_rows=tuple(
+            {**row, "binomial_set": binomial_region()} if row["metric"] == PRIMARY else row
+            for row in storefront.readout_rows
+        ),
+    )
 
     row = _row(storefront, "checkout_conversion")
     html = render_metric_details(storefront, metric=row["metric"]).text
