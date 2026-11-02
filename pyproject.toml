@@ -40,8 +40,8 @@ dependencies = [
     "scipy>=1.18.1",
     # SQLGlot 30.24 emits `DROP VIEW IF EXISTS` without a target in DuckDB.
     # Hold at 30.14 until its generator produces valid DROP statements again (2026-10-28).
-    "sqlglot>=30.14,<30.15",
-    "narwhals>=2.27.1",
+    "sqlglot>=30.25.0,<30.26",
+    "narwhals>=2.28.0",
     # Arrow 23.0.1 is the security floor; 25.0.0 crashes after its loading thread exits.
     # Exclude the broken release rather than changing process-wide allocators.
     "pyarrow!=25.0.0,>=26.0.0; python_version < '3.13'",
@@ -71,7 +71,7 @@ demo   = [
     "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",
     "ibis-framework[duckdb]>=12.0.0; python_version >= '3.14'",
 ]
-tables = ["coeftable>=0.13.1", "pandas>=3.0.5,<3.1"]
+tables = ["coeftable>=0.13.1", "pandas>=3.1.0,<3.2"]
 # Ibis 12 reads the deprecated pandas 3.1 `future.infer_string` option;
 # pandas turns that warning into an exception in this project's test policy.
 # Hold pandas below 3.1 until Ibis updates its pandas adapter (2026-10-28).
@@ -80,12 +80,12 @@ tables = ["coeftable>=0.13.1", "pandas>=3.0.5,<3.1"]
 dashboard = [
     "marimo>=0.25.2",
     "coeftable>=0.13.1",
-    "pandas>=3.0.5,<3.1",
+    "pandas>=3.1.0,<3.2",
     "anywidget>=0.9",
 ]
 
 [build-system]
-requires = ["hatchling>=1.32.4", "hatch-vcs>=0.5"]
+requires = ["hatchling>=1.33.0", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
 [project.entry-points."increment.artifact_ports"]
@@ -93,30 +93,30 @@ builtin = "increment.artifacts._query:artifact_query_ports"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.17.2",
+    "ruff>=0.17.3",
     "prek>=0.5.7",
     "marimo>=0.25.2",
     "altair>=6.3.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     # ty 0.0.91 emits hundreds of new diagnostics across existing code/tests;
     # hold at 0.0.64 until the stricter checks are adopted incrementally (2026-10-28).
-    "ty>=0.0.64,<0.0.65",
+    "ty>=0.0.93,<0.0.94",
     "pytest-cov>=6.0",
     "pytest-xdist>=3.6",
     "psutil>=7.2.2",
     "nox>=2026.10.20",
-    "virtualenv>=21.14.13",
-    "polars>=2.0.0",
+    "virtualenv>=21.15.1",
+    "polars>=2.1.0",
     "sybil>=10.1.0",
     "tach>=0.35.3",
     "vulture>=2.14",
-    "hypothesis>=6.170.9",
+    "hypothesis>=6.170.12",
     "pytest-timeout>=2.4",
     "filelock>=4.2.4",
     "pytest-split>=0.11.0",
     "mutmut>=3.8,<3.9",
     "pydoclint>=0.11.1",
-    "complexipy==8.1.0",
+    "complexipy==8.3.0",
     "pytest-benchmark>=5.3.0",
 ]
 warehouse-backends = [
