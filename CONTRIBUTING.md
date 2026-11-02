@@ -90,6 +90,9 @@ The PostgreSQL gate is selected for query dependency, warehouse-execution,
 PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
 PRs skip it. PostgreSQL runs nightly on main; numerical certification runs
 nightly inside the scientific tier.
+The warehouse compile registry runs for every PR except documentation-only
+changes, and always runs for pushes and manual dispatches. Renames consider
+both paths, so moving a module into documentation still requires compilation.
 Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.

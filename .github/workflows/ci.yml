@@ -208,6 +208,8 @@ jobs:
           retention-days: 30
 
   compile-registry:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.compile_registry_required == 'true' }}
     name: warehouse compile registry (${{ matrix.dialect }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -304,6 +306,7 @@ jobs:
     outputs:
       postgres_required: ${{ steps.postgres.outputs.required }}
       certification_required: ${{ steps.certification.outputs.required }}
+      compile_registry_required: ${{ steps.compile_registry.outputs.required }}
       wheel_smoke_required: ${{ steps.packaging.outputs.required }}
       snippets: ${{ steps.docs.outputs.snippets }}
       strict_docs: ${{ steps.docs.outputs.strict_docs }}
@@ -318,6 +321,12 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
       - id: certification
         run: python scripts/certification_ci_changes.py --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+      - id: compile_registry
+        run: python scripts/compile_registry_ci_changes.py --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
@@ -469,6 +478,8 @@ jobs:
           if-no-files-found: ignore
       - name: Check required jobs and gate decisions
         env:
+          COMPILE_REGISTRY_REQUIRED: ${{ needs.changes.outputs.compile_registry_required }}
+          COMPILE_REGISTRY_RESULT: ${{ needs.compile-registry.result }}
           POSTGRES_REQUIRED: ${{ needs.changes.outputs.postgres_required }}
           POSTGRES_RESULT: ${{ needs.warehouse-postgres.result }}
           CERTIFICATION_REQUIRED: ${{ needs.changes.outputs.certification_required }}
@@ -484,8 +495,8 @@ jobs:
           TEST_WEAKENING_RESULT: ${{ needs.test-weakening.result }}
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.compile-registry.result }} ${{ needs.build.result }} ${{ needs.changes.result }}"
-          echo "lint/test/slow/compile-registry/build/decision/wheel-smoke jobs -> $results"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.changes.result }}"
+          echo "lint/test/slow/build/decision/wheel-smoke jobs -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }
           done
@@ -498,6 +509,7 @@ jobs:
               *) echo "::error::unexpected $name decision/result: $required:$result"; exit 1 ;;
             esac
           }
+          check_conditional_job "$COMPILE_REGISTRY_REQUIRED" "$COMPILE_REGISTRY_RESULT" compile-registry
           check_conditional_job "$POSTGRES_REQUIRED" "$POSTGRES_RESULT" PostgreSQL
           check_conditional_job "$CERTIFICATION_REQUIRED" "$CERTIFICATION_RESULT" certification
           check_conditional_job "$SNIPPETS_REQUIRED" "$SNIPPETS_RESULT" documentation-snippets
