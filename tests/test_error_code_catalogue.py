@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from collections import Counter
 
+import pytest
+
 from increment.errors import RETIRED_CODES, RefusalSpec
 from scripts import render_error_codes
 from tests.refusal_registry import walk_refusal_registries
+
+pytestmark = pytest.mark.tooling
 
 
 def test_every_registered_code_appears_once() -> None:
