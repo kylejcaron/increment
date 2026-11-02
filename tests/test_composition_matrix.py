@@ -755,7 +755,7 @@ def test_cuped(metric_type, request):
     )
 
 
-# Retention alone needs the native fit; the other cluster cells stay on summary frames.
+# Only retention needs the native fit; other metric cells keep their frame/refusal paths.
 @pytest.mark.parametrize(
     "metric_type",
     [
