@@ -36,6 +36,7 @@ from increment._source_types import EvidenceCapabilities, _BuiltinMomentSource
 from increment._window import NO_DATA_SIGNAL
 from increment.errors import (
     CapabilityError,
+    CodedError,
     InvalidRequestError,
     RefusalSpec,
     raiser,
@@ -693,7 +694,11 @@ def _declared_metric_definitions(canonical_json: str) -> dict[str, Mapping[str, 
     """
     from pydantic import TypeAdapter
 
-    from increment.semantics.design import Encouragement
+    from increment.semantics.design import (
+        SUPPORTED_DESIGN_MECHANISMS,
+        Encouragement,
+        parse_design,
+    )
     from increment.semantics.models import EncouragementDeclaration, Experiment
 
     invalid = False
@@ -707,15 +712,23 @@ def _declared_metric_definitions(canonical_json: str) -> dict[str, Mapping[str, 
             invalid = invalid or name in declared
             declared[name] = item
         experiment_payload = dict(payload["experiment"])
-        if (experiment_payload.get("design") or {}).get("mechanism") == "encouragement":
-            design = Encouragement.model_validate(experiment_payload["design"])
-            experiment_payload["design"] = EncouragementDeclaration(
-                uptake=design.uptake,
-                one_sided=design.one_sided,
-                exclusion_restriction=design.exclusion_restriction,
-            )
+        design_payload = experiment_payload.get("design")
+        if isinstance(design_payload, Mapping):
+            mechanism = design_payload.get("mechanism")
+            if mechanism == "encouragement" or (
+                mechanism is not None and mechanism not in SUPPORTED_DESIGN_MECHANISMS
+            ):
+                design = parse_design(design_payload)
+                if isinstance(design, Encouragement):
+                    experiment_payload["design"] = EncouragementDeclaration(
+                        uptake=design.uptake,
+                        one_sided=design.one_sided,
+                        exclusion_restriction=design.exclusion_restriction,
+                    )
         roster = Experiment.model_validate(experiment_payload).metric_names
         invalid = invalid or set(declared) != set(roster)
+    except CodedError:
+        raise
     except (KeyError, TypeError, ValueError, AttributeError):
         invalid = True
     if invalid:

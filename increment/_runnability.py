@@ -23,10 +23,9 @@ from increment._source_types import EvidenceCapabilities
 from increment.decision import CompiledDecisionPlan
 from increment.declarations import VARIANCE_REDUCTION, estimator_refs, thaw
 from increment.errors import CapabilityError, CodedError, RefusalSpec, refuse
-from increment.semantics.design import Design
+from increment.semantics.design import SUPPORTED_DESIGN_MECHANISMS, Design, parse_design
 
 _CONFIGS = TypeAdapter(tuple[ResolvedMetricConfig, ...])
-_DESIGN = TypeAdapter(Design)
 
 
 @dataclass(frozen=True)
@@ -185,8 +184,13 @@ def operation_options(
     if scope.view in {"daily", "asof"}:
         values["dimension"] = scope.segment[0].property if scope.segment else None
     estimands = values.get("estimands")
+    design_payload = experiment.design
+    mechanism = design_payload.get("mechanism")
+    if mechanism is not None and mechanism not in SUPPORTED_DESIGN_MECHANISMS:
+        parse_design(design_payload)
+    is_encouragement = mechanism == "encouragement"
     if (
-        experiment.design.get("mechanism") == "encouragement"
+        is_encouragement
         and estimands is not None
         and tuple(estimands) == ("compliance",)
         and not values.get("dimension")
@@ -440,7 +444,7 @@ def readout_refusals(
 ) -> tuple[CodedError, ...]:
     """Use the execution validators on recorded metric, method and view declarations."""
     declaration = thaw(declaration)
-    decoded_design = _DESIGN.validate_python(declaration_value(design))
+    decoded_design = parse_design(declaration_value(design))
     try:
         options, base_configs, configs = _request_config(
             declaration, options, decoded_design, estimator_id, operation, metric_name

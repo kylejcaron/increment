@@ -2,6 +2,11 @@
 
 `increment.Experiment` is an immutable description of a registered analysis. It records a design, metrics, source references, and selected scopes. For portable declarations, `to_json()` and `from_json()` preserve its canonical identity. In-memory analyses can also declare learner factories and fold counts: these remain usable during construction and execution. Exporting a raw learner factory refuses rather than replacing the learner. Source references can record a digest, a column-name/type schema, and a versioned `EvidenceCapabilities` declaration; a missing declaration is not evidence that a source supports a request.
 
+Design mechanisms are a versioned set: an older reader refuses an unknown
+mechanism with `design.mechanism_unsupported` rather than guessing its
+semantics. New mechanisms are added in minor releases; existing mechanism
+contracts are not silently reinterpreted.
+
 Raw learner factories use exact object identity while bound in memory, so
 different closures, partials, or callable instances cannot be substituted for
 one another. Their registration identity is process-local, not a portable

@@ -38,6 +38,10 @@ request)` so shared capability checks run before a read. The
 shows the provider interface. The removed `increment.sources.MomentSource`
 custom-source protocol has no compatibility adapter.
 
+This required method set is a compatibility contract: never add a required
+`EvidenceProvider` method. New evidence capabilities must remain optional or be
+served through an explicitly versioned contract.
+
 When `evidence.assignment_relation` is `"ledger"` or `"reduced"`, implement
 `assignment(request: AssignmentRequest) -> AssignmentEvidence` to serve
 `AssignmentRequest`s. It returns reduced assignment metadata (arm counts,
