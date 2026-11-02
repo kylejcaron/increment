@@ -102,6 +102,7 @@ to the delta method with near certainty is enumerated only below `ENUMERATION_CE
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -648,6 +649,40 @@ def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool)
 # --- Tail sources ---------------------------------------------------------------
 
 
+#: The sizing/MDE solve pair may request the same nuisance control PMF at different treatment
+#: rates. Reuse exact arrays only within that solve, with a byte bound.
+_REPLAY_PMF_CACHE_BYTES = 32 * 2**20
+
+
+class _ReplayPmfCache:
+    """Exact control-PMF vectors retained across this geometry's repeated replays."""
+
+    def __init__(self) -> None:
+        self.values: OrderedDict[tuple[int, int, int, float], tuple[np.ndarray, int]] = (
+            OrderedDict()
+        )
+        self.bytes = 0
+
+    def get(self, key: tuple[int, int, int, float]) -> np.ndarray | None:
+        entry = self.values.get(key)
+        if entry is None:
+            return None
+        self.values.move_to_end(key)
+        return entry[0]
+
+    def put(self, key: tuple[int, int, int, float], value: np.ndarray) -> None:
+        charge = value.nbytes + 256
+        if key in self.values or charge > _REPLAY_PMF_CACHE_BYTES:
+            return
+        while self.bytes + charge > _REPLAY_PMF_CACHE_BYTES:
+            _, (_, evicted) = self.values.popitem(last=False)
+            self.bytes -= evicted
+        stored = value.copy()
+        stored.flags.writeable = False
+        self.values[key] = stored, charge
+        self.bytes += charge
+
+
 class _ExactTails:
     """The runtime's windowed joint-binomial tails, shared across count pairs.
 
@@ -658,8 +693,9 @@ class _ExactTails:
     own special functions, elementwise.
     """
 
-    def __init__(self, batch: _Batch) -> None:
+    def __init__(self, batch: _Batch, pmf_cache: _ReplayPmfCache | None = None) -> None:
         self.batch = batch
+        self.pmf_cache = pmf_cache
         groups = batch.groups
         self.n_c = batch.decision.n_c
         self.n_t = batch.decision.n_t
@@ -703,10 +739,34 @@ class _ExactTails:
         if fresh:
             sel = np.asarray(fresh)
             self.pmf = self._grown(self.pmf, used, used + sel.size)
-            s = groups.wlo[gg[sel]][:, None] + np.arange(self.wmax)[None, :]
-            inside = np.arange(self.wmax)[None, :] < groups.width[gg[sel]][:, None]
-            pmf = _rr._fast_binom_pmf(s, self.n_c, qq[sel, None])
-            self.pmf[used : used + sel.size] = np.where(inside, pmf, 0.0)
+            missing: list[int] = []
+            cache_keys: list[tuple[int, int, int, float]] = []
+            for offset, n in enumerate(fresh):
+                g = gg[n]
+                key = (
+                    self.n_c,
+                    int(groups.wlo[g]),
+                    int(groups.width[g]),
+                    float(qq[n]),
+                )
+                cache_keys.append(key)
+                self.pmf[used + offset] = 0.0
+                cached = self.pmf_cache.get(key) if self.pmf_cache is not None else None
+                if cached is None:
+                    missing.append(offset)
+                else:
+                    self.pmf[used + offset, : cached.size] = cached
+            if missing:
+                sel = np.asarray([fresh[offset] for offset in missing], dtype=np.int64)
+                s = groups.wlo[gg[sel]][:, None] + np.arange(self.wmax)[None, :]
+                inside = np.arange(self.wmax)[None, :] < groups.width[gg[sel]][:, None]
+                pmf = _rr._fast_binom_pmf(s, self.n_c, qq[sel, None])
+                computed = np.where(inside, pmf, 0.0)
+                for row, offset in enumerate(missing):
+                    self.pmf[used + offset] = computed[row]
+                    if self.pmf_cache is not None:
+                        width = int(groups.width[gg[fresh[offset]]])
+                        self.pmf_cache.put(cache_keys[offset], computed[row, :width])
         return rows
 
     def _register(
@@ -1034,6 +1094,7 @@ class _Request:
     kind: Kind
     j0: int
     j1: int
+    pmf_cache: _ReplayPmfCache | None = None
 
 
 def _runtime_rejects(decision: BinomialDecision, kind: Kind, x_c: int, x_t: int) -> bool:
@@ -1170,7 +1231,7 @@ def classify(
         # A request larger than a batch is replayed in pieces of at most a batch: each count
         # pair has its own replay, so a piece decides exactly as the whole would.
         for j0 in range(req.j0, req.j1 + 1, batch_rows):
-            piece = _Request(req.x_c, req.kind, j0, min(req.j1, j0 + batch_rows - 1))
+            piece = _Request(req.x_c, req.kind, j0, min(req.j1, j0 + batch_rows - 1), req.pmf_cache)
             rows = piece.j1 - piece.j0 + 1
             if live and pending + rows > batch_rows:
                 _classify_live(decision, route, live, results)
@@ -1242,7 +1303,7 @@ def _classify_live(decision, route, live, results) -> None:
         delta = np.zeros(band.size)
     guard = (groups.omitted + 2.0 * groups.margin)[group[band]]
     batch = _Batch(decision, groups, group[band], j[band], delta, guard)
-    tails = _ExactTails(batch) if exact else _SurrogateTails(batch)
+    tails = _ExactTails(batch, live[0][1].pmf_cache) if exact else _SurrogateTails(batch)
     outcome = _replay(batch, tails, exact=exact)
     reject[band] = outcome == _Outcome.REJECT
     for row in np.flatnonzero(outcome == _Outcome.AMBIGUOUS):
@@ -1881,6 +1942,7 @@ class RejectionGeometry:
         max_cells: int = PLANNING_CELL_CEILING,
         routing: Routing | None = None,
         store: _CellGrid | None = None,
+        pmf_cache: _ReplayPmfCache | None = None,
     ) -> None:
         self.decision = decision
         self.route = route
@@ -1896,6 +1958,7 @@ class RejectionGeometry:
         )
         self.grid = _CellGrid()
         self.store = _CellGrid() if store is None else store
+        self.pmf_cache = _ReplayPmfCache() if pmf_cache is None else pmf_cache
         # Effect searches already solved on this geometry, keyed by their control rate,
         # compliance, target, baseline variance and route mode: a curve's companion effects.
         self.effects: dict[tuple[float | str, ...], object] = {}
@@ -2152,7 +2215,13 @@ class RejectionGeometry:
         starts = np.argwhere(edges == 1)
         stops = np.argwhere(edges == -1)
         requests = [
-            _Request(x_lo + int(row), kind, j_lo + int(start), j_lo + int(stop) - 1)
+            _Request(
+                x_lo + int(row),
+                kind,
+                j_lo + int(start),
+                j_lo + int(stop) - 1,
+                self.pmf_cache,
+            )
             for (row, start), (_, stop) in zip(starts, stops, strict=True)
             for kind in self.decision.kinds
         ]
