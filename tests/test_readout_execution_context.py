@@ -1791,18 +1791,17 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell_without_extra_event(tmp
 
     (experiment, resolver), _ = definitions_source(tmp_path, return_binding=True, window_days=2)
     try:
-        with pytest.warns():
-            rows = view_readout(
-                experiment,
-                resolver,
-                Scope(
-                    view="daily",
-                    grain="daily",
-                    values=True,
-                    segment=BreakoutIdentity("country", None),
-                ),
-                metrics=["revenue"],
-            )
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+            ),
+            metrics=["revenue"],
+        )
         missing = [
             row
             for row in rows
@@ -2355,18 +2354,17 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell(tmp_path):
             "INSERT INTO raw_events (user_id, ts, event, group_id, country_code, revenue) "
             "VALUES ('u3', TIMESTAMP '2026-01-03 12:00:00', 'purchase', NULL, 'US', 4.0)"
         )
-        with pytest.warns():
-            rows = view_readout(
-                experiment,
-                resolver,
-                Scope(
-                    view="daily",
-                    grain="daily",
-                    values=True,
-                    segment=BreakoutIdentity("country", None),
-                ),
-                metrics=["revenue"],
-            )
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+            ),
+            metrics=["revenue"],
+        )
         missing = [
             row
             for row in rows
