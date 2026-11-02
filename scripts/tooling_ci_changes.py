@@ -31,7 +31,11 @@ def requires_tooling(event: str, base: str, head: str, root: Path | None = None)
     if not paths or any(not path for path in paths):
         print("Cannot determine PR changes; requiring tooling tests.", file=sys.stderr)
         return True
-    return any(not os.fsdecode(path).startswith("increment/") for path in paths)
+    return any(
+        os.path.basename(os.fsdecode(path)) == "conftest.py"
+        or not os.fsdecode(path).startswith("increment/")
+        for path in paths
+    )
 
 
 def main() -> None:

@@ -60,6 +60,12 @@ def test_increment_only_change_skips_tooling(repository):
     assert not requires_tooling("pull_request", base, head, repo)
 
 
+def test_increment_conftest_change_requires_tooling(repository):
+    repo, _ = repository
+    base, head = _change(repo, "increment/nested/conftest.py")
+    assert requires_tooling("pull_request", base, head, repo)
+
+
 @pytest.mark.parametrize(
     "path",
     [
