@@ -631,6 +631,9 @@ on manual dispatch. It retains full test runs at dependency floors on all
 three Python versions, which nightly does not cover, plus all three live
 warehouse backends. Weekly failures create or update a GitHub issue labelled
 `weekly-failure`.
+Each interpreter's dependency-floor suite uses three duration-balanced parts,
+each with its own retained JUnit report and the same 90-minute limit. The
+retained numerical cases run once per interpreter, in the first part.
 
 
 #### Refusal registry gate
