@@ -253,6 +253,9 @@ its bracket whose lower end reaches the target; `minimum_detectable_effect`
 and a companion `mde_relative` certify the returned effect the same way.
 Enumerating the count lattice is deterministic work and can take about a
 minute per call.
+The planner reuses exact control-arm probability vectors across repeated finite-sample replays
+within a sizing request and its companion MDE. This is a computational reuse only: it changes
+no decision, bound, planning assumption, or result.
 
 `cuped_rho` reduces planning variance by `(1 - cuped_rho**2)` only when the
 effective decision method uses CUPED. A CUPED sensitivity readout does not
