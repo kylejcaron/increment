@@ -838,9 +838,12 @@ def test_class_method_fanout_failure_includes_source_line(tmp_path: Path) -> Non
     assert "tests/test_grid.py:4" in str(raised.value)
 
 
-def test_h5_repository_guard_is_unmarked() -> None:
+def test_h5_repository_guard_runs_in_functional_slow_tier() -> None:
     marks = getattr(test_literal_fanout_does_not_grow_without_a_grid_marker, "pytestmark", ())
-    assert all(mark.name != "slow" for mark in marks)
+    assert "slow" in {mark.name for mark in marks}
+    assert not {"parameter_recovery", "numerical_certification", "examples", "benchmark"} & {
+        mark.name for mark in marks
+    }
 
 
 def test_fanout_baseline_only_moves_down(tmp_path: Path) -> None:
@@ -1076,6 +1079,8 @@ def test_count_baseline_reports_lower_observed_count_as_stale() -> None:
     assert "sample.py': (1, 2)" in str(raised.value)
 
 
+# Parse every parametrized test module; sampling would miss new fan-out regressions.
+@pytest.mark.slow
 def test_literal_fanout_does_not_grow_without_a_grid_marker() -> None:
     _assert_fanout_baseline(TESTS_ROOT, _load_fanout_allowlist())
 

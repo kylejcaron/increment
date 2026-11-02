@@ -106,6 +106,12 @@ statements executed during the fast tier (including pytest-cov's measured test
 workers); it does not measure the slow or scientific tiers, establish
 whole-suite coverage, or rate test quality.
 
+Every fast shard also reports non-skipped JUnit items above five elapsed seconds
+in its job summary. This is advisory: an over-budget item does not fail CI.
+Reduce unnecessary setup or input without crossing the tested boundary; keep
+irreducible warehouse, subprocess and exhaustive repository checks in the slow
+tier with a reason beside their marker.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include

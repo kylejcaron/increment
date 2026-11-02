@@ -116,6 +116,16 @@ jobs:
           TEST_OUTCOME: ${{ steps.fast-tests.outcome }}
         run: |
           python -c 'import json, os; from pathlib import Path; Path("junit-metadata.json").write_text(json.dumps({"shard_id": os.environ["SHARD_ID"], "junit_present": Path("junit.xml").is_file(), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
+      - name: Report fast items over budget
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f junit.xml ]; then
+            python scripts/duration_report.py junit.xml >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Fast duration report unavailable: no JUnit file.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
       - name: Retain fast JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

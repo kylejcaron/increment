@@ -340,6 +340,8 @@ def test_exploratory_run_stamping_preserves_source_content_provenance(seeded_con
         cast(Any, resolver).close()
 
 
+# Preserve native ratio and CUPED acquisition before detached JSON and Arrow replay.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_ratio_and_cuped_rows_survive_detached_json_arrow_operations(
     seeded_con, seeded_pre_period_con, seeded_defs
@@ -1965,6 +1967,8 @@ def test_directional_reinterval_with_posterior_round_trips_through_arrow(seeded_
     assert restored.components["posterior"][1] == corrected.components["posterior"][1]
 
 
+# Byte stability requires two fresh interpreters and native breakout rows.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_arrow_ipc_bytes_are_stable_across_fresh_processes(seeded_con, seeded_defs):
     import subprocess

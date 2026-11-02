@@ -36,6 +36,8 @@ def test_lower_counts_need_no_reason() -> None:
     assert check.check_increases(BASE, head, "")[0] == 0
 
 
+# Real branch histories and repeated collection protect merge-base item accounting.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_parallel_branches_each_pass_against_the_base_and_merge_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
