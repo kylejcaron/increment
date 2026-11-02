@@ -281,36 +281,45 @@ def fit_multicovariate_source(
         from increment.estimation.variance import require_positive_denominator_mean
         from increment.query._cuped_qr import _stable_arm_means
 
-        withheld = {}
-        fitted_request = request
-        if metric.type == "ratio":
-            denominator_means = _stable_arm_means(
-                relation, relation["y_den"].cast("float64"), execute=execute
-            )
-            for arm, mean in denominator_means.items():
-                try:
-                    require_positive_denominator_mean(metric=metric.name, group_id=arm, d_bar=mean)
-                except CodedError as exc:
-                    withheld[arm] = exc
-            admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
-            if request.control in withheld or len(admitted) < 2:
-                return warehouse_cuped_fit_evidence(
-                    None, request.arm_order, tuple(withheld.items())
+        scratch_context = scratch_factory() if scratch_factory is not None else None
+        if scratch_context is None:
+            scratch_context = nullcontext()
+        with scratch_context as scratch:
+            if scratch is not None and metric.type == "ratio" and not categorical_only:
+                relation = scratch.materialize_input(relation, label="magnitude_checked")
+            withheld = {}
+            fitted_request = request
+            if metric.type == "ratio":
+                denominator_relation = relation.select("group_id", "y_den")
+                denominator_means = _stable_arm_means(
+                    denominator_relation,
+                    denominator_relation["y_den"].cast("float64"),
+                    execute=execute,
                 )
-            relation = relation.filter(relation["group_id"].isin(admitted))
-            fitted_request = replace(
-                request,
-                arm_order=admitted,
-                identity=request.identity + ("admitted_arms", admitted),
-            )
-        if (
-            categorical_only
-            and not return_components
-            and not _known_cells_outcome_domain(source, metric, relation, outcomes)
-        ):
-            try:
-                scratch_context = scratch_factory() if scratch_factory is not None else None
-                with scratch_context if scratch_context is not None else nullcontext() as scratch:
+                for arm, mean in denominator_means.items():
+                    try:
+                        require_positive_denominator_mean(
+                            metric=metric.name, group_id=arm, d_bar=mean
+                        )
+                    except CodedError as exc:
+                        withheld[arm] = exc
+                admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
+                if request.control in withheld or len(admitted) < 2:
+                    return warehouse_cuped_fit_evidence(
+                        None, request.arm_order, tuple(withheld.items())
+                    )
+                relation = relation.filter(relation["group_id"].isin(admitted))
+                fitted_request = replace(
+                    request,
+                    arm_order=admitted,
+                    identity=request.identity + ("admitted_arms", admitted),
+                )
+            if (
+                categorical_only
+                and not return_components
+                and not _known_cells_outcome_domain(source, metric, relation, outcomes)
+            ):
+                try:
                     fit = fit_categorical_cells(
                         categorical_cells_from_relation(
                             relation,
@@ -322,11 +331,12 @@ def fit_multicovariate_source(
                         ),
                         control=fitted_request.control,
                     )
-                return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
-            except CodedError as exc:
-                if exc.code not in CELL_REFUSALS:
-                    raise
-        with scratch_factory() as scratch:
+                    return warehouse_cuped_fit_evidence(
+                        fit, request.arm_order, tuple(withheld.items())
+                    )
+                except CodedError as exc:
+                    if exc.code not in CELL_REFUSALS:
+                        raise
             fit = fit_warehouse_qr(
                 relation,
                 metric=metric,
@@ -336,7 +346,7 @@ def fit_multicovariate_source(
                 return_components=return_components,
                 magnitude_checked=True,
             )
-        return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
+            return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
 
 
 def _portable_categorical_domain(source, metric, method, population) -> None:
