@@ -91,6 +91,7 @@ nav:
       - Statistical Limitations: limitations.md
       - Validation: validation.md
       - Capabilities by Entry Point: reference/capabilities-by-entry-point.md
+      - Error Codes: reference/error-codes.md
       - Method Compatibility Reference: guides/compatibility.md
   - Development:
       - Extending Estimators and Evidence: development/adding-an-estimator.md

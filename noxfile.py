@@ -580,6 +580,7 @@ def docs(session: nox.Session) -> None:
     _sync(session, "docs", "dev", extras=("demo", "tables", "dashboard"))
     _run_heavy(session, "python", "scripts/check_doc_references.py", "--check")
     session.run("python", "scripts/render_capability_table.py", "--check")
+    session.run("python", "scripts/render_error_codes.py", "--check")
     for name in EXAMPLE_NOTEBOOKS:
         session.run(
             "marimo",
