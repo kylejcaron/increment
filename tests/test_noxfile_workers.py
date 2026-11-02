@@ -90,3 +90,10 @@ def test_tooling_job_is_conditional_and_required_by_ci_ok() -> None:
         "if-no-files-found": "warn",
         "retention-days": 90,
     }
+
+    assert "tooling_required" in jobs["changes"]["outputs"]
+    assert "tooling" in jobs["ci-ok"]["needs"]
+    gate_step = jobs["ci-ok"]["steps"][-1]
+    assert "TOOLING_REQUIRED" in gate_step["env"]
+    assert "TOOLING_RESULT" in gate_step["env"]
+    assert 'check_conditional_job "$TOOLING_REQUIRED" "$TOOLING_RESULT" tooling' in gate_step["run"]
