@@ -144,12 +144,29 @@ every loader.
 - A new test is shown failing first (a one-line break in the code under test or
   a detached worktree at the base, never `git stash`). Expected values come
   from the specification, not from running the implementation.
-- Commands: `make test TESTS=<nodeid>` while editing; `make test-affected
-  BASE=<task-base-sha>` before committing; `make check` optionally; CI is the
+- Commands: `make test TESTS=<nodeid>` while editing; before committing,
+  `make lint`, `uv run ty check`, `make test-affected BASE=<task-base-sha>`
+  and the same with `TIER=slow`. `make check` (full fast and slow tiers) runs
+  at most once per pushed head, never again on an unchanged tree; CI is the
   gate. Collected-item growth needs a `tests: +N items — reason` line in the
   PR body; removing or weakening tests needs the `test-reduction-approved`
   label. Mutation evidence comes
   from `scripts/mutation_campaign.py`, nightly or on demand, never per push.
+- The affected selection misses two checks. When imports reachable from
+  warehouse compilation change, regenerate the record with
+  `scripts/trace_compile_dependencies.py` and run
+  `tests/test_warehouse_compile_registry.py::test_recorded_compile_dependencies_are_current`;
+  when README or docs change, run `make test-doc-snippets`.
+- A change to refusals, scopes or breakout selection runs
+  `tests/test_parity_matrix.py::test_runnable_preserves_preflight_refusals`
+  (slow tier): `runnable()` and `run()` report the same code and context.
+- Tests never pass `examples/definitions` to a builder: builders write a
+  catalog file beside the definitions and `tests/conftest.py` then fails the
+  session. Use the `example_definitions` fixture.
+- A new module gets an entry in both `tach.toml` and `tests/layer_map.toml`.
+- Experiment canonical JSON and hashes are pinned: an executor signature change
+  must leave `analysis_context["operation_parameters"]` unchanged; compare a
+  builder's `experiment.to_json()` before and after.
 - A failure under contention is rerun alone before it is called a flake
   (`uv run --no-sync python -m scripts.test_slots -- make test TESTS=<nodeid>`);
   never widen a tolerance, timeout or threshold to pass. When Hypothesis finds
@@ -174,6 +191,15 @@ every loader.
   verification commands in the issue ledger; use absolute paths in every
   command. Do not overwrite another writer's dirty work; one writer per shared
   schema or wire format.
+- A relative path resolves against the session's directory, which may be a
+  different worktree; edit and run commands with absolute paths only.
+- Planning and report directories such as `.superpowers/` are gitignored;
+  never force-add them.
+- If the pre-push hook passes but git exits 141, push the identical head again
+  with `--no-verify` and confirm it with `git ls-remote`.
+- Avoid stacking pull requests that edit the same files (`tach.toml`,
+  `docs/api.md`, shared test helpers); each merge forces a rebase and a fresh
+  CI run of the next one.
 - Every PR gets a human diff read. Statistical, numerical and wire-format
   changes get domain review; security-sensitive boundaries get a security
   review. Review tooling and handoff mechanics are in `CONTRIBUTING.md`.
