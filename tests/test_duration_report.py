@@ -4,6 +4,8 @@ import pytest
 
 from scripts.duration_report import SlowItem, main, over_budget
 
+pytestmark = pytest.mark.tooling
+
 
 def test_lists_items_over_budget_slowest_first(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     junit = tmp_path / "junit.xml"
