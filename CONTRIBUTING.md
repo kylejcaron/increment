@@ -602,6 +602,22 @@ Without `.test_durations`, ordinary tests retain collection order. Markdown
 snippets are still scheduled after ordinary tests and retain their source order
 within each file.
 
+The fast, functional-slow and certification jobs and the nightly full suite pass
+`--cpu-report cpu.json` to pytest and upload the file as a
+`cpu-<matrix values>-<job ID>` artifact. Each invocation records the controller's
+user and system CPU seconds, the same for its reaped children (the `xdist`
+workers and the subprocesses they waited for), its wall seconds and its worker
+count. The nightly full suite records both its main pytest invocation and the
+trailing numerical cases; the report sums their CPU and wall seconds and keeps
+the largest worker count. Wall seconds cover pytest sessions only; runner-minutes
+come from each job's start and completion timestamps. To see what runs cost,
+print each job's runner-minutes and CPU-minutes with per-run totals; a job
+without a CPU artifact is unavailable, not zero:
+
+```bash
+uv run --no-sync python scripts/ci_cost_report.py --run <run ID> [--run <run ID> ...]
+```
+
 Dashboard, simulation and artifact tests reuse expensive prepared fixtures under the
 ignored `.cache/increment-fixtures/` directory. Cache entries are keyed by
 source and the installed Python environment. Set

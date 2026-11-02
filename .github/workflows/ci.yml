@@ -65,7 +65,7 @@ jobs:
             export COVERAGE_CORE=sysmon
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
-          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Predict selected files
         if: always()
         continue-on-error: true
@@ -126,6 +126,16 @@ jobs:
             junit-metadata.json
           if-no-files-found: warn
           retention-days: 30
+      - name: Retain CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          # The trailing job ID ties the record to one job execution (scripts/ci_cost_report.py).
+          name: cpu-fast-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
 
   selection-misses:
     if: always()
@@ -197,7 +207,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
+      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
       - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -206,6 +216,15 @@ jobs:
           path: junit.xml
           if-no-files-found: warn
           retention-days: 30
+      - name: Retain CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: cpu-slow-shard-${{ matrix.group }}-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
 
   compile-registry:
     needs: [changes]
@@ -363,7 +382,7 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/certification-test-durations.json"
+      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/certification-test-durations.json"
       - name: Retain certification JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -372,6 +391,15 @@ jobs:
           path: junit.xml
           if-no-files-found: warn
           retention-days: 30
+      - name: Retain CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: cpu-numerical-certification-shard-${{ matrix.group }}-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
 
   warehouse-postgres:
     needs: changes
