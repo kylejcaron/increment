@@ -468,3 +468,178 @@ def test_capture_roster_mismatch_fails():
         resolver.close()
     with pytest.raises(AssertionError):
         assert_same_evidence(EvidenceRecord([]), EvidenceRecord([]))
+
+
+def test_transcript_codec_rejects_an_unregistered_version():
+    from tests.evidence_fixtures.transcript import Transcript
+
+    payload = {
+        "schema_version": 2,
+        "baseline_revision": "7c324b66",
+        "scenario_id": "scalar-checkpoint",
+        "ingress": "from_moments",
+        "runtime": {"python": "3.13.5", "platform": "test"},
+        "provenance": {"kind": "historical-input"},
+        "declaration_sha256": "unused",
+        "input_sha256": "unused",
+        "records": [],
+    }
+    with pytest.raises(ValueError, match="schema_version"):
+        Transcript.from_payload(payload, expected_requests=())
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_frozen_scalar_evidence_runs_mean_conversion_ratio_consumers():
+    from pathlib import Path
+
+    from increment._evidence_types import (
+        AssignmentRequest,
+        CountsRequest,
+        MetricEvidenceRequest,
+        MomentsRequest,
+    )
+    from increment.estimation.engine import estimate_lift
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import bound_source
+    from tests.evidence_fixtures.transcript import Transcript, acquire_transcript
+    from tests.parity_harness.cases import _close_parity_binding, _fixed_horizon_case
+
+    case = _fixed_horizon_case(id="mean_ratio_conversion_cuped_fixed_horizon", breakout=False)
+    experiment, resolver = case.build["from_moments"]()
+    try:
+        source = bound_source(resolver)
+        metrics = {
+            metric.name: metric
+            for metric in source.context.metrics
+            if metric.name in {"revenue", "purchase_rate", "rps"}
+        }
+        assert set(metrics) == {"revenue", "purchase_rate", "rps"}
+        metric_requests = {
+            name: MetricEvidenceRequest(metric=metric, control_group="control")
+            for name, metric in metrics.items()
+        }
+        moments_requests = {name: MomentsRequest(metric=metric) for name, metric in metrics.items()}
+        requests = (
+            *metric_requests.values(),
+            *moments_requests.values(),
+            CountsRequest(kind="assignment"),
+            AssignmentRequest(experiment="moments"),
+        )
+        live = acquire_transcript(
+            evidence_provider(source),
+            scenario_id=case.id,
+            ingress="from_moments",
+            requests=requests,
+            baseline_revision="7c324b66",
+            provenance={
+                "kind": "baseline-input-capture",
+                "scenario": case.id,
+                "input": "case-owned fixed-horizon input and baseline M export",
+            },
+        )
+        fixture = (
+            Path(__file__).parent / "fixtures" / "evidence_identity" / "scalar_checkpoint.json"
+        )
+        frozen = Transcript.from_payload(
+            json.loads(fixture.read_text()), expected_requests=requests
+        )
+
+        def evidence_record(transcript):
+            return EvidenceRecord(
+                (
+                    CaptureKey(
+                        record["request_type"],
+                        record["request_type"],
+                        record["request"].get("metric", {}).get("name", ""),
+                        transcript.scenario_id,
+                        RequestCoordinates(
+                            record["request"].get("population", "assigned"),
+                            record["request"].get("grain", "total"),
+                        ),
+                        str(index),
+                    ),
+                    record["answer"],
+                )
+                for index, record in enumerate(transcript.records)
+            )
+
+        assert_same_evidence(evidence_record(frozen), evidence_record(live))
+
+        for name, metric in metrics.items():
+            evidence = frozen.answer_for(metric_requests[name])
+            expected_rows = {
+                row["group_id"]: row for row in frozen.answer_for(moments_requests[name])
+            }
+            (result,) = estimate_lift([metric], evidence["rows"], control_group="control").results
+            if name == "purchase_rate":
+                control = expected_rows["control"]["successes"] / expected_rows["control"]["n"]
+                treatment = (
+                    expected_rows["treatment"]["successes"] / expected_rows["treatment"]["n"]
+                )
+            elif name == "rps":
+                control = expected_rows["control"]["ref_y"] / expected_rows["control"]["ref_den"]
+                treatment = (
+                    expected_rows["treatment"]["ref_y"] / expected_rows["treatment"]["ref_den"]
+                )
+            else:
+                control = expected_rows["control"]["ref_y"]
+                treatment = expected_rows["treatment"]["ref_y"]
+            assert result.lift is not None
+            assert result.lift.value == pytest.approx(treatment / control - 1)
+
+        assert frozen.answer_for(CountsRequest(kind="assignment"))["counts"]
+        assert frozen.answer_for(AssignmentRequest(experiment="moments"))["arm_counts"]
+    finally:
+        _close_parity_binding((experiment, resolver))
+
+
+def test_transcript_decoder_rejects_roster_and_answer_schema_drift():
+    from copy import deepcopy
+
+    from increment._evidence_types import CountsRequest
+    from tests.evidence_fixtures.transcript import Transcript
+
+    request = CountsRequest(kind="unit")
+    transcript = Transcript(
+        baseline_revision="7c324b66",
+        scenario_id="scalar-checkpoint",
+        ingress="from_moments",
+        runtime={"python": "3.13.5", "platform": "test"},
+        provenance={"authority": "historical-input"},
+        records=(
+            {
+                "request_type": "CountsRequest",
+                "request": {"kind": "unit", "population": "assigned"},
+                "answer_type": "CountEvidence",
+                "answer": {
+                    "population": "assigned",
+                    "grain": "unit",
+                    "counts": {"control": 60, "treatment": 60},
+                    "unit_counts": {},
+                },
+            },
+        ),
+    )
+    payload = transcript.to_payload()
+    Transcript.from_payload(payload, expected_requests=(request,))
+
+    missing = deepcopy(payload)
+    missing["records"] = []
+    with pytest.raises(ValueError, match="roster mismatch"):
+        Transcript.from_payload(missing, expected_requests=(request,))
+
+    duplicate = deepcopy(payload)
+    duplicate["records"].append(deepcopy(duplicate["records"][0]))
+    with pytest.raises(ValueError, match="duplicate transcript request"):
+        Transcript.from_payload(duplicate, expected_requests=(request,))
+
+    unexpected = deepcopy(payload)
+    unexpected["records"][0]["request"]["kind"] = "cluster"
+    with pytest.raises(ValueError, match="roster mismatch"):
+        Transcript.from_payload(unexpected, expected_requests=(request,))
+
+    unknown_field = deepcopy(payload)
+    unknown_field["records"][0]["answer"]["discarded"] = True
+    with pytest.raises(ValueError, match="answer fields"):
+        Transcript.from_payload(unknown_field, expected_requests=(request,))

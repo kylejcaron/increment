@@ -1,0 +1,728 @@
+{
+  "baseline_revision": "7c324b66",
+  "declaration_sha256": "078fcddc993a63f42bef7d11ac3396d348d09707b9838ace662832e023bf5007",
+  "ingress": "from_moments",
+  "input_sha256": "20fcbcf401c6d627de42c73008d1ef13ec244948b965ff4d4e5c3e4a9ceee210",
+  "provenance": {
+    "input": "case-owned fixed-horizon input and baseline M export",
+    "kind": "baseline-input-capture",
+    "scenario": "mean_ratio_conversion_cuped_fixed_horizon"
+  },
+  "records": [
+    {
+      "answer": {
+        "cluster": null,
+        "control_group": "control",
+        "covariate_columns": [],
+        "decision_evidence_components": [
+          [
+            "moments_rows",
+            "3b6537c482a62634be3923604af311dc9fcc7d12b7ceb4dc52c67ba961a8ce23",
+            2
+          ]
+        ],
+        "evidence_components": [
+          [
+            "moments_rows",
+            "3b6537c482a62634be3923604af311dc9fcc7d12b7ceb4dc52c67ba961a8ce23",
+            2
+          ]
+        ],
+        "evidence_count": 2,
+        "evidence_kind": "moments_rows",
+        "evidence_sha256": "3b6537c482a62634be3923604af311dc9fcc7d12b7ceb4dc52c67ba961a8ce23",
+        "method_rows": [],
+        "n_treatment_arms": 1,
+        "observed_arms": [
+          "control",
+          "treatment"
+        ],
+        "rows": [
+          {
+            "cden1": null,
+            "cden2": null,
+            "cden3": null,
+            "cx1": null,
+            "cx2": null,
+            "cxd": null,
+            "cxden": null,
+            "cxy": null,
+            "cy1": -3.197442310920451e-14,
+            "cy2": 733.3333333333334,
+            "cy2d": null,
+            "cyd": null,
+            "cyden": null,
+            "experiment_id": "frame",
+            "group_id": "control",
+            "metric": "revenue",
+            "n": 60,
+            "ref_den": null,
+            "ref_x": null,
+            "ref_y": 4.666666666666667,
+            "successes": null,
+            "sum_d": null,
+            "winsor_lower_bound": null,
+            "winsor_lower_percentile": null,
+            "winsor_n": null,
+            "winsor_n_lower": null,
+            "winsor_n_upper": null,
+            "winsor_upper_bound": null,
+            "winsor_upper_percentile": null,
+            "x_role": null
+          },
+          {
+            "cden1": null,
+            "cden2": null,
+            "cden3": null,
+            "cx1": null,
+            "cx2": null,
+            "cxd": null,
+            "cxden": null,
+            "cxy": null,
+            "cy1": 2.842170943040401e-14,
+            "cy2": 933.3333333333335,
+            "cy2d": null,
+            "cyd": null,
+            "cyden": null,
+            "experiment_id": "frame",
+            "group_id": "treatment",
+            "metric": "revenue",
+            "n": 60,
+            "ref_den": null,
+            "ref_x": null,
+            "ref_y": 5.333333333333333,
+            "successes": null,
+            "sum_d": null,
+            "winsor_lower_bound": null,
+            "winsor_lower_percentile": null,
+            "winsor_n": null,
+            "winsor_n_lower": null,
+            "winsor_n_upper": null,
+            "winsor_upper_bound": null,
+            "winsor_upper_percentile": null,
+            "x_role": null
+          }
+        ]
+      },
+      "answer_type": "MetricEvidence",
+      "request": {
+        "by": [],
+        "control_group": "control",
+        "covariates": [],
+        "methods": [],
+        "metric": {
+          "aggregation": "sum",
+          "description": "",
+          "entity": "__frame__",
+          "fact": "__frame__",
+          "filters": [],
+          "margin": null,
+          "margin_abs": null,
+          "name": "revenue",
+          "preferred_direction": "increase",
+          "rollout_cost": null,
+          "type": "mean",
+          "window_days": null,
+          "winsorization": null
+        },
+        "population": "assigned"
+      },
+      "request_type": "MetricEvidenceRequest"
+    },
+    {
+      "answer": {
+        "cluster": null,
+        "control_group": "control",
+        "covariate_columns": [],
+        "decision_evidence_components": [
+          [
+            "moments_rows",
+            "e8aea500120f87fd2e0358e08b27eedbe24d920c9979743041c90d37f2c6fc97",
+            2
+          ]
+        ],
+        "evidence_components": [
+          [
+            "moments_rows",
+            "e8aea500120f87fd2e0358e08b27eedbe24d920c9979743041c90d37f2c6fc97",
+            2
+          ]
+        ],
+        "evidence_count": 2,
+        "evidence_kind": "moments_rows",
+        "evidence_sha256": "e8aea500120f87fd2e0358e08b27eedbe24d920c9979743041c90d37f2c6fc97",
+        "method_rows": [],
+        "n_treatment_arms": 1,
+        "observed_arms": [
+          "control",
+          "treatment"
+        ],
+        "rows": [
+          {
+            "cden1": null,
+            "cden2": null,
+            "cden3": null,
+            "cx1": null,
+            "cx2": null,
+            "cxd": null,
+            "cxden": null,
+            "cxy": null,
+            "cy1": 4.3298697960381105e-15,
+            "cy2": 13.333333333333336,
+            "cy2d": null,
+            "cyd": null,
+            "cyden": null,
+            "experiment_id": "frame",
+            "group_id": "control",
+            "metric": "purchase_rate",
+            "n": 60,
+            "ref_den": null,
+            "ref_x": null,
+            "ref_y": 0.6666666666666666,
+            "successes": 40,
+            "sum_d": null,
+            "winsor_lower_bound": null,
+            "winsor_lower_percentile": null,
+            "winsor_n": null,
+            "winsor_n_lower": null,
+            "winsor_n_upper": null,
+            "winsor_upper_bound": null,
+            "winsor_upper_percentile": null,
+            "x_role": null
+          },
+          {
+            "cden1": null,
+            "cden2": null,
+            "cden3": null,
+            "cx1": null,
+            "cx2": null,
+            "cxd": null,
+            "cxden": null,
+            "cxy": null,
+            "cy1": 3.3306690738754696e-15,
+            "cy2": 13.333333333333334,
+            "cy2d": null,
+            "cyd": null,
+            "cyden": null,
+            "experiment_id": "frame",
+            "group_id": "treatment",
+            "metric": "purchase_rate",
+            "n": 60,
+            "ref_den": null,
+            "ref_x": null,
+            "ref_y": 0.6666666666666666,
+            "successes": 40,
+            "sum_d": null,
+            "winsor_lower_bound": null,
+            "winsor_lower_percentile": null,
+            "winsor_n": null,
+            "winsor_n_lower": null,
+            "winsor_n_upper": null,
+            "winsor_upper_bound": null,
+            "winsor_upper_percentile": null,
+            "x_role": null
+          }
+        ]
+      },
+      "answer_type": "MetricEvidence",
+      "request": {
+        "by": [],
+        "control_group": "control",
+        "covariates": [],
+        "methods": [],
+        "metric": {
+          "description": "",
+          "entity": "__frame__",
+          "fact": "__frame__",
+          "filters": [],
+          "margin": null,
+          "margin_abs": null,
+          "name": "purchase_rate",
+          "preferred_direction": "increase",
+          "rollout_cost": null,
+          "type": "conversion",
+          "window_days": null
+        },
+        "population": "assigned"
+      },
+      "request_type": "MetricEvidenceRequest"
+    },
+    {
+      "answer": {
+        "cluster": null,
+        "control_group": "control",
+        "covariate_columns": [],
+        "decision_evidence_components": [
+          [
+            "moments_rows",
+            "20a941bde4e4fbffb7433151f0caf68710d124406c2067c362bb4b49998f49a7",
+            2
+          ]
+        ],
+        "evidence_components": [
+          [
+            "moments_rows",
+            "20a941bde4e4fbffb7433151f0caf68710d124406c2067c362bb4b49998f49a7",
+            2
+          ]
+        ],
+        "evidence_count": 2,
+        "evidence_kind": "moments_rows",
+        "evidence_sha256": "20a941bde4e4fbffb7433151f0caf68710d124406c2067c362bb4b49998f49a7",
+        "method_rows": [],
+        "n_treatment_arms": 1,
+        "observed_arms": [
+          "control",
+          "treatment"
+        ],
+        "rows": [
+          {
+            "cden1": 0.0,
+            "cden2": 0.0,
+            "cden3": 0.0,
+            "cx1": null,
+            "cx2": null,
+            "cxd": null,
+            "cxden": null,
+            "cxy": null,
+            "cy1": -3.375077994860476e-14,
+            "cy2": 733.3333333333333,
+            "cy2d": null,
+            "cyd": null,
+            "cyden": 0.0,
+            "experiment_id": "frame",
+            "group_id": "control",
+            "metric": "rps",
+            "n": 60,
+            "ref_den": 1.0,
+            "ref_x": null,
+            "ref_y": 4.666666666666667,
+            "successes": null,
+            "sum_d": null,
+            "winsor_lower_bound": null,
+            "winsor_lower_percentile": null,
+            "winsor_n": null,
+            "winsor_n_lower": null,
+            "winsor_n_upper": null,
+            "winsor_upper_bound": null,
+            "winsor_upper_percentile": null,
+            "x_role": null
+          },
+          {
+            "cden1": 0.0,
+            "cden2": 0.0,
+            "cden3": 0.0,
+            "cx1": null,
+            "cx2": null,
+            "cxd": null,
+            "cxden": null,
+            "cxy": null,
+            "cy1": 2.7533531010703882e-14,
+            "cy2": 933.3333333333335,
+            "cy2d": null,
+            "cyd": null,
+            "cyden": 0.0,
+            "experiment_id": "frame",
+            "group_id": "treatment",
+            "metric": "rps",
+            "n": 60,
+            "ref_den": 1.0,
+            "ref_x": null,
+            "ref_y": 5.333333333333333,
+            "successes": null,
+            "sum_d": null,
+            "winsor_lower_bound": null,
+            "winsor_lower_percentile": null,
+            "winsor_n": null,
+            "winsor_n_lower": null,
+            "winsor_n_upper": null,
+            "winsor_upper_bound": null,
+            "winsor_upper_percentile": null,
+            "x_role": null
+          }
+        ]
+      },
+      "answer_type": "MetricEvidence",
+      "request": {
+        "by": [],
+        "control_group": "control",
+        "covariates": [],
+        "methods": [],
+        "metric": {
+          "denominator": {
+            "aggregation": "sum",
+            "fact": "__frame_denominator__",
+            "filters": [],
+            "window_days": null
+          },
+          "description": "",
+          "entity": "__frame__",
+          "margin": null,
+          "margin_abs": null,
+          "name": "rps",
+          "numerator": {
+            "aggregation": "sum",
+            "fact": "__frame_numerator__",
+            "filters": [],
+            "window_days": null
+          },
+          "preferred_direction": "increase",
+          "rollout_cost": null,
+          "type": "ratio"
+        },
+        "population": "assigned"
+      },
+      "request_type": "MetricEvidenceRequest"
+    },
+    {
+      "answer": [
+        {
+          "cden1": null,
+          "cden2": null,
+          "cden3": null,
+          "cx1": null,
+          "cx2": null,
+          "cxd": null,
+          "cxden": null,
+          "cxy": null,
+          "cy1": -3.197442310920451e-14,
+          "cy2": 733.3333333333334,
+          "cy2d": null,
+          "cyd": null,
+          "cyden": null,
+          "experiment_id": "frame",
+          "group_id": "control",
+          "metric": "revenue",
+          "n": 60,
+          "ref_den": null,
+          "ref_x": null,
+          "ref_y": 4.666666666666667,
+          "successes": null,
+          "sum_d": null,
+          "winsor_lower_bound": null,
+          "winsor_lower_percentile": null,
+          "winsor_n": null,
+          "winsor_n_lower": null,
+          "winsor_n_upper": null,
+          "winsor_upper_bound": null,
+          "winsor_upper_percentile": null,
+          "x_role": null
+        },
+        {
+          "cden1": null,
+          "cden2": null,
+          "cden3": null,
+          "cx1": null,
+          "cx2": null,
+          "cxd": null,
+          "cxden": null,
+          "cxy": null,
+          "cy1": 2.842170943040401e-14,
+          "cy2": 933.3333333333335,
+          "cy2d": null,
+          "cyd": null,
+          "cyden": null,
+          "experiment_id": "frame",
+          "group_id": "treatment",
+          "metric": "revenue",
+          "n": 60,
+          "ref_den": null,
+          "ref_x": null,
+          "ref_y": 5.333333333333333,
+          "successes": null,
+          "sum_d": null,
+          "winsor_lower_bound": null,
+          "winsor_lower_percentile": null,
+          "winsor_n": null,
+          "winsor_n_lower": null,
+          "winsor_n_upper": null,
+          "winsor_upper_bound": null,
+          "winsor_upper_percentile": null,
+          "x_role": null
+        }
+      ],
+      "answer_type": "MomentRows",
+      "request": {
+        "by": [],
+        "completed_windows_only": false,
+        "experiment": null,
+        "grain": "total",
+        "include_covariate": false,
+        "method": null,
+        "metric": {
+          "aggregation": "sum",
+          "description": "",
+          "entity": "__frame__",
+          "fact": "__frame__",
+          "filters": [],
+          "margin": null,
+          "margin_abs": null,
+          "name": "revenue",
+          "preferred_direction": "increase",
+          "rollout_cost": null,
+          "type": "mean",
+          "window_days": null,
+          "winsorization": null
+        },
+        "population": "assigned"
+      },
+      "request_type": "MomentsRequest"
+    },
+    {
+      "answer": [
+        {
+          "cden1": null,
+          "cden2": null,
+          "cden3": null,
+          "cx1": null,
+          "cx2": null,
+          "cxd": null,
+          "cxden": null,
+          "cxy": null,
+          "cy1": 4.3298697960381105e-15,
+          "cy2": 13.333333333333336,
+          "cy2d": null,
+          "cyd": null,
+          "cyden": null,
+          "experiment_id": "frame",
+          "group_id": "control",
+          "metric": "purchase_rate",
+          "n": 60,
+          "ref_den": null,
+          "ref_x": null,
+          "ref_y": 0.6666666666666666,
+          "successes": 40,
+          "sum_d": null,
+          "winsor_lower_bound": null,
+          "winsor_lower_percentile": null,
+          "winsor_n": null,
+          "winsor_n_lower": null,
+          "winsor_n_upper": null,
+          "winsor_upper_bound": null,
+          "winsor_upper_percentile": null,
+          "x_role": null
+        },
+        {
+          "cden1": null,
+          "cden2": null,
+          "cden3": null,
+          "cx1": null,
+          "cx2": null,
+          "cxd": null,
+          "cxden": null,
+          "cxy": null,
+          "cy1": 3.3306690738754696e-15,
+          "cy2": 13.333333333333334,
+          "cy2d": null,
+          "cyd": null,
+          "cyden": null,
+          "experiment_id": "frame",
+          "group_id": "treatment",
+          "metric": "purchase_rate",
+          "n": 60,
+          "ref_den": null,
+          "ref_x": null,
+          "ref_y": 0.6666666666666666,
+          "successes": 40,
+          "sum_d": null,
+          "winsor_lower_bound": null,
+          "winsor_lower_percentile": null,
+          "winsor_n": null,
+          "winsor_n_lower": null,
+          "winsor_n_upper": null,
+          "winsor_upper_bound": null,
+          "winsor_upper_percentile": null,
+          "x_role": null
+        }
+      ],
+      "answer_type": "MomentRows",
+      "request": {
+        "by": [],
+        "completed_windows_only": false,
+        "experiment": null,
+        "grain": "total",
+        "include_covariate": false,
+        "method": null,
+        "metric": {
+          "description": "",
+          "entity": "__frame__",
+          "fact": "__frame__",
+          "filters": [],
+          "margin": null,
+          "margin_abs": null,
+          "name": "purchase_rate",
+          "preferred_direction": "increase",
+          "rollout_cost": null,
+          "type": "conversion",
+          "window_days": null
+        },
+        "population": "assigned"
+      },
+      "request_type": "MomentsRequest"
+    },
+    {
+      "answer": [
+        {
+          "cden1": 0.0,
+          "cden2": 0.0,
+          "cden3": 0.0,
+          "cx1": null,
+          "cx2": null,
+          "cxd": null,
+          "cxden": null,
+          "cxy": null,
+          "cy1": -3.375077994860476e-14,
+          "cy2": 733.3333333333333,
+          "cy2d": null,
+          "cyd": null,
+          "cyden": 0.0,
+          "experiment_id": "frame",
+          "group_id": "control",
+          "metric": "rps",
+          "n": 60,
+          "ref_den": 1.0,
+          "ref_x": null,
+          "ref_y": 4.666666666666667,
+          "successes": null,
+          "sum_d": null,
+          "winsor_lower_bound": null,
+          "winsor_lower_percentile": null,
+          "winsor_n": null,
+          "winsor_n_lower": null,
+          "winsor_n_upper": null,
+          "winsor_upper_bound": null,
+          "winsor_upper_percentile": null,
+          "x_role": null
+        },
+        {
+          "cden1": 0.0,
+          "cden2": 0.0,
+          "cden3": 0.0,
+          "cx1": null,
+          "cx2": null,
+          "cxd": null,
+          "cxden": null,
+          "cxy": null,
+          "cy1": 2.7533531010703882e-14,
+          "cy2": 933.3333333333335,
+          "cy2d": null,
+          "cyd": null,
+          "cyden": 0.0,
+          "experiment_id": "frame",
+          "group_id": "treatment",
+          "metric": "rps",
+          "n": 60,
+          "ref_den": 1.0,
+          "ref_x": null,
+          "ref_y": 5.333333333333333,
+          "successes": null,
+          "sum_d": null,
+          "winsor_lower_bound": null,
+          "winsor_lower_percentile": null,
+          "winsor_n": null,
+          "winsor_n_lower": null,
+          "winsor_n_upper": null,
+          "winsor_upper_bound": null,
+          "winsor_upper_percentile": null,
+          "x_role": null
+        }
+      ],
+      "answer_type": "MomentRows",
+      "request": {
+        "by": [],
+        "completed_windows_only": false,
+        "experiment": null,
+        "grain": "total",
+        "include_covariate": false,
+        "method": null,
+        "metric": {
+          "denominator": {
+            "aggregation": "sum",
+            "fact": "__frame_denominator__",
+            "filters": [],
+            "window_days": null
+          },
+          "description": "",
+          "entity": "__frame__",
+          "margin": null,
+          "margin_abs": null,
+          "name": "rps",
+          "numerator": {
+            "aggregation": "sum",
+            "fact": "__frame_numerator__",
+            "filters": [],
+            "window_days": null
+          },
+          "preferred_direction": "increase",
+          "rollout_cost": null,
+          "type": "ratio"
+        },
+        "population": "assigned"
+      },
+      "request_type": "MomentsRequest"
+    },
+    {
+      "answer": {
+        "counts": {
+          "control": 60,
+          "treatment": 60
+        },
+        "grain": "assignment",
+        "population": "assigned",
+        "unit_counts": {}
+      },
+      "answer_type": "CountEvidence",
+      "request": {
+        "kind": "assignment",
+        "population": "assigned"
+      },
+      "request_type": "CountsRequest"
+    },
+    {
+      "answer": {
+        "arm_counts": [
+          [
+            1,
+            null,
+            "control",
+            60
+          ],
+          [
+            1,
+            null,
+            "treatment",
+            60
+          ]
+        ],
+        "experiment": "moments",
+        "independence_grain": "unit",
+        "order_draws": [],
+        "periods": [
+          null
+        ],
+        "population": "assigned",
+        "probabilities": [],
+        "randomization_law": null,
+        "replay_status": "not_certified",
+        "versions": [
+          1
+        ]
+      },
+      "answer_type": "AssignmentEvidence",
+      "request": {
+        "all_periods": false,
+        "experiment": "moments",
+        "period": null,
+        "population": "assigned",
+        "version": null
+      },
+      "request_type": "AssignmentRequest"
+    }
+  ],
+  "runtime": {
+    "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+    "python": "3.13.5"
+  },
+  "scenario_id": "mean_ratio_conversion_cuped_fixed_horizon",
+  "schema_version": 1
+}
