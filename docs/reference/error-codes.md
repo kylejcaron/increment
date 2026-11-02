@@ -1,11 +1,13 @@
 # Error codes
 
 Refusal codes are stable identifiers; their human-readable wording may change.
-Context keys are part of the refusal contract. Retired codes and their replacements are listed below.
+Context keys are part of the refusal contract. They include template fields, explicitly declared keys and named renderer parameters (including optional parameters).
+Registering modules include the declaration and any modules that reuse it.
+Retired codes and their replacements are listed below.
 
 ## Registered refusal codes
 
-| Code | Error class | Context keys | Owning module |
+| Code | Error class | Context keys | Registering modules |
 | --- | --- | --- | --- |
 | `absorption.absorb_factor_needs` | `InvalidRequestError` | `arms` | `increment.absorption` |
 | `absorption.control_group_present` | `InvalidRequestError` | `arms`, `control_group` | `increment.absorption` |
@@ -14,32 +16,32 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `absorption.summary_missing_columns` | `InvalidRequestError` | `missing` | `increment.absorption` |
 | `adjust.variance_reduction.unsupported` | `UnsupportedRequestError` | `method`, `variance_reduction` | `increment.estimation.adjust` |
 | `adjust.winsorization.percentile_unsupported` | `CapabilityError` | `metric` | `increment.estimation.adjust` |
-| `allocation.alpha.underflow` | `InvalidRequestError` | — | `increment.compatibility` |
+| `allocation.alpha.underflow` | `InvalidRequestError` | `denominator`, `multiplier`, `numerator` | `increment.compatibility` |
 | `analysis.planning_baseline.cluster_icc_not_estimable` | `CapabilityError` | `control_clusters`, `control_units` | `increment._planning_baseline` |
 | `analysis.planning_baseline.covariate_source_unavailable` | `CapabilityError` | `metric` | `increment._planning_baseline` |
 | `analysis.planning_baseline.cuped_no_residual_variance` | `CapabilityError` | `metric` | `increment._planning_baseline` |
 | `analysis.planning_baseline.design_unavailable` | `CapabilityError` | `metric` | `increment._planning_baseline` |
 | `analysis.planning_baseline.quantile_insufficient_data` | `CapabilityError` | `metric` | `increment._planning_baseline` |
 | `analysis.planning_baseline.quantile_source_unavailable` | `CapabilityError` | `metric` | `increment._planning_baseline` |
-| `analysis.planning_baseline.trigger_evidence_unavailable` | `CapabilityError` | — | `increment._planning_baseline` |
+| `analysis.planning_baseline.trigger_evidence_unavailable` | `CapabilityError` | `metric`, `missing`, `trigger` | `increment._planning_baseline` |
 | `analysis.planning_baseline.trigger_membership_unavailable` | `CapabilityError` | `analyzed_clusters`, `assigned_clusters`, `control_group`, `metric`, `route` | `increment._planning_baseline` |
 | `analysis.planning_baseline.trigger_metric_population_unavailable` | `CapabilityError` | `control_group`, `eligible_units`, `metric`, `observed_units`, `route`, `trigger` | `increment._planning_baseline` |
 | `analysis.planning_baseline.trigger_population_inconsistent` | `CapabilityError` | `analyzed_clusters`, `assigned_clusters`, `assigned_units`, `derived_mean`, `metric`, `observed_mean`, `route`, `trigger_rate` | `increment._planning_baseline` |
-| `arm.adjustment.cluster_cuped` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.adjustment.cluster_prior` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.adjustment.sequential_cuped` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.adjustment.sequential_prior` | `InvalidRequestError` | — | `increment.compatibility` |
-| `arm.baseline.absorption_undeclared` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.baseline.cluster_size_required` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.baseline.compliance_undeclared` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.baseline.cuped_undeclared` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.baseline.iid_cluster_knobs` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.baseline.triggering_undeclared` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.inference.cluster` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.metric.quantile_cluster` | `CapabilityError` | — | `increment.compatibility` |
-| `arm.metric.quantile_cuped` | `UnsupportedRequestError` | — | `increment.compatibility` |
-| `arm.metric.quantile_sequential` | `UnsupportedRequestError` | — | `increment.compatibility` |
-| `arm.metric.unsupported` | `CapabilityError` | — | `increment.compatibility` |
+| `arm.adjustment.cluster_cuped` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.adjustment.cluster_prior` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.adjustment.sequential_cuped` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.adjustment.sequential_prior` | `InvalidRequestError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.baseline.absorption_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.baseline.cluster_size_required` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.baseline.compliance_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.baseline.cuped_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.baseline.iid_cluster_knobs` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.baseline.triggering_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.inference.cluster` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.metric.quantile_cluster` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.metric.quantile_cuped` | `UnsupportedRequestError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.metric.quantile_sequential` | `UnsupportedRequestError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.metric.unsupported` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
 | `arm_planning.guardrail_neutral_requires_direction` | `InvalidRequestError` | `alternative`, `preferred_direction` | `increment.estimation.arm_contract` |
 | `arm_planning.guardrail_preferred_direction_conflict` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `arm_planning.guardrail_requires_one_sided` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
@@ -52,10 +54,10 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `arm_planning.secondary_requires_count` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `arm_planning.sequential_secondary_one_arm` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `artifact.artifact_contract.refusal_code` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
-| `artifact.context.legacy_exclusion_acknowledged` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.context.mismatch` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
+| `artifact.context.legacy_exclusion_acknowledged` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.context.mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
 | `artifact.coverage_dates_date` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
-| `artifact.cuped.scalar_breakout` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
+| `artifact.cuped.scalar_breakout` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
 | `artifact.digest.json` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.nonfinite` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.nullable` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
@@ -68,28 +70,28 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `artifact.digest.schema` | `ArtifactDigestError` | `constraint`, `field`, `position`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.timestamp` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.type` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
-| `artifact.evidence.unavailable` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.extension.invalid` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.extension.missing` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
+| `artifact.evidence.unavailable` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.extension.invalid` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.extension.missing` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
 | `artifact.first_ds_last` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
-| `artifact.format.unsupported` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.generation.dropped` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.identifier.unsafe` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.manifest.invalid` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.manifest.unreferenced_relation` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.metric.binding_mismatch` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
+| `artifact.format.unsupported` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.generation.dropped` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.identifier.unsafe` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.manifest.invalid` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.manifest.unreferenced_relation` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.metric.binding_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_reader` |
 | `artifact.on_mixed_assignment` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
 | `artifact.operation.unsupported` | `CapabilityError` | `offered`, `operation`, `request`, `route` | `increment.query.artifact_reader` |
-| `artifact.refresh.context_mismatch` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.refresh.invalid_ref` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.relation.digest_mismatch` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
+| `artifact.refresh.context_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.refresh.invalid_ref` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.relation.digest_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
 | `artifact.relation.invalid` | `CapabilityError` | `check`, `detail`, `relation` | `increment.query.artifact_reader` |
-| `artifact.relation.schema_mismatch` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
+| `artifact.relation.schema_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
 | `artifact.request.trigger_metric_scope` | `InvalidRequestError` | — | `increment.semantics.artifact` |
-| `artifact.snapshot.mixed` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `artifact.store.namespace` | `CapabilityError` | — | `increment.query.session` |
-| `artifact_contract.encouragement_uptake_conflict` | `ArtifactContractError` | — | `increment.query.artifact_contract` |
-| `breakout.breakout.exactly_one_lift` | `InvalidRequestError` | — | `increment.breakout.estimates` |
+| `artifact.snapshot.mixed` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.store.namespace` | `CapabilityError` | `message` | `increment.query.session` |
+| `artifact_contract.encouragement_uptake_conflict` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `breakout.breakout.exactly_one_lift` | `InvalidRequestError` | `reason` | `increment.breakout.estimates` |
 | `breakout.breakout.point_unavailable` | `InvalidRequestError` | — | `increment.breakout.estimates` |
 | `breakout.coerce_type_datetime` | `InvalidRequestError` | `type_name`, `v` | `increment.breakout.estimates` |
 | `breakout.compliance_late_view` | `InvalidRequestError` | — | `increment.breakout.estimates` |
@@ -100,10 +102,10 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `breakout.metric_found_group` | `InvalidRequestError` | `declared_names`, `unknown_metrics` | `increment.breakout.estimates` |
 | `breakout.price_rollout_metrics` | `InvalidRequestError` | `misdirected` | `increment.breakout.rollout` |
 | `breakout.quantile` | `CapabilityError` | `method`, `names`, `reason`, `remedy` | `increment.breakout.estimates` |
-| `breakout.retention.completion` | `InvalidRequestError` | `fn_name`, `names` | `increment._readout_request` |
+| `breakout.retention.completion` | `InvalidRequestError` | `fn_name`, `names` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
 | `breakout.retention.daily` | `InvalidRequestError` | `fn_name`, `names` | `increment.breakout.estimates` |
 | `breakout.retention.encouragement` | `CapabilityError` | `fn_name`, `names` | `increment.breakout.estimates` |
-| `breakout.retention.unbounded` | `InvalidRequestError` | `fn_name`, `names`, `remedy`, `supported_view` | `increment._readout_request` |
+| `breakout.retention.unbounded` | `InvalidRequestError` | `fn_name`, `names`, `remedy`, `supported_view` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
 | `breakout.rollout_cost_names` | `InvalidRequestError` | `known`, `unknown` | `increment.breakout.rollout` |
 | `breakout.rollout_cost_rollout` | `InvalidRequestError` | `name`, `value` | `increment.breakout.rollout` |
 | `breakout.run_breakout_correction` | `InvalidRequestError` | `correction` | `increment.breakout.estimates` |
@@ -123,7 +125,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `breakout.segment_contrast_estimate` | `InvalidRequestError` | — | `increment.breakout.heterogeneity` |
 | `breakout.segment_contrast_expected` | `InvalidRequestError` | `label`, `row_count` | `increment.breakout.heterogeneity` |
 | `breakout.segment_contrast_open_interval_variance` | `InvalidRequestError` | — | `increment.breakout.heterogeneity` |
-| `breakout.segment_contrast_reference_fixed_horizon` | `InvalidRequestError` | — | `increment.breakout.heterogeneity` |
+| `breakout.segment_contrast_reference_fixed_horizon` | `InvalidRequestError` | `dimension_value`, `dof`, `inference`, `reference_df`, `reference_kind` | `increment.breakout.heterogeneity` |
 | `breakout.segment_heterogeneity_rebuild` | `InvalidRequestError` | `alpha`, `alternative`, `dimension_value`, `dof`, `inference`, `metric`, `reference_df`, `reference_kind` | `increment.breakout.heterogeneity` |
 | `breakout.tau_prior_scale` | `InvalidRequestError` | `tau_prior_scale` | `increment.breakout.heterogeneity` |
 | `breakout.to_frame_infer` | `InvalidRequestError` | — | `increment.breakout.projection` |
@@ -145,9 +147,9 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `compatibility.denominator` | `InvalidRequestError` | — | `increment.compatibility` |
 | `compatibility.multiplier` | `InvalidRequestError` | — | `increment.compatibility` |
 | `compatibility.support_unsupported` | `InvalidRequestError` | `support_type` | `increment.compatibility` |
-| `contrast.decision` | `CapabilityError` | — | `increment.compatibility` |
-| `contrast.inference` | `CapabilityError` | — | `increment.compatibility` |
-| `contrast.metric` | `CapabilityError` | — | `increment.compatibility` |
+| `contrast.decision` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `contrast.inference` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `contrast.metric` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
 | `conversion_inference.finite_sample.cuped` | `InvalidRequestError` | `adjusted_by`, `method` | `increment._finite_sample_refusals` |
 | `conversion_inference.finite_sample.metric_type` | `InvalidRequestError` | `metric_type` | `increment._finite_sample_refusals` |
 | `dashboard.invalid_config` | `InvalidRequestError` | `reason` | `increment.dashboard._data` |
@@ -157,7 +159,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `dashboard.population_unavailable` | `InvalidRequestError` | `population` | `increment.dashboard._data` |
 | `dashboard.unsupported_experiment` | `CapabilityError` | `reason` | `increment.dashboard._data` |
 | `decision.absolute_arm.procedures_fixed_inference` | `InvalidRequestError` | — | `increment.decision` |
-| `decision.arm_decision.one_sided_alpha` | `InvalidRequestError` | — | `increment.decision` |
+| `decision.arm_decision.one_sided_alpha` | `InvalidRequestError` | — | `increment.decision`, `increment.estimation.decision_types` |
 | `decision.arm_planning.scalar_power_unsupported_family` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `decision.arm_planning.uncorrected_family_size` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `decision.compiled_decision.procedure_mapping_key` | `InvalidRequestError` | `key`, `metric` | `increment.decision` |
@@ -166,7 +168,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `decision.contrast_context.reference_mismatch` | `InvalidRequestError` | `metrics` | `increment.decision` |
 | `decision.contrast_decision.reference_metric` | `InvalidRequestError` | — | `increment.estimation.decision_types` |
 | `decision.family.axes_contain_duplicates` | `InvalidRequestError` | `axes` | `increment.estimation.arm_contract` |
-| `decision.family.axes_contain_unknown` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
+| `decision.family.axes_contain_unknown` | `InvalidRequestError` | `unknown` | `increment.estimation.arm_contract` |
 | `decision.family.axes_use_canonical` | `InvalidRequestError` | `allowed`, `axes` | `increment.estimation.arm_contract` |
 | `decision.family.nofamily_membership_mark` | `InvalidRequestError` | — | `increment.decision` |
 | `decision.family.policy_least_one` | `InvalidRequestError` | `kind` | `increment.estimation.arm_contract` |
@@ -177,182 +179,182 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `decision.p_value_evidence.finite_unit_interval` | `InvalidRequestError` | `p_value` | `increment.estimation.decision_types` |
 | `decision.relative_arm.null_lift_greater` | `InvalidRequestError` | — | `increment.decision` |
 | `decision.relative_decision.one_sided_nominal` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
-| `definition.active.metric_window_days` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.adjustment_set.adjustmentset_covariates_contains` | `InvalidRequestError` | — | `increment.semantics.design` |
-| `definition.already_canonical_json` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.analysis.appears_both_metric` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.analysis.appears_more_once` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact.context_format_disagrees` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact.context_sha256_does` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact.trigger_metric_scope` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact.trigger_timestamp_timezone` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_datetimes_timezone` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_extension.definition_sha256_does` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_extension.source_provenance_sha256` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_extension.unsupported_version` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_json_values` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_relation.primary_key_contain` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_relation.primary_key_members` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.artifact_relation.row_count_integer` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.active.metric_window_days` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.adjustment_set.adjustmentset_covariates_contains` | `InvalidRequestError` | `dups` | `increment.semantics.design` |
+| `definition.already_canonical_json` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.analysis.appears_both_metric` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.analysis.appears_more_once` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact.context_format_disagrees` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact.context_sha256_does` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact.trigger_metric_scope` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact.trigger_timestamp_timezone` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_datetimes_timezone` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_extension.definition_sha256_does` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_extension.source_provenance_sha256` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_extension.unsupported_version` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_json_values` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_relation.primary_key_contain` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_relation.primary_key_members` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.artifact_relation.row_count_integer` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.assignment.carryover_order_range` | `InvalidRequestError` | `carryover_order`, `observation_steps` | `increment.semantics.assignment` |
 | `definition.assignment.carryover_order_type` | `InvalidRequestError` | — | `increment.semantics.assignment` |
-| `definition.assignment.reject_bool` | `InvalidRequestError` | — | `increment.semantics.assignment` |
-| `definition.assignment_populations_contain` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.assignment_populations_include` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.base_relations.exposures_primary_key` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.base_relations.exposures_relation_use` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.base_relations.measure_stats_primary` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.base_relations.measure_stats_relation` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.base_relations.share_artifact_id` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.base_relations.share_generation_id` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.breakout.ambiguous_source` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.check_observational.covariate_could` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.check_observational.covariate_property_found` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.check_observational.covariate_source_found` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.check_observational.covariate_unit_but` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.contain_control_characters` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.cuped.ambiguous_covariate_source` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.cuped_preperiod.window_bounds_integers` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.cuped_preperiod.window_satisfy_window` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.day_boundary_accepts` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.duplicate_property_name` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.source_declares_no` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.source_no_validity` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.source_versioned_validity` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.validity_mutually_exclusive_encoding` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.validity_ranges_need` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.validity_requires_one_encoding` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.dim.validity_valid_from` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.assignment.reject_bool` | `InvalidRequestError` | — | `increment.semantics.assignment`, `increment.semantics.design` |
+| `definition.assignment_populations_contain` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.assignment_populations_include` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.base_relations.exposures_primary_key` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.base_relations.exposures_relation_use` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.base_relations.measure_stats_primary` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.base_relations.measure_stats_relation` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.base_relations.share_artifact_id` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.base_relations.share_generation_id` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.breakout.ambiguous_source` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.check_observational.covariate_could` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.check_observational.covariate_property_found` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.check_observational.covariate_source_found` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.check_observational.covariate_unit_but` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.contain_control_characters` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.cuped.ambiguous_covariate_source` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.cuped_preperiod.window_bounds_integers` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.cuped_preperiod.window_satisfy_window` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.day_boundary_accepts` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.duplicate_property_name` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.source_declares_no` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.source_no_validity` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.source_versioned_validity` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.validity_mutually_exclusive_encoding` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.validity_ranges_need` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.validity_requires_one_encoding` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.dim.validity_valid_from` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.duplicate_scalar` | `DefinitionError` | `field`, `files`, `path`, `route` | `increment.semantics.loader` |
-| `definition.duplicates` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.encode_json_object` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.encouragement_uptake.window_days_integer` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.expected_datetime_bool` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.expected_iso_8601_epoch` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.expected_iso_8601_numeric_string` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.binding_margin_margin` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.cluster_combined_n` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.cluster_names_same` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.covariate_binding_exactly_one` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.covariate_measure_needs_preperiod` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.covariate_measure_numeric` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.covariate_name_reserved` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.covariate_names_unique` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.covariate_source_requires_property` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.design_tuning_key_not_yaml` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.end_before_start` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.intervention_grain_without_cluster` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.metric_cuped_linear_needs_covariates` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.metric_declares_cuped` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.observation_end_before_end` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.observation_end_requires_end` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.experiment.timezone_aware_but` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.exposure.filters_apply_fact` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.exposure.needs_exactly_one` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.exposure.sql_set_but` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.fact.source_declares_propert` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.fact.source_points_propert` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.fact.source_renames_its` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.fact.source_renames_propert` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.duplicates` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.encode_json_object` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.encouragement_uptake.window_days_integer` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.expected_datetime_bool` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.expected_iso_8601_epoch` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.expected_iso_8601_numeric_string` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.binding_margin_margin` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.cluster_combined_n` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.cluster_names_same` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.covariate_binding_exactly_one` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.covariate_measure_needs_preperiod` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.covariate_measure_numeric` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.covariate_name_reserved` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.covariate_names_unique` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.covariate_source_requires_property` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.design_tuning_key_not_yaml` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.end_before_start` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.intervention_grain_without_cluster` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.metric_cuped_linear_needs_covariates` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.metric_declares_cuped` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.observation_end_before_end` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.observation_end_requires_end` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.experiment.timezone_aware_but` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.exposure.filters_apply_fact` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.exposure.needs_exactly_one` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.exposure.sql_set_but` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.fact.source_declares_propert` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.fact.source_points_propert` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.fact.source_renames_its` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.fact.source_renames_propert` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.fact_source.missing_columns` | `DefinitionError` | `fact_source`, `missing` | `increment.query.fact_resolution` |
-| `definition.filter.op_between_comparable` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.filter.op_between_values` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.filter.op_exactly_value` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.filter.op_exactly_values` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.filter.op_least_value` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.filter.values_finite` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.filter.op_between_comparable` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.filter.op_between_values` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.filter.op_exactly_value` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.filter.op_exactly_values` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.filter.op_least_value` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.filter.values_finite` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.inference.always_valid_metric_type` | `DefinitionError` | `metric`, `metric_type` | `increment.sequential_source` |
-| `definition.inference.baseline_rate_domain` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.inference.baseline_rate_route` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.invalid` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.json` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.lowercase_64_hex` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.method.covariates` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.method.methodspec_name_cuped` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_base.margin_margin_abs` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_base.rollout_cost_preferred` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_both_relative` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_margin_abs_requires_direction` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_margin_abs_requires_non_neutral_direction` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_margin_implies_unrepresentable_null_lift` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_margin_non` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_margin_requires_direction` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.metric_unknown_alternative` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.inference.baseline_rate_domain` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.inference.baseline_rate_route` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.invalid` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.json` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.lowercase_64_hex` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.method.covariates` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.method.methodspec_name_cuped` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_base.margin_margin_abs` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_base.rollout_cost_preferred` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_both_relative` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_margin_abs_requires_direction` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_margin_abs_requires_non_neutral_direction` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_margin_implies_unrepresentable_null_lift` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_margin_non` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_margin_requires_direction` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.metric_unknown_alternative` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.migration.guardrails` | `DefinitionError` | `experiment`, `path` | `increment.semantics.loader` |
 | `definition.migration.metrics` | `DefinitionError` | `experiment`, `path` | `increment.semantics.loader` |
-| `definition.models.reject_bool` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.multiplicity.bh_q_only_valid_for_bh` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.multiplicity.bh_requires_q` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.non_empty_string` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.observational.ambiguous_covariate_source` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.models.reject_bool` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.multiplicity.bh_q_only_valid_for_bh` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.multiplicity.bh_requires_q` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.non_empty_string` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.observational.ambiguous_covariate_source` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.path.missing` | `DefinitionError` | `path` | `increment.semantics.loader` |
-| `definition.quantile.metric_use_avg` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.ratio.metric_numerator_denominator` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.ratio.metric_use_avg` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.ratio_metric.numerator_denominator_differ` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.relation_bind_manifest` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.relation_primary_key` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.relation_role` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.resolve_breakout.experiment_property_could` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.resolve_breakout.experiment_property_found` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.resolve_breakout.experiment_property_references` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.resolve_breakout.experiment_unit_but` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.retention.metric_window_days` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.retention.threshold_days_lower_bound_non_negative` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.retention.threshold_days_non_negative` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.retention.threshold_days_upper_exceeds_lower` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.quantile.metric_use_avg` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.ratio.metric_numerator_denominator` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.ratio.metric_use_avg` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.ratio_metric.numerator_denominator_differ` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.relation_bind_manifest` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.relation_primary_key` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.relation_role` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.resolve_breakout.experiment_property_could` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.resolve_breakout.experiment_property_found` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.resolve_breakout.experiment_property_references` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.resolve_breakout.experiment_unit_but` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.retention.metric_window_days` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.retention.threshold_days_lower_bound_non_negative` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.retention.threshold_days_non_negative` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.retention.threshold_days_upper_exceeds_lower` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.root` | `DefinitionError` | `expected`, `path`, `route`, `value_type` | `increment.semantics.loader` |
 | `definition.section` | `DefinitionError` | `expected`, `field`, `path`, `route`, `value_type` | `increment.semantics.loader` |
-| `definition.single_sql_identifier` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.site_volume.first_ds_last` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.site_volume.measure_keys_empty` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.site_volume.measure_keys_unique` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.site_volume.metric_names_empty` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.site_volume.metric_names_unique` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.source.sql_empty` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.single_sql_identifier` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.site_volume.first_ds_last` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.site_volume.measure_keys_empty` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.site_volume.measure_keys_unique` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.site_volume.metric_names_empty` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.site_volume.metric_names_unique` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.source.sql_empty` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.sql` | `DefinitionError` | `error`, `error_type`, `label`, `path`, `route` | `increment.semantics.loader` |
 | `definition.sql.dialect` | `InvalidRequestError` | `dialect`, `label`, `route` | `increment.semantics.loader` |
 | `definition.sql.not_read_only` | `InvalidRequestError` | `construct`, `dialect`, `label`, `route`, `violation` | `increment.semantics.loader` |
 | `definition.sql.parse` | `InvalidRequestError` | `column`, `dialect`, `error`, `label`, `line`, `route` | `increment.semantics.loader` |
 | `definition.sql.statement_count` | `InvalidRequestError` | `dialect`, `empty`, `label`, `route`, `statements` | `increment.semantics.loader` |
-| `definition.surrounding_whitespace` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.total.metric_use_avg` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.total.metric_window_days` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_cycle.aggregation` | `InvalidRequestError` | — | `increment.semantics.unit_cycle` |
-| `definition.unit_cycle.assignment` | `InvalidRequestError` | — | `increment.semantics.unit_cycle` |
-| `definition.unit_cycle.cycles` | `InvalidRequestError` | — | `increment.semantics.unit_cycle` |
-| `definition.unit_cycle.groups` | `InvalidRequestError` | — | `increment.semantics.unit_cycle` |
-| `definition.unit_cycle.nonempty` | `InvalidRequestError` | — | `increment.semantics.unit_cycle` |
-| `definition.unit_cycle.references` | `InvalidRequestError` | — | `increment.semantics.unit_cycle` |
-| `definition.unit_day.created_at_timezone` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_extension_absent` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_extensions_contain` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_extensions_use` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_first_ds` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_measure_keys` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_measures_use` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_metric_bindings` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_metric_bindings_canonical_order` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_metric_names` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.manifest_sha256_does` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.metric_references_undeclared` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.ratio_metric_references` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.site_volume_keys` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.site_volume_keys_absent_from_manifest` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.site_volume_request` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.trigger_measure_anchor` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.trigger_measure_keys` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.unit_day.trigger_measure_metric` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.utf` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.validation` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.winsorization.finite` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.winsorization.least_one_bound` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.winsorization.lower_percentile_below` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.winsorization.lower_value_below` | `DefinitionError` | — | `increment.semantics.loader` |
-| `definition.winsorization.set_percentile_fixed` | `DefinitionError` | — | `increment.semantics.loader` |
+| `definition.surrounding_whitespace` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.total.metric_use_avg` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.total.metric_window_days` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_cycle.aggregation` | `InvalidRequestError` | `reason` | `increment.semantics.unit_cycle` |
+| `definition.unit_cycle.assignment` | `InvalidRequestError` | `reason` | `increment.semantics.unit_cycle` |
+| `definition.unit_cycle.cycles` | `InvalidRequestError` | `reason` | `increment.semantics.unit_cycle` |
+| `definition.unit_cycle.groups` | `InvalidRequestError` | `reason` | `increment.semantics.unit_cycle` |
+| `definition.unit_cycle.nonempty` | `InvalidRequestError` | `reason` | `increment.semantics.unit_cycle` |
+| `definition.unit_cycle.references` | `InvalidRequestError` | `reason` | `increment.semantics.unit_cycle` |
+| `definition.unit_day.created_at_timezone` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_extension_absent` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_extensions_contain` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_extensions_use` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_first_ds` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_measure_keys` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_measures_use` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_metric_bindings` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_metric_bindings_canonical_order` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_metric_names` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.manifest_sha256_does` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.metric_references_undeclared` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.ratio_metric_references` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.site_volume_keys` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.site_volume_keys_absent_from_manifest` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.site_volume_request` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.trigger_measure_anchor` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.trigger_measure_keys` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.unit_day.trigger_measure_metric` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.utf` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.validation` | `DefinitionError` | `errors`, `path`, `route` | `increment.semantics.loader` |
+| `definition.winsorization.finite` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.winsorization.least_one_bound` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.winsorization.lower_percentile_below` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.winsorization.lower_value_below` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
+| `definition.winsorization.set_percentile_fixed` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.yaml` | `DefinitionError` | `column`, `error`, `line`, `path`, `route` | `increment.semantics.loader` |
 | `design.allocation.invalid` | `InvalidRequestError` | `allocation`, `control_group` | `increment.semantics.design` |
-| `design.allocation_scheme.incompatible` | `InvalidRequestError` | `allocation_scheme`, `design` | `increment.semantics.design` |
+| `design.allocation_scheme.incompatible` | `InvalidRequestError` | `allocation_scheme`, `design` | `increment.semantics.design`, `increment.semantics.models` |
 | `estimation.absorption.absorption_interval_half` | `InvalidRequestError` | `crit`, `se` | `increment.estimation.absorption` |
 | `estimation.absorption.all_moment_arrays` | `InvalidRequestError` | `lengths` | `increment.estimation.absorption` |
 | `estimation.absorption.contain_exact_integer` | `InvalidRequestError` | `arr`, `name` | `increment.estimation.absorption` |
@@ -361,11 +363,11 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.absorption.non_negative` | `InvalidRequestError` | `arr`, `name` | `increment.estimation.absorption` |
 | `estimation.absorption.one_dimensional_shape` | `InvalidRequestError` | `arr`, `name` | `increment.estimation.absorption` |
 | `estimation.absorption.pooling_one` | `InvalidRequestError` | `pooling`, `pooling_options` | `increment.estimation.absorption` |
-| `estimation.adjust.estimate_ate_every` | `UnsupportedRequestError` | — | `increment.estimation.adjust` |
+| `estimation.adjust.estimate_ate_every` | `UnsupportedRequestError` | — | `increment.estimation.adjust`, `increment.readouts._common` |
 | `estimation.adjust.method_name_unadjusted` | `InvalidRequestError` | — | `increment.estimation.adjust` |
 | `estimation.adjust.names_metrics_source` | `InvalidRequestError` | `by_name`, `label`, `unknown` | `increment.estimation.adjust` |
 | `estimation.adjust.prior.method_scale` | `InvalidRequestError` | — | `increment.estimation.adjust` |
-| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust` |
+| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement` |
 | `estimation.adjust.prior_interpreted_call` | `InvalidRequestError` | — | `increment.estimation.adjust` |
 | `estimation.adjust.resolve_value_scales_null_abs_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust` |
 | `estimation.adjust.resolve_value_scales_null_lift_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust` |
@@ -376,8 +378,8 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.adjust_common.fold_training_split` | `InvalidRequestError` | `contrast`, `j`, `method`, `metric` | `increment.estimation._adjust.common` |
 | `estimation.adjust_common.fold_would_train` | `InvalidRequestError` | `contrast`, `j`, `method`, `metric` | `increment.estimation._adjust.common` |
 | `estimation.adjust_common.needs_least_folds` | `InvalidRequestError` | `contrast`, `method`, `metric`, `n`, `needed` | `increment.estimation._adjust.common` |
-| `estimation.adjust_common.statistically_indistinguishable_from` | `InvalidRequestError` | — | `increment.estimation._adjust.common` |
-| `estimation.adjust_common.supported_ratio_metric` | `UnsupportedRequestError` | `correction`, `family`, `method`, `metric`, `role` | `increment.estimation._adjust.common` |
+| `estimation.adjust_common.statistically_indistinguishable_from` | `InvalidRequestError` | `control`, `denominator`, `estimator`, `label`, `metric`, `se`, `treatment` | `increment.estimation._adjust.common` |
+| `estimation.adjust_common.supported_ratio_metric` | `UnsupportedRequestError` | `correction`, `family`, `method`, `metric`, `role` | `increment.estimation._adjust.common`, `increment.estimation.adjust` |
 | `estimation.adjust_dml.dml_residualized_treatment` | `InvalidRequestError` | `contrast`, `metric_name` | `increment.estimation._adjust.dml` |
 | `estimation.adjust_encoding.predict_called` | `InvalidRequestError` | — | `increment.estimation._adjust.encoding` |
 | `estimation.adjust_learners.logistic_propensity.logisticpropensity_failed_converge` | `InvalidRequestError` | `res` | `increment.estimation._adjust.learners` |
@@ -404,7 +406,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.armstats.arm_stats.combine_uptake_family` | `InvalidRequestError` | — | `increment.estimation.armstats` |
 | `estimation.armstats.arm_stats.cov_yd_needs_uptake_sum_cyd` | `InvalidRequestError` | — | `increment.estimation.armstats` |
 | `estimation.armstats.arm_stats.cov_yden_needs_cyden` | `InvalidRequestError` | — | `increment.estimation.armstats` |
-| `estimation.armstats.arm_stats.cross_field_finite` | `InvalidRequestError` | `name`, `value` | `increment.estimation.armstats` |
+| `estimation.armstats.arm_stats.cross_field_finite` | `InvalidRequestError` | `name`, `value` | `increment.estimation.armstats`, `increment.estimation.sitewide` |
 | `estimation.armstats.arm_stats.cxd_complete_uptake` | `InvalidRequestError` | — | `increment.estimation.armstats` |
 | `estimation.armstats.arm_stats.cxden_complete_denominator` | `InvalidRequestError` | — | `increment.estimation.armstats` |
 | `estimation.armstats.arm_stats.group_summary_moment` | `InvalidRequestError` | `group_id`, `metric`, `name`, `value` | `increment.estimation.armstats` |
@@ -437,8 +439,8 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.armstats.centered_raw_row` | `InvalidRequestError` | `unsupported` | `increment.estimation.armstats` |
 | `estimation.armstats.centered_sum_squares` | `InvalidRequestError` | `value`, `variance_slack`, `what` | `increment.estimation.armstats` |
 | `estimation.armstats.cross_moment_materially` | `InvalidRequestError` | `cross`, `floor`, `var_a`, `var_b`, `what` | `increment.estimation.armstats` |
-| `estimation.armstats.cross_moment_violates` | `InvalidRequestError` | — | `increment.estimation.armstats` |
-| `estimation.armstats.independent_mean_contract` | `InvalidRequestError` | — | `increment.estimation.armstats` |
+| `estimation.armstats.cross_moment_violates` | `InvalidRequestError` | `bound`, `cross`, `excess`, `var_a`, `var_b`, `variance_slack`, `what` | `increment.estimation.armstats` |
+| `estimation.armstats.independent_mean_contract` | `InvalidRequestError` | `reason` | `increment.estimation.armstats` |
 | `estimation.armstats.score_stats.cluster_score_scale` | `InvalidRequestError` | — | `increment.estimation.armstats` |
 | `estimation.armstats.score_stats.cluster_variance` | `InvalidRequestError` | — | `increment.estimation.armstats` |
 | `estimation.armstats.score_stats.n_clusters_clustered` | `InvalidRequestError` | `n_clusters` | `increment.estimation.armstats` |
@@ -455,7 +457,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.binomial.invalid_counts` | `BinomialDataError` | `n`, `x` | `increment.estimation.binomial_rr` |
 | `estimation.binomial.reconstructed_counts_not_binary` | `BinomialDataError` | `group_id`, `metric`, `n`, `sum_y` | `increment.estimation.armstats` |
 | `estimation.binomial.tail_unrepresentable` | `BinomialDataError` | — | `increment.estimation.binomial_rr` |
-| `estimation.binomial.unknown_alternative` | `InvalidRequestError` | `alternative` | `increment.estimation.binomial_rr` |
+| `estimation.binomial.unknown_alternative` | `InvalidRequestError` | `alternative` | `increment.estimation.binomial_rr`, `increment.estimation.encouragement`, `increment.estimation.inference` |
 | `estimation.cate.cate.covariate_missing_from` | `InvalidRequestError` | `names`, `transform` | `increment.estimation.cate` |
 | `estimation.cate.cate.level_contradicts_alpha` | `InvalidRequestError` | `alpha`, `expected`, `level` | `increment.estimation.cate` |
 | `estimation.cate.cluster_count` | `InvalidRequestError` | `n`, `n_clusters` | `increment.estimation.cate` |
@@ -470,14 +472,14 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.cate.covariate_declared_both` | `InvalidRequestError` | `kind`, `name`, `prior_kind` | `increment.estimation.cate` |
 | `estimation.cate.covariate_declared_knots` | `InvalidRequestError` | `knots`, `name`, `prior_knots` | `increment.estimation.cate` |
 | `estimation.cate.covariate_missing_from` | `InvalidRequestError` | `columns`, `name` | `increment.estimation.cate` |
-| `estimation.cate.covariate_nulls` | `InvalidRequestError` | — | `increment.estimation.cate` |
-| `estimation.cate.covariate_nulls_non` | `InvalidRequestError` | — | `increment.estimation.cate` |
+| `estimation.cate.covariate_nulls` | `InvalidRequestError` | `name` | `increment.estimation.cate` |
+| `estimation.cate.covariate_nulls_non` | `InvalidRequestError` | `name` | `increment.estimation.cate` |
 | `estimation.cate.covariate_shape` | `InvalidRequestError` | `name`, `shape` | `increment.estimation.cate` |
 | `estimation.cate.design.covariate_rows_expected` | `InvalidRequestError` | `n`, `name`, `size` | `increment.estimation.cate` |
 | `estimation.cate.design.covariate_single_level` | `InvalidRequestError` | `level`, `name` | `increment.estimation.cate` |
 | `estimation.cate.design.covariate_zero_variance` | `InvalidRequestError` | `name` | `increment.estimation.cate` |
 | `estimation.cate.design_row_leverage` | `InvalidRequestError` | `culprits`, `leverage`, `row` | `increment.estimation.cate` |
-| `estimation.cate.design_too_wide` | `InvalidRequestError` | — | `increment.estimation.cate` |
+| `estimation.cate.design_too_wide` | `InvalidRequestError` | `n`, `width` | `increment.estimation.cate` |
 | `estimation.cate.each_arm_needs` | `InvalidRequestError` | `n_control`, `n_treated` | `increment.estimation.cate` |
 | `estimation.cate.equal_weighting_without_cluster` | `InvalidRequestError` | — | `increment.estimation.cate` |
 | `estimation.cate.inference_metadata` | `InvalidRequestError` | — | `increment.estimation.cate` |
@@ -487,7 +489,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.cate.invalid_covariance` | `InvalidRequestError` | `reason` | `increment.estimation.cate` |
 | `estimation.cate.names_entries_gram` | `InvalidRequestError` | `count`, `p` | `increment.estimation.cate` |
 | `estimation.cate.outcome_constant_within` | `InvalidRequestError` | — | `increment.estimation.cate` |
-| `estimation.cate.outcome_nulls_non` | `InvalidRequestError` | — | `increment.estimation.cate` |
+| `estimation.cate.outcome_nulls_non` | `InvalidRequestError` | — | `increment.estimation.cate`, `increment.estimation.targeting` |
 | `estimation.cate.outcome_shape` | `InvalidRequestError` | `shape` | `increment.estimation.cate` |
 | `estimation.cate.protected_column_collinear` | `InvalidRequestError` | `conditional`, `diag`, `name` | `increment.estimation.cate` |
 | `estimation.cate.rank_deficient` | `InvalidRequestError` | `dimension` | `increment.estimation.cate` |
@@ -497,7 +499,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.cate.singular_wald` | `InvalidRequestError` | `dimension` | `increment.estimation.cate` |
 | `estimation.cate.thin_cells.one_hot_level_interacted_min` | `InvalidRequestError` | `n_c`, `n_t`, `name` | `increment.estimation.cate` |
 | `estimation.cate.thin_cells.one_hot_level_singleton` | `InvalidRequestError` | `name`, `total` | `increment.estimation.cate` |
-| `estimation.cate.treatment_binary` | `InvalidRequestError` | `values` | `increment.estimation.cate` |
+| `estimation.cate.treatment_binary` | `InvalidRequestError` | `values` | `increment.estimation.cate`, `increment.estimation.targeting` |
 | `estimation.cate.treatment_shape_expected` | `InvalidRequestError` | `d_shape`, `y_shape` | `increment.estimation.cate` |
 | `estimation.cate.uncertainty_unavailable` | `InvalidRequestError` | `query` | `increment.estimation.cate` |
 | `estimation.cate.zz_square_gram` | `InvalidRequestError` | `shape` | `increment.estimation.cate` |
@@ -505,13 +507,13 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.certified.decimal_input_exponent_capacity` | `InvalidRequestError` | `precision`, `value`, `working_precision` | `increment.estimation._certified` |
 | `estimation.certified.decimal_log_exponent_capacity` | `InvalidRequestError` | `precision`, `value`, `working_precision` | `increment.estimation._certified` |
 | `estimation.certified.decimal_precision_capacity` | `InvalidRequestError` | `max_precision`, `precision`, `working_precision` | `increment.estimation._certified` |
-| `estimation.certified.inexact_value` | `InvalidRequestError` | `value_type` | `increment.estimation._certified` |
-| `estimation.certified.invalid_count` | `InvalidRequestError` | `count` | `increment.estimation._certified` |
+| `estimation.certified.inexact_value` | `InvalidRequestError` | `value_type` | `increment.estimation._certified`, `increment.estimation._sequential_inversion`, `increment.estimation._sequential_likelihood` |
+| `estimation.certified.invalid_count` | `InvalidRequestError` | `count` | `increment.estimation._certified`, `increment.estimation._sequential_likelihood` |
 | `estimation.certified.invalid_precision` | `InvalidRequestError` | `precision` | `increment.estimation._certified` |
 | `estimation.certified.nonpositive_gamma_value` | `InvalidRequestError` | `value` | `increment.estimation._certified` |
 | `estimation.certified.nonpositive_log_domain` | `InvalidRequestError` | `lower`, `upper` | `increment.estimation._certified` |
 | `estimation.certified.nonpositive_rising_value` | `InvalidRequestError` | `value` | `increment.estimation._certified` |
-| `estimation.certified.nonpositive_root_width` | `InvalidRequestError` | `max_width` | `increment.estimation._certified` |
+| `estimation.certified.nonpositive_root_width` | `InvalidRequestError` | `max_width` | `increment.estimation._certified`, `increment.estimation._sequential_inversion` |
 | `estimation.certified.reversed_interval` | `InvalidRequestError` | `lower`, `upper` | `increment.estimation._certified` |
 | `estimation.certified.reversed_root_domain` | `InvalidRequestError` | `lower`, `upper` | `increment.estimation._certified` |
 | `estimation.certified.zero_divisor_interval` | `InvalidRequestError` | `lower`, `upper` | `increment.estimation._certified` |
@@ -552,12 +554,12 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.crossfit.cluster_atomic_shape` | `InvalidRequestError` | `assignment`, `cluster_ids` | `increment.estimation.crossfit` |
 | `estimation.crossfit.cluster_ids_shape_expected` | `InvalidRequestError` | `cluster_ids`, `unit_ids` | `increment.estimation.crossfit` |
 | `estimation.crossfit.cluster_split` | `InvalidRequestError` | `cluster`, `values` | `increment.estimation.crossfit` |
-| `estimation.crossfit.fold_assignments_unit_ids_shape` | `InvalidRequestError` | `unit_ids` | `increment.estimation._adjust.overlap` |
+| `estimation.crossfit.fold_assignments_unit_ids_shape` | `InvalidRequestError` | `unit_ids` | `increment.estimation._adjust.overlap`, `increment.estimation.crossfit` |
 | `estimation.crossfit.identity_collision` | `InvalidRequestError` | `canonical`, `first`, `second`, `what` | `increment._identity` |
 | `estimation.crossfit.identity_missing` | `InvalidRequestError` | `index`, `what` | `increment._identity` |
 | `estimation.crossfit.insufficient_clusters` | `InvalidRequestError` | `n_clusters`, `n_folds` | `increment.estimation.crossfit` |
 | `estimation.crossfit.n_candidates_least` | `InvalidRequestError` | `n_candidates` | `increment.estimation.crossfit` |
-| `estimation.crossfit.n_folds_least` | `InvalidRequestError` | `n_folds` | `increment.estimation.crossfit` |
+| `estimation.crossfit.n_folds_least` | `InvalidRequestError` | `n_folds` | `increment.estimation.crossfit`, `increment.estimation.targeting` |
 | `estimation.crossfit.selection_needs_least` | `InvalidRequestError` | `n_labels` | `increment.estimation.crossfit` |
 | `estimation.crossfit.stratify_shape_expected` | `InvalidRequestError` | `n`, `s` | `increment.estimation.crossfit` |
 | `estimation.crossfit.test_size` | `InvalidRequestError` | `test_size` | `increment.estimation.crossfit` |
@@ -592,7 +594,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.cuped_linear.support_region` | `InvalidRequestError` | `region`, `violations` | `increment.estimation.cuped._numeric` |
 | `estimation.diagnostics.allocation_band_ds` | `InvalidRequestError` | `a`, `b`, `credible_level`, `ds`, `group_id`, `lower`, `upper` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.allocation_posterior_bands` | `InvalidRequestError` | `experiment_ids` | `increment.estimation.diagnostics` |
-| `estimation.diagnostics.alpha` | `InvalidRequestError` | `alpha` | `increment.breakout.estimates` |
+| `estimation.diagnostics.alpha` | `InvalidRequestError` | `alpha` | `increment.breakout.estimates`, `increment.estimation.absorption`, `increment.estimation.cate`, `increment.estimation.diagnostics`, `increment.estimation.encouragement`, `increment.estimation.inference`, `increment.estimation.quantile`, `increment.estimation.targeting`, `increment.power.core` |
 | `estimation.diagnostics.always_srm_predeclared` | `InvalidRequestError` | `route` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.counts_missing_columns` | `InvalidRequestError` | `missing` | `increment.estimation.diagnostics` |
 | `estimation.diagnostics.counts_non_negative` | `InvalidRequestError` | `negative` | `increment.estimation.diagnostics` |
@@ -626,7 +628,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.encouragement.prior_cluster_robust` | `InvalidRequestError` | — | `increment.estimation.encouragement` |
 | `estimation.encouragement.prior_inference_are` | `InvalidRequestError` | — | `increment.estimation.encouragement` |
 | `estimation.encouragement.sequential_inference_cluster` | `InvalidRequestError` | — | `increment.estimation.encouragement` |
-| `estimation.encouragement.unknown_estimand_supported` | `InvalidRequestError` | `estimands`, `unknown` | `increment.estimation.encouragement` |
+| `estimation.encouragement.unknown_estimand_supported` | `InvalidRequestError` | `estimands`, `unknown` | `increment.estimation.encouragement`, `increment.readouts._common` |
 | `estimation.engine.arm.duplicate_rows` | `InvalidRequestError` | `keys` | `increment.estimation.engine` |
 | `estimation.engine.arm.invalid_count` | `InvalidRequestError` | `value`, `what` | `increment.estimation.engine` |
 | `estimation.engine.carries_format_moments` | `InvalidRequestError` | `what` | `increment.estimation.engine` |
@@ -661,11 +663,11 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.estimator.ref.raw_rows_unsupported` | `InvalidRequestError` | `estimator_id` | `increment.declarations` |
 | `estimation.family.bh_select_q_finite` | `InvalidRequestError` | `q` | `increment.estimation.family` |
 | `estimation.family.e_values_finite` | `InvalidRequestError` | `e`, `i` | `increment.estimation.family` |
-| `estimation.family.exploratory_construction` | `UnsupportedRequestError` | — | `increment.estimation.family` |
-| `estimation.family.exploratory_non_decision` | `InvalidRequestError` | — | `increment.estimation.family` |
-| `estimation.family.exploratory_pre_corrected` | `InvalidRequestError` | — | `increment.estimation.family` |
-| `estimation.family.exploratory_row` | `InvalidRequestError` | — | `increment.estimation.family` |
-| `estimation.family.exploratory_sequential` | `UnsupportedRequestError` | — | `increment.estimation.family` |
+| `estimation.family.exploratory_construction` | `UnsupportedRequestError` | `constructions`, `rows` | `increment.estimation.family` |
+| `estimation.family.exploratory_non_decision` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
+| `estimation.family.exploratory_pre_corrected` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
+| `estimation.family.exploratory_row` | `InvalidRequestError` | `rows` | `increment.estimation.family` |
+| `estimation.family.exploratory_sequential` | `UnsupportedRequestError` | `rows` | `increment.estimation.family` |
 | `estimation.family.nominal_alpha_finite` | `InvalidRequestError` | `nominal_alpha` | `increment.estimation.family` |
 | `estimation.family.p_values_finite` | `InvalidRequestError` | `i`, `p` | `increment.estimation.family` |
 | `estimation.health.check.available_conclusion` | `InvalidRequestError` | — | `increment.estimation.health` |
@@ -677,21 +679,21 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.inference.arm_ns_each` | `InvalidRequestError` | `arm_ns` | `increment.estimation.inference` |
 | `estimation.inference.degenerate_data_zero` | `InvalidRequestError` | — | `increment.estimation.inference` |
 | `estimation.inference.infer_ate_null_abs_finite` | `InvalidRequestError` | `null_abs` | `increment.estimation.inference` |
-| `estimation.inference.infer_ate_null_abs_on_absolute_metric` | `InvalidRequestError` | — | `increment.estimation.inference` |
+| `estimation.inference.infer_ate_null_abs_on_absolute_metric` | `InvalidRequestError` | `name` | `increment.estimation.inference` |
 | `estimation.inference.infer_ate_null_lift_finite` | `InvalidRequestError` | `null_lift` | `increment.estimation.inference` |
-| `estimation.inference.infer_ate_null_lift_on_absolute_metric` | `InvalidRequestError` | — | `increment.estimation.inference` |
+| `estimation.inference.infer_ate_null_lift_on_absolute_metric` | `InvalidRequestError` | `name` | `increment.estimation.inference` |
 | `estimation.inference.infer_lift_abs_diff_finite` | `InvalidRequestError` | `abs_diff` | `increment.estimation.inference` |
 | `estimation.inference.infer_lift_abs_se_finite` | `InvalidRequestError` | `abs_se` | `increment.estimation.inference` |
 | `estimation.inference.infer_lift_abs_se_positive` | `InvalidRequestError` | `abs_se` | `increment.estimation.inference` |
-| `estimation.inference.joint_reference_invalid` | `InvalidRequestError` | — | `increment.estimation.inference` |
+| `estimation.inference.joint_reference_invalid` | `InvalidRequestError` | `reason` | `increment.estimation.inference` |
 | `estimation.inference.null_lift_log` | `InvalidRequestError` | `null_lift` | `increment.estimation.inference` |
-| `estimation.inference.one_sided_alpha_doubles` | `InvalidRequestError` | `alpha`, `alpha_eff` | `increment.estimation.encouragement` |
+| `estimation.inference.one_sided_alpha_doubles` | `InvalidRequestError` | `alpha`, `alpha_eff` | `increment.estimation.encouragement`, `increment.estimation.inference` |
 | `estimation.inference.prior_excludes_cluster_robust_t` | `InvalidRequestError` | — | `increment.estimation.inference` |
 | `estimation.inference.prior_excludes_joint_reference` | `InvalidRequestError` | — | `increment.estimation.inference` |
 | `estimation.inference.prior_excludes_welch_reference` | `InvalidRequestError` | `arm_ns` | `increment.estimation.inference` |
 | `estimation.inference.unknown_value_scale` | `InvalidRequestError` | `value_scale` | `increment.estimation.inference` |
 | `estimation.meta.alpha_strictly_between` | `InvalidRequestError` | `alpha` | `increment.estimation.meta` |
-| `estimation.meta.alpha_too_small` | `InvalidRequestError` | — | `increment.breakout.estimates` |
+| `estimation.meta.alpha_too_small` | `InvalidRequestError` | — | `increment.breakout.estimates`, `increment.estimation.meta`, `increment.estimation.quantile` |
 | `estimation.meta.est_a_est` | `InvalidRequestError` | — | `increment.estimation.meta` |
 | `estimation.meta.est_contains_non` | `InvalidRequestError` | — | `increment.estimation.meta` |
 | `estimation.meta.est_var_same` | `InvalidRequestError` | `est_arr`, `var_arr` | `increment.estimation.meta` |
@@ -702,20 +704,20 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.meta.marginalized_segment.length_shape` | `InvalidRequestError` | `arr_shape`, `k`, `name` | `increment.estimation.meta` |
 | `estimation.meta.marginalized_segment.level_contradicts_alpha` | `InvalidRequestError` | `alpha`, `expected_level`, `level` | `increment.estimation.meta` |
 | `estimation.meta.need_least_estimable` | `InvalidRequestError` | `k` | `increment.estimation.meta` |
-| `estimation.meta.posterior_integration_unresolved` | `InvalidRequestError` | `integration_error`, `k`, `node_budget`, `support`, `tau_prior_scale` | `increment.breakout.heterogeneity` |
+| `estimation.meta.posterior_integration_unresolved` | `InvalidRequestError` | `integration_error`, `k`, `node_budget`, `support`, `tau_prior_scale` | `increment.breakout.heterogeneity`, `increment.estimation.meta` |
 | `estimation.meta.tau2_finite` | `InvalidRequestError` | `tau2` | `increment.estimation.meta` |
 | `estimation.meta.tau_prior_scale` | `InvalidRequestError` | `tau_prior_scale` | `increment.estimation.meta` |
 | `estimation.meta.var_a_finite` | `InvalidRequestError` | `var_a` | `increment.estimation.meta` |
 | `estimation.meta.var_b_finite` | `InvalidRequestError` | `var_b` | `increment.estimation.meta` |
-| `estimation.meta.var_finite_strictly` | `InvalidRequestError` | — | `increment.estimation.meta` |
+| `estimation.meta.var_finite_strictly` | `InvalidRequestError` | — | `increment.estimation.meta`, `increment.power.core` |
 | `estimation.priors.mixture.every_sigma` | `InvalidRequestError` | — | `increment.estimation.priors` |
 | `estimation.priors.mixture.every_weight` | `InvalidRequestError` | — | `increment.estimation.priors` |
 | `estimation.priors.mixture.every_weight_mean` | `InvalidRequestError` | `means`, `sigmas`, `weights` | `increment.estimation.priors` |
 | `estimation.priors.mixture.prior_needs_least` | `InvalidRequestError` | — | `increment.estimation.priors` |
 | `estimation.priors.mixture.weights_means_sigmas` | `InvalidRequestError` | `k`, `means`, `sigmas` | `increment.estimation.priors` |
 | `estimation.priors.mixture.weights_sum` | `InvalidRequestError` | `total` | `increment.estimation.priors` |
-| `estimation.priors.mixture_posterior.expected_negative_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.inference` |
-| `estimation.priors.mixture_posterior.expected_positive_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.inference` |
+| `estimation.priors.mixture_posterior.expected_negative_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.inference`, `increment.estimation.priors` |
+| `estimation.priors.mixture_posterior.expected_positive_part_scale` | `InvalidRequestError` | `scale` | `increment.estimation.inference`, `increment.estimation.priors` |
 | `estimation.priors.mixture_posterior.probability` | `InvalidRequestError` | `probability` | `increment.estimation.priors` |
 | `estimation.priors.mixture_posterior.tail_probability` | `InvalidRequestError` | `tail_probability` | `increment.estimation.priors` |
 | `estimation.priors.standard_error` | `InvalidRequestError` | `standard_error` | `increment.estimation.priors` |
@@ -726,7 +728,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.quantile.log_quantile_se` | `InvalidRequestError` | `q` | `increment.estimation.quantile` |
 | `estimation.quantile.quantile_positive_log` | `InvalidRequestError` | `lo`, `point`, `q` | `increment.estimation.quantile` |
 | `estimation.quantile.too_small_bound` | `InvalidRequestError` | `level`, `n`, `n_min`, `q` | `increment.estimation.quantile` |
-| `estimation.quantile.values_contain_non` | `InvalidRequestError` | — | `increment.estimation.quantile` |
+| `estimation.quantile.values_contain_non` | `InvalidRequestError` | `n_bad` | `increment.estimation.quantile` |
 | `estimation.quantile.values_one_dimensional` | `InvalidRequestError` | `shape` | `increment.estimation.quantile` |
 | `estimation.results.binomial.counts_out_of_range` | `InvalidRequestError` | `n_c`, `n_t`, `x_c`, `x_t` | `increment.estimation.results` |
 | `estimation.results.binomial.decision_metadata` | `InvalidRequestError` | `reason` | `increment.estimation.results` |
@@ -768,12 +770,12 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.results.lift.liftestimate_value_lb` | `InvalidRequestError` | `e_lb`, `e_value`, `group_id`, `metric` | `increment.estimation.results` |
 | `estimation.results.lift.open_interval_unrecoverable` | `InvalidRequestError` | — | `increment.estimation.results` |
 | `estimation.results.lift.open_side_alternative_mismatch` | `InvalidRequestError` | `alternative`, `open_side` | `increment.estimation.results` |
-| `estimation.results.lift.p_value_cluster_robust_null_abs` | `InvalidRequestError` | — | `increment.estimation.results` |
+| `estimation.results.lift.p_value_cluster_robust_null_abs` | `InvalidRequestError` | `group_id`, `metric`, `reference_df` | `increment.estimation.results` |
 | `estimation.results.lift.p_value_missing_log_mean_or_se` | `InvalidRequestError` | `group_id`, `metric` | `increment.estimation.results` |
 | `estimation.results.lift.p_value_null_abs_missing_abs_se` | `InvalidRequestError` | `group_id`, `metric` | `increment.estimation.results` |
 | `estimation.results.lift.p_value_null_lift_not_representable_dof` | `InvalidRequestError` | `group_id`, `metric`, `null_lift` | `increment.estimation.results` |
 | `estimation.results.lift.posterior_components_invalid` | `InvalidRequestError` | `group_id`, `metric`, `reason` | `increment.estimation.results` |
-| `estimation.results.lift.posterior_decision_stats_cluster_robust` | `InvalidRequestError` | — | `increment.estimation.results` |
+| `estimation.results.lift.posterior_decision_stats_cluster_robust` | `InvalidRequestError` | `group_id`, `metric`, `reference_df` | `increment.estimation.results` |
 | `estimation.results.lift.posterior_decision_stats_sequential` | `InvalidRequestError` | `group_id`, `inference`, `metric` | `increment.estimation.results` |
 | `estimation.results.lift.prob_within_threshold_positive` | `InvalidRequestError` | `threshold` | `increment.estimation.results` |
 | `estimation.results.lift.prob_within_threshold_unit_interval` | `InvalidRequestError` | `threshold` | `increment.estimation.results` |
@@ -814,27 +816,27 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.sequential_likelihood.evidence_enclosure_mismatch` | `InvalidRequestError` | `log_e`, `required` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.inconsistent_nonfinite_logs` | `InvalidRequestError` | `log_e`, `log_null_sup`, `reason`, `status` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.insufficient_prior_nu` | `InvalidRequestError` | `dimension`, `nu` | `increment.estimation._sequential_likelihood` |
-| `estimation.sequential_likelihood.invalid_certificate_reason` | `InvalidRequestError` | `reason` | `increment.estimation._sequential_inversion` |
+| `estimation.sequential_likelihood.invalid_certificate_reason` | `InvalidRequestError` | `reason` | `increment.estimation._sequential_inversion`, `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.invalid_dimension` | `InvalidRequestError` | `dimension` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.invalid_log_interval` | `InvalidRequestError` | `field`, `value_type` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.matrix_dimension_mismatch` | `InvalidRequestError` | `dimension`, `row_lengths` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.merge_dimension_mismatch` | `InvalidRequestError` | `left_dimension`, `right_dimension` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.missing_finite_logs` | `InvalidRequestError` | `log_e`, `log_null_sup`, `log_predictive` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.negative_bernoulli_ratio` | `InvalidRequestError` | `ratio` | `increment.estimation._sequential_likelihood` |
-| `estimation.sequential_likelihood.non_psd_matrix` | `InvalidRequestError` | — | `increment.estimation._sequential_likelihood` |
+| `estimation.sequential_likelihood.non_psd_matrix` | `InvalidRequestError` | `matrix`, `principal_minors` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.nonfinite_observation` | `InvalidRequestError` | `value` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.nonpositive_beta_parameter` | `InvalidRequestError` | `parameter`, `value` | `increment.estimation._sequential_likelihood` |
-| `estimation.sequential_likelihood.nonpositive_definite_matrix` | `InvalidRequestError` | — | `increment.estimation._sequential_likelihood` |
+| `estimation.sequential_likelihood.nonpositive_definite_matrix` | `InvalidRequestError` | `matrix`, `principal_minors` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.nonpositive_max_error` | `InvalidRequestError` | `max_error` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.nonpositive_prior_kappa` | `InvalidRequestError` | `kappa` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.nonzero_empty_mean` | `InvalidRequestError` | `mean` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.nonzero_small_sample_scatter` | `InvalidRequestError` | `n`, `scatter` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.row_dimension_mismatch` | `InvalidRequestError` | `dimension`, `row_dimension` | `increment.estimation._sequential_likelihood` |
-| `estimation.sequential_likelihood.scatter_rank_exceeds_count` | `InvalidRequestError` | — | `increment.estimation._sequential_likelihood` |
+| `estimation.sequential_likelihood.scatter_rank_exceeds_count` | `InvalidRequestError` | `n`, `scatter` | `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.singular_candidate_residual` | `InvalidRequestError` | `candidate`, `mean`, `n`, `residual`, `scatter` | `increment.estimation._sequential_likelihood` |
-| `estimation.sequential_likelihood.state_prior_dimension_mismatch` | `InvalidRequestError` | `control_dimension`, `prior_control_dimension`, `prior_treatment_dimension`, `treatment_dimension` | `increment.estimation._sequential_inversion` |
+| `estimation.sequential_likelihood.state_prior_dimension_mismatch` | `InvalidRequestError` | `control_dimension`, `prior_control_dimension`, `prior_treatment_dimension`, `treatment_dimension` | `increment.estimation._sequential_inversion`, `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.successes_exceed_count` | `InvalidRequestError` | `n`, `successes` | `increment.estimation._sequential_likelihood` |
-| `estimation.sequential_likelihood.unknown_alternative` | `InvalidRequestError` | `alternative` | `increment.estimation._sequential_inversion` |
+| `estimation.sequential_likelihood.unknown_alternative` | `InvalidRequestError` | `alternative` | `increment.estimation._sequential_inversion`, `increment.estimation._sequential_likelihood` |
 | `estimation.sequential_likelihood.unknown_certificate_status` | `InvalidRequestError` | `status` | `increment.estimation._sequential_likelihood` |
 | `estimation.sitewide.alpha` | `InvalidRequestError` | `alpha` | `increment.estimation.sitewide` |
 | `estimation.sitewide.cluster_arm_needs_two` | `InvalidRequestError` | `arm_counts`, `cluster`, `metric` | `increment.estimation.sitewide` |
@@ -851,26 +853,26 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.sitewide.ship_all_denominator` | `InvalidRequestError` | `baseline_denominator`, `delta_den`, `n_exp`, `shipped_denominator` | `increment.estimation.sitewide` |
 | `estimation.sitewide.sitewide_ratio.metric_arm_declares` | `InvalidRequestError` | `arm`, `label`, `remedy`, `target`, `x_role` | `increment.estimation.sitewide` |
 | `estimation.sitewide.sitewide_ratio.metric_arm_missing` | `InvalidRequestError` | `arm`, `metric` | `increment.estimation.sitewide` |
-| `estimation.tails.unresolvable` | `InvalidRequestError` | — | `increment.estimation._tails` |
+| `estimation.tails.unresolvable` | `InvalidRequestError` | `tail_or_alpha`, `value`, `what` | `increment.estimation._tails` |
 | `estimation.targeting.adjustment_dtype` | `InvalidRequestError` | `caller`, `column`, `dtype` | `increment.estimation.targeting` |
-| `estimation.targeting.bootstrap_empty_arm` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.bootstrap_insufficient_clusters` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.bootstrap_empty_arm` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
+| `estimation.targeting.bootstrap_insufficient_clusters` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.bootstrap_options` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.bootstrap_tail_resolution` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.bootstrap_unavailable_replicate` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.bootstrap_zero_variance` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.bootstrap_tail_resolution` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
+| `estimation.targeting.bootstrap_unavailable_replicate` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
+| `estimation.targeting.bootstrap_zero_variance` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.cluster_count_bounds` | `InvalidRequestError` | `n_clusters`, `n_holdout` | `increment.estimation.targeting` |
 | `estimation.targeting.cluster_count_mismatch` | `InvalidRequestError` | `n_clusters`, `validation_n_clusters` | `increment.estimation.targeting` |
 | `estimation.targeting.cluster_grain_count_required` | `InvalidRequestError` | — | `increment.estimation.targeting` |
 | `estimation.targeting.cluster_ids_shape` | `InvalidRequestError` | `cluster_ids`, `y` | `increment.estimation.targeting` |
 | `estimation.targeting.cluster_ids_string` | `InvalidRequestError` | `cluster_ids` | `increment.estimation.targeting` |
 | `estimation.targeting.covariate_rows_expected` | `InvalidRequestError` | `cov`, `values`, `y` | `increment.estimation.targeting` |
-| `estimation.targeting.degenerate_cluster_variance` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.degenerate_rank_distribution` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.degenerate_cluster_variance` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
+| `estimation.targeting.degenerate_rank_distribution` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.deployment_cluster_ids_required` | `InvalidRequestError` | — | `increment.estimation._deployment` |
 | `estimation.targeting.deployment_cluster_ids_shape` | `InvalidRequestError` | `n`, `shape` | `increment.estimation._deployment` |
-| `estimation.targeting.empty_arm` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.empty_group` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.empty_arm` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
+| `estimation.targeting.empty_group` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.evaluation_population_invalid` | `InvalidRequestError` | `reason` | `increment.estimation.targeting` |
 | `estimation.targeting.every_fraction` | `InvalidRequestError` | `f` | `increment.estimation.targeting` |
 | `estimation.targeting.fraction_share_units` | `InvalidRequestError` | `fraction` | `increment.estimation.targeting` |
@@ -878,16 +880,16 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.targeting.fractions_non_empty` | `InvalidRequestError` | — | `increment.estimation.targeting` |
 | `estimation.targeting.half_split_holds` | `InvalidRequestError` | `n_control`, `n_treated`, `name` | `increment.estimation.targeting` |
 | `estimation.targeting.holdout_mask_shape` | `InvalidRequestError` | `hold`, `y` | `increment.estimation.targeting` |
-| `estimation.targeting.insufficient_arm_clusters` | `InvalidRequestError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.insufficient_clusters` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.insufficient_arm_clusters` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
+| `estimation.targeting.insufficient_clusters` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.invalid_deployment_grain` | `InvalidRequestError` | `deploy_grain`, `intervention_grain` | `increment.estimation._deployment` |
-| `estimation.targeting.jackknife_unavailable_replicate` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.jackknife_unavailable_replicate` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.n_groups_least` | `InvalidRequestError` | `n_groups` | `increment.estimation.targeting` |
-| `estimation.targeting.nonfinite_statistic` | `InvalidRequestError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.nonfinite_statistic` | `InvalidRequestError` | `message` | `increment.estimation.targeting` |
 | `estimation.targeting.outcome_shape` | `InvalidRequestError` | `y` | `increment.estimation.targeting` |
 | `estimation.targeting.overlap.empty_arm` | `IdentificationError` | `min_propensity`, `n_kept`, `n_total` | `increment.estimation.targeting` |
 | `estimation.targeting.overlap.partial_cluster` | `IdentificationError` | — | `increment.estimation.targeting` |
-| `estimation.targeting.overlap.refuse` | `IdentificationError` | — | `increment.estimation.targeting` |
+| `estimation.targeting.overlap.refuse` | `IdentificationError` | `min_propensity`, `n_outside`, `n_total` | `increment.estimation.targeting` |
 | `estimation.targeting.policy_grain_mismatch` | `InvalidRequestError` | — | `increment.estimation.targeting` |
 | `estimation.targeting.policy_metadata` | `InvalidRequestError` | — | `increment.estimation.targeting` |
 | `estimation.targeting.score_state_required` | `InvalidRequestError` | — | `increment.estimation.targeting` |
@@ -926,57 +928,57 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `estimation.variance.se_log_mean_not_representable` | `InvalidRequestError` | `mean`, `n`, `se`, `var` | `increment.estimation.variance` |
 | `estimation.variance.se_log_mean_out_of_range` | `InvalidRequestError` | `half`, `mean`, `n`, `var` | `increment.estimation.variance` |
 | `estimation.variance.var_non_negative` | `InvalidRequestError` | `var` | `increment.estimation.variance` |
-| `estimation.winsor.cutoff_in_zero_atom` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.density_required` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.density_unresolved` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.design_unsupported` | `CapabilityError` | — | `increment._winsor_errors` |
-| `estimation.winsor.endpoint_unrepresentable` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.invalid_state` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.pilot_degenerate` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.pilot_negative_outcome` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.pool_mismatch` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.posterior_unavailable` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.rank_size_unsupported` | `CapabilityError` | — | `increment._winsor_errors` |
-| `estimation.winsor.raw_state_required` | `CapabilityError` | — | `increment._winsor_errors` |
-| `estimation.winsor.reinversion_required` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.studentization_degenerate` | `InvalidRequestError` | — | `increment._winsor_errors` |
-| `estimation.winsor.support_required` | `CapabilityError` | — | `increment._winsor_errors` |
-| `estimation.winsor.support_violation` | `InvalidRequestError` | — | `increment._winsor_errors` |
+| `estimation.winsor.cutoff_in_zero_atom` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.density_required` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.density_unresolved` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.design_unsupported` | `CapabilityError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.endpoint_unrepresentable` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.invalid_state` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.pilot_degenerate` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.pilot_negative_outcome` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.pool_mismatch` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.posterior_unavailable` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.rank_size_unsupported` | `CapabilityError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.raw_state_required` | `CapabilityError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.reinversion_required` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.studentization_degenerate` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.support_required` | `CapabilityError` | `reason` | `increment._winsor_errors` |
+| `estimation.winsor.support_violation` | `InvalidRequestError` | `reason` | `increment._winsor_errors` |
 | `evidence.assignment.identity_unavailable` | `CapabilityError` | `constructor`, `operation`, `route` | `increment._evidence_refusals` |
-| `evidence.assignment.invalid` | `CapabilityError` | `details`, `reason` | `increment._assignment_refusals` |
-| `evidence.assignment.replay_mismatch` | `CapabilityError` | `details` | `increment._assignment_refusals` |
-| `evidence.assignment.selection_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested` | `increment._assignment_refusals` |
-| `evidence.assignment.unavailable` | `CapabilityError` | `constructor`, `offered`, `route` | `increment._assignment_refusals` |
+| `evidence.assignment.invalid` | `CapabilityError` | `details`, `reason` | `increment._assignment_refusals`, `increment._evidence_refusals` |
+| `evidence.assignment.replay_mismatch` | `CapabilityError` | `details` | `increment._assignment_refusals`, `increment._evidence_refusals` |
+| `evidence.assignment.selection_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested` | `increment._assignment_refusals`, `increment._evidence_refusals` |
+| `evidence.assignment.unavailable` | `CapabilityError` | `constructor`, `offered`, `route` | `increment._assignment_refusals`, `increment._evidence_refusals` |
 | `evidence.breakout_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `evidence.cluster_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `evidence.covariate_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `evidence.grain_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `evidence.joint_grouping_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested` | `increment._evidence_refusals` |
-| `evidence.operation_unavailable` | `CapabilityError` | — | `increment._evidence_refusals` |
-| `evidence.provider_unavailable` | `CapabilityError` | `constructor` | `increment._evidence_refusals` |
+| `evidence.operation_unavailable` | `CapabilityError` | `constructor`, `offered`, `request`, `requested`, `route` | `increment._evidence_refusals`, `increment.query._native_refusals` |
+| `evidence.provider_unavailable` | `CapabilityError` | `constructor` | `increment._evidence_refusals`, `increment._source_types` |
 | `evidence.raw_outcomes_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `evidence.request_unsupported` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `evidence.unit_rows_unavailable` | `CapabilityError` | `constructor`, `offered`, `requested`, `route` | `increment._evidence_refusals` |
 | `facade.analysis.bh_segmented_asof` | `UnsupportedRequestError` | `method` | `increment._day_axis` |
 | `facade.analysis.clustered_day_axis` | `CapabilityError` | `cluster`, `experiment`, `method` | `increment._day_axis` |
-| `facade.analysis.contrast_unavailable` | `CapabilityError` | `method` | `increment._evidence_refusals` |
+| `facade.analysis.contrast_unavailable` | `CapabilityError` | `method` | `increment._evidence_refusals`, `increment.cate`, `increment.dashboard._data` |
 | `facade.analysis.daily_compliance_dimension_unsupported` | `UnsupportedRequestError` | `method` | `increment._day_axis` |
 | `facade.analysis.definitions_state_requires_identification` | `InvalidRequestError` | — | `increment.builders` |
 | `facade.analysis.encouragement_daily_late` | `InvalidRequestError` | `experiment` | `increment._day_axis` |
 | `facade.analysis.exploratory_metrics_sequential` | `UnsupportedRequestError` | `inference`, `method`, `names` | `increment._exploratory` |
 | `facade.analysis.exploratory_metrics_source_limited` | `CapabilityError` | `method` | `increment._exploratory` |
 | `facade.analysis.invalid_mixed_assignment_policy` | `InvalidRequestError` | `on_mixed_assignment` | `increment.builders` |
-| `facade.analysis.invalid_population` | `InvalidRequestError` | `population` | `increment._evidence_refusals` |
+| `facade.analysis.invalid_population` | `InvalidRequestError` | `population` | `increment._evidence_refusals`, `increment._sitewide`, `increment._source_diagnostics` |
 | `facade.analysis.invalid_store_policy` | `InvalidRequestError` | `store` | `increment.builders` |
 | `facade.analysis.observational_day_axis` | `UnsupportedRequestError` | `method` | `increment._day_axis` |
 | `facade.analysis.sitewide_arm_not_enrolled` | `InvalidRequestError` | `arm`, `arms`, `control_group`, `metric` | `increment._sitewide` |
-| `facade.analysis.sitewide_arm_required` | `InvalidRequestError` | — | `increment._sitewide` |
+| `facade.analysis.sitewide_arm_required` | `InvalidRequestError` | `arms`, `metric` | `increment._sitewide` |
 | `facade.analysis.sitewide_cluster_counts_missing` | `CapabilityError` | `cluster` | `increment._sitewide` |
 | `facade.analysis.sitewide_cluster_metric_type` | `CapabilityError` | `cluster`, `metric`, `metric_type` | `increment._sitewide` |
 | `facade.analysis.sitewide_control_missing` | `InvalidRequestError` | `available`, `control_group`, `metric` | `increment._sitewide` |
 | `facade.analysis.sitewide_metric_unaligned` | `CapabilityError` | `aggregation`, `metric`, `metric_type`, `route`, `window_days` | `increment._sitewide` |
 | `facade.analysis.sitewide_no_treatment_arm` | `InvalidRequestError` | `control_group`, `metric` | `increment._sitewide` |
-| `facade.analysis.sitewide_outcomes_incomplete` | `CapabilityError` | `route` | `increment.query.native_contract` |
+| `facade.analysis.sitewide_outcomes_incomplete` | `CapabilityError` | `route` | `increment.query.native_contract`, `increment.query.native_source`, `increment.query.source` |
 | `facade.analysis.sitewide_ratio_denominator_missing` | `CapabilityError` | `metric` | `increment._sitewide` |
 | `facade.analysis.sitewide_requires_randomized` | `CapabilityError` | — | `increment._sitewide` |
 | `facade.analysis.sitewide_triggered_cluster_unsupported` | `CapabilityError` | `cluster` | `increment._sitewide` |
@@ -985,13 +987,13 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `facade.analysis.sitewide_winsorized_metric` | `CapabilityError` | `metric` | `increment._sitewide` |
 | `facade.analysis.source_context_design_disagrees_arm` | `InvalidRequestError` | — | `increment.builders` |
 | `facade.analysis.switchback_only` | `CapabilityError` | `method` | `increment._source_diagnostics` |
-| `facade.analysis.trigger_unsupported` | `CapabilityError` | — | `increment._breakout_readouts` |
+| `facade.analysis.trigger_unsupported` | `CapabilityError` | `experiment`, `method`, `trigger` | `increment._breakout_readouts`, `increment._day_axis`, `increment._execute`, `increment.readouts._whole_window` |
 | `facade.analysis.uncorrected_segments_sequential` | `UnsupportedRequestError` | `inference` | `increment._breakout_readouts` |
-| `facade.analysis.undeclared_breakout` | `InvalidRequestError` | `declared`, `requested` | `increment._binding` |
+| `facade.analysis.undeclared_breakout` | `InvalidRequestError` | `declared`, `requested` | `increment._binding`, `increment._dashboard_capture` |
 | `facade.analysis.undeclared_metric_for_dimension` | `InvalidRequestError` | `dimension`, `method`, `undeclared` | `increment._day_axis` |
 | `facade.analysis.unknown_dimension` | `InvalidRequestError` | `declared`, `dimension`, `method` | `increment._day_axis` |
-| `facade.analysis.unknown_experiment` | `InvalidRequestError` | — | `increment.builders` |
-| `facade.analysis.unknown_metric` | `InvalidRequestError` | `declared`, `metric` | `increment._sitewide` |
+| `facade.analysis.unknown_experiment` | `InvalidRequestError` | `available`, `requested` | `increment.builders` |
+| `facade.analysis.unknown_metric` | `InvalidRequestError` | `declared`, `metric` | `increment._sitewide`, `increment.readouts._whole_window` |
 | `facade.analysis_config.covariate_binding_conflict` | `InvalidRequestError` | `covariate` | `increment._analysis_config` |
 | `facade.analysis_config.cuped_linear_covariates` | `InvalidRequestError` | `metric` | `increment._analysis_config` |
 | `facade.analysis_config.cuped_linear_metric_type` | `InvalidRequestError` | `metric`, `metric_type` | `increment._analysis_config` |
@@ -1011,14 +1013,14 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `facade.study.switchback_study.identification_exactly_one` | `InvalidRequestError` | — | `increment._study` |
 | `facade.window.resolve_window_days` | `UnsupportedRequestError` | `metric_type` | `increment._window` |
 | `frame.asof.day_axis_unorderable` | `CapabilityError` | `labels` | `increment._day_axis_labels` |
-| `frame.asof.quantile_unsupported` | `CapabilityError` | `metric` | `increment._frame_moments` |
+| `frame.asof.quantile_unsupported` | `CapabilityError` | `metric` | `increment._frame_moments`, `increment.frame` |
 | `frame.duplicate_metric_name` | `InvalidRequestError` | `name` | `increment._metric_specs` |
 | `frame.frame_panel.asof_moments_completed` | `InvalidRequestError` | `band`, `name` | `increment.frame` |
 | `frame.frame_panel.unit_covariate_column` | `InvalidRequestError` | `columns`, `missing` | `increment.frame` |
 | `frame.frame_panel.unit_covariate_varies` | `InvalidRequestError` | `covariate`, `units` | `increment.frame` |
-| `frame.frame_totals.control_group_absent` | `InvalidRequestError` | — | `increment.frame` |
+| `frame.frame_totals.control_group_absent` | `InvalidRequestError` | `control`, `groups` | `increment.frame` |
 | `frame.frame_totals.metric_was_declared` | `InvalidRequestError` | `name` | `increment.frame` |
-| `frame.frame_totals.moments_metric_undeclared` | `InvalidRequestError` | — | `increment.frame` |
+| `frame.frame_totals.moments_metric_undeclared` | `InvalidRequestError` | `declared`, `names` | `increment.frame` |
 | `frame.frame_totals.unit_covariate_column` | `InvalidRequestError` | `columns`, `missing` | `increment.frame` |
 | `frame.frame_totals.unit_covariate_reserved` | `InvalidRequestError` | `cluster`, `column` | `increment.frame` |
 | `frame.metric.covariate_names_unique` | `InvalidRequestError` | `name` | `increment._metric_specs` |
@@ -1056,15 +1058,15 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `frame.validation.breakout_overlaps_metric` | `InvalidRequestError` | `name` | `increment._frame_validation` |
 | `frame.validation.breakout_reserved_internal` | `InvalidRequestError` | `name` | `increment._frame_validation` |
 | `frame.validation.breakout_unit_stable` | `InvalidRequestError` | `count`, `more`, `name`, `shown` | `increment._frame_validation` |
-| `frame.validation.covariate_not_numeric` | `InvalidRequestError` | — | `increment._frame_validation` |
+| `frame.validation.covariate_not_numeric` | `InvalidRequestError` | `covariate`, `dtype`, `metric`, `variance_reduction` | `increment._frame_validation` |
 | `frame.validation.design_control_group` | `InvalidRequestError` | `control`, `control_group` | `increment._frame_validation` |
 | `frame.validation.dtype_disagree_day` | `InvalidRequestError` | `anchor_dtype`, `anchor_name`, `ds_dtype`, `ds_name` | `increment._frame_validation` |
 | `frame.validation.duplicate_breakout_column` | `InvalidRequestError` | `duplicates` | `increment._frame_validation` |
-| `frame.validation.from_unit_panel` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `frame.validation.group_label_collision` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `frame.validation.group_label_reserved` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `frame.validation.metric_covariate_column` | `InvalidRequestError` | `covariate`, `metric`, `n_missing` | `increment._frame_moments` |
-| `frame.validation.metric_covariate_impute_all_null` | `InvalidRequestError` | `covariate`, `metric` | `increment._frame_moments` |
+| `frame.validation.from_unit_panel` | `InvalidRequestError` | `covered`, `retention` | `increment._frame_validation` |
+| `frame.validation.group_label_collision` | `InvalidRequestError` | `collision`, `group`, `route` | `increment._frame_validation` |
+| `frame.validation.group_label_reserved` | `InvalidRequestError` | `group`, `labels`, `route` | `increment._frame_validation` |
+| `frame.validation.metric_covariate_column` | `InvalidRequestError` | `covariate`, `metric`, `n_missing` | `increment._frame_moments`, `increment._frame_validation`, `increment.query.native_source` |
+| `frame.validation.metric_covariate_impute_all_null` | `InvalidRequestError` | `covariate`, `metric` | `increment._frame_moments`, `increment._frame_validation`, `increment.query.native_source` |
 | `frame.validation.metric_value_missing` | `InvalidRequestError` | `column`, `metric`, `n_missing` | `increment._frame_validation` |
 | `frame.winsorization.collapsed_bound` | `CapabilityError` | `clipped`, `date`, `lower`, `metric`, `upper` | `increment._frame_moments` |
 | `identification.encouragement.exclusion_required` | `IdentificationError` | `available_estimands`, `estimands`, `required_assumption` | `increment.estimation.encouragement` |
@@ -1075,8 +1077,8 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `impute.impute_roles_columns` | `InvalidRequestError` | `columns`, `requested` | `increment.impute` |
 | `impute.impute_roles_value` | `InvalidRequestError` | `columns` | `increment.impute` |
 | `impute.pooled_mean_outcome` | `InvalidRequestError` | `columns`, `route` | `increment.impute` |
-| `integrity.allocation_missing_or_nonconstant` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity` |
-| `integrity.allocation_scheme_missing` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity` |
+| `integrity.allocation_missing_or_nonconstant` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity`, `increment.readouts._common` |
+| `integrity.allocation_scheme_missing` | `CapabilityError` | `population` | `increment.estimation.assignment_integrity`, `increment.readouts._common` |
 | `kernel.context.closed` | `InvalidRequestError` | — | `increment.kernel.contracts` |
 | `kernel.context.undeclared_stream` | `InvalidRequestError` | `stream` | `increment.kernel.contracts` |
 | `kernel.definitions.catalog_missing` | `InvalidRequestError` | `path` | `increment.kernel.contracts` |
@@ -1093,46 +1095,46 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `kernel.scope.family_mismatch` | `CapabilityError` | `experiment_id`, `view` | `increment._runnability` |
 | `kernel.scope.invalid` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
 | `kernel.snapshot.integrity` | `InvalidRequestError` | `snapshot_id`, `stream` | `increment.kernel.contracts` |
-| `logged_policy.inference.adaptive_logging_unsupported` | `CapabilityError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.inference.adaptive_logging_unsupported` | `CapabilityError` | `logging_policy_keys`, `logging_policy_versions`, `update_batches` | `increment.logged_policy._refusals` |
 | `logged_policy.inference.alpha` | `InvalidRequestError` | `alpha` | `increment.logged_policy._refusals` |
 | `logged_policy.inference.cluster_floor` | `CapabilityError` | `ess_by_time`, `max_weight_by_time`, `min_propensity_by_time`, `minimum_total_units`, `n_units` | `increment.logged_policy._refusals` |
-| `logged_policy.inference.unrepresentable` | `CapabilityError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.inference.unrepresentable` | `CapabilityError` | `estimate`, `nonfinite`, `reference_value`, `se`, `target_value` | `increment.logged_policy._refusals` |
 | `logged_policy.policy.json_context_key` | `CapabilityError` | `key_types`, `policy_id`, `route`, `version` | `increment.logged_policy._refusals` |
 | `logged_policy.registry.duplicate` | `InvalidRequestError` | `policy_id`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.support.action_unsupported` | `CapabilityError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.support.context_unsupported` | `CapabilityError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.support.action_unsupported` | `CapabilityError` | `action`, `decision_index`, `policy_id`, `policy_probability`, `unit_id`, `version` | `increment.logged_policy._refusals` |
+| `logged_policy.support.context_unsupported` | `CapabilityError` | `context`, `context_key`, `policy_id`, `version` | `increment.logged_policy._refusals` |
 | `logged_policy.support.ess_floor` | `CapabilityError` | `decision_index`, `ess`, `floor`, `policy_id`, `reference_ess_by_time`, `target_ess_by_time`, `version` | `increment.logged_policy._refusals` |
 | `logged_policy.support.policy_not_normalized` | `CapabilityError` | `context`, `policy_id`, `probabilities`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.admission_route` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.boundary_awareness_mixed` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.boundary_before_decision` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.candidate_set_mismatch` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.trace.admission_route` | `InvalidRequestError` | `alternatives`, `supplied` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.boundary_awareness_mixed` | `InvalidRequestError` | `decision_index`, `decision_time`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.boundary_before_decision` | `InvalidRequestError` | `decision_index`, `decision_time`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.candidate_set_mismatch` | `InvalidRequestError` | `candidate_actions`, `chosen_action`, `decision_index`, `expected_candidate_actions`, `unit_id` | `increment.logged_policy._refusals` |
 | `logged_policy.trace.context_value_unsupported` | `InvalidRequestError` | `value_type` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.decision_time_awareness_mixed` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.empty` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.trace.decision_time_awareness_mixed` | `InvalidRequestError` | `decision_index`, `decision_time`, `reference_decision_index`, `reference_decision_time`, `reference_unit_id`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.empty` | `InvalidRequestError` | `constructors`, `n_records` | `increment.logged_policy._refusals` |
 | `logged_policy.trace.incomplete_horizon` | `InvalidRequestError` | `horizon`, `observed_horizon`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.logging_distribution_keys` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.trace.logging_distribution_keys` | `InvalidRequestError` | `actions`, `decision_index`, `expected_actions`, `unit_id` | `increment.logged_policy._refusals` |
 | `logged_policy.trace.logging_distribution_misaligned` | `InvalidRequestError` | `n_distributions`, `n_records` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.logging_policy_unregistered` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.trace.logging_policy_unregistered` | `InvalidRequestError` | `decision_index`, `logging_policy_id`, `logging_policy_version`, `registered`, `unit_id` | `increment.logged_policy._refusals` |
 | `logged_policy.trace.missing_columns` | `InvalidRequestError` | `missing` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.open_reward` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_below_floor` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_missing` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_nonfinite` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_out_of_range` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_stale` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.registry_audit_required` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
-| `logged_policy.trace.reward_nonfinite` | `InvalidRequestError` | — | `increment.logged_policy._refusals` |
+| `logged_policy.trace.open_reward` | `InvalidRequestError` | `decision_index`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_below_floor` | `InvalidRequestError` | `action`, `context`, `decision_index`, `floor`, `logging_policy_id`, `logging_policy_version`, `propensity`, `route`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_missing` | `InvalidRequestError` | `decision_index`, `logging_policy_id`, `logging_policy_version`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_nonfinite` | `InvalidRequestError` | `decision_index`, `propensity`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_out_of_range` | `InvalidRequestError` | `decision_index`, `propensity`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_stale` | `InvalidRequestError` | `chosen_action`, `decision_index`, `logged`, `logging_policy_id`, `logging_policy_version`, `registered`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.registry_audit_required` | `InvalidRequestError` | `constructors` | `increment.logged_policy._refusals` |
+| `logged_policy.trace.reward_nonfinite` | `InvalidRequestError` | `decision_index`, `reward`, `unit_id` | `increment.logged_policy._refusals` |
 | `logged_policy.trace.unit_id_missing` | `InvalidRequestError` | `row`, `unit_id` | `increment.logged_policy._refusals` |
 | `logged_policy.trace.unordered` | `InvalidRequestError` | `decision_indices`, `decision_times`, `unit_id` | `increment.logged_policy._refusals` |
-| `model.field.length` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors` |
-| `model.field.literal` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors` |
-| `model.field.missing` | `InvalidRequestError` | `field`, `model` | `increment.errors` |
-| `model.field.nonfinite` | `InvalidRequestError` | `field`, `model`, `value` | `increment.errors` |
-| `model.field.pattern` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors` |
-| `model.field.range` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors` |
-| `model.field.type` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors` |
-| `model.field.unknown` | `InvalidRequestError` | `field`, `model` | `increment.errors` |
+| `model.field.length` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
+| `model.field.literal` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
+| `model.field.missing` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.winsor` |
+| `model.field.nonfinite` | `InvalidRequestError` | `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
+| `model.field.pattern` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
+| `model.field.range` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
+| `model.field.type` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
+| `model.field.unknown` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.winsor` |
 | `moments.count_field_missing` | `WireFormatError` | `field` | `increment.sources` |
 | `moments.count_not_integer` | `WireFormatError` | `field`, `value` | `increment.sources` |
 | `moments.count_out_of_range` | `WireFormatError` | `field`, `n`, `value` | `increment.sources` |
@@ -1155,7 +1157,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `moments.winsorization.metadata_conflict` | `CapabilityError` | `actual_bound`, `actual_n`, `actual_percentile`, `expected_bound`, `expected_percentile`, `metric`, `side` | `increment.sources` |
 | `moments.winsorization.metadata_missing` | `CapabilityError` | `field`, `metric`, `value` | `increment.sources` |
 | `moments.winsorization.metadata_shape` | `CapabilityError` | `field`, `metric`, `value` | `increment.sources` |
-| `package.builtin_provider_unavailable` | `CodedError` | `count`, `feature`, `group`, `provider`, `reason` | `increment.errors` |
+| `package.builtin_provider_unavailable` | `CodedError` | `count`, `feature`, `group`, `provider`, `reason` | `increment.errors`, `increment.kernel.ports`, `increment.query.artifact_ports` |
 | `plan.compile_configs_template_mismatch` | `InvalidRequestError` | `metric` | `increment.plan` |
 | `plan.compile_configs_wrong_type` | `InvalidRequestError` | — | `increment.plan` |
 | `plan.configs_contain_one` | `InvalidRequestError` | — | `increment.plan` |
@@ -1164,8 +1166,8 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `plan.duplicate_metric_name` | `InvalidRequestError` | `duplicate_names` | `increment.plan` |
 | `plan.encouragement.margin` | `UnsupportedRequestError` | `metric` | `increment.plan` |
 | `plan.encouragement.sequential_cuped` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
-| `plan.frame.override` | `InvalidRequestError` | — | `increment.decision` |
-| `plan.frame.secondaries` | `InvalidRequestError` | — | `increment.decision` |
+| `plan.frame.override` | `InvalidRequestError` | `field`, `metric` | `increment.decision` |
+| `plan.frame.secondaries` | `InvalidRequestError` | `derived`, `explicit` | `increment.decision` |
 | `plan.frame_contrast_does` | `UnsupportedRequestError` | — | `increment.plan` |
 | `plan.guardrail.direction` | `InvalidRequestError` | `metric` | `increment.decision` |
 | `plan.metric.report_only` | `InvalidRequestError` | `metric`, `role` | `increment.decision` |
@@ -1173,7 +1175,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `plan.metric_frame_contrast` | `InvalidRequestError` | `metric` | `increment.plan` |
 | `plan.metric_informative_priors` | `UnsupportedRequestError` | `inference`, `metric` | `increment.plan` |
 | `plan.metric_priors_relative` | `UnsupportedRequestError` | `metric`, `prior` | `increment.plan` |
-| `plan.metrics.unknown` | `InvalidRequestError` | — | `increment.decision` |
+| `plan.metrics.unknown` | `InvalidRequestError` | `declared`, `path`, `unknown` | `increment.decision` |
 | `plan.observational.relative_margin` | `UnsupportedRequestError` | `metrics` | `increment.plan` |
 | `plan.unsupported_decision_plan` | `InvalidRequestError` | `path` | `increment.plan` |
 | `power.alpha_finite` | `InvalidRequestError` | `alpha` | `increment.power.sequential` |
@@ -1195,13 +1197,13 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `power.baseline.summarystats_bound_pilot` | `InvalidRequestError` | `n` | `increment.power.core` |
 | `power.baseline.trigger_rate` | `InvalidRequestError` | — | `increment.power.core` |
 | `power.baseline.var_zero_variance` | `InvalidRequestError` | — | `increment.power.core` |
-| `power.binomial_arm_ceiling_below_smallest_design` | `InvalidRequestError` | — | `increment.power.core` |
+| `power.binomial_arm_ceiling_below_smallest_design` | `InvalidRequestError` | `allocation`, `conversion_inference`, `max_arm_size`, `n_c`, `n_t` | `increment.power.core` |
 | `power.binomial_arm_ceiling_exceeded` | `InvalidRequestError` | `max_arm_size`, `n_c`, `n_t` | `increment.power.core` |
 | `power.binomial_enclosure_requires_counts` | `InvalidRequestError` | `metric_type` | `increment.power.core` |
-| `power.binomial_probability_unresolved` | `InvalidRequestError` | `error`, `lower`, `point`, `tolerance`, `upper` | `increment.power._binomial` |
-| `power.binomial_replay_bound_exceeded` | `InvalidRequestError` | — | `increment.power.core` |
-| `power.binomial_size_search_unreachable` | `InvalidRequestError` | — | `increment.power.core` |
-| `power.binomial_tail_level_unrepresentable` | `InvalidRequestError` | — | `increment.power.core` |
+| `power.binomial_probability_unresolved` | `InvalidRequestError` | `error`, `lower`, `point`, `tolerance`, `upper` | `increment.power._binomial`, `increment.power.core` |
+| `power.binomial_replay_bound_exceeded` | `InvalidRequestError` | `cells`, `conversion_inference`, `dense_min_count`, `max_arm_size`, `max_cells`, `n_c`, `n_t`, `p_c`, `p_t`, `planned_dense_min_count`, `power`, `power_reached` | `increment.power.core` |
+| `power.binomial_size_search_unreachable` | `InvalidRequestError` | `conversion_inference`, `max_arm_size`, `maximum_power`, `n_per_arm`, `power` | `increment.power.core` |
+| `power.binomial_tail_level_unrepresentable` | `InvalidRequestError` | `alpha`, `beta`, `cause`, `conversion_inference`, `decided_from`, `margin`, `n_c`, `n_t`, `p_c`, `scope`, `solver_floor`, `tail_alpha` | `increment.power.core` |
 | `power.boundary_crossing_quadrature` | `InvalidRequestError` | `reason` | `increment.power.sequential` |
 | `power.bounded_metric.baseline` | `InvalidRequestError` | `mean`, `metric_type` | `increment.power.core` |
 | `power.bounded_metric.rate_above_one` | `InvalidRequestError` | `implied_rate`, `mean`, `metric_type`, `role` | `increment.power.core` |
@@ -1223,8 +1225,8 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `power.mde_relative_unavailable` | `InvalidRequestError` | — | `increment.power.core` |
 | `power.mde_unavailable_reason` | `InvalidRequestError` | `mde_relative`, `mde_unavailable_reason` | `increment.power.core` |
 | `power.minimum_detectable_effect.design_search_minimum` | `InvalidRequestError` | `estimate`, `target` | `increment.power.core` |
-| `power.minimum_detectable_effect.numerical_resolution` | `InvalidRequestError` | `direction`, `power_enclosure`, `stopping_reason`, `target_power`, `unresolved_interval` | `increment.power._search` |
-| `power.minimum_detectable_effect.unattainable` | `InvalidRequestError` | — | `increment.power.core` |
+| `power.minimum_detectable_effect.numerical_resolution` | `InvalidRequestError` | `direction`, `power_enclosure`, `stopping_reason`, `target_power`, `unresolved_interval` | `increment.power._search`, `increment.power.core`, `increment.power.sequential` |
+| `power.minimum_detectable_effect.unattainable` | `InvalidRequestError` | `direction`, `limiting_condition`, `maximum_power`, `power_basis`, `target_power` | `increment.power.core` |
 | `power.minimum_detectable_effect.unrepresentable` | `InvalidRequestError` | `direction`, `limiting_condition`, `target_power` | `increment.power.core` |
 | `power.need_least_segments` | `InvalidRequestError` | `k` | `increment.power.core` |
 | `power.nodes_multiple` | `InvalidRequestError` | `nodes`, `panel_nodes` | `increment.power.sequential` |
@@ -1237,14 +1239,14 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `power.power_bounds_paired` | `InvalidRequestError` | `power_lower`, `power_upper` | `increment.power.core` |
 | `power.power_bounds_required` | `InvalidRequestError` | — | `increment.power.core` |
 | `power.power_is_lower_bound` | `InvalidRequestError` | `power`, `power_lower` | `increment.power.core` |
-| `power.power_solvers_relative` | `InvalidRequestError` | — | `increment.power._shared` |
+| `power.power_solvers_relative` | `InvalidRequestError` | — | `increment.power._shared`, `increment.power.core`, `increment.power.pairwise` |
 | `power.procedure_armplanningprocedure` | `InvalidRequestError` | `procedure_type` | `increment.power.core` |
 | `power.q_a` | `InvalidRequestError` | — | `increment.power.pairwise` |
 | `power.q_a_q` | `InvalidRequestError` | `q_a_plus_q_b` | `increment.power.pairwise` |
 | `power.q_b` | `InvalidRequestError` | — | `increment.power.pairwise` |
 | `power.quantile_baseline.cuped_unsupported` | `InvalidRequestError` | `cuped_rho` | `increment.power.core` |
 | `power.quantile_baseline.metric_not_quantile` | `InvalidRequestError` | `metric`, `metric_type` | `increment.power.core` |
-| `power.quantile_size_search_unreachable` | `InvalidRequestError` | — | `increment.power.core` |
+| `power.quantile_size_search_unreachable` | `InvalidRequestError` | `limiting_condition`, `maximum_power`, `power` | `increment.power.core` |
 | `power.r_a_above` | `InvalidRequestError` | `r_a`, `r_b`, `theta` | `increment.power.pairwise` |
 | `power.r_a_below` | `InvalidRequestError` | `r_a`, `r_b`, `theta` | `increment.power.pairwise` |
 | `power.r_a_r` | `InvalidRequestError` | `r_a`, `r_b` | `increment.power.pairwise` |
@@ -1259,7 +1261,7 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `power.segment_pairwise_achieved_n_per_arm_too_small` | `InvalidRequestError` | `exc`, `n_per_arm`, `q_a`, `q_b` | `increment.power.pairwise` |
 | `power.segment_pairwise_minimum` | `InvalidRequestError` | `null_lift` | `increment.power.pairwise` |
 | `power.segment_pairwise_required` | `InvalidRequestError` | `null_lift` | `increment.power.pairwise` |
-| `power.segment_pairwise_solvers` | `InvalidRequestError` | — | `increment.power.pairwise` |
+| `power.segment_pairwise_solvers` | `InvalidRequestError` | `unsupported` | `increment.power.pairwise` |
 | `power.segment_share_n` | `InvalidRequestError` | `allocation`, `min_n_total_seg`, `n_total`, `n_total_seg`, `q` | `increment.power.pairwise` |
 | `power.sequential_design_more` | `InvalidRequestError` | `power` | `increment.power.core` |
 | `power.sequential_mde.compliance_unrepresentable` | `InvalidRequestError` | `compliance`, `mde_relative`, `target_power` | `increment.power.sequential` |
@@ -1315,13 +1317,13 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `query.builders.union_event_horizon` | `InvalidRequestError` | — | `increment.query.builders` |
 | `query.builders.unit_totals_by` | `InvalidRequestError` | — | `increment.query.builders` |
 | `query.builders.unit_totals_properties` | `InvalidRequestError` | — | `increment.query.builders` |
-| `query.builders.unknown_aggregation` | `InvalidRequestError` | `aggregation` | `increment.query.builders` |
+| `query.builders.unknown_aggregation` | `InvalidRequestError` | `aggregation` | `increment.query.builders`, `increment.query.calendar` |
 | `query.builders.unknown_part_ratiometric` | `InvalidRequestError` | `part` | `increment.query.builders` |
 | `query.builders.window_bound_stats` | `UnsupportedRequestError` | `metric_type` | `increment.query.builders` |
 | `query.calendar.period_moments_by` | `InvalidRequestError` | `dim_cols` | `increment.query.calendar` |
 | `query.calendar.period_start_unknown_grain` | `InvalidRequestError` | `grain` | `increment.query.calendar` |
 | `query.calendar.population_unit_id` | `InvalidRequestError` | `columns` | `increment.query.calendar` |
-| `query.calendar.range` | `CapabilityError` | — | `increment.query.calendar` |
+| `query.calendar.range` | `CapabilityError` | `end_edge`, `span`, `start` | `increment.query.calendar` |
 | `query.cuped.general_qr_required` | `CapabilityError` | `metric`, `reason`, `route` | `increment.query._cuped_cells` |
 | `query.cuped.magnitude_range` | `CapabilityError` | `arm`, `bound`, `component`, `metric` | `increment.query._cuped_cells` |
 | `query.dims.dim_source_fact` | `InvalidRequestError` | `name` | `increment.query.dims` |
@@ -1360,13 +1362,13 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `query.session.warehouse_artifact.unknown_digest_format` | `InvalidRequestError` | `digest_format` | `increment.query.session` |
 | `query.session.warehouse_artifact.unknown_relation_role` | `InvalidRequestError` | `role` | `increment.query.session` |
 | `query.session.warehouse_artifact.verification_unavailable` | `InvalidRequestError` | `digest_format`, `relation`, `route` | `increment.query.session` |
-| `readout.adjustment.absolute_unadjusted` | `InvalidRequestError` | — | `increment._readout_request` |
+| `readout.adjustment.absolute_unadjusted` | `InvalidRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
 | `readout.alwaysvalid_under_encouragement` | `InvalidRequestError` | `method` | `increment.readouts._common` |
-| `readout.arms.no_treatment` | `InvalidRequestError` | — | `increment._readout_request` |
-| `readout.asof.cluster` | `CapabilityError` | `cluster` | `increment._readout_request` |
-| `readout.asof.segment_unsupported` | `UnsupportedRequestError` | — | `increment._readout_request` |
-| `readout.assignment.estimands` | `InvalidRequestError` | — | `increment._readout_request` |
-| `readout.cell.key_invalid` | `InvalidRequestError` | `fields`, `kind` | `increment.declarations` |
+| `readout.arms.no_treatment` | `InvalidRequestError` | `control_group`, `observed_arms` | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.asof.cluster` | `CapabilityError` | `cluster` | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.asof.segment_unsupported` | `UnsupportedRequestError` | `by` | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.assignment.estimands` | `InvalidRequestError` | `estimands`, `mechanism` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.cell.key_invalid` | `InvalidRequestError` | `fields`, `kind` | `increment.declarations`, `increment.estimation.readout_types` |
 | `readout.cell.missing_arm` | `InvalidRequestError` | `group_id`, `metric`, `observed_arms` | `increment.estimation.readout_types` |
 | `readout.cell.missing_metric_observations` | `InvalidRequestError` | `group_id`, `metric`, `observed_arms` | `increment.estimation.readout_types` |
 | `readout.cell.unsupported_request` | `InvalidRequestError` | `reason` | `increment.estimation.readout_types` |
@@ -1376,17 +1378,17 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `readout.collection.duplicate_cell_key` | `InvalidRequestError` | `cell_key`, `source_snapshot_id` | `increment.estimation.readout_types` |
 | `readout.collection.mutation_unsupported` | `InvalidRequestError` | `model`, `operation` | `increment.estimation.readout_types` |
 | `readout.completed_encouragement_inference` | `InvalidRequestError` | `method`, `unbound`, `uptake_window_days` | `increment.readouts._common` |
-| `readout.contrast.request` | `InvalidRequestError` | — | `increment._evidence_dispatch` |
+| `readout.contrast.request` | `InvalidRequestError` | `message` | `increment._evidence_dispatch` |
 | `readout.correction.invalid` | `InvalidRequestError` | `correction` | `increment.plan` |
-| `readout.design.required` | `InvalidRequestError` | `view` | `increment._readout_request` |
+| `readout.design.required` | `InvalidRequestError` | `view` | `increment._readout_request`, `increment.estimation._readout_refusals` |
 | `readout.encouragement.asof_completion` | `InvalidRequestError` | `view` | `increment.estimation.encouragement` |
 | `readout.encouragement.asof_unbounded` | `InvalidRequestError` | `metrics`, `uptake_window_days` | `increment.estimation.encouragement` |
 | `readout.encouragement.cluster_ratio` | `CapabilityError` | `cluster`, `names` | `increment.estimation.encouragement` |
 | `readout.encouragement.correction` | `UnsupportedRequestError` | — | `increment.plan` |
-| `readout.encouragement.margin` | `UnsupportedRequestError` | `names` | `increment._readout_request` |
-| `readout.encouragement.retention` | `CapabilityError` | `names` | `increment.estimation.encouragement` |
-| `readout.encouragement.value_scale` | `UnsupportedRequestError` | — | `increment.estimation.encouragement` |
-| `readout.estimands.unknown` | `InvalidRequestError` | — | `increment._readout_request` |
+| `readout.encouragement.margin` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.encouragement` |
+| `readout.encouragement.retention` | `CapabilityError` | `names` | `increment.estimation.encouragement`, `increment.semantics.design` |
+| `readout.encouragement.value_scale` | `UnsupportedRequestError` | — | `increment.estimation.encouragement`, `increment.readouts._common` |
+| `readout.estimands.unknown` | `InvalidRequestError` | `supported`, `unknown` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.encouragement` |
 | `readout.estimate_lift_every` | `UnsupportedRequestError` | `failures` | `increment.readouts._common` |
 | `readout.failure.hypothesis_key_collision` | `InvalidRequestError` | `cell_keys`, `hypothesis` | `increment.estimation.readout_types` |
 | `readout.inference.disjoint_slices` | `UnsupportedRequestError` | `inference`, `view` | `increment.breakout.estimates` |
@@ -1394,18 +1396,18 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `readout.inference.sequential_view` | `UnsupportedRequestError` | `view` | `increment.estimation.encouragement` |
 | `readout.legacy.sampling_unreconstructible` | `InvalidRequestError` | `cell_key`, `missing_fields`, `remedy` | `increment.estimation.readout_types` |
 | `readout.legacy.scope_unreconstructible` | `UnsupportedRequestError` | `missing_fields`, `remedy`, `source` | `increment.estimation.readout_types` |
-| `readout.margin.breakout` | `UnsupportedRequestError` | `names` | `increment._readout_request` |
-| `readout.metric.percentile_winsorization` | `CapabilityError` | — | `increment._readout_request` |
-| `readout.metric.quantile_alternative` | `UnsupportedRequestError` | — | `increment._readout_request` |
-| `readout.metric.quantile_breakout` | `CapabilityError` | — | `increment._readout_request` |
-| `readout.metric.quantile_grain` | `CapabilityError` | — | `increment.sources` |
+| `readout.margin.breakout` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.metric.percentile_winsorization` | `CapabilityError` | `names`, `view` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.metric.quantile_alternative` | `UnsupportedRequestError` | `metric`, `route` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.metric.quantile_breakout` | `CapabilityError` | `metric`, `route` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.metric.quantile_grain` | `CapabilityError` | `grain`, `metric` | `increment.sources` |
 | `readout.metric_declare_non` | `UnsupportedRequestError` | `combined` | `increment.readouts._common` |
-| `readout.observational.prior` | `InvalidRequestError` | — | `increment._readout_request` |
-| `readout.observational.quantile` | `UnsupportedRequestError` | `metric` | `increment._readout_request` |
-| `readout.randomized.value_scale` | `UnsupportedRequestError` | — | `increment._readout_request` |
-| `readout.request.readoutrequest_requires_one_resolved` | `InvalidRequestError` | — | `increment._readout_request` |
+| `readout.observational.prior` | `InvalidRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
+| `readout.observational.quantile` | `UnsupportedRequestError` | `metric` | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.randomized.value_scale` | `UnsupportedRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.request.readoutrequest_requires_one_resolved` | `InvalidRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals` |
 | `readout.roster.undeclared_observed_arms` | `InvalidRequestError` | `analysis_population`, `declared_arms`, `undeclared_arms` | `increment.readouts._common` |
-| `readout.run.segment_unsupported` | `UnsupportedRequestError` | `metric` | `increment._readout_request` |
+| `readout.run.segment_unsupported` | `UnsupportedRequestError` | `metric` | `increment._readout_request`, `increment.estimation._readout_refusals` |
 | `readout.scalar_method_evidence` | `UnsupportedRequestError` | `method`, `route` | `increment._analysis_config` |
 | `readout.scope.cell_incomplete` | `InvalidRequestError` | `cell` | `increment.readouts._common` |
 | `readout.scope.cell_unresolved` | `InvalidRequestError` | `cell` | `increment.readouts._common` |
@@ -1422,14 +1424,14 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `readout.serialization.sequential_snapshot_required` | `WireFormatError` | `checkpoint_ids` | `increment.estimation.readout_types` |
 | `readout.serialization.unsupported_version` | `WireFormatError` | `kind`, `received`, `remedy`, `supported` | `increment.estimation.readout_types` |
 | `readout.srm_source_declared` | `InvalidRequestError` | — | `increment.readouts._common` |
-| `readout.value_scale.invalid` | `InvalidRequestError` | `metric`, `value_scale` | `increment._readout_request` |
-| `readout.value_scale.null` | `InvalidRequestError` | `metric` | `increment._readout_request` |
-| `readout.value_scale.unknown_metric` | `InvalidRequestError` | — | `increment._readout_request` |
+| `readout.value_scale.invalid` | `InvalidRequestError` | `metric`, `value_scale` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
+| `readout.value_scale.null` | `InvalidRequestError` | `metric` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
+| `readout.value_scale.unknown_metric` | `InvalidRequestError` | `selected`, `unknown` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
 | `readout.value_scale_names` | `InvalidRequestError` | `metric_names`, `unknown_value_scale` | `increment.readouts._common` |
 | `readout.value_scale_randomized_absolute` | `UnsupportedRequestError` | — | `increment.readouts._common` |
-| `readout.view.observational` | `UnsupportedRequestError` | — | `increment.estimation.adjust` |
+| `readout.view.observational` | `UnsupportedRequestError` | `view` | `increment.estimation.adjust`, `increment.plan` |
 | `readout.weight_diagnostics.not_applicable` | `UnsupportedRequestError` | `method` | `increment.estimation.adjust` |
-| `report.metric.unsupported` | `CapabilityError` | — | `increment.reporting` |
+| `report.metric.unsupported` | `CapabilityError` | `errors` | `increment.reporting` |
 | `reporting.alpha_finite` | `InvalidRequestError` | `alpha` | `increment.reporting` |
 | `reporting.metric_trend.unknown_backend` | `InvalidRequestError` | `backend` | `increment.reporting` |
 | `reporting.week_start_monday` | `InvalidRequestError` | `week_start` | `increment.reporting` |
@@ -1447,24 +1449,24 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `sensitivity.confounding.scale_unsupported` | `UnsupportedRequestError` | `value_scale` | `increment.estimation.confounding` |
 | `sensitivity.confounding.sequential_unsupported` | `UnsupportedRequestError` | `inference` | `increment.estimation.confounding` |
 | `sensitivity.confounding.threshold_invalid` | `InvalidRequestError` | `threshold_risk_ratio` | `increment.estimation.confounding` |
-| `sequential.asymptotic_joint.invalid` | `CapabilityError` | — | `increment.estimation.asymptotic_joint` |
-| `sequential.asymptotic_mean.invalid` | `CapabilityError` | — | `increment.estimation.asymptotic_mean` |
-| `sequential.compliance.segmented_family_unsupported` | `CapabilityError` | — | `increment.semantics.sequential` |
-| `sequential.continuation.legacy` | `CapabilityError` | — | `increment.semantics.sequential` |
-| `sequential.continuation.rewrite` | `CapabilityError` | — | `increment.sequential_state` |
-| `sequential.freeze.dropped` | `CapabilityError` | — | `increment.sequential_state` |
-| `sequential.freeze.invalid` | `CapabilityError` | — | `increment.sequential_state` |
-| `sequential.memo.invalid` | `InvalidRequestError` | — | `increment.estimation.sequential_result` |
-| `sequential.registration.invalid` | `InvalidRequestError` | — | `increment.semantics.sequential` |
-| `sequential.registration.mixed_requires_asymptotic_mean` | `CapabilityError` | — | `increment.estimation.sequential` |
-| `sequential.route.unsupported` | `CapabilityError` | — | `increment.sequential_state` |
-| `sequential.source.invalid` | `CapabilityError` | — | `increment.sequential_state` |
-| `sequential.transform.unpredictable` | `CapabilityError` | — | `increment.sequential_state` |
-| `sequential.wire.rational_invalid` | `InvalidRequestError` | — | `increment.decision_wire` |
+| `sequential.asymptotic_joint.invalid` | `CapabilityError` | `reason` | `increment.estimation.asymptotic_joint` |
+| `sequential.asymptotic_mean.invalid` | `CapabilityError` | `reason` | `increment.estimation.asymptotic_mean` |
+| `sequential.compliance.segmented_family_unsupported` | `CapabilityError` | `alternatives`, `family`, `route`, `segments` | `increment.semantics.sequential` |
+| `sequential.continuation.legacy` | `CapabilityError` | `reason` | `increment.semantics.sequential`, `increment.sequential_state` |
+| `sequential.continuation.rewrite` | `CapabilityError` | `reason` | `increment.sequential_state` |
+| `sequential.freeze.dropped` | `CapabilityError` | `reason` | `increment.sequential_state` |
+| `sequential.freeze.invalid` | `CapabilityError` | `reason` | `increment.sequential_state` |
+| `sequential.memo.invalid` | `InvalidRequestError` | `reason` | `increment.estimation.sequential_result` |
+| `sequential.registration.invalid` | `InvalidRequestError` | `reason` | `increment.semantics.sequential` |
+| `sequential.registration.mixed_requires_asymptotic_mean` | `CapabilityError` | `metrics` | `increment.estimation.sequential`, `increment.semantics.sequential` |
+| `sequential.route.unsupported` | `CapabilityError` | `reason` | `increment.sequential_state` |
+| `sequential.source.invalid` | `CapabilityError` | `reason` | `increment.sequential_state` |
+| `sequential.transform.unpredictable` | `CapabilityError` | `reason` | `increment.sequential_state` |
+| `sequential.wire.rational_invalid` | `InvalidRequestError` | `field`, `limit_digits`, `reason`, `route_forward` | `increment.decision_wire`, `increment.semantics.rational` |
 | `simulate.bandit_loggers.count_positive` | `InvalidRequestError` | `name`, `value` | `increment.simulate.bandit_loggers` |
 | `simulate.bandit_loggers.epsilon` | `InvalidRequestError` | `epsilon` | `increment.simulate.bandit_loggers` |
 | `simulate.bandit_loggers.reward_mean_out_of_range` | `InvalidRequestError` | `action`, `mean`, `x` | `increment.simulate.bandit_loggers` |
-| `simulate.cluster_dgp.invalid_scenario` | `InvalidRequestError` | `reason` | `increment.simulate._cluster_reconstruction` |
+| `simulate.cluster_dgp.invalid_scenario` | `InvalidRequestError` | `reason` | `increment.simulate._cluster_reconstruction`, `increment.simulate.cluster_dgp` |
 | `simulate.cluster_dgp.overlap_roster_unavailable` | `InvalidRequestError` | — | `increment.simulate.cluster_dgp` |
 | `simulate.dgp.binomial_fixture_counts` | `InvalidRequestError` | `n_c`, `n_t`, `x_c`, `x_t` | `increment.simulate.dgp` |
 | `simulate.dgp.conversion_lift_unattainable` | `InvalidRequestError` | `lift`, `p_control`, `target` | `increment.simulate.dgp` |
@@ -1491,94 +1493,94 @@ Context keys are part of the refusal contract. Retired codes and their replaceme
 | `source.compliance_summary.duplicate_arms` | `InvalidRequestError` | `duplicates`, `study_id` | `increment._evidence_types` |
 | `source.compliance_summary.invalid_state` | `InvalidRequestError` | `reason` | `increment._evidence_types` |
 | `source.compliance_summary.legacy_uptake_state` | `CapabilityError` | `reason`, `study_id` | `increment._evidence_types` |
-| `source.frame.cluster_capability` | `CapabilityError` | — | `increment._frame_validation` |
-| `source.frame.cluster_labels` | `InvalidRequestError` | — | `increment._frame_validation` |
+| `source.frame.cluster_capability` | `CapabilityError` | `cluster`, `feature`, `mechanism`, `metrics`, `route`, `uptake` | `increment._frame_validation`, `increment.frame` |
+| `source.frame.cluster_labels` | `InvalidRequestError` | `cluster`, `examples`, `missing`, `reason`, `route`, `spanning` | `increment._frame_validation` |
 | `source.frame.column_dtype` | `InvalidRequestError` | `column`, `dtype`, `offending_values` | `increment._frame_validation` |
 | `source.frame.compliance_asof` | `CapabilityError` | `as_of`, `operation`, `route` | `increment.frame` |
 | `source.frame.compliance_design_mismatch` | `InvalidRequestError` | `requested_design`, `route`, `source_design` | `increment.frame` |
 | `source.frame.compliance_no_uptake` | `CapabilityError` | `route`, `source` | `increment.frame` |
-| `source.frame.constructor` | `CapabilityError` | — | `increment._frame_validation` |
+| `source.frame.constructor` | `CapabilityError` | `capability`, `metric`, `route`, `value` | `increment._frame_validation` |
 | `source.frame.control_invalid` | `InvalidRequestError` | `value` | `increment._frame_validation` |
 | `source.frame.control_missing` | `InvalidRequestError` | `control`, `group`, `observed`, `route` | `increment._frame_validation` |
-| `source.frame.conversion_not_binary` | `InvalidRequestError` | — | `increment._frame_validation` |
+| `source.frame.conversion_not_binary` | `InvalidRequestError` | `column`, `metric`, `route`, `values` | `increment._frame_validation` |
 | `source.frame.duplicate_units` | `InvalidRequestError` | `count`, `route`, `units` | `increment._frame_validation` |
 | `source.frame.input_type` | `InvalidRequestError` | `constructor`, `input_type`, `route` | `increment._frame_validation` |
 | `source.frame.intervention_grain_without_cluster` | `InvalidRequestError` | `intervention_grain` | `increment.frame` |
-| `source.frame.metric_missing` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.frame.non_finite` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.frame.null_identity` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.frame.on_unassigned_invalid` | `InvalidRequestError` | — | `increment._frame_validation` |
+| `source.frame.metric_missing` | `InvalidRequestError` | `available`, `message`, `missing` | `increment._frame_validation` |
+| `source.frame.non_finite` | `InvalidRequestError` | `column`, `count`, `role`, `route` | `increment._frame_validation` |
+| `source.frame.null_identity` | `InvalidRequestError` | `column`, `count`, `role`, `route` | `increment._frame_validation` |
+| `source.frame.on_unassigned_invalid` | `InvalidRequestError` | `allowed`, `value` | `increment._frame_validation` |
 | `source.frame.quantile_daily` | `CapabilityError` | `metric`, `route` | `increment.frame` |
-| `source.frame.quantile_no_moments` | `CapabilityError` | `metric`, `route` | `increment.frame` |
+| `source.frame.quantile_no_moments` | `CapabilityError` | `metric`, `route` | `increment.frame`, `increment.sources` |
 | `source.frame.ratio_same_column` | `InvalidRequestError` | `column`, `metric` | `increment._frame_validation` |
 | `source.frame.retention_daily` | `CapabilityError` | `metric`, `route` | `increment.frame` |
 | `source.frame.sequential_exposure_date` | `InvalidRequestError` | `constructor`, `route` | `increment.frame` |
-| `source.frame.switchback.assignment` | `InvalidRequestError` | — | `increment.switchback` |
-| `source.frame.switchback.columns` | `InvalidRequestError` | — | `increment.switchback` |
-| `source.frame.switchback.domain` | `InvalidRequestError` | — | `increment.switchback` |
-| `source.frame.switchback.identification` | `InvalidRequestError` | — | `increment._study` |
-| `source.frame.switchback.metric` | `CapabilityError` | — | `increment.switchback` |
-| `source.frame.switchback.missingness` | `InvalidRequestError` | — | `increment.switchback` |
-| `source.frame.switchback.numeric` | `InvalidRequestError` | — | `increment.switchback` |
+| `source.frame.switchback.assignment` | `InvalidRequestError` | `message` | `increment.switchback` |
+| `source.frame.switchback.columns` | `InvalidRequestError` | `message` | `increment.switchback` |
+| `source.frame.switchback.domain` | `InvalidRequestError` | `message` | `increment.switchback` |
+| `source.frame.switchback.identification` | `InvalidRequestError` | `message` | `increment._study`, `increment.switchback` |
+| `source.frame.switchback.metric` | `CapabilityError` | `message` | `increment.switchback` |
+| `source.frame.switchback.missingness` | `InvalidRequestError` | `message` | `increment.switchback` |
+| `source.frame.switchback.numeric` | `InvalidRequestError` | `message` | `increment.switchback` |
 | `source.frame.switchback.plan` | `CapabilityError` | `message`, `reason` | `increment.decision` |
-| `source.frame.switchback.schedule` | `InvalidRequestError` | — | `increment.switchback` |
-| `source.frame.switchback.units` | `InvalidRequestError` | — | `increment.switchback` |
+| `source.frame.switchback.schedule` | `InvalidRequestError` | `message` | `increment.switchback` |
+| `source.frame.switchback.units` | `InvalidRequestError` | `message` | `increment.switchback` |
 | `source.frame.unassigned` | `InvalidRequestError` | `constructor`, `count`, `group`, `route`, `units` | `increment._frame_validation` |
-| `source.frame.unit_frame_panel` | `CapabilityError` | — | `increment._frame_validation` |
-| `source.frame.uptake_not_binary` | `InvalidRequestError` | — | `increment._frame_validation` |
+| `source.frame.unit_frame_panel` | `CapabilityError` | `metric`, `route`, `shape` | `increment._frame_validation`, `increment.frame`, `increment.query.artifact_reader` |
+| `source.frame.uptake_not_binary` | `InvalidRequestError` | `route`, `uptake`, `values` | `increment._frame_validation` |
 | `source.frame.windowed_encouragement_total` | `CapabilityError` | `metric`, `route` | `increment.frame` |
 | `source.moments.assignment_counts` | `CapabilityError` | — | `increment.sources` |
-| `source.native.compliance_design_mismatch` | `InvalidRequestError` | `expected`, `received` | `increment.query._native_refusals` |
-| `source.native.covariate_ambiguous` | `CapabilityError` | — | `increment.query._native_refusals` |
-| `source.native.covariate_as_of` | `CapabilityError` | `as_of`, `covariate`, `source` | `increment.query._native_refusals` |
-| `source.native.covariate_dtype` | `CapabilityError` | `covariate`, `dtype`, `source` | `increment.query._native_refusals` |
-| `source.native.covariate_kind_mismatch` | `CapabilityError` | `covariate`, `dtype`, `kind`, `source` | `increment.query._native_refusals` |
-| `source.native.covariate_reserved` | `CapabilityError` | — | `increment.query.native_contract` |
-| `source.native.covariate_unresolved` | `CapabilityError` | — | `increment.query._native_refusals` |
-| `source.native.trigger_evidence_required` | `CapabilityError` | `operation`, `route` | `increment.query._native_refusals` |
-| `source.panel.day_grain_columns` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.panel.duplicate_unit_days` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.panel.exposure_date` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.panel.multi_group_unit` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `source.panel.null_exposure` | `InvalidRequestError` | — | `increment._frame_validation` |
-| `store.cell.not_found` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.decision.event_invalid` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.decision.log_corrupt` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.decision.outcome_mismatch` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.decision.reference_invalid` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.decision.schema_unsupported` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.decision.timestamp_invalid` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.history.ambiguous` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.corrupt` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.duplicate` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.empty` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.identity_incomplete` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.identity_mismatch` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
+| `source.native.compliance_design_mismatch` | `InvalidRequestError` | `expected`, `received` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.native.covariate_ambiguous` | `CapabilityError` | `candidates`, `covariate` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.native.covariate_as_of` | `CapabilityError` | `as_of`, `covariate`, `source` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.native.covariate_dtype` | `CapabilityError` | `covariate`, `dtype`, `source` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.native.covariate_kind_mismatch` | `CapabilityError` | `covariate`, `dtype`, `kind`, `source` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.native.covariate_reserved` | `CapabilityError` | `cluster`, `covariate` | `increment.query.native_contract`, `increment.query.native_source`, `increment.query.source` |
+| `source.native.covariate_unresolved` | `CapabilityError` | `covariate`, `source`, `unit` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.native.trigger_evidence_required` | `CapabilityError` | `operation`, `route` | `increment.query._native_refusals`, `increment.query.native_source` |
+| `source.panel.day_grain_columns` | `InvalidRequestError` | `columns`, `route` | `increment._frame_validation` |
+| `source.panel.duplicate_unit_days` | `InvalidRequestError` | `count`, `date`, `examples`, `route`, `unit` | `increment._frame_validation` |
+| `source.panel.exposure_date` | `InvalidRequestError` | `column`, `count`, `examples`, `issue`, `route` | `increment._frame_validation` |
+| `source.panel.multi_group_unit` | `InvalidRequestError` | `count`, `examples`, `group`, `route`, `unit` | `increment._frame_validation` |
+| `source.panel.null_exposure` | `InvalidRequestError` | `column`, `constructor`, `count`, `route` | `increment._frame_validation` |
+| `store.cell.not_found` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.decision.event_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.decision.log_corrupt` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.decision.outcome_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.decision.reference_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.decision.schema_unsupported` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.decision.timestamp_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.history.ambiguous` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.corrupt` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.duplicate` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.empty` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.identity_incomplete` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.identity_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `store.run.legacy_analysis_required` | `InvalidRequestError` | `route` | `increment._source_workflows` |
-| `store.run.metadata_mismatch` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.not_found` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.provenance_mismatch` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.roster_mismatch` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.scope_manifest_invalid` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.scope_mapping_invalid` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
-| `store.run.timestamp_invalid` | `InvalidRequestError` | — | `increment.kernel.program_refusals` |
+| `store.run.metadata_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.not_found` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.provenance_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.roster_mismatch` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.scope_manifest_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.scope_mapping_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
+| `store.run.timestamp_invalid` | `InvalidRequestError` | `message` | `increment.kernel.program_refusals` |
 | `tables.readout_table_ambiguous` | `InvalidRequestError` | `key` | `increment.tables` |
 | `tables.readout_table_duplicate` | `InvalidRequestError` | — | `increment.tables` |
 | `tables.readout_table_nest` | `InvalidRequestError` | — | `increment.tables` |
 | `tables.readout_table_trend` | `InvalidRequestError` | `columns` | `increment.tables` |
 | `tables.readout_table_trend_ds_all_null` | `InvalidRequestError` | — | `increment.tables` |
-| `tables.readout_table_trend_duplicate_rows` | `InvalidRequestError` | — | `increment.tables` |
+| `tables.readout_table_trend_duplicate_rows` | `InvalidRequestError` | `key`, `key_columns`, `rows`, `varying` | `increment.tables` |
 | `tables.readout_table_trend_missing_key_columns` | `InvalidRequestError` | `key_columns`, `missing`, `nest_by` | `increment.tables` |
 | `tables.readout_table_trend_mixed_ds_basis` | `InvalidRequestError` | `affected`, `bases` | `increment.tables` |
 | `tables.trend_table_missing` | `InvalidRequestError` | `missing` | `increment.tables` |
 | `tables.trend_table_supports` | `InvalidRequestError` | `dims` | `increment.tables` |
-| `unit_cycle.envelope_required` | `InvalidRequestError` | — | `increment._unit_cycle` |
-| `unit_cycle.error_budget_exhausted` | `InvalidRequestError` | — | `increment._unit_cycle` |
-| `unit_cycle.implausible_realized_split` | `InvalidRequestError` | — | `increment._unit_cycle` |
-| `unit_cycle.invalid_design` | `InvalidRequestError` | — | `increment._unit_cycle` |
-| `unit_cycle.numerical` | `InvalidRequestError` | — | `increment._unit_cycle` |
-| `unit_cycle.reference_mismatch` | `InvalidRequestError` | — | `increment._unit_cycle` |
-| `unit_cycle.sufficient_state` | `InvalidRequestError` | — | `increment._unit_cycle` |
+| `unit_cycle.envelope_required` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
+| `unit_cycle.error_budget_exhausted` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
+| `unit_cycle.implausible_realized_split` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
+| `unit_cycle.invalid_design` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
+| `unit_cycle.numerical` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
+| `unit_cycle.reference_mismatch` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
+| `unit_cycle.sufficient_state` | `InvalidRequestError` | `reason` | `increment._unit_cycle` |
 | `wire.procedure.contrast_context` | `WireFormatError` | `action` | `increment._run` |
 | `wire.result.raw_outcomes_unavailable` | `WireFormatError` | `action` | `increment._run` |
 

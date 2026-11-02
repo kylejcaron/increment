@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,27 +19,35 @@ class CodeEntry:
     code: str
     error_class: str
     context_keys: tuple[str, ...]
-    owner: str
+    modules: tuple[str, ...]
 
 
 def collect_refusal_specs() -> list[CodeEntry]:
-    """Collect each live refusal code once, with its declaring module."""
+    """Collect each live refusal code once, with every registering module."""
     entries = []
     for code, registrations in sorted(walk_refusal_registries().items()):
-        refusals = sorted(
-            ((location, spec) for location, spec in registrations if isinstance(spec, RefusalSpec)),
-            key=lambda item: item[0],
-        )
+        refusals = [
+            (location, spec) for location, spec in registrations if isinstance(spec, RefusalSpec)
+        ]
         if not refusals:
             continue
-        location, spec = refusals[0]
-        owner = location.split("[", maxsplit=1)[0].rsplit(".", maxsplit=1)[0]
+        spec = refusals[0][1]
+        context_keys = spec.keys | {
+            parameter.name
+            for parameter in inspect.signature(spec.render).parameters.values()
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        modules = {
+            location.split("[", maxsplit=1)[0].rsplit(".", maxsplit=1)[0]
+            for location, _ in refusals
+        }
         entries.append(
             CodeEntry(
                 code=code,
                 error_class=spec.error_type.__name__,
-                context_keys=tuple(sorted(spec.keys)),
-                owner=owner,
+                context_keys=tuple(sorted(context_keys)),
+                modules=tuple(sorted(modules)),
             )
         )
     return entries
@@ -50,16 +59,20 @@ def render(entries: list[CodeEntry]) -> str:
         "# Error codes",
         "",
         "Refusal codes are stable identifiers; their human-readable wording may change.",
-        "Context keys are part of the refusal contract. Retired codes and their replacements are listed below.",
+        "Context keys are part of the refusal contract. They include template fields, explicitly declared keys "
+        "and named renderer parameters (including optional parameters).",
+        "Registering modules include the declaration and any modules that reuse it.",
+        "Retired codes and their replacements are listed below.",
         "",
         "## Registered refusal codes",
         "",
-        "| Code | Error class | Context keys | Owning module |",
+        "| Code | Error class | Context keys | Registering modules |",
         "| --- | --- | --- | --- |",
     ]
     for entry in sorted(entries, key=lambda item: item.code):
         keys = ", ".join(f"`{key}`" for key in entry.context_keys) or "—"
-        lines.append(f"| `{entry.code}` | `{entry.error_class}` | {keys} | `{entry.owner}` |")
+        modules = ", ".join(f"`{module}`" for module in entry.modules)
+        lines.append(f"| `{entry.code}` | `{entry.error_class}` | {keys} | {modules} |")
 
     lines.extend(
         [
