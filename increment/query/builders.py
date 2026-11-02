@@ -1528,7 +1528,9 @@ def window_bound_stats(
     return dense
 
 
-def _dense_unit_days(spine_tbl: ir.Table, stats_tbl: ir.Table) -> ir.Table:
+def _dense_unit_days(
+    spine_tbl: ir.Table, stats_tbl: ir.Table, *, cluster: str | None = None
+) -> ir.Table:
     """Build the zero-filled unit-day relation used by metric aggregation."""
     joined = spine_tbl.left_join(
         stats_tbl,
@@ -1547,6 +1549,7 @@ def _dense_unit_days(spine_tbl: ir.Table, stats_tbl: ir.Table) -> ir.Table:
             for column in ("__uptake_first_exposure_date", "__uptake_first_exposure_ts")
             if column in spine_tbl.columns
         },
+        **({cluster: spine_tbl[cluster]} if cluster is not None else {}),
         n_events=ibis.coalesce(stats_tbl.n_events, 0),
         sum_value=ibis.coalesce(stats_tbl.sum_value, 0.0),
         min_value=ibis.coalesce(stats_tbl.min_value, 0.0),
@@ -1785,7 +1788,7 @@ def _attach_uptake_flag(
 
 def _project_unit_totals(
     totals: ir.Table,
-    spine: ir.Table,
+    dense: ir.Table,
     metric: Metric,
     by: list[str] | None,
     properties_table: ir.Table | None,
@@ -1804,7 +1807,8 @@ def _project_unit_totals(
     if by:
         _raise("query.builders.unit_totals_by")
     if cluster is not None:
-        cluster_map = spine.select("unit_id", cluster).distinct()
+        # Only admitted days can contribute totals; avoid re-expanding the full observation horizon.
+        cluster_map = dense.select("unit_id", cluster).distinct()
         totals = totals.left_join(cluster_map, "unit_id")
         return totals.select(*base_cols, cluster)
     return totals.select(*base_cols)
@@ -1923,7 +1927,7 @@ def unit_totals(  # noqa: PLR0913
                 columns=sorted(spine.columns),
             )
 
-    dense = _dense_unit_days(spine, stats).mutate(metric=ibis.literal(metric.name))
+    dense = _dense_unit_days(spine, stats, cluster=cluster).mutate(metric=ibis.literal(metric.name))
     dense = _censor_to_observable_window(
         dense,
         metric,
@@ -1949,7 +1953,7 @@ def unit_totals(  # noqa: PLR0913
         uptake_events,
         uptake_window_days,
     )
-    return _project_unit_totals(totals, spine, metric, by, properties_table, cluster)
+    return _project_unit_totals(totals, dense, metric, by, properties_table, cluster)
 
 
 def emit_centered_moments(
