@@ -23,10 +23,6 @@ license = "Apache-2.0"
 authors = [{ name = "Kyle Caron", email = "kyle.j.caron@gmail.com" }]
 requires-python = ">=3.12,<3.15"
 dependencies = [
-    "ibis-framework>=10.1.0; python_version < '3.14'",
-    # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
-    # exposes that module and ships CPython 3.14 wheels exists.
-    "ibis-framework>=11.0.0; python_version >= '3.14'",
     "pydantic>=2.14.1",
     # Ibis's compiler registry imports packaging even without backend extras.
     "packaging>=24.0",
@@ -38,9 +34,6 @@ dependencies = [
     "pyyaml>=6.0.3; python_version >= '3.14'",
     "numpy>=2.5.4",
     "scipy>=1.18.1",
-    # SQLGlot 30.24 emits `DROP VIEW IF EXISTS` without a target in DuckDB.
-    # Hold at 30.14 until its generator produces valid DROP statements again (2026-10-28).
-    "sqlglot>=30.14,<30.15",
     "narwhals>=2.27.1",
     # Arrow 23.0.1 is the security floor; 25.0.0 crashes after its loading thread exits.
     # Exclude the broken release rather than changing process-wide allocators.
@@ -67,7 +60,17 @@ core = "increment.cate:core_operations"
 core = "increment.store:core_operations"
 
 [project.optional-dependencies]
+warehouse = [
+    "ibis-framework>=10.1.0; python_version < '3.14'",
+    # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
+    # exposes that module and ships CPython 3.14 wheels exists.
+    "ibis-framework>=11.0.0; python_version >= '3.14'",
+    # SQLGlot 30.24 emits `DROP VIEW IF EXISTS` without a target in DuckDB.
+    # Hold at 30.14 until its generator produces valid DROP statements again (2026-10-28).
+    "sqlglot>=30.14,<30.15",
+]
 demo   = [
+    "increment[warehouse]",
     "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",
     "ibis-framework[duckdb]>=12.0.0; python_version >= '3.14'",
 ]

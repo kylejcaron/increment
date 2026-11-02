@@ -13,12 +13,14 @@ diagnostics into a validity verdict; for population and selection status, see
 ## Install
 
 ```bash
-pip install "increment[dashboard]"
+pip install "increment[dashboard,warehouse]" "ibis-framework[snowflake]"
 ```
 
-The extra adds `marimo`, `anywidget`, `coeftable>=0.13.1`, and `pandas`.
-Running the bundled notebook against its synthetic fixture also needs the
-local `demo` extra (DuckDB):
+The `dashboard` extra adds `marimo`, `anywidget`, `coeftable>=0.13.1`, and
+`pandas`. Warehouse input also needs the `warehouse` extra and an Ibis backend
+driver; the command above uses Snowflake. Running the bundled notebook against
+its synthetic fixture instead needs the local `demo` extra (warehouse support
+and DuckDB):
 
 ```bash
 pip install "increment[dashboard,demo]"

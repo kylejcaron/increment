@@ -1,4 +1,4 @@
-# Traced on commit: 3e1238904f82937c4f61006bc9d6f4d5089300d9
+# Traced on commit: 25f819138e4b82367748b42bb5e66b7ea505fa4a
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -31,6 +31,7 @@ increment._literals
 increment._metric_specs
 increment._moment_plan
 increment._multiplicity
+increment._optional
 increment._plan_compatibility
 increment._planning_baseline
 increment._policy_alpha

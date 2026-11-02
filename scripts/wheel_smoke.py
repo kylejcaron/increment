@@ -51,7 +51,7 @@ def main(*, core_only: bool = True) -> None:
             f"increment imported from {increment.__file__!r}, not this environment's site-packages"
         )
     if core_only:
-        optional_modules = ("duckdb", "pandas", "coeftable")
+        optional_modules = ("ibis", "sqlglot", "duckdb", "pandas", "coeftable")
         present = [name for name in optional_modules if importlib.util.find_spec(name) is not None]
         if present:
             raise SystemExit(

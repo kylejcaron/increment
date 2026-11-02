@@ -22,7 +22,6 @@ from increment.estimation.sitewide import (
     sitewide_impact_ratio,
 )
 from increment.evidence import evidence_provider
-from increment.query.builders import check_cluster_size_balance, validate_site_volume_metric
 from increment.readouts._whole_window import (
     _UNKNOWN_METRIC,
     _is_artifact_source,
@@ -292,6 +291,8 @@ class SitewideReadouts:
                 metric_type=metric.type,
                 cluster=cluster,
             )
+        from increment.query.builders import check_cluster_size_balance, validate_site_volume_metric
+
         validate_site_volume_metric(metric)
         self._validate_metric_alignment(metric)
         if req.population == "triggered":

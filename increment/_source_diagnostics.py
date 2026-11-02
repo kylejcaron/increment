@@ -10,6 +10,7 @@ from increment._binding import SourceBinding, binding_for
 from increment._evidence_refusals import INVALID_POPULATION
 from increment._evidence_types import CountEvidence, CountsRequest
 from increment._health import SrmObservations, check_health, srm_observation_key
+from increment._optional import require_warehouse
 from increment._planning_baseline import planning_baseline as _arm_planning_baseline
 from increment._source_admission import _require_analysis_operation, _require_arm_binding
 from increment._source_operations import AllocationHistoryOperation
@@ -168,6 +169,7 @@ def trigger_rates(experiment: Experiment, resolver: Resolver) -> dict[str, float
     ``Baseline(..., trigger_rate=...)``, then ``required_sample_size(...)``,
     to plan a follow-up at the right size.
     """
+    require_warehouse("trigger_rates")
     return _trigger_rates_binding(binding_for(experiment, resolver))
 
 

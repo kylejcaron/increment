@@ -673,6 +673,9 @@ def admit_read_only_sql(sql: str, *, dialect: str | None, label: str) -> None:
     time, so importing the semantic layer does not require the optional SQL
     parser until SQL validation is requested.
     """
+    from increment._optional import require_warehouse
+
+    require_warehouse(f"SQL validation for {label}")
     import sqlglot
     from sqlglot import exp
 
@@ -801,6 +804,9 @@ def _check_sql(dialect: str | None, sql: Any, label: str, path: Path):
         )
     if not sql or not sql.strip():
         return
+    from increment._optional import require_warehouse
+
+    require_warehouse(f"SQL validation for {label}")
     try:
         admit_read_only_sql(sql, dialect=dialect, label=label)
     except ValueError as exc:
@@ -858,6 +864,10 @@ def resolve_execution_dialect(defs: Definitions, con: Any) -> str | None:
     """
     if defs.dialect is not None:
         return defs.dialect
+
+    from increment._optional import require_warehouse
+
+    require_warehouse("SQL execution dialect")
     import sqlglot
 
     candidate = _IBIS_TO_SQLGLOT_DIALECT.get(con.name, con.name)

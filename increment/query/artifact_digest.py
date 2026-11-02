@@ -1,5 +1,8 @@
 """Pure format-1 canonical bytes and SHA-256 codec for unit-day artifacts."""
 
+# Warehouse availability must be checked before importing optional dependencies.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import hashlib
@@ -19,6 +22,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Literal, cast
+
+from increment._optional import require_warehouse
+
+require_warehouse("increment.query.artifact_digest")
 
 import ibis
 import ibis.expr.datatypes as dt

@@ -15,11 +15,8 @@ import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-import ibis
-import ibis.expr.types as ir
-from ibis import to_sql as ibis_to_sql
-
 from increment._literals import Backend, default_frame_backend
+from increment._optional import require_warehouse
 from increment.errors import (
     CapabilityError,
     InvalidRequestError,
@@ -28,34 +25,10 @@ from increment.errors import (
     refusals,
     refuse,
 )
-from increment.query.builders import (
-    _local_date_at_offset,
-    day_boundary_offset,
-    metric_events,
-    unit_day_stats,
-)
-from increment.query.calendar import (
-    PeriodGrain,
-    WeekStart,
-    active_period_values,
-    asof_property_table,
-    calendar_periods,
-    period_moments,
-    period_population,
-    period_unit_values,
-    ratio_period_values,
-    report_horizon_relation,
-    rolling_active_values,
-    rolling_total_values,
-    total_period_values,
-    validate_period_grain,
-    validate_report_population,
-)
 
 # Shared column-normalization contract with the definitions builder: both
 # must feed the query builders identically shaped tables.
 from increment.query.fact_resolution import _find_fact_source
-from increment.query.session import WarehouseSession
 from increment.semantics.loader import admit_read_only_sql, load, resolve_execution_dialect
 from increment.semantics.models import (
     ActiveMetric,
@@ -73,7 +46,10 @@ __all__ = ["MetricTrend", "MetricTrends"]
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    import ibis.expr.types as ir
     from ibis.backends.sql import SQLBackend
+
+    from increment.query.calendar import PeriodGrain, WeekStart
 
 _REFUSED_TYPES: dict[str, str] = {
     "retention": (
@@ -167,6 +143,8 @@ class MetricTrend:
         return self._table
 
     def sql(self) -> str:
+        from ibis import to_sql as ibis_to_sql
+
         return str(ibis_to_sql(self._table))
 
     def to_frame(self, backend: Backend | None = None):
@@ -203,6 +181,9 @@ class MetricTrends:
     """
 
     def __init__(self, defs: Definitions, con: SQLBackend) -> None:
+        require_warehouse("MetricTrends")
+        from increment.query.session import WarehouseSession
+
         snapshot = Definitions.model_validate(defs.model_dump())
         dialect = resolve_execution_dialect(snapshot, con)
         for fact_source in snapshot.fact_sources:
@@ -232,6 +213,7 @@ class MetricTrends:
 
     @classmethod
     def from_definitions(cls, defs: Definitions | str | Path, con: SQLBackend) -> MetricTrends:
+        require_warehouse("MetricTrends")
         if not isinstance(defs, Definitions):
             defs = load(defs)
         return cls(defs, con)
@@ -374,6 +356,8 @@ class MetricTrends:
     # ── query assembly ─────────────────────────────────────────────────
 
     def _resolve_population(self, population: str | ir.Table | None) -> ir.Table | None:
+        import ibis.expr.types as ir
+
         if population is None or isinstance(population, ir.Table):
             return population
         dialect = resolve_execution_dialect(self._defs, self._con)
@@ -425,9 +409,31 @@ class MetricTrends:
         alpha: float,
         window: int | None,
     ) -> MetricTrend:
+        import ibis
         from scipy.stats import norm
 
         from increment.estimation._tails import two_sided_critical_value
+        from increment.query.builders import (
+            _local_date_at_offset,
+            day_boundary_offset,
+            metric_events,
+            unit_day_stats,
+        )
+        from increment.query.calendar import (
+            active_period_values,
+            asof_property_table,
+            calendar_periods,
+            period_moments,
+            period_population,
+            period_unit_values,
+            ratio_period_values,
+            report_horizon_relation,
+            rolling_active_values,
+            rolling_total_values,
+            total_period_values,
+            validate_period_grain,
+            validate_report_population,
+        )
 
         m = self._defs.metric(name)
         assert m is not None  # _validate ran
