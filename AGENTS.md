@@ -75,8 +75,9 @@ every loader.
 - Under sequential inference a transform, threshold or coefficient is admissible
   only when it is fixed before each observation arrives or an established
   construction accounts for its estimation.
-- Cutovers are clean: migrate every caller and delete the old path. A
-  compatibility alias needs a removal date in the release notes.
+- From 1.0.0, clean cutovers apply only to private code. Changes to promised
+  public contracts require a deprecation warning and a removal release in the
+  next major version; record both in release notes.
 - Removing a capability removes it everywhere it is produced, planned,
   validated, serialized or documented, in one change.
 

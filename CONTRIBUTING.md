@@ -29,10 +29,16 @@ Use `skip-changelog` to omit a PR from release notes. The automation labels
 `dependencies`, `python:uv`, and `weekly-failure` are not contributor categories;
 dependency updates are excluded from release notes.
 
-Increment is alpha: breaking changes between 0.x prereleases are allowed but
-must carry the `breaking` label and name the affected paths and a migration
-route. The full policy, including persisted formats and stable refusal codes,
-is in the [pre-1.0 compatibility policy](docs/api.md#pre-10-compatibility).
+Until release 1.0.0, Increment is alpha and breaking changes between 0.x
+prereleases are allowed when documented in release notes. From 1.0.0, a
+promised public contract may be removed only after a deprecation warning names
+the release that will remove it; removal takes place in the next major release.
+Add a `breaking` label, identify the affected paths, and provide a migration
+route. Add the change to a `Deprecations` section in the release notes, naming
+the warning, affected paths, removal release, and migration route.
+Private code may still use a clean cutover. See the
+[compatibility policy](docs/api.md#compatibility-policy) for persisted formats,
+stable error codes, and the full contract.
 
 ## License and the CLA
 
