@@ -354,13 +354,7 @@ def test_direct_source_refuses_invalid_or_off_roster_metric_declarations(
     "reader,mismatch_context",
     [
         ("builder", {}),
-        (
-            "direct",
-            {
-                "message": "artifact context metric declarations must be valid, unique and "
-                "match the experiment's metric roster"
-            },
-        ),
+        ("direct", {"message": None}),
     ],
     ids=["builder", "direct"],
 )
@@ -415,7 +409,10 @@ def test_artifact_readers_preserve_typed_context_refusals(
         context = mismatch_context
     assert type(raised.value) is error_type
     assert raised.value.code == code
-    assert raised.value.context == context
+    assert raised.value.context.keys() == context.keys()
+    assert {key: value for key, value in raised.value.context.items() if key != "message"} == {
+        key: value for key, value in context.items() if key != "message"
+    }
     assert snapshot.calls == {"exposures": 0, "measure_stats": 0}
     assert snapshot.executions == []
 

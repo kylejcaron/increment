@@ -359,15 +359,18 @@ SUPPORTED_DESIGN_MECHANISMS = ("randomized", "encouragement", "observational")
 _DESIGN_ADAPTER = TypeAdapter(Design)
 
 
-def parse_design(payload: Mapping[str, object]) -> Design:
-    """Parse a design payload, refusing unknown mechanisms with a stable code."""
-    mechanism = payload.get("mechanism")
+def _refuse_unsupported_design_mechanism(mechanism: object) -> None:
     if mechanism is not None and mechanism not in SUPPORTED_DESIGN_MECHANISMS:
         refuse(
             _DESIGN_MECHANISM_UNSUPPORTED,
             mechanism=str(mechanism),
             supported=SUPPORTED_DESIGN_MECHANISMS,
         )
+
+
+def parse_design(payload: Mapping[str, object]) -> Design:
+    """Parse a design payload, refusing unknown mechanisms with a stable code."""
+    _refuse_unsupported_design_mechanism(payload.get("mechanism"))
     return _DESIGN_ADAPTER.validate_python(payload)
 
 
