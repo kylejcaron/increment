@@ -78,6 +78,18 @@ tests/test_unit_day_artifact_parity.py 5
 tests/test_warehouse_cuped_parity.py 2
 tests/test_warehouse_cuped_qr.py 5
 # H4: imports of increment private modules or names
+# T22 narrow ownership migrations: these private owner-module imports use
+# the same increment.evidence classes each named site imported before its API
+# cutover; no other private import count is authorized.
+# test_analysis_breakout.py:1751,2098,2185 — BreakoutSlicesRequest (same class).
+tests/test_analysis_breakout.py 3
+# test_evidence_provider.py:10 (3 names), 1246 (1), 1304 (2), 1663 (1),
+# 1683 (1), 2767/2846/2933 (1 each): same request classes as before.
+tests/test_evidence_provider.py 11
+# test_examples_custom_provider.py:11 — DayAxisRequest (same class).
+tests/test_examples_custom_provider.py 1
+# test_kernel_contracts.py:902 (1), 947 (3) — same request classes as before.
+tests/test_kernel_contracts.py 4
 tests/binary_sequential_cases.py 1
 tests/breakout/test_daily.py 3
 tests/breakout/test_estimates.py 3
