@@ -42,6 +42,8 @@ jobs:
           else
             uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-save=nightly
           fi
+      - name: Run context measurements
+        run: uv run pytest tests/test_kernel_context_measurement.py -m benchmark -n 0
       - name: Retain nightly benchmark data
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -1199,17 +1199,25 @@ def test_line3_registration_inventory_matches_frozen_capture() -> None:
             scenario_id,
             ingress,
             outcome,
-            marks=[pytest.mark.slow, pytest.mark.stress, pytest.mark.timeout(900)],
+            marks=[
+                pytest.mark.slow,
+                pytest.mark.numerical_certification,
+                pytest.mark.stress,
+                pytest.mark.timeout(900),
+            ],
         )
         if (scenario_id, ingress)
         == ("exact_binomial_beyond_the_former_arm_ceiling", "from_unit_day_artifact")
+        else pytest.param(
+            scenario_id,
+            ingress,
+            outcome,
+            marks=[pytest.mark.slow, pytest.mark.numerical_certification],
+        )
+        if scenario_id == "exact_binomial_beyond_the_former_arm_ceiling"
         # Scale scenarios taking 15-130s per pair run in the slow tier.
         else pytest.param(scenario_id, ingress, outcome, marks=pytest.mark.slow)
-        if scenario_id
-        in {
-            "exact_binomial_beyond_the_former_arm_ceiling",
-            "mixed-cuped-multicovariate-fixed-horizon",
-        }
+        if scenario_id == "mixed-cuped-multicovariate-fixed-horizon"
         else (scenario_id, ingress, outcome)
         for scenario_id, ingress, outcome in sorted(
             (scenario_id, ingress, outcome)

@@ -17,6 +17,10 @@ _GATE_FILES = {
     "uv.lock",
     "tach.toml",
     "scripts/certification_ci_changes.py",
+    "increment/_frame_moments.py",
+    "increment/query/builders.py",
+    "increment/query/artifact_reader.py",
+    "increment/sources.py",
     "tests/power/test_binomial_planning.py",
     "tests/estimation/test_conversion_route_calibration.py",
     "tests/calibration/test_cuped_linear.py",
@@ -26,6 +30,7 @@ _CERTIFICATION_TEST_MODULES = (
     "tests/power/test_binomial_planning.py",
     "tests/estimation/test_conversion_route_calibration.py",
     "tests/calibration/test_cuped_linear.py",
+    "tests/estimation/test_sequential_public_proof_acceptance.py",
 )
 _ROOT_DOCS = {"README.md", "CONTRIBUTING.md", "AGENTS.md", "CHANGELOG.md"}
 _DOC_SUFFIXES = (".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
