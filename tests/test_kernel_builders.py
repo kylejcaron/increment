@@ -153,6 +153,8 @@ def test_frame_builder_records_source_reference_fields():
     assert isinstance(run(experiment, resolver), RunResult)
 
 
+# Exploratory cell identity compares complete native runs before and after selection.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_definition_exploratory_metric_runs_with_cell_identity(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
@@ -301,6 +303,8 @@ def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_
     assert not set(live_names) & set(seeded_con.list_tables())
 
 
+# Materialization and repeated exploratory runs protect the parent session lifecycle.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
@@ -544,6 +548,8 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
         con.disconnect()
 
 
+# Publish, close and reopen a real artifact while preserving the caller's connection.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_artifact_resolver_reopens_owned_snapshot_after_close():
     from increment.builders import from_unit_day_artifact

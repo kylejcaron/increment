@@ -984,7 +984,8 @@ def test_breakout_moments_declares_no_unit_or_count_rows() -> None:
         "definitions",
         "pinned",
         "triggered",
-        "artifact",
+        # Publishing and replaying an artifact is part of this capability boundary.
+        pytest.param("artifact", marks=pytest.mark.slow),
         "sql_totals",
         "breakout_moments",
         "switchback",

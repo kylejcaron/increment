@@ -161,6 +161,8 @@ def _same_cells(actual, expected):
         )
 
 
+# Compare narrowed and complete warehouse families without dropping the late horizon.
+@pytest.mark.slow
 def test_narrowed_running_family_keeps_unselected_later_horizon():
     rows = ds.event_rows()
     for row in rows:
@@ -265,6 +267,8 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
         con.disconnect()
 
 
+# Compare separate and shared captures for all four views, then persist and replay.
+@pytest.mark.slow
 def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
     from increment.result_envelope import AnalysisEnvelope
     from increment.store import ParquetResultsStore
@@ -628,6 +632,8 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
         con.disconnect()
 
 
+# Raw confidence sets require both populations and a real persistence refusal.
+@pytest.mark.slow
 def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_path):
     from increment import render
     from increment.store import ParquetResultsStore
@@ -665,6 +671,8 @@ def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_pa
     con.disconnect()
 
 
+# All three views must agree with independent runs across both populations.
+@pytest.mark.slow
 def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path, triggered=True)
@@ -732,6 +740,8 @@ def test_two_population_run_advises_each_unused_covariate_once(tmp_path):
         con.disconnect()
 
 
+# Distinct metric sources must remain pinned through separate and shared runs.
+@pytest.mark.slow
 def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_variant(tmp_path):
     from increment.semantics.models import MeanMetric
 
@@ -878,6 +888,8 @@ def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
         con.disconnect()
 
 
+# All six ingress dispositions must retain shared-view results and refusal codes.
+@pytest.mark.slow
 @pytest.mark.filterwarnings(
     "ignore:metric 'm' has window_days=None:increment.errors.IncrementWarning"
 )

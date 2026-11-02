@@ -199,6 +199,8 @@ def _assert_compliance(provider: Any, source: Any, populations: frozenset[str]) 
         assert provider.compliance_series(request) == expected
 
 
+# Every adapter must exercise every declared evidence operation and population.
+@pytest.mark.slow
 @pytest.mark.integration
 def test_each_builtin_arm_adapter_matches_every_declared_evidence_path(tmp_path) -> None:
     for adapter in provider_adapters(tmp_path):

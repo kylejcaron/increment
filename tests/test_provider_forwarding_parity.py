@@ -233,6 +233,8 @@ def test_forwarding_provider_matches_matrix_cell(cell: matrix.Cell) -> None:
             _check(cell, "from_unit_day_artifact", mode)
 
 
+# Preserve both provider modes, all methods and both warehouse ingress paths.
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "cell",
@@ -307,6 +309,8 @@ def test_forwarding_provider_sequential_checkpoint_rows_match(con) -> None:
         native[1].close()
 
 
+# Triggered day-axis parity requires both provider modes on both warehouse ingresses.
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "case",
