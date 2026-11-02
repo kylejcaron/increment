@@ -228,9 +228,10 @@ live result refuses rather than dropping the set or exposing its raw outcomes;
 `result.readout().model_dump_json()` writes the full-row JSON, including the
 confidence set and the raw outcomes it depends on, when that is required.
 
-Each view reads one population, the `Scope(population=...)` it declares; the
-default is `"assigned"`. To read a triggered experiment's assigned and triggered
-results together, declare one view per population; a view never pools the two.
+Each view reads one population, declared by its view constructor; for example,
+`Scope.daily(population="triggered")`. The default is `"assigned"`. To read a
+triggered experiment's assigned and triggered results together, declare one
+view per population; a view never pools the two.
 Under a registered sequential plan each population reads its own retained chain of the
 captured checkpoint; a triggered row never borrows an assigned checkpoint, and a process
 committed without a triggered chain keeps an unavailable row with its refusal code and reason.
@@ -500,7 +501,7 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
     the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
     Each view reads the population its `Scope` declares, `"assigned"` by
-    default; declare `Scope(view="run", grain="total", population="triggered")`
+    default; declare `Scope.run(population="triggered")`
     beside the default view to read both populations as separate rows. A triggered row belongs
     to its own multiplicity family. Conditioning on triggering is causally
     valid only under the experiment's assumptions; triggering affected by
