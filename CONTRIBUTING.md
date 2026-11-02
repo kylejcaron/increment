@@ -462,6 +462,21 @@ Before pushing, the pre-push checks run lint, type-checking and the affected
 fast tier. CI is the authoritative full-suite gate; `make check` is an optional
 broader local check. Use `make fmt` to apply formatting and safe lint fixes.
 
+`make lint` also checks explicit `Any` annotations in public signatures and
+fields without importing the package. `scripts/check_public_typing.py` resolves
+`__all__`, lazy export maps (including dictionary unions), re-exports and local
+type aliases from source. Overloads retain separate signature allowances.
+Public receiver fields count even in private helpers or compound statements;
+private signatures, nested implementation scopes and inherited external members
+are excluded. Only the manifest's promised namespace sections are inspected.
+The allowances in `tests/public_any_baseline.txt` are per qualified name and annotation site,
+including names with no `Any`: a reduction cannot hide a new name, parameter,
+return or field. Counts may fall, never grow. Review any intentional public
+typing change before explicitly regenerating with
+`uv run python scripts/check_public_typing.py --write-baseline`; do not regenerate
+the file just to silence a failure.
+
+
 Additional commands:
 
 - `make test-unit` runs the local unit tier; `make test` aliases it.
