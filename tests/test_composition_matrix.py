@@ -716,8 +716,15 @@ def test_retention_frame_seam_refusal_still_blankets_the_summary_path():
     assert raised.value.code == "source.frame.constructor"
 
 
-@pytest.mark.parametrize("metric_type", METRIC_TYPES)
-def test_cuped(metric_type, native):
+# Only retention needs the native warehouse fit; frame and refusal cells stay fast.
+@pytest.mark.parametrize(
+    "metric_type",
+    [
+        pytest.param(kind, marks=pytest.mark.slow) if kind == "retention" else kind
+        for kind in METRIC_TYPES
+    ],
+)
+def test_cuped(metric_type, request):
     cell = _cell("cuped", metric_type)
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
@@ -727,6 +734,7 @@ def test_cuped(metric_type, native):
         _expect_refusal(cell, lambda: _frame_spec("quantile", covariate="pre"))
         return
     if metric_type == "retention":
+        native = request.getfixturevalue("native")
         rows = [e for e in native.cuped_run if e.metric == "d1"]
         assert rows and rows[0].method == "cuped"
         _assert_sane_lift(list(native.cuped_run), "d1")
