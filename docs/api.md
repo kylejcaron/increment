@@ -27,19 +27,22 @@ for experiment metadata.
 
 ::: increment.ExperimentDefinition
 
-## Pre-1.0 compatibility
+## Compatibility policy
 
-Increment is pre-release software. This section covers compatibility between
-releases, persisted formats, and migrations—not statistical certification. A
-stable interface does not establish that a method's assumptions fit your
-experiment. See [Statistical limitations](limitations.md) for method assumptions
-and the [capability table](reference/capabilities-by-entry-point.md) for what
-runs on each entry point.
+This policy defines the compatibility promise beginning with release 1.0.0. It
+does not claim that the current alpha release is 1.0.0 or already has this
+promise. Before 1.0.0, compatibility between prereleases is not guaranteed.
+This section covers interfaces, persisted formats, and migrations—not
+statistical certification. A stable interface does not establish that a
+method's assumptions fit your experiment. See [Statistical limitations](limitations.md)
+for method assumptions and the [capability table](reference/capabilities-by-entry-point.md)
+for what runs on each entry point.
 
-### Promised surface
+### Covered contracts
 
 The machine-checked [public manifest](https://github.com/kylejcaron/increment/blob/main/tests/public_exports.txt)
-is the import promise. It lists one user task per name, grouped by namespace:
+is the import promise from 1.0.0. It lists one user task per name, grouped by
+namespace:
 
 - `increment` for workflow entry points and caller-authored declarations;
 - `increment.estimators`, `increment.power`, `increment.results`, and
@@ -73,26 +76,53 @@ is the import promise. It lists one user task per name, grouped by namespace:
   their remaining parameters are unchanged. The data-only array kernels in
   `increment.estimation.targeting` and `increment.estimation.sitewide`, and the
   `increment.power` solvers, take no source.
-- result fields and schemas, including row sets, null reasons, and interval
-  reference/guarantee labels;
-- stable refusal codes and named context fields;
-- each versioned portable or artifact format listed below.
 
-Only names listed in the manifest are promised, including re-exports. Other
-modules, underscore names, registry and dispatch helpers, and private research
-kernels are internal and may change without notice.
+The promise covers the listed public names and their signatures (new optional
+parameters only); result fields and schemas, including row sets, null reasons,
+and interval reference/guarantee labels (new fields only, never renamed or
+reinterpreted); stable error codes and their named context keys (message text
+may change); each saved format and the versions its readers accept, listed in
+the [saved-format table](reference/saved-formats.md); and identity hashes,
+including `Experiment.hash()`, `Scope.hash()`, and `scope_key`.
 
-### Alpha semantics
+Other modules, underscore names, registry and dispatch helpers, private
+research kernels, and the `increment.experimental` namespace are not covered
+by this promise and may change without notice.
 
-- Pin the exact prerelease and dependency versions (Narwhals, Ibis, Arrow,
-  DuckDB, and any pandas/Polars versions) when you need to reproduce a result.
-- Breaking changes may occur between 0.x prereleases. Each is listed in the
-  release notes (the `Breaking changes` section, from pull requests labelled
-  `breaking`) with the affected paths and a migration route.
-- 1.0 stability is not promised. Alpha API cutovers remove obsolete paths
-  directly and document their replacements without deprecation warnings.
-- A bug fix may change a previously incorrect numerical answer. Release notes
-  describe the correction; compatibility does not preserve wrong values.
+### Change and forward-compatibility rules
+
+Public additions may ship in minor releases. To remove or change a promised
+contract, first deprecate it with a warning and state the release in which it
+will be removed. Removal happens in the next major release. Clean cutovers
+without an alias remain appropriate for private code only.
+
+An older release refuses data written in a newer saved format with a coded
+upgrade-required error. It does not guess how to interpret unknown data or
+silently upgrade it. The saved-format table identifies the supported versions
+and refusal codes.
+
+### Support matrix
+
+The package metadata currently declares Python 3.12, 3.13, and 3.14
+(`>=3.12,<3.15`) and the dependency floors below. This matrix states the
+supported configurations; it does not claim the current alpha release is
+1.0.0. Dependency changes are reflected in `pyproject.toml`.
+
+| Installation | Dependency floors |
+| --- | --- |
+| Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 |
+| `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot 30.14 and below 30.15 |
+
+These floors describe supported dependency combinations, not statistical
+certification. Optional extras have their own dependencies in `pyproject.toml`.
+
+### Numerical corrections
+
+A bug fix may change a previously incorrect numerical answer. Disclose
+numerical corrections in release notes; compatibility does not preserve wrong
+values.
+
+### Earlier release notes
 
 - Release note (breaking API cutover): the public manifest now covers every
   promised namespace, including `errors`, `tables`, `store`, `simulate`, and

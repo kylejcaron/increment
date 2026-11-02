@@ -27,6 +27,11 @@ depends_on = ["increment._display"]
 path = "increment"
 layer = "core"
 depends_on = []
+
+[[modules]]
+path = "increment.experimental"
+layer = "core"
+depends_on = []
 [[modules]]
 path = "increment.errors"
 layer = "core"

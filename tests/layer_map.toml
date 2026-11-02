@@ -48,7 +48,7 @@ core = [
   "increment._sitewide",
   "increment._predeclared_adjustment",
   "increment._planning*",
-  "increment._sequential*",
+  "increment.experimental",
 ]
 
 designs = ["test_extensions.designs"]
