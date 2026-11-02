@@ -49,6 +49,7 @@ lint:
 	uv run tach check
 	uv run vulture increment vulture_whitelist.py --min-confidence 80
 	uv run python -m scripts.check_docstring_baseline
+	uv run python scripts/check_public_typing.py
 	uv run python scripts/audit_verbosity.py --gate
 audit-verbosity:
 	uv run python scripts/audit_verbosity.py --gate

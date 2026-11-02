@@ -475,6 +475,52 @@ Before pushing, the pre-push checks run lint, type-checking and the affected
 fast tier. CI is the authoritative full-suite gate; `make check` is an optional
 broader local check. Use `make fmt` to apply formatting and safe lint fixes.
 
+`make lint` also checks explicit `Any` annotations in public signatures and
+fields without importing the package. `scripts/check_public_typing.py` resolves
+`__all__`, lazy export maps (including dictionary unions), re-exports and local
+type aliases from source, including qualified aliases in local classes.
+Annotation-only fields are declarations, not runtime name bindings. Eager
+signatures use bindings available before their definition.
+Type-expression unions retain local `Any` counts when paired with
+an imported external type; generic subscripts with recognized type arguments do
+likewise, including external names re-exported through local modules. External
+sources are opaque and never imported or traversed. Runtime values such as
+string-keyed dictionary subscripts or unions are not treated as type aliases.
+When an unmarked public expression using an opaque imported object and a quoted
+argument could mean either a runtime lookup or an `Any`-bearing alias, the check
+fails closed. Add the accurate value annotation, or declare the intended alias
+with `TypeAlias`/`type`; explicit declarations determine whether its `Any` counts.
+Unambiguous quoted arguments that do not resolve to `Any` remain ordinary
+zero-count names. Function and method overloads retain separate signature
+allowances, independent of their implementations. Standard typing factories
+inspect only type-bearing positions: type-variable constraints, bounds and
+defaults; `NewType` supertypes; `TypeAliasType` values; and `NamedTuple`/`TypedDict`
+field types, including locally bound field entries. Constructor and field names,
+type-parameter lists and runtime flags are metadata, not additional annotations.
+PEP 695 parameter bounds, constraints and supported defaults have independent
+declaration sites; parameter uses do not repeat those counts. They resolve lazily
+in the declaration's enclosing scope, never through the generic class body or a
+function's eagerly evaluated signature names. Recursive aliases
+count finitely through type constructors, while unresolved flat cycles refuse.
+Typing star imports use the standard-library export inventory; unresolved
+Any-bearing generic forms refuse rather than silently counting zero.
+Unannotated factory declarations and explicit type aliases count when exported
+directly as well as when used by public annotations; record declarations retain
+separate allowances per field. An ordinary value's declared annotation is
+authoritative, so its factory initializer does not add type sites.
+TypedDict field-map unions use rightmost field definitions; field containers
+that cannot be statically resolved refuse instead of producing empty schemas.
+Public receiver fields count even in private helpers or compound statements;
+private signatures, nested implementation scopes and inherited external members
+are excluded. Only the manifest's promised namespace sections are inspected.
+The allowances in `tests/public_any_baseline.txt` are per qualified name and annotation site,
+including names with no `Any`: a reduction cannot hide a new name, parameter,
+return or field. Counts may fall, never grow. Review any intentional public
+typing change before explicitly regenerating with
+`uv run python scripts/check_public_typing.py --write-baseline`; do not regenerate
+the file just to silence a failure.
+
+
 Additional commands:
 
 - `make test-unit` runs the local unit tier; `make test` aliases it.
