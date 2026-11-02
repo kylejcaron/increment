@@ -1160,6 +1160,8 @@ DuckDB, PostgreSQL, Snowflake, and BigQuery have verified execution support.
 The QR factorization and unit-dependent inference reductions remain
 warehouse-side; only the bounded triangular solve and fit finalization run on
 the client.
+Warehouse QR batches independent summary reductions to reduce database round trips;
+it uses the same observations and interval calculation.
 
 From definitions or an adopted unit-day artifact, use
 `increment.workflows.export_moments(experiment, resolver, path)` to write the

@@ -832,7 +832,8 @@ def _aggregate_bm_batch(
                 descriptors.append((job_index, "g", row, column, product.sum()))
                 descriptors.append((job_index, "g2", row, column, (t2 * product).sum()))
     values: dict[tuple[int, str, int, int], list[float]] = {}
-    batch_size = max(1, max_statement_chars // 90)
+    # BM aggregate fields use about 82 SQL characters; leave room for query syntax.
+    batch_size = max(1, max_statement_chars // 84)
     for start in range(0, len(descriptors), batch_size):
         batch = descriptors[start : start + batch_size]
         fields = {
