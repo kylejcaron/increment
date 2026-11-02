@@ -602,9 +602,9 @@ def _artifact_source_context(
         experiment = Experiment.model_validate(experiment_payload)
         experiment = _with_inherited_day_boundary(experiment, definitions_payload["day_boundary"])
         experiment_name = str(payload["experiment_name"])
-    except CodedError:
-        raise
     except (TypeError, ValueError, AttributeError) as exc:
+        if isinstance(exc, CodedError) and exc.code == "design.mechanism_unsupported":
+            raise
         raise ArtifactContractError(
             "artifact.context.mismatch",
             "artifact context does not contain a valid typed experiment",

@@ -7,6 +7,9 @@ mechanism with `design.mechanism_unsupported` rather than guessing its
 semantics. New mechanisms are added in minor releases; existing mechanism
 contracts are not silently reinterpreted.
 
+Artifact readers retain `artifact.context.mismatch` for other invalid experiment
+declarations, including boolean values in integer fields.
+
 Raw learner factories use exact object identity while bound in memory, so
 different closures, partials, or callable instances cannot be substituted for
 one another. Their registration identity is process-local, not a portable

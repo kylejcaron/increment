@@ -727,9 +727,9 @@ def _declared_metric_definitions(canonical_json: str) -> dict[str, Mapping[str, 
                     )
         roster = Experiment.model_validate(experiment_payload).metric_names
         invalid = invalid or set(declared) != set(roster)
-    except CodedError:
-        raise
-    except (KeyError, TypeError, ValueError, AttributeError):
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        if isinstance(exc, CodedError) and exc.code == "design.mechanism_unsupported":
+            raise
         invalid = True
     if invalid:
         _relation_refuse(
