@@ -369,6 +369,7 @@ PolicyValueContrast: Read an offline policy-value contrast.
 ExperimentHealth: Read an experiment's health checks.
 HealthCheck: Read one source-health observation.
 AnalysisEnvelope: Save and reopen a run's result cells for rendering.
+ResultCell: Save and reopen one result's identity, outcome and supported operations.
 ReadoutResults: Reopen a saved readout collection.
 
 [increment.simulate]

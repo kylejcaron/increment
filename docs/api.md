@@ -111,7 +111,7 @@ kernels are internal and may change without notice.
 
 - Release note (API addition): import priors, fixed inference, dataframe
   sequential-registration helpers, and exploratory-family operations from
-  `increment.estimators`; saved readout decoders and `AnalysisEnvelope` from
+  `increment.estimators`; saved readout decoders, `AnalysisEnvelope`, and `ResultCell` from
   `increment.results`; `WarehouseArtifactStore` from `increment.artifacts`;
   planning-procedure field types from `increment.power`; and `ComplianceArm`
   from `increment.evidence`. `ExperimentDefinition` at the root names the
@@ -402,7 +402,7 @@ format below when you need per-cell operation metadata, summaries, or Arrow
 interchange.
 
 For portable cells, use `ResultCell` and `AnalysisEnvelope` from
-`increment.result_envelope`. `ResultCell.to_payload()` / `from_payload()` read
+`increment.results`. `ResultCell.to_payload()` / `from_payload()` read
 and write JSON-compatible cells; `ResultCell.to_arrow()` / `from_arrow()` read
 and write Arrow tables. The matching envelope methods also preserve collection
 metadata.
@@ -436,10 +436,11 @@ envelope to render its table or text report:
 import json
 
 from increment import render
-from increment.results import AnalysisEnvelope
+from increment.results import AnalysisEnvelope, ResultCell
 from increment.tables import readout_table
 
-envelope = AnalysisEnvelope(tuple(rows.as_cells()), rows.metadata)
+cells: tuple[ResultCell, ...] = tuple(rows.as_cells())
+envelope = AnalysisEnvelope(cells, rows.metadata)
 saved = json.dumps(envelope.to_payload())
 reopened = AnalysisEnvelope.from_payload(json.loads(saved))
 table = readout_table(reopened)
@@ -1605,6 +1606,8 @@ sampling or interval reasons.
 ::: increment.results.PolicyValueContrast
 
 ::: increment.results.AnalysisEnvelope
+
+::: increment.results.ResultCell
 
 ::: increment.results.ReadoutResults
 

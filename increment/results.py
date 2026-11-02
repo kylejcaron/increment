@@ -66,7 +66,7 @@ if TYPE_CHECKING:
         UnitCyclePowerLowerBoundResult,
     )
     from increment.reporting import MetricTrend
-    from increment.result_envelope import AnalysisEnvelope
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
     from increment.switchback import SwitchbackAssignmentDiagnostic
     from increment.winsor import (
         BootstrapReference,
@@ -144,6 +144,7 @@ __all__ = [
     "ExperimentHealth",
     "HealthCheck",
     "AnalysisEnvelope",
+    "ResultCell",
     "ReadoutResults",
 ]
 
@@ -218,6 +219,7 @@ _LAZY_IMPORTS = {
     "ExperimentHealth": ("increment.estimation.health", "ExperimentHealth"),
     "HealthCheck": ("increment.estimation.health", "HealthCheck"),
     "AnalysisEnvelope": ("increment.result_envelope", "AnalysisEnvelope"),
+    "ResultCell": ("increment.result_envelope", "ResultCell"),
     "ReadoutResults": ("increment.estimation.readout_types", "ReadoutResults"),
 }
 
