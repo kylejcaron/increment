@@ -240,7 +240,16 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-tier TIER=tooling WORKERS=auto PYTEST_ARGS="--durations=25"
+      - run: make test-tier TIER=tooling WORKERS=auto PYTEST_ARGS="--durations=25 --cpu-report cpu.json"
+      - name: Retain tooling CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: cpu-tooling-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
   compile-registry:
     needs: [changes]
     if: ${{ needs.changes.outputs.compile_registry_required == 'true' }}
