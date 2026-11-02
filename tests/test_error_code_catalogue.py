@@ -25,6 +25,42 @@ def test_every_registered_code_appears_once() -> None:
     assert {line.split("|", maxsplit=2)[1].strip() for line in registered_rows} == {
         f"`{code}`" for code in counts
     }
+    metadata = {
+        columns[1].strip(): tuple(column.strip() for column in columns[2:-1])
+        for line in registered_rows
+        if (columns := line.split("|"))
+    }
+    expected = {
+        "`evidence.operation_unavailable`": (
+            "`CapabilityError`",
+            "`constructor`, `offered`, `request`, `requested`, `route`",
+            "`increment._evidence_refusals`, `increment.query._native_refusals`",
+        ),
+        "`package.builtin_provider_unavailable`": (
+            "`CodedError`",
+            "`count`, `feature`, `group`, `provider`, `reason`",
+            "`increment.errors`, `increment.kernel.ports`, `increment.query.artifact_ports`",
+        ),
+        "`estimation.diagnostics.alpha`": (
+            "`InvalidRequestError`",
+            "`alpha`",
+            ", ".join(
+                f"`{module}`"
+                for module in (
+                    "increment.breakout.estimates",
+                    "increment.estimation.absorption",
+                    "increment.estimation.cate",
+                    "increment.estimation.diagnostics",
+                    "increment.estimation.encouragement",
+                    "increment.estimation.inference",
+                    "increment.estimation.quantile",
+                    "increment.estimation.targeting",
+                    "increment.power.core",
+                )
+            ),
+        ),
+    }
+    assert {code: metadata[code] for code in expected} == expected
 
 
 def test_retired_codes_name_their_replacement() -> None:
