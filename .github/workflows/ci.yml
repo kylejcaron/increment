@@ -8,12 +8,6 @@ on:
         type: boolean
         default: true
         required: true
-      workers:
-        description: "Temporary matched worker-count trial"
-        type: choice
-        options: [auto, logical]
-        default: auto
-        required: true
   push: {branches: [main]}
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
@@ -71,12 +65,7 @@ jobs:
             export COVERAGE_CORE=sysmon
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
-          set +e
-          /usr/bin/time -v -o /tmp/worker-time.txt make test-fast WORKERS="${{ github.event_name == 'workflow_dispatch' && inputs.workers || 'auto' }}" PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
-          test_status=$?
-          grep -E 'User time|System time|Elapsed|Maximum resident set size' /tmp/worker-time.txt >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/worker-time.txt
-          exit "$test_status"
+          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Predict selected files
         if: always()
         continue-on-error: true
@@ -218,14 +207,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - name: Run slow tests with worker and memory measurements
-        run: |
-          set +e
-          /usr/bin/time -v -o /tmp/worker-time.txt make test-slow WORKERS="${{ github.event_name == 'workflow_dispatch' && inputs.workers || 'auto' }}" PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
-          test_status=$?
-          grep -E 'User time|System time|Elapsed|Maximum resident set size' /tmp/worker-time.txt >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/worker-time.txt
-          exit "$test_status"
+      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
       - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
