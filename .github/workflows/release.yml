@@ -4,7 +4,8 @@ name: release
 # tag IS the version bump -- nothing writes a version string into a file.
 #
 #   .github/workflows/bump.yml  -> creates the vX.Y.Z tag and dispatches this workflow
-#   this workflow               -> build, verify, publish to PyPI, GitHub Release,
+#   this workflow               -> build, gate a stable version on its candidate's
+#                                  evidence, verify, publish to PyPI, GitHub Release,
 #                                  then (opt-in, stable only) notify the docs website
 #
 # Publishing uses PyPI Trusted Publishing (OIDC). No API token is stored.
@@ -31,6 +32,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      checks: read
+      actions: read
+      statuses: read
     outputs:
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
@@ -107,6 +111,17 @@ jobs:
           fi
           echo "version=$built" >> "$GITHUB_OUTPUT"
           echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Bump's force input can skip its gate for a prerelease only, so a stable
+      # tag is gated again here, whichever route dispatched this workflow.
+      - name: Require release evidence on the candidate
+        if: ${{ steps.check.outputs.prerelease == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.check.outputs.candidate_sha }}
+          VERSION: ${{ steps.check.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/
+        run: scripts/release_gate.sh
 
       - name: Check metadata renders on PyPI
         run: uvx twine check --strict dist/*
@@ -208,6 +223,7 @@ jobs:
         env:
           SHA: ${{ needs.build.outputs.candidate_sha }}
           VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
           WHEEL_SHA256: ${{ needs.build.outputs.wheel_sha256 }}
           SDIST_SHA256: ${{ needs.build.outputs.sdist_sha256 }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -224,8 +240,9 @@ jobs:
               "scope": ["strict-docs", "installed-wheel-readme-mean-analysis"],
               "docs": {"status": "success", "sha": os.environ["SHA"], "run_url": os.environ["RUN_URL"]},
               "readme_smoke": {"status": "success", "sha": os.environ["SHA"], "run_url": os.environ["RUN_URL"]},
-              "unresolved": [
-                  "Upstream ci-ok/legacy status checks are evaluated by bump.yml, not revalidated here; bump's explicit force input can bypass them."
+              # The build job re-runs the release gate for a stable version only.
+              "unresolved": [] if os.environ["PRERELEASE"] == "false" else [
+                  "Prerelease upstream checks are evaluated by bump.yml, not revalidated here; bump's force input can skip them."
               ],
               "deviations": [],
           }

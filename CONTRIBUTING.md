@@ -719,7 +719,7 @@ gh workflow run bump.yml --ref main
 | `stage` | `keep-current` | Keep the stage or explicitly choose `alpha`, `beta`, `rc`, or `stable` |
 | `version` | blank | Exact canonical PEP 440 override, without `v` or a local (`+`) segment |
 | `dry_run` | `false` | Resolve the version and check CI without tagging or dispatching |
-| `force` | `false` | Explicitly bypass only the CI gate |
+| `force` | `false` | Skip the CI gate for a prerelease; refused for a stable version |
 
 `auto` increments the current alpha/beta/RC counter, or patch when stable.
 Explicit patch/minor/major bumps reset lower base components; a retained
@@ -766,11 +766,13 @@ For a local calculation without GitHub or any tag mutation:
 uv run python scripts/next_version.py --bump auto --stage keep-current
 ```
 
-The default `bump` gate requires successful GitHub Actions `ci-ok` on that exact
-commit, no other unfinished or failed checks, and successful legacy commit
-statuses when present. It excludes only the running bump workflow itself.
-`force=true` skips only this upstream CI gate; it does not bypass any release
-workflow checks.
+The `bump` gate (`scripts/release_gate.sh`) requires, on that exact commit,
+successful GitHub Actions `ci-ok`, a successful nightly run, no other
+unfinished or failed checks, and successful legacy commit statuses when
+present. It excludes only the running bump workflow itself. A stable version
+also needs the qualification evidence below. `force=true` skips this gate for
+a prerelease only and is refused for a stable version; it never bypasses any
+release workflow checks.
 
 Bump creates the version tag and explicitly dispatches `release.yml` on it.
 The release workflow also runs on pushed `v*` tags; a direct manual dispatch is
@@ -781,7 +783,9 @@ reissued against the existing tag, without creating another tag:
 gh workflow run release.yml --ref v0.1.0a3
 ```
 
-Every route resolves the tag to the exact checked-out commit, builds and hashes
+Every route resolves the tag to the exact checked-out commit. For a stable tag
+the build job then runs the bump gate again against that commit, so no route
+publishes a stable version without its evidence. Every route builds and hashes
 the wheel and sdist, then runs strict documentation validation and the README
 mean-analysis example using the installed built wheel outside the checkout.
 Both checks must succeed for that same commit before publication is eligible;
@@ -806,6 +810,37 @@ self-review is not prevented. Active `main-review` rules require `ci-ok` and
 branch-protection endpoint reports the branch is not protected. These settings
 are not changed here; environment and ruleset configuration is distinct from
 the workflow's exact-candidate gate.
+
+#### Release qualification checklist
+
+Qualify a stable version on the exact candidate commit before dispatching
+`bump`. For a stable version the gate checks the first four items and refuses
+`force`; a prerelease needs green CI and a nightly run.
+
+- [ ] **Green CI.** `ci-ok` succeeded, with no other unfinished or failed check
+  and no failed legacy status. For a stable version, the same CI run includes
+  a successful `core-install (3.15)`, the Python 3.15 core-install evidence.
+- [ ] **Certification.** The numerical-certification tier passed: in CI when
+  the change required it, and in the nightly scientific tiers.
+- [ ] **Nightly.** A nightly run succeeded on the commit. For a stable version,
+  it must be scheduled or manually dispatched: a labeled-PR run skips the
+  scientific tiers and cannot supply certification. Run
+  `gh workflow run nightly.yml --ref main` while main is at the commit.
+- [ ] **Dependency floors.** The weekly "full suite at dependency floors" job
+  succeeded on Python 3.12, 3.13 and 3.14, the interpreters with floor
+  sessions, including every part when split. Run
+  `gh workflow run weekly.yml --ref main` while main is at the commit.
+- [ ] **Validation scope statement.** The release notes state the validated
+  scope and the methods still being validated, from
+  [External validation coverage](docs/validation.md). A stable version
+  promises a stable interface, not statistical certification of every method.
+
+Independent statistical review and consumer evidence are not release
+prerequisites. Run the gate from a checkout before dispatching:
+
+```bash
+VERSION=1.0.0 SHA="$(git rev-parse origin/main)" scripts/release_gate.sh
+```
 
 #### Website documentation sync
 
