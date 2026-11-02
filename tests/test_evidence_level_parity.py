@@ -173,6 +173,105 @@ def test_mean_and_conversion_evidence_matches_across_sources(monkeypatch):
     assert records[0].entries[_key()]["moments"]["n"] == 60
 
 
+@pytest.mark.integration
+def test_real_breakout_capture_checks_roster_per_declared_source():
+    import ibis
+
+    from tests.analysis_factory import view_readout
+    from tests.evidence_fixtures.capture import _Capture, _wrapped_producers
+    from tests.query.test_builders import _analysis_with_cross_source_breakouts
+
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "breakout_collision_src_a",
+        obj=[
+            {
+                "user_id": user,
+                "ts": datetime(2024, 1, 2, 9, index),
+                "event": "page_view",
+                "group_id": arm,
+                "country_code": country,
+            }
+            for index, (user, arm, country) in enumerate(
+                (
+                    ("u1", "C", "US"),
+                    ("u2", "T", "US"),
+                    ("u3", "C", "CA"),
+                    ("u4", "T", "CA"),
+                )
+            )
+        ],
+    )
+    con.create_table(
+        "breakout_collision_src_b",
+        obj=[
+            {
+                "user_id": user,
+                "ts": datetime(2024, 1, 3, 10, index),
+                "event": "order",
+                "order_id": f"o{index}",
+                "country_code": "MX",
+            }
+            for index, (user, arm) in enumerate(
+                (("u1", "C"), ("u2", "T"), ("u3", "C"), ("u4", "T"))
+            )
+        ],
+    )
+    experiment, resolver = _analysis_with_cross_source_breakouts(con)
+    scope = Scope(view="breakout", grain="total")
+    method = Method(name="unadjusted")
+    declared_segments = {
+        "src_a": (("US", ("C", "T")), ("CA", ("C", "T"))),
+        "src_b": (("MX", ("C", "T")),),
+    }
+    expected = frozenset(
+        CaptureKey(
+            "randomized.unadjusted",
+            method_identity(method),
+            metric,
+            scope.hash(),
+            RequestCoordinates(
+                "assigned",
+                "total",
+                segment=(
+                    (f"{source}:country", value),
+                    (f"{source}:country", value),
+                ),
+            ),
+            arm,
+        )
+        for source, segments in declared_segments.items()
+        for metric in ("visit_rate", "checkout")
+        for value, arms in segments
+        for arm in arms
+    ) | frozenset(
+        {
+            CaptureKey(
+                "load_breakout_evidence",
+                "",
+                "",
+                scope.hash(),
+                RequestCoordinates("assigned", "total"),
+                "",
+            )
+        }
+    )
+    capture = _Capture((scope,), expected)
+    try:
+        with _wrapped_producers(capture):
+            results = view_readout(experiment, resolver, scope)
+    finally:
+        resolver.close()
+        con.disconnect()
+
+    assert {row.source for row in results} == {"src_a", "src_b"}
+    assert {key.request_coordinates.segment[0][0] for key, _ in capture.entries if key.metric} == {
+        "src_a:country",
+        "src_b:country",
+    }
+    assert frozenset(key for key, _ in capture.entries) == expected
+
+
 def test_day_axis_capture_keeps_slice_source_identity():
     from tests.evidence_fixtures.capture import _Capture
 
