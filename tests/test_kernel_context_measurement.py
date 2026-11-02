@@ -8,6 +8,8 @@ import pytest
 from calibration.kernel_context_measurement import measure
 from tests.parity_harness.comparison import nested_close
 
+pytestmark = pytest.mark.benchmark
+
 
 def test_temp_peak_preserves_workload_max_before_cleanup(monkeypatch):
     import calibration.kernel_context_measurement as measurement
