@@ -46,8 +46,16 @@ from tests._evidence_requests import (
 from tests.analysis_factory import bound_source, lift_rows, view_readout
 from tests.test_unit_day_artifact_facade import (
     _definitions,
+    _expected_context,
     _extensions,
     _native,
+    _published,
+)
+from tests.test_unit_day_artifact_facade import (
+    _shared_publications as _shared_publications,
+)
+from tests.test_unit_day_artifact_facade import (
+    readonly_publications as readonly_publications,
 )
 
 _EXPECTED_ARTIFACT_SCHEMAS = {
@@ -274,26 +282,29 @@ def _replace_artifact_relation(
 _shared_publication = pytest.mark.xdist_group("unit_day_artifact_parity")
 
 
-@pytest.fixture(scope="module")
-def publication():
-    import shutil
-    import tempfile
+@pytest.fixture
+def publication(readonly_publications):
+    return readonly_publications()
 
-    connection, native, context, store = _native()
-    with tempfile.TemporaryDirectory() as temporary:
-        copied = Path(temporary) / "definitions"
-        shutil.copytree("examples/definitions", copied)
-        experiment, resolver = from_definitions(
-            copied, connection, experiment_name="new_onboarding_v2"
-        )
-        try:
-            reference = publish_unit_day_artifact(experiment, resolver, store)
-        finally:
-            cast(Any, resolver).close()
+
+@pytest.fixture
+def fresh_publication():
+    connection, native, context, store, reference = _published()
     try:
         yield connection, native, context, store, reference
     finally:
         native[1].close()
+        connection.disconnect()
+
+
+@pytest.fixture
+def fresh_published_pair(fresh_publication):
+    _connection, native, context, store, reference = fresh_publication
+    adopted = from_unit_day_artifact(store, reference, expected_context=context)
+    try:
+        yield native, adopted, context, store, reference
+    finally:
+        adopted[1].close()
 
 
 @pytest.fixture
@@ -307,19 +318,18 @@ def published_pair(publication):
 
 
 @pytest.mark.slow
-@_shared_publication
 @pytest.mark.parametrize("ingress", ["definitions", "artifact"])
 @pytest.mark.parametrize(
     ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", "above_n")]
 )
 def test_fixed_export_refuses_invalid_backend_counts(
-    publication, ingress, field, value, monkeypatch, tmp_path
+    fresh_publication, ingress, field, value, monkeypatch, tmp_path
 ):
     import pyarrow as pa
 
     from increment.errors import WireFormatError
 
-    connection, native, context, store, reference = publication
+    connection, native, context, store, reference = fresh_publication
     adopted = from_unit_day_artifact(store, reference, expected_context=context)
     to_pyarrow = connection.to_pyarrow
 
@@ -391,32 +401,36 @@ _shared_covariate_publication = pytest.mark.xdist_group("unit_day_artifact_covar
 
 
 @pytest.fixture(scope="module")
-def covariate_publication(tmp_path_factory: pytest.TempPathFactory):
-    definitions = _definitions(
+def covariate_definitions(tmp_path_factory: pytest.TempPathFactory):
+    return _definitions(
         tmp_path_factory.mktemp("covariate"),
         site_volume_only=True,
         cuped_metrics=("purchase_rate",),
     )
-    _connection, native, context, store = _native(definitions=definitions, with_pre_period=True)
-    native_experiment, native_resolver = native
-    requests = _extensions(context, "breakout_dimension", "factor_dimension", "cuped_preperiod")
-    reference = publish_unit_day_artifact(
-        native_experiment, native_resolver, store, extensions=requests
-    )
-    try:
-        yield native, context, store, reference
-    finally:
-        native_resolver.close()
 
 
 @pytest.fixture
-def covariate_pair(covariate_publication):
-    native, context, store, reference = covariate_publication
+def covariate_pair(covariate_definitions, readonly_publications):
+    context = _expected_context(covariate_definitions)
+    requests = _extensions(context, "breakout_dimension", "factor_dimension", "cuped_preperiod")
+    _connection, native, context, store, reference = readonly_publications(
+        definitions=covariate_definitions, with_pre_period=True, extensions=requests
+    )
     adopted = from_unit_day_artifact(store, reference, expected_context=context)
     try:
         yield native, adopted
     finally:
         adopted[1].close()
+
+
+@pytest.fixture
+def sitewide_publication(tmp_path, readonly_publications):
+    definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
+    context = _expected_context(definitions)
+    requests = _extensions(
+        context, "breakout_dimension", "factor_dimension", "cuped_preperiod", "site_volume"
+    )
+    return readonly_publications(definitions=definitions, with_pre_period=True, extensions=requests)
 
 
 @pytest.mark.slow
@@ -590,20 +604,12 @@ def test_every_extension_schema_and_primary_key_is_exact(kind: str) -> None:
 
 # Guards every approved operation with either native/adopted value parity or an exact refusal.
 @pytest.mark.slow
-def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path) -> None:
-    definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
-    _connection, (native_experiment, native_resolver), context, store = _native(
-        definitions=definitions, with_pre_period=True
-    )
-    requests = _extensions(
-        context,
-        "breakout_dimension",
-        "factor_dimension",
-        "cuped_preperiod",
-        "site_volume",
-    )
-    reference = publish_unit_day_artifact(
-        native_experiment, native_resolver, store, extensions=requests
+@_shared_covariate_publication
+def test_task5_approved_operations_have_values_or_coded_refusals(
+    tmp_path: Path, sitewide_publication
+) -> None:
+    _connection, (native_experiment, native_resolver), context, store, reference = (
+        sitewide_publication
     )
     adopted_experiment, adopted_resolver = from_unit_day_artifact(
         store, reference, expected_context=context
@@ -918,16 +924,10 @@ def test_cluster_extension_spine_parity_matches_native_for_late_enrolled_treatme
 
 
 @pytest.mark.slow
-def test_breakout_factor_and_sitewide_operations_match_adopted_values(tmp_path: Path) -> None:
-    definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
-    _connection, (native_experiment, native_resolver), context, store = _native(
-        definitions=definitions, with_pre_period=True
-    )
-    requests = _extensions(
-        context, "breakout_dimension", "factor_dimension", "cuped_preperiod", "site_volume"
-    )
-    reference = publish_unit_day_artifact(
-        native_experiment, native_resolver, store, extensions=requests
+@_shared_covariate_publication
+def test_breakout_factor_and_sitewide_operations_match_adopted_values(sitewide_publication) -> None:
+    _connection, (native_experiment, native_resolver), context, store, reference = (
+        sitewide_publication
     )
     adopted_experiment, adopted_resolver = from_unit_day_artifact(
         store, reference, expected_context=context
@@ -2087,9 +2087,8 @@ def test_absent_extension_is_identical_coded_refusal(published_pair: tuple[Any, 
         adopted_source.close()
 
 
-@_shared_publication
-def test_fixed_trusted_ref_tamper_is_rejected(publication: tuple[Any, ...]) -> None:
-    _connection, _native_pair, context, store, reference = publication
+def test_fixed_trusted_ref_tamper_is_rejected(fresh_publication: tuple[Any, ...]) -> None:
+    _connection, _native_pair, context, store, reference = fresh_publication
     tampered = reference.model_copy(update={"manifest_sha256": "0" * 64})
     with pytest.raises(ArtifactContractError) as raised:
         from_unit_day_artifact(store, tampered, expected_context=context)
@@ -2097,13 +2096,12 @@ def test_fixed_trusted_ref_tamper_is_rejected(publication: tuple[Any, ...]) -> N
 
 
 # Guards both base-role manifest bindings against identity, role, and primary-key drift.
-@_shared_publication
 @pytest.mark.parametrize("role", ["exposures", "measure_stats"])
 @pytest.mark.parametrize("mutation", ["artifact_id", "role", "primary_key"])
 def test_manifest_base_relation_mutations_refuse_exactly(
-    published_pair: tuple[Any, ...], role: str, mutation: str
+    fresh_published_pair: tuple[Any, ...], role: str, mutation: str
 ) -> None:
-    _native_pair, _adopted, context, store, reference = published_pair
+    _native_pair, _adopted, context, store, reference = fresh_published_pair
     source = _artifact_source(store, reference, context)
     relation = getattr(source.manifest.base, role)
     if mutation == "artifact_id":
@@ -2223,18 +2221,12 @@ def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
 
 
 @pytest.mark.slow
+@_shared_covariate_publication
 def test_export_and_fused_breakout_summaries_match_the_definitions_source(
-    tmp_path: Path,
+    tmp_path: Path, sitewide_publication
 ) -> None:
-    definitions = _definitions(tmp_path, site_volume_only=True, cuped_metrics=("purchase_rate",))
-    _connection, (native_experiment, native_resolver), context, store = _native(
-        definitions=definitions, with_pre_period=True
-    )
-    requests = _extensions(
-        context, "breakout_dimension", "cuped_preperiod", "factor_dimension", "site_volume"
-    )
-    reference = publish_unit_day_artifact(
-        native_experiment, native_resolver, store, extensions=requests
+    _connection, (native_experiment, native_resolver), context, store, reference = (
+        sitewide_publication
     )
     adopted_experiment, adopted_resolver = from_unit_day_artifact(
         store, reference, expected_context=context
@@ -2299,11 +2291,10 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
 
 
 # Guards caller-pinned context and generation values before any store access.
-@_shared_publication
 def test_caller_trusted_context_and_generation_are_not_replaceable(
-    publication: tuple[Any, ...], example_definitions: Path
+    fresh_publication: tuple[Any, ...], example_definitions: Path
 ) -> None:
-    connection, _native_pair, context, store, reference = publication
+    connection, _native_pair, context, store, reference = fresh_publication
     from increment.query.artifact_publish import artifact_context
     from increment.semantics.loader import load
 
@@ -2343,9 +2334,8 @@ def test_caller_trusted_context_and_generation_are_not_replaceable(
         cast(Any, other_resolver).close()
 
 
-@_shared_publication
-def test_base_relation_generation_binding_is_coded(published_pair: tuple[Any, ...]) -> None:
-    _native_pair, _adopted, context, store, reference = published_pair
+def test_base_relation_generation_binding_is_coded(fresh_published_pair: tuple[Any, ...]) -> None:
+    _native_pair, _adopted, context, store, reference = fresh_published_pair
     source = _artifact_source(store, reference, context)
     base = source.manifest.base
     bad_exposures = base.exposures.model_copy(update={"generation_id": uuid4()})

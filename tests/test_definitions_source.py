@@ -19,7 +19,6 @@ import pytest
 
 from examples._seed import seed_event_log
 from increment import Method, Scope, from_definitions, from_unit_day_artifact, readouts, workflows
-from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import run_daily as _day_axis_values
 from increment.evidence import (
     BreakoutIdentity,
@@ -45,6 +44,16 @@ from tests.analysis_factory import (
     view_readout,
 )
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
+from tests.test_unit_day_artifact_facade import (
+    _expected_context,
+    _extensions,
+)
+from tests.test_unit_day_artifact_facade import (
+    _shared_publications as _shared_publications,
+)
+from tests.test_unit_day_artifact_facade import (
+    readonly_publications as readonly_publications,
+)
 
 # Metric/guardrail set for new_onboarding_v2: d7_retention carries a
 # declared prior binding and a bounded threshold_days band, mixed with calendar-axis metrics.
@@ -137,24 +146,17 @@ def seeded_analysis(module_definitions: Path):
     return from_definitions(module_definitions, con, experiment_name="new_onboarding_v2")
 
 
-@pytest.fixture(scope="module")
-def definitions_and_adopted_analyses():
-    """Build one definitions binding and reopen its published day artifact."""
-    from tests.test_unit_day_artifact_facade import _extensions, _native
-
-    _con, native, context, store = _native()
-    native_experiment, native_resolver = native
-    extensions = _extensions(
-        context,
-        "breakout_dimension",
-        "factor_dimension",
-        "assignment_counts",
-    )
-    ref = publish_unit_day_artifact(
-        native_experiment, native_resolver, store, extensions=extensions
-    )
+@pytest.fixture
+def definitions_and_adopted_analyses(readonly_publications):
+    """Open fresh consumers of the module's immutable day publication."""
+    context = _expected_context("examples/definitions")
+    extensions = _extensions(context, "breakout_dimension", "factor_dimension", "assignment_counts")
+    _con, native, context, store, ref = readonly_publications(extensions=extensions)
     adopted = from_unit_day_artifact(store, ref, expected_context=context)
-    return native, adopted
+    try:
+        yield native, adopted
+    finally:
+        adopted[1].close()
 
 
 _PUBLIC_KEY_FIELDS = (
@@ -208,6 +210,7 @@ def _run_public_view(
 
 
 @pytest.mark.slow
+@pytest.mark.xdist_group("definitions_readonly")
 @pytest.mark.parametrize(
     ("view", "metrics", "dimension"),
     [
@@ -253,21 +256,15 @@ def test_definitions_and_adopted_public_views_match(
 
 
 @pytest.mark.slow
+@pytest.mark.xdist_group("definitions_readonly")
 @pytest.mark.parametrize("dimension_first", [True, False], ids=["cold", "warm"])
-def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
+def test_dimensioned_daily_duration_matches_raw_events(
+    dimension_first, definitions_and_adopted_analyses
+):
     """A fresh adoption must retain seconds, independently of earlier requests."""
-    from tests.test_unit_day_artifact_facade import _extensions, _native
-
-    con, native, context, store = _native()
-    native_experiment, native_resolver = native
-    ref = publish_unit_day_artifact(
-        native_experiment,
-        native_resolver,
-        store,
-        extensions=_extensions(
-            context, "breakout_dimension", "factor_dimension", "assignment_counts"
-        ),
-    )
+    native, adopted = definitions_and_adopted_analyses
+    _, native_resolver = native
+    con = native_connection(bound_source(native_resolver))
     # The seed has one assignment row per user and a static country. Keep every
     # eligible user, including mobile users and users with no sessions that day.
     oracle = (
@@ -306,7 +303,6 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
 
     metrics = ("purchase_rate", "avg_session_duration")
     try:
-        adopted = from_unit_day_artifact(store, ref, expected_context=context)
         _, adopted_resolver = adopted
         with adopted_resolver:
             if not dimension_first:
@@ -339,10 +335,10 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
             assert estimates[0] == pytest.approx(estimates[1], rel=1e-9)
     finally:
         native_resolver.close()
-        con.disconnect()
 
 
 @pytest.mark.slow
+@pytest.mark.xdist_group("definitions_readonly")
 @allow_declared_overrides
 def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_analyses):
     from increment.estimation.engine import Method
@@ -373,18 +369,18 @@ def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_an
 
 
 @pytest.mark.slow
-def test_adopted_breakout_refusal_has_stable_extension_code():
+@pytest.mark.xdist_group("definitions_readonly")
+def test_adopted_breakout_refusal_has_stable_extension_code(readonly_publications):
     from increment.query.artifact_contract import ArtifactContractError
-    from tests.test_unit_day_artifact_facade import _extensions, _native
 
-    _con, (native_experiment, native_resolver), context, store = _native()
+    context = _expected_context("examples/definitions")
     requests = _extensions(context, "assignment_counts")
-    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    _con, _native_pair, context, store, ref = readonly_publications(extensions=requests)
     adopted_experiment, adopted_resolver = from_unit_day_artifact(
         store, ref, expected_context=context
     )
 
-    with pytest.raises(ArtifactContractError) as raised:
+    with adopted_resolver, pytest.raises(ArtifactContractError) as raised:
         view_readout(
             adopted_experiment,
             adopted_resolver,
@@ -447,7 +443,7 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric(example_definitio
 def test_run_daily_shares_native_day_source_across_selected_metrics(
     seeded_analysis: tuple[Any, Any], monkeypatch
 ):
-    experiment, resolver = seeded_analysis
+    experiment, resolver = make_binding_like(seeded_analysis[1])
     source = bound_source(resolver)
     source_type = type(source)
     original = source_type.day_source
@@ -459,12 +455,13 @@ def test_run_daily_shares_native_day_source_across_selected_metrics(
 
     monkeypatch.setattr(source_type, "day_source", counted)
     selected = workflows.metrics(experiment, resolver)[:2]
-    rows = view_readout(
-        experiment,
-        resolver,
-        Scope(view="daily", grain="daily", values=True),
-        metrics=list(selected),
-    )
+    with resolver:
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(view="daily", grain="daily", values=True),
+            metrics=list(selected),
+        )
 
     assert rows
     assert acquired == [tuple(metric.name for metric in selected)]
