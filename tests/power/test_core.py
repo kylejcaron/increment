@@ -4854,8 +4854,14 @@ def test_baseline_metric_type_round_trips_and_default_dump_is_unchanged():
     ("baseline", "clustered"),
     [
         pytest.param(Baseline(mean=1.0, var=2.0), False, id="mean"),
-        pytest.param(Baseline.from_proportion(0.1), False, id="conversion"),
-        pytest.param(Baseline(mean=0.1, var=0.09, metric_type="retention"), False, id="retention"),
+        # Bernoulli defaults require two complete sizing searches at the original lift.
+        pytest.param(Baseline.from_proportion(0.1), False, id="conversion", marks=pytest.mark.slow),
+        pytest.param(
+            Baseline(mean=0.1, var=0.09, metric_type="retention"),
+            False,
+            id="retention",
+            marks=pytest.mark.slow,
+        ),
         pytest.param(Baseline.from_ratio(2.0, 1.0, 3.0, 0.5, 0.2), False, id="ratio"),
         pytest.param(
             _quantile_baseline("latency", 0.5, np.arange(1.0, 101.0)), False, id="quantile"

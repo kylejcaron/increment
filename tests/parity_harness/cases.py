@@ -6377,6 +6377,8 @@ def _clustered_assignment_integrity_case() -> ParityCase:
 
     return ParityCase(
         id="clustered_assignment_integrity_scope",
+        # Three ingress paths include artifact publication and clustered integrity reads.
+        slow=True,
         build={
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
