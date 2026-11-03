@@ -18,6 +18,7 @@ def _collect_and_run(tmp_path: Path, source: str) -> subprocess.CompletedProcess
     config.write_text(
         "[pytest]\nmarkers = slow: expensive\n parameter_recovery: calibration\n"
         " examples: notebook\n stress: exhaustive\n numerical_certification: exact inferential certification\n"
+        " exhaustive: complete cross-source grids\n"
     )
     project = Path(__file__).resolve().parents[1]
     (tmp_path / "conftest.py").write_text((project / "conftest.py").read_text())
@@ -61,6 +62,24 @@ def test_expensive_category_refuses_before_running_a_consumer(tmp_path: Path, ca
     )
     assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
     assert not (tmp_path / "executed").exists()
+
+
+def test_exhaustive_requires_slow(tmp_path: Path):
+    consumer = (
+        "import pytest\nfrom pathlib import Path\n{marks}"
+        "def test_consumer():\n    Path('executed').write_text('5')\n"
+    )
+    unmarked, marked = tmp_path / "unmarked", tmp_path / "marked"
+    unmarked.mkdir()
+    marked.mkdir()
+    refused = _collect_and_run(unmarked, consumer.format(marks="@pytest.mark.exhaustive\n"))
+    assert refused.returncode == pytest.ExitCode.USAGE_ERROR, refused.stdout + refused.stderr
+    assert not (unmarked / "executed").exists()
+    accepted = _collect_and_run(
+        marked, consumer.format(marks="@pytest.mark.exhaustive\n@pytest.mark.slow\n")
+    )
+    assert accepted.returncode == pytest.ExitCode.OK, accepted.stdout + accepted.stderr
+    assert (marked / "executed").read_text() == "5"
 
 
 @pytest.mark.parametrize("scope", ["module", "class", "parameter"])

@@ -2,7 +2,8 @@
 
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs
-the PR covering scope by default and all cells when `INCREMENT_PARITY_MATRIX=full`.
+the covering cells (`matrix.pr_matrix_cells()`) on every pull request; with
+`INCREMENT_PARITY_MATRIX=full` it also generates the other cells, marked `exhaustive`.
 
 Every count below is generated from `matrix.iter_cells()` and `matrix.classify()`.
 

@@ -99,6 +99,17 @@ The PostgreSQL gate is selected for query dependency, warehouse-execution,
 PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
 PRs skip it. PostgreSQL runs nightly on main; numerical certification runs
 nightly inside the scientific tier.
+The exhaustive gate runs tests marked `exhaustive` in four shards for every
+push to main and for PRs that change loaders (`increment/frame.py`,
+`increment/_frame_*.py`, `increment/sources.py`), `increment/query/`, the
+evidence layer (`increment/readouts/_evidence.py`, `increment/_evidence_*.py`,
+`increment/_source_types.py`), `tests/parity_harness/`,
+`tests/evidence_fixtures/`, a test module holding `exhaustive` tests, or the
+files that define the gate (`ci.yml`, `noxfile.py`, `Makefile`,
+`pyproject.toml`, `uv.lock`, `scripts/certification_ci_changes.py`). `ci-ok`
+requires it whenever the selection does; the nightly full suite runs it too.
+Ordinary runs generate only the pull-request parity-matrix cells; the gate sets
+`INCREMENT_PARITY_MATRIX=full` to generate the rest.
 The warehouse compile registry runs for every PR except documentation-only
 changes, and always runs for pushes and manual dispatches. Renames consider
 both paths, so moving a module into documentation still requires compilation.
@@ -163,6 +174,7 @@ do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
 | Local integration boundary | `integration` | `make test-integration-fast` and `make test-fast`; PR CI |
 | Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and required CI |
 | Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
+| Complete cross-source grids and sweeps outside the every-PR covering subset | `exhaustive` and `slow` | Exhaustive gate: main pushes, nightly, and PRs that change loaders, query, evidence or the parity harness |
 | Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Nightly required gate and relevant inference validation |
 | Deterministic inferential certification | `numerical_certification` and `slow` | Required for relevant changes and in the nightly gate |
 | Runnable notebook exports | `examples` and `slow` | Nightly required gate and notebook acceptance/documentation |
@@ -170,7 +182,7 @@ do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
 `slow` describes cost, not purpose. A solver regression at ordinary inputs
 does not become stress merely because it is slow: investigate production
 performance or redundant test work. Category checks refuse recovery,
-numerical certification, examples or stress tests lacking an effective `slow` mark before execution,
+numerical certification, examples, stress or exhaustive tests lacking an effective `slow` mark before execution,
 including CI; module, class and parameter inheritance count.
 
 Integration tests remain in the fast tier and PR CI. `make test-unit` excludes
@@ -214,7 +226,8 @@ default CI selection; the Make targets define supported tiers:
 | `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling` |
 | `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling` |
 | `make test-fast` | Unit plus integration-fast (tooling and benchmarks excluded) |
-| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling` |
+| `make test-slow` | `slow and not exhaustive and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling` |
+| `make test-exhaustive` | `exhaustive and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling`, with `INCREMENT_PARITY_MATRIX=full` (the exhaustive gate; `make check` and `make ci-local` include it) |
 | `make test-tier TIER=compile-registry` | `compile_registry and not benchmark` (the warehouse compile registry; its own CI job) |
 | `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery and not benchmark` |
 | `make test-numerical-certification` | `numerical_certification and not benchmark` |
@@ -366,9 +379,27 @@ Tier intent:
   add shards before trimming tests.
 - `slow` holds deterministic functional work: large-N parity, power
   enclosure, artifact replay, dashboard capture. Same shard target.
+- `exhaustive` holds the complete cross-source grids: parity cases outside
+  `PR_PARITY_CASES`, matrix cells outside `matrix.pr_matrix_cells()`,
+  preflight cells beyond one per recorded refusal hazard, every declared
+  evidence coordinate, and large QR workloads and sweeps. Every PR keeps a
+  covering subset; moving a check here needs a fault proof that a PR-selected
+  test catches the same defect.
 - `numerical_certification` runs on PRs only when certified modules change;
   `parameter_recovery` is nightly. Neither moves into `fast` or `slow` to
   see it on a PR.
+
+Test layers, by what they own:
+
+| Layer | Marker | Owns | Budget |
+| --- | --- | --- | --- |
+| Unit | none | pure logic, compiled SQL text, consumers on frozen evidence | milliseconds |
+| Contract | `integration` | one boundary on tiny data: a loader answering one evidence request kind; a lifecycle step | under 1 s |
+| Journey | `integration` or `slow` | one real end-to-end path per readout kind and source family | under 30 s |
+| Exhaustive | `slow` and `exhaustive` | the full scenario × source matrix, every declared evidence coordinate, large workloads and sweeps | main pushes, nightly, relevant PRs |
+
+Budgets are review triggers and the per-layer duration ratchet, never timing
+assertions.
 
 To inspect the fast-tier test items selected by representative one-file changes,
 run `uv run --no-sync python scripts/selection_probe.py`. The probe reports the
@@ -647,18 +678,21 @@ runtime redirect). Do not use this fast-tier map as a gating selector for
 another tier. Keep `tests/selection_required.txt` updated for dependencies
 which static imports and observed coverage cannot represent.
 
-Functional-slow CI uses eight isolated shards and the certification job two,
-with workers inside each shard; `ci-ok` requires their aggregate success. Every
-case remains selected exactly once. Both split by the recorded weights in
-`.github/slow-test-durations.json` and `.github/certification-test-durations.json`;
-a test without a weight still runs. The slow weights come from a complete,
-passing local slow run on 2026-11-01 (Python 3.13, four `xdist` workers),
-normalized like the fast weights. Proportions matter, not absolute seconds, so
-refresh the weights from the nightly artifact or a complete local run of the
-tier when the tier changes materially:
+Functional-slow CI uses eight isolated shards, the exhaustive gate four and the
+certification job two, with workers inside each shard; `ci-ok` requires their
+aggregate success. Every case remains selected exactly once. They split by the
+recorded weights in `.github/slow-test-durations.json`,
+`.github/exhaustive-test-durations.json` and
+`.github/certification-test-durations.json`; a test without a weight still
+runs. The slow weights come from a complete, passing local slow run on
+2026-11-01 (Python 3.13, four `xdist` workers), normalized like the fast
+weights. Proportions matter, not absolute seconds, so refresh the weights from
+the nightly artifact or a complete local run of the tier when the tier changes
+materially:
 
 ```bash
 make test-slow WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/slow-test-durations.json"
+make test-exhaustive WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/exhaustive-test-durations.json"
 make test-numerical-certification WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/certification-test-durations.json"
 ```
 
@@ -1099,10 +1133,15 @@ A new method needs all of the following:
    `LoggedTrace`, or a power solver) does not belong in that matrix; it
    enumerates parity across its own public ingresses instead. Path presence
    alone is not evidence of parity.
-   PRs run the deterministic strength-3 covering scope plus disposition
-   sentinels; the nightly gate sets `INCREMENT_PARITY_MATRIX=full` to execute
-   the exhaustive grid. Both scopes always run the asymptotic-retention variants
-   and non-parametrized parity tests; see the coverage page for counts.
+   Every PR runs the deterministic strength-3 covering cells plus disposition
+   sentinels and pinned CUPED cells (`matrix.pr_matrix_cells()`), and one
+   preflight cell per recorded refusal hazard
+   (`tests/parity_harness/preflight_hazards.json`, regenerated by
+   `scripts/record_preflight_hazards.py` when a refusal's code, context keys or
+   stage changes). Only `INCREMENT_PARITY_MATRIX=full` generates the remaining
+   cells, marked `exhaustive`; `make test-exhaustive`, `make test-all`, the
+   nightly and the weekly tenfold run set it. The asymptotic-retention variants
+   and non-parametrized parity tests always run; see the coverage page for counts.
 6. **An independent reference.** Either a frozen comparison against a
    third-party tool or independent primitive under `tests/oracles/`, or a
    justified independent construction check (an enumeration or an exact

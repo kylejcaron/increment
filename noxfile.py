@@ -108,10 +108,15 @@ TIER_MARKERS = {
     "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
     "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
     "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
-    # The compile registry builds once in its own CI job instead of in every slow shard.
+    # The compile registry builds once in its own CI job instead of in every slow shard;
+    # exhaustive grids run in their own gate.
     "slow": (
-        "slow and not parameter_recovery and not numerical_certification and not examples"
-        " and not compile_registry and not benchmark and not tooling"
+        "slow and not exhaustive and not parameter_recovery and not numerical_certification"
+        " and not examples and not compile_registry and not benchmark and not tooling"
+    ),
+    "exhaustive": (
+        "exhaustive and not parameter_recovery and not numerical_certification"
+        " and not examples and not compile_registry and not benchmark and not tooling"
     ),
     "compile-registry": "compile_registry and not benchmark",
     "parameter-recovery": "parameter_recovery and not benchmark",

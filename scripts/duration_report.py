@@ -24,6 +24,9 @@ class LayerItem:
 
 
 LAYER_BUDGETS_S = {"unit": 0.1, "integration": 1.0, "slow": 30.0}
+# The fast and functional-slow shards' artifacts are the duration evidence; other JUnit
+# reports (the exhaustive gate's) carry no collection metadata and are not inventoried.
+DURATION_ARTIFACT_PREFIXES = ("fast-junit-", "slow-junit-")
 
 
 def layer_over_budget(junit: Path, collection: Path) -> list[LayerItem]:
@@ -112,8 +115,19 @@ def over_budget(junit: Path, *, budget_s: float = 5.0) -> list[SlowItem]:
 def _read_aggregate_items(
     artifacts_dir: Path, expected_shards: set[str]
 ) -> tuple[list[LayerItem], list[str]]:
-    junit_paths = set(artifacts_dir.rglob("junit.xml"))
-    collection_paths = set(artifacts_dir.rglob("junit-collection.json"))
+    reports = (
+        [
+            directory
+            for directory in artifacts_dir.iterdir()
+            if directory.is_dir() and directory.name.startswith(DURATION_ARTIFACT_PREFIXES)
+        ]
+        if artifacts_dir.is_dir()
+        else []
+    )
+    junit_paths = {path for directory in reports for path in directory.rglob("junit.xml")}
+    collection_paths = {
+        path for directory in reports for path in directory.rglob("junit-collection.json")
+    }
     incomplete = []
     paired_shards = set()
     unique_items: dict[tuple[str, str], LayerItem] = {}

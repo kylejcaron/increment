@@ -49,10 +49,7 @@ def _signature(disposition: matrix.Disposition) -> tuple[object, ...]:
     return verdicts, refusal_codes, waived_ingresses
 
 
-def test_covering_cells_cover_every_three_way_combination(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("INCREMENT_PARITY_MATRIX", "cover")
+def test_covering_cells_cover_every_three_way_combination() -> None:
     full = _full_cells()
     triples = tuple(itertools.combinations(range(len(AXES)), 3))
     required = {
@@ -65,7 +62,7 @@ def test_covering_cells_cover_every_three_way_combination(
     }
     assert required <= covered
 
-    scoped = {_values(cell) for cell in matrix.parity_matrix_cells()}
+    scoped = {_values(cell) for cell in matrix.pr_matrix_cells()}
     scope_coverage = {
         (indices, tuple(cell[index] for index in indices)) for cell in scoped for indices in triples
     }
@@ -88,12 +85,11 @@ def test_covering_cells_are_deterministic() -> None:
     assert other_process == f"{first!r}\n"
 
 
-def test_pr_scope_keeps_every_disposition(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pr_scope_keeps_every_disposition() -> None:
     full_by_signature: dict[tuple[object, ...], matrix.Cell] = {}
     for cell in matrix.iter_cells():
         full_by_signature.setdefault(_signature(matrix.classify(cell)), cell)
 
-    monkeypatch.setenv("INCREMENT_PARITY_MATRIX", "cover")
-    pr_cells = matrix.parity_matrix_cells()
+    pr_cells = matrix.pr_matrix_cells()
     pr_signatures = {_signature(matrix.classify(cell)) for cell in pr_cells}
     assert set(full_by_signature) <= pr_signatures

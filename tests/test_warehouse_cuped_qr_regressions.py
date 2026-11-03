@@ -1,26 +1,170 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from itertools import permutations
 from types import SimpleNamespace
 from typing import Any, cast
 
 import ibis
+import numpy as np
 import pytest
 
 from increment import Scope, from_definitions, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.cuped import fit_cuped_multicovariate
+from increment.estimation.cuped.multicovariate import M1_MAX_LEVERAGE_RATIO
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate
 from increment.query._cuped_qr import fit_warehouse_qr
 from increment.query.cuped import _ResolvedCupedRequest
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import view_readout
 from tests.test_warehouse_cuped_qr import _scratch_session
 
 pytestmark = pytest.mark.integration
 
 ARMS = ("control", "treatment")
+THREE_ARMS = ("control", "variant-a", "variant-b")
+
+
+@contextmanager
+def _scratch_capture(
+    connection, *, scratch_statements, scratch_columns, statement_log
+) -> Iterator[None]:
+    if scratch_statements is None and scratch_columns is None and statement_log is None:
+        yield
+        return
+    backend_type = type(connection)
+    original_create = backend_type.create_table
+    original_drop = backend_type.drop_table
+
+    def record_scratch_sql(backend, name, expression=None, *args, **kwargs):
+        if str(name).startswith("_cuped_qr_") and expression is not None:
+            if scratch_columns is not None:
+                scratch_columns.append(tuple(expression.columns))
+            if scratch_statements is not None or statement_log is not None:
+                sql = ibis.to_sql(expression, dialect="duckdb")
+                for log in (scratch_statements, statement_log):
+                    if log is not None:
+                        log.append(sql)
+        if expression is None:
+            return original_create(backend, name, *args, **kwargs)
+        return original_create(backend, name, expression, *args, **kwargs)
+
+    def record_scratch_drop(backend, name, *args, **kwargs):
+        if str(name).startswith("_cuped_qr_") and statement_log is not None:
+            statement_log.append("")
+        return original_drop(backend, name, *args, **kwargs)
+
+    backend_type.create_table = record_scratch_sql
+    backend_type.drop_table = record_scratch_drop
+    try:
+        yield
+    finally:
+        backend_type.create_table = original_create
+        backend_type.drop_table = original_drop
+
+
+class _QRWarehouse:
+    """One DuckDB warehouse whose input tables stay unchanged across QR fits."""
+
+    def __init__(self, tmp_path, tables: Mapping[str, list[dict[str, Any]]]) -> None:
+        self.rows = dict(tables)
+        self.connection = ibis.duckdb.connect()
+        for name, rows in self.rows.items():
+            self.connection.create_table(name, obj=rows)
+        self.connection.create_table("scratch_source", obj=[{"x": 1.0}])
+        self.session = _scratch_session(self.connection, tmp_path)
+
+    def __enter__(self) -> _QRWarehouse:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.session.drop_materialized()
+        self.connection.disconnect()
+
+    def fit(
+        self,
+        table: str,
+        *,
+        ratio: bool,
+        arms: tuple[str, ...],
+        declarations: Sequence[CupedCovariate],
+        transfers=None,
+        scratch_statements=None,
+        scratch_columns=None,
+        statement_log=None,
+        sql_nan: bool = False,
+    ):
+        connection = self.connection
+        request = _ResolvedCupedRequest(
+            identity=("warehouse_qr_regression",),
+            control=arms[0],
+            arm_order=arms,
+            method=Method.cuped_multicovariate(covariates=list(declarations)),
+        )
+
+        def execute(expression):
+            if statement_log is not None:
+                statement_log.append(ibis.to_sql(expression, dialect="duckdb"))
+            result = connection.to_pyarrow(expression)
+            if transfers is not None:
+                transfers.extend(result.to_pylist())
+            return result
+
+        with (
+            _scratch_capture(
+                connection,
+                scratch_statements=scratch_statements,
+                scratch_columns=scratch_columns,
+                statement_log=statement_log,
+            ),
+            self.session.qr_scratch() as scratch,
+        ):
+            relation = connection.table(table)
+            if sql_nan:
+                relation = relation.mutate(x=ibis.literal(float("nan")).cast("float64"))
+            actual = fit_warehouse_qr(
+                relation,
+                metric=SimpleNamespace(name="probe", type="ratio" if ratio else "mean"),
+                request=request,
+                execute=execute,
+                scratch=scratch,
+            )
+        # Later fits reuse this warehouse, so no scratch relation may outlive a fit.
+        assert not [name for name in connection.list_tables() if name.startswith("_cuped_qr_")]
+        return actual
+
+
+def _local_fit(rows, *, ratio: bool, arms: tuple[str, ...], kinds: dict[str, str], missing=None):
+    covariates = {
+        name: [float(row[name]) if kind == "continuous" else str(row[name]) for row in rows]
+        for name, kind in kinds.items()
+    }
+    outcome = [float(row["y"]) for row in rows]
+    return fit_cuped_multicovariate(
+        None if ratio else outcome,
+        [str(row["group_id"]) for row in rows],
+        control=arms[0],
+        arm_order=arms,
+        covariates=covariates,
+        kinds=kinds,
+        missing=missing,
+        numerator=outcome if ratio else None,
+        denominator=[float(row["y_den"]) for row in rows] if ratio else None,
+    )
+
+
+def _probe_covariates(*, categorical: bool, missing_policy=None):
+    kinds = {"x": "continuous"}
+    declarations = [CupedCovariate(name="x", kind="continuous", missing=missing_policy or "refuse")]
+    if categorical:
+        kinds["category"] = "categorical"
+        declarations.append(CupedCovariate(name="category", kind="categorical"))
+    return kinds, declarations
 
 
 def _fit_pair(
@@ -37,104 +181,38 @@ def _fit_pair(
     sql_nan: bool = False,
     local_failure=None,
 ):
-    groups = [str(row["group_id"]) for row in rows]
-    x_values = [float(row["x"]) for row in rows]
-    y_values = [float(row["y"]) for row in rows]
-    covariates = {"x": x_values}
-    kinds = {"x": "continuous"}
-    declarations = [CupedCovariate(name="x", kind="continuous", missing=missing_policy or "refuse")]
-    if categorical:
-        covariates["category"] = [str(row["category"]) for row in rows]
-        kinds["category"] = "categorical"
-        declarations.append(CupedCovariate(name="category", kind="categorical"))
-    local_error = None
+    kinds, declarations = _probe_covariates(categorical=categorical, missing_policy=missing_policy)
     try:
-        if ratio:
-            local = fit_cuped_multicovariate(
-                None,
-                groups,
-                control=arms[0],
-                arm_order=arms,
-                covariates=covariates,
-                kinds=kinds,
-                numerator=y_values,
-                denominator=[float(row["y_den"]) for row in rows],
-                missing={"x": missing_policy} if missing_policy else None,
-            )
-        else:
-            local = fit_cuped_multicovariate(
-                y_values,
-                groups,
-                control=arms[0],
-                arm_order=arms,
-                covariates=covariates,
-                kinds=kinds,
-                missing={"x": missing_policy} if missing_policy else None,
-            )
+        local = _local_fit(
+            rows,
+            ratio=ratio,
+            arms=arms,
+            kinds=kinds,
+            missing={"x": missing_policy} if missing_policy else None,
+        )
     except Exception as error:
         if local_failure is None or getattr(error, "code", None) != local_failure:
             raise
-        local, local_error = None, error
-    connection = ibis.duckdb.connect()
-    connection.create_table("probe_input", obj=rows)
-    connection.create_table("scratch_source", obj=[{"x": 1.0}])
-    session = _scratch_session(connection, tmp_path)
-    method = Method.cuped_multicovariate(covariates=declarations)
-    request = _ResolvedCupedRequest(
-        identity=("warehouse_qr_regression",),
-        control=arms[0],
-        arm_order=arms,
-        method=method,
-    )
-    original_create = type(connection).create_table
+        local = error
+    with _QRWarehouse(tmp_path, {"probe_input": rows}) as warehouse:
+        actual = warehouse.fit(
+            "probe_input",
+            ratio=ratio,
+            arms=arms,
+            declarations=declarations,
+            transfers=transfers,
+            scratch_statements=scratch_statements,
+            statement_log=statement_log,
+            sql_nan=sql_nan,
+        )
+    return local, actual
 
-    def record_scratch_sql(backend, name, expression=None, *args, **kwargs):
-        if str(name).startswith("_cuped_qr_") and expression is not None:
-            sql = ibis.to_sql(expression, dialect="duckdb")
-            if scratch_statements is not None:
-                scratch_statements.append(sql)
-            if statement_log is not None:
-                statement_log.append(sql)
-        if expression is None:
-            return original_create(backend, name, *args, **kwargs)
-        return original_create(backend, name, expression, *args, **kwargs)
 
-    type(connection).create_table = record_scratch_sql
-    original_drop = type(connection).drop_table
-
-    def record_scratch_drop(backend, name, *args, **kwargs):
-        if str(name).startswith("_cuped_qr_") and statement_log is not None:
-            statement_log.append("")
-        return original_drop(backend, name, *args, **kwargs)
-
-    type(connection).drop_table = record_scratch_drop
-
-    def execute(expression):
-        if statement_log is not None:
-            statement_log.append(ibis.to_sql(expression, dialect="duckdb"))
-        result = connection.to_pyarrow(expression)
-        if transfers is not None:
-            transfers.extend(result.to_pylist())
-        return result
-
-    try:
-        with session.qr_scratch() as scratch:
-            relation = connection.table("probe_input")
-            if sql_nan:
-                relation = relation.mutate(x=ibis.literal(float("nan")).cast("float64"))
-            actual = fit_warehouse_qr(
-                relation,
-                metric=SimpleNamespace(name="probe", type="ratio" if ratio else "mean"),
-                request=request,
-                execute=execute,
-                scratch=scratch,
-            )
-        return (local_error if local_error is not None else local), actual
-    finally:
-        type(connection).create_table = original_create
-        type(connection).drop_table = original_drop
-        session.drop_materialized()
-        connection.disconnect()
+def _scale_pair(warehouse: _QRWarehouse, table: str, *, ratio: bool):
+    kinds, declarations = _probe_covariates(categorical=True)
+    local = _local_fit(warehouse.rows[table], ratio=ratio, arms=THREE_ARMS, kinds=kinds)
+    actual = warehouse.fit(table, ratio=ratio, arms=THREE_ARMS, declarations=declarations)
+    return local, actual
 
 
 def _assert_magnitude_refusal(rows, *, ratio, tmp_path, component, bound):
@@ -155,10 +233,9 @@ def _assert_magnitude_refusal(rows, *, ratio, tmp_path, component, bound):
 
 
 def _mixed_scale_rows(scale_exponent: int, *, denominator: bool = False, joint: bool = False):
-    arms = ("control", "variant-a", "variant-b")
     rows = []
     outcome_exponent = 0 if denominator else scale_exponent
-    for arm_index, arm in enumerate(arms):
+    for arm_index, arm in enumerate(THREE_ARMS):
         for index in range(60):
             sign = -1 if index % 2 else 1
             row = {
@@ -260,41 +337,40 @@ def _same_scale_projection(actual, reference, factor: float, *, ratio: bool) -> 
     return True
 
 
-def _check_scale_equivariance(scale_exponent, tmp_path):
-    arms = ("control", "variant-a", "variant-b")
-    base_rows = _mixed_scale_rows(0)
-    scaled_rows = _mixed_scale_rows(scale_exponent)
+@backend_fixture()
+def scale_warehouse(scale_exponent, tmp_path):
+    with _QRWarehouse(
+        tmp_path,
+        {
+            "base": _mixed_scale_rows(0),
+            "scaled": _mixed_scale_rows(scale_exponent),
+            "denominator_scaled": _mixed_scale_rows(scale_exponent, denominator=True),
+            "joint_scaled": _mixed_scale_rows(scale_exponent, joint=True),
+        },
+    ) as warehouse:
+        yield warehouse
+
+
+def _check_scale_equivariance(scale_exponent, warehouse):
     factor = math.ldexp(1.0, scale_exponent)
 
-    base_mean_local, base_mean_warehouse = _fit_pair(
-        base_rows, ratio=False, tmp_path=tmp_path, arms=arms, categorical=True
-    )
-    mean_local, mean_warehouse = _fit_pair(
-        scaled_rows, ratio=False, tmp_path=tmp_path, arms=arms, categorical=True
-    )
+    base_mean_local, base_mean_warehouse = _scale_pair(warehouse, "base", ratio=False)
+    mean_local, mean_warehouse = _scale_pair(warehouse, "scaled", ratio=False)
     assert _same_scale_projection(mean_warehouse, base_mean_warehouse, factor, ratio=False)
     assert _same_scale_projection(mean_local, base_mean_local, factor, ratio=False)
     assert _same_scale_projection(mean_warehouse, mean_local, 1.0, ratio=False)
 
-    base_ratio_local, base_ratio_warehouse = _fit_pair(
-        base_rows, ratio=True, tmp_path=tmp_path, arms=arms, categorical=True
-    )
+    base_ratio_local, base_ratio_warehouse = _scale_pair(warehouse, "base", ratio=True)
     assert _same_scale_projection(base_ratio_warehouse, base_ratio_local, 1.0, ratio=True)
 
-    numerator_local, numerator_warehouse = _fit_pair(
-        scaled_rows, ratio=True, tmp_path=tmp_path, arms=arms, categorical=True
-    )
+    numerator_local, numerator_warehouse = _scale_pair(warehouse, "scaled", ratio=True)
     _assert_ratio_projection_scaled(
         numerator_warehouse, base_ratio_warehouse, factor, absolute_dof_invariant=False
     )
     assert _same_scale_projection(numerator_warehouse, numerator_local, 1.0, ratio=True)
 
-    denominator_local, denominator_warehouse = _fit_pair(
-        _mixed_scale_rows(scale_exponent, denominator=True),
-        ratio=True,
-        tmp_path=tmp_path,
-        arms=arms,
-        categorical=True,
+    denominator_local, denominator_warehouse = _scale_pair(
+        warehouse, "denominator_scaled", ratio=True
     )
     inverse_factor = math.ldexp(1.0, -scale_exponent)
     _assert_ratio_projection_scaled(
@@ -305,24 +381,28 @@ def _check_scale_equivariance(scale_exponent, tmp_path):
     )
     assert _same_scale_projection(denominator_warehouse, denominator_local, 1.0, ratio=True)
 
-    joint_local, joint_warehouse = _fit_pair(
-        _mixed_scale_rows(scale_exponent, joint=True),
-        ratio=True,
-        tmp_path=tmp_path,
-        arms=arms,
-        categorical=True,
-    )
+    joint_local, joint_warehouse = _scale_pair(warehouse, "joint_scaled", ratio=True)
     _assert_ratio_projection_scaled(
         joint_warehouse, base_ratio_warehouse, 1.0, absolute_dof_invariant=True
     )
     assert _same_scale_projection(joint_warehouse, joint_local, 1.0, ratio=True)
 
 
+# Every pull request checks the two extreme exponents; the interior ones run in the exhaustive gate.
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize("scale_exponent", [-167, -100, 0, 100, 163])
-def test_warehouse_qr_scale_equivariance_sweep(scale_exponent, tmp_path):
-    _check_scale_equivariance(scale_exponent, tmp_path)
+@pytest.mark.parametrize(
+    "scale_exponent",
+    [
+        -167,
+        pytest.param(-100, marks=pytest.mark.exhaustive),
+        pytest.param(0, marks=pytest.mark.exhaustive),
+        pytest.param(100, marks=pytest.mark.exhaustive),
+        163,
+    ],
+)
+def test_warehouse_qr_scale_equivariance_sweep(scale_exponent, scale_warehouse):
+    _check_scale_equivariance(scale_exponent, scale_warehouse)
 
 
 def test_out_of_range_same_sign_means_refuse(tmp_path):
@@ -638,6 +718,73 @@ def test_warehouse_qr_p4_three_arm_fit_has_bounded_statements_and_sql(tmp_path):
     bm_statements = [sql for sql in statements if "_qr_bm_" in str(sql).lower()]
     assert bm_statements
     assert max(map(len, bm_statements)) <= 80_000
+
+
+@pytest.mark.slow
+def test_compact_three_arm_ratio_cuped_batches_match_local_fit(tmp_path):
+    names = tuple(f"x{index}" for index in range(34))
+    # Inference needs p / n_min within the M1 leverage-ratio bound; 170 per arm is the minimum.
+    units_per_arm = 170
+    assert len(names) / units_per_arm <= M1_MAX_LEVERAGE_RATIO < len(names) / (units_per_arm - 1)
+    rng = np.random.default_rng(20261021)
+    rows = []
+    for arm_index, arm in enumerate(THREE_ARMS):
+        for index in range(units_per_arm):
+            values = rng.normal(size=len(names))
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index:03d}",
+                    "group_id": arm,
+                    "y": 12.0 + arm_index * 0.4 + 0.7 * values[0] + rng.normal(scale=0.3),
+                    "y_den": float(5 + index % 4),
+                    **dict(zip(names, values.tolist(), strict=True)),
+                }
+            )
+    local = _local_fit(rows, ratio=True, arms=THREE_ARMS, kinds=dict.fromkeys(names, "continuous"))
+    transfers, scratch_columns = [], []
+    with _QRWarehouse(tmp_path, {"probe_input": rows}) as warehouse:
+        actual = warehouse.fit(
+            "probe_input",
+            ratio=True,
+            arms=THREE_ARMS,
+            declarations=[CupedCovariate(name=name, kind="continuous") for name in names],
+            transfers=transfers,
+            scratch_columns=scratch_columns,
+        )
+
+    assert actual.p == len(names) == 34
+    # Three arms give six ordered contrasts; mirrors share, so each of the three pairs
+    # needs six BM jobs (absolute, relative, two log-ratio and two absolute-ratio
+    # components): 18 jobs. A job carries 2 * (3 + 34) + 1 = 75 columns, so the
+    # 1,200-column budget holds 15 jobs beside group_id: one full and one partial batch.
+    feature_relations = [
+        columns for columns in scratch_columns if "group_id" in columns and "t0" in columns
+    ]
+    assert len(feature_relations) == 2
+    assert all(len(columns) <= 1200 for columns in feature_relations)
+    jobs = [sum(name.startswith("t") for name in columns) for columns in feature_relations]
+    assert jobs[-1] < jobs[0]
+    assert transfers
+    assert not any("unit_id" in row for row in transfers)
+    for arm, comparison in permutations(THREE_ARMS, 2):
+        projections = {
+            "absolute": (
+                actual.absolute(arm, control=comparison),
+                local.absolute(arm, control=comparison),
+            ),
+            **{
+                f"ratio-{scale}": (
+                    actual.ratio(arm, control=comparison, scale=scale),
+                    local.ratio(arm, control=comparison, scale=scale),
+                )
+                for scale in ("log", "absolute")
+            },
+        }
+        for projection, (observed, expected) in projections.items():
+            for field in ("estimate", "se", "dof"):
+                assert getattr(observed, field) == pytest.approx(
+                    getattr(expected, field), rel=1e-9, abs=1e-11
+                ), (arm, comparison, projection, field)
 
 
 @pytest.mark.slow

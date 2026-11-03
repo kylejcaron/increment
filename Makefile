@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := install
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate selection-map benchmark
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-exhaustive test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate selection-map benchmark
 
 BENCHMARK_BASELINE ?=
 benchmark:
@@ -71,9 +71,12 @@ test-integration-fast:
 # Fast tiers stop at the first failure; long tiers report every failure.
 test-tier:
 	$(SLOT) $(PYTEST) --benchmark-skip -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(UNIT_CPU_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
-# Functional tests exclude Monte-Carlo calibration and notebook subprocesses.
+# Functional tests exclude Monte-Carlo calibration, notebook subprocesses and exhaustive grids.
 test-slow:
 	$(MAKE) test-tier TIER=slow
+# Complete cross-source grids and sweeps; the full matrix scope generates every parity cell.
+test-exhaustive:
+	INCREMENT_PARITY_MATRIX=full $(MAKE) test-tier TIER=exhaustive
 # One optional shard of the Monte-Carlo tier. Without machine-specific timing
 # data, pytest-split distributes collected tests evenly.
 # Example: `make test-parameter-recovery SPLITS=4 GROUP=1`.
@@ -95,7 +98,7 @@ test-scientific:
 	fi
 	$(MAKE) test-tier TIER=scientific SHARD_ARGS='--splits $(SPLITS) --group $(GROUP)'
 test-all:
-	$(MAKE) test-tier TIER=all
+	INCREMENT_PARITY_MATRIX=full $(MAKE) test-tier TIER=all
 test-versions:
 	uv run --with nox nox -s tests
 test-examples:
@@ -132,10 +135,10 @@ demo:
 	uv run --group dev --extra demo --extra tables --extra dashboard marimo edit examples/realistic_demo/
 examples:
 	uv run --group dev --extra demo --extra tables --extra dashboard marimo edit examples/ --no-token
-check: lint typecheck test-fast test-slow
+check: lint typecheck test-fast test-slow test-exhaustive
 
 # Local CI omits interpreter/floor matrices, Windows, notebooks and live warehouses.
-ci-local: lint typecheck test-fast test-slow test-doc-snippets
+ci-local: lint typecheck test-fast test-slow test-exhaustive test-doc-snippets
 	uv run --with nox nox -s tests_tables
 	uv run --with nox nox -s docs
 	uv build

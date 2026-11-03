@@ -527,6 +527,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "numerical_certification",
             "examples",
             "stress",
+            "exhaustive",
         ):
             if item.get_closest_marker(category) is not None:
                 raise pytest.UsageError(f"{item.nodeid}: {category} requires the slow mark")

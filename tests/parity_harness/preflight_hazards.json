@@ -1,0 +1,706 @@
+{
+  "hazards": [
+    {
+      "cell": "mean-run-winsor_percentile-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "evidence.raw_outcomes_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "mean-run-winsor_percentile-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "evidence.raw_outcomes_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "mean-run-sequential-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "sequential.route.unsupported",
+      "context": [
+        "reason"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "mean-run-sequential-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "sequential.route.unsupported",
+      "context": [
+        "reason"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "mean-run-sequential-utc-error-from_unit_summary",
+      "ingress": "from_unit_summary",
+      "code": "sequential.source.invalid",
+      "context": [
+        "reason"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "mean-run-observational-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "evidence.covariate_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-none-utc-error-from_unit_summary",
+      "ingress": "from_unit_summary",
+      "code": "evidence.breakout_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-none-utc-error-from_switchback_panel",
+      "ingress": "from_switchback_panel",
+      "code": "facade.analysis.contrast_unavailable",
+      "context": [
+        "method"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-none-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "evidence.breakout_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-winsor_percentile-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.metric.percentile_winsorization",
+      "context": [
+        "names",
+        "view"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-winsor_percentile-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.metric.percentile_winsorization",
+      "context": [
+        "names",
+        "view"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-winsor_percentile-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.metric.percentile_winsorization",
+      "context": [
+        "names",
+        "view"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-observational-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.view.observational",
+      "context": [
+        "view"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-observational-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.view.observational",
+      "context": [
+        "view"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-observational-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.view.observational",
+      "context": [
+        "view"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-ni_margin-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.margin.breakout",
+      "context": [
+        "names"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-ni_margin-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.margin.breakout",
+      "context": [
+        "names"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-breakout-ni_margin-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.margin.breakout",
+      "context": [
+        "names"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-none-utc-error-from_unit_summary",
+      "ingress": "from_unit_summary",
+      "code": "evidence.grain_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-none-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "evidence.grain_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-cuped-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "estimation.cuped.arm_no_covariate",
+      "context": [
+        "arm_group",
+        "arm_metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-winsor_fixed-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "evidence.operation_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "request",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-winsor_fixed-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "evidence.operation_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "request",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-winsor_fixed-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "evidence.operation_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "request",
+        "requested",
+        "route"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-cluster-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "facade.analysis.clustered_day_axis",
+      "context": [
+        "cluster",
+        "experiment",
+        "method"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-cluster-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "facade.analysis.clustered_day_axis",
+      "context": [
+        "cluster",
+        "experiment",
+        "method"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-observational-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "facade.analysis.observational_day_axis",
+      "context": [
+        "method"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-observational-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "facade.analysis.observational_day_axis",
+      "context": [
+        "method"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "mean-daily-observational-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "facade.analysis.observational_day_axis",
+      "context": [
+        "method"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "ratio-run-observational-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "estimation.adjust_common.supported_ratio_metric",
+      "context": [
+        "correction",
+        "family",
+        "method",
+        "metric",
+        "role"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "ratio-run-observational-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "estimation.adjust_common.supported_ratio_metric",
+      "context": [
+        "correction",
+        "family",
+        "method",
+        "metric",
+        "role"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "ratio-run-observational-utc-error-from_unit_summary",
+      "ingress": "from_unit_summary",
+      "code": "estimation.adjust_common.supported_ratio_metric",
+      "context": [
+        "correction",
+        "family",
+        "method",
+        "metric",
+        "role"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "ratio-run-observational-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "estimation.adjust_common.supported_ratio_metric",
+      "context": [
+        "correction",
+        "family",
+        "method",
+        "metric",
+        "role"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "ratio-run-observational-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "estimation.adjust_common.supported_ratio_metric",
+      "context": [
+        "correction",
+        "family",
+        "method",
+        "metric",
+        "role"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "retention-run-observational-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "source.frame.unit_frame_panel",
+      "context": [
+        "metric",
+        "route",
+        "shape"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "retention-breakout-sequential-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "sequential.route.unsupported",
+      "context": [
+        "reason"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "retention-breakout-sequential-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "sequential.route.unsupported",
+      "context": [
+        "reason"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "retention-daily-none-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "source.frame.retention_daily",
+      "context": [
+        "metric",
+        "route"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "retention-daily-sequential-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.inference.disjoint_slices",
+      "context": [
+        "inference",
+        "view"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "retention-daily-sequential-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "source.frame.retention_daily",
+      "context": [
+        "metric",
+        "route"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "retention-daily-sequential-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "evidence.grain_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "retention-daily-sequential-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.inference.disjoint_slices",
+      "context": [
+        "inference",
+        "view"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "retention-daily-sequential-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.inference.disjoint_slices",
+      "context": [
+        "inference",
+        "view"
+      ],
+      "stage": "construction"
+    },
+    {
+      "cell": "quantile-run-none-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "evidence.unit_rows_unavailable",
+      "context": [
+        "constructor",
+        "offered",
+        "requested",
+        "route"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "quantile-run-cuped-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "arm.metric.quantile_cuped",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-cuped-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "artifact.extension.invalid",
+      "context": [],
+      "stage": "declaration"
+    },
+    {
+      "cell": "quantile-run-cluster-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "arm.metric.quantile_cluster",
+      "context": [
+        "cluster",
+        "metric",
+        "metric_type"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-cluster-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "arm.metric.quantile_cluster",
+      "context": [
+        "cluster",
+        "metric",
+        "metric_type"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-observational-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.observational.quantile",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-observational-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.observational.quantile",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-observational-utc-error-from_unit_summary",
+      "ingress": "from_unit_summary",
+      "code": "readout.observational.quantile",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-observational-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.observational.quantile",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-observational-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "readout.observational.quantile",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-ni_margin-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.metric.quantile_alternative",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-ni_margin-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.metric.quantile_alternative",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-ni_margin-utc-error-from_unit_summary",
+      "ingress": "from_unit_summary",
+      "code": "readout.metric.quantile_alternative",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-ni_margin-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.metric.quantile_alternative",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-run-ni_margin-utc-error-from_moments",
+      "ingress": "from_moments",
+      "code": "readout.metric.quantile_alternative",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-breakout-none-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "readout.metric.quantile_breakout",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-breakout-none-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.metric.quantile_breakout",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-breakout-none-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.metric.quantile_breakout",
+      "context": [
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-daily-none-utc-error-from_definitions",
+      "ingress": "from_definitions",
+      "code": "breakout.quantile",
+      "context": [
+        "method",
+        "names",
+        "reason",
+        "remedy"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-daily-none-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.metric.quantile_grain",
+      "context": [
+        "grain",
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-daily-none-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "readout.metric.quantile_grain",
+      "context": [
+        "grain",
+        "metric"
+      ],
+      "stage": "preflight"
+    },
+    {
+      "cell": "quantile-asof-none-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "query.builders.asof_group_summary_metric_type_not_implemented",
+      "context": [
+        "metric_type"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "quantile-asof-none-utc-error-from_unit_panel",
+      "ingress": "from_unit_panel",
+      "code": "frame.asof.quantile_unsupported",
+      "context": [
+        "metric"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "quantile-asof-observational-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "readout.observational.quantile",
+      "context": [
+        "metric"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "windowed_quantile-run-none-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "frame.metric.window_days_supported",
+      "context": [
+        "name"
+      ],
+      "stage": "data"
+    },
+    {
+      "cell": "windowed_quantile-breakout-none-utc-error-from_unit_day_artifact",
+      "ingress": "from_unit_day_artifact",
+      "code": "frame.metric.window_days_supported",
+      "context": [
+        "name"
+      ],
+      "stage": "preflight"
+    }
+  ]
+}

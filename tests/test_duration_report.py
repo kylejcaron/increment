@@ -107,7 +107,7 @@ def test_aggregate_deduplicates_nodes_and_obeys_baseline_mode(
     artifacts = tmp_path / "artifacts"
     nodeid = "tests/test_shared.py::test_expensive"
     for shard in ("python-3.12", "python-3.14"):
-        report_dir = artifacts / shard
+        report_dir = artifacts / f"fast-junit-{shard}"
         report_dir.mkdir(parents=True)
         (report_dir / "junit.xml").write_text(
             '<testsuite><testcase classname="tests.test_shared" file="tests/test_shared.py" '
@@ -147,11 +147,11 @@ def test_incomplete_artifacts_warn_or_fail_by_mode(
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     if scenario == "unpaired":
-        shard = artifacts / "fast-1"
+        shard = artifacts / "fast-junit-1"
         shard.mkdir()
         (shard / "junit.xml").write_text("<testsuite/>")
     if scenario == "missing-shard":
-        shard = artifacts / "fast-1"
+        shard = artifacts / "fast-junit-1"
         shard.mkdir()
         (shard / "junit.xml").write_text("<testsuite/>")
         (shard / "junit-collection.json").write_text(
@@ -176,3 +176,41 @@ def test_incomplete_artifacts_warn_or_fail_by_mode(
     assert ("::warning::Incomplete duration evidence" in output) == (mode == "report")
     assert ("::error::Incomplete duration evidence" in output) == (mode == "enforce")
     assert result == (0 if mode == "report" else 1)
+
+
+def test_complete_required_shards_pass_beside_an_unrelated_exhaustive_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Only fast and functional-slow artifacts are duration evidence; an exhaustive report,
+    which carries no collection metadata, is outside the inventory."""
+    artifacts = tmp_path / "artifacts"
+    for directory, shard in (
+        ("fast-junit-3.12-shard-1-1", "3.12-1"),
+        ("slow-junit-shard-1-7-1", "slow-1"),
+    ):
+        report = artifacts / directory
+        report.mkdir(parents=True)
+        (report / "junit.xml").write_text("<testsuite/>")
+        (report / "junit-collection.json").write_text(
+            json.dumps({"shard_id": shard, "tier_nodeids": {"unit": []}})
+        )
+    unrelated = artifacts / "exhaustive-junit-shard-1-7-1"
+    unrelated.mkdir()
+    (unrelated / "junit.xml").write_text("<testsuite/>")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"mode":"enforce","max_over_budget":{"unit":0,"integration":0,"slow":0}}')
+
+    result = main(
+        [
+            "--artifacts-dir",
+            str(artifacts),
+            "--baseline",
+            str(baseline),
+            "--expected-shards",
+            "3.12-1,slow-1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Incomplete duration evidence" not in output
+    assert result == 0

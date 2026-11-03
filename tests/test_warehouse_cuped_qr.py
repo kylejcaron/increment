@@ -1551,10 +1551,12 @@ def _assert_fit_coordinates_equal(left_rows, right_rows):
         )
 
 
-# Keep the 34-column, three-batch ratio path covered; CI needs a longer timeout for DuckDB.
+# The 34-column, three-batch ratio path through a public builder; the compact regression test
+# checks the same batching on every pull request. CI needs a longer timeout for DuckDB.
 @pytest.mark.timeout(600)
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.exhaustive
 def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_path):
     import datetime as dt
 
