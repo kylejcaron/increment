@@ -132,7 +132,6 @@ class _ModuleState:
     mutations: dict[_Binding, tuple[_Mutation, ...]]
     stars: tuple[str, ...]
     uncertain_star_names: dict[str, _Uncertainty]
-    functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]
 
 
 @dataclass
@@ -146,7 +145,6 @@ class _Module:
     mutations: dict[_Binding, tuple[_Mutation, ...]] = field(default_factory=dict)
     uncertain_star_names: dict[str, _Uncertainty] = field(default_factory=dict)
     stars: list[str] = field(default_factory=list)
-    functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
 
     def define(
         self,
@@ -161,6 +159,10 @@ class _Module:
             binding,
             value_binding if value_binding is not None else value,
             owner if owner is not None else _Reference(self.owner.module, name, self.owner.scope),
+            value_binding.uncertainty
+            if isinstance(value_binding, _Binding)
+            and not isinstance(binding, (ast.AnnAssign, ast.TypeAlias))
+            else None,
         )
         self.assign(name, record)
 
@@ -183,6 +185,18 @@ class _Module:
             self.bindings[name] = record
         # A runtime binding supersedes a conditional star-import candidate.
         self.uncertain_star_names.pop(name, None)
+
+    def unknown(self, name: str, statement: ast.AST) -> None:
+        """Shadow an outer value without inventing a value for a runtime binding."""
+        self.assign(
+            name,
+            _Binding(
+                statement,
+                None,
+                _Reference(self.owner.module, name, self.owner.scope),
+                _Uncertainty(statement, (None,)),
+            ),
+        )
 
     def change(self, root: _Binding, mutation: _Mutation) -> None:
         self.mutations = {**self.mutations, root: (*self.mutations.get(root, ()), mutation)}
@@ -424,6 +438,8 @@ class _Source:
             # A call runs once the module or function body defining it has finished.
             mutations=self.body_changes(name, parent, late=True),
         )
+        for parameter in _parameters(node):
+            body.unknown(parameter.arg, parameter)
         self.scopes[key] = body
         self.bind(name, body, self.package(name))
         return body
@@ -435,6 +451,23 @@ class _Source:
         parent = self.module(module, scope).parent
         return None if parent is None else parent.scope
 
+    def runtime_uncertainty(
+        self, binding: ast.AST | _Binding | _Reference | None
+    ) -> _Uncertainty | None:
+        """Unknown runtime provenance, independent of any authoritative value annotation."""
+        seen: set[_Binding | _Reference] = set()
+        while isinstance(binding, (_Binding, _Reference)) and binding not in seen:
+            seen.add(binding)
+            if isinstance(binding, _Binding):
+                if binding.uncertainty is not None:
+                    return binding.uncertainty
+                binding = binding.value
+            elif binding.name is not None and self.path(binding.module) is not None:
+                binding = self.lookup(binding.module, binding.name, binding.scope)
+            else:
+                return None
+        return None
+
     def copied_binding(
         self,
         module: str,
@@ -444,17 +477,28 @@ class _Source:
     ) -> _Binding | _Reference | None:
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return None
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            parent = self.reference(module, node.value, scope, allow_forward_strings=False)
-            if parent is not None and parent.name is not None:
-                binding = self.lookup(parent.module, parent.name, parent.scope)
-                if isinstance(binding, _Binding) and binding.uncertainty is not None:
-                    return _Binding(
-                        node,
-                        None,
-                        owner or _Reference(module, node.attr, scope),
-                        binding.uncertainty,
-                    )
+        if isinstance(node, ast.Attribute):
+            parents = []
+            expression: ast.expr = node
+            while isinstance(expression, ast.Attribute):
+                parents.append(expression.value)
+                expression = expression.value
+            for expression in reversed(parents):
+                parent = self.reference(module, expression, scope, allow_forward_strings=False)
+                if (
+                    parent is not None
+                    and parent.name is not None
+                    and self.path(parent.module) is not None
+                ):
+                    binding = self.lookup(parent.module, parent.name, parent.scope)
+                    uncertainty = self.runtime_uncertainty(binding)
+                    if uncertainty is not None:
+                        return _Binding(
+                            node,
+                            None,
+                            owner or _Reference(module, node.attr, scope),
+                            uncertainty,
+                        )
         ref = self.reference(module, node, scope, allow_forward_strings=False)
         if ref is None:
             return None
@@ -501,7 +545,6 @@ class _Source:
             dict(module.mutations),
             tuple(module.stars),
             dict(module.uncertain_star_names),
-            {name: list(nodes) for name, nodes in module.functions.items()},
         )
 
     def _restore(self, module: _Module, state: _ModuleState) -> None:
@@ -510,7 +553,6 @@ class _Source:
         module.mutations = dict(state.mutations)
         module.stars = list(state.stars)
         module.uncertain_star_names = dict(state.uncertain_star_names)
-        module.functions = {name: list(nodes) for name, nodes in state.functions.items()}
 
     def _typing_condition_reference(
         self, module: str, node: ast.expr, scope: _Scope | None
@@ -715,21 +757,33 @@ class _Source:
                 if joined is not None and joined.uncertainty is not None:
                     bindings[name] = joined
                     uncertain_star_names[name] = joined.uncertainty
-        functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
-        for state in states:
-            for name, nodes in state.functions.items():
-                target = functions.setdefault(name, [])
-                target.extend(node for node in nodes if node not in target)
         module.declarations = declarations
         module.bindings = bindings
         module.mutations = mutations
         module.stars = ordered_stars
         module.uncertain_star_names = uncertain_star_names
-        module.functions = functions
+
+    def _unknown_target(
+        self,
+        name: str,
+        module: _Module,
+        statement: ast.stmt,
+        target: ast.expr | str,
+        scope: _Scope | None,
+    ) -> None:
+        if isinstance(target, str):
+            module.unknown(target, statement)
+            return
+        for leaf in _target_leaves(target):
+            if isinstance(leaf, ast.Name):
+                module.unknown(leaf.id, statement)
+            else:
+                self.change_containers(name, module, statement, leaf, scope)
 
     def _bind_control(
         self, name: str, module: _Module, package: str, node: ast.stmt, scope: _Scope | None
     ) -> bool:
+        targets: list[list[ast.expr | str]]
         if isinstance(node, ast.If):
             condition = self._condition(name, node.test, scope)
             self.guards[node] = condition
@@ -739,6 +793,7 @@ class _Source:
                 )
                 return True
             suites = [node.body, node.orelse] if node.orelse else [node.body, []]
+            targets = [[] for _ in suites]
         elif isinstance(node, (ast.Try, ast.TryStar)):
             if not node.handlers:
                 self._bind_suite(name, module, package, [*node.body, *node.orelse], scope)
@@ -748,8 +803,18 @@ class _Source:
                 [*node.body, *node.orelse],
                 *[handler.body for handler in node.handlers],
             ]
+            targets = [[], *[[handler.name] if handler.name else [] for handler in node.handlers]]
         elif isinstance(node, ast.Match):
             suites = [case.body for case in node.cases]
+            targets = []
+            for case in node.cases:
+                captures: list[ast.expr | str] = []
+                for pattern in ast.walk(case.pattern):
+                    if isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and pattern.name:
+                        captures.append(pattern.name)
+                    elif isinstance(pattern, ast.MatchMapping) and pattern.rest:
+                        captures.append(pattern.rest)
+                targets.append(captures)
             if not any(
                 isinstance(case.pattern, ast.MatchAs)
                 and case.pattern.pattern is None
@@ -757,28 +822,89 @@ class _Source:
                 for case in node.cases
             ):
                 suites.append([])
+                targets.append([])
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
             suites = [node.body, node.orelse, []]
+            targets = (
+                [[node.target], [node.target], []]
+                if isinstance(node, (ast.For, ast.AsyncFor))
+                else [[], [], []]
+            )
         elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    self._unknown_target(name, module, node, item.optional_vars, scope)
             self._bind_suite(name, module, package, node.body, scope)
             return True
         else:
             return False
         base = self._snapshot(module)
         states = []
-        for suite in suites:
+        for suite, stores in zip(suites, targets, strict=True):
             self._restore(module, base)
+            for target in stores:
+                self._unknown_target(name, module, node, target, scope)
             self._bind_suite(name, module, package, suite, scope)
+            if isinstance(node, (ast.Try, ast.TryStar)):
+                # Exception target names are cleared after their handler finishes.
+                for target in stores:
+                    self._unknown_target(name, module, node, target, scope)
             states.append(self._snapshot(module))
         self._merge_states(module, node, states)
         if isinstance(node, (ast.Try, ast.TryStar)):
             self._bind_suite(name, module, package, node.finalbody, scope)
         return True
 
+    def _named_expressions(
+        self, name: str, node: ast.AST, scope: _Scope | None
+    ) -> Iterator[ast.NamedExpr]:
+        """Stores an expression can evaluate, respecting known short circuits."""
+        if isinstance(node, ast.NamedExpr):
+            yield from self._named_expressions(name, node.value, scope)
+            yield node
+            return
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                yield from self._named_expressions(name, value, scope)
+                condition = self._condition(name, value, scope)
+                if (
+                    condition is False
+                    and isinstance(node.op, ast.And)
+                    or condition is True
+                    and isinstance(node.op, ast.Or)
+                ):
+                    return
+            return
+        if isinstance(node, ast.IfExp):
+            yield from self._named_expressions(name, node.test, scope)
+            condition = self._condition(name, node.test, scope)
+            branches = (
+                (node.body if condition else node.orelse,)
+                if condition is not None
+                else (node.body, node.orelse)
+            )
+            for branch in branches:
+                yield from self._named_expressions(name, branch, scope)
+            return
+        children: Sequence[ast.AST]
+        if isinstance(node, ast.Lambda):
+            children = [
+                *node.args.defaults,
+                *(value for value in node.args.kw_defaults if value is not None),
+            ]
+        else:
+            children = [
+                child for child in ast.iter_child_nodes(node) if not isinstance(child, ast.stmt)
+            ]
+        for child in children:
+            yield from self._named_expressions(name, child, scope)
+
     def _bind_suite(
         self, name: str, module: _Module, package: str, body: list[ast.stmt], scope: _Scope | None
     ) -> None:
         for node in body:
+            for expression in self._named_expressions(name, node, scope):
+                module.unknown(expression.target.id, expression)
             if self._bind_control(name, module, package, node, scope):
                 continue
             self._bind_statement(name, module, package, node, scope)
@@ -795,6 +921,7 @@ class _Source:
     ) -> None:
         exports = isinstance(module.tree, ast.Module)
         if isinstance(node, (*_FUNCTION, ast.ClassDef)):
+            previous = module.bindings.get(node.name)
             if isinstance(node, _FUNCTION):
                 # Decorators run with the definition; rebinding their names later changes nothing.
                 self.capture(
@@ -810,8 +937,14 @@ class _Source:
                 module.mutations = declared.mutations
             module.define(node.name, node)
             if isinstance(node, _FUNCTION):
-                self.overload_candidates[node] = tuple(module.functions.get(node.name, ()))
-                module.functions.setdefault(node.name, []).append(node)
+                previous_definition = previous.declaration if previous is not None else None
+                self.overload_candidates[node] = (
+                    (*self.overload_candidates[previous_definition], previous_definition)
+                    if isinstance(previous_definition, _FUNCTION)
+                    and previous is not None
+                    and previous.owner == _Reference(name, node.name, scope)
+                    else ()
+                )
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 module.define(
@@ -872,7 +1005,7 @@ class _Source:
             self.bind_augmented(name, module, node, scope)
         elif isinstance(node, ast.Delete):
             for target in node.targets:
-                self.change_containers(name, module, node, target, scope)
+                self._unknown_target(name, module, node, target, scope)
         elif (
             isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Call)
@@ -1840,19 +1973,39 @@ class _Source:
             for decorator in node.decorator_list
         )
 
-    def extended_binding(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _Binding | None:
-        """The earlier binding a decorator such as a property's `setter` builds this value from."""
+    def property_accessor(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[str, _Binding] | None:
+        """The accessor slot and property value captured by an accessor decorator."""
         decorators = self.scopes[_ValueScope(node)]
         for decorator in node.decorator_list:
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
             if (
                 isinstance(target, ast.Attribute)
+                and target.attr in {"getter", "setter", "deleter"}
                 and isinstance(target.value, ast.Name)
-                and target.value.id == node.name
-                and isinstance(previous := decorators.bindings.get(node.name), _Binding)
+                and isinstance(previous := decorators.bindings.get(target.value.id), _Binding)
             ):
-                return previous
+                return target.attr, previous
         return None
+
+    def property_functions(
+        self, module: str, node: ast.FunctionDef | ast.AsyncFunctionDef, scope: _Scope | None
+    ) -> dict[str, tuple[_Reference, ast.FunctionDef | ast.AsyncFunctionDef]]:
+        """Keep each property's latest accessor, including when cloned under another name."""
+        functions: dict[str, tuple[_Reference, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+        owner = _Reference(module, node.name, scope)
+        while True:
+            accessor = self.property_accessor(node)
+            slot = accessor[0] if accessor is not None else "getter"
+            functions.setdefault(slot, (owner, node))
+            if accessor is None:
+                return functions
+            previous = accessor[1]
+            owner, definition = self.member_contract(previous.owner, previous)
+            if not isinstance(definition, _FUNCTION):
+                return functions
+            node = definition
 
     def is_type_expression(
         self,
@@ -2185,26 +2338,26 @@ class _Source:
                 return {"alias": self.annotation(module, record, scope=scope)}
             node = declaration
         if isinstance(node, _FUNCTION):
-            sites = self.signature(module, node, scope)
-            # Overloads stay with the definition they preceded, under any later name.
-            overloads = [
-                definition
-                for definition in self.overload_candidates[node]
-                if self.is_overload(definition)
-            ]
-            for index, definition in enumerate(overloads, 1):
-                sites.update(
-                    {
-                        f"overload:{index}.{site}": count
-                        for site, count in self.signature(module, definition, scope).items()
-                    }
-                )
-            extended = self.extended_binding(node)
-            if extended is not None:
-                # A property accessor keeps the accessors it was built from.
-                owner, base = self.member_contract(extended.owner, extended)
-                earlier = {} if base is None else self.sites(owner.module, base, name, owner.scope)
-                for site, count in earlier.items():
+            sites: dict[str, int] = {}
+            for owner, definition in self.property_functions(module, node, scope).values():
+                current = self.signature(owner.module, definition, owner.scope)
+                # Overloads stay with the definition they preceded, under any later name.
+                overloads = []
+                for candidate in reversed(self.overload_candidates[definition]):
+                    if not self.is_overload(candidate):
+                        break
+                    overloads.append(candidate)
+                overloads.reverse()
+                for index, candidate in enumerate(overloads, 1):
+                    current.update(
+                        {
+                            f"overload:{index}.{site}": count
+                            for site, count in self.signature(
+                                owner.module, candidate, owner.scope
+                            ).items()
+                        }
+                    )
+                for site, count in current.items():
                     sites[site] = sites.get(site, 0) + count
             return sites
         if isinstance(node, ast.AnnAssign):

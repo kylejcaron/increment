@@ -521,6 +521,14 @@ in-place changes to an export container refuse.
 Unpacking a tuple or list display binds each name to its element, all evaluated
 before any name is rebound; a name unpacked from another value is unknown, so the
 checker refuses when an exported typing declaration depends on it.
+Function parameters and unsupported runtime stores, including loop targets and
+pattern captures, shadow outer names with unknown values. A public typing
+declaration that depends on one refuses rather than reusing an older alias.
+Ordinary reads and aliases of unknown runtime attributes do not refuse unless
+a typing declaration depends on them.
+Declared value annotations and unknown runtime provenance remain separate.
+Known boolean short circuits and conditional-expression choices skip inactive
+stores.
 Type-expression unions retain local `Any` counts when paired with
 an imported external type; generic subscripts with recognized type arguments do
 likewise, including external names re-exported through local modules. External
@@ -536,6 +544,8 @@ Unambiguous quoted arguments that do not resolve to `Any` remain ordinary
 zero-count names. Function and method overloads retain separate signature
 allowances, independent of their implementations. Decorators resolve when their
 definition runs, so rebinding `overload` afterwards does not drop an overload.
+A replacement function does not inherit the previous function's overloads;
+an alias captured before replacement keeps the original group.
 Standard typing factories inspect only type-bearing positions: type-variable
 constraints, bounds and defaults; `NewType` supertypes; `TypeAliasType` values;
 and `NamedTuple`/`TypedDict`
@@ -562,12 +572,12 @@ aliases. Only an attribute's final binding counts, whether an assignment, import
 function or class. An import is followed through local sources to an external
 object, which is opaque unless it is a typing name. Earlier values and definitions
 add no sites unless an annotation captured them, while field annotations always
-count, and a decorator built from the previous value, such as a property `setter`,
-keeps that value's accessors. A function assigned or imported as a public class
-attribute exposes its signature and the overloads defined before it under the
-attribute's name, even after the original name is rebound. Those overloads and
-annotations resolve where the function was defined, so a name the class body
-binds cannot hide them.
+count. A property update replaces its selected getter, setter or deleter and
+retains the other accessors, including when cloned under another name.
+A function assigned or imported as a public class attribute exposes its signature
+and the overloads defined before it under the attribute's name, even after the
+original name is rebound. Those overloads and annotations resolve where the
+function was defined, so a name the class body binds cannot hide them.
 Record declarations retain separate allowances per field. An ordinary value's
 declared annotation is authoritative, so its factory initializer does not add
 type sites, even when a class assigns that initializer separately.

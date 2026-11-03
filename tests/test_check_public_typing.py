@@ -2914,3 +2914,328 @@ def test_class_member_imports_stop_at_external_objects_on_every_route(tmp_path: 
     observed = (reexported, public_any(root, ["sample"]), main(args), baseline.read_text())
 
     assert observed == ({"sample.Holder": 1}, {"sample.Holder": 1}, 0, before)
+
+
+@pytest.mark.integration
+def test_property_updates_replace_only_the_selected_accessor_contract(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    @property
+                    def _value(self) -> Any: ...
+                    @_value.setter
+                    def _value(self, value: Any) -> None: ...
+                    @_value.getter
+                    def _value(self) -> str: ...
+                    @_value.setter
+                    def _value(self, value: str) -> None: ...
+                    value = _value
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("value: str", "value: Any"))
+
+    assert (public_any(root, ["sample"]), main(args), baseline.read_text()) == (
+        {"sample.Holder": 1},
+        1,
+        before,
+    )
+
+
+@pytest.mark.integration
+def test_cloned_property_keeps_the_getter_after_original_name_is_rebound(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    @property
+                    def value(self) -> str: ...
+                    @value.setter
+                    def writable(self, value: int) -> None: ...
+                    value = None
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("-> str", "-> Any"))
+
+    assert (public_any(root, ["sample"]), main(args), baseline.read_text()) == (
+        {"sample.Holder": 1},
+        1,
+        before,
+    )
+
+
+@pytest.mark.integration
+def test_factory_field_parameter_cannot_fall_through_to_an_outer_known_mapping(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import TypedDict
+                __all__ = ["Holder"]
+                _fields = {"value": str}
+                class Holder:
+                    def __init__(self, provided) -> None:
+                        Record = TypedDict("Record", _fields)
+                        self.record: Record
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("self, provided", "self, _fields"))
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_unsupported_runtime_stores_cannot_reuse_a_stale_annotation_alias(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from contextlib import nullcontext
+                from typing import Any
+                __all__ = ["read"]
+                _Payload = str
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    source = path.read_text()
+    stores = {
+        "loop": "for _Payload in (Any,):\n    pass",
+        "context": "with nullcontext(Any) as _Payload:\n    pass",
+        "pattern": "match Any:\n    case _Payload:\n        pass",
+        "expression": "(_Payload := Any)",
+        "deletion": "del _Payload",
+        "handler": "try:\n    raise ValueError\nexcept ValueError as _Payload:\n    pass",
+    }
+    observed = {}
+    for kind, statement in stores.items():
+        path.write_text(source.replace("def read(", f"{statement}\ndef read("))
+        try:
+            public_any(root, ["sample"])
+        except ValueError:
+            refused = True
+        else:
+            refused = False
+        observed[kind] = (refused, main(args), baseline.read_text() == before)
+
+    assert observed == dict.fromkeys(stores, (True, 1, True))
+
+
+@pytest.mark.integration
+def test_unknown_runtime_attributes_refuse_only_when_a_type_depends_on_them(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                __all__ = ["Holder"]
+                class Holder:
+                    def __init__(self, payload: object) -> None:
+                        alias = payload.outer.inner
+                        copied = alias.child
+                        self.value = copied
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(
+            "self.value = copied", "self.value = copied\n        self.typed: copied"
+        )
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_replacing_a_function_drops_old_overloads_but_a_captured_alias_keeps_them(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, overload
+                __all__ = ["read", "original"]
+                @overload
+                def read(value: Any) -> str: ...
+                @overload
+                def read(value: str) -> str: ...
+                def read(value: object) -> str: ...
+                original = read
+                def read(value: str) -> str: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.original": 1, "sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    source = path.read_text()
+    position = source.rfind("def read(value: str)")
+    path.write_text(source[:position] + source[position:].replace("value: str", "value: Any", 1))
+
+    assert (public_any(root, ["sample"]), main(args), baseline.read_text()) == (
+        {"sample.original": 1, "sample.read": 1},
+        1,
+        before,
+    )
+
+
+@pytest.mark.integration
+def test_external_runtime_attribute_discovery_keeps_external_sources_opaque(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["read"]
+                _implementation_version = sys.version_info.major
+                def read(value: str) -> str: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("value: str", "value: Any"))
+
+    assert (public_any(root, ["sample"]), main(args), baseline.read_text()) == (
+        {"sample.read": 1},
+        1,
+        before,
+    )
+
+
+@pytest.mark.integration
+def test_annotated_runtime_local_keeps_unknown_initializer_provenance_for_attribute_reads(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                __all__ = ["Holder"]
+                class Holder:
+                    def __init__(self, payload: object) -> None:
+                        alias: object = payload
+                        copied = alias.child
+                        self.value = copied
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(
+            "self.value = copied", "self.value = copied\n        self.typed: copied"
+        )
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_statically_short_circuited_expression_stores_do_not_replace_typing_bindings(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["read"]
+                _Payload = str
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    source = path.read_text()
+    expressions = (
+        ("False and (_Payload := Any)", "True and (_Payload := Any)"),
+        ("True or (_Payload := Any)", "False or (_Payload := Any)"),
+        ("None if True else (_Payload := Any)", "None if False else (_Payload := Any)"),
+        ("(_Payload := Any) if False else None", "(_Payload := Any) if True else None"),
+    )
+    observed = []
+    for inactive, active in expressions:
+        path.write_text(source.replace("def read(", f"_runtime = {inactive}\ndef read("))
+        try:
+            inactive_counts = public_any(root, ["sample"])
+        except ValueError:
+            inactive_counts = None
+        inactive_state = (inactive_counts, main(args), baseline.read_text() == before)
+        path.write_text(source.replace("def read(", f"_runtime = {active}\ndef read("))
+        try:
+            public_any(root, ["sample"])
+        except ValueError:
+            refused = True
+        else:
+            refused = False
+        observed.append((inactive_state, (refused, main(args), baseline.read_text() == before)))
+
+    assert observed == [(({"sample.read": 0}, 0, True), (True, 1, True))] * len(expressions)
