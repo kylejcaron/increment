@@ -260,17 +260,20 @@ For a `LiftEstimate` row `r`:
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 `c.estimate.ub`, `c.null_abs`, and `c.alternative`. All are additive.
 
-Scoped readouts carry a `source_snapshot_id` that identifies the canonical
-request, pinned source evidence and source identity, and integer sufficient
-statistics such as counts. The identity excludes floating-point aggregates
-and derived estimates, so the same unchanged evidence and request retains its
-identity even when warehouse reduction order changes the last bits of a
-floating-point result. Different requests, effective methods, populations, or
-sources remain distinct; a saved result retains the identity it was created
-with. If the request, pinned source identity, and counts stay the same while
-floating-point outcome data change, this identity cannot distinguish those
-changes. It is an identity for the recorded inputs, not a checksum of all
-numeric outputs.
+Scoped readouts carry a `source_snapshot_id` identifying the canonical request,
+pinned source evidence, and source identity. Ordinary moment evidence filters
+floating aggregate values from snapshot components, so harmless reduction-order
+differences do not change those components. Multicovariate linear readouts use
+raw moment-row fingerprints instead; their exact canonical fingerprints can
+differ when numerically equivalent aggregate moments differ in low bits.
+Counts, categorical evidence, request, methods, populations, and other declared
+identity inputs remain part of the snapshot. A saved result retains the identity
+it was created with.
+
+The separate `source_content_digest` records exact canonical estimation inputs
+as provenance. It does not round moment values or promise equality across
+constructors and aggregation orders. Compare estimates and intervals using the
+numerical tolerance appropriate to the quantity, not by comparing fingerprints.
 
 ## Read the result as a decision, not just a number
 
@@ -604,18 +607,20 @@ to change the planned alpha instead of widening a result after analysis.
     `row.sequential_result` when explicitly inspected.
     For a `LiftEstimate` row `r`, inspect `r.sequential_result`.
 
-    Scoped readouts carry a `source_snapshot_id` that identifies the
-    canonical request, pinned source evidence and source identity, and
-    integer sufficient statistics such as counts. The identity excludes
-    floating-point aggregates and derived estimates, so the same unchanged
-    evidence and request retains its identity even when warehouse reduction
-    order changes the last bits of a floating-point result. Different
-    requests, effective methods, populations, or sources remain distinct; a
-    saved result retains the identity it was created with. If the request,
-    pinned source identity, and counts stay the same while floating-point
-    outcome data change, this identity cannot distinguish those changes. It
-    is an identity for the recorded inputs, not a checksum of all numeric
-    outputs.
+    Scoped readouts carry a `source_snapshot_id` identifying the canonical
+    request, pinned source evidence, and source identity. Ordinary moment
+    evidence filters floating aggregate values from snapshot components, while
+    multicovariate linear readouts use raw moment-row fingerprints. The latter
+    can differ when numerically equivalent aggregate moments differ in low bits.
+    Counts, categorical evidence, request, methods, populations, and other
+    declared identity inputs remain part of the snapshot. A saved result retains
+    the identity it was created with.
+
+    The separate `source_content_digest` records exact canonical estimation
+    inputs as provenance. It does not round moment values or promise equality
+    across constructors and aggregation orders. Compare estimates and intervals
+    using the numerical tolerance appropriate to the quantity, not by comparing
+    fingerprints.
 
 ## Before you act
 

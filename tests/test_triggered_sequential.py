@@ -563,6 +563,8 @@ def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path)
         connection.disconnect()
 
 
+# Native capture, moments export and persisted replay must retain both populations.
+@pytest.mark.slow
 def test_trigger_declared_capture_reports_both_populations(tmp_path):
     connection = ibis.duckdb.connect()
     (experiment, resolver), path = _analysis(tmp_path, _events(), connection=connection)

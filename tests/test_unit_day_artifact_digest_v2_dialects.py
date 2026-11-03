@@ -61,6 +61,7 @@ def test_digest_scratch_cleanup_targets_created_namespace(
     class Connection:
         def __init__(self):
             self.name = backend
+            self.dialect = backend
             self.current_catalog = current_catalog
             self.current_database = current_database
             self.dropped = []

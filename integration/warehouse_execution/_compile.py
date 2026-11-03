@@ -247,18 +247,35 @@ def _transpile_captured_raw_sql(expression, dialect):
     from increment.query._nonfinite import _is_nan_sql
 
     def transpile(query, description):
-        if dialect == "snowflake":
+        if dialect in {"bigquery", "snowflake"}:
             statements = sqlglot.parse(query, read="duckdb")
             if len(statements) != 1:
                 raise ValueError(f"captured CUPED SQL {description} must contain one query")
             statement = statements[0]
-            for is_nan in tuple(statement.find_all(exp.IsNan)):
-                value = is_nan.this.sql(dialect=dialect)
-                is_nan.replace(_is_nan_sql(dialect, value))
-            for is_inf in tuple(statement.find_all(exp.IsInf)):
-                infinity = exp.Cast(this=exp.Literal.string("Inf"), to=exp.DataType.build("DOUBLE"))
-                is_inf.replace(exp.EQ(this=exp.Abs(this=is_inf.this.copy()), expression=infinity))
-            return statement.sql(dialect=dialect)
+            for cte in statement.find_all(exp.CTE):
+                cte.set("materialized", None)
+            if dialect == "snowflake":
+                for is_nan in tuple(statement.find_all(exp.IsNan)):
+                    value = is_nan.this.sql(dialect=dialect)
+                    is_nan.replace(_is_nan_sql(dialect, value))
+                for is_inf in tuple(statement.find_all(exp.IsInf)):
+                    infinity = exp.Cast(
+                        this=exp.Literal.string("Inf"),
+                        to=exp.DataType.build("DOUBLE"),
+                    )
+                    is_inf.replace(
+                        exp.EQ(this=exp.Abs(this=is_inf.this.copy()), expression=infinity)
+                    )
+                return statement.sql(dialect=dialect)
+
+            statements = sqlglot.transpile(
+                statement.sql(dialect="duckdb"),
+                read="duckdb",
+                write=dialect,
+            )
+            if len(statements) != 1:
+                raise ValueError(f"captured CUPED SQL {description} must contain one query")
+            return statements[0]
 
         statements = sqlglot.transpile(query, read="duckdb", write=dialect)
         if len(statements) != 1:

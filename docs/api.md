@@ -124,6 +124,10 @@ values.
 
 ### Earlier release notes
 
+- Release note (bug fix): `Experiment.from_json` now refuses unknown design
+  mechanisms with `design.mechanism_unsupported` before accepting the saved
+  declaration.
+
 - Release note (breaking API cutover): the public manifest now covers every
   promised namespace, including `errors`, `tables`, `store`, `simulate`, and
   the three `query` workflows. The following names leave the import promise;

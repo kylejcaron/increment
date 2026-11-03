@@ -37,6 +37,7 @@ def collect_refusal_specs() -> list[CodeEntry]:
             for parameter in inspect.signature(spec.render).parameters.values()
             if parameter.kind
             in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            and not parameter.name.startswith("_")
         }
         modules = {
             location.split("[", maxsplit=1)[0].rsplit(".", maxsplit=1)[0]

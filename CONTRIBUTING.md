@@ -113,6 +113,12 @@ statements executed during the fast tier (including pytest-cov's measured test
 workers); it does not measure the slow or scientific tiers, establish
 whole-suite coverage, or rate test quality.
 
+Every fast shard also reports non-skipped JUnit items above five elapsed seconds
+in its job summary. This is advisory: an over-budget item does not fail CI.
+Reduce unnecessary setup or input without crossing the tested boundary; keep
+irreducible warehouse, subprocess and exhaustive repository checks in the slow
+tier with a reason beside their marker.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include
@@ -673,6 +679,9 @@ on manual dispatch. It retains full test runs at dependency floors on all
 three Python versions, which nightly does not cover, plus all three live
 warehouse backends. Weekly failures create or update a GitHub issue labelled
 `weekly-failure`.
+Each interpreter's dependency-floor suite uses three duration-balanced parts,
+each with its own retained JUnit report and the same 90-minute limit. The
+retained numerical cases run once per interpreter, in the first part.
 
 
 #### Refusal registry gate

@@ -767,6 +767,22 @@ def test_materialize_table_creates_temp_and_tracks_name():
     assert s.materialized_names == []
 
 
+def test_materialized_cleanup_uses_connection_sqlglot_dialect(monkeypatch):
+    con, session = _session()
+    name = session.temp_name("dialect_cleanup")
+    session.materialize_table(name, con.table("t"), required=True)
+    assert name in con.list_tables(database=("temp", "main"))
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(con, "name", "singlestoredb")
+            session.drop_materialized()
+        assert name not in con.list_tables(database=("temp", "main"))
+        assert session.materialized_names == []
+    finally:
+        session.drop_materialized()
+        con.disconnect()
+
+
 @pytest.mark.integration
 def test_failed_insert_during_temp_materialization_is_cleaned_up():
     con, session = _session()
@@ -957,6 +973,7 @@ class _ScopedPostgresCursor:
 
 class _ScopedPostgresBackend:
     name = "postgres"
+    dialect = "postgres"
 
     def __init__(self, connection):
         self.con = connection
@@ -1026,6 +1043,7 @@ def test_snowflake_batch_owned_drop_closes_cursors():
 
     class Backend:
         name = "snowflake"
+        dialect = "snowflake"
 
         def __init__(self):
             self.tables = {"owned_a", "owned_b"}
@@ -1206,6 +1224,7 @@ def test_unresolved_backend_namespace_cleanup_survives_namespace_switch(
 
     adapter = SimpleNamespace(
         name=backend,
+        dialect=backend,
         current_catalog="memory",
         current_database="materialized",
         create_table=create_table,
@@ -1240,7 +1259,9 @@ def test_snowflake_unknown_creation_namespace_does_not_create(monkeypatch):
     con, session = _session()
     expr = con.table("t")
     before = con.list_tables(database=("temp", "main"))
-    adapter = SimpleNamespace(name="snowflake", current_catalog="memory", current_database=None)
+    adapter = SimpleNamespace(
+        name="snowflake", dialect="snowflake", current_catalog="memory", current_database=None
+    )
 
     def create_table(*args, **kwargs):
         pytest.fail("cannot safely create a TEMP table without a known namespace")
@@ -1313,6 +1334,7 @@ def test_non_duckdb_partial_temp_create_is_cleaned_in_creation_namespace(backend
 
     adapter = SimpleNamespace(
         name=backend,
+        dialect=backend,
         current_catalog="memory",
         current_database="materialized",
         _session_dataset=SimpleNamespace(project="memory", dataset_id="session_dataset"),

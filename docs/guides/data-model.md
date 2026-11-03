@@ -776,6 +776,9 @@ Definitions-backed analysis has two persistence boundaries:
 | `increment.workflows.materialize(experiment, resolver)` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
 | `increment.artifacts.publish_unit_day_artifact(experiment, resolver, store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. Obtain the trusted publication context with `increment.artifacts.artifact_context(experiment, resolver)`. A later process adopts it with `from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
+Session-local TEMP relations are removed when refreshed or when the resolver
+closes; they are not persistent warehouse tables.
+
 Internally, query core owns the shared artifact contracts and relation schemas;
 the bundled artifact extension supplies publication, reader, digest, and capture
 implementations through the typed `increment.artifact_ports` entry point. The

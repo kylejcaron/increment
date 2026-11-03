@@ -14,8 +14,8 @@ Retired codes and their replacements are listed below.
 | `absorption.summary_duplicate_rows` | `InvalidRequestError` | `factor`, `named` | `increment.absorption` |
 | `absorption.summary_eager_dataframe` | `InvalidRequestError` | — | `increment.absorption` |
 | `absorption.summary_missing_columns` | `InvalidRequestError` | `missing` | `increment.absorption` |
-| `adjust.variance_reduction.unsupported` | `UnsupportedRequestError` | `method`, `variance_reduction` | `increment.estimation.adjust` |
-| `adjust.winsorization.percentile_unsupported` | `CapabilityError` | `metric` | `increment.estimation.adjust` |
+| `adjust.variance_reduction.unsupported` | `UnsupportedRequestError` | `method`, `variance_reduction` | `increment.estimation.adjust`, `increment.plan` |
+| `adjust.winsorization.percentile_unsupported` | `CapabilityError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
 | `allocation.alpha.underflow` | `InvalidRequestError` | `denominator`, `multiplier`, `numerator` | `increment.compatibility` |
 | `analysis.planning_baseline.cluster_icc_not_estimable` | `CapabilityError` | `control_clusters`, `control_units` | `increment._planning_baseline` |
 | `analysis.planning_baseline.covariate_source_unavailable` | `CapabilityError` | `metric` | `increment._planning_baseline` |
@@ -27,21 +27,21 @@ Retired codes and their replacements are listed below.
 | `analysis.planning_baseline.trigger_membership_unavailable` | `CapabilityError` | `analyzed_clusters`, `assigned_clusters`, `control_group`, `metric`, `route` | `increment._planning_baseline` |
 | `analysis.planning_baseline.trigger_metric_population_unavailable` | `CapabilityError` | `control_group`, `eligible_units`, `metric`, `observed_units`, `route`, `trigger` | `increment._planning_baseline` |
 | `analysis.planning_baseline.trigger_population_inconsistent` | `CapabilityError` | `analyzed_clusters`, `assigned_clusters`, `assigned_units`, `derived_mean`, `metric`, `observed_mean`, `route`, `trigger_rate` | `increment._planning_baseline` |
-| `arm.adjustment.cluster_cuped` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.adjustment.cluster_prior` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.adjustment.sequential_cuped` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.adjustment.sequential_prior` | `InvalidRequestError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.baseline.absorption_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.baseline.cluster_size_required` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.baseline.compliance_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.baseline.cuped_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.baseline.iid_cluster_knobs` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.baseline.triggering_undeclared` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.inference.cluster` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.metric.quantile_cluster` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.metric.quantile_cuped` | `UnsupportedRequestError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.metric.quantile_sequential` | `UnsupportedRequestError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `arm.metric.unsupported` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `arm.adjustment.cluster_cuped` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.adjustment.cluster_prior` | `CapabilityError` | `cluster`, `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.adjustment.sequential_cuped` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.adjustment.sequential_prior` | `InvalidRequestError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.baseline.absorption_undeclared` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.baseline.cluster_size_required` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.baseline.compliance_undeclared` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.baseline.cuped_undeclared` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.baseline.iid_cluster_knobs` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.baseline.triggering_undeclared` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.inference.cluster` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.metric.quantile_cluster` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.metric.quantile_cuped` | `UnsupportedRequestError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.metric.quantile_sequential` | `UnsupportedRequestError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `arm.metric.unsupported` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
 | `arm_planning.guardrail_neutral_requires_direction` | `InvalidRequestError` | `alternative`, `preferred_direction` | `increment.estimation.arm_contract` |
 | `arm_planning.guardrail_preferred_direction_conflict` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `arm_planning.guardrail_requires_one_sided` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
@@ -53,11 +53,11 @@ Retired codes and their replacements are listed below.
 | `arm_planning.secondaries_without_secondary_role` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `arm_planning.secondary_requires_count` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
 | `arm_planning.sequential_secondary_one_arm` | `InvalidRequestError` | — | `increment.estimation.arm_contract` |
-| `artifact.artifact_contract.refusal_code` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
-| `artifact.context.legacy_exclusion_acknowledged` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.context.mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.coverage_dates_date` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
-| `artifact.cuped.scalar_breakout` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.artifact_contract.refusal_code` | `InvalidRequestError` | — | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.context.legacy_exclusion_acknowledged` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.context.mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.coverage_dates_date` | `InvalidRequestError` | — | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.cuped.scalar_breakout` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
 | `artifact.digest.json` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.nonfinite` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.nullable` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
@@ -70,27 +70,27 @@ Retired codes and their replacements are listed below.
 | `artifact.digest.schema` | `ArtifactDigestError` | `constraint`, `field`, `position`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.timestamp` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
 | `artifact.digest.type` | `ArtifactDigestError` | `constraint`, `field`, `route`, `value` | `increment.query.artifact_digest` |
-| `artifact.evidence.unavailable` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.extension.invalid` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.extension.missing` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.first_ds_last` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
-| `artifact.format.unsupported` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.generation.dropped` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.identifier.unsafe` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.manifest.invalid` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.manifest.unreferenced_relation` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.metric.binding_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_reader` |
-| `artifact.on_mixed_assignment` | `InvalidRequestError` | — | `increment.query.artifact_contract` |
+| `artifact.evidence.unavailable` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.extension.invalid` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.extension.missing` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.first_ds_last` | `InvalidRequestError` | — | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.format.unsupported` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.generation.dropped` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.identifier.unsafe` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.manifest.invalid` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.manifest.unreferenced_relation` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.metric.binding_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.on_mixed_assignment` | `InvalidRequestError` | — | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
 | `artifact.operation.unsupported` | `CapabilityError` | `offered`, `operation`, `request`, `route` | `increment.query.artifact_reader` |
-| `artifact.refresh.context_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.refresh.invalid_ref` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
-| `artifact.relation.digest_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.refresh.context_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.refresh.invalid_ref` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
+| `artifact.relation.digest_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
 | `artifact.relation.invalid` | `CapabilityError` | `check`, `detail`, `relation` | `increment.query.artifact_reader` |
-| `artifact.relation.schema_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.relation.schema_mismatch` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
 | `artifact.request.trigger_metric_scope` | `InvalidRequestError` | — | `increment.semantics.artifact` |
-| `artifact.snapshot.mixed` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact.snapshot.mixed` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
 | `artifact.store.namespace` | `CapabilityError` | `message` | `increment.query.session` |
-| `artifact_contract.encouragement_uptake_conflict` | `ArtifactContractError` | `message` | `increment.query.artifact_contract` |
+| `artifact_contract.encouragement_uptake_conflict` | `ArtifactContractError` | `message` | `increment.query.artifact_contract`, `increment.query.artifact_extensions`, `increment.query.artifact_publish`, `increment.query.artifact_reader`, `increment.query.source` |
 | `breakout.breakout.exactly_one_lift` | `InvalidRequestError` | `reason` | `increment.breakout.estimates` |
 | `breakout.breakout.point_unavailable` | `InvalidRequestError` | — | `increment.breakout.estimates` |
 | `breakout.coerce_type_datetime` | `InvalidRequestError` | `type_name`, `v` | `increment.breakout.estimates` |
@@ -102,10 +102,10 @@ Retired codes and their replacements are listed below.
 | `breakout.metric_found_group` | `InvalidRequestError` | `declared_names`, `unknown_metrics` | `increment.breakout.estimates` |
 | `breakout.price_rollout_metrics` | `InvalidRequestError` | `misdirected` | `increment.breakout.rollout` |
 | `breakout.quantile` | `CapabilityError` | `method`, `names`, `reason`, `remedy` | `increment.breakout.estimates` |
-| `breakout.retention.completion` | `InvalidRequestError` | `fn_name`, `names` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `breakout.retention.completion` | `InvalidRequestError` | `fn_name`, `names` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `breakout.retention.daily` | `InvalidRequestError` | `fn_name`, `names` | `increment.breakout.estimates` |
 | `breakout.retention.encouragement` | `CapabilityError` | `fn_name`, `names` | `increment.breakout.estimates` |
-| `breakout.retention.unbounded` | `InvalidRequestError` | `fn_name`, `names`, `remedy`, `supported_view` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `breakout.retention.unbounded` | `InvalidRequestError` | `fn_name`, `names`, `remedy`, `supported_view` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `breakout.rollout_cost_names` | `InvalidRequestError` | `known`, `unknown` | `increment.breakout.rollout` |
 | `breakout.rollout_cost_rollout` | `InvalidRequestError` | `name`, `value` | `increment.breakout.rollout` |
 | `breakout.run_breakout_correction` | `InvalidRequestError` | `correction` | `increment.breakout.estimates` |
@@ -147,9 +147,9 @@ Retired codes and their replacements are listed below.
 | `compatibility.denominator` | `InvalidRequestError` | — | `increment.compatibility` |
 | `compatibility.multiplier` | `InvalidRequestError` | — | `increment.compatibility` |
 | `compatibility.support_unsupported` | `InvalidRequestError` | `support_type` | `increment.compatibility` |
-| `contrast.decision` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `contrast.inference` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
-| `contrast.metric` | `CapabilityError` | `_code`, `message`, `reason` | `increment.compatibility` |
+| `contrast.decision` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `contrast.inference` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
+| `contrast.metric` | `CapabilityError` | `message`, `reason` | `increment.compatibility`, `increment.estimation.adjust`, `increment.estimation.arm_contract` |
 | `conversion_inference.finite_sample.cuped` | `InvalidRequestError` | `adjusted_by`, `method` | `increment._finite_sample_refusals` |
 | `conversion_inference.finite_sample.metric_type` | `InvalidRequestError` | `metric_type` | `increment._finite_sample_refusals` |
 | `dashboard.invalid_config` | `InvalidRequestError` | `reason` | `increment.dashboard._data` |
@@ -364,16 +364,16 @@ Retired codes and their replacements are listed below.
 | `estimation.absorption.non_negative` | `InvalidRequestError` | `arr`, `name` | `increment.estimation.absorption` |
 | `estimation.absorption.one_dimensional_shape` | `InvalidRequestError` | `arr`, `name` | `increment.estimation.absorption` |
 | `estimation.absorption.pooling_one` | `InvalidRequestError` | `pooling`, `pooling_options` | `increment.estimation.absorption` |
-| `estimation.adjust.estimate_ate_every` | `UnsupportedRequestError` | — | `increment.estimation.adjust`, `increment.readouts._common` |
-| `estimation.adjust.method_name_unadjusted` | `InvalidRequestError` | — | `increment.estimation.adjust` |
-| `estimation.adjust.names_metrics_source` | `InvalidRequestError` | `by_name`, `label`, `unknown` | `increment.estimation.adjust` |
-| `estimation.adjust.prior.method_scale` | `InvalidRequestError` | — | `increment.estimation.adjust` |
-| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement` |
-| `estimation.adjust.prior_interpreted_call` | `InvalidRequestError` | — | `increment.estimation.adjust` |
-| `estimation.adjust.resolve_value_scales_null_abs_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust` |
-| `estimation.adjust.resolve_value_scales_null_lift_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust` |
-| `estimation.adjust.value_scale_names` | `InvalidRequestError` | `metric_type`, `name` | `increment.estimation.adjust` |
-| `estimation.adjust.value_scale_relative` | `InvalidRequestError` | `name`, `requested` | `increment.estimation.adjust` |
+| `estimation.adjust.estimate_ate_every` | `UnsupportedRequestError` | — | `increment.estimation.adjust`, `increment.plan`, `increment.readouts._common` |
+| `estimation.adjust.method_name_unadjusted` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.names_metrics_source` | `InvalidRequestError` | `by_name`, `label`, `unknown` | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.prior.method_scale` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.prior.type` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.plan` |
+| `estimation.adjust.prior_interpreted_call` | `InvalidRequestError` | — | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.resolve_value_scales_null_abs_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.resolve_value_scales_null_lift_on_absolute_metric` | `InvalidRequestError` | `metric` | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.value_scale_names` | `InvalidRequestError` | `metric_type`, `name` | `increment.estimation.adjust`, `increment.plan` |
+| `estimation.adjust.value_scale_relative` | `InvalidRequestError` | `name`, `requested` | `increment.estimation.adjust`, `increment.plan` |
 | `estimation.adjust_common.control_group_found` | `InvalidRequestError` | `available`, `control_group`, `metric` | `increment.estimation._adjust.common` |
 | `estimation.adjust_common.covariate_dtype` | `InvalidRequestError` | `contrast`, `covariate`, `dtype`, `method`, `metric` | `increment.estimation._adjust.common` |
 | `estimation.adjust_common.fold_training_split` | `InvalidRequestError` | `contrast`, `j`, `method`, `metric` | `increment.estimation._adjust.common` |
@@ -1066,8 +1066,8 @@ Retired codes and their replacements are listed below.
 | `frame.validation.from_unit_panel` | `InvalidRequestError` | `covered`, `retention` | `increment._frame_validation` |
 | `frame.validation.group_label_collision` | `InvalidRequestError` | `collision`, `group`, `route` | `increment._frame_validation` |
 | `frame.validation.group_label_reserved` | `InvalidRequestError` | `group`, `labels`, `route` | `increment._frame_validation` |
-| `frame.validation.metric_covariate_column` | `InvalidRequestError` | `covariate`, `metric`, `n_missing` | `increment._frame_moments`, `increment._frame_validation`, `increment.query.native_source` |
-| `frame.validation.metric_covariate_impute_all_null` | `InvalidRequestError` | `covariate`, `metric` | `increment._frame_moments`, `increment._frame_validation`, `increment.query.native_source` |
+| `frame.validation.metric_covariate_column` | `InvalidRequestError` | `covariate`, `metric`, `n_missing` | `increment._frame_moments`, `increment._frame_validation`, `increment.breakout.estimates`, `increment.query.native_source`, `increment.readouts._breakout`, `increment.readouts._encouragement`, `increment.readouts._metric_rows`, `increment.readouts._passes` |
+| `frame.validation.metric_covariate_impute_all_null` | `InvalidRequestError` | `covariate`, `metric` | `increment._frame_moments`, `increment._frame_validation`, `increment.breakout.estimates`, `increment.query.native_source`, `increment.readouts._breakout`, `increment.readouts._encouragement`, `increment.readouts._metric_rows`, `increment.readouts._passes` |
 | `frame.validation.metric_value_missing` | `InvalidRequestError` | `column`, `metric`, `n_missing` | `increment._frame_validation` |
 | `frame.winsorization.collapsed_bound` | `CapabilityError` | `clipped`, `date`, `lower`, `metric`, `upper` | `increment._frame_moments` |
 | `identification.encouragement.exclusion_required` | `IdentificationError` | `available_estimands`, `estimands`, `required_assumption` | `increment.estimation.encouragement` |
@@ -1097,38 +1097,38 @@ Retired codes and their replacements are listed below.
 | `kernel.scope.family_mismatch` | `CapabilityError` | `experiment_id`, `view` | `increment._runnability` |
 | `kernel.scope.invalid` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
 | `kernel.snapshot.integrity` | `InvalidRequestError` | `snapshot_id`, `stream` | `increment.kernel.contracts` |
-| `logged_policy.inference.adaptive_logging_unsupported` | `CapabilityError` | `logging_policy_keys`, `logging_policy_versions`, `update_batches` | `increment.logged_policy._refusals` |
-| `logged_policy.inference.alpha` | `InvalidRequestError` | `alpha` | `increment.logged_policy._refusals` |
-| `logged_policy.inference.cluster_floor` | `CapabilityError` | `ess_by_time`, `max_weight_by_time`, `min_propensity_by_time`, `minimum_total_units`, `n_units` | `increment.logged_policy._refusals` |
-| `logged_policy.inference.unrepresentable` | `CapabilityError` | `estimate`, `nonfinite`, `reference_value`, `se`, `target_value` | `increment.logged_policy._refusals` |
-| `logged_policy.policy.json_context_key` | `CapabilityError` | `key_types`, `policy_id`, `route`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.registry.duplicate` | `InvalidRequestError` | `policy_id`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.support.action_unsupported` | `CapabilityError` | `action`, `decision_index`, `policy_id`, `policy_probability`, `unit_id`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.support.context_unsupported` | `CapabilityError` | `context`, `context_key`, `policy_id`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.support.ess_floor` | `CapabilityError` | `decision_index`, `ess`, `floor`, `policy_id`, `reference_ess_by_time`, `target_ess_by_time`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.support.policy_not_normalized` | `CapabilityError` | `context`, `policy_id`, `probabilities`, `version` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.admission_route` | `InvalidRequestError` | `alternatives`, `supplied` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.boundary_awareness_mixed` | `InvalidRequestError` | `decision_index`, `decision_time`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.boundary_before_decision` | `InvalidRequestError` | `decision_index`, `decision_time`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.candidate_set_mismatch` | `InvalidRequestError` | `candidate_actions`, `chosen_action`, `decision_index`, `expected_candidate_actions`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.context_value_unsupported` | `InvalidRequestError` | `value_type` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.decision_time_awareness_mixed` | `InvalidRequestError` | `decision_index`, `decision_time`, `reference_decision_index`, `reference_decision_time`, `reference_unit_id`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.empty` | `InvalidRequestError` | `constructors`, `n_records` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.incomplete_horizon` | `InvalidRequestError` | `horizon`, `observed_horizon`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.logging_distribution_keys` | `InvalidRequestError` | `actions`, `decision_index`, `expected_actions`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.logging_distribution_misaligned` | `InvalidRequestError` | `n_distributions`, `n_records` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.logging_policy_unregistered` | `InvalidRequestError` | `decision_index`, `logging_policy_id`, `logging_policy_version`, `registered`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.missing_columns` | `InvalidRequestError` | `missing` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.open_reward` | `InvalidRequestError` | `decision_index`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_below_floor` | `InvalidRequestError` | `action`, `context`, `decision_index`, `floor`, `logging_policy_id`, `logging_policy_version`, `propensity`, `route`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_missing` | `InvalidRequestError` | `decision_index`, `logging_policy_id`, `logging_policy_version`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_nonfinite` | `InvalidRequestError` | `decision_index`, `propensity`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_out_of_range` | `InvalidRequestError` | `decision_index`, `propensity`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.propensity_stale` | `InvalidRequestError` | `chosen_action`, `decision_index`, `logged`, `logging_policy_id`, `logging_policy_version`, `registered`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.registry_audit_required` | `InvalidRequestError` | `constructors` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.reward_nonfinite` | `InvalidRequestError` | `decision_index`, `reward`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.unit_id_missing` | `InvalidRequestError` | `row`, `unit_id` | `increment.logged_policy._refusals` |
-| `logged_policy.trace.unordered` | `InvalidRequestError` | `decision_indices`, `decision_times`, `unit_id` | `increment.logged_policy._refusals` |
+| `logged_policy.inference.adaptive_logging_unsupported` | `CapabilityError` | `logging_policy_keys`, `logging_policy_versions`, `update_batches` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.inference.alpha` | `InvalidRequestError` | `alpha` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.inference.cluster_floor` | `CapabilityError` | `ess_by_time`, `max_weight_by_time`, `min_propensity_by_time`, `minimum_total_units`, `n_units` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.inference.unrepresentable` | `CapabilityError` | `estimate`, `nonfinite`, `reference_value`, `se`, `target_value` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.policy.json_context_key` | `CapabilityError` | `key_types`, `policy_id`, `route`, `version` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.registry.duplicate` | `InvalidRequestError` | `policy_id`, `version` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.support.action_unsupported` | `CapabilityError` | `action`, `decision_index`, `policy_id`, `policy_probability`, `unit_id`, `version` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.support.context_unsupported` | `CapabilityError` | `context`, `context_key`, `policy_id`, `version` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.support.ess_floor` | `CapabilityError` | `decision_index`, `ess`, `floor`, `policy_id`, `reference_ess_by_time`, `target_ess_by_time`, `version` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.support.policy_not_normalized` | `CapabilityError` | `context`, `policy_id`, `probabilities`, `version` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.admission_route` | `InvalidRequestError` | `alternatives`, `supplied` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.boundary_awareness_mixed` | `InvalidRequestError` | `decision_index`, `decision_time`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.boundary_before_decision` | `InvalidRequestError` | `decision_index`, `decision_time`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.candidate_set_mismatch` | `InvalidRequestError` | `candidate_actions`, `chosen_action`, `decision_index`, `expected_candidate_actions`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.context_value_unsupported` | `InvalidRequestError` | `value_type` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.decision_time_awareness_mixed` | `InvalidRequestError` | `decision_index`, `decision_time`, `reference_decision_index`, `reference_decision_time`, `reference_unit_id`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.empty` | `InvalidRequestError` | `constructors`, `n_records` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.incomplete_horizon` | `InvalidRequestError` | `horizon`, `observed_horizon`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.logging_distribution_keys` | `InvalidRequestError` | `actions`, `decision_index`, `expected_actions`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.logging_distribution_misaligned` | `InvalidRequestError` | `n_distributions`, `n_records` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.logging_policy_unregistered` | `InvalidRequestError` | `decision_index`, `logging_policy_id`, `logging_policy_version`, `registered`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.missing_columns` | `InvalidRequestError` | `missing` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.open_reward` | `InvalidRequestError` | `decision_index`, `reward_observation_boundary`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_below_floor` | `InvalidRequestError` | `action`, `context`, `decision_index`, `floor`, `logging_policy_id`, `logging_policy_version`, `propensity`, `route`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_missing` | `InvalidRequestError` | `decision_index`, `logging_policy_id`, `logging_policy_version`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_nonfinite` | `InvalidRequestError` | `decision_index`, `propensity`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_out_of_range` | `InvalidRequestError` | `decision_index`, `propensity`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.propensity_stale` | `InvalidRequestError` | `chosen_action`, `decision_index`, `logged`, `logging_policy_id`, `logging_policy_version`, `registered`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.registry_audit_required` | `InvalidRequestError` | `constructors` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.reward_nonfinite` | `InvalidRequestError` | `decision_index`, `reward`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.unit_id_missing` | `InvalidRequestError` | `row`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
+| `logged_policy.trace.unordered` | `InvalidRequestError` | `decision_indices`, `decision_times`, `unit_id` | `increment.logged_policy`, `increment.logged_policy._refusals` |
 | `model.field.length` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
 | `model.field.literal` | `InvalidRequestError` | `constraint`, `field`, `model`, `value` | `increment.errors`, `increment.winsor` |
 | `model.field.missing` | `InvalidRequestError` | `field`, `model` | `increment.errors`, `increment.winsor` |
@@ -1365,12 +1365,12 @@ Retired codes and their replacements are listed below.
 | `query.session.warehouse_artifact.unknown_digest_format` | `InvalidRequestError` | `digest_format` | `increment.query.session` |
 | `query.session.warehouse_artifact.unknown_relation_role` | `InvalidRequestError` | `role` | `increment.query.session` |
 | `query.session.warehouse_artifact.verification_unavailable` | `InvalidRequestError` | `digest_format`, `relation`, `route` | `increment.query.session` |
-| `readout.adjustment.absolute_unadjusted` | `InvalidRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
+| `readout.adjustment.absolute_unadjusted` | `InvalidRequestError` | — | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.plan`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.alwaysvalid_under_encouragement` | `InvalidRequestError` | `method` | `increment.readouts._common` |
-| `readout.arms.no_treatment` | `InvalidRequestError` | `control_group`, `observed_arms` | `increment._readout_request`, `increment.estimation._readout_refusals` |
-| `readout.asof.cluster` | `CapabilityError` | `cluster` | `increment._readout_request`, `increment.estimation._readout_refusals` |
-| `readout.asof.segment_unsupported` | `UnsupportedRequestError` | `by` | `increment._readout_request`, `increment.estimation._readout_refusals` |
-| `readout.assignment.estimands` | `InvalidRequestError` | `estimands`, `mechanism` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.arms.no_treatment` | `InvalidRequestError` | `control_group`, `observed_arms` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.asof.cluster` | `CapabilityError` | `cluster` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.asof.segment_unsupported` | `UnsupportedRequestError` | `by` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.assignment.estimands` | `InvalidRequestError` | `estimands`, `mechanism` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.cell.key_invalid` | `InvalidRequestError` | `fields`, `kind` | `increment.declarations`, `increment.estimation.readout_types` |
 | `readout.cell.missing_arm` | `InvalidRequestError` | `group_id`, `metric`, `observed_arms` | `increment.estimation.readout_types` |
 | `readout.cell.missing_metric_observations` | `InvalidRequestError` | `group_id`, `metric`, `observed_arms` | `increment.estimation.readout_types` |
@@ -1383,15 +1383,15 @@ Retired codes and their replacements are listed below.
 | `readout.completed_encouragement_inference` | `InvalidRequestError` | `method`, `unbound`, `uptake_window_days` | `increment.readouts._common` |
 | `readout.contrast.request` | `InvalidRequestError` | `message` | `increment._evidence_dispatch` |
 | `readout.correction.invalid` | `InvalidRequestError` | `correction` | `increment.plan` |
-| `readout.design.required` | `InvalidRequestError` | `view` | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.design.required` | `InvalidRequestError` | `view` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.encouragement.asof_completion` | `InvalidRequestError` | `view` | `increment.estimation.encouragement` |
 | `readout.encouragement.asof_unbounded` | `InvalidRequestError` | `metrics`, `uptake_window_days` | `increment.estimation.encouragement` |
 | `readout.encouragement.cluster_ratio` | `CapabilityError` | `cluster`, `names` | `increment.estimation.encouragement` |
 | `readout.encouragement.correction` | `UnsupportedRequestError` | — | `increment.plan` |
-| `readout.encouragement.margin` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.encouragement` |
+| `readout.encouragement.margin` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.encouragement.retention` | `CapabilityError` | `names` | `increment.estimation.encouragement`, `increment.semantics.design` |
 | `readout.encouragement.value_scale` | `UnsupportedRequestError` | — | `increment.estimation.encouragement`, `increment.readouts._common` |
-| `readout.estimands.unknown` | `InvalidRequestError` | `supported`, `unknown` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.encouragement` |
+| `readout.estimands.unknown` | `InvalidRequestError` | `supported`, `unknown` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.estimate_lift_every` | `UnsupportedRequestError` | `failures` | `increment.readouts._common` |
 | `readout.failure.hypothesis_key_collision` | `InvalidRequestError` | `cell_keys`, `hypothesis` | `increment.estimation.readout_types` |
 | `readout.inference.disjoint_slices` | `UnsupportedRequestError` | `inference`, `view` | `increment.breakout.estimates` |
@@ -1399,18 +1399,18 @@ Retired codes and their replacements are listed below.
 | `readout.inference.sequential_view` | `UnsupportedRequestError` | `view` | `increment.estimation.encouragement` |
 | `readout.legacy.sampling_unreconstructible` | `InvalidRequestError` | `cell_key`, `missing_fields`, `remedy` | `increment.estimation.readout_types` |
 | `readout.legacy.scope_unreconstructible` | `UnsupportedRequestError` | `missing_fields`, `remedy`, `source` | `increment.estimation.readout_types` |
-| `readout.margin.breakout` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
-| `readout.metric.percentile_winsorization` | `CapabilityError` | `names`, `view` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
-| `readout.metric.quantile_alternative` | `UnsupportedRequestError` | `metric`, `route` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
-| `readout.metric.quantile_breakout` | `CapabilityError` | `metric`, `route` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.margin.breakout` | `UnsupportedRequestError` | `names` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.metric.percentile_winsorization` | `CapabilityError` | `names`, `view` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.metric.quantile_alternative` | `UnsupportedRequestError` | `metric`, `route` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.metric.quantile_breakout` | `CapabilityError` | `metric`, `route` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.metric.quantile_grain` | `CapabilityError` | `grain`, `metric` | `increment.sources` |
 | `readout.metric_declare_non` | `UnsupportedRequestError` | `combined` | `increment.readouts._common` |
-| `readout.observational.prior` | `InvalidRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
-| `readout.observational.quantile` | `UnsupportedRequestError` | `metric` | `increment._readout_request`, `increment.estimation._readout_refusals` |
-| `readout.randomized.value_scale` | `UnsupportedRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
-| `readout.request.readoutrequest_requires_one_resolved` | `InvalidRequestError` | — | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.observational.prior` | `InvalidRequestError` | — | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.plan`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.observational.quantile` | `UnsupportedRequestError` | `metric` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.randomized.value_scale` | `UnsupportedRequestError` | — | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.request.readoutrequest_requires_one_resolved` | `InvalidRequestError` | — | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.roster.undeclared_observed_arms` | `InvalidRequestError` | `analysis_population`, `declared_arms`, `undeclared_arms` | `increment.readouts._common` |
-| `readout.run.segment_unsupported` | `UnsupportedRequestError` | `metric` | `increment._readout_request`, `increment.estimation._readout_refusals` |
+| `readout.run.segment_unsupported` | `UnsupportedRequestError` | `metric` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.scalar_method_evidence` | `UnsupportedRequestError` | `method`, `route` | `increment._analysis_config` |
 | `readout.scope.cell_incomplete` | `InvalidRequestError` | `cell` | `increment.readouts._common` |
 | `readout.scope.cell_unresolved` | `InvalidRequestError` | `cell` | `increment.readouts._common` |
@@ -1427,13 +1427,13 @@ Retired codes and their replacements are listed below.
 | `readout.serialization.sequential_snapshot_required` | `WireFormatError` | `checkpoint_ids` | `increment.estimation.readout_types` |
 | `readout.serialization.unsupported_version` | `WireFormatError` | `kind`, `received`, `remedy`, `supported` | `increment.estimation.readout_types` |
 | `readout.srm_source_declared` | `InvalidRequestError` | — | `increment.readouts._common` |
-| `readout.value_scale.invalid` | `InvalidRequestError` | `metric`, `value_scale` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
-| `readout.value_scale.null` | `InvalidRequestError` | `metric` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.adjust` |
-| `readout.value_scale.unknown_metric` | `InvalidRequestError` | `selected`, `unknown` | `increment._readout_request`, `increment.estimation._readout_refusals`, `increment.estimation.engine` |
+| `readout.value_scale.invalid` | `InvalidRequestError` | `metric`, `value_scale` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.plan`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.value_scale.null` | `InvalidRequestError` | `metric` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.plan`, `increment.power.core`, `increment.power.pairwise` |
+| `readout.value_scale.unknown_metric` | `InvalidRequestError` | `selected`, `unknown` | `increment._readout_request`, `increment.breakout.estimates`, `increment.estimation._readout_refusals`, `increment.estimation.adjust`, `increment.estimation.encouragement`, `increment.estimation.engine`, `increment.power.core`, `increment.power.pairwise` |
 | `readout.value_scale_names` | `InvalidRequestError` | `metric_names`, `unknown_value_scale` | `increment.readouts._common` |
 | `readout.value_scale_randomized_absolute` | `UnsupportedRequestError` | — | `increment.readouts._common` |
 | `readout.view.observational` | `UnsupportedRequestError` | `view` | `increment.estimation.adjust`, `increment.plan` |
-| `readout.weight_diagnostics.not_applicable` | `UnsupportedRequestError` | `method` | `increment.estimation.adjust` |
+| `readout.weight_diagnostics.not_applicable` | `UnsupportedRequestError` | `method` | `increment.estimation.adjust`, `increment.plan` |
 | `report.metric.unsupported` | `CapabilityError` | `errors` | `increment.reporting` |
 | `reporting.alpha_finite` | `InvalidRequestError` | `alpha` | `increment.reporting` |
 | `reporting.metric_trend.unknown_backend` | `InvalidRequestError` | `backend` | `increment.reporting` |

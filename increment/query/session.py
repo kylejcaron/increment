@@ -1564,7 +1564,7 @@ def _drop_owned_table(
     drop_target = (
         {"tables": [target]} if "tables" in sqlglot.exp.Drop.arg_types else {"this": target}
     )
-    statement = sqlglot.exp.Drop(**drop_target, kind="TABLE", exists=True).sql(dialect=con.name)
+    statement = sqlglot.exp.Drop(**drop_target, kind="TABLE", exists=True).sql(dialect=con.dialect)
     with cast(Any, con)._safe_raw_sql(statement):
         pass
 

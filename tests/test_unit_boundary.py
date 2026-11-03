@@ -262,6 +262,8 @@ def _connecting_fixture_violations(source: str, filename: str) -> list[str]:
     return violations
 
 
+# Every test module must be parsed to detect newly connecting fixtures.
+@pytest.mark.slow
 def test_connecting_fixtures_are_backend_fixtures() -> None:
     violations = []
     for source_path in (PROJECT / "tests").rglob("*.py"):

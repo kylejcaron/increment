@@ -755,11 +755,12 @@ class TestUnavailableCompanionMde:
             )
 
 
+# Default-procedure parity needs one small finite-sample row.
 def test_power_curve_default_procedure_matches_scalar_power():
     curve = power_curve(
-        n_per_arm=1_000,
+        n_per_arm=40,
         baseline=BASELINE,
         relative_lift=0.1,
     )[0]
-    scalar = achieved_power(1_000, 0.1, BASELINE)
+    scalar = achieved_power(40, 0.1, BASELINE)
     assert curve.power == pytest.approx(scalar.power)
