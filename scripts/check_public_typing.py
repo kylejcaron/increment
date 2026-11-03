@@ -286,8 +286,10 @@ class _Source:
             ast.FunctionDef | ast.AsyncFunctionDef,
             tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...],
         ] = {}
-        # An overload chain whose earlier members differ by an unresolved branch.
-        self.ambiguous_overloads: dict[ast.FunctionDef | ast.AsyncFunctionDef, _Binding] = {}
+        # The unresolved branch join and owner that preceded an overload chain's first member.
+        self.ambiguous_overloads: dict[
+            ast.FunctionDef | ast.AsyncFunctionDef, tuple[_Binding, _Reference]
+        ] = {}
 
     def path(self, name: str) -> Path | None:
         path = self.root.joinpath(*name.split("."))
@@ -956,9 +958,9 @@ class _Source:
                         ]
                 else:
                     self.overload_candidates[node] = ()
-                    if self._branch_overloads(previous, owner):
-                        assert previous is not None
-                        self.ambiguous_overloads[node] = previous
+                    if isinstance(previous, _Binding) and previous.uncertainty is not None:
+                        # Inspected only if a public contract reaches this chain's start.
+                        self.ambiguous_overloads[node] = (previous, owner)
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 module.define(
@@ -1035,9 +1037,7 @@ class _Source:
             if not isinstance(candidate, _Binding) or candidate.owner != owner:
                 continue
             declaration = candidate.declaration
-            if isinstance(declaration, _FUNCTION) and (
-                self.is_overload(declaration) or declaration in self.ambiguous_overloads
-            ):
+            if isinstance(declaration, _FUNCTION) and self.is_overload(declaration):
                 return True
             if self._branch_overloads(candidate, owner):
                 return True
@@ -2380,8 +2380,10 @@ class _Source:
                         break
                     overloads.append(candidate)
                 if complete and definition in self.ambiguous_overloads:
-                    # The group's earlier overloads depend on a branch the check cannot decide.
-                    self.require_certain(self.ambiguous_overloads[definition])
+                    joined, owner_name = self.ambiguous_overloads[definition]
+                    if self._branch_overloads(joined, owner_name):
+                        # The group's earlier overloads depend on a branch the check cannot decide.
+                        self.require_certain(joined)
                 overloads.reverse()
                 for index, candidate in enumerate(overloads, 1):
                     current.update(

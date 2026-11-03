@@ -3276,3 +3276,55 @@ def test_overload_group_split_by_an_undecidable_branch_refuses(tmp_path: Path) -
         public_any(root, ["sample"])
     assert main(args) == 1
     assert baseline.read_text() == before
+
+
+@pytest.mark.integration
+def test_replacement_after_a_branch_join_of_implementations_keeps_its_own_signature(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any, overload
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    @overload
+                    def read(value: int) -> None: ...
+                def read(value: object) -> None: ...
+                if sys.platform == "darwin":
+                    def read(value: object) -> None: ...
+                def read(value: Any) -> None: ...
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
+
+
+@pytest.mark.integration
+def test_unexported_function_with_a_branch_dependent_decorator_does_not_refuse(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    from functools import cache as _decorate
+                else:
+                    from functools import lru_cache as _decorate
+                if sys.platform == "darwin":
+                    @_decorate
+                    def _helper() -> None: ...
+                def _helper() -> None: ...
+                def read(value: Any) -> None: ...
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
