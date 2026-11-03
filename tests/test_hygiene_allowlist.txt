@@ -93,6 +93,9 @@ tests/evidence_fixtures/transcript.py 8
 tests/evidence_fixtures/replay.py 5
 # Source-free observational and result-row assembly consumers.
 tests/evidence_fixtures/method_replay.py 6
+# Compound and unrouted request kinds the loader conformance table sends, and the
+# borrowed-scope switchback contrast acquisition.
+tests/test_loader_conformance.py 7
 # Borrowed internal day/contrast acquisition and source-free temporal scope consumers.
 tests/evidence_fixtures/temporal.py 44
 tests/test_analysis_breakout.py 3
