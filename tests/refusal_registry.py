@@ -169,11 +169,12 @@ def _child_scope_table(
             children.extend(child.get_children())
         else:
             children.append(child)
+    # Anonymous compiler scope names may be angle-bracketed.
     matches = [
         child
         for child in children
         if child.get_lineno() == node.lineno
-        and child.get_name() == name
+        and child.get_name() in (name, f"<{name}>")
         and _table_kind(child) == kind
     ]
     index = used.get(key, 0)

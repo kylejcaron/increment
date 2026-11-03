@@ -4,7 +4,9 @@ Analyze A/B tests in Python from dataframes or SQL warehouses. Increment provide
 
 Methods include exact constructions (such as Bernoulli e-processes), asymptotic approximations (such as `asymptotic_mean` confidence sequences), and empirically qualified procedures. Results may include diagnostics instead of refusing; see [Statistical limitations](limitations.md) for guarantees and known calibration gaps.
 
-Requires Python 3.12, 3.13, or 3.14.
+Requires Python 3.12 or newer. Core and dataframe analysis are tested on Python
+3.12–3.15; warehouse workflows are tested on 3.12–3.14. DuckDB-backed extras on
+Python 3.15 need a compatible DuckDB wheel.
 
 ## Install
 

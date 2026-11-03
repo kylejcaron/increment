@@ -66,7 +66,9 @@ agreement? Email kyle.j.caron@gmail.com before opening a pull request.
 
 ## Development
 
-Increment supports Python 3.12 through 3.14 and uses
+Increment requires Python 3.12 or newer. Core and dataframe checks cover Python
+3.12–3.15; use 3.12–3.14 for the warehouse-backed development environment below.
+The `tests_core-3.15` Nox session runs the core-only checks. Increment uses
 [uv](https://docs.astral.sh/uv/) for dependency management. From a checkout,
 create or update the development environment with:
 
