@@ -320,13 +320,6 @@ def _check_scale_equivariance(scale_exponent, tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize("scale_exponent", [-167, 0, 163])
-def test_warehouse_qr_scale_equivariance_smoke(scale_exponent, tmp_path):
-    _check_scale_equivariance(scale_exponent, tmp_path)
-
-
-@pytest.mark.integration
-@pytest.mark.slow
 @pytest.mark.parametrize("scale_exponent", [-167, -100, 0, 100, 163])
 def test_warehouse_qr_scale_equivariance_sweep(scale_exponent, tmp_path):
     _check_scale_equivariance(scale_exponent, tmp_path)

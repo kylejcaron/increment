@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 EVIDENCE_METHODS = frozenset({"unit_frame", "moments"})
 _SOURCE_NAMES = frozenset({"src", "source"})
 _ALLOWED = {
@@ -62,6 +64,8 @@ def test_estimation_reads_sources_only_through_facades():
     assert not violations, "\n".join(violations)
 
 
+# Scan every production module; narrowing the tree would miss forbidden acquisition routes.
+@pytest.mark.slow
 def test_loader_routes_stay_inside_acquisition_and_facades():  # noqa: C901
     root = Path(__file__).parents[1] / "increment"
     # The evidence layer plus the readout routes that request evidence.

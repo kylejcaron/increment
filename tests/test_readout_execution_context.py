@@ -837,6 +837,8 @@ def test_standalone_value_read_skips_separately_sourced_cuped_covariate(
         cast(Any, analysis_resolver).close()
 
 
+# Two property sources require real capture for both valid and missing-history fits.
+@pytest.mark.slow
 @pytest.mark.parametrize("missing_history_source", [None, "profiles_a", "profiles_b"])
 @pytest.mark.integration
 def test_captured_run_pins_each_source_for_same_property_covariates(
