@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - name: Check for CI benchmark baseline
@@ -46,7 +46,7 @@ jobs:
         run: uv run pytest tests/test_kernel_context_measurement.py -m benchmark -n 0
       - name: Retain nightly benchmark data
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark-${{ github.run_id }}-${{ github.run_attempt }}
           path: .benchmarks/
@@ -66,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
       - run: jq -s add .github/fast-test-durations.json .github/slow-test-durations.json > floor-test-durations.json
       - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml --cpu-report cpu.json -n auto --dist loadgroup --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path floor-test-durations.json
@@ -113,7 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       # The committed weights split the parts; --clean-durations keeps only the tests this part ran.
@@ -221,7 +221,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - name: Build selection map
@@ -265,7 +265,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv run --with nox nox -s tests_scientific -- --splits 4 --group ${{ matrix.group }} --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
       - name: Retain scientific JUnit report
@@ -285,7 +285,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - name: Log randomized-order seed
@@ -324,7 +324,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - run: make mutate CAMPAIGN=${{ matrix.campaign }} KILL_MATRIX=1
