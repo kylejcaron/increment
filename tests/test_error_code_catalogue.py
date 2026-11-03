@@ -63,6 +63,14 @@ def test_every_registered_code_appears_once() -> None:
                 )
             ),
         ),
+        "`arm.adjustment.cluster_prior`": (
+            "`CapabilityError`",
+            "`cluster`, `message`, `reason`",
+            (
+                "`increment.compatibility`, `increment.estimation.adjust`, "
+                "`increment.estimation.arm_contract`"
+            ),
+        ),
     }
     assert {code: metadata[code] for code in expected} == expected
 
