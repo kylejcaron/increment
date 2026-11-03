@@ -420,3 +420,44 @@ The original public-run detector failed inside capture, before estimation:
 `AssertionError: Duplicate capture key` for revenue/control (`1 failed in 4.08s`).
 The retained typed-acquisition detector preserves duplicate-key rejection.
 Each fault proof requires a separate pristine execution after restoration.
+
+## Public-journey fault proofs
+
+At `d8bcdc4a2c1a9c676171ae18a6fc86cffcfe1660`, four temporary production
+faults exercised all 16 retained public witnesses. Each failed its intended
+public contract, then passed in a separate pristine execution after byte-exact
+restoration. No fixture, expected result, assertion, tolerance or marker changed.
+All executions used `INCREMENT_REQUIRE_ALL_REGISTERED=1 make test TESTS=...`
+with fail-fast disabled.
+
+| Fault | Production boundary | Observed failure | Pristine result |
+| --- | --- | --- | --- |
+| A: captured evidence mislabeled live | `load_evidence_scope` capture status | All 13 standard catalogue entries failed their captured-coherence assertion: 13 failed, 0 errors, 15.68s | Same 13 entries passed, 15.40s |
+| B: captured switchback evidence mislabeled live | `_SwitchbackScopeProvider.scope` capture status | The switchback catalogue entry failed its captured-coherence assertion: 1 failed, 0 errors, 2.84s | Same entry passed, 2.58s |
+| C: skip reopening a closed artifact | `ResolverBinding.resolve` artifact-open guard | The second public read after `resolver.close()` failed with a missing snapshot-table `CatalogException`: 1 failed, 0 errors, 3.51s | Same adoption/reopen witness passed, 3.44s |
+| D: forward the wrong population | `request_evidence` primitive dispatch, replacing the dataclass population with `triggered` | Native results diverged from the forwarding provider's coded refusal at the existing parity assertion: 1 failed, 0 errors, 2.97s | Same forwarding witness passed, 6.68s |
+
+The exact catalogue coordinates exercised by A and B were:
+
+| Scenario | Source route | Fault |
+| --- | --- | --- |
+| `mean_ratio_conversion_cuped_fixed_horizon` | `from_definitions` | A |
+| `conversion_route_straddles_the_dense_threshold` | `from_unit_summary` | A |
+| `mean_ratio_conversion_cuped_fixed_horizon` | `from_moments` | A |
+| `mixed-cuped-multicovariate-fixed-horizon` | `from_unit_day_artifact` | A |
+| `quantile_tied_rounded_outcomes` | `from_unit_panel` | A |
+| `sequential-mixed-quantile-catalog-checkpoint` | `from_unit_summary` | A |
+| `triggered_daily` | `from_definitions` | A |
+| `triggered_asof` | `from_unit_day_artifact` | A |
+| `triggered-sitewide-population-results` | `from_definitions` | A |
+| `triggered_encouragement_compliance_asof` | `from_unit_day_artifact` | A |
+| `breakout_store_dimension` | `from_definitions` | A |
+| `clustered_assignment_integrity_scope` | `from_unit_day_artifact` | A |
+| `multiplicity_primary_secondaries_guardrail` | `from_definitions` | A |
+| `audit-switchback-neighboring-integers` | `from_switchback_panel` | B |
+
+C used `test_public_artifact_adoption_constructs_and_reopens`; its failure was
+the real second-read lifecycle error, not a startup failure or an asserted
+error expectation. D used `test_forwarding_provider_boundary_cell[run]` and
+reached the result/refusal parity assertion; the request remained a real typed
+dataclass and no fabricated provider was substituted.
