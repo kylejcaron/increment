@@ -3239,3 +3239,40 @@ def test_statically_short_circuited_expression_stores_do_not_replace_typing_bind
         observed.append((inactive_state, (refused, main(args), baseline.read_text() == before)))
 
     assert observed == [(({"sample.read": 0}, 0, True), (True, 1, True))] * len(expressions)
+
+
+@pytest.mark.integration
+def test_overload_group_split_by_an_undecidable_branch_refuses(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any, overload
+                __all__ = ["read"]
+                @overload
+                def read(value: Any) -> None: ...
+                def read(value: object) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(
+            "def read(value: object)",
+            'if sys.platform == "win32":\n'
+            "    @overload\n"
+            "    def read(value: int) -> None: ...\n"
+            "def read(value: object)",
+        )
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert main(args) == 1
+    assert baseline.read_text() == before

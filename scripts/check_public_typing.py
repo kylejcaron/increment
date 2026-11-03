@@ -286,6 +286,8 @@ class _Source:
             ast.FunctionDef | ast.AsyncFunctionDef,
             tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...],
         ] = {}
+        # An overload chain whose earlier members differ by an unresolved branch.
+        self.ambiguous_overloads: dict[ast.FunctionDef | ast.AsyncFunctionDef, _Binding] = {}
 
     def path(self, name: str) -> Path | None:
         path = self.root.joinpath(*name.split("."))
@@ -938,13 +940,25 @@ class _Source:
             module.define(node.name, node)
             if isinstance(node, _FUNCTION):
                 previous_definition = previous.declaration if previous is not None else None
-                self.overload_candidates[node] = (
-                    (*self.overload_candidates[previous_definition], previous_definition)
-                    if isinstance(previous_definition, _FUNCTION)
+                owner = _Reference(name, node.name, scope)
+                if (
+                    isinstance(previous_definition, _FUNCTION)
                     and previous is not None
-                    and previous.owner == _Reference(name, node.name, scope)
-                    else ()
-                )
+                    and previous.owner == owner
+                ):
+                    self.overload_candidates[node] = (
+                        *self.overload_candidates[previous_definition],
+                        previous_definition,
+                    )
+                    if previous_definition in self.ambiguous_overloads:
+                        self.ambiguous_overloads[node] = self.ambiguous_overloads[
+                            previous_definition
+                        ]
+                else:
+                    self.overload_candidates[node] = ()
+                    if self._branch_overloads(previous, owner):
+                        assert previous is not None
+                        self.ambiguous_overloads[node] = previous
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 module.define(
@@ -1012,6 +1026,22 @@ class _Source:
             and isinstance(node.value.func, ast.Attribute)
         ):
             self.bind_method_call(name, module, node, node.value, node.value.func, scope)
+
+    def _branch_overloads(self, binding: _Binding | _Reference | None, owner: _Reference) -> bool:
+        """Whether some unresolved alternative of a name continues an overload group."""
+        if not isinstance(binding, _Binding) or binding.uncertainty is None:
+            return False
+        for candidate in binding.uncertainty.candidates:
+            if not isinstance(candidate, _Binding) or candidate.owner != owner:
+                continue
+            declaration = candidate.declaration
+            if isinstance(declaration, _FUNCTION) and (
+                self.is_overload(declaration) or declaration in self.ambiguous_overloads
+            ):
+                return True
+            if self._branch_overloads(candidate, owner):
+                return True
+        return False
 
     def bind_targets(
         self, name: str, module: _Module, node: ast.Assign, scope: _Scope | None
@@ -2343,10 +2373,15 @@ class _Source:
                 current = self.signature(owner.module, definition, owner.scope)
                 # Overloads stay with the definition they preceded, under any later name.
                 overloads = []
+                complete = True
                 for candidate in reversed(self.overload_candidates[definition]):
                     if not self.is_overload(candidate):
+                        complete = False
                         break
                     overloads.append(candidate)
+                if complete and definition in self.ambiguous_overloads:
+                    # The group's earlier overloads depend on a branch the check cannot decide.
+                    self.require_certain(self.ambiguous_overloads[definition])
                 overloads.reverse()
                 for index, candidate in enumerate(overloads, 1):
                     current.update(

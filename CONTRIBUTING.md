@@ -528,7 +528,9 @@ Ordinary reads and aliases of unknown runtime attributes do not refuse unless
 a typing declaration depends on them.
 Declared value annotations and unknown runtime provenance remain separate.
 Known boolean short circuits and conditional-expression choices skip inactive
-stores.
+stores. Any other assignment expression rebinds its name for the whole statement
+containing it, including reads earlier in that statement and generator
+expressions that may run later; a typing declaration depending on it refuses.
 Type-expression unions retain local `Any` counts when paired with
 an imported external type; generic subscripts with recognized type arguments do
 likewise, including external names re-exported through local modules. External
@@ -545,7 +547,8 @@ zero-count names. Function and method overloads retain separate signature
 allowances, independent of their implementations. Decorators resolve when their
 definition runs, so rebinding `overload` afterwards does not drop an overload.
 A replacement function does not inherit the previous function's overloads;
-an alias captured before replacement keeps the original group.
+an alias captured before replacement keeps the original group. An overload group
+whose members differ by a branch the check cannot decide refuses.
 Standard typing factories inspect only type-bearing positions: type-variable
 constraints, bounds and defaults; `NewType` supertypes; `TypeAliasType` values;
 and `NamedTuple`/`TypedDict`
