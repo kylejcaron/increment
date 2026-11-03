@@ -510,6 +510,9 @@ count finitely through type constructors, including when re-exported under
 another name, while unresolved flat cycles refuse.
 Typing star imports use the standard-library export inventory; unresolved
 Any-bearing generic forms refuse rather than silently counting zero.
+When an unresolved conditional leaves a binding ambiguous and an exported
+typing declaration depends on it, the checker refuses rather than assuming
+either branch.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`

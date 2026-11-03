@@ -288,6 +288,30 @@ def test_assignment_alias_snapshots_any_before_name_rebinding(tmp_path: Path) ->
     )
 
 
+def test_compound_alias_and_class_field_keep_eager_bindings(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any as T
+                Rows = list[T]
+                class Record:
+                    values: list[T]
+                def quoted(value: "T") -> None: ...
+                type Lazy = list[T]
+                T = str
+                __all__ = ["Rows", "Record", "quoted", "Lazy"]
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {
+        "sample.Rows": 1,
+        "sample.Record": 1,
+        "sample.quoted": 0,
+        "sample.Lazy": 0,
+    }
+
+
 def test_relative_submodule_union_alias_resolves_without_importing_package(tmp_path: Path) -> None:
     root = _package(
         tmp_path,
@@ -407,6 +431,39 @@ def test_public_class_implicit_generic_alias_counts_any_growth(tmp_path: Path) -
         1,
         baseline_before_growth,
     )
+
+
+def test_public_class_alias_chains_resolve_declared_and_implicit_values(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TypeAlias, TypedDict
+                __all__ = ["Declared", "Implicit", "Factory", "PrivateOnly"]
+                class Declared:
+                    _Rows: TypeAlias = list[Any]
+                    Rows = _Rows
+                    _Unused: TypeAlias = list[Any]
+                class Implicit:
+                    _Rows = list[Any] | None
+                    Rows = _Rows
+                    _Unused = list[Any]
+                class Factory:
+                    _Rows = TypedDict("Rows", {"value": Any})
+                    Rows = _Rows
+                class PrivateOnly:
+                    _Rows: TypeAlias = list[Any]
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {
+        "sample.Declared": 1,
+        "sample.Implicit": 1,
+        "sample.Factory": 1,
+        "sample.PrivateOnly": 0,
+    }
 
 
 def test_valid_typevar_generic_does_not_resolve_its_name_as_an_annotation(tmp_path: Path) -> None:
@@ -717,6 +774,39 @@ def test_value_annotation_excludes_internal_factory_initializer_any(tmp_path: Pa
     baseline_before_initializer_change = baseline.read_text()
     observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
     assert observed == ({"sample.payload": 0}, 0, baseline_before_initializer_change)
+
+
+def test_public_any_annotation_survives_later_none_assignment(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["payload"]
+                payload: object
+                payload = None
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("payload: object", "payload: Any"))
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.payload": 0},
+        {"sample.payload": 1},
+        1,
+        baseline_before_growth,
+    )
 
 
 def test_typed_runtime_mapping_key_any_is_not_annotation(tmp_path: Path) -> None:
@@ -1149,6 +1239,47 @@ def test_star_imports_resolve_typing_and_explicit_local_exports(tmp_path: Path) 
     assert public_any(root, ["sample"]) == {"sample.convert": 2, "sample.forward": 2}
 
 
+@pytest.mark.parametrize(
+    ("module_source", "expected"),
+    [
+        (
+            """
+            Payload = str
+            from .types import *
+            __all__ = ["read"]
+            def read(value: Payload) -> int: ...
+            """,
+            {"sample.read": 1},
+        ),
+        (
+            """
+            from .types import *
+            Payload = str
+            __all__ = ["read"]
+            def read(value: Payload) -> int: ...
+            """,
+            {"sample.read": 0},
+        ),
+    ],
+    ids=["star-import-overrides-prior-binding", "binding-after-star-import-wins"],
+)
+def test_star_import_binding_precedence_follows_statement_order(
+    tmp_path: Path, module_source: str, expected: dict[str, int]
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": module_source,
+            "types.py": """
+                from typing import Any
+                __all__ = ["Payload"]
+                Payload = Any
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == expected
+
+
 def test_counts_any_in_public_fields_not_private_ones(tmp_path: Path) -> None:
     root = _package(
         tmp_path,
@@ -1184,6 +1315,55 @@ def test_counts_any_in_public_fields_not_private_ones(tmp_path: Path) -> None:
     )
 
     assert public_any(root, ["sample"]) == {"sample.Record": 6}
+
+
+def test_method_receiver_annotation_uses_module_not_class_namespace(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                _Payload = str
+                _AnyPayload = Any
+                __all__ = ["StringPayload", "AnyPayload"]
+                class StringPayload:
+                    _Payload = Any
+                    def __init__(self):
+                        Local = _Payload
+                        self.value: Local = None
+                        local: Any = None
+                        def nested():
+                            self.hidden: Any = None
+                class AnyPayload:
+                    _AnyPayload = str
+                    def __init__(self):
+                        Local = _AnyPayload
+                        self.value: Local = None
+                        local: Any = None
+                        def nested():
+                            self.hidden: Any = None
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("_Payload = str", "_Payload = Any"))
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.StringPayload": 0, "sample.AnyPayload": 1},
+        {"sample.StringPayload": 1, "sample.AnyPayload": 1},
+        1,
+        baseline_before_growth,
+    )
 
 
 def test_receiver_fields_in_compound_bodies_exclude_nested_scopes(tmp_path: Path) -> None:
@@ -1308,6 +1488,32 @@ def test_literal_string_attribute_owner_stays_opaque(
 ) -> None:
     root = _package(tmp_path, **{"__init__.py": module_source})
     assert public_any(root, ["sample"]) == expected
+
+
+def test_public_module_literal_attribute_is_excluded_but_type_alias_counts(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TypeAlias
+                __all__ = ["normalize", "Quoted", "read"]
+                normalize = "hello world".strip
+                Quoted: TypeAlias = "Any"
+                def read() -> str: ...
+            """,
+        },
+    )
+    expected = {
+        "sample.normalize": 0,
+        "sample.Quoted": 1,
+        "sample.read": 0,
+    }
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == expected
+    assert main([*args, "--write-baseline"]) == 0
 
 
 def test_class_realias_preserves_quoted_type_alias_context(tmp_path: Path) -> None:
@@ -1486,3 +1692,709 @@ def test_default_namespaces_use_manifest_headers_and_source_names(tmp_path: Path
     (root / "sample/other.py").write_text('__all__ = ["field", "new"]\nfield = 2\nnew = 3')
 
     assert main(args) == 1
+
+
+@pytest.mark.parametrize(
+    "conditional_definitions",
+    [
+        """
+        if sys.platform == "win32":
+            def read(value: Any) -> None: ...
+        else:
+            def read(value: str) -> None: ...
+        """,
+        """
+        if sys.platform == "win32":
+            def read(value: str) -> None: ...
+        else:
+            def read(value: Any) -> None: ...
+        """,
+    ],
+    ids=["any-first", "any-last"],
+)
+def test_unknown_platform_public_definitions_refuse_without_baseline_write(
+    tmp_path: Path, conditional_definitions: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["read"]
+                def read(value: str) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_condition = baseline.read_text()
+    (root / "sample/__init__.py").write_text(
+        "import sys\nfrom typing import Any\n__all__ = ['read']\n"
+        + dedent(conditional_definitions).lstrip()
+    )
+
+    try:
+        public_any(root, ["sample"])
+    except ValueError:
+        analysis_refused = True
+    else:
+        analysis_refused = False
+    observed = (
+        analysis_refused,
+        main(args),
+        main([*args, "--write-baseline"]),
+        baseline.read_text(),
+    )
+    assert observed == (True, 1, 1, baseline_before_condition)
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        """
+        if sys.platform == "win32":
+            _Payload = Any
+        else:
+            _Payload = str
+        """,
+        """
+        _Payload = Any
+        if sys.platform == "win32":
+            _Payload = str
+        """,
+        """
+        if sys.platform == "win32":
+            _Payload = Any
+        """,
+    ],
+    ids=["two-branch", "incoming-any", "incoming-absent"],
+)
+def test_unknown_private_alias_refuses_for_eager_public_signature(
+    tmp_path: Path, binding: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": (
+                "import sys\nfrom typing import Any\n__all__ = ['read']\n"
+                + dedent(binding).lstrip()
+                + "\ndef read(value: _Payload) -> None: ...\n"
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+def test_unknown_private_alias_refuses_for_generic_bound(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    _Payload = Any
+                else:
+                    _Payload = str
+                def read[T: _Payload](value: T) -> T: ...
+            """,
+        },
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+def test_unknown_private_alias_refuses_for_public_receiver_field(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["Record"]
+                if sys.platform == "win32":
+                    _Payload = Any
+                else:
+                    _Payload = str
+                class Record:
+                    def __init__(self) -> None:
+                        self.value: _Payload = None
+            """,
+        },
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+def test_late_binding_resolves_after_condition_without_rewriting_capture(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["early", "late"]
+                _Payload = Any
+                def early(value: _Payload) -> None: ...
+                if sys.platform == "win32":
+                    _Payload = str
+                type Rows = list[_Payload]
+                def late[T: _Payload](value: Rows) -> T: ...
+                _Payload = str
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {
+        "sample.early": 1,
+        "sample.late": 0,
+    }
+
+
+def test_known_conditions_and_runtime_value_fallbacks_remain_supported(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from importlib.metadata import PackageNotFoundError, version
+                from typing import Any, TYPE_CHECKING as static_view
+                __all__ = ["__version__", "checked", "literal_true", "literal_false", "Record"]
+                try:
+                    __version__ = version("increment")
+                except PackageNotFoundError:
+                    __version__ = "0.0.0.dev0"
+                if sys.platform == "win32":
+                    _Unused = Any
+                else:
+                    _Unused = str
+                if static_view:
+                    _Static = Any
+                else:
+                    _Static = str
+                def checked(value: _Static) -> None: ...
+                if True:
+                    _TrueValue = Any
+                else:
+                    _TrueValue = str
+                def literal_true(value: _TrueValue) -> None: ...
+                if False:
+                    _FalseValue = Any
+                else:
+                    _FalseValue = str
+                def literal_false(value: _FalseValue) -> None: ...
+                class Record:
+                    def populate(self, condition: bool) -> None:
+                        if condition:
+                            self.first: Any = None
+                        else:
+                            self.second: Any = None
+                        for item in ():
+                            self.iterated: Any = item
+                        while condition:
+                            self.repeated: Any = None
+                        try:
+                            self.tried: Any = None
+                        except Exception:
+                            self.caught: Any = None
+                        finally:
+                            self.finished: Any = None
+                        self.last: Any = None
+            """,
+        },
+    )
+    expected = {
+        "sample.__version__": 0,
+        "sample.checked": 1,
+        "sample.literal_true": 1,
+        "sample.literal_false": 0,
+        "sample.Record": 8,
+    }
+
+    assert public_any(root, ["sample"]) == expected
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert main([*args, "--write-baseline"]) == 0
+
+
+@pytest.mark.parametrize(
+    ("condition_setup", "condition"),
+    [
+        (
+            "TYPE_CHECKING = object()\n",
+            "TYPE_CHECKING",
+        ),
+        (
+            "from . import gates as gate\n",
+            "gate.TYPE_CHECKING",
+        ),
+    ],
+    ids=["shadowed-name", "unrelated-attribute"],
+)
+def test_type_checking_lookalikes_do_not_select_a_static_branch(
+    tmp_path: Path, condition_setup: str, condition: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": (
+                "from typing import Any\n"
+                + condition_setup
+                + "__all__ = ['read']\n"
+                + f"if {condition}:\n"
+                + "    _Payload = Any\n"
+                + "else:\n"
+                + "    _Payload = str\n"
+                + "def read(value: _Payload) -> None: ...\n"
+            ),
+            "gates.py": "TYPE_CHECKING = object()\n",
+        },
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+def test_unknown_private_alias_refuses_for_late_public_annotations(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["read", "read_rows"]
+                if sys.platform == "win32":
+                    _Payload = Any
+                else:
+                    _Payload = str
+                def read(value: "_Payload") -> None: ...
+                type Rows = list[_Payload]
+                def read_rows(value: Rows) -> None: ...
+            """,
+        },
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+@pytest.mark.parametrize(
+    ("export_source", "export_name"),
+    [
+        (
+            '__all__ = [\'Record\']\nRecord = TypedDict("Record", {"left": Any, "right": str})\n',
+            "sample.Record",
+        ),
+        (
+            "__all__ = ['Holder']\n"
+            "class Holder:\n"
+            '    _Record = TypedDict("Record", {"left": Any, "right": str})\n'
+            "    Record = _Record\n",
+            "sample.Holder",
+        ),
+    ],
+    ids=["direct-export", "private-factory-class-alias"],
+)
+def test_factory_field_transfer_fails_the_original_site_allowance(
+    tmp_path: Path, export_source: str, export_name: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{"__init__.py": "from typing import Any, TypedDict\n" + export_source},
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    expected = {export_name: 1}
+
+    assert public_any(root, ["sample"]) == expected
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_transfer = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace('{"left": Any, "right": str}', '{"left": str, "right": Any}')
+    )
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == (expected, 1, baseline_before_transfer)
+
+
+def test_quoted_name_in_compound_alias_uses_final_binding(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Rows"]
+                T = str
+                Rows = tuple[T, "T"]
+                T = str
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Rows": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_growth = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(
+            'Rows = tuple[T, "T"]\nT = str',
+            'Rows = tuple[T, "T"]\nT = Any',
+        )
+    )
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Rows": 1}, 1, baseline_before_growth)
+
+
+@pytest.mark.parametrize(
+    ("statement_order", "expected"),
+    [
+        ("Any = str\nfrom typing import *\n", 1),
+        ("from typing import *\nAny = str\n", 0),
+    ],
+    ids=["typing-star-overrides-prior-data", "later-data-overrides-typing-star"],
+)
+def test_typing_star_import_respects_statement_order(
+    tmp_path: Path, statement_order: str, expected: int
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": (
+                statement_order + "__all__ = ['read']\n" + "def read(value: Any) -> None: ...\n"
+            ),
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.read": expected}
+
+
+def test_trystar_keeps_a_public_any_binding_or_refuses_closed(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["read"]
+                try:
+                    _Payload = Any
+                except* Exception:
+                    _Payload = Any
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+
+    try:
+        counts = public_any(root, ["sample"])
+    except ValueError:
+        return
+    assert counts == {"sample.read": 1}
+
+
+def test_statically_skipped_receiver_annotation_is_not_resolved(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TYPE_CHECKING
+                __all__ = ["Record"]
+                class Record:
+                    def populate(self) -> None:
+                        if TYPE_CHECKING:
+                            self.value: str = ""
+                        else:
+                            self.other: Any = None
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.Record": 0}
+
+
+def test_identical_qualified_typing_bindings_join_across_unknown_branches(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                import typing
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    _Payload = typing.Any
+                else:
+                    _Payload = typing.Any
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
+
+
+def test_unused_private_attribute_condition_does_not_refuse_public_contract(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    class _Gate:
+                        enabled = True
+                else:
+                    class _Gate:
+                        enabled = False
+                if _Gate.enabled:
+                    _private = "enabled"
+                def read(value: str) -> None: ...
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+
+
+def test_public_copy_of_runtime_version_fallback_stays_ordinary_data(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from importlib.metadata import PackageNotFoundError, version
+                __all__ = ["VERSION"]
+                try:
+                    __version__ = version("increment")
+                except PackageNotFoundError:
+                    __version__ = "0.0.0.dev0"
+                VERSION = __version__
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.VERSION": 0}
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert main([*args, "--write-baseline"]) == 0
+
+
+def test_unused_private_attribute_copy_is_deferred_until_public_use(
+    tmp_path: Path,
+) -> None:
+    private_root = _package(
+        tmp_path / "private",
+        **{
+            "__init__.py": """
+                import sys
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    class _Gate:
+                        enabled = True
+                else:
+                    class _Gate:
+                        enabled = False
+                _private = _Gate.enabled
+                def read(value: str) -> None: ...
+            """,
+        },
+    )
+    private_baseline = private_root / "baseline.txt"
+    private_args = [
+        "--root",
+        str(private_root),
+        "--namespace",
+        "sample",
+        "--baseline",
+        str(private_baseline),
+    ]
+    try:
+        private_counts = public_any(private_root, ["sample"])
+    except ValueError:
+        private_counts = None
+    private_baseline_write = main([*private_args, "--write-baseline"])
+
+    public_root = _package(
+        tmp_path / "public",
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any
+                __all__ = ["read"]
+                if sys.platform == "win32":
+                    class _Gate:
+                        enabled = True
+                else:
+                    class _Gate:
+                        enabled = False
+                if _Gate.enabled:
+                    _Payload = Any
+                else:
+                    _Payload = str
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+    try:
+        public_any(public_root, ["sample"])
+    except ValueError:
+        public_dependency_refused = True
+    else:
+        public_dependency_refused = False
+
+    assert (
+        private_counts,
+        private_baseline_write,
+        public_dependency_refused,
+    ) == ({"sample.read": 0}, 0, True)
+
+
+def test_receiver_fields_keep_their_definition_time_guard_selection(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TYPE_CHECKING
+                __all__ = ["Record"]
+                class Record:
+                    def populate(self) -> None:
+                        if TYPE_CHECKING:
+                            self.value: str = ""
+                        else:
+                            self.other: Any = None
+                        TYPE_CHECKING = False
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.Record": 0}
+
+
+def test_imported_factory_quoted_field_resolves_in_its_defining_module(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "types.py": """
+                from typing import Any, TypedDict
+                _Payload = str
+                _Record = TypedDict("Record", {"value": "_Payload"})
+            """,
+            "__init__.py": """
+                from .types import _Record
+                __all__ = ["Holder"]
+                class Holder:
+                    Record = _Record
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    expected = {"sample.Holder": 0}
+
+    assert public_any(root, ["sample"]) == expected
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_growth = baseline.read_text()
+    types = root / "sample/types.py"
+    types.write_text(types.read_text().replace("_Payload = str", "_Payload = Any"))
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 1}, 1, baseline_before_growth)
+
+
+def test_imported_factory_reference_hops_keep_independent_field_allowances(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "types.py": """
+                from typing import Any, TypedDict
+                _Record = TypedDict("Record", {"left": Any, "right": str})
+            """,
+            "bridge.py": "from .types import _Record\n",
+            "__init__.py": """
+                from .bridge import _Record
+                __all__ = ["Holder"]
+                class Holder:
+                    Record = _Record
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    expected = {"sample.Holder": 1}
+
+    assert public_any(root, ["sample"]) == expected
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_transfer = baseline.read_text()
+    types = root / "sample/types.py"
+    types.write_text(
+        types.read_text().replace('{"left": Any, "right": str}', '{"left": str, "right": Any}')
+    )
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == (expected, 1, baseline_before_transfer)
+
+
+def test_receiver_fields_keep_unknown_guard_arms_captured_before_rebinding(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Record"]
+                class Record:
+                    def populate(self, condition: bool) -> None:
+                        if condition:
+                            self.value: str = ""
+                        else:
+                            self.value: str = ""
+                        from typing import TYPE_CHECKING as condition
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    expected = {"sample.Record": 1}
+
+    assert public_any(root, ["sample"]) == {"sample.Record": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_growth = baseline.read_text()
+    path = root / "sample/__init__.py"
+    source = path.read_text()
+    updated = source.replace(
+        'else:\n            self.value: str = ""',
+        "else:\n            self.value: Any = None",
+        1,
+    )
+    assert updated != source
+    path.write_text(updated)
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == (expected, 1, baseline_before_growth)
