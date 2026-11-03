@@ -221,29 +221,26 @@ def _load_decisions(
     metadata = payload.get("__metadata__")
     if not isinstance(incomplete, bool) or not isinstance(metadata, dict):
         return {}, {}, False
-    raw_shards = metadata.get("shards")
-    if not isinstance(raw_shards, dict):
+    if "shards" in metadata or metadata.get("shard", metadata.get("shard_id")) != "all":
         return {}, {}, False
-    shards: dict[str, dict[str, object]] = {}
+    shards: dict[str, dict[str, object]] = {"all": metadata}
     expected_files: set[str] = set()
-    for shard_id, raw in raw_shards.items():
-        if not isinstance(shard_id, str) or not isinstance(raw, dict):
-            return {}, {}, False
-        complete = raw.get("collection_complete")
-        collected_tests = raw.get("collected_tests")
-        decision_files = raw.get("decision_files")
-        if (
-            not isinstance(complete, bool)
-            or not isinstance(collected_tests, int)
-            or collected_tests < 1
-            or not isinstance(decision_files, list)
-            or not all(isinstance(name, str) for name in decision_files)
-        ):
-            return {}, {}, False
-        if collected_tests > 0 and not decision_files:
-            incomplete = True
-        expected_files.update(decision_files)
-        shards[shard_id] = raw
+    complete = metadata.get("collection_complete")
+    collected_tests = metadata.get("collected_tests")
+    decision_files = metadata.get("decision_files")
+    if (
+        not isinstance(complete, bool)
+        or not isinstance(collected_tests, int)
+        or collected_tests < 1
+        or not isinstance(decision_files, list)
+        or not all(isinstance(name, str) for name in decision_files)
+    ):
+        return {}, {}, False
+    if collected_tests > 0 and not decision_files:
+        incomplete = True
+    expected_files.update(decision_files)
+    if not complete:
+        incomplete = True
 
     decisions: dict[str, SelectionDecision] = {}
     for name, raw in payload.items():
@@ -284,10 +281,8 @@ def misses(
     )
     failures: set[str] = set()
     junit_files: set[str] = set()
-    incomplete = (
-        not report_loaded
-        or set(prediction_shards) != expected_shards
-        or any(not shard["collection_complete"] for shard in prediction_shards.values())
+    incomplete = not report_loaded or any(
+        not shard["collection_complete"] for shard in prediction_shards.values()
     )
 
     junit_shards: dict[str, Path] = {}
@@ -355,52 +350,44 @@ def misses(
     return result
 
 
-def merge_reports(reports: list[Path], output: Path, *, expected_shards: set[str]) -> None:
-    merged: dict[str, object] = {}
-    shards: dict[str, dict[str, object]] = {}
-    incomplete = False
-    for path in reports:
+def merge_reports(reports: list[Path], output: Path) -> None:
+    merged: dict[str, object] = {
+        "__metadata__": {
+            "shard": "all",
+            "collection_complete": False,
+            "collected_tests": 1,
+            "decision_files": [],
+        },
+        "__incomplete__": True,
+    }
+    if len(reports) == 1:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(reports[0].read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
-            incomplete = True
-            continue
-        if not isinstance(payload, dict):
-            incomplete = True
-            continue
-        metadata = payload.get("__metadata__")
-        if not isinstance(metadata, dict):
-            incomplete = True
-            continue
-        shard_id = metadata.get("shard_id")
-        collection_complete = metadata.get("collection_complete")
-        collected_tests = metadata.get("collected_tests")
-        decision_files = metadata.get("decision_files")
-        decisions = {name: value for name, value in payload.items() if not name.startswith("__")}
+            payload = None
+        metadata = payload.get("__metadata__") if isinstance(payload, dict) else None
         if (
-            not isinstance(shard_id, str)
-            or shard_id in shards
-            or not isinstance(collection_complete, bool)
-            or not isinstance(collected_tests, int)
-            or collected_tests < 1
-            or not isinstance(decision_files, list)
-            or not all(isinstance(name, str) for name in decision_files)
+            isinstance(payload, dict)
+            and isinstance(metadata, dict)
+            and "shards" not in metadata
+            and metadata.get("shard", metadata.get("shard_id")) == "all"
         ):
-            incomplete = True
-            continue
-        shards[shard_id] = {
-            "collection_complete": collection_complete,
-            "collected_tests": collected_tests,
-            "decision_files": decision_files,
-        }
-        if sorted(decisions) != sorted(decision_files) or not collection_complete:
-            incomplete = True
-            continue
-        merged.update(decisions)
-    if set(shards) != expected_shards:
-        incomplete = True
-    merged["__metadata__"] = {"shards": shards}
-    merged["__incomplete__"] = incomplete
+            decisions, _, complete = _load_decisions(reports[0])
+            decision_files = metadata.get("decision_files")
+            incomplete = (
+                not complete
+                or payload.get("__incomplete__", False) is not False
+                or not isinstance(decision_files, list)
+                or not all(isinstance(name, str) for name in decision_files)
+                or set(decisions) != set(decision_files)
+            )
+            merged = dict(payload)
+            normalized_metadata = dict(metadata)
+            normalized_metadata.pop("shard_id", None)
+            normalized_metadata["shard"] = "all"
+            merged["__metadata__"] = normalized_metadata
+            merged["__incomplete__"] = incomplete
+
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -415,9 +402,6 @@ def main() -> int:
     builder.add_argument("--output", type=Path, required=True)
     merger = sub.add_parser("merge")
     merger.add_argument("--reports", type=Path, nargs="*", required=True)
-    merger.add_argument(
-        "--expected-shards", type=lambda value: set(value.split(",")), required=True
-    )
     merger.add_argument("--output", type=Path, required=True)
     miss = sub.add_parser("misses")
     miss.add_argument("--base", required=True)
@@ -430,11 +414,7 @@ def main() -> int:
     if args.command == "build":
         write(build(args.coverage, Path.cwd(), tier=args.tier, fixtures=args.fixtures), args.output)
     elif args.command == "merge":
-        merge_reports(
-            cast(list[Path], args.reports),
-            args.output,
-            expected_shards=cast(set[str], args.expected_shards),
-        )
+        merge_reports(cast(list[Path], args.reports), args.output)
     else:
         selection_map = load(Path("tests/selection_map.json"))
         for item in misses(

@@ -104,6 +104,11 @@ Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.
 
+Pull requests run the full fast tier in three Python 3.12 shards and the unit
+tier on Python 3.14; pushes retain the 3.12–3.14 fast matrix. `ci-ok` requires
+the newest-Python unit job for pull requests. Python 3.12 fast coverage remains
+available for approved test reductions.
+
 The Python 3.12 fast shards upload optional executed-code coverage artifacts.
 After the required jobs, `ci-ok` combines matching shard artifacts and
 publishes a combined report when every shard is complete. This advisory step
