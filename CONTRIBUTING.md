@@ -546,10 +546,11 @@ need those services for ordinary changes.
 The checked-in CI candidate requires lint, fast tests, functional slow tests,
 package builds, and live PostgreSQL 16 probes through `ci-ok`; hosted
 enforcement and required-check activation remain owner gates. PR fast tests run
-on Python 3.12 and 3.14; 3.13 remains in main pushes and nightly full/weekly floor
-matrices. `ci-ok` validates every selected fast shard and required conditional
-gate. It combines Python 3.12 fast-shard coverage advisory; cross-platform wheel
-smoke runs for packaging-related PR changes and on pushes.
+on Python 3.12, with a separate required Python 3.14 unit job; 3.13 remains in main
+pushes and nightly full/weekly floor matrices. `ci-ok` validates every selected
+fast shard and required conditional gate. It combines Python 3.12 fast-shard
+coverage as advisory; cross-platform wheel smoke runs for packaging-related PR
+changes and on pushes.
 PostgreSQL runs on a PR when a change touches the transitive `tach.toml`
 dependency closure of `increment.query`, `integration/warehouse_execution/`,
 a test helper the PostgreSQL suite imports, build or workflow files, or an
@@ -561,8 +562,9 @@ warehouse workflow defaults to three shards for weekly and manual runs.
 
 Each selected fast Python-version cell has three duration-balanced
 `pytest-split` shards, with `xdist` workers inside each shard. `ci-ok` requires
-all six PR shards or all nine main-push shards (Python 3.12–3.14). The build
-job also runs the documentation snippet and strict-docs checks when changed
+all three Python 3.12 PR shards and the separate Python 3.14 unit job, or all
+nine main-push shards (Python 3.12–3.14). The build job also runs the
+documentation snippet and strict-docs checks when changed
 paths require them. The machine-generated `.github/fast-test-durations.json`
 weights come from a complete, passing local fast run on 2026-11-01 (Python 3.13,
 four `xdist` workers); only their proportions matter, and absent weights do not
