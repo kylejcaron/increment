@@ -478,14 +478,19 @@ broader local check. Use `make fmt` to apply formatting and safe lint fixes.
 `make lint` also checks explicit `Any` annotations in public signatures and
 fields without importing the package. `scripts/check_public_typing.py` resolves
 `__all__`, lazy export maps (including dictionary unions), re-exports and local
-type aliases from source, including qualified aliases in local classes.
-Annotation-only fields are declarations, not runtime name bindings. Eager
-signatures use bindings available before their definition.
+type aliases from source, including qualified aliases in local classes. A package
+importing its own name gets the attribute it already holds, otherwise that
+submodule; dotted external members keep their qualified path.
+Annotation-only fields are declarations, not runtime name bindings.
+Eager signatures and ordinary assignments use bindings available at that point;
+quoted forward references resolve late, using final bindings.
 Type-expression unions retain local `Any` counts when paired with
 an imported external type; generic subscripts with recognized type arguments do
 likewise, including external names re-exported through local modules. External
 sources are opaque and never imported or traversed. Runtime values such as
-string-keyed dictionary subscripts or unions are not treated as type aliases.
+string-keyed dictionary subscripts, unions or plain string assignments are not
+treated as type aliases; an annotation that names string data still evaluates
+that string as a forward reference.
 When an unmarked public expression using an opaque imported object and a quoted
 argument could mean either a runtime lookup or an `Any`-bearing alias, the check
 fails closed. Add the accurate value annotation, or declare the intended alias
@@ -501,16 +506,20 @@ PEP 695 parameter bounds, constraints and supported defaults have independent
 declaration sites; parameter uses do not repeat those counts. They resolve lazily
 in the declaration's enclosing scope, never through the generic class body or a
 function's eagerly evaluated signature names. Recursive aliases
-count finitely through type constructors, while unresolved flat cycles refuse.
+count finitely through type constructors, including when re-exported under
+another name, while unresolved flat cycles refuse.
 Typing star imports use the standard-library export inventory; unresolved
 Any-bearing generic forms refuse rather than silently counting zero.
 Unannotated factory declarations and explicit type aliases count when exported
-directly as well as when used by public annotations; record declarations retain
+directly as well as when used by public annotations; so do public class
+attributes assigned type expressions, including generic, union and bare `Any`
+aliases. Record declarations retain
 separate allowances per field. An ordinary value's declared annotation is
 authoritative, so its factory initializer does not add type sites.
 TypedDict field-map unions use rightmost field definitions; field containers
 that cannot be statically resolved refuse instead of producing empty schemas.
-Public receiver fields count even in private helpers or compound statements;
+Public receiver fields count even in private helpers or compound statements, and
+resolve method-local imports and aliases bound before each field;
 private signatures, nested implementation scopes and inherited external members
 are excluded. Only the manifest's promised namespace sections are inspected.
 The allowances in `tests/public_any_baseline.txt` are per qualified name and annotation site,

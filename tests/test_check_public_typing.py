@@ -221,6 +221,194 @@ def test_annotation_aliases_unwrap_declared_and_quoted_types(tmp_path: Path) -> 
     assert main(args) == 1
 
 
+def test_quoted_forward_reference_tracks_late_alias_rebinding(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any as Payload, Any
+                __all__ = ["read"]
+                def read(value: Payload) -> "Payload": ...
+                Payload = str
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("Payload = str", "Payload = Any"))
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.read": 1},
+        {"sample.read": 2},
+        1,
+        baseline_before_growth,
+    )
+
+
+def test_assignment_alias_snapshots_any_before_name_rebinding(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any as Bound
+                __all__ = ["read"]
+                Alias = str
+                Bound = str
+                def read(value: Alias) -> int: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("Alias = str", "Alias = Bound"))
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.read": 0},
+        {"sample.read": 1},
+        1,
+        baseline_before_growth,
+    )
+
+
+def test_relative_submodule_union_alias_resolves_without_importing_package(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from . import types
+                __all__ = ["read"]
+                def read() -> types.Payload: ...
+            """,
+            "types.py": """
+                from typing import Any
+                Payload = Any | str
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
+
+
+@pytest.mark.parametrize(
+    ("module_source", "extra_files"),
+    [
+        (
+            """
+            from typing import Any, TypeAlias
+            class _Previous:
+                Payload: TypeAlias = Any
+            types = _Previous
+            from . import types
+            def read() -> types.Payload: ...
+            __all__ = ["read"]
+            """,
+            {"types.py": "Payload = str"},
+        ),
+        (
+            """
+            from typing import Any
+            Payload = Any
+            from . import Payload
+            def read() -> Payload: ...
+            __all__ = ["read"]
+            """,
+            {},
+        ),
+    ],
+    ids=["prior-class-module-attribute", "prior-any-module-binding"],
+)
+def test_relative_self_import_preserves_prior_module_binding(
+    tmp_path: Path, module_source: str, extra_files: dict[str, str]
+) -> None:
+    root = _package(tmp_path, **{"__init__.py": module_source, **extra_files})
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
+
+
+def test_external_dotted_generic_alias_counts_any_growth(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import collections.abc
+                from typing import Any
+                __all__ = ["Rows"]
+                Rows = collections.abc.Mapping[str, str]
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("Mapping[str, str]", "Mapping[str, Any]"))
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.Rows": 0},
+        {"sample.Rows": 1},
+        1,
+        baseline_before_growth,
+    )
+
+
+def test_public_class_implicit_generic_alias_counts_any_growth(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Record"]
+                class Record:
+                    Rows = list[str]
+                    label = "Any"
+                    _PrivateRows = list[str]
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("Rows = list[str]", "Rows = list[Any]"))
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.Record": 0},
+        {"sample.Record": 1},
+        1,
+        baseline_before_growth,
+    )
+
+
 def test_valid_typevar_generic_does_not_resolve_its_name_as_an_annotation(tmp_path: Path) -> None:
     root = _package(
         tmp_path,
@@ -794,6 +982,21 @@ def test_recursive_pep695_alias_counts_any_finitely_and_rejects_growth(tmp_path:
     )
 
 
+def test_recursive_type_alias_counts_once_through_exported_alias(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                type Tree = Any | list[Tree]
+                Public = Tree
+                __all__ = ["Tree", "Public"]
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.Tree": 1, "sample.Public": 1}
+
+
 def test_typing_star_import_recognizes_generic_aliases(tmp_path: Path) -> None:
     root = _package(
         tmp_path,
@@ -1017,6 +1220,132 @@ def test_receiver_fields_in_compound_bodies_exclude_nested_scopes(tmp_path: Path
         },
     )
     assert public_any(root, ["sample"]) == {"sample.Record": 8}
+
+
+def test_receiver_field_uses_method_local_import_binding_in_order(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                __all__ = ["Record"]
+                class Record:
+                    def __init__(self) -> None:
+                        from typing import Any as Payload
+                        self.value: Payload = None
+                        local: Payload = None
+                        self._private: Payload = None
+                        def nested(value: Payload) -> Payload: ...
+                        Payload = str
+                        self.later: Payload = None
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.Record": 1}
+
+
+def test_runtime_string_method_locals_do_not_become_annotations(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["LocalOnly", "WithField"]
+                class LocalOnly:
+                    def normalize(self):
+                        text = "hello world"
+                        normalize = text.strip
+                class WithField:
+                    def __init__(self):
+                        self.value: Any = None
+                        text = "hello world"
+                        normalize = text.strip
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {
+        "sample.LocalOnly": 0,
+        "sample.WithField": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("module_source", "expected"),
+    [
+        (
+            """
+            __all__ = ["read"]
+            _normalize = "hello world".strip
+            def read() -> str: ...
+            """,
+            {"sample.read": 0},
+        ),
+        (
+            """
+            __all__ = ["Record"]
+            class Record:
+                def normalize(self):
+                    normalize = "hello world".strip
+            """,
+            {"sample.Record": 0},
+        ),
+        (
+            """
+            __all__ = ["Record"]
+            class Record:
+                normalize = "hello world".strip
+            """,
+            {"sample.Record": 0},
+        ),
+    ],
+    ids=[
+        "private-module-attribute",
+        "method-local-attribute",
+        "public-class-attribute",
+    ],
+)
+def test_literal_string_attribute_owner_stays_opaque(
+    tmp_path: Path, module_source: str, expected: dict[str, int]
+) -> None:
+    root = _package(tmp_path, **{"__init__.py": module_source})
+    assert public_any(root, ["sample"]) == expected
+
+
+def test_class_realias_preserves_quoted_type_alias_context(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TypeAlias
+                __all__ = ["Record"]
+                class Record:
+                    _Payload: TypeAlias = "str"
+                    Payload = _Payload
+                    label = "Any"
+                    description: str = "Any"
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace('_Payload: TypeAlias = "str"', '_Payload: TypeAlias = "Any"')
+    )
+    baseline_before_growth = baseline.read_text()
+    observed = (
+        initial,
+        public_any(root, ["sample"]),
+        main(args),
+        baseline.read_text(),
+    )
+    assert observed == (
+        {"sample.Record": 0},
+        {"sample.Record": 1},
+        1,
+        baseline_before_growth,
+    )
 
 
 def test_follows_lazy_exports_and_reexports(tmp_path: Path) -> None:

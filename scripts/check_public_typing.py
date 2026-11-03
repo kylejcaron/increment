@@ -19,7 +19,7 @@ from typing import cast
 
 _FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
 type _Declaration = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.TypeAlias
-type _Scope = _Declaration | _TypeParameters
+type _Scope = _Declaration | _TypeParameters | _Body | ast.AnnAssign
 _LEGACY_NAMESPACES = (
     "increment",
     "increment.artifacts",
@@ -72,6 +72,13 @@ class _TypeParameters:
     """Lazy scope of a generic class or function's type parameters, outside its body."""
 
     declaration: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True)
+class _Body:
+    """Local scope of a function body, separate from its definition-time signature names."""
+
+    function: ast.FunctionDef | ast.AsyncFunctionDef
 
 
 @dataclass(frozen=True)
@@ -166,8 +173,11 @@ class _Source:
     def module(self, name: str, scope: _Scope | None = None) -> _Module:
         if scope is None and name in self.modules:
             return self.modules[name]
-        if scope is not None and scope in self.scopes:
+        # Annotation captures are created while binding their function body.
+        if scope is not None and (scope in self.scopes or isinstance(scope, ast.AnnAssign)):
             return self.scopes[scope]
+        if isinstance(scope, _Body):
+            return self.function_body(name, scope.function, None)
         if scope is not None and not isinstance(scope, ast.ClassDef):
             return self.declaration_scope(name, scope, None)
         path = self.path(name)
@@ -182,9 +192,20 @@ class _Source:
             self.modules[name] = module
         else:
             self.scopes[scope] = module
-        package = name if path.name == "__init__.py" else name.rpartition(".")[0]
-        self.bind(name, module, package)
+        self.bind(name, module, self.package(name))
         return module
+
+    def package(self, name: str) -> str:
+        path = self.path(name)
+        return name if path is not None and path.name == "__init__.py" else name.rpartition(".")[0]
+
+    def deferred(self, name: str) -> bool:
+        return any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in cast(ast.Module, self.module(name).tree).body
+        )
 
     def bind_type_parameters(self, module: _Module, node: _Declaration) -> None:
         for parameter in node.type_params:
@@ -192,13 +213,22 @@ class _Source:
                 raise ValueError(f"Unsupported type parameter in {module.owner.module}")
             module.define(parameter.name, parameter)
 
-    def declaration_scope(self, name: str, node: _Scope, parent: _Scope | None) -> _Module:
+    def declaration_scope(
+        self, name: str, node: _Declaration | _TypeParameters, parent: _Scope | None
+    ) -> _Module:
         if isinstance(node, (*_FUNCTION, ast.ClassDef)) and node.type_params:
             self.declaration_scope(name, _TypeParameters(node), parent)
         if isinstance(node, ast.ClassDef):
             return self.module(name, node)
         if node in self.scopes:
             return self.scopes[node]
+        if isinstance(node, _FUNCTION):
+            return self.capture(
+                name,
+                node,
+                [*(argument.annotation for argument in _parameters(node)), node.returns],
+                _TypeParameters(node) if node.type_params else parent,
+            )
         environment = _Module(
             node, _Reference(name, None, node), parent=_Reference(name, None, parent)
         )
@@ -206,36 +236,65 @@ class _Source:
         self.bind_type_parameters(
             environment, node.declaration if isinstance(node, _TypeParameters) else node
         )
-        root = cast(ast.Module, self.module(name).tree)
-        deferred = any(
-            isinstance(statement, ast.ImportFrom)
-            and statement.module == "__future__"
-            and any(alias.name == "annotations" for alias in statement.names)
-            for statement in root.body
-        )
-        if isinstance(node, _FUNCTION) and not deferred:
-            annotations = [argument.annotation for argument in _parameters(node)] + [node.returns]
-            for annotation in annotations:
-                if annotation is None:
-                    continue
-                for part in ast.walk(annotation):
-                    if not isinstance(part, ast.Name) or part.id in environment.bindings:
-                        continue
-                    binding = self.lookup(name, part.id, parent)
-                    if isinstance(binding, _Binding):
-                        environment.bindings[part.id] = binding
-                    elif isinstance(binding, _Reference):
-                        environment.define(part.id, binding)
-                    elif part.id in _BUILTIN_TYPE_NAMES:
-                        environment.define(part.id, _Reference("builtins", part.id))
         return environment
+
+    def capture(
+        self,
+        name: str,
+        key: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign,
+        annotations: list[ast.expr | None],
+        parent: _Scope | None,
+    ) -> _Module:
+        """Bind names an eager annotation evaluates now; quoted names resolve in `parent`."""
+        environment = _Module(
+            key, _Reference(name, None, key), parent=_Reference(name, None, parent)
+        )
+        self.scopes[key] = environment
+        if self.deferred(name):
+            return environment
+        for annotation in annotations:
+            if annotation is None:
+                continue
+            for part in ast.walk(annotation):
+                if not isinstance(part, ast.Name) or part.id in environment.bindings:
+                    continue
+                binding = self.lookup(name, part.id, parent)
+                if isinstance(binding, _Binding):
+                    environment.bindings[part.id] = binding
+                elif isinstance(binding, _Reference):
+                    environment.define(part.id, binding)
+                elif part.id in _BUILTIN_TYPE_NAMES:
+                    environment.define(part.id, _Reference("builtins", part.id))
+        return environment
+
+    def function_body(
+        self, name: str, node: ast.FunctionDef | ast.AsyncFunctionDef, parent: _Scope | None
+    ) -> _Module:
+        key = _Body(node)
+        if key in self.scopes:
+            return self.scopes[key]
+        body = _Module(
+            node,
+            _Reference(name, None, key),
+            parent=self.declaration_scope(name, node, parent).parent,
+        )
+        self.scopes[key] = body
+        self.bind(name, body, self.package(name))
+        return body
+
+    def forward_scope(self, module: str, scope: _Scope | None) -> _Scope | None:
+        """Quoted annotations resolve late, outside definition-time name captures."""
+        if not isinstance(scope, (*_FUNCTION, ast.AnnAssign)):
+            return scope
+        parent = self.module(module, scope).parent
+        return None if parent is None else parent.scope
 
     def copied_binding(
         self, module: str, node: ast.expr | None, scope: _Scope | None
     ) -> _Binding | _Reference | None:
         if not isinstance(node, (ast.Name, ast.Attribute)):
             return None
-        ref = self.reference(module, node, scope)
+        ref = self.reference(module, node, scope, allow_forward_strings=False)
         if ref is None:
             return None
         if ref.name is not None and self.path(ref.module) is not None:
@@ -244,10 +303,34 @@ class _Source:
                 return previous
         return ref
 
+    def bind_from_import(
+        self, name: str, module: _Module, package: str, node: ast.ImportFrom
+    ) -> None:
+        parts = package.split(".")
+        base = ".".join(parts[: len(parts) - node.level + 1]) if node.level else ""
+        target = ".".join(filter(None, (base, node.module)))
+        for alias in node.names:
+            if alias.name == "*":
+                module.stars.append(target)
+                continue
+            local = alias.asname or alias.name
+            submodule = f"{target}.{alias.name}"
+            # A package importing its own name gets the attribute it already holds;
+            # only an unbound name loads that submodule.
+            current = self.lookup(name, alias.name) if target == name else None
+            if isinstance(current, _Binding):
+                module.declarations[local] = module.bindings[local] = current
+            elif current is not None:
+                module.define(local, current)
+            elif target == name and self.path(submodule) is not None:
+                module.define(local, _Reference(submodule, None))
+            else:
+                module.define(local, _Reference(target, alias.name))
+
     def bind(self, name: str, module: _Module, package: str) -> None:
         exports = isinstance(module.tree, ast.Module)
-        scope = module.tree if isinstance(module.tree, ast.ClassDef) else None
-        assert isinstance(module.tree, (ast.Module, ast.ClassDef))
+        scope = module.owner.scope
+        assert isinstance(module.tree, (ast.Module, ast.ClassDef, *_FUNCTION))
         if isinstance(module.tree, ast.ClassDef):
             self.bind_type_parameters(module, module.tree)
         for node in _statements(module.tree.body):
@@ -263,18 +346,13 @@ class _Source:
                         _Reference(alias.name if alias.asname else alias.name.split(".")[0], None),
                     )
             elif isinstance(node, ast.ImportFrom):
-                parts = package.split(".")
-                base = ".".join(parts[: len(parts) - node.level + 1]) if node.level else ""
-                target = ".".join(filter(None, (base, node.module)))
-                for alias in node.names:
-                    if alias.name == "*":
-                        module.stars.append(target)
-                    else:
-                        module.define(alias.asname or alias.name, _Reference(target, alias.name))
+                self.bind_from_import(name, module, package, node)
             elif isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        module.define(target.id, node.value)
+                        module.define(
+                            target.id, node.value, self.copied_binding(name, node.value, scope)
+                        )
                         module.values[target.id] = node.value
                     elif exports and any(
                         isinstance(part, ast.Name) and part.id in _EXPORT_MAPS
@@ -285,6 +363,8 @@ class _Source:
                 module.define(node.target.id, node, self.copied_binding(name, node.value, scope))
                 if node.value is not None:
                     module.values[node.target.id] = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(module.tree, _FUNCTION):
+                self.capture(name, node, [node.annotation], scope)
             elif isinstance(node, ast.TypeAlias):
                 self.declaration_scope(name, node, scope)
                 module.define(node.name.id, node, owner=_Reference(name, node.name.id, node))
@@ -448,12 +528,22 @@ class _Source:
         node: ast.AST | _Reference | None,
         scope: _Scope | None = None,
         seen: frozenset[_Reference | _Binding] = frozenset(),
+        *,
+        allow_forward_strings: bool = True,
     ) -> _Reference | None:
         if isinstance(node, _Reference):
             return node
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if not allow_forward_strings:
+                return None
             try:
-                return self.reference(module, ast.parse(node.value, mode="eval").body, scope, seen)
+                return self.reference(
+                    module,
+                    ast.parse(node.value, mode="eval").body,
+                    self.forward_scope(module, scope),
+                    seen,
+                    allow_forward_strings=allow_forward_strings,
+                )
             except SyntaxError as exc:
                 raise ValueError(f"Invalid annotation in {module}: {node.value}") from exc
         if isinstance(node, ast.Name):
@@ -465,10 +555,18 @@ class _Source:
             source = self.module(module, scope)
             if scope is not None and node.id not in source.bindings and source.parent is not None:
                 parent = source.parent
-                return self.reference(parent.module, node, parent.scope, seen)
+                return self.reference(
+                    parent.module,
+                    node,
+                    parent.scope,
+                    seen,
+                    allow_forward_strings=allow_forward_strings,
+                )
             return _Reference(module, node.id, scope)
         if isinstance(node, ast.Attribute):
-            parent = self.reference(module, node.value, scope, seen)
+            parent = self.reference(
+                module, node.value, scope, seen, allow_forward_strings=allow_forward_strings
+            )
             if parent is not None:
                 class_owner = self.class_scope(parent, seen)
                 if class_owner is not None:
@@ -476,7 +574,12 @@ class _Source:
                         return None
                     return _Reference(class_owner.module, node.attr, class_owner.scope)
                 owner = ".".join(filter(None, (parent.module, parent.name)))
-                if parent.name is None or self.path(owner) is not None:
+                # External members keep their qualified path; sources are never traversed.
+                if (
+                    parent.name is None
+                    or self.path(owner) is not None
+                    or self.path(parent.module) is None
+                ):
                     return _Reference(owner, node.attr)
         return None
 
@@ -486,7 +589,7 @@ class _Source:
         name: str,
         seen: frozenset[_Reference] = frozenset(),
         scope: _Scope | None = None,
-    ) -> tuple[_Reference, ast.AST | None]:
+    ) -> tuple[_Reference, ast.AST | _Binding | None]:
         key = _Reference(module, name, scope)
         if key in seen:
             raise ValueError(f"Cyclic public re-export: {module}.{name}")
@@ -518,15 +621,27 @@ class _Source:
             if scope is None and self.path(f"{module}.{name}") is not None:
                 return _Reference(f"{module}.{name}", None), None
             raise ValueError(f"Unresolved public export: {module}.{name}")
-        if isinstance(binding, (ast.Name, ast.Attribute)):
-            expression = binding
-            binding = self.reference(module, expression, scope) or expression
+        # An ordinary assignment exports the value its name held at that point.
+        while (
+            isinstance(binding, (ast.Name, ast.Attribute))
+            and record is not None
+            and isinstance(record.value, _Binding)
+        ):
+            record = record.value
+            key, binding = record.owner, record.declaration
+        if isinstance(binding, (ast.Name, ast.Attribute)) and record is not None:
+            target = (
+                record.value
+                if isinstance(record.value, _Reference)
+                else self.reference(key.module, binding, key.scope)
+            )
             if (
-                isinstance(binding, _Reference)
-                and self.is_type_expression(module, expression, scope=scope)
-                and self.typing_name(binding) == "Any"
+                target is not None
+                and self.is_type_expression(key.module, target, scope=key.scope)
+                and self.typing_name(target) == "Any"
             ):
-                return key, ast.TypeAlias(name=ast.Name(id=name), type_params=[], value=expression)
+                return key, record
+            binding = target or binding
         if isinstance(binding, _Reference):
             if binding.name is None:
                 if self.path(binding.module) is None:
@@ -537,23 +652,40 @@ class _Source:
                     f"No Python source for public export {binding.module}.{binding.name}"
                 )
             return self.resolve(binding.module, binding.name, seen, binding.scope)
+        # Declared aliases count through their own record, not a later name lookup.
+        if (
+            record is not None
+            and record.declaration is binding
+            and isinstance(binding, (ast.TypeAlias, ast.AnnAssign))
+        ):
+            return key, record
         return key, binding
 
     def typing_name(
         self,
         ref: _Reference | _Binding | None,
         seen: frozenset[_Reference | _Binding] = frozenset(),
+        *,
+        allow_forward_strings: bool = True,
     ) -> str | None:
         visited = set(seen)
         while ref is not None and ref not in visited:
             visited.add(ref)
             if isinstance(ref, _Binding):
+                # Explicit aliases put their values back in type, not runtime, context.
+                allow_forward_strings = allow_forward_strings or self.declared_alias(ref)
                 owner = ref.owner
                 value = self.symbol_value(ref, frozenset(visited))
                 ref = (
                     value
                     if isinstance(value, (_Reference, _Binding))
-                    else self.reference(owner.module, value, owner.scope, frozenset(visited))
+                    else self.reference(
+                        owner.module,
+                        value,
+                        owner.scope,
+                        frozenset(visited),
+                        allow_forward_strings=allow_forward_strings,
+                    )
                 )
                 continue
             if ref.module in _TYPING:
@@ -594,6 +726,9 @@ class _Source:
                 return None
             if self.typing_name(marker, seen) == "TypeAlias":
                 return binding.value
+            return None
+        if isinstance(binding, ast.Constant) and isinstance(binding.value, str):
+            # An ordinary string assignment is data, not an implicit alias.
             return None
         return binding if isinstance(binding, ast.expr) else None
 
@@ -818,14 +953,26 @@ class _Source:
                 if node in productive:
                     return 0
                 raise ValueError(f"Cyclic annotation alias: {node.owner.module}.{node.owner.name}")
-            value = self.symbol_value(node, seen | {node})
+            declaration = node.declaration
+            # Naming string data in an annotation evaluates it as a forward reference.
+            value = (
+                declaration
+                if node.value is declaration
+                and isinstance(declaration, ast.Constant)
+                and isinstance(declaration.value, str)
+                else self.symbol_value(node, seen | {node})
+            )
             return self.annotation(
                 node.owner.module, value, seen | {node}, node.owner.scope, productive
             )
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             try:
                 return self.annotation(
-                    module, ast.parse(node.value, mode="eval").body, seen, scope, productive
+                    module,
+                    ast.parse(node.value, mode="eval").body,
+                    seen,
+                    self.forward_scope(module, scope),
+                    productive,
                 )
             except SyntaxError as exc:
                 raise ValueError(f"Invalid annotation in {module}: {node.value}") from exc
@@ -1090,8 +1237,19 @@ class _Source:
             )
 
     def sites(
-        self, module: str, node: ast.AST, name: str | None = None, scope: _Scope | None = None
+        self,
+        module: str,
+        node: ast.AST | _Binding,
+        name: str | None = None,
+        scope: _Scope | None = None,
     ) -> dict[str, int]:
+        record = node if isinstance(node, _Binding) else None
+        if record is not None:
+            declaration = record.declaration
+            if not isinstance(declaration, (ast.TypeAlias, ast.AnnAssign)):
+                # A bare implicit alias such as `Alias = Any` has no other definition.
+                return {"alias": self.annotation(module, record, scope=scope)}
+            node = declaration
         if isinstance(node, _FUNCTION):
             sites = self.signature(module, node, scope)
             source = self.module(module, scope)
@@ -1114,16 +1272,14 @@ class _Source:
             # TypeAlias's value is itself an annotation, not an implementation value.
             annotation = self.type_value(module, node, scope)
             if annotation is not None:
-                record = (
-                    self.module(module, scope).declarations.get(node.target.id)
-                    if isinstance(node.target, ast.Name)
-                    else None
-                )
+                if record is None and isinstance(node.target, ast.Name):
+                    record = self.module(module, scope).declarations.get(node.target.id)
                 target = record if record is not None and record.declaration is node else annotation
                 return {"field": self.annotation(module, target, scope=scope)}
             return {"field": self.annotation(module, node.annotation, scope=scope)}
         if isinstance(node, ast.TypeAlias):
-            record = self.module(module, scope).declarations.get(node.name.id)
+            if record is None:
+                record = self.module(module, scope).declarations.get(node.name.id)
             target = record if record is not None and record.declaration is node else node.value
             return {
                 **self.type_parameter_sites(module, node),
@@ -1144,16 +1300,25 @@ class _Source:
         scope = node
         source = self.module(module, scope)
         sites = self.type_parameter_sites(module, node)
-        members: dict[str, list[ast.AST]] = {}
+        members: dict[str, list[ast.AST | _Binding]] = {}
         for member in _statements(node.body):
-            if isinstance(member, ast.Assign) and isinstance(member.value, ast.Call):
+            if isinstance(member, ast.Assign):
                 for target in member.targets:
                     if isinstance(target, ast.Name) and (
                         not target.id.startswith("_")
                         or target.id.startswith("__")
                         and target.id.endswith("__")
                     ):
-                        members.setdefault(target.id, []).append(member.value)
+                        record = source.declarations.get(target.id)
+                        # Like an exported name, a bare final Any alias has no other definition.
+                        members.setdefault(target.id, []).append(
+                            record
+                            if isinstance(member.value, (ast.Name, ast.Attribute))
+                            and record is not None
+                            and record.declaration is member.value
+                            and self.typing_name(record, allow_forward_strings=False) == "Any"
+                            else member.value
+                        )
                 continue
             if isinstance(member, (*_FUNCTION, ast.ClassDef)):
                 name = member.name
@@ -1163,6 +1328,7 @@ class _Source:
                 ):
                     positional = [*member.args.posonlyargs, *member.args.args]
                     receiver = positional[0].arg if positional else "self"
+                    self.function_body(module, member, scope)
                     for statement in _statements(member.body):
                         if isinstance(statement, ast.AnnAssign):
                             target = statement.target
@@ -1174,7 +1340,7 @@ class _Source:
                             ):
                                 label = f"{member.name}.field:{target.attr}"
                                 sites[label] = sites.get(label, 0) + self.annotation(
-                                    module, statement.annotation, scope=member
+                                    module, statement.annotation, scope=statement
                                 )
             elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
                 name = member.target.id
