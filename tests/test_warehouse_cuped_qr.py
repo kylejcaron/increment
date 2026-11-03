@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from typing import Any, cast
 
 import ibis
@@ -77,38 +78,53 @@ def _positive_diagonal(r, rhs):
 
 
 @pytest.mark.integration
-def test_qr_scratch_reuses_two_temp_relations_without_intermediate_drops(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+def test_qr_scratch_bounds_live_temp_relations_to_two_slots(
+    tmp_path,
 ) -> None:
     connection = ibis.duckdb.connect()
-    connection.create_table("scratch_source", obj=[{"x": 1}])
-    connection.create_table("factor_input", obj=[{"x": 1}])
+    connection.raw_sql("CREATE TABLE scratch_source (x INTEGER)")
+    connection.raw_sql("INSERT INTO scratch_source VALUES (1)")
+    connection.raw_sql("CREATE TABLE factor_input (x INTEGER)")
+    connection.raw_sql("INSERT INTO factor_input VALUES (1)")
     session = _scratch_session(connection, tmp_path)
-    drop_calls = []
-    drop_statements = []
-    original_drop = connection.drop_table
-    original_raw_sql = connection.raw_sql
-
-    def tracked_drop(*args, **kwargs):
-        drop_calls.append(args[0])
-        return original_drop(*args, **kwargs)
-
-    def tracked_raw_sql(sql, *args, **kwargs):
-        if "DROP TABLE" in str(sql).upper():
-            drop_statements.append(str(sql))
-        return original_raw_sql(sql, *args, **kwargs)
-
-    monkeypatch.setattr(connection, "drop_table", tracked_drop)
-    monkeypatch.setattr(connection, "raw_sql", tracked_raw_sql)
+    existing_relations = set(connection.list_tables(database=("temp", "main")))
     try:
         with session.qr_scratch() as scratch:
             first = scratch.materialize_next(connection.table("factor_input"))
-            second = scratch.materialize_next(first.mutate(x=first.x + 1))
-            third = scratch.materialize_next(second.mutate(x=second.x + 1))
+            assert (
+                len(
+                    {
+                        name
+                        for name in connection.list_tables(database=("temp", "main"))
+                        if name.startswith("_cuped_qr_")
+                    }
+                )
+                == 1
+            )
+            scratch.materialize_next(first.mutate(x=first.x + 1))
+            assert (
+                len(
+                    {
+                        name
+                        for name in connection.list_tables(database=("temp", "main"))
+                        if name.startswith("_cuped_qr_")
+                    }
+                )
+                == 2
+            )
+            third = scratch.materialize_next(first.mutate(x=first.x + 2))
             assert third.execute().to_dict("records") == [{"x": 3}]
-        assert drop_calls == []
-        assert len(drop_statements) == 1
-        assert len(drop_statements[0].split(";")) == 2
+            assert (
+                len(
+                    {
+                        name
+                        for name in connection.list_tables(database=("temp", "main"))
+                        if name.startswith("_cuped_qr_")
+                    }
+                )
+                == 2
+            )
+        assert set(connection.list_tables(database=("temp", "main"))) == existing_relations
     finally:
         connection.disconnect()
 
@@ -1231,16 +1247,19 @@ def test_qr_scratch_drop_failure_exposes_retained_locator(tmp_path, monkeypatch)
     from increment.errors import CodedError
 
     connection = ibis.duckdb.connect()
-    connection.create_table("scratch_source", obj=[{"x": 1.0}, {"x": 2.0}])
+    connection.raw_sql("CREATE TABLE scratch_source (x DOUBLE)")
+    connection.raw_sql("INSERT INTO scratch_source VALUES (1.0), (2.0)")
     session = _scratch_session(connection, tmp_path)
-    original_drop = type(connection).drop_table
+    original_safe_raw_sql = connection._safe_raw_sql
 
-    def denied_drop(backend, name, *args, **kwargs):
-        if str(name).startswith("_cuped_qr_"):
+    @contextmanager
+    def denied_safe_raw_sql(statement, *args, **kwargs):
+        if str(statement).startswith("DROP TABLE IF EXISTS") and "_cuped_qr_" in str(statement):
             raise PermissionError("simulated temporary-relation DROP denial")
-        return original_drop(backend, name, *args, **kwargs)
+        with original_safe_raw_sql(statement, *args, **kwargs) as result:
+            yield result
 
-    monkeypatch.setattr(type(connection), "drop_table", denied_drop)
+    monkeypatch.setattr(connection, "_safe_raw_sql", denied_safe_raw_sql)
     try:
         with pytest.raises(CodedError) as raised:
             with session.qr_scratch() as scratch:
@@ -1249,7 +1268,7 @@ def test_qr_scratch_drop_failure_exposes_retained_locator(tmp_path, monkeypatch)
         assert raised.value.context["relations"]
         assert session.materialized_names
     finally:
-        monkeypatch.setattr(type(connection), "drop_table", original_drop)
+        monkeypatch.setattr(connection, "_safe_raw_sql", original_safe_raw_sql)
         session.drop_materialized()
         connection.disconnect()
 

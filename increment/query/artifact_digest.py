@@ -49,6 +49,7 @@ from increment.errors import (
     _safe_error_value,
     raiser,
     refusals,
+    refuse,
 )
 from increment.query._artifact_float import _Float64Token, register_float64_token
 from increment.query.artifact_ports import BUCKETED_DIGEST_FORMAT, SQL_DIGEST_FORMAT
@@ -1340,10 +1341,70 @@ def _drop_sql_digest_hash_table(con: Any, relation: ir.Table) -> None:
     elif con.name == "snowflake":
         catalog = catalog or getattr(con, "current_catalog", None)
         database = database or getattr(con, "current_database", None)
-    physical_database = (
-        (catalog, database) if catalog is not None and database is not None else database or catalog
+    from increment.query.session import _drop_owned_table
+
+    _drop_owned_table(con, op.name, catalog=catalog, schema=database)
+
+
+def _create_sql_digest_hash_table(
+    con: Any,
+    name: str,
+    row_hashes: ir.Table,
+    cleanup_failure: Callable[[str, str | None, str | None], None] | None,
+) -> ir.Table:
+    from increment.query.session import (
+        _RELATION_NAME_OCCUPIED,
+        _cleanup_failed_temporary_relation,
+        _temporary_relation_exists,
+        _temporary_relation_locator,
     )
-    con.drop_table(op.name, database=physical_database, force=True)
+
+    locator = _temporary_relation_locator(con, name)
+    if locator is not None and _temporary_relation_exists(con, locator):
+        refuse(
+            _RELATION_NAME_OCCUPIED,
+            backend=con.name,
+            catalog=locator.catalog,
+            schema=locator.schema,
+            name=locator.name,
+            route="retry with a new publication or scratch relation name",
+        )
+    try:
+        return con.create_table(name, row_hashes, temp=True)
+    except BaseException:
+        if locator is not None and not _cleanup_failed_temporary_relation(
+            con, locator, created=False
+        ):
+            if cleanup_failure is not None:
+                cleanup_failure(locator.name, locator.catalog, locator.schema)
+            else:
+                _cleanup_failed_temporary_relation(con, locator, created=False)
+        raise
+
+
+def _drop_sql_digest_hash_table_with_retry(
+    con: Any,
+    relation: ir.Table,
+    cleanup_failure: Callable[[str, str | None, str | None], None] | None,
+) -> None:
+    try:
+        _drop_sql_digest_hash_table(con, relation)
+    except BaseException:
+        if cleanup_failure is not None:
+            operation = relation.op()
+            catalog, database = operation.namespace.catalog, operation.namespace.database
+            if con.name == "postgres":
+                database = "pg_temp"
+            elif con.name == "snowflake":
+                catalog = catalog or getattr(con, "current_catalog", None)
+                database = database or getattr(con, "current_database", None)
+            cleanup_failure(operation.name, catalog, database)
+        else:
+            try:
+                _drop_sql_digest_hash_table(con, relation)
+            except BaseException:
+                pass
+        raise
 
 
 def digest_relation_sql_v2(
@@ -1354,6 +1415,7 @@ def digest_relation_sql_v2(
     *,
     primary_key: Sequence[str] = (),
     digest_format: int = SQL_DIGEST_FORMAT,
+    cleanup_failure: Callable[[str, str | None, str | None], None] | None = None,
 ) -> RelationDigests:
     """SQL digest in the v2 domain: format 2 for DuckDB verification, format 4 for writes."""
     if con.name not in _SQL_DIGEST_BACKENDS:
@@ -1408,9 +1470,10 @@ def digest_relation_sql_v2(
 
     hashed_name = f"incr_digest_{uuid.uuid4().hex}"
     hashed = None
+
     try:
         row_hashes = table.select(h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name))
-        hashed = con.create_table(hashed_name, row_hashes, temp=True)
+        hashed = _create_sql_digest_hash_table(con, hashed_name, row_hashes, cleanup_failure)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
         row_count = int(fetch_bounded_arrow(con, hashed.count()).as_py())
@@ -1434,9 +1497,16 @@ def digest_relation_sql_v2(
                 .order_by("bucket")
             )
             rows.extend(fetch_bounded_arrow(con, bucket_digests).to_pylist())
-    finally:
+    except BaseException as primary_error:
         if hashed is not None:
-            _drop_sql_digest_hash_table(con, hashed)
+            try:
+                _drop_sql_digest_hash_table_with_retry(con, hashed, cleanup_failure)
+            except BaseException as cleanup_error:
+                raise primary_error from cleanup_error
+        raise
+    else:
+        if hashed is not None:
+            _drop_sql_digest_hash_table_with_retry(con, hashed, cleanup_failure)
     bucketed = sum(record["n"] for record in rows)
     if bucketed != row_count:
         _raise(

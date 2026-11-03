@@ -55,6 +55,55 @@ def test_sql_digest_is_order_independent(con):
     assert forward.digest_format == 4
 
 
+@pytest.mark.integration
+def test_sql_digest_cleans_hash_relation_when_create_raises_after_creation(monkeypatch):
+    import uuid
+
+    from increment.errors import CapabilityError
+
+    con = ibis.duckdb.connect()
+    source = con.create_table("digest_source", obj=_ROWS)
+    source_rows = source.to_pyarrow().to_pylist()
+    create = con.create_table
+    created_names = []
+    reserved_id = uuid.UUID("00112233-4455-6677-8899-aabbccddeeff")
+    reserved_name = f"incr_digest_{reserved_id.hex}"
+    con.raw_sql(f'CREATE TEMP TABLE "{reserved_name}" AS SELECT 314159 AS sentinel')
+
+    with monkeypatch.context() as randomness:
+        randomness.setattr(uuid, "uuid4", lambda: reserved_id)
+        with pytest.raises(CapabilityError) as raised:
+            digest_relation_sql_v2(con, source, "exposures", _SCHEMA, primary_key=_PK)
+    assert raised.value.code == "query.relation.name_occupied"
+    assert set(raised.value.context) == {"backend", "catalog", "schema", "name", "route"}
+    assert {key: value for key, value in raised.value.context.items() if key != "route"} == {
+        "backend": "duckdb",
+        "catalog": "temp",
+        "schema": "main",
+        "name": reserved_name,
+    }
+    assert isinstance(raised.value.context["route"], str)
+    assert con.table(reserved_name).to_pyarrow().to_pylist() == [{"sentinel": 314159}]
+    con.drop_table(reserved_name, database=("temp", "main"))
+
+    def create_then_raise(name, obj=None, **kwargs):
+        result = create(name, obj, **kwargs)
+        if str(name).startswith("incr_digest_"):
+            created_names.append(str(name))
+            raise RuntimeError("lost create response")
+        return result
+
+    monkeypatch.setattr(con, "create_table", create_then_raise)
+    try:
+        with pytest.raises(RuntimeError, match="lost create response"):
+            digest_relation_sql_v2(con, source, "exposures", _SCHEMA, primary_key=_PK)
+        assert created_names
+        assert set(created_names).isdisjoint(con.list_tables(database=("temp", "main")))
+        assert source.to_pyarrow().to_pylist() == source_rows
+    finally:
+        con.disconnect()
+
+
 _PORTABLE_SCHEMA = (
     ("id", "INT64", False),
     ("text", "STRING", True),
