@@ -69,9 +69,24 @@ receipts fail rather than reducing the eligible domain.
 
 Warehouse fit-record components are independently rebuilt from the genuine
 rehydrated fit, its complete field inventory and real relative/ratio projections.
-This checks identity data, not an independent implementation of projection
-mathematics. Local frame components retain their original columns and values and
-are hashed after the actual declared dimension-alias transformation.
+Projection bounds are recomputed through the Student-t inverse, so an archived
+component commits to the capture platform's rounding of them, not to decoded
+data. Archived components are rehashed with their witnessed historical bounds
+(`breakout_component_witnesses.json`, keyed by fixture, receipt, entry, kind,
+metric, arm and alpha). A witness has authority only because that rehash equals
+the protected archived digest; the locally recomputed bounds must agree with the
+witnessed ones at the original parity contract, and the witness inventory must
+match the archived components exactly. Live components are rehashed on their own
+runtime. Neither checks an independent implementation of projection mathematics.
+Local frame components retain their original columns and values and are hashed
+after the actual declared dimension-alias transformation.
+
+Bootstrap-t root series are owned by replicate index: count, order, `None`
+positions and failure indices are exact, every root keeps the original parity
+contract, and every root must agree on the consumer scale `point - root * se`
+(`expm1` for the log-relative series) within the consumer interval bound. Pivot
+error is absolute, so a relative rule on a nearly centred root rejects platform
+rounding no consumer can observe.
 
 Warehouse raw-relation fingerprints are a distinct protocol from fitted-wire
 hashes and fit-record components. Their receipts retain ordered backend schema,

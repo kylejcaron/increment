@@ -1001,6 +1001,21 @@ _INPUT_ROOT = Path(__file__).parent / "fixtures" / "evidence_identity" / "consum
 _BASELINE = "7c324b66f9f758eb78298e6ecf2d1aea29c66709"
 
 
+def _input_name(scenario_id, ingress):
+    return f"{scenario_id}--{ingress}.json.gz"
+
+
+def _archived_input(coordinate):
+    """Name of the protected consumer-input file a decoded transcript came from.
+
+    Live acquisitions return None: their components were digested on this runtime, so the
+    audit rehashes them without historical witnesses.
+    """
+    if isinstance(coordinate, Transcript):
+        return _input_name(coordinate.scenario_id, coordinate.ingress)
+    return None
+
+
 @cache
 def _acquired_coordinate(scenario_id, ingress):
     """Keep materialized data only; acquisition closes every source."""
@@ -1012,7 +1027,7 @@ def _frozen_coordinate(scenario_id, ingress):
     import gzip
 
     payload = json.loads(
-        gzip.decompress((_INPUT_ROOT / f"{scenario_id}--{ingress}.json.gz").read_bytes())
+        gzip.decompress((_INPUT_ROOT / _input_name(scenario_id, ingress)).read_bytes())
     )
     requests = tuple(_decode_transcript_request(record) for record in payload["records"])
     coordinate = Transcript.from_payload(
@@ -1552,6 +1567,7 @@ def _assert_input_value(actual, expected, path="typed_inputs"):
     import math
     from collections.abc import Mapping
 
+    from increment.winsor import BootstrapRoots
     from tests.evidence_fixtures.capture import _MOMENTS
     from tests.evidence_fixtures.transcript import _canonical
 
@@ -1566,6 +1582,11 @@ def _assert_input_value(actual, expected, path="typed_inputs"):
             right = {_canonical([r["unit_id"], r["group_id"]]): r for r in expected["rows"]}
             assert len(left) == len(actual["rows"]) and len(right) == len(expected["rows"]), path
             _assert_input_value(left, right, f"{path}.unit_rows")
+            return
+        if path.rsplit(".", 1)[-1] in {"additive", "log_relative"} and actual.keys() == set(
+            BootstrapRoots.model_fields
+        ):
+            _assert_bootstrap_series(actual, expected, path)
             return
         for key in actual:
             _assert_input_value(actual[key], expected[key], f"{path}.{key}")
@@ -1607,6 +1628,44 @@ def _assert_input_value(actual, expected, path="typed_inputs"):
         )
     else:
         assert type(actual) is type(expected) and actual == expected, (path, actual, expected)
+
+
+def _assert_bootstrap_series(actual, expected, path):
+    """Own a bootstrap-t root series by replicate index, the way its consumers read it.
+
+    ``point``, ``pilot_target`` and ``se`` keep the generic typed-input comparison. The
+    roots keep the original parity contract (count, order, ``None`` positions, sign and
+    ``TOLERANCE``) and every root must also agree on the consumer scale ``point - root * se``
+    (through ``expm1`` for the log-relative series) within the consumer's interval bound.
+    A pivot's error is absolute (ulps of its statistic over its replicate SE), so a relative
+    rule on a nearly centred root rejects platform rounding that no consumer can observe.
+    """
+    from tests.test_evidence_identity_parity import _compare
+
+    for field in ("point", "pilot_target", "se"):
+        _assert_input_value(actual[field], expected[field], f"{path}.{field}")
+    roots = f"{path}.roots"
+    _compare(expected["roots"], actual["roots"], roots)
+    relative = path.rsplit(".", 1)[-1] == "log_relative"
+    for index, (left, right) in enumerate(zip(actual["roots"], expected["roots"], strict=True)):
+        if left is None:
+            continue
+        assert _bootstrap_consumer_bound(actual, left, relative) == pytest.approx(
+            _bootstrap_consumer_bound(expected, right, relative), rel=1e-12, abs=1e-14
+        ), (f"{roots}[{index}]", left, right)
+
+
+def _bootstrap_consumer_bound(series, root, relative):
+    """The interval endpoint ``bootstrap_root_interval`` derives from one root."""
+    import math
+
+    bound = series["point"] - root * series["se"]
+    if not relative:
+        return bound
+    try:
+        return math.expm1(bound)
+    except OverflowError:
+        return math.inf
 
 
 def _decode_covariate(value):
@@ -2321,6 +2380,84 @@ def _breakout_fit_input_record(answer, request):
     }
 
 
+_WITNESSES = Path(__file__).parent / "evidence_fixtures" / "breakout_component_witnesses.json"
+_WITNESS_COORDINATE = ("fixture", "receipt", "entry", "kind", "metric", "arm", "alpha")
+_PROJECTION_ALPHA = 0.05
+
+
+@cache
+def _breakout_component_witnesses():
+    """Historical interval bounds inside archived warehouse fit-record component preimages.
+
+    A fit-record component digests the fit's stored values plus each treatment arm's
+    projection, whose ``lower``/``upper`` are recomputed through the Student-t inverse:
+    the archived bytes are the capture platform's rounding, not decoded data. A witness
+    carries exactly those bytes for one coordinate and has no authority of its own: the
+    archived record rehashed with the witnessed bounds must equal the protected component
+    digest, and the locally recomputed bounds must agree with the witnessed ones at the
+    original parity contract.
+    """
+    witnesses = {}
+    for witness in json.loads(_WITNESSES.read_text()):
+        assert witness.keys() == {*_WITNESS_COORDINATE, "archived_sha256", "lower", "upper"}
+        key = tuple(witness[name] for name in _WITNESS_COORDINATE)
+        assert key not in witnesses, key
+        witnesses[key] = witness
+    return witnesses
+
+
+def _witnessed_fit_input_record(record, archived, kind, metric, component):
+    """Rebind an archived fit record's recomputed interval bounds to their witnessed bytes."""
+    from tests.test_evidence_identity_parity import _compare
+
+    if "projections" not in record:
+        return record
+    fixture, receipt_index, entry_index = archived
+    projections = []
+    for projection in record["projections"]:
+        if len(projection) != 6:
+            projections.append(projection)
+            continue
+        arm, estimate, se, dof, lower, upper = projection
+        key = (fixture, receipt_index, entry_index, kind, metric, arm, _PROJECTION_ALPHA)
+        witness = _breakout_component_witnesses().get(key)
+        assert witness is not None, key
+        assert witness["archived_sha256"] == component["sha256"], key
+        label = f"{fixture}[{receipt_index}][{entry_index}].{arm}"
+        _compare(witness["lower"], lower, f"{label}.lower")
+        _compare(witness["upper"], upper, f"{label}.upper")
+        projections.append((arm, estimate, se, dof, witness["lower"], witness["upper"]))
+    return {**record, "projections": tuple(projections)}
+
+
+@pytest.mark.integration
+def test_breakout_component_witnesses_cover_archived_fit_projections_exactly():
+    import gzip
+
+    expected = {}
+    for path in sorted(_INPUT_ROOT.glob("*.json.gz")):
+        payload = json.loads(gzip.decompress(path.read_bytes()))
+        assembly = payload["provenance"]["consumer_configuration"].get("assembly", {})
+        for receipt_index, receipt in enumerate(assembly.get("breakout_scope_inputs", ())):
+            for entry_index, entry in enumerate(receipt["entries"]):
+                component = entry["component"]
+                if component is None or not component["kind"].startswith("warehouse_qr_breakout:"):
+                    continue
+                record = entry["record"]
+                fit_record = _breakout_fit_input_record(
+                    record["answer"], _decode_transcript_request(record)
+                )
+                for projection in fit_record.get("projections", ()):
+                    if len(projection) == 6:
+                        arm = projection[0]
+                        key = (path.name, receipt_index, entry_index, component["kind"])
+                        expected[(*key, component["metric"], arm, _PROJECTION_ALPHA)] = component[
+                            "sha256"
+                        ]
+    witnesses = _breakout_component_witnesses()
+    assert {key: witness["archived_sha256"] for key, witness in witnesses.items()} == expected
+
+
 def _breakout_frame_component(record, config, receipt):
     from tests.evidence_fixtures.transcript import _restore
 
@@ -2564,7 +2701,7 @@ def _breakout_scope_request(receipt, configuration, context):
     return request
 
 
-def _breakout_input_component(entry, typed, config, receipt, context):
+def _breakout_input_component(entry, typed, config, receipt, context, *, archived=None):
     record = entry["record"]
     identity = receipt["identity"]
     source_name = receipt["request"]["source_name"]
@@ -2588,10 +2725,13 @@ def _breakout_input_component(entry, typed, config, receipt, context):
     segment = "__null__" if typed.cell.is_null else str(typed.cell.value)
     if entry["usage"] == "warehouse_breakout_fit":
         assert answer["origin"] in {"retained_fitted", "warehouse"}
-        digest, count = _materialized_rows_digest(
-            [_breakout_fit_input_record(answer, typed)], raw=True
-        )
         kind = f"warehouse_qr_breakout:{typed.method.name}:{identity['property']}:{segment}"
+        fit_record = _breakout_fit_input_record(answer, typed)
+        if archived is not None:
+            fit_record = _witnessed_fit_input_record(
+                fit_record, archived, kind, typed.metric.name, entry["component"]
+            )
+        digest, count = _materialized_rows_digest([fit_record], raw=True)
     else:
         assert entry["usage"] == "retained_categorical_breakout_fit"
         assert answer["origin"] == "retained_categorical" and answer["failure"] is None
@@ -2641,9 +2781,10 @@ def _assert_breakout_slice_association(receipt, coordinate):
 def _audit_breakout_scope_inputs(coordinate):
     from tests.evidence_fixtures.transcript import _validate_record
 
+    archive = _archived_input(coordinate)
     configuration = coordinate.provenance["consumer_configuration"]
     assembly = configuration.get("assembly", {})
-    receipts = assembly.get("breakout_scope_inputs", [])
+    receipts: list[Any] = assembly.get("breakout_scope_inputs", [])
     assert isinstance(receipts, list)
     scope_keys = {
         "identity",
@@ -2667,7 +2808,7 @@ def _audit_breakout_scope_inputs(coordinate):
     ]
     ordered_scopes = []
     validated = []
-    for receipt in receipts:
+    for receipt_index, receipt in enumerate(receipts):
         assert receipt.keys() == scope_keys
         identity = receipt["identity"]
         assert identity.keys() == {"property", "source"}
@@ -2699,7 +2840,7 @@ def _audit_breakout_scope_inputs(coordinate):
         seen_requests = set()
         covered = set()
         components = []
-        for entry in receipt["entries"]:
+        for entry_index, entry in enumerate(receipt["entries"]):
             assert entry.keys() == {"usage", "record", "component"}
             record = entry["record"]
             _validate_record(record)
@@ -2712,7 +2853,14 @@ def _audit_breakout_scope_inputs(coordinate):
             config = by_metric[metric]
             assert typed.metric == config.metric
             assert typed.population == request["analysis_population"]
-            expected_component = _breakout_input_component(entry, typed, config, receipt, context)
+            expected_component = _breakout_input_component(
+                entry,
+                typed,
+                config,
+                receipt,
+                context,
+                archived=None if archive is None else (archive, receipt_index, entry_index),
+            )
             assert entry["component"] == expected_component
             covered.add(metric)
             if expected_component is not None:
