@@ -46,7 +46,9 @@ lists supported combinations.
 
 ## Quickstart
 
-Requires **Python 3.12–3.14**. Install Increment's pre-release package and
+Requires **Python 3.12 or newer**. Core and dataframe analysis are tested on
+Python 3.12–3.15. DuckDB-backed extras remain tested on 3.12–3.14; Python 3.15
+needs a compatible DuckDB wheel. Install Increment's pre-release package and
 Polars for this example:
 
 ```bash
