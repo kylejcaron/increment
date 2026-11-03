@@ -13,6 +13,7 @@ import pytest
 UNIT_EXCLUDING_MARKERS = frozenset(
     {
         "slow",
+        "tooling",
         "integration",
         "parameter_recovery",
         "numerical_certification",

@@ -9,6 +9,8 @@ import pytest
 
 from scripts.mutation_campaign import COLLECTION_ERROR, RUNNER_ERROR, _rates, classify, execute
 
+pytestmark = pytest.mark.tooling
+
 
 @pytest.fixture
 def worker_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:

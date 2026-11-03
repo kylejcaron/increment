@@ -126,4 +126,4 @@ def test_packaging_configuration_and_type_markers_require_wheel_smoke(repository
     assert _required(repo, base)
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]

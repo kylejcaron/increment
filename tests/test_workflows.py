@@ -2,8 +2,11 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
+
+pytestmark = pytest.mark.tooling
 
 _PINNED_REF = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 

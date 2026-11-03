@@ -31,6 +31,7 @@ jobs:
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - run: uv run python scripts/check_doc_references.py --check --collect
       - run: uv run python scripts/render_capability_table.py --check
+      - run: uv run python scripts/render_error_codes.py --check
       - run: make lint
       - run: uv run --no-sync python scripts/import_reach.py --summary
       - run: uv run ty check
@@ -77,7 +78,7 @@ jobs:
             echo "incomplete evidence: no base" > affected-report.json
             echo "incomplete evidence: no base" >> "$GITHUB_STEP_SUMMARY"
           else
-            uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
+            uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
           fi
       - name: Retain selection prediction
         if: always()
@@ -226,6 +227,30 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+  tooling:
+    name: repository tooling
+    needs: [lint, changes]
+    if: ${{ needs.changes.outputs.tooling_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - run: make test-tier TIER=tooling WORKERS=auto PYTEST_ARGS="--durations=25 --cpu-report cpu.json"
+      - name: Retain tooling CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: cpu-tooling-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
   compile-registry:
     needs: [changes]
     if: ${{ needs.changes.outputs.compile_registry_required == 'true' }}
@@ -326,6 +351,7 @@ jobs:
       postgres_required: ${{ steps.postgres.outputs.required }}
       certification_required: ${{ steps.certification.outputs.required }}
       compile_registry_required: ${{ steps.compile_registry.outputs.required }}
+      tooling_required: ${{ steps.tooling.outputs.required }}
       wheel_smoke_required: ${{ steps.packaging.outputs.required }}
       snippets: ${{ steps.docs.outputs.snippets }}
       strict_docs: ${{ steps.docs.outputs.strict_docs }}
@@ -350,6 +376,12 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+      - id: tooling
+        run: python scripts/tooling_ci_changes.py --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
       - id: packaging
         run: python scripts/packaging_ci_changes.py --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
         env:
@@ -469,7 +501,7 @@ jobs:
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, slow, compile-registry, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening]
+    needs: [lint, test, slow, compile-registry, tooling, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening]
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -521,6 +553,8 @@ jobs:
           WHEEL_SMOKE_WINDOWS_RESULT: ${{ needs.wheel-smoke-windows.result }}
           TEST_WEAKENING_REQUIRED: ${{ github.event_name == 'pull_request' }}
           TEST_WEAKENING_RESULT: ${{ needs.test-weakening.result }}
+          TOOLING_REQUIRED: ${{ needs.changes.outputs.tooling_required }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
         run: |
           set -euo pipefail
           results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.changes.result }}"
@@ -541,6 +575,7 @@ jobs:
           check_conditional_job "$POSTGRES_REQUIRED" "$POSTGRES_RESULT" PostgreSQL
           check_conditional_job "$CERTIFICATION_REQUIRED" "$CERTIFICATION_RESULT" certification
           check_conditional_job "$SNIPPETS_REQUIRED" "$SNIPPETS_RESULT" documentation-snippets
+          check_conditional_job "$TOOLING_REQUIRED" "$TOOLING_RESULT" tooling
           check_conditional_job "$STRICT_DOCS_REQUIRED" "$STRICT_DOCS_RESULT" strict-docs
           check_conditional_job "$WHEEL_SMOKE_REQUIRED" "$WHEEL_SMOKE_MACOS_RESULT" wheel-smoke-macos
           check_conditional_job "$WHEEL_SMOKE_REQUIRED" "$WHEEL_SMOKE_WINDOWS_RESULT" wheel-smoke-windows

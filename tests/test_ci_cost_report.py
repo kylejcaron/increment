@@ -10,6 +10,8 @@ import pytest
 from scripts import ci_cost_report
 from scripts.ci_cost_report import CpuUsage, JobTiming, build_report
 
+pytestmark = pytest.mark.tooling
+
 _START = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 
 
