@@ -1116,6 +1116,16 @@ warehouse = [
 ]
 
 [package.dev-dependencies]
+core-test = [
+    { name = "hypothesis" },
+    { name = "pandas" },
+    { name = "polars" },
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+    { name = "pytest-xdist" },
+    { name = "sybil" },
+    { name = "tach" },
+]
 dev = [
     { name = "altair" },
     { name = "complexipy" },
@@ -1182,6 +1192,16 @@ requires-dist = [
 provides-extras = ["dashboard", "demo", "tables", "warehouse"]
 
 [package.metadata.requires-dev]
+core-test = [
+    { name = "hypothesis", specifier = ">=6.170.9" },
+    { name = "pandas", specifier = ">=3.0.5,<3.1" },
+    { name = "polars", specifier = ">=2.0.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-timeout", specifier = ">=2.4" },
+    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "sybil", specifier = ">=10.1.0" },
+    { name = "tach", specifier = ">=0.35.3" },
+]
 dev = [
     { name = "altair", specifier = ">=6.3.0" },
     { name = "complexipy", specifier = "==8.1.0" },

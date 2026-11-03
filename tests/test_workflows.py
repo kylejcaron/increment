@@ -1,5 +1,8 @@
 import json
 import re
+import subprocess
+import sys
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -210,6 +213,100 @@ def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
         if step.get("name") == "Merge predictions and report misses"
     )
     assert "incomplete evidence: no base" in report["run"]
+
+
+@pytest.mark.integration
+def test_backend_absence_keeps_process_and_socket_guards_active() -> None:
+    script = """
+import multiprocessing
+import socket
+import subprocess
+import sys
+from _pytest.outcomes import Failed
+import pytest
+sys.modules["duckdb"] = None
+sys.modules["ibis"] = None
+from tests import _unit_boundary as boundary
+from tests._duckdb_resources import bound_duckdb_resources
+bound_duckdb_resources()
+boundary.install_guards()
+boundary._current_unit_nodeid = "test_network_boundary"
+operations = (
+    ("socket", lambda: socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("127.0.0.1", 9))),
+    ("subprocess", lambda: subprocess.Popen([sys.executable, "-c", "pass"])),
+    ("process", lambda: multiprocessing.Process(target=lambda: None).start()),
+)
+for name, operation in operations:
+    try:
+        operation()
+    except Failed:
+        continue
+    raise AssertionError(f"{name} guard allowed the operation")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_core_install_job_runs_listed_modules_without_warehouse_packages() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["core-install"]
+    assert job["name"] == "core-install (${{ matrix.python-version }})"
+    assert job["env"]["UV_NO_SYNC"] == "1"
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert (
+        "uv sync --python ${{ matrix.python-version }} --no-default-groups --group core-test"
+        in commands
+    )
+    assert any(step.get("name") == "Run README dataframe quickstart" for step in job["steps"])
+    assert "README.md" in commands
+    assert "exec(compile" in commands
+    assert any(step.get("name") == "Verify warehouse packages are absent" for step in job["steps"])
+    assert "--collect-only -q $(cat tests/core_modules.txt)" in commands
+    assert '-m "not slow" $(cat tests/core_modules.txt)' in commands
+    core_test_run = next(step for step in job["steps"] if step.get("name") == "Run core tests")
+    assert "--cpu-report cpu.json" in core_test_run["run"]
+    cpu_upload = next(step for step in job["steps"] if step.get("name") == "Retain core CPU usage")
+    assert cpu_upload["if"] == "always()"
+    assert cpu_upload["continue-on-error"] is True
+    assert (
+        cpu_upload["with"]["name"]
+        == "cpu-core-${{ matrix.python-version }}-${{ job.check_run_id }}"
+    )
+    assert cpu_upload["with"]["path"] == "cpu.json"
+    ci_gate = workflow["jobs"]["ci-ok"]
+    assert "core-install" in ci_gate["needs"]
+    gate_env = next(
+        step["env"]
+        for step in ci_gate["steps"]
+        if step.get("name") == "Check required jobs and gate decisions"
+    )
+    assert gate_env["CORE_INSTALL_RESULT"] == "${{ needs.core-install.result }}"
+
+
+def test_core_test_dependencies_exclude_warehouse_backends() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text())
+    requirements = project["dependency-groups"]["core-test"]
+    assert {
+        "pytest",
+        "pytest-xdist",
+        "pytest-timeout",
+        "hypothesis",
+        "sybil",
+        "tach",
+        "polars",
+        "pandas",
+    } <= {requirement.split(">")[0].split("=")[0] for requirement in requirements}
+    assert not any(
+        name in requirement.lower()
+        for requirement in requirements
+        for name in ("ibis", "sqlglot", "duckdb")
+    )
 
 
 def test_weekly_floor_parts_cover_each_interpreter_with_distinct_reports() -> None:
