@@ -319,10 +319,27 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
             )
 
 
+# Failure locality is readout assembly, shared by every source, so both method roles run on
+# the frames; each warehouse reader runs once per missing policy to pin that it raises the
+# frame's covariate code with the failed method's siblings intact.
 @pytest.mark.integration
-@pytest.mark.parametrize("ingress", ["summary", "panel", "native", "artifact"])
-@pytest.mark.parametrize("role", ["decision", "sensitivity"])
-@pytest.mark.parametrize("missing", ["refuse", "impute"])
+@pytest.mark.parametrize(
+    ("missing", "role", "ingress"),
+    [
+        ("refuse", "decision", "summary"),
+        ("refuse", "decision", "panel"),
+        ("refuse", "sensitivity", "summary"),
+        ("refuse", "sensitivity", "panel"),
+        ("impute", "decision", "summary"),
+        ("impute", "decision", "panel"),
+        ("impute", "sensitivity", "summary"),
+        ("impute", "sensitivity", "panel"),
+        ("refuse", "decision", "native"),
+        ("refuse", "decision", "artifact"),
+        ("impute", "decision", "native"),
+        ("impute", "decision", "artifact"),
+    ],
+)
 @pytest.mark.slow
 @allow_declared_overrides
 def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, missing):

@@ -819,9 +819,8 @@ implicit pre-period binding, while the multicovariate method uses its explicit
 `covariates` bindings. To adjust the same historical signal, those per-unit
 values must match. Publication for `from_unit_day_artifact` must include the
 `cuped_preperiod` extension required by scalar CUPED. The four-ingress witness
-in `test_warehouse_cuped_parity.py` exercises both methods on the same
-per-unit historical revenue data; this is runtime compatibility, not coverage
-certification.
+in `test_cuped_frame_evidence.py` composes both methods over the same per-unit
+history; this is runtime compatibility, not coverage certification.
 
 ### A mixed-covariate dataframe recipe
 

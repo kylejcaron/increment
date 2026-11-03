@@ -174,6 +174,13 @@ def iter_cells() -> Iterator[Cell]:
         yield Cell(metric, view, option, boundary, missing)
 
 
+# Scalar CUPED cells the PR scope runs whatever the covering array selects. The covering array
+# reaches ratio CUPED on the daily axis only through a refusing missing policy, so this cell is
+# the PR-tier comparison of its daily values and lift across definitions, the unit-day artifact
+# and (values) the unit panel.
+PR_CUPED_CELLS = (Cell("ratio", "daily", "cuped", "utc", "error"),)
+
+
 ASYMPTOTIC_RETENTION = "asymptotic_mean"
 
 
@@ -1337,7 +1344,8 @@ def _disposition_signature(disposition: Disposition) -> tuple[object, ...]:
 
 
 def parity_matrix_cells() -> tuple[Cell, ...]:
-    """Return the selected primary matrix cells, including disposition sentinels."""
+    """Return the selected primary matrix cells, including disposition sentinels and the
+    pinned CUPED cells."""
     cells = tuple(iter_cells())
     if parity_matrix_scope() == "full":
         return cells
@@ -1359,7 +1367,7 @@ def parity_matrix_cells() -> tuple[Cell, ...]:
     selected = covered
     selected.update(
         (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing)
-        for cell in sentinels.values()
+        for cell in (*sentinels.values(), *PR_CUPED_CELLS)
     )
     return tuple(
         cell

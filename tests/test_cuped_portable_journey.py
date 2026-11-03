@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import replace
 from typing import Any, cast
 
 import ibis
@@ -29,7 +28,7 @@ from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.semantics.models import CupedCovariateBinding
 from increment.workflows import export_moments
-from tests.analysis_factory import bound_source, view_readout
+from tests.analysis_factory import view_readout
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -117,7 +116,7 @@ def _events(units) -> list[dict[str, Any]]:
     return events
 
 
-def _definitions(tmp_path, *, fixed_caps: bool, covariate_name: str = "country"):
+def _definitions(tmp_path, *, fixed_caps: bool):
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml
 
     data = yaml.safe_load(
@@ -149,7 +148,6 @@ def _definitions(tmp_path, *, fixed_caps: bool, covariate_name: str = "country")
         }
     )
     decision = _CATEGORICAL.model_dump(mode="json", exclude_none=True)
-    decision["covariates"][0]["name"] = covariate_name
     companion = _COMPANION.model_dump(mode="json", exclude_none=True)
     explicit_companion = _EXPLICIT_COMPANION.model_dump(mode="json", exclude_none=True)
     plan = data["experiments"][0]["plan"]
@@ -230,64 +228,6 @@ def _cells(rows):
     return {
         (row.metric, row.method, row.group_id): row for row in rows if isinstance(row, LiftEstimate)
     }
-
-
-@pytest.mark.parametrize("ingress", ["definitions", "artifact"])
-def test_categorical_covariate_named_n_exports_identically(tmp_path, ingress):
-    analyses = []
-    connection = ibis.duckdb.connect()
-    connection.create_table("events", obj=pa.Table.from_pylist(_events(_units())))
-    try:
-        for name in ("country", "n"):
-            path = _definitions(tmp_path, fixed_caps=False, covariate_name=name)
-            native_experiment, native_resolver = from_definitions(
-                path, connection, experiment_name="mixed_cuped"
-            )
-            adopted_resolver = None
-            try:
-                source_experiment, source_resolver = native_experiment, native_resolver
-                if ingress == "artifact":
-                    (source_experiment, adopted_resolver), _ = _publish(
-                        connection, (native_experiment, native_resolver)
-                    )
-                    source_resolver = adopted_resolver
-                    source = bound_source(source_resolver)
-                    source._snapshot = replace(source._snapshot, _qr_scratch=None)
-                expected = _cells(view_readout(native_experiment, native_resolver))
-                destination = tmp_path / f"{ingress}-{name}.parquet"
-                export_moments(source_experiment, source_resolver, destination)
-                rows = pq.read_table(destination).to_pylist()
-                design = _design(path)
-                experiment, resolver = from_moments(
-                    rows, metrics=_specs(), design=design, experiment_id="mixed_cuped"
-                )
-                try:
-                    analyses.append((_cells(view_readout(experiment, resolver)), expected))
-                finally:
-                    resolver.close()
-            finally:
-                if adopted_resolver is not None:
-                    adopted_resolver.close()
-                cast(Any, native_resolver).close()
-    finally:
-        connection.disconnect()
-    reference = analyses[0][1]
-    for _, expected in analyses[1:]:
-        assert expected.keys() == reference.keys()
-        for key, row in reference.items():
-            comparison = expected[key]
-            for field in ("value", "log_se", "lb", "ub"):
-                assert getattr(comparison.require_lift(), field) == pytest.approx(
-                    getattr(row.require_lift(), field), rel=1e-10, abs=1e-12
-                )
-    for actual, expected in analyses:
-        assert actual.keys() == expected.keys()
-        for key, row in expected.items():
-            replayed = actual[key]
-            for field in ("value", "log_se", "lb", "ub"):
-                assert getattr(replayed.require_lift(), field) == pytest.approx(
-                    getattr(row.require_lift(), field), rel=1e-10, abs=1e-12
-                )
 
 
 @pytest.mark.parametrize("ingress", ["artifact", "definitions"])

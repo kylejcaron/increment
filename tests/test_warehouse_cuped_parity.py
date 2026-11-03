@@ -1,8 +1,10 @@
-"""Ratio CUPED and the adjusted sequential laws on the warehouse readers.
+"""Warehouse CUPED checks the parity matrix does not express.
 
-The dataframe path is the oracle: identical per-unit data through the
-definitions reader and the unit-day artifact reader must produce the same
-adjusted moments, the same interval and the same retained sequential state.
+Cross-source agreement of scalar and mixed CUPED is the parity matrix's job
+(``tests/parity_harness/matrix.py`` cells and its dedicated QR rows). These tests keep
+what one source owns: declaration refusals, the day-axis total identity, mixed-CUPED
+support refusals shared with the local fit, breakouts that never transfer unit rows, and
+the source content digest.
 """
 
 from __future__ import annotations
@@ -14,118 +16,15 @@ import ibis
 import pytest
 import yaml
 
-from increment import from_definitions, from_unit_day_artifact
+from increment import Method, Scope, from_definitions, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import DefinitionError
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Definitions
-from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
+from tests.analysis_factory import view_readout
 from tests.parity_harness.views import read
-from tests.warehouse_cuped_cases import (
-    check_day_axis_parity,
-    check_fixed_horizon_parity,
-    check_sequential_parity,
-    definitions_yaml,
-    event_rows,
-    unit_rows,
-)
-
-
-def _source_scope_signature(metadata):
-    scope = metadata.scope
-    sources = tuple(
-        sorted(
-            (
-                record.model_dump(mode="json", exclude={"source_snapshot_id"})
-                for record in scope.by_source.values()
-            ),
-            key=repr,
-        )
-    )
-    families = tuple(
-        sorted(
-            (
-                family.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"})
-                for family in scope.families
-            ),
-            key=repr,
-        )
-    )
-    return sources, families
-
-
-def _retained_mixed_cuped_signature(result):
-    metadata = result.metadata
-    assert metadata is not None
-    scope = metadata.scope
-    signature = {}
-    for row in result:
-        cell = next(
-            cell
-            for cell in scope.cells
-            if (
-                cell.metric,
-                cell.group_id,
-                cell.method,
-                cell.method_role,
-                cell.analysis_population,
-            )
-            == (
-                row.metric,
-                row.group_id,
-                row.method,
-                row.method_role,
-                row.analysis_population,
-            )
-        )
-        record = next(
-            record
-            for record in metadata.cells
-            if record.cell == cell and record.source_snapshot_id == row.source_snapshot_id
-        )
-        assert record.sampling is not None
-        assert record.sampling.available == row.sampling_available
-        assert (
-            record.posterior.available if record.posterior is not None else None
-        ) == row.posterior_available
-        identity = (
-            cell.kind,
-            cell.metric,
-            cell.group_id,
-            cell.method,
-            cell.method_role,
-            cell.analysis_population,
-        )
-        signature[identity] = {
-            "failure": record.failure.model_dump(mode="json")
-            if record.failure is not None
-            else None,
-            "sampling": record.sampling.model_dump(mode="json"),
-            "posterior": (
-                record.posterior.model_dump(mode="json") if record.posterior is not None else None
-            ),
-            "advisories": [advisory.model_dump(mode="json") for advisory in record.advisories],
-        }
-    cells = tuple(
-        sorted(
-            (
-                tuple(cell.model_dump(mode="json", exclude={"source"}).items())
-                for cell in scope.cells
-            ),
-            key=repr,
-        )
-    )
-    decisions = tuple(
-        sorted(
-            (
-                tuple(cell.model_dump(mode="json", exclude={"source"}).items())
-                for cell in scope.decision_cells
-            ),
-            key=repr,
-        )
-    )
-    return signature, cells, decisions, tuple(scope.populations)
+from tests.warehouse_cuped_cases import _open, definitions_yaml, event_rows, unit_rows
 
 
 def _retained_breakout_signature(result):
@@ -211,28 +110,6 @@ def _retained_breakout_signature(result):
     )
 
 
-def _assert_usable_cuped_rows(results):
-    for result in results:
-        for row in result:
-            assert row.sampling_available is True, (
-                row.metric,
-                row.group_id,
-                row.method_role,
-                row.sampling_reason_code,
-            )
-            assert row.lift is not None
-            assert all(
-                math.isfinite(value)
-                for value in (
-                    row.lift.value,
-                    row.lift.log_se,
-                    row.lift.lb,
-                    row.lift.ub,
-                    row.dof,
-                )
-            )
-
-
 def _native_and_adopted(connection, definitions_path, schema_name, *, all_extensions=False):
     """The mixed-CUPED definitions pair and its published, re-adopted unit-day artifact."""
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
@@ -268,23 +145,36 @@ def duck():
 
 
 @pytest.mark.slow
-@allow_declared_overrides
-def test_ratio_cuped_fixed_horizon_matches_the_dataframe_oracle(duck, tmp_path):
-    intervals = check_fixed_horizon_parity(duck, "duckdb", "events", tmp_path)
-    plain, adjusted = intervals["duckdb"]
-    assert adjusted.require_lift().ub - adjusted.require_lift().lb < 0.5 * (
-        plain.require_lift().ub - plain.require_lift().lb
+def test_day_axis_ratio_cuped_final_as_of_equals_the_total(duck):
+    """Cumulated through its last day, the as-of ratio CUPED lift is the whole-experiment lift."""
+    cuped = Method(name="cuped", variance_reduction="cuped")
+    plan = (
+        "      secondaries:\n        - metric: rpo\n"
+        "          decision_method: {name: unadjusted}\n"
+        "          sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
     )
-
-
-@pytest.mark.integration
-@pytest.mark.slow
-def test_adjusted_sequential_laws_match_frame_capture(duck):
-    widths = check_sequential_parity(duck, "duckdb", "events")
-    for plain, adjusted in widths.values():
-        assert adjusted.require_lift().ub - adjusted.require_lift().lb < 0.5 * (
-            plain.require_lift().ub - plain.require_lift().lb
-        )
+    experiment, resolver = _open(duck, "duckdb", "events", plan, artifact=False)
+    try:
+        (total_row,) = [r for r in view_readout(experiment, resolver) if r.method == "cuped"]
+        asof = {
+            (r.group_id, r.ds): r
+            for r in view_readout(
+                experiment,
+                resolver,
+                Scope(view="asof", grain="asof"),
+                metrics=["rpo"],
+                sensitivity_methods=[cuped],
+            )
+            if r.method == "cuped"
+        }
+    finally:
+        resolver.close()
+    assert isinstance(total_row, LiftEstimate)
+    total = total_row.require_lift()
+    final = asof[("treatment", max(ds for _, ds in asof))].require_lift()
+    assert final.value == pytest.approx(total.value, abs=1e-12)
+    assert final.lb == pytest.approx(total.lb, abs=1e-12)
+    assert final.ub == pytest.approx(total.ub, abs=1e-12)
 
 
 def test_ratio_cuped_binding_without_a_pre_period_refuses_by_name():
@@ -297,42 +187,6 @@ def test_ratio_cuped_binding_without_a_pre_period_refuses_by_name():
             yaml.safe_load(definitions_yaml("duckdb", "events", n_pre_periods=0, plan=plan))
         )
     assert raised.value.code == "definition.experiment.metric_declares_cuped"
-
-
-@pytest.mark.slow
-def test_day_axis_ratio_cuped_matches_total_and_both_readers_agree(duck):
-    check_day_axis_parity(duck, "duckdb", "events")
-
-
-def test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles():
-    from tests.parity_harness import matrix_cases, matrix_data
-    from tests.parity_harness.comparison import nested_close
-
-    rows = matrix_data.linear_cuped_rows()
-    summary = matrix_cases.linear_cuped_frame_case(rows, panel=False)
-    panel = matrix_cases.linear_cuped_frame_case(rows, panel=True)
-    try:
-        left, right = read(summary), read(panel)
-        assert {(r.metric, r.group_id, r.method, r.method_role) for r in left} == {
-            (r.metric, r.group_id, r.method, r.method_role) for r in right
-        }
-        assert {r.method_role for r in left} == {"decision"}
-        assert {r.metric for r in left} == {"revenue", "rpo", "signups"}
-
-        def public_rows(result):
-            fields = []
-            for row in result:
-                dumped = row.model_dump(mode="json")
-                dumped.pop("source_snapshot_id", None)
-                dumped.pop("source_id", None)
-                fields.append(dumped)
-            return sorted(fields, key=lambda row: (row["metric"], row["group_id"], row["method"]))
-
-        assert nested_close(public_rows(left), public_rows(right))
-        assert left.metadata.scope.cells and right.metadata.scope.cells
-        assert left.metadata.scope.snapshot_id and right.metadata.scope.snapshot_id
-    finally:
-        _close_pairs(summary, panel)
 
 
 @pytest.mark.integration
@@ -422,150 +276,6 @@ def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
     finally:
         _close_pairs(*pairs)
         con.disconnect()
-
-
-@pytest.mark.slow
-def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tmp_path):
-    from tests.parity_harness import matrix_cases, matrix_data
-    from tests.parity_harness.comparison import nested_close
-    from tests.warehouse_cuped_cases import (
-        mixed_cuped_definitions_yaml,
-        mixed_cuped_event_rows,
-    )
-
-    units = matrix_data.linear_cuped_rows()
-    connection = ibis.duckdb.connect()
-    connection.create_table("mixed_events", obj=mixed_cuped_event_rows(units))
-    definitions_path = tmp_path / "mixed_cuped.yaml"
-    definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
-    native, adopted = _native_and_adopted(connection, definitions_path, "mixed_cuped_artifacts")
-    summary = matrix_cases.linear_cuped_frame_case(units, panel=False)
-    panel = matrix_cases.linear_cuped_frame_case(units, panel=True)
-    try:
-        results = [read(summary), read(panel), read(native), read(adopted)]
-        _assert_usable_cuped_rows(results)
-
-        from tests.parity_harness.runner import (
-            _normalize,
-            _row_identity,
-            _validate_source_snapshot_ids,
-        )
-
-        names = ("summary", "panel", "definitions", "artifact")
-        normalized = []
-        for name, result in zip(names, results, strict=True):
-            family_for_row = _validate_source_snapshot_ids("mixed-cuped", name, result)
-            normalized.append(_normalize(result, family_for_row=family_for_row))
-        for name, payload in zip(names[1:], normalized[1:], strict=True):
-            assert nested_close(normalized[0], payload), name
-
-        expected_keys = {_row_identity(row) for row in results[0]}
-
-        expected_source_scope = _source_scope_signature(results[0].metadata)
-        for name, result in zip(names[1:], results[1:], strict=True):
-            assert nested_close(expected_source_scope, _source_scope_signature(result.metadata)), (
-                name
-            )
-        assert {row.metric for row in results[0]} == {"revenue", "rpo", "signups"}
-        for result in results[1:]:
-            assert {_row_identity(row) for row in result} == expected_keys
-
-        expected_state = _retained_mixed_cuped_signature(results[0])
-        for name, result in zip(names[1:], results[1:], strict=True):
-            assert nested_close(expected_state, _retained_mixed_cuped_signature(result)), name
-
-    finally:
-        _close_pairs(summary, panel, adopted, native)
-
-
-@pytest.mark.slow
-def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
-    from tests.parity_harness import matrix_cases, matrix_data
-    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
-
-    units = matrix_data.linear_cuped_rows()
-    for row in units:
-        if row["pre_revenue"] is None:
-            row["pre_revenue"] = 12.0
-    connection = ibis.duckdb.connect()
-    connection.create_table("mixed_scalar_events", obj=mixed_cuped_event_rows(units))
-    definitions_path = tmp_path / "mixed_cuped_scalar.yaml"
-    definitions_path.write_text(
-        mixed_cuped_definitions_yaml(
-            "mixed_scalar_events",
-            scalar_cuped=True,
-            n_pre_periods=30,
-        )
-    )
-    native, adopted = _native_and_adopted(
-        connection, definitions_path, "mixed_scalar_artifacts", all_extensions=True
-    )
-    summary = matrix_cases.linear_cuped_frame_case(units, panel=False, scalar_cuped=True)
-    panel = matrix_cases.linear_cuped_frame_case(units, panel=True, scalar_cuped=True)
-    try:
-        results = [read(summary), read(panel), read(native), read(adopted)]
-        for result in results:
-            adjusted = [
-                row
-                for row in result
-                if isinstance(row, LiftEstimate)
-                and row.metric == "revenue"
-                and row.method in {"cuped", "linear"}
-            ]
-            assert {row.method for row in adjusted} == {"cuped", "linear"}
-            for row in adjusted:
-                assert row.sampling_available is True
-                assert row.lift is not None
-                assert row.lift.value is not None and math.isfinite(row.lift.value)
-    finally:
-        _close_pairs(summary, panel, adopted, native)
-        connection.disconnect()
-
-
-@pytest.mark.slow
-def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses(
-    tmp_path,
-):
-    from tests.parity_harness import matrix_cases, matrix_data
-    from tests.parity_harness.comparison import nested_close
-    from tests.parity_harness.runner import _normalize, _validate_source_snapshot_ids
-    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
-
-    units = matrix_data.linear_cuped_rows()
-    assert min(row["revenue"] for row in units) < 7.0
-    assert max(row["revenue"] for row in units) > 11.0
-    connection = ibis.duckdb.connect()
-    connection.create_table("mixed_winsor_events", obj=mixed_cuped_event_rows(units))
-    definitions_path = tmp_path / "mixed_cuped_winsor.yaml"
-    definitions_path.write_text(
-        mixed_cuped_definitions_yaml("mixed_winsor_events", fixed_winsorization=True)
-    )
-    native, adopted = _native_and_adopted(connection, definitions_path, "mixed_winsor_artifacts")
-    summary = matrix_cases.linear_cuped_frame_case(units, panel=False, fixed_winsorization=True)
-    panel = matrix_cases.linear_cuped_frame_case(units, panel=True, fixed_winsorization=True)
-    try:
-        results = [
-            read(summary, metrics=["revenue"]),
-            read(panel, metrics=["revenue"]),
-            read(native, metrics=["revenue"]),
-            read(adopted, metrics=["revenue"]),
-        ]
-        names = ("summary", "panel", "definitions", "artifact")
-        normalized = []
-        for name, result in zip(names, results, strict=True):
-            family_for_row = _validate_source_snapshot_ids("mixed-cuped-winsor", name, result)
-            normalized.append(_normalize(result, family_for_row=family_for_row))
-            _assert_usable_cuped_rows([result])
-        for payload in normalized[1:]:
-            assert nested_close(normalized[0], payload)
-        retained = _retained_mixed_cuped_signature(results[0])
-        source_scope = _source_scope_signature(results[0].metadata)
-        for result in results[1:]:
-            assert nested_close(retained, _retained_mixed_cuped_signature(result))
-            assert nested_close(source_scope, _source_scope_signature(result.metadata))
-    finally:
-        _close_pairs(summary, panel, adopted, native)
-        connection.disconnect()
 
 
 @pytest.mark.slow
