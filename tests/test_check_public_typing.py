@@ -3328,3 +3328,66 @@ def test_unexported_function_with_a_branch_dependent_decorator_does_not_refuse(
     )
 
     assert public_any(root, ["sample"]) == {"sample.read": 1}
+
+
+@pytest.mark.integration
+def test_loop_else_sees_the_bindings_its_body_may_have_replaced(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Record"]
+                class Record:
+                    def __init__(self, items: list[int]) -> None:
+                        _Payload = str
+                        for item in items:
+                            self.last = item
+                        else:
+                            self.value: _Payload
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Record": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("self.last = item", "_Payload = Any"))
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_qualified_property_update_retains_the_local_class_getter(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Holder"]
+                class _Base:
+                    @property
+                    def value(self) -> str: ...
+                class Holder(_Base):
+                    @_Base.value.setter
+                    def value(self, new: int) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("-> str", "-> Any"))
+
+    assert (public_any(root, ["sample"]), main(args), baseline.read_text()) == (
+        {"sample.Holder": 1},
+        1,
+        before,
+    )

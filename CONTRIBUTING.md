@@ -567,7 +567,8 @@ typing declaration depends on it, the checker refuses rather than assuming
 either branch. A known condition selects its branch when the module or class
 body runs; rebinding the condition's name afterwards does not change that
 selection. An unconditional assignment or import replaces a conditional
-star-import candidate; an annotation alone does not.
+star-import candidate; an annotation alone does not. A loop's `else` suite
+starts from the bindings before the loop joined with those its body leaves.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
@@ -576,7 +577,8 @@ function or class. An import is followed through local sources to an external
 object, which is opaque unless it is a typing name. Earlier values and definitions
 add no sites unless an annotation captured them, while field annotations always
 count. A property update replaces its selected getter, setter or deleter and
-retains the other accessors, including when cloned under another name.
+retains the other accessors, including when cloned under another name or made
+through a local class's property, as in `@Base.value.setter`.
 A function assigned or imported as a public class attribute exposes its signature
 and the overloads defined before it under the attribute's name, even after the
 original name is rebound. Those overloads and annotations resolve where the

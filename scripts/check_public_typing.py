@@ -828,12 +828,17 @@ class _Source:
                 suites.append([])
                 targets.append([])
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-            suites = [node.body, node.orelse, []]
-            targets = (
-                [[node.target], [node.target], []]
-                if isinstance(node, (ast.For, ast.AsyncFor))
-                else [[], [], []]
-            )
+            entry = self._snapshot(module)
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                self._unknown_target(name, module, node, node.target, scope)
+            self._bind_suite(name, module, package, node.body, scope)
+            iterated = self._snapshot(module)
+            # `else` runs once the loop ends after zero or more complete iterations.
+            self._merge_states(module, node, [entry, iterated])
+            self._bind_suite(name, module, package, node.orelse, scope)
+            # `break` can leave after any part of an iteration, skipping `else`.
+            self._merge_states(module, node, [iterated, self._snapshot(module), entry])
+            return True
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
                 if item.optional_vars is not None:
@@ -2007,15 +2012,35 @@ class _Source:
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> tuple[str, _Binding] | None:
         """The accessor slot and property value captured by an accessor decorator."""
-        decorators = self.scopes[_ValueScope(node)]
+        scope = _ValueScope(node)
+        decorators = self.scopes[scope]
         for decorator in node.decorator_list:
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
-            if (
-                isinstance(target, ast.Attribute)
-                and target.attr in {"getter", "setter", "deleter"}
-                and isinstance(target.value, ast.Name)
-                and isinstance(previous := decorators.bindings.get(target.value.id), _Binding)
-            ):
+            if not isinstance(target, ast.Attribute) or target.attr not in {
+                "getter",
+                "setter",
+                "deleter",
+            }:
+                continue
+            root = target.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if not isinstance(root, ast.Name) or root.id not in decorators.bindings:
+                continue
+            previous: _Binding | _Reference | None = decorators.bindings[root.id]
+            if root is not target.value:
+                # A qualified receiver such as `Base.value` reads a member through captured names.
+                member = self.reference(
+                    decorators.owner.module, target.value, scope, allow_forward_strings=False
+                )
+                previous = (
+                    self.lookup(member.module, member.name, member.scope)
+                    if member is not None
+                    and member.name is not None
+                    and self.path(member.module) is not None
+                    else None
+                )
+            if isinstance(previous, _Binding):
                 return target.attr, previous
         return None
 
