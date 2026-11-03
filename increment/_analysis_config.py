@@ -607,6 +607,16 @@ def refuse_missing_scalar_evidence(route: str, method: str) -> NoReturn:
     _raise("readout.scalar_method_evidence", route=route, method=method)
 
 
+def require_resolved_configs(
+    selected: Sequence[Metric], configs: Sequence[ResolvedMetricConfig]
+) -> None:
+    """Refuse the first selected metric that has no resolved configuration."""
+    resolved = {config.metric.name for config in configs}
+    for metric in selected:
+        if metric.name not in resolved:
+            _raise("facade.analysis_config.metric_no_resolved", metric_name=metric.name)
+
+
 def resolve_configs(
     selected: Sequence[Metric],
     bindings: Mapping[str, ExperimentMetric] | None,

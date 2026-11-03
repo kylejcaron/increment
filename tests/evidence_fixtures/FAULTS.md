@@ -154,16 +154,144 @@ patching dataclass constructors. No estimator implementation registry is used.
 
 ## Loader fault catalogue
 
-The shared detector is
-`tests/test_evidence_level_parity.py::test_mean_and_conversion_evidence_matches_across_sources`.
-It executes the same line-one mean/conversion/ratio scenario through summary and
-panel `from_frame`, DuckDB `from_definitions`, `from_unit_day_artifact`, and
-`from_moments`. Its expected roster has six metric/arm inputs and two assignment
-counts. The scenario's denominators, exact successes and optional null moments
-are compared, not just the final estimate.
+The detector is the loader conformance table,
+`tests/test_loader_conformance.py::test_loader_answers_request_kind`. It loads
+the line-one mean/conversion/ratio fixture of
+`tests/test_evidence_level_parity.py::test_mean_and_conversion_evidence_matches_across_sources`
+(including its nonzero rows at each unit's excluded right window edge), at six
+units per arm and with the declared `store` breakout, once per module through
+DuckDB `from_definitions`, `from_unit_day_artifact`, summary and panel
+`from_frame`, and `from_moments`; `from_switchback_frame` uses its own
+schedule-shaped fixture. Every evidence request kind the loaders' declarations
+answer is requested through `request_evidence` from every loader. Each cell must
+equal hand-computed evidence (and the first answering loader's evidence), an
+answer its declared route gives without evidence, or a registered refusal with
+its context. `test_conformance_covers_every_declared_request_kind` fails when the
+table's kinds differ from the declared kinds. Moments are compared as
+reference-free counts, successes, means and centered sums, so denominators,
+exact successes and null successes are compared, not just a final estimate.
 
+### Conformance-table fault proofs
+
+At `13ab4ab044cf6cf9ce81bd0006d5fe83461aca02`, each catalogue replacement below
+(the same diffs as the original campaign; four lines have moved) was applied
+alone, the table ran with fail-fast disabled, and the line was restored before
+the next execution. Every fault failed evidence or roster comparisons in the
+table; none failed at import, fixture construction or a timeout. The pristine
+table passed: `97 passed in 11.18s`. Elapsed times are observations, not
+thresholds.
+
+```sh
+make test TESTS=tests/test_loader_conformance.py WORKERS=2 \
+  PYTEST_ARGS="--maxfail=1000 --tb=no -rf -p no:tach --junitxml=/tmp/fault-<id>.xml"
+```
+
+| ID | One-line location | Observed detector cell | Result |
+| --- | --- | --- | --- |
+| `frame-dropped-arm-proof` | `increment/_frame_moments.py:684` | `MomentsRequest` x frame summary: revenue arms `control` versus `control, treatment` | `7 failed, 90 passed in 11.02s` |
+| `frame-day-window-proof` | `increment/_frame_moments.py:1515` | `MomentsRequest` x frame panel: revenue control mean 104.5 versus 4.5 | `5 failed, 92 passed in 10.35s` |
+| `frame-wrong-denominator-proof` | `increment/_frame_moments.py:684` | `MomentsRequest` x frame summary: revenue control n 7 versus 6 | `7 failed, 90 passed in 11.48s` |
+| `frame-lost-null-proof` | `increment/_frame_moments.py:684` | `MomentsRequest` x frame summary: revenue control successes 0 versus null | `7 failed, 90 passed in 10.91s` |
+| `frame-swapped-population-proof` | `increment/_frame_moments.py:636` | `MomentsRequest` x frame summary: revenue control n 4 versus 6 | `7 failed, 90 passed in 12.68s` |
+| `warehouse-dropped-arm-proof` | `increment/query/builders.py:2208` (was 2190) | `MomentsRequest` x definitions: revenue arms `control` versus `control, treatment` | `22 failed, 75 passed in 10.97s` |
+| `warehouse-day-window-proof` | `increment/query/builders.py:1517` | `MomentsRequest` x definitions: revenue control mean 104.5 versus 4.5 | `30 failed, 67 passed in 10.69s` |
+| `warehouse-wrong-denominator-proof` | `increment/query/builders.py:2208` | `MomentsRequest` x definitions: revenue control n 7 versus 6 | `22 failed, 75 passed in 11.51s` |
+| `warehouse-lost-null-proof` | `increment/query/builders.py:2208` | `MomentsRequest` x definitions: revenue control successes 0 versus null | `22 failed, 75 passed in 10.44s` |
+| `warehouse-swapped-population-proof` | `increment/query/builders.py:2208` | `MomentsRequest` x definitions: revenue control n 4 versus 6 | `22 failed, 75 passed in 10.36s` |
+| `artifact-dropped-arm-proof` | `increment/query/artifact_reader.py:1462` (was 1443) | `MomentsRequest` x unit-day artifact: revenue arms `control` versus `control, treatment` | `6 failed, 91 passed in 11.10s` |
+| `artifact-day-window-proof` | `increment/query/artifact_reader.py:1678` (was 1640) | `MomentsRequest` x unit-day artifact: revenue control mean 104.5 versus 4.5 | `7 failed, 90 passed in 12.04s` |
+| `artifact-wrong-denominator-proof` | `increment/query/artifact_reader.py:1462` | `MomentsRequest` x unit-day artifact: revenue control n 7 versus 6 | `6 failed, 91 passed in 11.91s` |
+| `artifact-lost-null-proof` | `increment/query/artifact_reader.py:1462` | `MomentsRequest` x unit-day artifact: revenue control successes 0 versus null | `6 failed, 91 passed in 13.16s` |
+| `artifact-swapped-population-proof` | `increment/query/artifact_reader.py:1857` (was 1819) | `MomentsRequest` x unit-day artifact: revenue control n 4 versus 6 | `6 failed, 91 passed in 12.53s` |
+| `moments-dropped-arm-proof` | `increment/sources.py:1834` | `MomentsRequest` x moments: revenue arms `control` versus `control, treatment` | `3 failed, 94 passed in 10.10s` |
+| `moments-day-window-proof` | `increment/sources.py:1834` | `MomentsRequest` x moments: rows keyed `(2025-01-11, arm)` instead of total-window arms | `3 failed, 94 passed in 11.32s` |
+| `moments-wrong-denominator-proof` | `increment/sources.py:1834` | `MomentsRequest` x moments: revenue control n 7 versus 6 | `3 failed, 94 passed in 13.02s` |
+| `moments-lost-null-proof` | `increment/sources.py:1834` | `MomentsRequest` x moments: revenue control successes 0 versus null | `3 failed, 94 passed in 11.57s` |
+| `moments-swapped-population-proof` | `increment/sources.py:1834` | `MomentsRequest` x moments: revenue control n 4 versus 6 | `3 failed, 94 passed in 10.67s` |
+| `duplicate-producer-output` | `increment/readouts/_metric_rows.py:201` | `MetricEvidenceRequest` x every answering loader: duplicate evidence row `control` | `5 failed, 92 passed in 10.00s` |
+
+Faults on the computing loaders also fail cells whose loader compares against
+the faulted reference loader, which is the cross-loader equality check working.
+
+One fault per newly covered request kind drops the treatment arm from that
+kind's answer:
+
+| ID | One-line location | Observed detector cell | Result |
+| --- | --- | --- | --- |
+| `moments-request-dropped-arm-proof` | `increment/readouts/_provider.py:68` | `MomentsRequest` x every answering loader: revenue arms `control` | `13 failed, 84 passed in 10.48s` |
+| `evidence-scope-dropped-arm-proof` | `increment/_evidence_scopes.py:244` | `EvidenceScope` x every answering loader: revenue arms `control` | `5 failed, 92 passed in 10.52s` |
+| `day-axis-request-dropped-arm-proof` | `increment/readouts/_evidence.py:1674` | `DayAxisRequest` x definitions, artifact, panel: missing `(2025-01-10, treatment)` | `3 failed, 94 passed in 11.13s` |
+| `unit-rows-request-dropped-arm-proof` | `increment/readouts/_provider.py:74` | `UnitRowsRequest` x definitions, artifact, summary: missing units `t0`..`t5` | `3 failed, 94 passed in 10.51s` |
+| `assignment-request-dropped-arm-proof` | `increment/readouts/_evidence.py:511` | `AssignmentRequest` x every answering loader: arm counts `control` only | `5 failed, 92 passed in 10.89s` |
+| `breakout-slices-request-dropped-arm-proof` | `increment/sources.py:2377` | `BreakoutSlicesRequest` x definitions, artifact (and panel against them): missing `(s0, treatment)`, `(s1, treatment)` | `7 failed, 90 passed in 10.24s` |
+| `breakout-unit-rows-request-dropped-arm-proof` | `increment/readouts/_evidence.py:1105` | `BreakoutUnitRowsRequest` x definitions, summary: missing units `t0`..`t5` | `2 failed, 95 passed in 11.35s` |
+| `breakout-method-moments-request-dropped-arm-proof` | `increment/readouts/_provider.py:86` | `BreakoutMethodMomentsRequest` x every answering loader: missing `(s0, treatment)`, `(s1, treatment)` | `4 failed, 93 passed in 11.41s` |
+
+`MetricEvidenceRequest` and `CountsRequest` were covered by the original
+catalogue. On this fixture no loader answers `MethodFitRequest`,
+`ComplianceRequest`, `ComplianceSeriesRequest`, `SequentialCaptureRequest`,
+`SequentialSnapshotRequest` or `ContrastStatsRequest` with arm rows: local-fit
+loaders answer without a fit, the warehouse loaders carry a coded fit failure,
+and every other cell is a registered refusal, so no arm can be dropped there.
+The fixture-guard covariate-hash fault below breaks the capture helper's method
+identity, not a loader; the table keys evidence by request coordinates and holds
+no method hash.
+
+```diff
+# increment/readouts/_provider.py:68
+-        return load_moments(self.source, request)
++        return tuple(row for row in load_moments(self.source, request) if row["group_id"] == "control")
+# increment/_evidence_scopes.py:244
+-            yield cast(EvidenceProvider, provider_factory(pinned))
++            yield cast(EvidenceProvider, type("_Pinned", (provider_factory,), {"moments": lambda self, request: tuple(row for row in provider_factory.moments(self, request) if row["group_id"] == "control")})(pinned))
+# increment/readouts/_evidence.py:1674
+-        (replace(item, observation_edges=observation_edges) for item in evidence.slices(request)),
++        (replace(item, observation_edges=observation_edges, rows=[row for row in item.rows if row["group_id"] == "control"]) for item in evidence.slices(request)),
+# increment/readouts/_provider.py:74
+-        return load_unit_rows(self.source, request)
++        return __import__("narwhals").from_native(load_unit_rows(self.source, request), eager_only=True).filter(__import__("narwhals").col("group_id") == "control").to_native()
+# increment/readouts/_evidence.py:511
+-            (1, None, str(arm), int(count)) for arm, count in sorted(counts.counts.items())
++            (1, None, str(arm), int(count)) for arm, count in sorted(counts.counts.items()) if arm == "control"
+# increment/sources.py:2377
+-        return [dict(r) for r in self._rows if r["metric"] == metric.name]
++        return [dict(r) for r in self._rows if r["metric"] == metric.name and r["group_id"] == "control"]
+# increment/readouts/_evidence.py:1105
+-        return BreakoutUnitRows(request.breakout, breakout_route(src), frame, dimension_in_frame)
++        return BreakoutUnitRows(request.breakout, breakout_route(src), __import__("narwhals").from_native(frame, eager_only=True).filter(__import__("narwhals").col("group_id") == "control").to_native(), dimension_in_frame)
+# increment/readouts/_provider.py:86
+-        return load_breakout_method_moments(self.source, request)
++        return (lambda answer: __import__("dataclasses").replace(answer, rows=tuple(row for row in answer.rows if row["group_id"] == "control")))(load_breakout_method_moments(self.source, request))
+```
+
+SHA-256 after restoring every fault in this campaign:
+
+```text
+170228bf426583d9a594a59fe65080ebcb81be79ef3ffd42000b77995cb8443c  increment/_frame_moments.py
+2b4a8571bb4bdaadd1ddf114c08377da30585bb32c8367fda17bc28a2522f6c6  increment/query/builders.py
+494201ec06c9fae49dcfeb7d25bab42c2a0ce5fb4f35e93e24c1af83ce764e62  increment/query/artifact_reader.py
+9ec34a66d3dea4c8b3d6210ea1b61695bfbecac1a83fc19571d2f9810c73917c  increment/sources.py
+c49644ed4f65b8b9a7acaf3651a63787daeef7b845e8be4a97e8004f2c489573  increment/readouts/_provider.py
+a28d2500c66a8f4b3dcbf137e9b41a30f172fcaaa66bab403e48667a287e5beb  increment/readouts/_evidence.py
+d933f2792c0821232b8a260059b7bec65f1de164af49d6e53a6e1a1fcbe0a7fd  increment/_evidence_scopes.py
+5557fcfe1adf1f5c4569826b841df5f2bfd88c33253abec3b8bfef8c1d50e831  increment/readouts/_metric_rows.py
+```
+
+`test_method_fit_matches_least_squares_on_unit_rows` answers `MethodFitRequest`
+on its own fixture (seven units per arm, two stores with at least two units per
+arm each, the store covariate published on the artifact) through definitions
+and the artifact, and compares the fit with a numpy least-squares fit of the unit
+rows. Flipping the sign of the warehouse covariate adjustment
+(`increment/query/_cuped_qr.py:2277`, `- adjustment` to `+ adjustment`) failed
+both cells at the adjusted control mean, 4.0844 versus 3.6299: `2 failed in
+5.20s`.
 
 ### Original loader fault proofs
+
+The original detector was
+`tests/test_evidence_level_parity.py::test_mean_and_conversion_evidence_matches_across_sources`,
+at sixty units per arm through the five parallel-arm loaders; its expected
+roster had six metric/arm inputs and two assignment counts.
 
 The measurements below record the original fault campaign at
 `25f819138e4b82367748b42bb5e66b7ea505fa4a`. Each replacement changed exactly one
@@ -416,7 +544,7 @@ ce54d1465e7a667ad5ef5b731b5cc30d2b4caf4a2f73483d72b61e4dc068e780  increment/quer
 ```
 
 The producer inventory includes daily, as-of, sequential, breakout, switchback
-and multicovariate-fit boundaries. The shared loader detector acquires typed
+and multicovariate-fit boundaries. The loader conformance table acquires typed
 evidence directly, without running a successful public readout. Frozen-input
 consumers own statistical and assembly fields; the public journey catalogue owns
 source-coupled completion, identity, reopening and forwarding contracts.
@@ -433,7 +561,9 @@ A separate production fault duplicated the acquired `MetricEvidence.rows` at
 
 The original public-run detector failed inside capture, before estimation:
 `AssertionError: Duplicate capture key` for revenue/control (`1 failed in 4.08s`).
-The retained typed-acquisition detector preserves duplicate-key rejection.
+The retained typed-acquisition detector preserves duplicate-key rejection. The
+conformance table rejects duplicated evidence rows by key too, failing every
+answering `MetricEvidenceRequest` cell on this fault (see the table above).
 Each fault proof requires a separate pristine execution after restoration.
 
 ## Public-journey fault proofs

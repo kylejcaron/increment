@@ -1050,6 +1050,11 @@ def load_breakout_evidence(
     request, identities = _complete_breakout_request(src, request)
     require_request_evidence(src, request)
     require_breakout_identity(src, identities)
+    if isinstance(request, BreakoutSlicesRequest) and not is_custom_source(src):
+        from increment._analysis_config import require_resolved_configs
+
+        # A built-in loader reduces each requested metric under its resolved configuration.
+        require_resolved_configs(request.metrics, request.configs)
     if isinstance(request, BreakoutSlicesRequest) and execution_context is not None:
         return _load_borrowed_breakout_slices(
             request,
