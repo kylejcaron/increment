@@ -278,9 +278,18 @@ class _Capture:
         key = partial(_capture_key, scope, request, values, coordinates)
 
         if isinstance(result, MetricEvidence):
+            assert metric is not None
             start = len(self.entries)
             self.metric_records(name, result, metric, methods, key)
-            self.check_metric_roster(self.entries[start:], metric, methods, key)
+            # The one producer call covers a declared dimension/source acquisition.
+            # Use its coordinate labels, not observed rows: every declared segment
+            # (and refusal) for that acquisition must still match the roster.
+            acquisition_segment = _capture_key(
+                scope, request, values, coordinates, "", None, metric.name, ""
+            ).request_coordinates.segment
+            self.check_metric_roster(
+                self.entries[start:], metric, methods, key, acquisition_segment
+            )
             return result
         if isinstance(result, DayAxisRows):
 
@@ -355,7 +364,7 @@ class _Capture:
         self.add(key(name, method, "" if metric is None else metric.name, ""), result_payload)
         return result
 
-    def check_metric_roster(self, entries, metric, methods, key):
+    def check_metric_roster(self, entries, metric, methods, key, acquisition_segment):
         actual = frozenset(item[0] for item in entries)
         estimator_ids = {method_estimator_id(method) or method.name for method in methods}
         estimator_ids |= {
@@ -374,6 +383,8 @@ class _Capture:
             and item.request_coordinates.population == coordinate.population
             and item.request_coordinates.grain == coordinate.grain
             and item.request_coordinates.day in days
+            and tuple(name for name, _value in item.request_coordinates.segment)
+            == tuple(name for name, _value in acquisition_segment)
         )
         assert actual == expected, {"missing": expected - actual, "unexpected": actual - expected}
 
