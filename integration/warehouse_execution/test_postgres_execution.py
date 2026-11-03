@@ -12,7 +12,6 @@ from uuid import uuid4
 
 import pytest
 
-from increment._source_resolver import SourceResolver
 from increment.estimators import MetricTrends
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import Definitions
@@ -59,39 +58,179 @@ def test_materialized_cache_reflects_true_correction(postgres_nonpublic_con, mon
     )
 
 
+def _patch_postgres_cursor_execute(con, monkeypatch, mutate):
+    """Inject at psycopg's real PostgreSQL cursor boundary."""
+    import psycopg
+
+    connection = con.con
+    execute = psycopg.Cursor.execute
+
+    def execute_with_mutation(cursor, query, *args, **kwargs):
+        if cursor.connection is connection:
+            query = mutate(query)
+            if query is None:
+                return None
+        return execute(cursor, query, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.Cursor, "execute", execute_with_mutation)
+
+
+def _postgres_drop_target(statement):
+    import sqlglot
+    from sqlglot import exp
+
+    if not isinstance(statement, str):
+        return None
+    try:
+        parsed = sqlglot.parse_one(statement, read="postgres")
+    except sqlglot.ParseError:
+        return None
+    if not isinstance(parsed, exp.Drop):
+        return None
+    targets = parsed.args.get("tables") or [parsed.this]
+    if not targets or not isinstance(targets[0], exp.Table):
+        return None
+    target = targets[0]
+    return target.catalog or None, target.db or None, target.name
+
+
 @pytest.mark.parametrize("cleanup", ["invalidation", "close"])
 def test_materialized_cache_detects_skipped_cleanup(postgres_nonpublic_con, monkeypatch, cleanup):
     con = postgres_nonpublic_con
-    drop_table = con.drop_table
-    close = SourceResolver.close
+    attempts = {}
     skipped = set()
 
-    def skip_materialized_drop(name, *args, **kwargs):
-        if name.startswith(("exp_spine_", "exp_stats_revenue_")):
+    def mutate(statement):
+        locator = _postgres_drop_target(statement)
+        if locator is None:
+            return statement
+        _catalog, schema, name = locator
+        if (
+            not schema
+            or not schema.startswith("pg_temp_")
+            or not name.startswith(("exp_spine_", "exp_stats_revenue_"))
+        ):
+            return statement
+        role = "spine" if name.startswith("exp_spine_") else "revenue stats"
+        occurrence = attempts.get(role, 0)
+        attempts[role] = occurrence + 1
+        should_skip = (cleanup == "invalidation" and occurrence == 0) or (
+            cleanup == "close" and occurrence == 1
+        )
+        if should_skip:
             skipped.add(name)
             return None
-        return drop_table(name, *args, **kwargs)
+        return statement
 
-    def close_without_cleanup(resolver):
-        with monkeypatch.context() as patch:
-            patch.setattr(con, "drop_table", skip_materialized_drop)
-            return close(resolver)
-
-    if cleanup == "invalidation":
-        monkeypatch.setattr(con, "drop_table", skip_materialized_drop)
-    else:
-        monkeypatch.setattr(SourceResolver, "close", close_without_cleanup)
+    _patch_postgres_cursor_execute(con, monkeypatch, mutate)
+    leak_error = None
     try:
-        with pytest.raises(AssertionError, match="materialization leaked"):
+        try:
             run_materialized_cache_correction_probe(
                 con, dialect="postgres", monkeypatch=monkeypatch
             )
-        assert skipped, "mutation did not intercept cleanup"
+        except AssertionError as error:
+            leak_error = error
     finally:
         if skipped:
             schema = _postgres_temp_schema(con)
-            for name in skipped:
-                drop_table(name, database=schema, force=True)
+            for name in con.list_tables(database=schema):
+                if name.startswith(("exp_spine_", "exp_stats_revenue_")):
+                    con.drop_table(name, database=schema, force=True)
+    assert skipped, f"mutation did not intercept cleanup; attempts={attempts}"
+    assert leak_error is not None and "materialization leaked" in str(leak_error), (
+        f"cleanup damage was not detected: {leak_error!r}"
+    )
+
+
+def _run_permanent_shadow_probe(
+    con, monkeypatch, cleanup, *, bare_cleanup=False, bare_fault_hits=None
+):
+    """Keep permanent rows intact when the owned TEMP relation is already absent."""
+    schema = con.current_database
+    drop_table = con.drop_table
+    required_materializations = _suite._required_materializations
+    sentinel_names = set()
+    temp_schemas = set()
+    absent_temp_names = set()
+    fault_hits = bare_fault_hits if bare_fault_hits is not None else set()
+    readout = 0
+    target_readout = 1 if cleanup == "invalidation" else 2
+
+    def remove_owned_relations(connection, created):
+        nonlocal readout
+        required = required_materializations(connection, created)
+        temp_schemas.add(_postgres_temp_schema(connection))
+        readout += 1
+        if readout == target_readout:
+            for relation in required:
+                name = relation.op().name
+                sentinel_names.add(name)
+                con.create_table(name, obj=[{"sentinel": 314159}], database=schema)
+                assert con.table(name, database=schema).to_pyarrow().to_pylist() == [
+                    {"sentinel": 314159}
+                ]
+                drop_table(name, database=_suite._materialization_database(relation), force=True)
+                absent_temp_names.add(name)
+        return required
+
+    def mutate_bare_name_drop(statement):
+        import sqlglot
+
+        locator = _postgres_drop_target(statement)
+        if locator is None:
+            return statement
+        _catalog, namespace, name = locator
+        if namespace not in temp_schemas or name not in absent_temp_names:
+            return statement
+        fault_hits.add(name)
+        parsed = sqlglot.parse_one(statement, read="postgres")
+        target = parsed.args.get("tables") or [parsed.this]
+        target[0].set("db", None)
+        target[0].set("catalog", None)
+        return parsed.sql(dialect="postgres")
+
+    monkeypatch.setattr(_suite, "_required_materializations", remove_owned_relations)
+    if bare_cleanup:
+        _patch_postgres_cursor_execute(con, monkeypatch, mutate_bare_name_drop)
+    try:
+        run_materialized_cache_correction_probe(con, dialect="postgres", monkeypatch=monkeypatch)
+        for name in sentinel_names:
+            assert name in con.list_tables(database=schema), (
+                f"permanent shadow sentinel {name!r} was deleted"
+            )
+            rows = con.table(name, database=schema).to_pyarrow().to_pylist()
+            assert rows == [{"sentinel": 314159}], (
+                f"permanent shadow sentinel {name!r} changed: {rows}"
+            )
+    finally:
+        for name in sentinel_names:
+            drop_table(name, database=schema, force=True)
+
+
+@pytest.mark.parametrize("cleanup", ["invalidation", "close"])
+def test_permanent_shadow_sentinel_survives_cleanup(postgres_nonpublic_con, monkeypatch, cleanup):
+    _run_permanent_shadow_probe(postgres_nonpublic_con, monkeypatch, cleanup)
+
+
+@pytest.mark.parametrize("cleanup", ["invalidation", "close"])
+def test_permanent_shadow_sentinel_bare_name_cleanup_mutation(
+    postgres_nonpublic_con, monkeypatch, cleanup
+):
+    fault_hits = set()
+    try:
+        _run_permanent_shadow_probe(
+            postgres_nonpublic_con,
+            monkeypatch,
+            cleanup,
+            bare_cleanup=True,
+            bare_fault_hits=fault_hits,
+        )
+    except AssertionError as error:
+        assert "permanent shadow sentinel" in str(error)
+    else:
+        pytest.fail(f"bare-name cleanup mutation did not delete the sentinel; hits={fault_hits}")
+    assert fault_hits, "bare-name mutation missed the physical owned cleanup SQL"
 
 
 @pytest.mark.parametrize(
@@ -488,66 +627,6 @@ def test_extra_unrelated_temp_creation_does_not_fail_the_gate(postgres_nonpublic
     finally:
         for name in decoys:
             con.drop_table(name, force=True)
-
-
-def _run_permanent_shadow_probe(con, monkeypatch, cleanup, *, bare_cleanup=False):
-    """Keep permanent rows intact when the owned TEMP relation is already absent."""
-    schema = con.current_database
-    drop_table = con.drop_table
-    required_materializations = _suite._required_materializations
-    sentinel_names = set()
-    readout = 0
-    target_readout = 1 if cleanup == "invalidation" else 2
-
-    def remove_owned_relations(connection, created):
-        nonlocal readout
-        required = required_materializations(connection, created)
-        readout += 1
-        if readout == target_readout:
-            for relation in required:
-                name = relation.op().name
-                sentinel_names.add(name)
-                con.create_table(name, obj=[{"sentinel": 314159}], database=schema)
-                assert con.table(name, database=schema).to_pyarrow().to_pylist() == [
-                    {"sentinel": 314159}
-                ]
-                drop_table(name, database=_suite._materialization_database(relation), force=True)
-        return required
-
-    def bare_name_drop(name, *args, **kwargs):
-        if name.startswith(("exp_spine_", "exp_stats_revenue_")):
-            return drop_table(name, force=True)
-        return drop_table(name, *args, **kwargs)
-
-    monkeypatch.setattr(_suite, "_required_materializations", remove_owned_relations)
-    if bare_cleanup:
-        monkeypatch.setattr(con, "drop_table", bare_name_drop)
-    try:
-        run_materialized_cache_correction_probe(con, dialect="postgres", monkeypatch=monkeypatch)
-        for name in sentinel_names:
-            assert name in con.list_tables(database=schema), (
-                f"permanent shadow sentinel {name!r} was deleted"
-            )
-            rows = con.table(name, database=schema).to_pyarrow().to_pylist()
-            assert rows == [{"sentinel": 314159}], (
-                f"permanent shadow sentinel {name!r} changed: {rows}"
-            )
-    finally:
-        for name in sentinel_names:
-            drop_table(name, database=schema, force=True)
-
-
-@pytest.mark.parametrize("cleanup", ["invalidation", "close"])
-def test_permanent_shadow_sentinel_survives_cleanup(postgres_nonpublic_con, monkeypatch, cleanup):
-    _run_permanent_shadow_probe(postgres_nonpublic_con, monkeypatch, cleanup)
-
-
-@pytest.mark.parametrize("cleanup", ["invalidation", "close"])
-def test_permanent_shadow_sentinel_bare_name_cleanup_mutation(
-    postgres_nonpublic_con, monkeypatch, cleanup
-):
-    with pytest.raises(AssertionError, match="permanent shadow sentinel"):
-        _run_permanent_shadow_probe(postgres_nonpublic_con, monkeypatch, cleanup, bare_cleanup=True)
 
 
 @allow_declared_overrides

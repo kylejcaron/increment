@@ -71,10 +71,11 @@ for row in demo_results:
     print(row.metric, row.group_id, row.lift)
 ```
 
-This self-contained example uses `ibis-framework[duckdb]` and `polars` to
-create a small event table. Increment builds the unit-by-day panel and exposes
-every query it runs. If your data is already one row per unit or per unit-day,
-use `from_frame(..., shape="summary")` or `shape="panel"` instead
+This self-contained example uses the `increment[demo]` extra, which supplies a
+compatible Ibis/DuckDB combination, plus `polars` to create a small event table.
+Increment builds the unit-by-day panel and exposes every query it runs. If your
+data is already one row per unit or per unit-day, use
+`from_frame(..., shape="summary")` or `shape="panel"` instead
 ([Quickstart](quickstart.md)).
 
 The [warehouse example](../examples/analysis_from_a_warehouse.md) walks through
@@ -775,6 +776,9 @@ Definitions-backed analysis has two persistence boundaries:
 | `increment.workflows.materialize(experiment, resolver)` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
 | `increment.artifacts.publish_unit_day_artifact(experiment, resolver, store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. Obtain the trusted publication context with `increment.artifacts.artifact_context(experiment, resolver)`. A later process adopts it with `from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
+Session-local TEMP relations are removed when refreshed or when the resolver
+closes; they are not persistent warehouse tables.
+
 Internally, query core owns the shared artifact contracts and relation schemas;
 the bundled artifact extension supplies publication, reader, digest, and capture
 implementations through the typed `increment.artifact_ports` entry point. The
@@ -867,6 +871,12 @@ publication time, and experiment end are not completeness proofs.
     note with the `artifact_id` and `generation_id`; from a fresh process, run
     `store.drop_generation(artifact_id, generation_id)` to finish erasing the
     relations. That call is idempotent.
+
+    `query.relation.name_occupied` means a publication or digest scratch name
+    is already in use. Its immutable context identifies `backend`, `catalog`,
+    `schema`, `name`, and `route`. Increment does not overwrite or erase that
+    relation. Retry with a new publication or scratch relation name; do not
+    remove the existing relation unless you independently know who owns it.
 
     An exception before the manifest-index insert is submitted never made the
     generation visible, and the store only drops its relations, attempting
@@ -1054,6 +1064,25 @@ The caller-pinned `UnitDayArtifactRef` (artifact UUID, generation UUID,
 namespace-qualified manifest locator, and manifest digest) is the trust root.
 The store, not Increment, owns authorization for the catalog/schema namespace;
 locators outside that namespace or outside the pinned generation are refused.
+
+For BigQuery, a store resolves its effective project and dataset once during
+construction, before creating or reading its control-plane tables. An omitted
+namespace binds to the connection's current data project and dataset; a
+dataset-only namespace binds to the billing project and that dataset. A
+catalog-only argument retains BigQuery's existing creation behavior and binds
+to the connection's current data project and dataset. Supplying both catalog
+and dataset binds exactly that pair. The store consistently uses this bound
+namespace for metadata, relation creation, reads, tombstones, and cleanup;
+later `set_database()` calls on a borrowed connection do not retarget an
+existing store.
+
+Older BigQuery artifact receipts that omit a data relation's physical project
+or dataset cannot prove which relation was created. They are refused with
+`artifact.identifier.unsafe` before looking up or copying that relation's data,
+and before tombstoning or erasure. Control metadata may be read first. A valid
+manifest checksum does not establish the missing location. Do not replace it
+with the current connection defaults; recover or retire the receipt only with
+independently verified original location evidence.
 Opening validates the pinned manifest and then holds one immutable
 `ArtifactSnapshot` for verification and every reduction, so later writes or
 rebinding cannot mix generations. If both the artifact and the supplied ref

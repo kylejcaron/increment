@@ -1345,6 +1345,7 @@ Retired codes and their replacements are listed below.
 | `query.integrity.mixed_assignment_units` | `InvalidRequestError` | `finding`, `mixed_count`, `route`, `unassigned_count` | `increment.query.integrity` |
 | `query.integrity.trigger_arm_missing` | `InvalidRequestError` | `rates`, `route`, `silent`, `trigger` | `increment._trigger_integrity` |
 | `query.integrity.unassigned_assignment_units` | `InvalidRequestError` | `finding`, `mixed_count`, `route`, `unassigned_count` | `increment.query.integrity` |
+| `query.relation.name_occupied` | `CapabilityError` | `backend`, `catalog`, `name`, `route`, `schema` | `increment.query.session` |
 | `query.session.artifact_publication.handle_closed` | `InvalidRequestError` | — | `increment.query.session` |
 | `query.session.materialization_namespace` | `CapabilityError` | `backend` | `increment.query.session` |
 | `query.session.qr_scratch_cleanup_failed` | `CapabilityError` | `relations`, `route` | `increment.query.session` |
