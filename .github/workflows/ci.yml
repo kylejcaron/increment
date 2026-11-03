@@ -142,7 +142,16 @@ jobs:
           enable-cache: true
           python-version: "3.14"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-unit WORKERS=auto
+      - run: make test-unit WORKERS=auto PYTEST_ARGS="--cpu-report cpu.json"
+      - name: Retain newest-Python unit CPU usage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: cpu-unit-3.14-${{ job.check_run_id }}
+          path: cpu.json
+          if-no-files-found: warn
+          retention-days: 90
 
   selection-misses:
     if: always()
