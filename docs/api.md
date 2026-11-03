@@ -103,14 +103,15 @@ and refusal codes.
 
 ### Support matrix
 
-The package metadata currently declares Python 3.12, 3.13, and 3.14
-(`>=3.12,<3.15`) and the dependency floors below. This matrix states the
-supported configurations; it does not claim the current alpha release is
-1.0.0. Dependency changes are reflected in `pyproject.toml`.
+The package requires Python 3.12 or newer (`>=3.12`). Core and dataframe analysis
+are tested on Python 3.12–3.15; warehouse workflows are tested on 3.12–3.14.
+DuckDB-backed extras on Python 3.15 need a compatible DuckDB wheel. The dependency
+floors below describe supported configurations, not a claim that the current
+alpha release is 1.0.0. Dependency changes are reflected in `pyproject.toml`.
 
 | Installation | Dependency floors |
 | --- | --- |
-| Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 |
+| Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 and newer |
 | `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot 30.14 and below 30.15 |
 
 These floors describe supported dependency combinations, not statistical
