@@ -10,8 +10,9 @@ exactly that, so a stale refusal code, a refusal that became a number, a number 
 refusal and a numeric disagreement all fail.
 
 By default the primary cells are a strength-3 covering array with one sentinel per
-disposition; ``INCREMENT_PARITY_MATRIX=full`` executes the full grid. The 64
-asymptotic-retention variants always execute in either scope.
+disposition and the pinned CUPED cells (``matrix.PR_CUPED_CELLS``);
+``INCREMENT_PARITY_MATRIX=full`` executes the full grid. The 64 asymptotic-retention variants
+always execute in either scope.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request
@@ -251,6 +252,21 @@ def test_qr_cuped_ingress_contract_is_enumerated_separately_from_scalar_cells():
         "from_switchback_panel": "source.frame.switchback.metric"
     }
     assert "mixed-cuped-multicovariate-fixed-horizon" in matrix.QR_CUPED_ROWS
+
+
+def test_pr_scope_runs_every_pinned_cuped_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The covering array may select only a refusing variant of a CUPED shape; a pinned cell
+    keeps that shape's cross-source comparison on every pull request, with its lift compared
+    across the definitions and unit-day artifact readers."""
+    monkeypatch.setenv("INCREMENT_PARITY_MATRIX", "cover")
+    selected = set(matrix.parity_matrix_cells())
+    assert matrix.PR_CUPED_CELLS
+    for cell in matrix.PR_CUPED_CELLS:
+        assert cell in selected, cell.id
+        assert cell.option == "cuped"
+        lift = matrix.classify(cell).legs["lift" if cell.view in ("daily", "asof") else "rows"]
+        running = {name for name, v in lift.items() if isinstance(v.outcome, matrix.Runs)}
+        assert {"from_definitions", "from_unit_day_artifact"} <= running, cell.id
 
 
 def test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_reads_it():

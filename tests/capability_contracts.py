@@ -152,7 +152,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "scalar_cuped",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses",
+        "tests/test_cuped_frame_evidence.py::test_scalar_missing_failure_is_local_to_its_method",
         "Frames declare scalar and mixed covariates on their respective Method.cuped(covariates=...) declarations; definitions derive the scalar covariate from n_pre_periods > 0 and bind mixed covariates separately. Publish the cuped_preperiod artifact extension.",
         (("from_moments", _PORTABLE_CATEGORICAL),),
     ),
@@ -160,7 +160,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "ratio",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+        "tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",
         ingress_dispositions=(
             (
                 "from_moments",
@@ -203,7 +203,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "winsorization_fixed_value",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses",
+        "tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",
         "Fixed lower and upper value bounds are exercised on each supported unit ingress and compared with shared row and retained-scope normalization.",
         (
             (
@@ -261,7 +261,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "multiplicity_roles",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+        "tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",
         ingress_dispositions=(("from_moments", _PORTABLE_CATEGORICAL),),
     ),
     MethodInteraction(

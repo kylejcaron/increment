@@ -573,9 +573,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "from_unit_summary",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
-            evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
-            ),
+            evidence=("tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",),
         ),
         _e(
             "from_unit_panel_supported",
@@ -583,9 +581,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "from_unit_panel",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
-            evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
-            ),
+            evidence=("tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",),
         ),
         _e(
             "from_definitions_supported",
@@ -593,9 +589,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "from_definitions",
             "same per-unit mean, ratio, categorical and missing-history data; warehouse QR keeps unit values in place and leaves only the bounded triangular solve and fit finalization client-side (verified on DuckDB, PostgreSQL, Snowflake and BigQuery)",
             "supported",
-            evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
-            ),
+            evidence=("tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",),
         ),
         _e(
             "from_unit_day_artifact_supported",
@@ -604,7 +598,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "format-4 artifact extensions are SQL-verified; native QR keeps unit values in the warehouse and leaves only the bounded triangular solve and fit finalization client-side (verified on DuckDB, PostgreSQL, Snowflake and BigQuery)",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+                "tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",
                 "tests/test_unit_day_artifact_facade.py::test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers",
             ),
         ),

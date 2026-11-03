@@ -225,7 +225,7 @@ tests/test_cuped_evidence.py 19
 tests/test_cuped_portable_journey.py 1
 tests/test_cuped_review_followups.py 1
 tests/test_cuped_route_admission.py 4
-tests/test_cuped_warehouse_cells.py 15
+tests/test_cuped_warehouse_cells.py 16
 tests/test_dashboard.py 15
 tests/test_dashboard_capture.py 10
 tests/test_dashboard_group_data.py 5
@@ -318,7 +318,6 @@ tests/test_certification_ci_changes.py::test_relevant_change_requires_certificat
 tests/test_compliance_artifacts.py::test_native_artifact_completed_compliance_staggered_enrollment 16
 tests/test_compliance_summary.py::test_completed_compliance_excludes_open_staggered_cohorts 16
 tests/test_compliance_summary.py::test_panel_asof_compliance_preserves_day_axis_identity_and_order 60
-tests/test_cuped_frame_evidence.py::test_scalar_missing_failure_is_local_to_its_method 16
 tests/test_cuped_identity.py::test_decision_family_ignores_companion_evidence 24
 tests/test_dashboard_theme.py::test_unusable_visual_configuration_has_portable_structured_refusal 14
 tests/test_definitions_source.py::test_definitions_and_adopted_public_views_match 14

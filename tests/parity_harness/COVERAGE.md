@@ -111,7 +111,7 @@ Every cell builds and runs each of its ingresses itself; no result is shared bet
 
 ## Collapse proofs
 
-No cells are collapsed in full scope; PR scope uses covering cells and disposition sentinels.
+No cells are collapsed in full scope; PR scope uses covering cells, disposition sentinels and the pinned CUPED cells (`matrix.PR_CUPED_CELLS`).
 
 ## Existing scenario cases
 
@@ -163,8 +163,9 @@ standard error. Separate QR producer boundary tests cover a withheld nonpositive
 `query.cuped.magnitude_range`, and `estimation.cuped_linear.nonfinite`:
 `tests/test_warehouse_cuped_qr.py::test_ratio_qr_withholds_nonpositive_arm_before_fit`,
 `test_qr_tiny_mean_large_denominator_spread_refuses_magnitude_range`, and
-`test_qr_encoder_refuses_infinite_covariates_with_coded_error`. The surrounding direct
-cross-ingress support and refusal journeys are in `tests/test_warehouse_cuped_parity.py` and
+`test_qr_encoder_refuses_infinite_covariates_with_coded_error`. The warehouse boundaries these
+rows do not express (support refusals shared with the local fit, and breakouts and exports that
+never transfer unit rows) are in `tests/test_warehouse_cuped_parity.py` and
 `tests/test_cuped_portable_journey.py`.
 
 The generated capability table records scalar CUPED separately from mixed CUPED: fixed-horizon

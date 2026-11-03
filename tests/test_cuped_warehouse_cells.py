@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from contextlib import AbstractContextManager
 from dataclasses import asdict
+from functools import cache
 from typing import cast
 
 import ibis
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 from increment import from_definitions, from_moments, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
@@ -497,29 +500,35 @@ def test_categorical_warehouse_transfer_omits_absolute_outcome_sums():
     )
 
 
+@cache
+def _alias_reference():
+    """The unaliased ratio frame's cells and fit, which every alias case must reproduce."""
+    cells, _ = _produce(_cells_frame((41, 29, 37, 33), ratio=True))
+    return cells, fit_categorical_cells(cells, control="c")
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    "alias",
+    "aliases",
     [
-        "magnitude_0",
-        "_base_norm_0",
-        "_rank_0",
-        "exponent_0",
-        "exponent_1",
-        "_centered_0",
-        "_arm_count",
-        "_max_0",
-        "_residual_0",
+        # Two renames in one request: the cell count and a first-component working column.
+        ("n", "_rank_0"),
+        # Transferred columns: the second (denominator) component and the pairwise moment.
+        ("exponent_1", "cross_0_1"),
+        # A magnitude-preflight name: that stage never reads covariates, so it stays as declared.
+        ("_magnitude_value_0", "device"),
+        # The first rename target is itself a declared covariate.
+        ("__increment_cuped_input_0", "n"),
     ],
+    ids=["count-and-working", "transferred", "magnitude-preflight", "occupied-target"],
 )
-def test_generated_warehouse_names_preserve_covariate_alias_parity(alias):
-    frame = _cells_frame((41, 29, 37, 33), ratio=True)
-    expected, _ = _produce(frame)
-    aliased = frame.rename(columns={"segment": alias})
-    actual, _ = _produce(
-        aliased,
-        request=_request(covariate_names=(alias, "device")),
+def test_generated_warehouse_names_preserve_covariate_alias_parity(aliases):
+    expected, expected_fit = _alias_reference()
+    frame = _cells_frame((41, 29, 37, 33), ratio=True).rename(
+        columns=dict(zip(("segment", "device"), aliases, strict=True))
     )
+    actual, _ = _produce(frame, request=_request(covariate_names=aliases))
+    assert actual.covariate_names == aliases
     assert actual.patterns == expected.patterns
     assert actual.levels == expected.levels
     assert actual.counts == expected.counts
@@ -532,8 +541,82 @@ def test_generated_warehouse_names_preserve_covariate_alias_parity(alias):
             np.asarray(getattr(expected, field)), rel=1e-14, abs=1e-14
         )
     actual_fit = fit_categorical_cells(actual, control="c")
-    expected_fit = fit_categorical_cells(expected, control="c")
     assert actual_fit.adjusted_means == pytest.approx(expected_fit.adjusted_means)
+
+
+# Columns the categorical-cell queries create beside the covariates: fixed names, one set per
+# outcome component ``f`` and one cross moment per component pair.
+_CELL_QUERY_COLUMNS = ("_arm_count", "_sigma", "n")
+_CELL_COMPONENT_COLUMNS = (
+    *("_max_{f}", "_norm_max_{f}", "_sum_squares_{f}", "_max_exponent_{f}", "_scaled_norm_{f}"),
+    *("_norm_valid_{f}", "exponent_{f}", "_rank_{f}", "_median_{f}", "_overflow_{f}"),
+    *("_base_{f}", "_base_norm_{f}", "_centered_{f}", "_offset_{f}", "_arm_sum_{f}"),
+    *("_arm_remainder_{f}", "ref_{f}", "_shift_{f}", "first_{f}", "_precise_{f}"),
+    *("contributors_{f}", "distinct_{f}", "max_centered_{f}", "_sum_{f}", "_mean_{f}"),
+    "_residual_{f}",
+)
+_CELL_INPUTS = ("unit_id", "group_id", "y", "y_den")
+
+
+def _cell_query_columns(components: int) -> frozenset[str]:
+    return frozenset(
+        (
+            *_CELL_QUERY_COLUMNS,
+            *(name.format(f=f) for f in range(components) for name in _CELL_COMPONENT_COLUMNS),
+            *(f"cross_{f}_{g}" for f in range(components) for g in range(f, components)),
+        )
+    )
+
+
+_generated_like_names = st.builds(
+    lambda template, f, g, suffix: template.format(f=f, g=g) + suffix,
+    st.sampled_from(
+        (
+            *_CELL_QUERY_COLUMNS,
+            *_CELL_COMPONENT_COLUMNS,
+            "cross_{f}_{g}",
+            "__increment_cuped_input_{f}",
+        )
+    ),
+    st.integers(0, 2),
+    st.integers(0, 2),
+    st.sampled_from(("", "_", "__")),
+)
+_column_names = st.one_of(
+    _generated_like_names, st.from_regex(r"[a-z_][a-z0-9_]{0,10}", fullmatch=True)
+).filter(lambda name: name not in _CELL_INPUTS)
+
+
+@given(
+    components=st.sampled_from((1, 2)),
+    names=st.lists(_column_names, min_size=1, max_size=4, unique=True),
+    others=st.lists(_column_names, max_size=3, unique=True),
+)
+def test_covariate_names_never_share_a_generated_cell_column(components, names, others):
+    """Renaming is injective, leaves no input under a generated column name, moves only the
+    names that collide, and gives each covariate the same column whatever the declaration or
+    input column order."""
+    from increment.query._cuped_cells import _rename_scratch_inputs
+
+    assume(not set(names) & set(others))
+    generated = _cell_query_columns(components)
+    columns = (*_CELL_INPUTS[: 2 + components], *names, *others)
+    relation = ibis.table(dict.fromkeys(columns, "string"), name="units")
+    renamed, query_names = _rename_scratch_inputs(relation, tuple(names), components)
+
+    assert len(set(query_names)) == len(names)
+    assert len(renamed.columns) == len(columns)
+    assert generated.isdisjoint(renamed.columns)
+    for original, current in zip(columns, renamed.columns, strict=True):
+        if original not in generated:
+            assert current == original
+    assert query_names == tuple(renamed.columns[columns.index(name)] for name in names)
+
+    reordered = ibis.table(dict.fromkeys(reversed(columns), "string"), name="units")
+    _, reversed_names = _rename_scratch_inputs(reordered, tuple(reversed(names)), components)
+    assert dict(zip(reversed(names), reversed_names, strict=True)) == dict(
+        zip(names, query_names, strict=True)
+    )
 
 
 @pytest.mark.parametrize(
