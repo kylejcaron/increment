@@ -39,6 +39,7 @@ def _run_heavy(session: nox.Session, *command: str, **kwargs) -> None:
 
 
 PYTHON_VERSIONS = ["3.12", "3.13", "3.14"]
+CORE_PYTHON_VERSIONS = [*PYTHON_VERSIONS, "3.15"]
 
 # Direct dependency floors declared in pyproject.toml. Keyed companions retain
 # interpreter-specific package combinations where wheel availability differs.
@@ -123,9 +124,16 @@ TIER_MARKERS = {
 }
 
 
-def _sync(session: nox.Session, *groups: str, extras: tuple[str, ...] = ()) -> None:
+def _sync(
+    session: nox.Session,
+    *groups: str,
+    extras: tuple[str, ...] = (),
+    default_groups: bool = True,
+) -> None:
     """Sync the project's uv-managed dependency groups (and extras) into the session's venv."""
     args = ["uv", "sync", "--locked"]
+    if not default_groups:
+        args.append("--no-default-groups")
     for group in groups:
         args += ["--group", group]
     for extra in extras:
@@ -189,26 +197,39 @@ def _run_pytest_at_floor(
     )
 
 
+@nox.session(python=CORE_PYTHON_VERSIONS)
+def tests_core(session: nox.Session) -> None:
+    """Run core and dataframe contracts without warehouse dependencies."""
+    _sync(session, "core-test", default_groups=False)
+    root = Path(__file__).resolve().parent
+    modules = [
+        (root / name).as_posix() for name in (root / "tests/core_modules.txt").read_text().split()
+    ]
+    _run_heavy(
+        session,
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-m",
+        "not slow",
+        *modules,
+        *PYTEST_ARGS,
+        *session.posargs,
+        env={"UV_NO_SYNC": "1"},
+    )
+
+
 @nox.session(python=PYTHON_VERSIONS)
 def tests(session: nox.Session) -> None:
-    """Run the fast test suite against every supported Python version.
-
-    Syncs the ``demo`` extra: most of the fast suite (query builders,
-    ``Analysis``, the calibration fixtures) exercises a live
-    ``ibis.duckdb.connect()`` backend directly, with no
-    ``importorskip`` guard, so duckdb has to actually be installed.
-    """
+    """Run the fast warehouse-enabled suite on its supported interpreters."""
     _sync(session, "dev", extras=("demo", "dashboard"))
     _run_pytest_tier(session, "fast", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python=PYTHON_VERSIONS)
 def tests_full(session: nox.Session) -> None:
-    """Nightly: slow + examples against locked dependencies, across every
-    supported Python version. Mirrors ``make test-all`` minus both scientific
-    campaigns, which run once in the scientific shard job below. Previously
-    covered exact-mass and capacity cases remain in this matrix.
-    """
+    """Run nightly functional and example coverage on warehouse interpreters."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     # File selectors opt into a focused run; other options keep the tier marker.
     tier = "all-except-scientific"
