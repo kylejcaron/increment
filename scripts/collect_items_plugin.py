@@ -34,13 +34,12 @@ def pytest_collection_finish(session: pytest.Session) -> None:
             if expression.evaluate(matcher):
                 counts[tier] += 1
                 tier_nodeids[tier].append(item.nodeid)
-    Path(output).write_text(
-        json.dumps(
-            {
-                "tiers": counts,
-                "nodeids": [item.nodeid for item in session.items],
-                "tier_nodeids": tier_nodeids,
-            }
-        ),
-        encoding="utf-8",
-    )
+    metadata = {
+        "tiers": counts,
+        "nodeids": [item.nodeid for item in session.items],
+        "tier_nodeids": tier_nodeids,
+    }
+    shard_id = os.environ.get("INCREMENT_COLLECT_SHARD_ID")
+    if shard_id:
+        metadata["shard_id"] = shard_id
+    Path(output).write_text(json.dumps(metadata), encoding="utf-8")

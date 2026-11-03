@@ -59,6 +59,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - id: fast-tests
+        env:
+          INCREMENT_COLLECT_OUTPUT: junit-collection.json
+          INCREMENT_COLLECT_TIERS: '{"unit":"not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling","integration":"integration and not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling"}'
+          INCREMENT_COLLECT_SHARD_ID: ${{ matrix.python-version }}-${{ matrix.group }}
         run: |
           coverage_enabled="${{ github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'test-reduction-approved')) || (github.event_name == 'workflow_dispatch' && inputs.coverage) }}"
           coverage_args=""
@@ -66,7 +70,7 @@ jobs:
             export COVERAGE_CORE=sysmon
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
-          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+          make test-fast WORKERS=auto PYTEST_ARGS="-p scripts.collect_items_plugin --durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Record fast coverage shard metadata
         if: always() && matrix.python-version == '3.12'
         env:
@@ -100,6 +104,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ -f junit.xml ]; then
+            python scripts/duration_report.py junit.xml --collection junit-collection.json >> "$GITHUB_STEP_SUMMARY"
             python scripts/duration_report.py junit.xml >> "$GITHUB_STEP_SUMMARY"
           else
             printf 'Fast duration report unavailable: no JUnit file.\n' >> "$GITHUB_STEP_SUMMARY"
@@ -113,6 +118,7 @@ jobs:
           path: |
             junit.xml
             junit-metadata.json
+            junit-collection.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain CPU usage
@@ -245,13 +251,36 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
+      - name: Run slow tests
+        id: slow-tests
+        env:
+          INCREMENT_COLLECT_OUTPUT: junit-collection.json
+          INCREMENT_COLLECT_TIERS: '{"slow":"slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling"}'
+          INCREMENT_COLLECT_SHARD_ID: slow-${{ matrix.group }}
+        run: make test-slow WORKERS=auto PYTEST_ARGS="-p scripts.collect_items_plugin --durations=25 --junitxml=junit.xml --cpu-report cpu.json --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
+      - name: Record slow JUnit shard metadata
+        if: always()
+        env:
+          SHARD_ID: slow-${{ matrix.group }}
+          TEST_OUTCOME: ${{ steps.slow-tests.outcome }}
+        run: |
+          python -c 'import json, os; from pathlib import Path; Path("junit-metadata.json").write_text(json.dumps({"shard_id": os.environ["SHARD_ID"], "junit_present": Path("junit.xml").is_file(), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
+      - name: Report slow item durations
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f junit.xml ] && [ -f junit-collection.json ]; then
+            python scripts/duration_report.py junit.xml --collection junit-collection.json >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: slow-junit-shard-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: junit.xml
+          path: |
+            junit.xml
+            junit-collection.json
+            junit-metadata.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain CPU usage
@@ -263,6 +292,26 @@ jobs:
           path: cpu.json
           if-no-files-found: warn
           retention-days: 90
+  duration-ratchet:
+    if: always()
+    needs: [test, slow]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: "*-junit-*"
+          path: duration-artifacts
+      - name: Report aggregate per-layer duration ratchet
+        shell: bash
+        env:
+          EXPECTED_DURATION_SHARDS: ${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.12-3,slow-1,slow-2,slow-3,slow-4,slow-5,slow-6,slow-7,slow-8' || '3.12-1,3.12-2,3.12-3,3.13-1,3.13-2,3.13-3,3.14-1,3.14-2,3.14-3,slow-1,slow-2,slow-3,slow-4,slow-5,slow-6,slow-7,slow-8' }}
+        run: python scripts/duration_report.py --artifacts-dir duration-artifacts --baseline tests/layer_time_baseline.json --expected-shards "$EXPECTED_DURATION_SHARDS" | tee -a "$GITHUB_STEP_SUMMARY"
 
   tooling:
     name: repository tooling
@@ -600,7 +649,7 @@ jobs:
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, unit-newest, slow, compile-registry, tooling, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening, core-install]
+    needs: [lint, test, unit-newest, slow, duration-ratchet, compile-registry, tooling, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening, core-install]
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -659,7 +708,7 @@ jobs:
           CORE_INSTALL_RESULT: ${{ needs.core-install.result }}
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.changes.result }} $CORE_INSTALL_RESULT"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.duration-ratchet.result }} ${{ needs.build.result }} ${{ needs.changes.result }} $CORE_INSTALL_RESULT"
           echo "lint/test/slow/build/decision/wheel-smoke jobs -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }

@@ -120,8 +120,20 @@ statements executed during the fast tier (including pytest-cov's measured test
 workers); it does not measure the slow or scientific tiers, establish
 whole-suite coverage, or rate test quality.
 
-Every fast shard also reports non-skipped JUnit items above five elapsed seconds
-in its job summary. This is advisory: an over-budget item does not fail CI.
+CI reports non-skipped tests above per-layer duration budgets: unmarked unit
+tests over 0.1 seconds, `integration` tests over 1 second, and `slow` tests
+over 30 seconds. Marker membership is captured from pytest's collected items in
+each test job and uploaded beside its JUnit report; JUnit and shard metadata
+alone do not contain marker data. The committed count ceilings in
+`tests/layer_time_baseline.json` come from CI run 41640623644. Its `mode`
+controls the aggregate report: `report` (the initial mode) annotates count
+growth and exits successfully; `enforce` emits an error annotation and fails
+the required `duration-ratchet` CI job. After the report-first period, switching
+the baseline's mode to `enforce` is a separate reviewed one-line change.
+The aggregator expects the complete shard inventory: three Python 3.12 fast
+shards on pull requests, all nine fast matrix shards on pushes and manual runs,
+and all eight functional-slow shards. Missing JUnit/collection pairs are
+incomplete evidence: they warn in `report` mode and fail in `enforce` mode.
 Reduce unnecessary setup or input without crossing the tested boundary; keep
 irreducible warehouse, subprocess and exhaustive repository checks in the slow
 tier with a reason beside their marker.

@@ -1,0 +1,14 @@
+{
+  "source": "ci-test-times-41640623644.csv",
+  "mode": "report",
+  "budgets_s": {
+    "unit": 0.1,
+    "integration": 1.0,
+    "slow": 30.0
+  },
+  "max_over_budget": {
+    "unit": 515,
+    "integration": 570,
+    "slow": 50
+  }
+}
