@@ -201,6 +201,27 @@ def test_unit_totals_retains_cluster_column(cl_exposure_events, cl_purchase_even
     assert df.loc["u6", "y"] == 0.0  # zero-fill unaffected by the carry
 
 
+def test_unit_totals_cluster_name_can_match_dense_state_column(
+    cl_exposure_events, cl_purchase_events
+):
+    experiment = _experiment("n_events")
+    exposures = first_exposures(cl_exposure_events, _experiment("store_id"))
+    exposures = exposures.mutate(n_events=exposures.store_id)
+    events = metric_events(cl_purchase_events, REVENUE, value_column="amount")
+    spine, stats = unit_day_spine_stats(exposures, events, experiment, REVENUE.name)
+
+    totals = unit_totals(spine, stats, REVENUE, experiment).execute().set_index("unit_id")
+
+    assert totals["n_events"].to_dict() == {
+        "u1": "s1",
+        "u2": "s1",
+        "u3": "s2",
+        "u4": "s3",
+        "u5": "s3",
+        "u6": "s4",
+    }
+
+
 def test_unit_totals_refuses_breakout_with_cluster(cl_con, cl_exposure_events, cl_purchase_events):
     experiment = _experiment("store_id")
     exposures = first_exposures(cl_exposure_events, experiment)
