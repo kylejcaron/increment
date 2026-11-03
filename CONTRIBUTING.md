@@ -1167,6 +1167,10 @@ and verified supported controls.
 Keep current hooks and the before-push `make check` obligation until the
 replacement hosted gate is actually required and its failure behavior is observed.
 
+Disposable selector-test commits isolate hooks for that command only. They must
+not enqueue real reviews or change shared hook configuration; ordinary commits
+retain the review policy above.
+
 For an owner-authorized manual-ready transition, back up the common Git
 `post-commit`, `post-rewrite` and `pre-push` files with their permissions and
 record their custom/legacy ownership before running `roborev uninstall-hook`
