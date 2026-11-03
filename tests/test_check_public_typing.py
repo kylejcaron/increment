@@ -2676,3 +2676,68 @@ def test_method_alias_keeps_captured_overloads_after_original_rebinding(tmp_path
     observed = (captured, public_any(root, ["sample"]), main(args), baseline.read_text())
 
     assert observed == ({"sample.Holder": 1}, {"sample.Holder": 2}, 1, before)
+
+
+@pytest.mark.integration
+def test_final_class_import_counts_its_contract_instead_of_replaced_assignment(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    Rows = list[Any]
+                    from .types import Rows
+            """,
+            "types.py": """
+                from typing import Any
+                Rows = list[str]
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/types.py"
+    path.write_text(path.read_text().replace("list[str]", "list[Any]"))
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 1}, 1, before)
+
+
+@pytest.mark.integration
+def test_class_imported_function_resolves_overloads_where_it_was_defined(
+    tmp_path: Path,
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, overload
+                __all__ = ["Holder"]
+                @overload
+                def _read(value: str) -> str: ...
+                @overload
+                def _read(value: str) -> str: ...
+                def _read(value: object) -> str: ...
+                class Holder:
+                    overload = None
+                    from . import _read as read
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("value: str", "value: Any", 1))
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 1}, 1, before)

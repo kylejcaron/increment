@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,34 @@ def test_workers_variable_overrides_allowance() -> None:
         "--dist",
         "loadgroup",
     )
+
+
+@pytest.mark.integration
+def test_warehouse_sessions_expand_only_to_interpreters_with_floor_pins() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "nox", "--list", "--json"],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sessions = json.loads(result.stdout)
+    warehouse_sessions = {
+        "tests",
+        "tests_full",
+        "tests_floor",
+        "tests_slow_floor",
+        "tests_floor_full",
+    }
+    actual = {
+        name: {session["python"] for session in sessions if session["name"] == name}
+        for name in warehouse_sessions | {"tests_core"}
+    }
+    warehouse_versions = {"3.12", "3.13", "3.14"}
+    assert actual == {
+        **dict.fromkeys(warehouse_sessions, warehouse_versions),
+        "tests_core": warehouse_versions | {"3.15"},
+    }
 
 
 @pytest.mark.integration

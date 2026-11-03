@@ -66,7 +66,9 @@ agreement? Email kyle.j.caron@gmail.com before opening a pull request.
 
 ## Development
 
-Increment supports Python 3.12 through 3.14 and uses
+Increment requires Python 3.12 or newer. Core and dataframe checks cover Python
+3.12–3.15; use 3.12–3.14 for the warehouse-backed development environment below.
+The `tests_core-3.15` Nox session runs the core-only checks. Increment uses
 [uv](https://docs.astral.sh/uv/) for dependency management. From a checkout,
 create or update the development environment with:
 
@@ -103,6 +105,11 @@ both paths, so moving a module into documentation still requires compilation.
 Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.
+
+Pull requests run the full fast tier in three Python 3.12 shards and the unit
+tier on Python 3.14; pushes retain the 3.12–3.14 fast matrix. `ci-ok` requires
+the newest-Python unit job for pull requests. Python 3.12 fast coverage remains
+available for approved test reductions.
 
 The Python 3.12 fast shards upload optional executed-code coverage artifacts.
 After the required jobs, `ci-ok` combines matching shard artifacts and
@@ -546,10 +553,13 @@ star-import candidate; an annotation alone does not.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
-aliases. Only an attribute's final assignment counts; an earlier assigned value
-adds no sites unless an annotation captured it. A public class attribute
-assigned a function exposes that function's signature and the overloads defined
-before it under the attribute's name, even after the original name is rebound.
+aliases. Only an attribute's final assignment or import counts, following an
+import into its local source; an earlier assigned value adds no sites unless an
+annotation captured it. A function assigned or imported as a public class
+attribute exposes its signature and the overloads defined before it under the
+attribute's name, even after the original name is rebound. Those overloads and
+annotations resolve where the function was defined, so a name the class body
+binds cannot hide them.
 Record declarations retain separate allowances per field. An ordinary value's
 declared annotation is authoritative, so its factory initializer does not add
 type sites, even when a class assigns that initializer separately.
@@ -612,10 +622,11 @@ need those services for ordinary changes.
 The checked-in CI candidate requires lint, fast tests, functional slow tests,
 package builds, and live PostgreSQL 16 probes through `ci-ok`; hosted
 enforcement and required-check activation remain owner gates. PR fast tests run
-on Python 3.12 and 3.14; 3.13 remains in main pushes and nightly full/weekly floor
-matrices. `ci-ok` validates every selected fast shard and required conditional
-gate. It combines Python 3.12 fast-shard coverage advisory; cross-platform wheel
-smoke runs for packaging-related PR changes and on pushes.
+on Python 3.12, with a separate required Python 3.14 unit job; 3.13 remains in main
+pushes and nightly full/weekly floor matrices. `ci-ok` validates every selected
+fast shard and required conditional gate. It combines Python 3.12 fast-shard
+coverage as advisory; cross-platform wheel smoke runs for packaging-related PR
+changes and on pushes.
 PostgreSQL runs on a PR when a change touches the transitive `tach.toml`
 dependency closure of `increment.query`, `integration/warehouse_execution/`,
 a test helper the PostgreSQL suite imports, build or workflow files, or an
@@ -627,8 +638,9 @@ warehouse workflow defaults to three shards for weekly and manual runs.
 
 Each selected fast Python-version cell has three duration-balanced
 `pytest-split` shards, with `xdist` workers inside each shard. `ci-ok` requires
-all six PR shards or all nine main-push shards (Python 3.12–3.14). The build
-job also runs the documentation snippet and strict-docs checks when changed
+all three Python 3.12 PR shards and the separate Python 3.14 unit job, or all
+nine main-push shards (Python 3.12–3.14). The build job also runs the
+documentation snippet and strict-docs checks when changed
 paths require them. The machine-generated `.github/fast-test-durations.json`
 weights come from a complete, passing local fast run on 2026-11-01 (Python 3.13,
 four `xdist` workers); only their proportions matter, and absent weights do not

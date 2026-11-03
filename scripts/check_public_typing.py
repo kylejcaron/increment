@@ -197,6 +197,15 @@ def _assigned_value(binding: _Binding) -> ast.AST | _Reference | None:
     return declaration.value if isinstance(declaration, ast.AnnAssign) else declaration
 
 
+def _bound_names(node: ast.Assign | ast.Import | ast.ImportFrom) -> list[str]:
+    """Names an assignment or import statement binds, as the binder defines them."""
+    if isinstance(node, ast.Assign):
+        return [target.id for target in node.targets if isinstance(target, ast.Name)]
+    if isinstance(node, ast.Import):
+        return [alias.asname or alias.name.split(".")[0] for alias in node.names]
+    return [alias.asname or alias.name for alias in node.names if alias.name != "*"]
+
+
 def _receiver_body_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
     for node in body:
         yield node
@@ -1288,6 +1297,9 @@ class _Source:
         """Interpret an assigned class attribute; external and unbound values stay opaque."""
         key, record = self.assigned_origin(key, record)
         node = self.contract(record)
+        if isinstance(node, _FUNCTION):
+            # A copied function keeps the scope its decorators and signature were evaluated in.
+            return record.owner, node
         if not isinstance(node, _Reference):
             return key, node
         if (
@@ -2101,24 +2113,12 @@ class _Source:
         sites = self.type_parameter_sites(module, node)
         members: dict[str, list[ast.AST | _Binding]] = {}
         for member in self.contract_statements(node.body):
-            if isinstance(member, ast.Assign):
-                for target in member.targets:
-                    if isinstance(target, ast.Name) and (
-                        not target.id.startswith("_")
-                        or target.id.startswith("__")
-                        and target.id.endswith("__")
-                    ):
-                        # The final declaration is the attribute's contract: superseded values
-                        # and an annotated attribute's initializer add no sites.
-                        declared = source.declarations.get(target.id)
-                        occurrences = members.setdefault(target.id, [])
-                        if declared is not None and declared.owner == _Reference(
-                            module, target.id, member
-                        ):
-                            occurrences.append(declared)
-                continue
-            if isinstance(member, (*_FUNCTION, ast.ClassDef)):
-                name = member.name
+            occurrence: ast.AST | None = member
+            if isinstance(member, (ast.Assign, ast.Import, ast.ImportFrom)):
+                # Assigned and imported values count once, through the final declaration.
+                names, occurrence = _bound_names(member), None
+            elif isinstance(member, (*_FUNCTION, ast.ClassDef)):
+                names = [member.name]
                 if isinstance(member, _FUNCTION) and not any(
                     isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
                     for decorator in member.decorator_list
@@ -2140,19 +2140,28 @@ class _Source:
                                     module, statement.annotation, scope=statement
                                 )
             elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
-                name = member.target.id
+                names = [member.target.id]
             elif isinstance(member, ast.TypeAlias):
-                name = member.name.id
+                names = [member.name.id]
             else:
                 continue
-            if not name.startswith("_") or (name.startswith("__") and name.endswith("__")):
-                members.setdefault(name, []).append(member)
+            for name in names:
+                if not name.startswith("_") or (name.startswith("__") and name.endswith("__")):
+                    occurrences = members.setdefault(name, [])
+                    if occurrence is not None:
+                        occurrences.append(occurrence)
         for name, definitions in members.items():
             record = source.declarations.get(name)
             if record is not None and record.uncertainty is not None:
                 if self.ordinary_uncertainty(record):
                     continue
                 self.require_certain(record)
+            if record is not None and not any(
+                member is record.declaration for member in definitions
+            ):
+                # A final assigned or imported value is the attribute's contract; values it
+                # replaced and an annotated attribute's initializer add no sites.
+                definitions = [*definitions, record]
             if any(
                 isinstance(member, _FUNCTION) and self.is_overload(module, member, scope)
                 for member in definitions
