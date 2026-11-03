@@ -177,6 +177,12 @@ def _rows(value: object) -> list[dict[str, Any]]:
     _raise("query.artifact_reader.snapshot_execution_returned", type_name=type(value).__name__)
 
 
+def _unit_reduction_output(totals: ir.Table, grain: Literal["unit", "membership"]) -> ir.Table:
+    if grain == "membership":
+        return totals.select("unit_id", "group_id")
+    return totals
+
+
 def restrict_to_units(table: ir.Table, units: frozenset[str] | ir.Table) -> ir.Table:
     """Keep the rows of *table* whose ``unit_id`` belongs to a population."""
     if isinstance(units, ir.Table):
@@ -1551,6 +1557,25 @@ class ArtifactMomentSource(SequentialSourceMixin):
             columns.update({name: totals[name] for name in covariate_tables})
         return totals.select(**columns)
 
+    def _membership_relation(
+        self,
+        metric: Metric,
+        *,
+        cluster: str | None,
+        cluster_table: ir.Table | None,
+        population_units: frozenset[str] | ir.Table | None = None,
+        trigger_inputs: _TriggeredReductionInputs | None = None,
+    ) -> ir.Table:
+        totals = self._reduction_query(
+            metric,
+            "membership",
+            cluster=cluster,
+            cluster_table=cluster_table,
+            population_units=population_units,
+            trigger_inputs=trigger_inputs,
+        )
+        return totals.select("unit_id", "group_id")
+
     def _observation_spine_edge(
         self,
         measure_keys: frozenset[str],
@@ -1632,7 +1657,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
     def _reduction_query(  # noqa: PLR0915
         self,
         metric: Metric,
-        grain: Grain | Literal["unit"],
+        grain: Grain | Literal["unit", "membership"],
         *,
         by: str | None = None,
         properties_table: ir.Table | None = None,
@@ -1646,7 +1671,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         calendar_end: dt.date | None = None,
     ) -> ir.Table:
         """Reduce every artifact source through the same observation spine."""
-        if cluster is not None and grain not in ("total", "unit"):
+        if cluster is not None and grain not in ("total", "unit", "membership"):
             from increment._evidence_refusals import require_evidence
 
             require_evidence(self, grain=grain)
@@ -1800,7 +1825,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         uptake_panel = self._uptake_panel(uptake_spine, uptake_events)
 
         by_list = [by] if by else None
-        if grain in ("total", "unit"):
+        if grain in ("total", "unit", "membership"):
             total_experiment = experiment
             if grain == "total" and spine_edge is not None and trigger_inputs is None:
                 # Every observed spine ends at this edge; null-day units stay censored.
@@ -1830,8 +1855,8 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 uptake_exposures=uptake_exposures,
             )
             totals = winsorize_unit_totals(totals, metric)
-            if grain == "unit":
-                return totals
+            if grain in ("unit", "membership"):
+                return _unit_reduction_output(totals, grain)
             return group_summary(
                 totals,
                 by=by_list,

@@ -921,6 +921,7 @@ class _Fixture:
 
     boolean_store: bool = False
     window_by_route: Mapping[str, tuple[str, str]] | None = None
+    unit_id_prefix: str | None = None
 
     def declare_store_dtype(self, defs_dict: dict[str, Any]) -> None:
         if self.boolean_store:
@@ -943,6 +944,8 @@ _NO_FIXTURE = _Fixture()
 
 
 def _fixture_rows(rows: list[dict[str, Any]], fixture: _Fixture) -> list[dict[str, Any]]:
+    if fixture.unit_id_prefix is not None:
+        rows = [{**row, "user_id": fixture.unit_id_prefix + str(row["user_id"])} for row in rows]
     if fixture.boolean_store:
         rows = [{**row, "store_id": _BOOLEAN_STORE_VALUE[row["store_id"]]} for row in rows]
     if fixture.window_by_route is not None:
@@ -9751,11 +9754,12 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
     )
 
 
-def _arm_facts_parity_case() -> ParityCase:
+def _arm_facts_parity_case(*, fixture: _Fixture = _NO_FIXTURE) -> ParityCase:
     case = _fixed_horizon_case(
         id="arm-facts-parity",
         breakout=False,
         include_cuped=False,
+        fixture=fixture,
     )
     return replace(case, waive={"from_switchback_panel": "SOURCE: fixed-horizon frame inputs."})
 

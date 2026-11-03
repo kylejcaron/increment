@@ -547,6 +547,30 @@ def test_source_input_bytes_preserve_original_payload_protocol():
         _source_input_bytes({"value": float("nan")})
 
 
+def test_source_row_receipts_preserve_empty_and_partial_batches():
+    from tests.evidence_fixtures.scenarios import _source_input_bytes, _source_row_hashes
+
+    metadata = {"schema": [["label", "string"], ["value", "float64"]]}
+    batches = [
+        [("café", -0.0), ('雪"\\\n', None)],
+        [],
+        [("last", 9007199254740993)],
+    ]
+    expected = (
+        rb'{"rows":[["caf\u00e9",-0.0],["\u96ea\"\\\n",null],'
+        rb'["last",9007199254740993]],"schema":[["label","string"],["value","float64"]]}'
+    )
+    assert (
+        _source_input_bytes({**metadata, "rows": [row for batch in batches for row in batch]})
+        == expected
+    )
+    digest = sha256(expected).hexdigest()
+    assert _source_row_hashes(metadata, iter(batches)) == (digest, digest, 3)
+    empty = rb'{"rows":[],"schema":[["label","string"],["value","float64"]]}'
+    empty_digest = sha256(empty).hexdigest()
+    assert _source_row_hashes(metadata, iter([[], []])) == (empty_digest, empty_digest, 0)
+
+
 def test_transcript_codec_rejects_an_unregistered_version():
     from increment.evidence import CountsRequest
     from tests.evidence_fixtures.transcript import Transcript
@@ -1385,6 +1409,16 @@ def _assert_coordinate_inputs(live, frozen):
     assert live.source_input_hashes == tuple(
         item["sha256"] for item in live.provenance["source_inputs"]
     )
+    from tests.test_evidence_identity_parity import _capture
+
+    archived_outcome = _capture()["scenarios"][live.scenario_id][live.ingress]
+    if "population_identity" in archived_outcome:
+        assert live.source_membership_identity is not None
+        _assert_input_value(
+            live.source_membership_identity,
+            archived_outcome["population_identity"],
+            path="source_population_membership",
+        )
     _assert_input_value(
         _source_input_identity_projection(live),
         _source_input_identity_projection(frozen),
@@ -5007,3 +5041,36 @@ def test_frozen_encouragement_breakout_consumers_match_complete_ordered_old_rows
             complete.extend(assembled)
         _assert_old_readout_rows(complete, expected, nominal_alpha=plan.alpha)
         _assert_old_assembled_metadata(parts, transcript)
+
+
+@pytest.mark.integration
+def test_source_only_capture_rejects_relabelled_summary_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.evidence_fixtures import scenarios
+    from tests.evidence_fixtures.scenarios import acquire_scenario
+    from tests.parity_harness.cases import PARITY_CASES, _arm_facts_parity_case, _Fixture
+
+    scenario_id = "arm-facts-parity"
+    ingress = "from_unit_summary"
+    replacement = _arm_facts_parity_case(fixture=_Fixture(unit_id_prefix="relabelled-"))
+    monkeypatch.setattr(
+        scenarios,
+        "PARITY_CASES",
+        tuple(replacement if case.id == scenario_id else case for case in PARITY_CASES),
+    )
+    live = acquire_scenario(scenario_id, ingress)
+    frozen = _frozen_coordinate(scenario_id, ingress)
+    from tests.test_evidence_identity_parity import _capture
+
+    archived_identity = _capture()["scenarios"][scenario_id][ingress]["population_identity"]
+    assert live.source_membership_identity is not None
+    assert live.source_membership_identity != archived_identity
+    for population, arms in archived_identity.items():
+        assert {arm: evidence["unit_count"] for arm, evidence in arms.items()} == {
+            arm: evidence["unit_count"]
+            for arm, evidence in live.source_membership_identity[population].items()
+        }
+
+    with pytest.raises(AssertionError):
+        _assert_coordinate_inputs(live, frozen)

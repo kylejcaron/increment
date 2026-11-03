@@ -1593,6 +1593,20 @@ class _ArtifactFacadeSource(_ArtifactBase):
                 )
         yield relation, self._snapshot.execute, getattr(self._snapshot, "qr_scratch", None)
 
+    def _population_membership(self, metric: Metric) -> Any:
+        metric = self.validated_metric(metric)
+        trigger_inputs = (
+            self._triggered_reduction_inputs(metric) if self._population_units is not None else None
+        )
+        relation = self._membership_relation(
+            metric,
+            cluster=self.context.cluster,
+            cluster_table=self._cluster_table(),
+            population_units=self._population_units,
+            trigger_inputs=trigger_inputs,
+        )
+        return self._snapshot.execute(relation)
+
     def unit_frame(
         self,
         metric: Metric,

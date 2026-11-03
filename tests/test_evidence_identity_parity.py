@@ -1595,6 +1595,131 @@ def test_frozen_capture_rejects_ingress_evidence_mismatch(field: str) -> None:
         _assert_outcome_matches(expected, actual, current_schema=False)
 
 
+@pytest.fixture
+def qualified_capture_repository(tmp_path: Path) -> Path:
+    import shutil
+
+    repository = Path(__file__).resolve().parents[1]
+    isolated = tmp_path / "qualified-capture"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "clone",
+            "--shared",
+            "--no-checkout",
+            str(repository),
+            str(isolated),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-C",
+            str(isolated),
+            "checkout",
+            "7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+            "--",
+            "increment",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (isolated / "scripts").mkdir()
+    shutil.copy2(
+        repository / "scripts" / "capture_evidence_identity.py",
+        isolated / "scripts" / "capture_evidence_identity.py",
+    )
+    return isolated
+
+
+@pytest.mark.integration
+def test_consumer_capture_rejects_foreign_imported_production_before_writing(
+    tmp_path: Path,
+    qualified_capture_repository: Path,
+) -> None:
+    import shutil
+
+    repository = Path(__file__).resolve().parents[1]
+    foreign_repository = tmp_path / "foreign"
+    foreign_package = foreign_repository / "increment"
+    shutil.copytree(qualified_capture_repository / "increment", foreign_package)
+    output = tmp_path / "consumer-inputs"
+    script = qualified_capture_repository / "scripts" / "capture_evidence_identity.py"
+    command = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(repository)!r}); "
+        f"sys.path.insert(0, {str(qualified_capture_repository)!r}); "
+        "import tests; "
+        f"sys.path.insert(0, {str(foreign_repository)!r}); "
+        "import increment; "
+        f"assert increment.__file__.startswith({str(foreign_package)!r}); "
+        "print(increment.__file__); "
+        f"sys.argv = [{str(script)!r}, "
+        "'--consumer-inputs', '--scenario', 'arm-facts-parity', '--out', "
+        f"{str(output)!r}]; "
+        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == str(foreign_package / "__init__.py")
+    assert not output.exists()
+
+
+@pytest.mark.integration
+def test_consumer_capture_accepts_valid_production_root_and_records_it(
+    tmp_path: Path,
+    qualified_capture_repository: Path,
+) -> None:
+    import gzip
+
+    repository = Path(__file__).resolve().parents[1]
+    output = tmp_path / "consumer-inputs"
+    script = qualified_capture_repository / "scripts" / "capture_evidence_identity.py"
+    command = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(repository)!r}); "
+        f"sys.path.insert(0, {str(qualified_capture_repository)!r}); "
+        "import tests; "
+        "import increment; "
+        "print(increment.__file__); "
+        f"sys.argv = [{str(script)!r}, '--consumer-inputs', '--scenario', "
+        "'arm-facts-parity', '--out', "
+        f"{str(output)!r}]; "
+        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(qualified_capture_repository / "increment" / "__init__.py")
+    captured = json.loads(
+        gzip.decompress((output / "arm-facts-parity--from_unit_summary.json.gz").read_bytes())
+    )
+    assert captured["runtime"]["production_root"] == str(qualified_capture_repository / "increment")
+
+
 def test_frozen_capture_rejects_operation_mismatch() -> None:
     capture = _capture()
     scenario_id, ingress, expected = next(

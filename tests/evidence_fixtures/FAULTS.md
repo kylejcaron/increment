@@ -87,17 +87,22 @@ Original source frame/table/state/manifest receipts without stored raw bytes are
 historical provenance, not independently rehashed frozen byte oracles. Current
 original-byte hashes are checked before semantic keying. Consumed numeric and
 categorical values retain their independent references and unchanged bounds.
-Current source payloads use one immutable canonical byte sequence: sorted-key,
-compact JSON with ASCII escaping, strict nonfinite handling and UTF-8 encoding.
+Current source payloads use one canonical byte stream: sorted-key, compact JSON
+with ASCII escaping, strict nonfinite handling and UTF-8 encoding. Population
+rows are fetched or converted in batches of at most 1,024; complete populations
+are never materialized as Python row graphs or JSON buffers just for a receipt.
 Observation, row and column order and numeric/null spellings are preserved.
-Claim and audit SHA-256 values are calculated separately from those bytes;
+Claim and audit SHA-256 states are updated separately from the owned chunks;
 neither calculation copies the other's digest or hash state. The detached audit
-tuple is compared with emitted receipt claims before projection. A literal-byte
-protocol assertion owns the shared encoder; a truncated-claim preimage fault
-must fail the retained input comparison.
+tuple is compared with emitted receipt claims before projection. Literal byte
+and empty/partial-batch assertions own the shared encoder and array framing;
+a truncated-claim preimage fault must fail the retained input comparison.
 The narrow post-capture alpha and absolute-contrast serialization projections
 operate only on comparison copies; actual result objects and archived records
 remain unmodified.
+
+
+Population membership identity is captured from the source’s actual declared population and metric roster. For artifact sources, the test-only observer uses a private source-owned membership projection over the same eligible unit reduction and pinned snapshot, returning only unit and arm IDs. It skips analyst censoring-warning bookkeeping only for this identity observation; public `unit_frame` reads retain their warning behavior. Membership deduplication, canonical encoding and hashing remain in the capture helper, and this observer adds no public evidence capability or request schema.
 
 ## Producer inventory
 

@@ -3,6 +3,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cache
+from itertools import chain, islice
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -99,6 +100,7 @@ class AcquiredScenario:
     actual_representations: tuple[str, ...]
     missing_representations: tuple[str, ...]
     source_input_hashes: tuple[str, ...]
+    source_membership_identity: dict[str, Any] | None
 
 
 def _family(case: Any) -> str:
@@ -307,11 +309,82 @@ def _breakout_identities(source: Any, experiment: Any) -> tuple[BreakoutIdentity
     return tuple(BreakoutIdentity(name, None) for name in getattr(capabilities, "breakouts", ()))
 
 
+_SOURCE_INPUT_BATCH_SIZE = 1024
+
+
 def _source_input_bytes(value: Any) -> bytes:
     """Encode original source receipts without reordering observations."""
     import json
 
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _source_row_hashes(
+    metadata: Mapping[str, Any], batches: Iterable[list[Any]]
+) -> tuple[str, str, int]:
+    """Hash the canonical source object while retaining only one row batch."""
+    import hashlib
+
+    claim = hashlib.sha256()
+    audit = hashlib.sha256()
+    row_count = 0
+
+    def emit(chunk: bytes) -> None:
+        claim.update(chunk)
+        audit.update(chunk)
+
+    emit(b"{")
+    for index, key in enumerate(sorted((*metadata, "rows"))):
+        if index:
+            emit(b",")
+        emit(_source_input_bytes(key))
+        emit(b":")
+        if key == "rows":
+            emit(b"[")
+            for batch in batches:
+                if not batch:
+                    continue
+                if row_count:
+                    emit(b",")
+                emit(_source_input_bytes(batch)[1:-1])
+                row_count += len(batch)
+            emit(b"]")
+        else:
+            emit(_source_input_bytes(metadata[key]))
+    emit(b"}")
+    return claim.hexdigest(), audit.hexdigest(), row_count
+
+
+def _source_table_batches(cursor: Any) -> Iterable[list[Any]]:
+    while rows := cursor.fetchmany(_SOURCE_INPUT_BATCH_SIZE):
+        yield _plain(rows)
+
+
+def _source_plain_batches(rows: Iterable[Any]) -> Iterable[list[Any]]:
+    iterator = iter(rows)
+    while batch := list(islice(iterator, _SOURCE_INPUT_BATCH_SIZE)):
+        yield _source_plain(batch)
+
+
+def _source_frame_payloads(value: Any) -> Iterable[dict[str, Any]]:
+    module = type(value).__module__.split(".", maxsplit=1)[0]
+    if module == "narwhals":
+        to_native = getattr(value, "to_native", None)
+        if not callable(to_native):
+            raise TypeError(f"Unsupported tabular transcript carrier: {type(value).__qualname__}")
+        native = to_native()
+        if native is value:
+            raise TypeError("Narwhals frame did not expose a native tabular carrier")
+        yield from _source_frame_payloads(native)
+    elif module == "pandas":
+        for start in range(0, max(len(value), 1), _SOURCE_INPUT_BATCH_SIZE):
+            yield _frame_payload(value.iloc[start : start + _SOURCE_INPUT_BATCH_SIZE])
+    elif module in {"polars", "pyarrow"}:
+        row_count = value.height if module == "polars" else value.num_rows
+        for start in range(0, max(row_count, 1), _SOURCE_INPUT_BATCH_SIZE):
+            yield _frame_payload(value.slice(start, _SOURCE_INPUT_BATCH_SIZE))
+    else:
+        raise TypeError(f"Unsupported tabular transcript carrier: {type(value).__qualname__}")
 
 
 def _source_inputs(
@@ -331,6 +404,11 @@ def _source_inputs(
         hash_audits.append(hashlib.sha256(original_bytes).hexdigest())
         return claimed
 
+    def rows_digest(metadata, batches):
+        claimed, audit, row_count = _source_row_hashes(metadata, batches)
+        hash_audits.append(audit)
+        return claimed, row_count
+
     declaration_method = getattr(source, "declaration_identity", None)
 
     declaration = _plain(declaration_method()) if callable(declaration_method) else {}
@@ -346,7 +424,12 @@ def _source_inputs(
     if frame is None:
         frame = getattr(source, "_frame", None)
     if frame is not None:
-        frame_payload = _frame_payload(frame)
+        payloads = iter(_source_frame_payloads(frame))
+        frame_payload = next(payloads)
+        claimed, row_count = rows_digest(
+            {key: frame_payload[key] for key in ("columns", "schema")},
+            chain((frame_payload["rows"],), (payload["rows"] for payload in payloads)),
+        )
         source_inputs.append(
             {
                 "kind": "declared_source_frame",
@@ -355,9 +438,9 @@ def _source_inputs(
                     **configuration,
                     "frame_columns": frame_payload["columns"],
                     "frame_schema": frame_payload["schema"],
-                    "row_count": len(frame_payload["rows"]),
+                    "row_count": row_count,
                 },
-                "sha256": digest(frame_payload),
+                "sha256": claimed,
             }
         )
     backend = getattr(source, "_con", None)
@@ -374,7 +457,10 @@ def _source_inputs(
         for table_name in table_names:
             quoted_name = '"' + table_name.replace('"', '""') + '"'
             schema = raw_connection.execute(f"describe {quoted_name}").fetchall()
-            rows = raw_connection.execute(f"select * from {quoted_name}").fetchall()
+            claimed, row_count = rows_digest(
+                {"schema": _plain(schema)},
+                _source_table_batches(raw_connection.execute(f"select * from {quoted_name}")),
+            )
             source_inputs.append(
                 {
                     "kind": "declared_source_table",
@@ -383,26 +469,28 @@ def _source_inputs(
                         **configuration,
                         "table_name": table_name,
                         "table_schema": _plain(schema),
-                        "row_count": len(rows),
+                        "row_count": row_count,
                     },
-                    "sha256": digest({"schema": _plain(schema), "rows": _plain(rows)}),
+                    "sha256": claimed,
                 }
             )
     if not source_inputs and hasattr(source, "_rows"):
-        source_state = _source_plain(
-            {
-                "rows": source._rows,
-                "assignment_counts": source._assignment_counts,
-                "compliance": source._compliance,
-                "population": source._population,
-            }
+        claimed, _row_count = rows_digest(
+            _source_plain(
+                {
+                    "assignment_counts": source._assignment_counts,
+                    "compliance": source._compliance,
+                    "population": source._population,
+                }
+            ),
+            _source_plain_batches(source._rows),
         )
         source_inputs.append(
             {
                 "kind": "declared_source_state",
                 "identity": f"{scenario_id}:{ingress}:{type(source).__qualname__}",
                 "configuration": configuration,
-                "sha256": digest(source_state),
+                "sha256": claimed,
             }
         )
     manifest = getattr(source, "_manifest", None)
@@ -1404,7 +1492,9 @@ def _attach_warehouse_inputs(configuration, receipts):
         configuration.setdefault("assembly", {})["warehouse_input_receipts"] = receipts
 
 
-def acquire_scenario(scenario_id: str, ingress: str) -> AcquiredScenario:  # noqa: PLR0915
+def acquire_scenario(  # noqa: PLR0915
+    scenario_id: str, ingress: str, *, observe_membership: bool = True
+) -> AcquiredScenario:
     """Acquire typed inputs from one declared ingress without invoking a readout."""
     if _frozen_dispositions()[(scenario_id, ingress)]["kind"] != "cells":
         raise ValueError("refusals and absences require observe_scenario_disposition")
@@ -1489,6 +1579,26 @@ def acquire_scenario(scenario_id: str, ingress: str) -> AcquiredScenario:  # noq
                 prior_override=case.prior,
             )
             consumer_context = _plain(replace(source.context, metrics=metrics, configs=configs))
+        from scripts.capture_evidence_identity import _population_identity
+
+        compliance_only = (
+            all(scope.grain == "total" for scope in public_scopes)
+            and case.estimands is not None
+            and set(case.estimands) == {"compliance"}
+            and isinstance(source.context.design, Encouragement)
+        )
+        membership_metrics = () if compliance_only else tuple(metric.name for metric in metrics)
+        source_membership_identity = (
+            _population_identity(
+                bound,
+                case,
+                (),
+                population_selection=populations,
+                metric_selection=membership_metrics,
+            )
+            if observe_membership
+            else None
+        )
         consumer_configuration: dict[str, Any] = {
             "context": consumer_context,
             "base_context": _plain(source.context),
@@ -1888,6 +1998,7 @@ def acquire_scenario(scenario_id: str, ingress: str) -> AcquiredScenario:  # noq
                 actual,
                 missing,
                 tuple(source_input_hashes),
+                source_membership_identity,
             )
 
         if (
@@ -2026,6 +2137,7 @@ def acquire_scenario(scenario_id: str, ingress: str) -> AcquiredScenario:  # noq
             actual,
             missing,
             tuple(source_input_hashes),
+            source_membership_identity,
         )
     finally:
         stack.close()
