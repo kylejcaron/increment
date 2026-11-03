@@ -283,6 +283,11 @@ class Experiment:
         payload = json.loads(value)
         if not isinstance(payload, dict) or payload.get("schema_version") != 1:
             _refuse("kernel.request.invalid", field="unsupported experiment format")
+        design = payload.get("design")
+        if isinstance(design, Mapping):
+            from increment.semantics.design import _refuse_unsupported_design_mechanism
+
+            _refuse_unsupported_design_mechanism(design.get("mechanism"))
         implementations = {
             (
                 str(item["method_instance_id"]),

@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -343,19 +343,22 @@ def test_drop_generation_second_erase_failure_is_retryable(monkeypatch) -> None:
     ref, exposure_ref, measure_ref = _publish(store)
     cached = WarehouseArtifactStore(con, schema_name="artifact")
 
-    real_drop_table = con.drop_table
+    real_safe_raw_sql = con._safe_raw_sql
     calls = {"n": 0}
 
-    def flaky_drop_table(name, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise RuntimeError("simulated erasure failure")
-        return real_drop_table(name, **kwargs)
+    @contextmanager
+    def flaky_safe_raw_sql(statement, *args, **kwargs):
+        if isinstance(statement, str) and statement.startswith("DROP TABLE IF EXISTS"):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated erasure failure")
+        with real_safe_raw_sql(statement, *args, **kwargs) as result:
+            yield result
 
-    monkeypatch.setattr(con, "drop_table", flaky_drop_table)
+    monkeypatch.setattr(con, "_safe_raw_sql", flaky_safe_raw_sql)
     with pytest.raises(RuntimeError, match="simulated erasure failure"):
         store.drop_generation(ref.artifact_id, ref.generation_id)
-    monkeypatch.setattr(con, "drop_table", real_drop_table)
+    monkeypatch.setattr(con, "_safe_raw_sql", real_safe_raw_sql)
 
     target_names = {exposure_ref.relation.name, measure_ref.relation.name}
     remaining = set(con.list_tables(database="artifact"))
@@ -1390,22 +1393,33 @@ def _fail_one_relation_drop(
 ) -> tuple[list[str], list[str], Any]:
     """Make the first dropped relation fail (every retry too when `persistent`);
     returns (attempted, failed, error)."""
-    real_drop = con.drop_table
+    import sqlglot
+    from sqlglot import exp
+
+    real_safe_raw_sql = con._safe_raw_sql
     attempted: list[str] = []
     failed: list[str] = []
     error = error or ConnectionError("drop unavailable")
 
-    def flaky_drop(name, *args, **kwargs):
-        if not name.startswith("ud_"):
-            return real_drop(name, *args, **kwargs)  # digest scratch tables
-        attempted.append(name)
-        if not failed or (persistent and name == failed[0]):
-            if not failed:
-                failed.append(name)
-            raise error
-        return real_drop(name, *args, **kwargs)
+    @contextmanager
+    def flaky_safe_raw_sql(statement, *args, **kwargs):
+        if isinstance(statement, str):
+            try:
+                drop = sqlglot.parse_one(statement, read=con.name)
+            except sqlglot.ParseError:
+                drop = None
+            tables = drop.args.get("tables") or [drop.this] if isinstance(drop, exp.Drop) else []
+            name = tables[0].name if tables and isinstance(tables[0], exp.Table) else ""
+            if name.startswith("ud_"):
+                attempted.append(name)
+                if not failed or (persistent and name == failed[0]):
+                    if not failed:
+                        failed.append(name)
+                    raise error
+        with real_safe_raw_sql(statement, *args, **kwargs) as result:
+            yield result
 
-    monkeypatch.setattr(con, "drop_table", flaky_drop)
+    monkeypatch.setattr(con, "_safe_raw_sql", flaky_safe_raw_sql)
     return attempted, failed, error
 
 

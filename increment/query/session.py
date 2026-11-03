@@ -108,6 +108,13 @@ _ARTIFACT_STORE_NAMESPACE = RefusalSpec(
     lambda *, message, **_: message,
 )
 
+_RELATION_NAME_OCCUPIED = RefusalSpec(
+    "query.relation.name_occupied",
+    CapabilityError,
+    template="warehouse relation {name!r} already exists; {route}",
+    keys=frozenset({"backend", "catalog", "schema"}),
+)
+
 
 Renderer = Callable[..., str]
 
@@ -389,6 +396,19 @@ class WarehouseArtifactStore:
         self._con = con
         self._catalog = catalog
         self._schema = schema_name or namespace
+        if self._con.name == "bigquery" and (self._catalog is None or self._schema is None):
+            try:
+                self._catalog, self._schema = cast(Any, self._con)._parse_project_and_dataset(
+                    self._schema
+                )
+            except ValueError as exc:
+                refuse(
+                    _ARTIFACT_STORE_NAMESPACE,
+                    message=f"artifact store namespace could not be resolved: {exc}",
+                    catalog=self._catalog,
+                    schema=self._schema,
+                    table="ud_manifest_index",
+                )
         self._database: str | tuple[str, str] | None = (
             (self._catalog, self._schema)
             if self._catalog is not None and self._schema is not None
@@ -400,13 +420,34 @@ class WarehouseArtifactStore:
         self._meta_name = "ud_manifest_index"
         self._dropped_name = "ud_manifest_dropped"
         self._generations: dict[tuple[uuid.UUID, uuid.UUID], _StoredGeneration] = {}
+        self._pending_cleanup: list[_MaterializedRelation] = []
         self._validate_namespace()
         self._ensure_metadata_table()
         self._ensure_dropped_table()
 
     def qr_scratch(self):
         """Return a scoped scratch owner for computations over a pinned artifact snapshot."""
+        self._retry_pending_cleanup()
         return _warehouse_artifact_qr_scratch(self._con)
+
+    def _retain_pending_cleanup(self, name: str, catalog: str | None, schema: str | None) -> None:
+        _remember_materialized(
+            self._pending_cleanup, _MaterializedRelation(name, name, catalog, schema)
+        )
+
+    def _retry_pending_cleanup(self) -> None:
+        pending = self._pending_cleanup
+        self._pending_cleanup = []
+        for relation in pending:
+            try:
+                _drop_owned_table(
+                    self._con,
+                    relation.name,
+                    catalog=relation.catalog,
+                    schema=relation.schema,
+                )
+            except Exception:
+                _remember_materialized(self._pending_cleanup, relation)
 
     def preflight_publication(self) -> None:
         """Require warehouse-side digest verification before source assembly."""
@@ -749,9 +790,15 @@ class WarehouseArtifactStore:
             # The insert never began, so no row can appear: dropping by name is safe.
             dropped_failed: list[str] = []
             first_error: BaseException | None = None
-            for name in tuple(locators):
+            for name, locator in locators.items():
                 try:
-                    self._con.drop_table(name, database=self._database, force=True)
+                    _drop_owned_table(
+                        self._con,
+                        name,
+                        database=(locator.catalog, locator.schema_name)
+                        if locator.catalog is not None and locator.schema_name is not None
+                        else self._database,
+                    )
                 except BaseException as erase:  # attempt every relation; never replace exc
                     dropped_failed.append(qualified[name])
                     first_error = first_error or erase
@@ -789,9 +836,15 @@ class WarehouseArtifactStore:
             )
         retained: list[str] = []
         first_erase_error: BaseException | None = None
-        for name in tuple(locators):
+        for name, locator in locators.items():
             try:
-                self._con.drop_table(name, database=self._database, force=True)
+                _drop_owned_table(
+                    self._con,
+                    name,
+                    database=(locator.catalog, locator.schema_name)
+                    if locator.catalog is not None and locator.schema_name is not None
+                    else self._database,
+                )
             except BaseException as erase:  # attempt every relation; never replace exc
                 retained.append(qualified[name])
                 first_erase_error = first_erase_error or erase
@@ -898,6 +951,7 @@ class WarehouseArtifactStore:
                 schema,
                 primary_key=primary_key,
                 digest_format=digest_format,
+                cleanup_failure=self._retain_pending_cleanup,
             )
         if digest_format == BUCKETED_DIGEST_FORMAT:
             return digest_relation_bucketed(self._con, table, role, schema, primary_key=primary_key)
@@ -917,6 +971,7 @@ class WarehouseArtifactStore:
             _raise("query.session.warehouse_artifact.unknown_relation_role", role=role)
         if generation.manifest is not None:
             _raise("query.session.warehouse_artifact.publication_handle_sealed")
+        self._retry_pending_cleanup()
 
         relation_suffix = role
         if any(stored.ref.role == role for stored in generation.relations.values()):
@@ -934,8 +989,16 @@ class WarehouseArtifactStore:
             generation_id=generation.generation_id,
             role=cast("Any", role),
         )
-        # The create may land even when it raises (a lost response), so the locator is
-        # tracked from before the create until it is registered or provably dropped.
+        existing = locator.name in self._con.list_tables(database=cast("Any", self._database))
+        if existing:
+            refuse(
+                _RELATION_NAME_OCCUPIED,
+                backend=self._con.name,
+                catalog=locator.catalog,
+                schema=locator.schema_name,
+                name=locator.name,
+                route="retry with a new publication or scratch relation name",
+            )
         generation.unregistered[locator.name] = locator
         try:
             self._con.create_table(
@@ -948,11 +1011,11 @@ class WarehouseArtifactStore:
             digest = self._digest_table_for_write(persisted, role)
         except BaseException:
             try:
-                self._con.drop_table(locator.name, database=cast("Any", self._database), force=True)
+                if locator.name in self._con.list_tables(database=cast("Any", self._database)):
+                    _drop_owned_table(self._con, locator.name, database=self._database)
+                del generation.unregistered[locator.name]
             except BaseException:  # never replace the propagating error; abort retries
                 pass
-            else:
-                del generation.unregistered[locator.name]
             raise
         del generation.unregistered[locator.name]
         ref = ArtifactRelationRef(
@@ -1119,8 +1182,146 @@ class WarehouseArtifactStore:
                     route="republish from trusted definitions with warehouse-side integrity enabled",
                 )
 
+    def _drop_snapshot_relation(self, relation: _MaterializedRelation) -> None:
+        try:
+            _drop_owned_table(
+                self._con,
+                relation.name,
+                catalog=relation.catalog,
+                schema=relation.schema,
+            )
+        except Exception:
+            _remember_materialized(self._pending_cleanup, relation)
+
+    def _read_snapshot_manifest(
+        self,
+        ref: UnitDayArtifactRef,
+        manifest: UnitDayArtifactManifest,
+        locator: RelationLocator,
+        expected_sha256: str,
+    ) -> UnitDayArtifactManifest:
+        self.validate_locator(
+            locator,
+            artifact_id=ref.artifact_id,
+            generation_id=ref.generation_id,
+            role="manifest",
+        )
+        if locator != ref.manifest or expected_sha256 != ref.manifest_sha256:
+            from increment.query.artifact_contract import ArtifactContractError
+
+            raise ArtifactContractError(
+                "artifact.refresh.invalid_ref",
+                "manifest locator or digest does not match reference",
+                context={"name": locator.name},
+            )
+        return copy.deepcopy(manifest)
+
+    def _verify_snapshot_relation(
+        self,
+        ref: UnitDayArtifactRef,
+        relations: dict[str, _StoredRelation],
+        relation_ref: ArtifactRelationRef,
+        expected_role: str,
+        created_snapshots: list[_MaterializedRelation],
+    ) -> ir.Table:
+        if (
+            relation_ref.artifact_id != ref.artifact_id
+            or relation_ref.generation_id != ref.generation_id
+            or relation_ref.role != expected_role
+        ):
+            from increment.query.artifact_contract import ArtifactContractError
+
+            raise ArtifactContractError(
+                "artifact.snapshot.mixed",
+                "relation is not bound to this snapshot",
+                context={"role": expected_role},
+            )
+        stored = relations.get(relation_ref.relation.name)
+        if stored is None or stored.ref != relation_ref:
+            from increment.query.artifact_contract import ArtifactContractError
+
+            raise ArtifactContractError(
+                "artifact.snapshot.mixed",
+                "relation reference does not match snapshot",
+                context={"role": expected_role},
+            )
+        self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
+        self.validate_locator(
+            relation_ref.relation,
+            artifact_id=ref.artifact_id,
+            generation_id=ref.generation_id,
+            role=expected_role,
+        )
+        snapshot_name = f"ud_snap_{uuid.uuid4().hex}"
+        database = self._create_database if self._con.name == "snowflake" else None
+        if self._con.name == "snowflake":
+            candidate = _MaterializedRelation(
+                snapshot_name,
+                snapshot_name,
+                self._catalog or getattr(self._con, "current_catalog", None),
+                self._schema or getattr(self._con, "current_database", None),
+            )
+        else:
+            candidate = _temporary_relation_locator(self._con, snapshot_name)
+        cleanup = None
+        snapshot_table = None
+        try:
+            if candidate is not None:
+                if _temporary_relation_exists(self._con, candidate):
+                    _raise("query.session.snapshot.materialization_failed")
+                cleanup = candidate
+            live = self._con.table(relation_ref.relation.name, database=self._database)
+            snapshot_table = self._con.create_table(
+                snapshot_name,
+                live,
+                database=cast("Any", database),
+                temp=True,
+                overwrite=False,
+            )
+            op = snapshot_table.op()
+            if self._con.name == "postgres":
+                database = "pg_temp"
+                cleanup = _MaterializedRelation(snapshot_name, op.name, None, database)
+            elif op.namespace.catalog and op.namespace.database:
+                database = (op.namespace.catalog, op.namespace.database)
+                cleanup = _MaterializedRelation(
+                    snapshot_name, op.name, op.namespace.catalog, op.namespace.database
+                )
+            elif op.namespace.database:
+                database = op.namespace.database
+                cleanup = _MaterializedRelation(snapshot_name, op.name, None, op.namespace.database)
+            if cleanup is None:
+                _raise("query.session.snapshot.materialization_failed")
+            _validate_artifact_schema(snapshot_table, expected_role)
+            digest = self._digest_table(
+                snapshot_table, expected_role, digest_format=relation_ref.digest_format
+            )
+            self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
+            if (
+                digest.content_sha256 != relation_ref.content_sha256
+                or digest.schema_sha256 != relation_ref.schema_sha256
+                or digest.row_count != relation_ref.row_count
+            ):
+                from increment.query.artifact_contract import ArtifactContractError
+
+                raise ArtifactContractError(
+                    "artifact.snapshot.mixed",
+                    "relation changed after snapshot verification",
+                    context={"role": expected_role},
+                )
+        except BaseException:
+            if cleanup is not None and not _cleanup_failed_temporary_relation(
+                self._con, cleanup, created=snapshot_table is not None
+            ):
+                _remember_materialized(self._pending_cleanup, cleanup)
+            self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
+            raise
+        created_snapshots.append(cleanup)
+        return snapshot_table
+
     @contextmanager
     def open_snapshot(self, ref: UnitDayArtifactRef):
+        self._retry_pending_cleanup()
         validate_trusted_ref(ref)
         self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
         generation = self._generation_for_ref(ref)
@@ -1141,96 +1342,15 @@ class WarehouseArtifactStore:
                 *_extension_relation_refs(manifest.extensions),
             )
         )
-        created_snapshots: list[tuple[str, Any]] = []
-
-        def drop_snapshot(name: str, database: Any) -> None:
-            try:
-                self._con.drop_table(name, database=database, force=True)
-            except Exception:
-                pass
+        created_snapshots: list[_MaterializedRelation] = []
 
         def read_manifest(locator: RelationLocator, expected_sha256: str):
-            self.validate_locator(
-                locator,
-                artifact_id=ref.artifact_id,
-                generation_id=ref.generation_id,
-                role="manifest",
-            )
-            if locator != ref.manifest or expected_sha256 != ref.manifest_sha256:
-                from increment.query.artifact_contract import ArtifactContractError
-
-                raise ArtifactContractError(
-                    "artifact.refresh.invalid_ref",
-                    "manifest locator or digest does not match reference",
-                    context={"name": locator.name},
-                )
-            return copy.deepcopy(manifest)
+            return self._read_snapshot_manifest(ref, manifest, locator, expected_sha256)
 
         def verify_relation(relation_ref: ArtifactRelationRef, expected_role: str):
-            if (
-                relation_ref.artifact_id != ref.artifact_id
-                or relation_ref.generation_id != ref.generation_id
-                or relation_ref.role != expected_role
-            ):
-                from increment.query.artifact_contract import ArtifactContractError
-
-                raise ArtifactContractError(
-                    "artifact.snapshot.mixed",
-                    "relation is not bound to this snapshot",
-                    context={"role": expected_role},
-                )
-            stored = relations.get(relation_ref.relation.name)
-            if stored is None or stored.ref != relation_ref:
-                from increment.query.artifact_contract import ArtifactContractError
-
-                raise ArtifactContractError(
-                    "artifact.snapshot.mixed",
-                    "relation reference does not match snapshot",
-                    context={"role": expected_role},
-                )
-            self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
-            snapshot_name = f"ud_snap_{uuid.uuid4().hex}"
-            # DuckDB/Postgres TEMP tables live outside the publication schema.
-            database = self._create_database if self._con.name == "snowflake" else None
-            try:
-                live = self._con.table(relation_ref.relation.name, database=self._database)
-                snapshot_table = self._con.create_table(
-                    snapshot_name,
-                    live,
-                    database=cast("Any", database),
-                    temp=True,
-                    overwrite=False,
-                )
-                op = snapshot_table.op()
-                if self._con.name == "postgres":
-                    database = "pg_temp"
-                elif op.namespace.catalog and op.namespace.database:
-                    database = (op.namespace.catalog, op.namespace.database)
-                elif op.namespace.database:
-                    database = op.namespace.database
-                _validate_artifact_schema(snapshot_table, expected_role)
-                digest = self._digest_table(
-                    snapshot_table, expected_role, digest_format=relation_ref.digest_format
-                )
-                self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
-                if (
-                    digest.content_sha256 != relation_ref.content_sha256
-                    or digest.schema_sha256 != relation_ref.schema_sha256
-                    or digest.row_count != relation_ref.row_count
-                ):
-                    from increment.query.artifact_contract import ArtifactContractError
-
-                    raise ArtifactContractError(
-                        "artifact.snapshot.mixed",
-                        "relation changed after snapshot verification",
-                        context={"role": expected_role},
-                    )
-            except BaseException:
-                drop_snapshot(snapshot_name, database)
-                self._refuse_if_dropped(ref.artifact_id, ref.generation_id)
-                raise
-            created_snapshots.append((snapshot_name, database))
-            return snapshot_table
+            return self._verify_snapshot_relation(
+                ref, relations, relation_ref, expected_role, created_snapshots
+            )
 
         record_batches = artifact_query_ports().sequential_capture.record_batches
 
@@ -1247,8 +1367,8 @@ class WarehouseArtifactStore:
         try:
             yield snapshot
         finally:
-            for name, database in created_snapshots:
-                drop_snapshot(name, database)
+            for relation in created_snapshots:
+                self._drop_snapshot_relation(relation)
 
     def abandon_generation(self, artifact_id: uuid.UUID, generation_id: uuid.UUID) -> None:
         """Durably hide a generation that may or may not have a manifest row yet.
@@ -1337,12 +1457,18 @@ class WarehouseArtifactStore:
                 role=cast("Any", relation_ref.role),
             )
         key = (artifact_id, generation_id)
-        names = sorted({relation_ref.relation.name for relation_ref in relation_refs})
 
         self._write_tombstone(artifact_id, generation_id)
 
-        for name in names:
-            self._con.drop_table(name, database=self._database, force=True)
+        for relation_ref in sorted(relation_refs, key=lambda item: item.relation.name):
+            locator = relation_ref.relation
+            _drop_owned_table(
+                self._con,
+                locator.name,
+                database=(locator.catalog, locator.schema_name)
+                if locator.catalog is not None and locator.schema_name is not None
+                else self._database,
+            )
         # Evict only after every erasure succeeds, so a failure partway
         # through leaves the generation retrievable for a retry.
         self._generations.pop(key, None)
@@ -1416,45 +1542,110 @@ class _MaterializedRelation:
     schema: str | None
 
 
+def _drop_owned_table(
+    con: SQLBackend,
+    name: str,
+    *,
+    database: Any = None,
+    catalog: str | None = None,
+    schema: str | None = None,
+) -> None:
+    """Drop one owned relation with a dialect-rendered, quoted SQLGlot target."""
+    if isinstance(database, tuple):
+        catalog, schema = database
+    elif isinstance(database, str) and schema is None:
+        schema = database
+    if con.name == "bigquery" and catalog is None:
+        # Match Ibis 10.1/12 BigQuery CREATE resolution: an omitted database
+        # uses data_project/current_database, while a dataset-only database
+        # uses billing_project. Ibis raw SQL does not supply default_dataset.
+        catalog, schema = cast(Any, con)._parse_project_and_dataset(schema)
+    target = sqlglot.table(name, db=schema, catalog=catalog, quoted=True)
+    drop_target = (
+        {"tables": [target]} if "tables" in sqlglot.exp.Drop.arg_types else {"this": target}
+    )
+    statement = sqlglot.exp.Drop(**drop_target, kind="TABLE", exists=True).sql(dialect=con.dialect)
+    with cast(Any, con)._safe_raw_sql(statement):
+        pass
+
+
+def _duckdb_temp_relation_exists(con: SQLBackend, name: str) -> bool:
+    return con.name == "duckdb" and name in cast(Any, con).list_tables(database=("temp", "main"))
+
+
+def _temporary_relation_locator(con: SQLBackend, name: str) -> _MaterializedRelation | None:
+    """Return the exact namespace used by a supported temporary-table backend."""
+    if con.name == "duckdb":
+        return _MaterializedRelation(name, name, "temp", "main")
+    if con.name == "postgres":
+        return _MaterializedRelation(name, name, None, "pg_temp")
+    if con.name == "snowflake":
+        catalog = getattr(con, "current_catalog", None)
+        schema = getattr(con, "current_database", None)
+        if catalog and schema:
+            return _MaterializedRelation(name, name, catalog, schema)
+    if con.name == "bigquery":
+        dataset = getattr(con, "_session_dataset", None)
+        project = getattr(dataset, "project", None)
+        schema = getattr(dataset, "dataset_id", None)
+        if project and schema:
+            return _MaterializedRelation(name, name, project, schema)
+    return None
+
+
+def _temporary_relation_exists(con: SQLBackend, relation: _MaterializedRelation) -> bool:
+    """Probe only the relation's owned temporary namespace."""
+    if con.name == "duckdb":
+        return relation.name in cast(Any, con).list_tables(database=("temp", "main"))
+    database: str | tuple[str, str] | None
+    if con.name == "postgres":
+        sql = getattr(con, "sql", None)
+        to_pyarrow = getattr(con, "to_pyarrow", None)
+        if callable(sql) and callable(to_pyarrow):
+            rows = to_pyarrow(
+                sql("SELECT nspname FROM pg_catalog.pg_namespace WHERE oid = pg_my_temp_schema()")
+            ).to_pylist()
+            if not rows:
+                return False
+            database = rows[0]["nspname"]
+        else:
+            database = relation.schema
+    elif relation.catalog and relation.schema:
+        database = (relation.catalog, relation.schema)
+    else:
+        database = relation.schema
+    return relation.name in cast(Any, con).list_tables(database=database)
+
+
+def _cleanup_failed_temporary_relation(
+    con: SQLBackend, relation: _MaterializedRelation, *, created: bool
+) -> bool:
+    """Clean a partially created temporary table or report that its locator must be retained."""
+    if not created:
+        try:
+            if not _temporary_relation_exists(con, relation):
+                return True
+        except Exception:
+            return False
+    try:
+        _drop_owned_table(con, relation.name, catalog=relation.catalog, schema=relation.schema)
+    except Exception:
+        return False
+    return True
+
+
+def _remember_materialized(
+    relations: list[_MaterializedRelation], relation: _MaterializedRelation
+) -> None:
+    if relation not in relations:
+        relations.append(relation)
+
+
 def _drop_materialized_relations(
     con: SQLBackend, relations: tuple[_MaterializedRelation, ...]
 ) -> None:
-    if not relations:
-        return
-    if len(relations) == 1:
-        relation = relations[0]
-        database = (
-            (relation.catalog, relation.schema)
-            if relation.catalog is not None and relation.schema is not None
-            else relation.schema or relation.catalog
-        )
-        con.drop_table(relation.name, database=database, force=True)
-        return
-    if con.name == "snowflake":
-        for relation in relations:
-            database = (
-                (relation.catalog, relation.schema)
-                if relation.catalog is not None and relation.schema is not None
-                else relation.schema or relation.catalog
-            )
-            con.drop_table(relation.name, database=database, force=True)
-        return
-    names = tuple(
-        sqlglot.table(
-            relation.name,
-            db=relation.schema,
-            catalog=relation.catalog,
-            quoted=True,
-        ).sql(dialect=con.name)
-        for relation in relations
-    )
-    drops = tuple(f"DROP TABLE IF EXISTS {name}" for name in names)
-    sql = (
-        "; ".join(drops)
-        if con.name in {"bigquery", "duckdb"}
-        else f"DROP TABLE IF EXISTS {', '.join(names)}"
-    )
-    cast(Any, con).raw_sql(sql)
+    for relation in relations:
+        _drop_owned_table(con, relation.name, catalog=relation.catalog, schema=relation.schema)
 
 
 class _WarehouseQrScratch:
@@ -1464,11 +1655,13 @@ class _WarehouseQrScratch:
         self._session = session
         self._work_slots: dict[int, _MaterializedRelation] = {}
         self._pinned: list[_MaterializedRelation] = []
+        self._next_relation = 0
         self._next_slot = 0
+        self._prefix = f"_cuped_qr_{session._suffix}_{uuid.uuid4().hex[:8]}_"
 
     def materialize_input(self, expression: ir.Table, *, label: str = "input") -> ir.Table:
         """Retain an input relation outside the two alternating work slots."""
-        name = f"_cuped_qr_{self._session._suffix}_{label}"
+        name = f"{self._prefix}{label}"
         result = self._session.materialize_table(name, expression, required=True)
         locator = next(
             (item for item in reversed(self._session._materialized) if item.requested_name == name),
@@ -1483,29 +1676,23 @@ class _WarehouseQrScratch:
         """Replace the next TEMP work slot while retaining the other slot."""
         slot = self._next_slot
         self._next_slot = 1 - slot
-        name = f"_cuped_qr_{self._session._suffix}_{slot}"
+        name = f"{self._prefix}{slot}_{self._next_relation}"
+        self._next_relation += 1
         previous = self._work_slots.get(slot)
-        replace = previous is not None
-        if previous is not None and self._session._con.name == "postgres":
-            if not self._drop(previous):
-                _raise(
-                    "query.session.qr_scratch_cleanup_failed",
-                    relations=self.leftovers,
-                    route=f"restore DROP privileges on {self._session._con.name} and retry",
-                )
-            self._work_slots.pop(slot)
-            previous = None
-            replace = False
-        result = self._session.materialize_table(name, expression, required=True, replace=replace)
+        result = self._session.materialize_table(name, expression, required=True)
         locator = next(
             (item for item in reversed(self._session._materialized) if item.requested_name == name),
             None,
         )
         if locator is None:
             _raise("query.session.snapshot.materialization_failed")
-        if previous is not None:
-            self._session._materialized.remove(previous)
         self._work_slots[slot] = locator
+        if previous is not None and not self._drop(previous):
+            _raise(
+                "query.session.qr_scratch_cleanup_failed",
+                relations=self.leftovers,
+                route=f"restore DROP privileges on {self._session._con.name} and retry",
+            )
         return result
 
     @property
@@ -1513,20 +1700,22 @@ class _WarehouseQrScratch:
         return tuple(
             (item.catalog, item.schema, item.name)
             for item in self._session._materialized
-            if item.requested_name.startswith(f"_cuped_qr_{self._session._suffix}_")
+            if item.requested_name.startswith(self._prefix)
         )
 
     def close(self) -> None:
-        relations = (*self._work_slots.values(), *self._pinned)
+        relations = tuple(
+            item
+            for item in self._session._materialized
+            if item.requested_name.startswith(self._prefix)
+        )
         try:
-            self._session._drop_materialized_relations(tuple(relations))
+            self._session._drop_materialized_relations(relations)
         except Exception:
-            for slot, relation in tuple(self._work_slots.items()):
-                if self._drop(relation):
-                    self._work_slots.pop(slot)
-            for pinned in tuple(self._pinned):
-                if self._drop(pinned):
-                    self._pinned.remove(pinned)
+            for relation in relations:
+                self._drop(relation)
+            self._work_slots.clear()
+            self._pinned.clear()
         else:
             for relation in relations:
                 self._session._materialized.remove(relation)
@@ -1602,12 +1791,13 @@ class _WarehouseArtifactQrSession:
         if not required:
             _raise("query.session.snapshot.materialization_failed")
         created = None
-        cleanup = (
-            _MaterializedRelation(name, name, None, "pg_temp")
-            if self._con.name == "postgres"
-            else _MaterializedRelation(name, name, None, None)
-        )
+        cleanup = None
         try:
+            candidate = _temporary_relation_locator(self._con, name)
+            if candidate is not None:
+                if _temporary_relation_exists(self._con, candidate):
+                    _raise("query.session.snapshot.materialization_failed")
+                cleanup = candidate
             create_kwargs: dict[str, Any] = {"temp": True}
             if replace:
                 create_kwargs["overwrite"] = True
@@ -1643,20 +1833,16 @@ class _WarehouseArtifactQrSession:
             self._materialized.append(locator)
             return created
         except Exception:
-            if created is not None and cleanup is not None:
-                try:
-                    self._drop_materialized_relation(cleanup)
-                except Exception:
-                    self._materialized.append(cleanup)
+            if cleanup is not None and not _cleanup_failed_temporary_relation(
+                self._con, cleanup, created=created is not None
+            ):
+                _remember_materialized(self._materialized, cleanup)
             _raise("query.session.snapshot.materialization_failed")
 
     def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None:
-        database = (
-            (relation.catalog, relation.schema)
-            if relation.catalog is not None and relation.schema is not None
-            else relation.schema or relation.catalog
+        _drop_owned_table(
+            self._con, relation.name, catalog=relation.catalog, schema=relation.schema
         )
-        self._con.drop_table(relation.name, database=database, force=True)
 
     def _drop_materialized_relations(self, relations: tuple[_MaterializedRelation, ...]) -> None:
         _drop_materialized_relations(self._con, relations)
@@ -2095,6 +2281,11 @@ class WarehouseSession:
         created = None
         cleanup = None
         try:
+            candidate = _temporary_relation_locator(self._con, name)
+            if candidate is not None:
+                if _temporary_relation_exists(self._con, candidate):
+                    _raise("query.session.snapshot.materialization_failed")
+                cleanup = candidate
             create_kwargs: dict[str, Any] = {"temp": True}
             if replace:
                 create_kwargs["overwrite"] = True
@@ -2105,14 +2296,12 @@ class WarehouseSession:
                 schema = getattr(self._con, "current_database", None)
                 if not catalog or not schema:
                     _raise("query.session.materialization_namespace", backend=self._con.name)
-                # Pin creation so cleanup never depends on a later namespace lookup.
                 database = sg.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
                 create_kwargs["database"] = database
             created = self._con.create_table(name, expr, **create_kwargs)
             op = created.op()
             if self._con.name == "postgres":
-                # pg_temp addresses only this connection's TEMP schema.
                 cleanup = _MaterializedRelation(name, op.name, None, "pg_temp")
             elif op.namespace.catalog and op.namespace.database:
                 cleanup = _MaterializedRelation(
@@ -2126,23 +2315,19 @@ class WarehouseSession:
                 return created
         except Exception:  # degrade, never propagate a privilege error
             pass
-        if created is not None and cleanup is not None:
-            try:
-                self._drop_materialized_relation(cleanup)
-            except Exception:  # retain a qualified locator for close() to retry
-                self._materialized.append(cleanup)
+        if cleanup is not None and not _cleanup_failed_temporary_relation(
+            self._con, cleanup, created=created is not None
+        ):
+            _remember_materialized(self._materialized, cleanup)
         if required:
             _raise("query.session.snapshot.materialization_failed")
         _warn("query.session.materialization_degraded", name=name, stacklevel=4)
         return expr
 
     def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None:
-        database = (
-            (relation.catalog, relation.schema)
-            if relation.catalog is not None and relation.schema is not None
-            else relation.schema or relation.catalog
+        _drop_owned_table(
+            self._con, relation.name, catalog=relation.catalog, schema=relation.schema
         )
-        self._con.drop_table(relation.name, database=database, force=True)
 
     def _drop_materialized_relations(self, relations: tuple[_MaterializedRelation, ...]) -> None:
         _drop_materialized_relations(self._con, relations)
@@ -2155,12 +2340,13 @@ class WarehouseSession:
         later materialization never reuses a name this drop failed to
         remove.
         """
+        remaining: list[_MaterializedRelation] = []
         for relation in self._materialized:
             try:
                 self._drop_materialized_relation(relation)
-            except Exception:  # best-effort cleanup only
-                pass
-        self._materialized = []
+            except Exception:  # best-effort cleanup; retain locators for the next retry
+                remaining.append(relation)
+        self._materialized = remaining
         self._suffix = uuid.uuid4().hex[:12]
         self._arrow_results.clear()
         self._arrow_cache_bytes = 0

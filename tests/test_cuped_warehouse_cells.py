@@ -761,6 +761,21 @@ def test_categorical_source_fitter_uses_native_and_verified_artifact_relations(
 
 
 @pytest.mark.slow
+def test_categorical_artifact_fit_without_optional_qr_scratch(categorical_sources):
+    from dataclasses import replace
+
+    from increment.query.cuped import fit_multicovariate_source
+
+    _native_source, artifact_source, request = categorical_sources
+    artifact_source._snapshot = replace(artifact_source._snapshot, _qr_scratch=None)
+    fit = fit_multicovariate_source(
+        artifact_source, artifact_source.context.metrics[0], request
+    ).fit
+    assert fit is not None
+    assert fit.theta
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("categorical_sources", [True], indirect=True)
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 def test_integer_fact_domain_routes_through_qr_without_unit_keyed_transfer(

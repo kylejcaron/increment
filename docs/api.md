@@ -111,7 +111,7 @@ supported configurations; it does not claim the current alpha release is
 | Installation | Dependency floors |
 | --- | --- |
 | Core | Pydantic 2.14.1, packaging 24.0, NumPy 2.5.4, SciPy 1.18.1, Narwhals 2.27.1, PyArrow 26.0.0 (25.0.0 excluded); PyYAML 6.0.1 on Python 3.12, 6.0.2 on 3.13, and 6.0.3 on 3.14 |
-| `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot 30.14 and below 30.15 |
+| `warehouse` extra | Ibis 10.1.0 on Python 3.12–3.13 and 11.0.0 on 3.14; SQLGlot `>=30.14`, excluding `30.18.0` through `30.27.0` inclusive (the declared warehouse-extra constraint) |
 
 These floors describe supported dependency combinations, not statistical
 certification. Optional extras have their own dependencies in `pyproject.toml`.
@@ -123,6 +123,10 @@ numerical corrections in release notes; compatibility does not preserve wrong
 values.
 
 ### Earlier release notes
+
+- Release note (bug fix): `Experiment.from_json` now refuses unknown design
+  mechanisms with `design.mechanism_unsupported` before accepting the saved
+  declaration.
 
 - Release note (breaking API cutover): the public manifest now covers every
   promised namespace, including `errors`, `tables`, `store`, `simulate`, and

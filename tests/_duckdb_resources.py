@@ -12,7 +12,10 @@ _DUCKDB_SPILL_ROOT: str | None = None
 
 def bound_duckdb_resources() -> None:
     """Bound test DuckDB connections and give each one an isolated spill path."""
-    from ibis.backends.duckdb import Backend
+    try:
+        from ibis.backends.duckdb import Backend
+    except ImportError:
+        return
 
     original_connect = Backend.do_connect
 

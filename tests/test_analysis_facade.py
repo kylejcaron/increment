@@ -3099,6 +3099,8 @@ def test_polars_backend_survives_daily_lift_results():
     assert isinstance(results.to_frame(), pl.DataFrame)
 
 
+# Exploratory and breakout results both cross the native warehouse/backend boundary.
+@pytest.mark.slow
 def test_polars_backend_survives_exploratory_run_and_breakout(seeded_defs, seeded_con):
     from dataclasses import replace
 

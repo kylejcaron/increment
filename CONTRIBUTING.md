@@ -89,9 +89,10 @@ testing. Pushes MAY use `git push --no-verify`; CI is the required PR gate.
 Numerical certification is selected from the certified modules' transitive
 `tach.toml` import graph, certification-test changes and CI/build configuration;
 unrelated module changes such as `increment/dashboard/_html.py` do not select it.
-The parity-harness certification case runs nightly; its facade is not a
-certification root because the other harness cases exercise those ingress paths
-on every PR.
+The bounded sequential public proof is a certification root; its small
+continuation witnesses remain in the fast tier. Changes to frame moments,
+query builders, artifact reading or sources also select certification so the
+former-arm-ceiling capacity cases run when their ingress calculations change.
 The PostgreSQL gate is selected for query dependency, warehouse-execution,
 PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
 PRs skip it. PostgreSQL runs nightly on main; numerical certification runs
@@ -111,6 +112,12 @@ data means no combined report is published. Coverage counts `increment/` source
 statements executed during the fast tier (including pytest-cov's measured test
 workers); it does not measure the slow or scientific tiers, establish
 whole-suite coverage, or rate test quality.
+
+Every fast shard also reports non-skipped JUnit items above five elapsed seconds
+in its job summary. This is advisory: an over-budget item does not fail CI.
+Reduce unnecessary setup or input without crossing the tested boundary; keep
+irreducible warehouse, subprocess and exhaustive repository checks in the slow
+tier with a reason beside their marker.
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
@@ -202,6 +209,18 @@ also carry `slow`; the marker expressions keep their purpose-specific gates
 separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
 are no tier-level wall-clock budgets.
 
+#### Isolated core-test install
+
+The required `core-install (3.12)` job installs only the `core-test`
+dependency group, then executes the README Quickstart and a committed
+non-slow test inventory in an environment without Ibis, SQLGlot or DuckDB.
+Maintain `tests/core_modules.txt` as a static selection using the import graph
+in `tests/_selection.py`; audit its import closures and every root or nested
+`conftest.py` when changing the list. Do not include `tests/query/`, whose
+collection requires warehouse backends, or prune failing entries dynamically.
+The job retains CPU measurements from executed tests as a run-specific
+artifact; collection-only work is not measured.
+
 Ordinary test lanes pass `--benchmark-skip` because pytest-benchmark's xdist
 collection warning is fatal under the project's warning policy. Run benchmarks
 explicitly with `make benchmark`. To compare code changes against your machine,
@@ -215,6 +234,10 @@ make benchmark BENCHMARK_BASELINE=/path/to/baseline.json
 
 The plugin writes the baseline JSON under `.benchmarks/`; pass that generated
 path to `BENCHMARK_BASELINE`.
+
+The nightly benchmark job also runs `tests/test_kernel_context_measurement.py`
+with `-m benchmark -n 0` in a separate step, without `--benchmark-only`.
+Those context measurements do not use the pytest-benchmark fixture.
 
 The committed `tests/fixtures/benchmarks/step4-pre-kernel.json` is a
 reference-machine diagnostic, not a portable performance gate. `make benchmark`
@@ -726,6 +749,9 @@ on manual dispatch. It retains full test runs at dependency floors on all
 three Python versions, which nightly does not cover, plus all three live
 warehouse backends. Weekly failures create or update a GitHub issue labelled
 `weekly-failure`.
+Each interpreter's dependency-floor suite uses three duration-balanced parts,
+each with its own retained JUnit report and the same 90-minute limit. The
+retained numerical cases run once per interpreter, in the first part.
 
 
 #### Refusal registry gate
@@ -1210,6 +1236,10 @@ owner checkpoint, an inventory of live worktree consumers, a tested rollback
 and verified supported controls.
 Keep current hooks and the before-push `make check` obligation until the
 replacement hosted gate is actually required and its failure behavior is observed.
+
+Disposable selector-test commits isolate hooks for that command only. They must
+not enqueue real reviews or change shared hook configuration; ordinary commits
+retain the review policy above.
 
 For an owner-authorized manual-ready transition, back up the common Git
 `post-commit`, `post-rewrite` and `pre-push` files with their permissions and
