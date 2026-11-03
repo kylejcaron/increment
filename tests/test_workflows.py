@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 import sys
@@ -196,16 +197,15 @@ def test_nightly_publishes_duration_weights_only_from_every_successful_part() ->
 
 def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
-    test_job = workflow["jobs"]["test"]
+    report_job = workflow["jobs"]["selection-misses"]
     prediction = next(
-        step for step in test_job["steps"] if step.get("name") == "Predict selected files"
+        step for step in report_job["steps"] if step.get("name") == "Predict selected files"
     )
 
     assert prediction["continue-on-error"] is True
     assert "incomplete evidence: no base" in prediction["run"]
     assert 'if [ -z "$BASE" ]' in prediction["run"]
 
-    report_job = workflow["jobs"]["selection-misses"]
     assert report_job["continue-on-error"] is True
     report = next(
         step
@@ -329,3 +329,65 @@ def test_weekly_floor_parts_cover_each_interpreter_with_distinct_reports() -> No
     )
     assert "-part-${{ matrix.group }}-" in upload["with"]["name"]
     assert upload["if"] == "always()"
+
+
+def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]
+    fast_job = jobs["test"]
+    matrix_expression = fast_job["strategy"]["matrix"]["include"]
+    matrix_literals = re.findall(r"'(\[\{.*?\}\])'", matrix_expression)
+    pull_request_matrix, push_matrix = map(json.loads, matrix_literals)
+
+    assert [
+        (entry["python-version"], entry["group"], entry["splits"]) for entry in pull_request_matrix
+    ] == [("3.12", group, 3) for group in (1, 2, 3)]
+    assert {
+        (entry["python-version"], entry["group"], entry["splits"]) for entry in push_matrix
+    } == {(python, group, 3) for python in ("3.12", "3.13", "3.14") for group in (1, 2, 3)}
+    fast_tests = next(step for step in fast_job["steps"] if step.get("id") == "fast-tests")
+    assert "matrix.python-version" in fast_tests["run"]
+    assert "test-reduction-approved" in fast_tests["run"]
+    report_step = next(
+        step
+        for step in jobs["selection-misses"]["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+    assert report_step["env"]["EXPECTED_SHARDS"] == (
+        "${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.12-3' || "
+        "'3.12-1,3.12-2,3.12-3,3.13-1,3.13-2,3.13-3,3.14-1,3.14-2,3.14-3' }}"
+    )
+
+    assert not any(step.get("name") == "Predict selected files" for step in fast_job["steps"])
+    selection_job = jobs["selection-misses"]
+    prediction = next(
+        step for step in selection_job["steps"] if step.get("name") == "Predict selected files"
+    )
+    assert prediction["env"]["AFFECTED_SHARD_ID"] == "all"
+    assert "--co" in prediction["run"]
+    assert "--splits" not in prediction["run"]
+    assert "--group" not in prediction["run"]
+    prediction_artifact = next(
+        step for step in selection_job["steps"] if step.get("name") == "Retain selection prediction"
+    )
+    assert prediction_artifact["with"]["name"].startswith("affected-report-all-")
+
+    newest = jobs["unit-newest"]
+    assert newest["name"] == "unit (3.14)"
+    setup_uv = next(
+        step for step in newest["steps"] if step.get("uses", "").startswith("astral-sh/setup-uv@")
+    )
+    assert setup_uv["with"]["python-version"] == "3.14"
+    assert any("make test-unit" in step.get("run", "") for step in newest["steps"])
+
+    gate = jobs["ci-ok"]
+    assert "unit-newest" in gate["needs"]
+    gate_step = next(
+        step
+        for step in gate["steps"]
+        if step.get("name") == "Check required jobs and gate decisions"
+    )
+    assert gate_step["env"]["UNIT_NEWEST_REQUIRED"] == "${{ github.event_name == 'pull_request' }}"
+    assert gate_step["env"]["UNIT_NEWEST_RESULT"] == "${{ needs.unit-newest.result }}"
+    run = gate_step["run"]
+    assert 'check_conditional_job "$UNIT_NEWEST_REQUIRED" "$UNIT_NEWEST_RESULT" unit-newest' in run
