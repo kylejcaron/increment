@@ -12,7 +12,7 @@ from coverage import CoverageData
 
 from scripts.selection_map import SelectionMap, build, is_stale
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 def test_build_maps_each_module_to_executing_test_file(tmp_path: Path) -> None:
@@ -399,13 +399,10 @@ def test_failed_test_excluded_from_prediction_is_reported_as_miss(tmp_path: Path
                     "tach_kept": False,
                 },
                 "__metadata__": {
-                    "shards": {
-                        shard_id: {
-                            "collection_complete": True,
-                            "collected_tests": 1,
-                            "decision_files": ["tests/test_skipped.py"],
-                        }
-                    }
+                    "shard": "all",
+                    "collection_complete": True,
+                    "collected_tests": 1,
+                    "decision_files": ["tests/test_skipped.py"],
                 },
             }
         )
@@ -449,13 +446,10 @@ def test_shard_stopped_by_a_failure_is_incomplete_but_keeps_its_misses(tmp_path:
             {
                 "tests/test_skipped.py": {"kept": False, "reasons": [], "tach_kept": False},
                 "__metadata__": {
-                    "shards": {
-                        shard_id: {
-                            "collection_complete": True,
-                            "collected_tests": 1,
-                            "decision_files": ["tests/test_skipped.py"],
-                        }
-                    }
+                    "shard": "all",
+                    "collection_complete": True,
+                    "collected_tests": 1,
+                    "decision_files": ["tests/test_skipped.py"],
                 },
             }
         )
@@ -493,14 +487,11 @@ def test_partial_prediction_is_incomplete_evidence(tmp_path: Path) -> None:
         json.dumps(
             {
                 "__metadata__": {
-                    "shards": {
-                        shard_id: {
-                            "collection_complete": True,
-                            "collected_tests": 1,
-                            "decision_files": ["tests/test_skipped.py"],
-                        }
-                    }
-                }
+                    "shard": "all",
+                    "collection_complete": True,
+                    "collected_tests": 1,
+                    "decision_files": ["tests/test_skipped.py"],
+                },
             }
         )
     )
@@ -539,13 +530,10 @@ def test_junit_failure_without_a_prediction_decision_is_incomplete(
             {
                 "tests/test_a.py": {"kept": True, "reasons": [], "tach_kept": True},
                 "__metadata__": {
-                    "shards": {
-                        shard_id: {
-                            "collection_complete": True,
-                            "collected_tests": 2,
-                            "decision_files": ["tests/test_a.py"],
-                        }
-                    }
+                    "shard": "all",
+                    "collection_complete": True,
+                    "collected_tests": 2,
+                    "decision_files": ["tests/test_a.py"],
                 },
             }
         )
@@ -586,14 +574,11 @@ def test_empty_decisions_with_collected_tests_is_incomplete(
         json.dumps(
             {
                 "__metadata__": {
-                    "shards": {
-                        shard_id: {
-                            "collection_complete": True,
-                            "collected_tests": 1,
-                            "decision_files": [],
-                        }
-                    }
-                }
+                    "shard": "all",
+                    "collection_complete": True,
+                    "collected_tests": 1,
+                    "decision_files": [],
+                },
             }
         )
     )
@@ -627,16 +612,17 @@ def test_missing_expected_junit_shard_is_incomplete_evidence(tmp_path: Path) -> 
     prediction.write_text(
         json.dumps(
             {
+                "tests/test_present.py": {
+                    "kept": True,
+                    "reasons": [],
+                    "tach_kept": True,
+                },
                 "__metadata__": {
-                    "shards": {
-                        shard_id: {
-                            "collection_complete": True,
-                            "collected_tests": 1,
-                            "decision_files": [],
-                        }
-                        for shard_id in shard_ids
-                    }
-                }
+                    "shard": "all",
+                    "collection_complete": True,
+                    "collected_tests": 1,
+                    "decision_files": ["tests/test_present.py"],
+                },
             }
         )
     )
@@ -662,6 +648,164 @@ def test_missing_expected_junit_shard_is_incomplete_evidence(tmp_path: Path) -> 
     assert "incomplete evidence" in result
 
 
+def _write_unsharded_prediction_and_junit(
+    tmp_path: Path, *, junit_shards: tuple[str, ...], complete: bool = True
+) -> tuple[Path, list[Path], list[Path]]:
+    test_files = [f"tests/test_{name}.py" for name in ("a", "b", "c")]
+    prediction = tmp_path / "affected-report.json"
+    prediction.write_text(
+        json.dumps(
+            {name: {"kept": True, "reasons": [], "tach_kept": True} for name in test_files}
+            | {
+                "__metadata__": {
+                    "shard": "all",
+                    "collection_complete": complete,
+                    "collected_tests": len(test_files),
+                    "decision_files": test_files,
+                }
+            }
+        )
+    )
+    reports: list[Path] = []
+    metadata: list[Path] = []
+    for shard_id in junit_shards:
+        shard_dir = tmp_path / f"junit-{shard_id}"
+        shard_dir.mkdir()
+        junit = shard_dir / "junit.xml"
+        junit.write_text(
+            "<testsuite>"
+            + "".join(f'<testcase file="{name}"/>' for name in test_files)
+            + "</testsuite>"
+        )
+        junit_metadata = shard_dir / "junit-metadata.json"
+        junit_metadata.write_text(
+            json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "success"})
+        )
+        reports.append(junit)
+        metadata.append(junit_metadata)
+    return prediction, reports, metadata
+
+
+def test_legacy_split_prediction_is_incomplete_with_every_junit_shard(
+    tmp_path: Path,
+) -> None:
+    from scripts.selection_map import misses
+
+    shard_ids = {"3.12-1", "3.12-2", "3.12-3"}
+    prediction = tmp_path / "affected-report.json"
+    prediction.write_text(
+        json.dumps(
+            {
+                "tests/test_a.py": {"kept": True, "reasons": [], "tach_kept": True},
+                "__metadata__": {
+                    "shards": {
+                        "3.12-1": {
+                            "collection_complete": True,
+                            "collected_tests": 1,
+                            "decision_files": ["tests/test_a.py"],
+                        }
+                    }
+                },
+            }
+        )
+    )
+    junit_reports: list[Path] = []
+    junit_metadata: list[Path] = []
+    for shard_id in sorted(shard_ids):
+        shard_dir = tmp_path / f"junit-{shard_id}"
+        shard_dir.mkdir()
+        junit = shard_dir / "junit.xml"
+        junit.write_text('<testsuite><testcase file="tests/test_a.py"/></testsuite>')
+        metadata = shard_dir / "junit-metadata.json"
+        metadata.write_text(
+            json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "success"})
+        )
+        junit_reports.append(junit)
+        junit_metadata.append(metadata)
+
+    result = misses(
+        None,
+        base="base",
+        head="head",
+        junit_reports=junit_reports,
+        junit_metadata=junit_metadata,
+        expected_shards=shard_ids,
+        report=prediction,
+    )
+
+    assert result == ["incomplete evidence"]
+
+
+def test_one_unsharded_prediction_with_every_junit_shard_is_complete(tmp_path: Path) -> None:
+    from scripts.selection_map import misses
+
+    expected = {"3.12-1", "3.12-2", "3.12-3"}
+    prediction, junit, junit_metadata = _write_unsharded_prediction_and_junit(
+        tmp_path, junit_shards=tuple(sorted(expected))
+    )
+
+    result = misses(
+        None,
+        base="base",
+        head="head",
+        junit_reports=junit,
+        junit_metadata=junit_metadata,
+        expected_shards=expected,
+        report=prediction,
+    )
+
+    assert result == []
+
+
+def test_a_missing_junit_shard_is_incomplete_despite_a_complete_prediction(
+    tmp_path: Path,
+) -> None:
+    from scripts.selection_map import misses
+
+    expected = {"3.12-1", "3.12-2", "3.12-3"}
+    prediction, junit, junit_metadata = _write_unsharded_prediction_and_junit(
+        tmp_path, junit_shards=("3.12-1", "3.12-2")
+    )
+
+    result = misses(
+        None,
+        base="base",
+        head="head",
+        junit_reports=junit,
+        junit_metadata=junit_metadata,
+        expected_shards=expected,
+        report=prediction,
+    )
+
+    assert "incomplete evidence" in result
+
+
+@pytest.mark.parametrize(("write_prediction", "complete"), [(False, True), (True, False)])
+def test_a_missing_or_incomplete_prediction_is_incomplete(
+    tmp_path: Path, write_prediction: bool, complete: bool
+) -> None:
+    from scripts.selection_map import misses
+
+    expected = {"3.12-1", "3.12-2", "3.12-3"}
+    prediction, junit, junit_metadata = _write_unsharded_prediction_and_junit(
+        tmp_path, junit_shards=tuple(sorted(expected)), complete=complete
+    )
+    if not write_prediction:
+        prediction.unlink()
+
+    result = misses(
+        None,
+        base="base",
+        head="head",
+        junit_reports=junit,
+        junit_metadata=junit_metadata,
+        expected_shards=expected,
+        report=prediction,
+    )
+
+    assert "incomplete evidence" in result
+
+
 def test_merge_reports_marks_missing_decision_incomplete(tmp_path: Path) -> None:
     from scripts.selection_map import merge_reports
 
@@ -671,7 +815,7 @@ def test_merge_reports_marks_missing_decision_incomplete(tmp_path: Path) -> None
             {
                 "tests/test_present.py": {"kept": True, "reasons": [], "tach_kept": True},
                 "__metadata__": {
-                    "shard_id": "3.12-1",
+                    "shard": "all",
                     "collection_complete": True,
                     "collected_tests": 2,
                     "decision_files": ["tests/test_present.py", "tests/test_missing.py"],
@@ -681,8 +825,8 @@ def test_merge_reports_marks_missing_decision_incomplete(tmp_path: Path) -> None
     )
 
     merged = tmp_path / "merged.json"
-    merge_reports([shard], merged, expected_shards={"3.12-1", "3.12-2"})
+    merge_reports([shard], merged)
 
     payload = json.loads(merged.read_text())
     assert payload["__incomplete__"] is True
-    assert set(payload["__metadata__"]["shards"]) == {"3.12-1"}
+    assert payload["__metadata__"]["shard"] == "all"

@@ -2193,6 +2193,8 @@ def test_triggered_observational_run_estimates_the_undiluted_triggered_lift(tmp_
         con.disconnect()
 
 
+# Observational triggered parity includes publication and replay of all required extensions.
+@pytest.mark.slow
 def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_path):
     from tests.parity_harness.cases import _close_parity_binding, _publish_and_adopt
 

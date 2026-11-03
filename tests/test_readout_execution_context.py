@@ -837,6 +837,8 @@ def test_standalone_value_read_skips_separately_sourced_cuped_covariate(
         cast(Any, analysis_resolver).close()
 
 
+# Two property sources require real capture for both valid and missing-history fits.
+@pytest.mark.slow
 @pytest.mark.parametrize("missing_history_source", [None, "profiles_a", "profiles_b"])
 @pytest.mark.integration
 def test_captured_run_pins_each_source_for_same_property_covariates(
@@ -1791,18 +1793,17 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell_without_extra_event(tmp
 
     (experiment, resolver), _ = definitions_source(tmp_path, return_binding=True, window_days=2)
     try:
-        with pytest.warns():
-            rows = view_readout(
-                experiment,
-                resolver,
-                Scope(
-                    view="daily",
-                    grain="daily",
-                    values=True,
-                    segment=BreakoutIdentity("country", None),
-                ),
-                metrics=["revenue"],
-            )
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+            ),
+            metrics=["revenue"],
+        )
         missing = [
             row
             for row in rows
@@ -2355,18 +2356,17 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell(tmp_path):
             "INSERT INTO raw_events (user_id, ts, event, group_id, country_code, revenue) "
             "VALUES ('u3', TIMESTAMP '2026-01-03 12:00:00', 'purchase', NULL, 'US', 4.0)"
         )
-        with pytest.warns():
-            rows = view_readout(
-                experiment,
-                resolver,
-                Scope(
-                    view="daily",
-                    grain="daily",
-                    values=True,
-                    segment=BreakoutIdentity("country", None),
-                ),
-                metrics=["revenue"],
-            )
+        rows = view_readout(
+            experiment,
+            resolver,
+            Scope(
+                view="daily",
+                grain="daily",
+                values=True,
+                segment=BreakoutIdentity("country", None),
+            ),
+            metrics=["revenue"],
+        )
         missing = [
             row
             for row in rows

@@ -13,6 +13,7 @@ import pytest
 UNIT_EXCLUDING_MARKERS = frozenset(
     {
         "slow",
+        "tooling",
         "integration",
         "parameter_recovery",
         "numerical_certification",
@@ -67,29 +68,39 @@ def _is_internet_socket(sock: socket.socket) -> bool:
 
 def install_guards() -> None:
     """Patch process-wide boundary operations; outside unit tests calls are unchanged."""
-    import duckdb
-    from ibis.backends.duckdb import Backend
+    duckdb_module: Any = None
+    try:
+        import duckdb as duckdb_module
+    except ImportError:
+        pass
+    backend_type: Any = None
+    try:
+        from ibis.backends.duckdb import Backend as backend_type
+    except ImportError:
+        pass
 
     global _guards_installed
     if _guards_installed:
         return
     _guards_installed = True
 
-    original_duckdb_connect = duckdb.connect
+    if duckdb_module is not None:
+        original_duckdb_connect = duckdb_module.connect
 
-    def guarded_duckdb_connect(*args: Any, **kwargs: Any) -> Any:
-        _refuse("opened a DuckDB connection")
-        return original_duckdb_connect(*args, **kwargs)
+        def guarded_duckdb_connect(*args: Any, **kwargs: Any) -> Any:
+            _refuse("opened a DuckDB connection")
+            return original_duckdb_connect(*args, **kwargs)
 
-    setattr(duckdb, _CONNECT_ATTRIBUTE, guarded_duckdb_connect)
+        setattr(duckdb_module, _CONNECT_ATTRIBUTE, guarded_duckdb_connect)
 
-    original_do_connect = Backend.do_connect
+    if backend_type is not None:
+        original_do_connect = backend_type.do_connect
 
-    def guarded_do_connect(self: Any, *args: Any, **kwargs: Any) -> Any:
-        _refuse("opened a DuckDB connection")
-        return original_do_connect(self, *args, **kwargs)
+        def guarded_do_connect(self: Any, *args: Any, **kwargs: Any) -> Any:
+            _refuse("opened a DuckDB connection")
+            return original_do_connect(self, *args, **kwargs)
 
-    Backend.do_connect = guarded_do_connect
+        backend_type.do_connect = guarded_do_connect
 
     original_popen_init = subprocess.Popen.__init__
 

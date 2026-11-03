@@ -6,8 +6,8 @@ day-axis plans are covered by tests/test_frame_window_parity.py and the
 as-of uptake case in tests/test_frame_panel.py. Tolerance: relative 1e-12
 (both paths compute the same two-phase sums over O(10) values; only the
 backend's summation order differs, bounded by n*eps ~ 5e-14 at n=240);
-the "~0 but exact" first residual sums are compared against the family's
-magnitude n*|ref| instead of their own near-zero value.
+the property checks each producer's residual sums against the input rows at
+that producer's rounded reference, with the same scale-relative error bound.
 """
 
 from __future__ import annotations
@@ -149,9 +149,8 @@ def _assert_emitted_slots_agree(frame_rows, sql_rows, units: dict[str, list]) ->
             elif spec.kind == "count":
                 assert frame_value == sql_value, (group, slot, frame_value, sql_value)
             else:
-                scales = []
                 for reference_row in (frame_row, sql_row):
-                    scale = 0.0
+                    terms = []
                     for index, row_group in enumerate(units["group_id"]):
                         if row_group != group or (spec.mask == "d" and not units["d"][index]):
                             continue
@@ -160,18 +159,19 @@ def _assert_emitted_slots_agree(frame_rows, sql_rows, units: dict[str, list]) ->
                             value = units[slot_values[variable]][index]
                             reference = reference_row[f"ref_{variable}"]
                             term *= value - reference
-                        scale += abs(term)
-                    scales.append(scale)
-                scale = max(scales)
-                assert abs(frame_value - sql_value) <= 1e-9 * scale, (
-                    group,
-                    slot,
-                    frame_value,
-                    sql_value,
-                    scale,
-                )
+                        terms.append(term)
+                    expected = math.fsum(terms)
+                    scale = math.fsum(abs(term) for term in terms)
+                    assert abs(reference_row[slot] - expected) <= 1e-9 * scale, (
+                        group,
+                        slot,
+                        reference_row[slot],
+                        expected,
+                        scale,
+                    )
 
 
+@example(seed=0, n_units=49, partitions=1, offset=1e9, near_constant_den=False, uptake=False)
 @example(seed=1, n_units=12, partitions=3, offset=1e9, near_constant_den=True, uptake=True)
 @pytest.mark.slow
 @settings(deadline=None)

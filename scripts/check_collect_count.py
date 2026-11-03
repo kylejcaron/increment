@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TIERS = ("unit", "fast", "slow", "all")
+TIERS = ("unit", "fast", "slow", "tooling", "all")
 FANOUT_LIMIT = 12
 _PLUGIN = Path(__file__).with_name("collect_items_plugin.py")
 
@@ -29,6 +29,7 @@ _PLUGIN = Path(__file__).with_name("collect_items_plugin.py")
 class Collection:
     tiers: Mapping[str, int]
     nodeids: tuple[str, ...]
+    tier_nodeids: Mapping[str, tuple[str, ...]]
 
 
 def tier_markers(noxfile: Path = ROOT / "noxfile.py") -> dict[str, str]:
@@ -88,7 +89,11 @@ def collect(
                 f"collection failed in {checkout} (exit {result.returncode}):\n{tail}"
             )
         data = json.loads(output.read_text(encoding="utf-8"))
-    return Collection(tiers=data["tiers"], nodeids=tuple(data["nodeids"]))
+    return Collection(
+        tiers=data["tiers"],
+        nodeids=tuple(data["nodeids"]),
+        tier_nodeids={tier: tuple(nodeids) for tier, nodeids in data["tier_nodeids"].items()},
+    )
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -192,11 +197,26 @@ def _fanout_message(nodeids: Sequence[str], tests_root: Path) -> str:
     )
 
 
-def report(base: Mapping[str, int], head: Mapping[str, int]) -> str:
-    return "".join(
+def report(
+    base: Mapping[str, int],
+    head: Mapping[str, int],
+    *,
+    base_nodeids: Mapping[str, Sequence[str]] | None = None,
+    head_nodeids: Mapping[str, Sequence[str]] | None = None,
+) -> str:
+    lines = [
         f"{tier} {base[tier]} -> {head[tier]} ({delta:+d})\n"
         for tier, delta in deltas(base, head).items()
-    )
+    ]
+    if base_nodeids is not None and head_nodeids is not None:
+        for tier in TIERS:
+            old = set(base_nodeids[tier])
+            new = set(head_nodeids[tier])
+            for label, nodeids in (("removed", sorted(old - new)), ("added", sorted(new - old))):
+                if nodeids:
+                    lines.append(f"{tier} {label} node IDs:\n")
+                    lines.extend(f"  {nodeid}\n" for nodeid in nodeids)
+    return "".join(lines)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -214,7 +234,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as error:
         print(f"could not collect test items: {error}", file=sys.stderr)
         return 2
-    print(_fanout_message(head.nodeids, repo / args.tests) + report(base.tiers, head.tiers), end="")
+    print(
+        _fanout_message(head.nodeids, repo / args.tests)
+        + report(
+            base.tiers,
+            head.tiers,
+            base_nodeids=base.tier_nodeids,
+            head_nodeids=head.tier_nodeids,
+        ),
+        end="",
+    )
     return 0
 
 

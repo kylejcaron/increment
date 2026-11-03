@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_collect_count import _check_fanout, collect, main
+from scripts.check_collect_count import Collection, _check_fanout, collect, main, report
+
+pytestmark = pytest.mark.tooling
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,7 +67,52 @@ class TestCollection:
 
         counts = collect(repo).tiers
 
-        assert counts == {"unit": 1, "fast": 2, "slow": 1, "all": 4}
+        assert counts == {"unit": 1, "fast": 2, "slow": 1, "tooling": 0, "all": 4}
+
+    def test_check_items_report_exact_tooling_node_ids(self) -> None:
+        tiers = ("unit", "fast", "slow", "tooling", "all")
+        unit_fast = "tests/test_tooling.py::test_fast"
+        slow = "tests/test_tooling.py::test_slow"
+        base_nodes = {
+            "unit": (unit_fast,),
+            "fast": (unit_fast,),
+            "slow": (slow,),
+            "tooling": (),
+            "all": (unit_fast, slow),
+        }
+        head_nodes = {
+            "unit": (),
+            "fast": (),
+            "slow": (),
+            "tooling": (unit_fast, slow),
+            "all": (unit_fast, slow),
+        }
+        base = Collection(
+            tiers={tier: len(base_nodes[tier]) for tier in tiers},
+            nodeids=tuple(sorted({node for values in base_nodes.values() for node in values})),
+            tier_nodeids=base_nodes,
+        )
+        head = Collection(
+            tiers={tier: len(head_nodes[tier]) for tier in tiers},
+            nodeids=base.nodeids,
+            tier_nodeids=head_nodes,
+        )
+
+        changes = report(
+            base.tiers,
+            head.tiers,
+            base_nodeids=base.tier_nodeids,
+            head_nodeids=head.tier_nodeids,
+        )
+
+        assert "unit removed node IDs:\n  tests/test_tooling.py::test_fast\n" in changes
+        assert "fast removed node IDs:\n  tests/test_tooling.py::test_fast\n" in changes
+        assert "slow removed node IDs:\n  tests/test_tooling.py::test_slow\n" in changes
+        assert (
+            "tooling added node IDs:\n"
+            "  tests/test_tooling.py::test_fast\n"
+            "  tests/test_tooling.py::test_slow\n"
+        ) in changes
 
     def test_working_tree_delta_and_unmarked_grid_are_reported(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -86,7 +133,7 @@ class TestCollection:
         out = capsys.readouterr().out
         assert "unit 1 -> 27 (+26)" in out
         assert "test_unmarked: 13 collected items" in out
-        assert "test_marked" not in out
+        assert "test_marked: 13 collected items" not in out
 
     def test_make_check_items_reports_the_working_tree_delta(self, tmp_path: Path) -> None:
         repo = _repo(tmp_path, {"tests/test_one.py": "def test_one(): pass\n"})

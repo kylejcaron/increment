@@ -187,10 +187,12 @@ def test_categorical_ratio_withholds_invalid_arm_before_fit(tmp_path):
         con.disconnect()
 
 
+# Native and artifact breakout fits both exercise the real warehouse QR path.
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "route",
-    ["native", pytest.param("artifact", marks=pytest.mark.slow)],
+    ["native", "artifact"],
 )
 def test_breakout_null_and_reserved_label_stay_distinct(route, tmp_path):
     import warnings

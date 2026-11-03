@@ -6,7 +6,7 @@ import math
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from functools import cache
 from pathlib import Path
@@ -222,6 +222,71 @@ def _compare_aggregate(expected: Any, actual: Any) -> None:
             _compare_aggregate(left, right)
     else:
         assert expected == actual
+
+
+def _reference_raw_moment_sha256(rows: Sequence[Mapping[str, object]]) -> str:
+    """Build the documented row-multiset fingerprint without production digest helpers."""
+    from hashlib import sha256
+
+    import increment._canonical as canonical
+
+    accumulator = sum(
+        int.from_bytes(sha256(canonical.canonical_digest_bytes(dict(row))).digest(), "big")
+        for row in rows
+    ) % (1 << 256)
+    return sha256(
+        canonical.canonical_json_bytes(
+            {
+                "kind": "increment.readout.rows",
+                "version": 1,
+                "count": len(rows),
+                "accumulator": f"{accumulator:064x}",
+            }
+        )
+    ).hexdigest()
+
+
+def _assert_raw_moment_fingerprints_match(
+    components: Sequence[Mapping[str, object]],
+    raw_inputs: Sequence[Sequence[Mapping[str, object]]],
+) -> None:
+    raw_components = [item for item in components if item.get("kind") == "moments_rows"]
+    assert raw_components
+    for component in raw_components:
+        metric = component["metric"]
+        candidates = [
+            rows for rows in raw_inputs if rows and all(row.get("metric") == metric for row in rows)
+        ]
+        assert candidates
+        assert any(component["sha256"] == _reference_raw_moment_sha256(rows) for rows in candidates)
+
+
+def _assert_raw_moment_components_match_payload(actual: Mapping[str, object]) -> None:
+    raw_inputs = actual["_raw_moment_inputs"]
+    assert isinstance(raw_inputs, list)
+    components = actual["_scope_evidence_components"]
+    assert isinstance(components, list)
+    _assert_raw_moment_fingerprints_match(
+        cast(list[Mapping[str, object]], components),
+        cast(list[list[dict[str, object]]], raw_inputs),
+    )
+
+
+def _capture_raw_moment_inputs(operation: Callable[[], Any]):
+    from unittest.mock import patch
+
+    from increment.readouts import _metric_rows
+
+    raw_inputs: list[list[dict[str, object]]] = []
+    original = _metric_rows._rows_raw_digest_and_arms
+
+    def capture(rows):
+        raw_inputs.append([dict(row) for row in rows])
+        return original(rows)
+
+    with patch.object(_metric_rows, "_rows_raw_digest_and_arms", capture):
+        result = operation()
+    return result, raw_inputs
 
 
 def test_compare_normalizes_tuple_and_list_containers_recursively() -> None:
@@ -498,7 +563,11 @@ def _project_post_capture_artifact_digests(expected: Any, actual: Any) -> Any:
 
 
 def _assert_payload_matches(
-    expected: Mapping[str, Any], actual: Mapping[str, Any], *, snapshotless: bool = False
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    snapshotless: bool = False,
+    clear_content_digest: bool = False,
 ) -> None:
     canonical_expected = _with_post_capture_summary_intervals(
         ResultCell.from_payload(expected).to_payload(), actual
@@ -510,7 +579,9 @@ def _assert_payload_matches(
     if snapshotless:
         expected_digest = expected_payload.get("identity", {}).get("source_content_digest")
         actual_digest = actual_payload.get("identity", {}).get("source_content_digest")
-        clear_content_digest = expected_digest is None and actual_digest is not None
+        clear_content_digest = clear_content_digest or (
+            expected_digest is None and actual_digest is not None
+        )
         expected_payload = _without_snapshot_identity(
             expected_payload, clear_content_digest=clear_content_digest
         )
@@ -525,6 +596,7 @@ def _assert_operation_matches(
     operation: Callable[[], ResultCell],
     *,
     snapshotless: bool = False,
+    clear_content_digest: bool = False,
     reissue_alpha: float | None = None,
 ) -> None:
     from increment.errors import CodedError
@@ -576,7 +648,12 @@ def _assert_operation_matches(
                         else:
                             normalized_projection.pop(field, None)
                     actual_payload["projection_fields"] = normalized_projection
-        _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
+        _assert_payload_matches(
+            expected_cell,
+            actual_payload,
+            snapshotless=snapshotless,
+            clear_content_digest=clear_content_digest,
+        )
 
 
 def _identity_hash_without_snapshot(value: object, *, clear_content_digest: bool = False) -> str:
@@ -624,7 +701,11 @@ def _retained_capture_projection(expected: Mapping[str, Any], actual: Mapping[st
 
 
 def _assert_cell_matches(
-    expected: Mapping[str, Any], actual: object, *, snapshotless: bool = False
+    expected: Mapping[str, Any],
+    actual: object,
+    *,
+    snapshotless: bool = False,
+    clear_content_digest: bool = False,
 ) -> None:
     from increment.result_envelope import relevel
 
@@ -653,7 +734,12 @@ def _assert_cell_matches(
                     else:
                         normalized_projection.pop(field, None)
                 actual_payload["projection_fields"] = normalized_projection
-    _assert_payload_matches(expected_cell, actual_payload, snapshotless=snapshotless)
+    _assert_payload_matches(
+        expected_cell,
+        actual_payload,
+        snapshotless=snapshotless,
+        clear_content_digest=clear_content_digest,
+    )
     actual_cell = (
         actual if isinstance(actual, ResultCell) else ResultCell.from_payload(actual_payload)
     )
@@ -665,6 +751,7 @@ def _assert_cell_matches(
             operation,
             lambda alpha=float(alpha): relevel(actual_cell, alpha=alpha),
             snapshotless=snapshotless,
+            clear_content_digest=clear_content_digest,
             reissue_alpha=float(alpha),
         )
 
@@ -776,8 +863,18 @@ def _compare_family_selection(expected: object, actual: object) -> None:
 
 
 def _assert_outcome_matches(
-    expected: Mapping[str, Any], actual: Mapping[str, object], *, current_schema: bool = True
+    expected: Mapping[str, Any],
+    actual: Mapping[str, object],
+    *,
+    current_schema: bool = True,
+    allow_raw_moment_identity_drift: bool = False,
 ) -> Mapping[str, object]:
+    if "aggregate_evidence" in expected:
+        # Decode serialized CUPED fit payloads before applying the existing numeric tolerance.
+        _compare_aggregate(
+            _decode_fitted_cuped_evidence(expected["aggregate_evidence"]),
+            _decode_fitted_cuped_evidence(actual["aggregate_evidence"]),
+        )
     assert expected["kind"] == actual["kind"]
     if expected["kind"] == "refusal":
         assert expected["code"] == actual["code"]
@@ -792,15 +889,19 @@ def _assert_outcome_matches(
         actual_cells = actual["cells"]
         assert isinstance(expected_cells, Mapping)
         assert isinstance(actual_cells, Mapping)
-        snapshotless = _has_platform_sensitive_scope_component(actual)
-        cells_to_compare: Any
+        snapshotless = _has_platform_sensitive_scope_component(actual) or (
+            allow_raw_moment_identity_drift
+        )
         actual_cells_by_identity: Any
         if snapshotless:
             expected_by_identity = {
                 _identity_hash_without_snapshot(
                     cell,
                     clear_content_digest=(
-                        ResultCell.from_payload(cell["result_cell"]).identity.source_content_digest
+                        allow_raw_moment_identity_drift
+                        or ResultCell.from_payload(
+                            cell["result_cell"]
+                        ).identity.source_content_digest
                         is None
                     ),
                 ): cell
@@ -810,7 +911,8 @@ def _assert_outcome_matches(
                 _identity_hash_without_snapshot(
                     cell,
                     clear_content_digest=(
-                        all(
+                        allow_raw_moment_identity_drift
+                        or all(
                             ResultCell.from_payload(
                                 expected_cell["result_cell"]
                             ).identity.source_content_digest
@@ -835,12 +937,21 @@ def _assert_outcome_matches(
         for identity, expected_cell in cells_to_compare:
             assert isinstance(expected_cell, Mapping)
             actual_cell = cast(Any, actual_cells_by_identity)[identity]
-            _assert_cell_matches(expected_cell, actual_cell, snapshotless=snapshotless)
+            _assert_cell_matches(
+                expected_cell,
+                actual_cell,
+                snapshotless=snapshotless,
+                clear_content_digest=allow_raw_moment_identity_drift,
+            )
         expected_metadata = _metadata_without_modes(expected["metadata"])
         actual_metadata = _metadata_without_modes(actual["metadata"])
         if snapshotless:
-            expected_metadata = _without_snapshot_identity(expected_metadata)
-            actual_metadata = _without_snapshot_identity(actual_metadata)
+            expected_metadata = _without_snapshot_identity(
+                expected_metadata, clear_content_digest=allow_raw_moment_identity_drift
+            )
+            actual_metadata = _without_snapshot_identity(
+                actual_metadata, clear_content_digest=allow_raw_moment_identity_drift
+            )
         if actual.get("_artifact_generation_identity") is True:
             actual_metadata = _project_post_capture_artifact_digests(
                 expected_metadata, actual_metadata
@@ -860,8 +971,14 @@ def _assert_outcome_matches(
                 expected_value = expected[field]
                 actual_value = actual[field]
                 if snapshotless:
-                    expected_value = _without_snapshot_identity(expected_value)
-                    actual_value = _without_snapshot_identity(actual_value)
+                    expected_value = _without_snapshot_identity(
+                        expected_value,
+                        clear_content_digest=allow_raw_moment_identity_drift,
+                    )
+                    actual_value = _without_snapshot_identity(
+                        actual_value,
+                        clear_content_digest=allow_raw_moment_identity_drift,
+                    )
                     if field == "aggregate_evidence":
                         expected_value = _decode_fitted_cuped_evidence(expected_value)
                         actual_value = _decode_fitted_cuped_evidence(actual_value)
@@ -944,7 +1061,12 @@ def _run_with_read_counter(
 
 
 def _line1_actual_outcome(
-    scenario_id: str, ingress: str, *, scoped: bool = False, line4: bool = False
+    scenario_id: str,
+    ingress: str,
+    *,
+    scoped: bool = False,
+    line4: bool = False,
+    moment_mutator: Callable[[list[dict[str, object]]], None] | None = None,
 ) -> Mapping[str, object]:
     """The current outcome of a registered pair under the capture's recorded conditions.
 
@@ -958,6 +1080,7 @@ def _line1_actual_outcome(
 
     scope_components: list[dict[str, Any]] = []
     snapshot_inputs: list[dict[str, Any]] = []
+    raw_moment_inputs: list[list[dict[str, object]]] = []
     original_design_snapshot_id = _design_scope._design_snapshot_id
     original_randomized_snapshot_id = _randomized_scope._randomized_snapshot_id
 
@@ -983,32 +1106,122 @@ def _line1_actual_outcome(
     with _single_thread_duckdb(), ExitStack() as stack:
         _enter_patch(stack, _design_scope, "_design_snapshot_id", capture_design_scope)
         _enter_patch(stack, _randomized_scope, "_randomized_snapshot_id", capture_randomized_scope)
-        outcome = _line1_outcome(scenario_id, ingress, scoped=scoped, line4=line4)
+        outcome, raw_moment_inputs = _capture_raw_moment_inputs(
+            lambda: _line1_outcome(
+                scenario_id,
+                ingress,
+                scoped=scoped,
+                line4=line4,
+                moment_mutator=moment_mutator,
+            )
+        )
     if outcome.get("kind") == "cells":
         return {
             **outcome,
             "_scope_evidence_components": scope_components,
             "_scope_snapshot_inputs": snapshot_inputs,
+            "_raw_moment_inputs": raw_moment_inputs,
         }
     return outcome
 
 
-def _line1_outcome(  # noqa: PLR0915
-    scenario_id: str, ingress: str, *, scoped: bool = False, line4: bool = False
-) -> Mapping[str, object]:
-    import json
-    import warnings
+def _line1_refusal(
+    error: Any,
+    stage: str,
+    payloads: dict[str, Any],
+    aggregate_rows: list[dict[str, Any]],
+) -> dict[str, object]:
+    from scripts.capture_evidence_identity import _aggregate_evidence
+
+    outcome: dict[str, object] = {
+        "kind": "refusal",
+        "code": error.code,
+        "stage": stage,
+        "context": dict(error.context),
+    }
+    aggregate = _aggregate_evidence(payloads, aggregate_rows)
+    if aggregate is not None:
+        payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+        aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+        outcome["aggregate_evidence"] = aggregate
+    return outcome
+
+
+def _construct_line1_bound(
+    case: Any,
+    ingress: str,
+    aggregate_rows: list[dict[str, Any]],
+    payloads: dict[str, Any],
+    moment_mutator: Callable[[list[dict[str, object]]], None] | None,
+) -> tuple[Any, Mapping[str, object] | None]:
     from contextlib import ExitStack
-    from datetime import UTC, datetime
 
     from increment import builders
+    from increment.errors import CodedError
+
+    try:
+        if ingress == "from_moments":
+            original_from_moments = builders.from_moments
+
+            def capture_moments(rows, **kwargs):
+                supplied_rows = [dict(row) for row in rows]
+                if moment_mutator is not None:
+                    moment_mutator(supplied_rows)
+                aggregate_rows.extend(copy.deepcopy(supplied_rows))
+                return original_from_moments(supplied_rows, **kwargs)
+
+            with ExitStack() as stack:
+                _enter_patch(stack, builders, "from_moments", capture_moments)
+                bound = case.build[ingress]()
+        else:
+            bound = case.build[ingress]()
+    except CodedError as error:
+        return None, _line1_refusal(error, "construct", payloads, aggregate_rows)
+    return bound, None
+
+
+def _line1_family_selection(results: Any, cells: list[Any]) -> dict[str, object]:
+    import json
+
     from increment.errors import CodedError, InvalidRequestError
+
+    family_selection: dict[str, object] = {"status": "unavailable"}
+    if cells:
+        try:
+            from increment.estimation.family import select_exploratory_family
+
+            selected = select_exploratory_family(list(results), q=0.05)
+            family_selection = {
+                "status": "available",
+                "q": 0.05,
+                "results": json.loads(
+                    json.dumps([row.model_dump(mode="json") for row in selected])
+                ),
+            }
+        except (CodedError, InvalidRequestError) as error:
+            family_selection = {
+                "status": "refusal",
+                "code": error.code,
+                "context": dict(error.context),
+            }
+    return cast(dict[str, object], _json_compatible(family_selection))
+
+
+def _line1_outcome(
+    scenario_id: str,
+    ingress: str,
+    *,
+    scoped: bool = False,
+    line4: bool = False,
+    moment_mutator: Callable[[list[dict[str, object]]], None] | None = None,
+) -> Mapping[str, object]:
+    import warnings
+    from datetime import UTC, datetime
+
+    from increment.errors import CodedError
     from increment.evidence import SequentialCaptureRequest
     from increment.result_envelope import AnalysisEnvelope
-    from scripts.capture_evidence_identity import (
-        _aggregate_evidence,
-        _population_identity,
-    )
+    from scripts.capture_evidence_identity import _aggregate_evidence, _population_identity
     from tests.parity_harness.cases import PARITY_CASES, _capture_kwargs, _close_parity_binding
 
     cases = {case.id: case for case in PARITY_CASES}
@@ -1021,32 +1234,9 @@ def _line1_outcome(  # noqa: PLR0915
 
     aggregate_rows: list[dict[str, object]] = []
     payloads: dict[str, object] = {}
-    try:
-        if ingress == "from_moments":
-            original_from_moments = builders.from_moments
-
-            def capture_moments(rows, **kwargs):
-                aggregate_rows.extend(copy.deepcopy(dict(row)) for row in rows)
-                return original_from_moments(rows, **kwargs)
-
-            with ExitStack() as stack:
-                _enter_patch(stack, builders, "from_moments", capture_moments)
-                bound = case.build[ingress]()
-        else:
-            bound = case.build[ingress]()
-    except CodedError as error:
-        outcome = {
-            "kind": "refusal",
-            "code": error.code,
-            "stage": "construct",
-            "context": dict(error.context),
-        }
-        aggregate = _aggregate_evidence(payloads, aggregate_rows)
-        if aggregate is not None:
-            payload_ref = cast(Mapping[str, Any], aggregate["moments"])
-            aggregate["moments"] = payloads[payload_ref["payload_hash"]]
-            outcome["aggregate_evidence"] = aggregate
-        return outcome
+    bound, refusal = _construct_line1_bound(case, ingress, aggregate_rows, payloads, moment_mutator)
+    if refusal is not None:
+        return refusal
 
     try:
         try:
@@ -1063,6 +1253,10 @@ def _line1_outcome(  # noqa: PLR0915
             assert all(count == 1 for count in read_count.values()), (
                 f"{scenario_id}/{ingress} performed repeated captured reads: {read_count}"
             )
+            if scenario_id == "categorical-cuped-moments-format-13":
+                from tests.parity_harness.runner import _validate_source_snapshot_ids
+
+                _validate_source_snapshot_ids(scenario_id, ingress, results)
             metadata_value = getattr(results, "metadata", None)
             daily_values = []
             cells = []
@@ -1080,39 +1274,9 @@ def _line1_outcome(  # noqa: PLR0915
                 warnings.simplefilter("ignore")
                 population_identity = _population_identity(bound, case, cells)
         except CodedError as error:
-            outcome: dict[str, object] = {
-                "kind": "refusal",
-                "code": error.code,
-                "stage": "run",
-                "context": dict(error.context),
-            }
-            aggregate = _aggregate_evidence(payloads, aggregate_rows)
-            if aggregate is not None:
-                payload_ref = cast(Mapping[str, Any], aggregate["moments"])
-                aggregate["moments"] = payloads[payload_ref["payload_hash"]]
-                outcome["aggregate_evidence"] = aggregate
-            return outcome
+            return _line1_refusal(error, "run", payloads, aggregate_rows)
 
-        family_selection: dict[str, object] = {"status": "unavailable"}
-        if cells:
-            try:
-                from increment.estimation.family import select_exploratory_family
-
-                selected = select_exploratory_family(list(results), q=0.05)
-                family_selection = {
-                    "status": "available",
-                    "q": 0.05,
-                    "results": json.loads(
-                        json.dumps([row.model_dump(mode="json") for row in selected])
-                    ),
-                }
-            except (CodedError, InvalidRequestError) as error:
-                family_selection = {
-                    "status": "refusal",
-                    "code": error.code,
-                    "context": dict(error.context),
-                }
-        family_selection = cast(dict[str, object], _json_compatible(family_selection))
+        family_selection = _line1_family_selection(results, cells)
         cells_by_hash: dict[str, object] = {}
         for cell in cells:
             cell_hash = cell.identity.hash()
@@ -1305,8 +1469,14 @@ def test_frozen_capture_outcome(
             f"registered adapter skipped for {scenario_id}/{ingress}: {error}",
             pytrace=False,
         )
+    if key == ("categorical-cuped-moments-format-13", "from_moments"):
+        _assert_raw_moment_components_match_payload(actual)
     modes = _assert_outcome_matches(
-        with_expected_difference(scenario_id, ingress, expected), actual
+        with_expected_difference(scenario_id, ingress, expected),
+        actual,
+        allow_raw_moment_identity_drift=(
+            key == ("categorical-cuped-moments-format-13", "from_moments")
+        ),
     )
     if key in set().union(*REGISTERED.values()) and expected["kind"] == "cells":
         assert modes["coherence"] == "captured"
@@ -1314,6 +1484,87 @@ def test_frozen_capture_outcome(
         assert isinstance(effective_modes, Mapping)
         assert effective_modes
         assert set(effective_modes.values()) == {"captured"}
+
+
+@pytest.mark.integration
+def test_subtolerance_moment_mutation_preserves_parity_but_changes_identity() -> None:
+    scenario = "categorical-cuped-moments-format-13"
+    ingress = "from_moments"
+    expected = _capture()["scenarios"][scenario][ingress]
+    baseline = cast(dict[str, Any], _line1_actual_outcome(scenario, ingress))
+    changed_rows = 0
+
+    def mutate(rows: list[dict[str, object]]) -> None:
+        nonlocal changed_rows
+        for row in rows:
+            if (
+                row.get("record_kind") is None
+                and row.get("metric") == "revenue"
+                and row.get("group_id") == "treatment"
+            ):
+                row["cy2"] = cast(float, row["cy2"]) + 1e-8
+                changed_rows += 1
+
+    changed = cast(
+        dict[str, Any],
+        _line1_actual_outcome(scenario, ingress, moment_mutator=mutate),
+    )
+    assert changed_rows == 1
+    _assert_raw_moment_components_match_payload(baseline)
+    _assert_raw_moment_components_match_payload(changed)
+    _assert_outcome_matches(
+        expected,
+        changed,
+        allow_raw_moment_identity_drift=True,
+    )
+    _compare_aggregate(baseline["aggregate_evidence"], changed["aggregate_evidence"])
+
+    baseline_cells = list(baseline["cells"].values())
+    changed_cells = list(changed["cells"].values())
+    baseline_identity = baseline_cells[0].identity
+    changed_identity = changed_cells[0].identity
+    assert baseline_identity.source_content_digest != changed_identity.source_content_digest
+    assert (
+        baseline["metadata"]["scope"]["snapshot_id"] != changed["metadata"]["scope"]["snapshot_id"]
+    )
+    baseline_raw = {
+        item["metric"]: item["sha256"]
+        for item in baseline["_scope_evidence_components"]
+        if item["kind"] == "moments_rows"
+    }
+    changed_raw = {
+        item["metric"]: item["sha256"]
+        for item in changed["_scope_evidence_components"]
+        if item["kind"] == "moments_rows"
+    }
+    assert baseline_raw["revenue"] != changed_raw["revenue"]
+    assert baseline_raw["revenue_per_spend"] == changed_raw["revenue_per_spend"]
+
+    def component_contract(outcome):
+        return [
+            (
+                item["kind"],
+                item.get("metric"),
+                item.get("population"),
+                item.get("source"),
+                item.get("dimension"),
+                "<raw-moment-fingerprint>" if item["kind"] == "moments_rows" else item["sha256"],
+            )
+            for item in outcome["_scope_evidence_components"]
+        ]
+
+    assert component_contract(baseline) == component_contract(changed)
+    baseline_categorical = {
+        item["metric"]: item["sha256"]
+        for item in baseline["_scope_evidence_components"]
+        if item["kind"].startswith("categorical_cells:")
+    }
+    changed_categorical = {
+        item["metric"]: item["sha256"]
+        for item in changed["_scope_evidence_components"]
+        if item["kind"].startswith("categorical_cells:")
+    }
+    assert baseline_categorical == changed_categorical
 
 
 @pytest.mark.integration
@@ -1527,7 +1778,7 @@ def test_frozen_capture_rejects_constant_relative_offset(fraction: float) -> Non
 
 @pytest.mark.parametrize(
     ("expected", "actual"),
-    ((0.0, -2e-9), (0.0, 2e-9), (2e-9, -2e-9)),
+    ((0.0, -2 * TOLERANCE), (0.0, 2 * TOLERANCE), (1.0, -1.0)),
 )
 def test_frozen_comparison_enforces_zero_and_sign_outside_tolerance(
     expected: float, actual: float

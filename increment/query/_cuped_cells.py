@@ -72,9 +72,7 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
     names = tuple(name for _, _, name in components)
     if not names:
         return
-    component_values: list[Any] = []
-    maxima_fields: dict[str, Any] = {}
-    dialect = relation.get_backend().name
+    base_fields: dict[str, Any] = {}
     for index, (role, _component, name) in enumerate(components):
         raw = relation[name]
         value = cast(
@@ -84,104 +82,69 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
             else raw.cast("float64"),
         )
         is_nan, is_inf = nonfinite_parts(value)
-        nonfinite = is_inf
-        if role == "outcome":
-            nonfinite = nonfinite | is_nan
-        else:
+        nonfinite = is_inf | is_nan if role == "outcome" else is_inf
+        if role != "outcome":
             value = cast(
                 ir.FloatingValue,
                 ibis.ifelse(is_nan, ibis.null().cast("float64"), value),
             )
-        component_values.append(value)
-        maxima_fields[f"_magnitude_nonfinite_{index}"] = cast(
+        base_fields[f"_magnitude_value_{index}"] = value
+        base_fields[f"_magnitude_nonfinite_{index}"] = cast(
             Any, nonfinite.ifelse(ibis.literal(1), ibis.literal(0)).cast("int64")
-        ).sum()
+        )
+
+    base_values = relation.select("group_id", **base_fields)
+    maxima_fields: dict[str, Any] = {}
+    for index in range(len(components)):
+        value = base_values[f"_magnitude_value_{index}"]
+        maxima_fields[f"_magnitude_total_nonfinite_{index}"] = base_values[
+            f"_magnitude_nonfinite_{index}"
+        ].sum()
         maxima_fields[f"_magnitude_max_{index}"] = cast(Any, value).abs().max()
 
-    maxima = relation.group_by("group_id").aggregate(**maxima_fields)
-    maxima_schema = {
-        "group_id": relation.schema()["group_id"],
-        **{f"_magnitude_nonfinite_{index}": "int64" for index in range(len(components))},
-        **{f"_magnitude_max_{index}": "float64" for index in range(len(components))},
-    }
-    maxima_table = ibis.table(maxima_schema, name="_magnitude_maxima")
-    joined = relation.join(
-        maxima_table,
-        [relation.group_id.identical_to(maxima_table.group_id)],
+    maxima = base_values.group_by("group_id").aggregate(**maxima_fields)
+    joined = base_values.join(
+        maxima,
+        [base_values.group_id.identical_to(maxima.group_id)],
     )
     stats_fields: dict[str, Any] = {}
-    for index, value in enumerate(component_values):
-        maximum = maxima_table[f"_magnitude_max_{index}"]
+    for index in range(len(components)):
+        value = joined[f"_magnitude_value_{index}"]
+        maximum = joined[f"_magnitude_max_{index}"]
         safe_maximum = (maximum > 0).ifelse(maximum, 1.0)
-        stats_fields[f"_magnitude_nonfinite_{index}"] = maxima_table[
-            f"_magnitude_nonfinite_{index}"
+        stats_fields[f"_magnitude_nonfinite_{index}"] = joined[
+            f"_magnitude_total_nonfinite_{index}"
         ].max()
         stats_fields[f"_magnitude_max_{index}"] = maximum.max()
         stats_fields[f"_magnitude_squares_{index}"] = (value / safe_maximum).pow(2).sum()
         stats_fields[f"_magnitude_count_{index}"] = value.count()
     stats = joined.group_by("group_id").aggregate(**stats_fields)
 
-    stats_schema = {
-        "group_id": relation.schema()["group_id"],
-        **{
-            field: "int64"
-            for index in range(len(components))
-            for field in (
-                f"_magnitude_nonfinite_{index}",
-                f"_magnitude_count_{index}",
-            )
-        },
-        **{
-            field: "float64"
-            for index in range(len(components))
-            for field in (
-                f"_magnitude_max_{index}",
-                f"_magnitude_squares_{index}",
-            )
-        },
-    }
-    stats_table = ibis.table(stats_schema, name="_magnitude_stats")
     normalized_fields: dict[str, Any] = {}
     for index in range(len(components)):
         maximum_exponent, scaled_norm, valid = _component_exponent_parts(
-            stats_table[f"_magnitude_max_{index}"],
-            stats_table[f"_magnitude_squares_{index}"],
+            stats[f"_magnitude_max_{index}"],
+            stats[f"_magnitude_squares_{index}"],
         )
-        count = stats_table[f"_magnitude_count_{index}"].cast("float64")
+        count = stats[f"_magnitude_count_{index}"].cast("float64")
         safe_count = (count > 0).ifelse(count, 1.0)
         rms_factor = scaled_norm / safe_count.sqrt()
-        normalized_fields[f"_magnitude_nonfinite_{index}"] = stats_table[
-            f"_magnitude_nonfinite_{index}"
-        ]
+        normalized_fields[f"_magnitude_nonfinite_{index}"] = stats[f"_magnitude_nonfinite_{index}"]
         normalized_fields[f"_magnitude_max_exponent_{index}"] = maximum_exponent
         normalized_fields[f"_magnitude_rms_factor_{index}"] = rms_factor
         normalized_fields[f"_magnitude_valid_{index}"] = valid & (count > 0)
-    normalized = stats_table.select("group_id", **normalized_fields)
+    normalized = stats.select("group_id", **normalized_fields)
 
     minimum_mantissa, minimum_exponent = math.frexp(_MAGNITUDE_MIN)
     maximum_mantissa, maximum_bound_exponent = math.frexp(_MAGNITUDE_MAX)
-    normalized_schema = {
-        "group_id": relation.schema()["group_id"],
-        **{f"_magnitude_nonfinite_{index}": "int64" for index in range(len(components))},
-        **{
-            field: dtype
-            for index in range(len(components))
-            for field, dtype in (
-                (f"_magnitude_max_exponent_{index}", "int64"),
-                (f"_magnitude_rms_factor_{index}", "float64"),
-                (f"_magnitude_valid_{index}", "boolean"),
-            )
-        },
-    }
-    normalized_table = ibis.table(normalized_schema, name="_magnitude_normalized")
     decision_fields: dict[str, Any] = {}
     for index in range(len(components)):
-        factor = normalized_table[f"_magnitude_rms_factor_{index}"]
+        factor = normalized[f"_magnitude_rms_factor_{index}"]
         adjustment = factor.log2().floor().cast("int64") + 1
-        exponent = normalized_table[f"_magnitude_max_exponent_{index}"] + adjustment
+        exponent = normalized[f"_magnitude_max_exponent_{index}"] + adjustment
         mantissa = _binary_normalize(factor, adjustment)
-        valid = normalized_table[f"_magnitude_valid_{index}"] & (factor > 0)
-        decision_fields[f"_magnitude_nonfinite_{index}"] = normalized_table[
+        valid = normalized[f"_magnitude_valid_{index}"] & (factor > 0)
+        decision_fields[f"_magnitude_nonfinite_{index}"] = normalized[
             f"_magnitude_nonfinite_{index}"
         ]
         decision_fields[f"_magnitude_low_{index}"] = valid & (
@@ -192,29 +155,33 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
             (exponent > maximum_bound_exponent)
             | ((exponent == maximum_bound_exponent) & (mantissa > maximum_mantissa))
         )
-    decisions = normalized_table.select("group_id", **decision_fields)
+    decisions = normalized.select("group_id", **decision_fields)
 
+    import sqlglot
     from sqlglot import exp
 
     backend = relation.get_backend()
     dialect = backend.name
 
-    def cte(name: str, expression: ir.Table) -> str:
-        identifier = exp.to_identifier(name).sql(dialect=dialect, identify=True)
-        return f"{identifier} AS ({ibis.to_sql(expression, dialect=dialect)})"
-
-    sql = (
-        "WITH "
-        + ", ".join(
-            (
-                cte("_magnitude_maxima", maxima),
-                cte("_magnitude_stats", stats),
-                cte("_magnitude_normalized", normalized),
-            )
-        )
-        + " "
-        + ibis.to_sql(decisions, dialect=dialect)
-    )
+    sql = ibis.to_sql(decisions, dialect=dialect)
+    query = sqlglot.parse_one(sql, read=dialect)
+    with_clause = query.args.get("with_")
+    if with_clause is not None and dialect == "duckdb":
+        for cte in with_clause.expressions:
+            if not isinstance(cte.this, exp.Select):
+                continue
+            outputs = {
+                projection.alias_or_name
+                for projection in cte.this.expressions
+                if projection.alias_or_name
+            }
+            if any(
+                output.startswith("_magnitude_value_")
+                and output[len("_magnitude_value_") :].isdigit()
+                for output in outputs
+            ):
+                cte.set("materialized", True)
+    sql = query.sql(dialect=dialect)
     output_schema = {
         "group_id": relation.schema()["group_id"],
         **{
@@ -369,6 +336,7 @@ def _join_on(left, right, keys):
 
 def _cell_relation(relation, names, outcomes):
     keys = ("group_id", *names)
+    relation = relation.select(*dict.fromkeys((*keys, *outcomes)))
 
     maxima = relation.group_by("group_id").aggregate(
         **{
@@ -607,6 +575,40 @@ def _preflight(cells, names, components, request, metric):
     )
 
 
+def _materialize_cell_stages(expression: ir.Table) -> ir.Table:
+    """Keep the categorical-cell pipeline's shared stages as query-local CTEs on DuckDB."""
+    backend = expression.get_backend()
+    if backend.name != "duckdb":
+        return expression
+
+    import sqlglot
+    from sqlglot import exp
+
+    sql = ibis.to_sql(expression, dialect=backend.name)
+    query = sqlglot.parse_one(sql, read=backend.name)
+    with_clause = query.args.get("with_")
+    if with_clause is None:
+        return expression
+
+    prefixes = ("_rank_", "_median_")
+    for cte in with_clause.expressions:
+        if not isinstance(cte.this, exp.Select):
+            continue
+        outputs = {
+            projection.alias_or_name
+            for projection in cte.this.expressions
+            if projection.alias_or_name
+        }
+        if any(
+            output.startswith(prefix) and output[len(prefix) :].isdigit()
+            for output in outputs
+            for prefix in prefixes
+        ):
+            cte.set("materialized", True)
+
+    return backend.sql(query.sql(dialect=backend.name))
+
+
 def _rows(value):
     return list(nw.from_native(value, eager_only=True).iter_rows(named=True))
 
@@ -665,7 +667,13 @@ def _rename_scratch_inputs(relation, names, components):
 
 
 def categorical_cells_from_relation(
-    relation, execute, *, metric, request: _ResolvedCupedRequest, magnitude_checked=False
+    relation,
+    execute,
+    *,
+    metric,
+    request: _ResolvedCupedRequest,
+    magnitude_checked=False,
+    scratch=None,
 ) -> CategoricalCells:
     declarations = request.method.covariates or ()
     if any(item.kind != "categorical" for item in declarations):
@@ -690,8 +698,14 @@ def categorical_cells_from_relation(
             ),
             execute=execute,
         )
+    if scratch is not None:
+        relation = scratch.materialize_input(relation, label="categorical")
     cells = _cell_relation(relation, query_names, outcomes)
-    preflight = _rows(execute(_preflight(cells, query_names, len(outcomes), request, metric)))[0]
+    preflight = _rows(
+        execute(
+            _materialize_cell_stages(_preflight(cells, query_names, len(outcomes), request, metric))
+        )
+    )[0]
     count = int(preflight["cell_count"])
     if not 0 < count <= MAX_CELLS:
         general_qr_required(metric, "cell_count")
@@ -712,7 +726,7 @@ def categorical_cells_from_relation(
     fields = [*query_names, "group_id", "n"]
     fields += [f"{kind}_{f}" for f in range(len(outcomes)) for kind in ("ref", "first", "exponent")]
     fields += [f"cross_{f}_{g}" for f in range(len(outcomes)) for g in range(f, len(outcomes))]
-    rows = _rows(execute(cells.select(*fields)))
+    rows = _rows(execute(_materialize_cell_stages(cells.select(*fields))))
     return _as_cells(rows, query_names, len(outcomes), request, covariate_names=names)
 
 

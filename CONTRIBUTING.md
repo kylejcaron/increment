@@ -29,10 +29,16 @@ Use `skip-changelog` to omit a PR from release notes. The automation labels
 `dependencies`, `python:uv`, and `weekly-failure` are not contributor categories;
 dependency updates are excluded from release notes.
 
-Increment is alpha: breaking changes between 0.x prereleases are allowed but
-must carry the `breaking` label and name the affected paths and a migration
-route. The full policy, including persisted formats and stable refusal codes,
-is in the [pre-1.0 compatibility policy](docs/api.md#pre-10-compatibility).
+Until release 1.0.0, Increment is alpha and breaking changes between 0.x
+prereleases are allowed when documented in release notes. From 1.0.0, a
+promised public contract may be removed only after a deprecation warning names
+the release that will remove it; removal takes place in the next major release.
+Add a `breaking` label, identify the affected paths, and provide a migration
+route. Add the change to a `Deprecations` section in the release notes, naming
+the warning, affected paths, removal release, and migration route.
+Private code may still use a clean cutover. See the
+[compatibility policy](docs/api.md#compatibility-policy) for persisted formats,
+stable error codes, and the full contract.
 
 ## License and the CLA
 
@@ -83,9 +89,10 @@ testing. Pushes MAY use `git push --no-verify`; CI is the required PR gate.
 Numerical certification is selected from the certified modules' transitive
 `tach.toml` import graph, certification-test changes and CI/build configuration;
 unrelated module changes such as `increment/dashboard/_html.py` do not select it.
-The parity-harness certification case runs nightly; its facade is not a
-certification root because the other harness cases exercise those ingress paths
-on every PR.
+The bounded sequential public proof is a certification root; its small
+continuation witnesses remain in the fast tier. Changes to frame moments,
+query builders, artifact reading or sources also select certification so the
+former-arm-ceiling capacity cases run when their ingress calculations change.
 The PostgreSQL gate is selected for query dependency, warehouse-execution,
 PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
 PRs skip it. PostgreSQL runs nightly on main; numerical certification runs
@@ -97,6 +104,11 @@ Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.
 
+Pull requests run the full fast tier in three Python 3.12 shards and the unit
+tier on Python 3.14; pushes retain the 3.12–3.14 fast matrix. `ci-ok` requires
+the newest-Python unit job for pull requests. Python 3.12 fast coverage remains
+available for approved test reductions.
+
 The Python 3.12 fast shards upload optional executed-code coverage artifacts.
 After the required jobs, `ci-ok` combines matching shard artifacts and
 publishes a combined report when every shard is complete. This advisory step
@@ -105,6 +117,12 @@ data means no combined report is published. Coverage counts `increment/` source
 statements executed during the fast tier (including pytest-cov's measured test
 workers); it does not measure the slow or scientific tiers, establish
 whole-suite coverage, or rate test quality.
+
+Every fast shard also reports non-skipped JUnit items above five elapsed seconds
+in its job summary. This is advisory: an over-budget item does not fail CI.
+Reduce unnecessary setup or input without crossing the tested boundary; keep
+irreducible warehouse, subprocess and exhaustive repository checks in the slow
+tier with a reason beside their marker.
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
@@ -179,21 +197,34 @@ default CI selection; the Make targets define supported tiers:
 
 | Target | Marker expression |
 | --- | --- |
-| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark` |
-| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark` |
-| `make test-fast` | Unit plus integration-fast (benchmarks excluded) |
-| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark` |
+| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling` |
+| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling` |
+| `make test-fast` | Unit plus integration-fast (tooling and benchmarks excluded) |
+| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry and not benchmark and not tooling` |
 | `make test-tier TIER=compile-registry` | `compile_registry and not benchmark` (the warehouse compile registry; its own CI job) |
 | `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery and not benchmark` |
 | `make test-numerical-certification` | `numerical_certification and not benchmark` |
 | `make test-scientific SPLITS=N GROUP=K` | `(parameter_recovery or numerical_certification) and not benchmark` |
 | `make test-examples` | `examples and not benchmark` |
-| `make test-all` | `(slow or not slow) and not benchmark` |
+| `make test-tier TIER=tooling` | `tooling and not benchmark` (repository tooling; conditional CI job) |
+| `make test-all` | `(slow or not slow) and not benchmark` (includes tooling) |
 
 The parameter-recovery, numerical-certification, scientific and examples tests
 also carry `slow`; the marker expressions keep their purpose-specific gates
 separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
 are no tier-level wall-clock budgets.
+
+#### Isolated core-test install
+
+The required `core-install (3.12)` job installs only the `core-test`
+dependency group, then executes the README Quickstart and a committed
+non-slow test inventory in an environment without Ibis, SQLGlot or DuckDB.
+Maintain `tests/core_modules.txt` as a static selection using the import graph
+in `tests/_selection.py`; audit its import closures and every root or nested
+`conftest.py` when changing the list. Do not include `tests/query/`, whose
+collection requires warehouse backends, or prune failing entries dynamically.
+The job retains CPU measurements from executed tests as a run-specific
+artifact; collection-only work is not measured.
 
 Ordinary test lanes pass `--benchmark-skip` because pytest-benchmark's xdist
 collection warning is fatal under the project's warning policy. Run benchmarks
@@ -208,6 +239,10 @@ make benchmark BENCHMARK_BASELINE=/path/to/baseline.json
 
 The plugin writes the baseline JSON under `.benchmarks/`; pass that generated
 path to `BENCHMARK_BASELINE`.
+
+The nightly benchmark job also runs `tests/test_kernel_context_measurement.py`
+with `-m benchmark -n 0` in a separate step, without `--benchmark-only`.
+Those context measurements do not use the pytest-benchmark fixture.
 
 The committed `tests/fixtures/benchmarks/step4-pre-kernel.json` is a
 reference-machine diagnostic, not a portable performance gate. `make benchmark`
@@ -526,10 +561,11 @@ need those services for ordinary changes.
 The checked-in CI candidate requires lint, fast tests, functional slow tests,
 package builds, and live PostgreSQL 16 probes through `ci-ok`; hosted
 enforcement and required-check activation remain owner gates. PR fast tests run
-on Python 3.12 and 3.14; 3.13 remains in main pushes and nightly full/weekly floor
-matrices. `ci-ok` validates every selected fast shard and required conditional
-gate. It combines Python 3.12 fast-shard coverage advisory; cross-platform wheel
-smoke runs for packaging-related PR changes and on pushes.
+on Python 3.12, with a separate required Python 3.14 unit job; 3.13 remains in main
+pushes and nightly full/weekly floor matrices. `ci-ok` validates every selected
+fast shard and required conditional gate. It combines Python 3.12 fast-shard
+coverage as advisory; cross-platform wheel smoke runs for packaging-related PR
+changes and on pushes.
 PostgreSQL runs on a PR when a change touches the transitive `tach.toml`
 dependency closure of `increment.query`, `integration/warehouse_execution/`,
 a test helper the PostgreSQL suite imports, build or workflow files, or an
@@ -541,8 +577,9 @@ warehouse workflow defaults to three shards for weekly and manual runs.
 
 Each selected fast Python-version cell has three duration-balanced
 `pytest-split` shards, with `xdist` workers inside each shard. `ci-ok` requires
-all six PR shards or all nine main-push shards (Python 3.12–3.14). The build
-job also runs the documentation snippet and strict-docs checks when changed
+all three Python 3.12 PR shards and the separate Python 3.14 unit job, or all
+nine main-push shards (Python 3.12–3.14). The build job also runs the
+documentation snippet and strict-docs checks when changed
 paths require them. The machine-generated `.github/fast-test-durations.json`
 weights come from a complete, passing local fast run on 2026-11-01 (Python 3.13,
 four `xdist` workers); only their proportions matter, and absent weights do not
@@ -660,11 +697,15 @@ The
 [nightly workflow](.github/workflows/nightly.yml) runs daily at 06:00 UTC or
 on dispatch on any ref. It runs the full fast and slow tiers with the full
 parity matrix, numerical certification, parameter recovery, examples, and a
-randomized-order fast run with its seed logged. Separate jobs record the fast
-and slow duration weights; once every part passes, it publishes them and, on
-`main`, proposes the selection-map refresh. A failure creates or updates a
-GitHub issue labelled `nightly-failure`; tagging also requires a successful
-nightly run on the exact release SHA.
+randomized-order fast run with its seed logged. The full-suite matrix uses two
+duration-balanced shards per Python version: each combines the nightly fast
+and slow weights for `pytest-split`'s `least_duration` algorithm, and retains
+its own JUnit artifact under a 90-minute limit. Separate jobs record the fast
+and slow duration weights without waiting for the full-suite shards; once every
+recording part passes, it publishes them and, on `main`, proposes the
+selection-map refresh.
+A failure creates or updates a GitHub issue labelled `nightly-failure`;
+tagging also requires a successful nightly run on the exact release SHA.
 
 The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
@@ -672,6 +713,9 @@ on manual dispatch. It retains full test runs at dependency floors on all
 three Python versions, which nightly does not cover, plus all three live
 warehouse backends. Weekly failures create or update a GitHub issue labelled
 `weekly-failure`.
+Each interpreter's dependency-floor suite uses three duration-balanced parts,
+each with its own retained JUnit report and the same 90-minute limit. The
+retained numerical cases run once per interpreter, in the first part.
 
 
 #### Refusal registry gate
@@ -1156,6 +1200,10 @@ owner checkpoint, an inventory of live worktree consumers, a tested rollback
 and verified supported controls.
 Keep current hooks and the before-push `make check` obligation until the
 replacement hosted gate is actually required and its failure behavior is observed.
+
+Disposable selector-test commits isolate hooks for that command only. They must
+not enqueue real reviews or change shared hook configuration; ordinary commits
+retain the review policy above.
 
 For an owner-authorized manual-ready transition, back up the common Git
 `post-commit`, `post-rewrite` and `pre-push` files with their permissions and

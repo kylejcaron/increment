@@ -25,9 +25,9 @@ later run is claimed.
 Software compatibility, statistical guarantees, and empirical evidence answer
 different questions:
 
-- **Compatibility:** documented root imports, `increment.results`, and
-  `increment.power` are alpha under the [pre-1.0 policy](api.md#pre-10-compatibility).
-  Individual methods have no maturity tier.
+- **Compatibility:** the current alpha release is not 1.0.0; the
+  [compatibility policy](api.md#compatibility-policy) applies starting with
+  1.0.0. Individual methods have no maturity tier.
 - **Guarantee:** `exact` means finite-sample under a stated model or dependence
   condition; `asymptotic` means valid in the limit under stated assumptions;
   `planning approximation` is for planning, not inference; `experimental`

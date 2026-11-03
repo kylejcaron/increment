@@ -89,6 +89,17 @@ def test_each_promised_namespace_exports_exactly_its_manifest() -> None:
         )
 
 
+@pytest.mark.integration
+def test_experimental_namespace_is_excluded_from_the_manifest() -> None:
+    manifest = _manifest(EXPORTS)
+
+    experimental = importlib.import_module("increment.experimental")
+
+    assert experimental.__all__ == []
+    assert "increment.experimental" not in manifest
+    assert not _is_promised("increment.experimental", manifest)
+
+
 def _documentation_python(path: Path) -> Iterator[tuple[int, str]]:
     if path.suffix == ".py":
         yield 1, path.read_text()

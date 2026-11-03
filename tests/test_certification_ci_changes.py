@@ -38,6 +38,11 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
         '[[modules]]\npath = "increment.estimation.variance"\ndepends_on = ["increment.errors"]\n'
         '[[modules]]\npath = "increment.analysis"\ndepends_on = ["increment.estimation", "increment.errors"]\n'
         '[[modules]]\npath = "increment.dashboard"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment._frame_moments"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment.query.builders"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment.query.artifact_reader"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment.sources"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment.estimation.sequential_runtime"\ndepends_on = []\n'
         '[[modules]]\npath = "increment.errors"\ndepends_on = []\n'
         '[[modules]]\npath = "increment.future_engine"\ndepends_on = ["increment.errors"]\n'
     )
@@ -50,6 +55,9 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
         ),
         "tests/calibration/test_cuped_linear.py": (
             "from increment.estimation.cuped import fit_cuped\n"
+        ),
+        "tests/estimation/test_sequential_public_proof_acceptance.py": (
+            "import increment.estimation.sequential_runtime\n"
         ),
     }.items():
         target = repo / path
@@ -146,6 +154,27 @@ def test_indirect_certified_dependencies_require_certification(repository, path:
     assert _required(repo, base)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "increment/_frame_moments.py",
+        "increment/query/builders.py",
+        "increment/query/artifact_reader.py",
+        "increment/sources.py",
+    ],
+)
+def test_ingress_moment_change_requires_certification(repository, path: str):
+    repo, base = repository
+    _commit_change(repo, path)
+    assert _required(repo, base)
+
+
+def test_sequential_proof_module_change_requires_certification(repository):
+    repo, base = repository
+    _commit_change(repo, "increment/estimation/sequential_runtime.py")
+    assert _required(repo, base)
+
+
 def test_dashboard_only_change_does_not_require_certification(repository):
     repo, base = repository
     _commit_change(repo, "increment/dashboard/_html.py")
@@ -195,4 +224,4 @@ def test_non_pr_events_require_certification(repository, event: str):
     assert _required(repo, "missing-base", event)
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]

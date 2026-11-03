@@ -65,12 +65,15 @@ warehouse = [
     # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
     # exposes that module and ships CPython 3.14 wheels exists.
     "ibis-framework>=11.0.0; python_version >= '3.14'",
-    # SQLGlot 30.24 emits `DROP VIEW IF EXISTS` without a target in DuckDB.
-    # Hold at 30.14 until its generator produces valid DROP statements again (2026-10-28).
-    "sqlglot>=30.14,<30.15",
+    # Ibis 12 emits Drop(this=...), while SQLGlot 30.18–30.27 reads Drop.targets from `tables`.
+    # Reassess these SDK-incompatible releases when a stable Ibis fix is published.
+    "sqlglot>=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0",
 ]
 demo   = [
     "increment[warehouse]",
+    # Ibis 12 still calls DuckDB's removed `fetch_arrow_table()` method.
+    # Reassess this exact release exclusion after the upstream adapter is updated.
+    "duckdb!=2.0.0",
     "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",
     "ibis-framework[duckdb]>=12.0.0; python_version >= '3.14'",
 ]
@@ -117,10 +120,21 @@ dev = [
     "pytest-timeout>=2.4",
     "filelock>=4.2.4",
     "pytest-split>=0.11.0",
-    "mutmut>=3.8,<3.9",
+    # The mutation runner intentionally depends on mutmut's internal 3.8.0 API.
+    "mutmut==3.8.0",
     "pydoclint>=0.11.1",
     "complexipy==8.1.0",
     "pytest-benchmark>=5.3.0",
+]
+core-test = [
+    "pytest>=9.1.1",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.4",
+    "hypothesis>=6.170.9",
+    "sybil>=10.1.0",
+    "tach>=0.35.3",
+    "polars>=2.0.0",
+    "pandas>=3.0.5,<3.1",
 ]
 warehouse-backends = [
     "ibis-framework[postgres]>=12.0.0",
@@ -164,6 +178,7 @@ package = true
 # test. The `docs_snippets` Nox session runs them in the conditional docs CI job.
 testpaths = ["tests"]
 markers = [
+    "tooling: repository tooling tests; excluded from product tiers and selected by the tooling CI job",
     "integration: exercises cooperating components, local query engines, UI or subprocess boundaries; included in integration-fast and fast, excluded from unit",
     "stress: large-scale or exhaustive deterministic validation; also requires slow and remains in functional-slow until an equivalent required execution gate is activated",
     "slow: expensive functional test; excluded from fast, included in functional-slow unless parameter_recovery, numerical_certification or examples",

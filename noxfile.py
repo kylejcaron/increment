@@ -104,19 +104,20 @@ DUCKDB_FLOORS: dict[str, str] = {
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
 TIER_MARKERS = {
-    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
-    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
+    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
+    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
     # The compile registry builds once in its own CI job instead of in every slow shard.
     "slow": (
         "slow and not parameter_recovery and not numerical_certification and not examples"
-        " and not compile_registry and not benchmark"
+        " and not compile_registry and not benchmark and not tooling"
     ),
     "compile-registry": "compile_registry and not benchmark",
     "parameter-recovery": "parameter_recovery and not benchmark",
     "numerical-certification": "numerical_certification and not benchmark",
     "scientific": "(parameter_recovery or numerical_certification) and not benchmark",
     "examples": "examples and not benchmark",
+    "tooling": "tooling and not benchmark",
     "all": "(slow or not slow) and not benchmark",
     "all-except-scientific": "not parameter_recovery and not numerical_certification and not benchmark",
 }
@@ -416,6 +417,7 @@ def tests_floor_full(session: nox.Session) -> None:
     ``tests_floor`` above is the narrower fast-only floor session.
     This full floor session also exercises coverage checks against core,
     table and dashboard dependency floors.
+    The numerical cases run once per interpreter, in the first weekly part.
     """
     _run_pytest_at_floor(
         session,
@@ -425,6 +427,8 @@ def tests_floor_full(session: nox.Session) -> None:
         extras=("demo", "tables", "dashboard"),
     )
     if session.posargs and Path(session.posargs[0].split("::", 1)[0]).is_file():
+        return
+    if os.environ.get("INCREMENT_FLOOR_PART", "1") != "1":
         return
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"
@@ -590,6 +594,7 @@ def docs(session: nox.Session) -> None:
     _sync(session, "docs", "dev", extras=("demo", "tables", "dashboard"))
     _run_heavy(session, "python", "scripts/check_doc_references.py", "--check")
     session.run("python", "scripts/render_capability_table.py", "--check")
+    session.run("python", "scripts/render_error_codes.py", "--check")
     for name in EXAMPLE_NOTEBOOKS:
         session.run(
             "marimo",

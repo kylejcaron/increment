@@ -243,6 +243,7 @@ _REFUSALS: dict[str, RefusalSpec] = {
             message=message,
             **context,
         ),
+        keys=frozenset({"cluster"}) if _code == "arm.adjustment.cluster_prior" else frozenset(),
     )
     for _code in _COMPATIBILITY_CODES
 } | refusals(

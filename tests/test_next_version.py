@@ -161,4 +161,4 @@ def test_invalid_commit_ref_is_refused_before_any_version_is_emitted(repo):
     assert result.stdout == ""
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]

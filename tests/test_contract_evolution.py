@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import MutableMapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -39,6 +41,28 @@ def test_unknown_design_mechanism_refuses_with_code():
         "mechanism": "stepped_wedge",
         "supported": ("randomized", "encouragement", "observational"),
     }
+
+
+def test_experiment_reader_rejects_unknown_design_mechanism_before_execution():
+    from increment.errors import InvalidRequestError
+    from increment.kernel.experiment import Experiment
+
+    fixture = Path(__file__).parent / "fixtures" / "definitions_experiment_reference.json"
+    fixture_payload = json.loads(fixture.read_text())
+    payload = fixture_payload["experiment"]
+    payload["design"]["mechanism"] = "stepped_wedge"
+
+    with pytest.raises(InvalidRequestError) as raised:
+        Experiment.from_json(json.dumps(payload))
+
+    assert type(raised.value) is InvalidRequestError
+    assert raised.value.code == "design.mechanism_unsupported"
+    assert raised.value.context == {
+        "mechanism": "stepped_wedge",
+        "supported": ("randomized", "encouragement", "observational"),
+    }
+    with pytest.raises(TypeError):
+        cast(MutableMapping[str, object], raised.value.context)["mechanism"] = "randomized"
 
 
 def test_evidence_provider_required_methods_are_frozen():

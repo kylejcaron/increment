@@ -1,9 +1,16 @@
+import json
 import re
+import subprocess
+import sys
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
+
+pytestmark = pytest.mark.tooling
 
 _PINNED_REF = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 
@@ -133,13 +140,50 @@ def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
     assert "needs.record-durations.result == 'success'" in job["if"]
 
 
+def test_nightly_refresh_jobs_do_not_wait_for_the_full_suite() -> None:
+    jobs = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]
+    assert "needs" not in jobs["record-durations"]
+    for name in ("refresh-selection-map", "record-durations"):
+        job = jobs[name]
+        needs = job.get("needs", [])
+        if isinstance(needs, str):
+            needs = [needs]
+        assert "test-all" not in needs, name
+        assert "needs.test-all" not in job.get("if", ""), name
+
+
+def test_nightly_full_suite_shards_keep_distinct_reports() -> None:
+    job = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]["test-all"]
+    assert job["strategy"]["matrix"]["group"] == [1, 2]
+    assert job["strategy"]["fail-fast"] is False
+    assert job["timeout-minutes"] <= 90
+    assert "${{ matrix.group }}" in job["name"]
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert any(
+        "jq -s add .github/fast-test-durations.json .github/slow-test-durations.json" in run
+        and "> floor-test-durations.json" in run
+        for run in runs
+    )
+    run = next(run for run in runs if "nox -s" in run)
+    assert "--splits 2 --group ${{ matrix.group }}" in run
+    assert "--splitting-algorithm least_duration" in run
+    assert "--durations-path floor-test-durations.json" in run
+    report = next(
+        step for step in job["steps"] if step.get("name") == "Retain full-suite JUnit report"
+    )
+    assert report["if"] == "always()"
+    assert report["with"]["name"] == (
+        "full-suite-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}"
+        "-${{ github.run_attempt }}"
+    )
+    assert set(report["with"]["path"].splitlines()) == {"junit.xml", "junit-numerical.xml"}
+
+
 def test_nightly_publishes_duration_weights_only_from_every_successful_part() -> None:
     jobs = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"]
     record = jobs["record-durations"]
     publish = jobs["publish-durations"]
 
-    # The full suite can outlast its timeout; recording must not wait for it.
-    assert "needs" not in record
     assert publish["needs"] == "record-durations"
     assert "needs.record-durations.result == 'success'" in publish["if"]
     parts: dict[str, set[tuple[int, int]]] = {}
@@ -153,16 +197,15 @@ def test_nightly_publishes_duration_weights_only_from_every_successful_part() ->
 
 def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
-    test_job = workflow["jobs"]["test"]
+    report_job = workflow["jobs"]["selection-misses"]
     prediction = next(
-        step for step in test_job["steps"] if step.get("name") == "Predict selected files"
+        step for step in report_job["steps"] if step.get("name") == "Predict selected files"
     )
 
     assert prediction["continue-on-error"] is True
     assert "incomplete evidence: no base" in prediction["run"]
     assert 'if [ -z "$BASE" ]' in prediction["run"]
 
-    report_job = workflow["jobs"]["selection-misses"]
     assert report_job["continue-on-error"] is True
     report = next(
         step
@@ -170,3 +213,181 @@ def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
         if step.get("name") == "Merge predictions and report misses"
     )
     assert "incomplete evidence: no base" in report["run"]
+
+
+@pytest.mark.integration
+def test_backend_absence_keeps_process_and_socket_guards_active() -> None:
+    script = """
+import multiprocessing
+import socket
+import subprocess
+import sys
+from _pytest.outcomes import Failed
+import pytest
+sys.modules["duckdb"] = None
+sys.modules["ibis"] = None
+from tests import _unit_boundary as boundary
+from tests._duckdb_resources import bound_duckdb_resources
+bound_duckdb_resources()
+boundary.install_guards()
+boundary._current_unit_nodeid = "test_network_boundary"
+operations = (
+    ("socket", lambda: socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("127.0.0.1", 9))),
+    ("subprocess", lambda: subprocess.Popen([sys.executable, "-c", "pass"])),
+    ("process", lambda: multiprocessing.Process(target=lambda: None).start()),
+)
+for name, operation in operations:
+    try:
+        operation()
+    except Failed:
+        continue
+    raise AssertionError(f"{name} guard allowed the operation")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_core_install_job_runs_listed_modules_without_warehouse_packages() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["core-install"]
+    assert job["name"] == "core-install (${{ matrix.python-version }})"
+    assert job["env"]["UV_NO_SYNC"] == "1"
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert (
+        "uv sync --python ${{ matrix.python-version }} --no-default-groups --group core-test"
+        in commands
+    )
+    assert any(step.get("name") == "Run README dataframe quickstart" for step in job["steps"])
+    assert "README.md" in commands
+    assert "exec(compile" in commands
+    assert any(step.get("name") == "Verify warehouse packages are absent" for step in job["steps"])
+    assert "--collect-only -q $(cat tests/core_modules.txt)" in commands
+    assert '-m "not slow" $(cat tests/core_modules.txt)' in commands
+    core_test_run = next(step for step in job["steps"] if step.get("name") == "Run core tests")
+    assert "--cpu-report cpu.json" in core_test_run["run"]
+    cpu_upload = next(step for step in job["steps"] if step.get("name") == "Retain core CPU usage")
+    assert cpu_upload["if"] == "always()"
+    assert cpu_upload["continue-on-error"] is True
+    assert (
+        cpu_upload["with"]["name"]
+        == "cpu-core-${{ matrix.python-version }}-${{ job.check_run_id }}"
+    )
+    assert cpu_upload["with"]["path"] == "cpu.json"
+    ci_gate = workflow["jobs"]["ci-ok"]
+    assert "core-install" in ci_gate["needs"]
+    gate_env = next(
+        step["env"]
+        for step in ci_gate["steps"]
+        if step.get("name") == "Check required jobs and gate decisions"
+    )
+    assert gate_env["CORE_INSTALL_RESULT"] == "${{ needs.core-install.result }}"
+
+
+def test_core_test_dependencies_exclude_warehouse_backends() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text())
+    requirements = project["dependency-groups"]["core-test"]
+    assert {
+        "pytest",
+        "pytest-xdist",
+        "pytest-timeout",
+        "hypothesis",
+        "sybil",
+        "tach",
+        "polars",
+        "pandas",
+    } <= {requirement.split(">")[0].split("=")[0] for requirement in requirements}
+    assert not any(
+        name in requirement.lower()
+        for requirement in requirements
+        for name in ("ibis", "sqlglot", "duckdb")
+    )
+
+
+def test_weekly_floor_parts_cover_each_interpreter_with_distinct_reports() -> None:
+    job = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]["test-all-floor"]
+    matrix = job["strategy"]["matrix"]
+    assert matrix["python-version"] == ["3.12", "3.13", "3.14"]
+    assert matrix["group"] == [1, 2, 3]
+    assert job["timeout-minutes"] == 90
+    assert "part ${{ matrix.group }}/3)" in job["name"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "jq -s add .github/fast-test-durations.json .github/slow-test-durations.json" in commands
+    assert "--splits 3 --group ${{ matrix.group }}" in commands
+    assert (
+        "--splitting-algorithm least_duration --durations-path floor-test-durations.json"
+        in commands
+    )
+    assert job["env"]["INCREMENT_FLOOR_PART"] == "${{ matrix.group }}"
+    upload = next(
+        step for step in job["steps"] if step.get("name") == "Retain floor-suite JUnit report"
+    )
+    assert "-part-${{ matrix.group }}-" in upload["with"]["name"]
+    assert upload["if"] == "always()"
+
+
+def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]
+    fast_job = jobs["test"]
+    matrix_expression = fast_job["strategy"]["matrix"]["include"]
+    matrix_literals = re.findall(r"'(\[\{.*?\}\])'", matrix_expression)
+    pull_request_matrix, push_matrix = map(json.loads, matrix_literals)
+
+    assert [
+        (entry["python-version"], entry["group"], entry["splits"]) for entry in pull_request_matrix
+    ] == [("3.12", group, 3) for group in (1, 2, 3)]
+    assert {
+        (entry["python-version"], entry["group"], entry["splits"]) for entry in push_matrix
+    } == {(python, group, 3) for python in ("3.12", "3.13", "3.14") for group in (1, 2, 3)}
+    fast_tests = next(step for step in fast_job["steps"] if step.get("id") == "fast-tests")
+    assert "matrix.python-version" in fast_tests["run"]
+    assert "test-reduction-approved" in fast_tests["run"]
+    report_step = next(
+        step
+        for step in jobs["selection-misses"]["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+    assert report_step["env"]["EXPECTED_SHARDS"] == (
+        "${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.12-3' || "
+        "'3.12-1,3.12-2,3.12-3,3.13-1,3.13-2,3.13-3,3.14-1,3.14-2,3.14-3' }}"
+    )
+
+    assert not any(step.get("name") == "Predict selected files" for step in fast_job["steps"])
+    selection_job = jobs["selection-misses"]
+    prediction = next(
+        step for step in selection_job["steps"] if step.get("name") == "Predict selected files"
+    )
+    assert prediction["env"]["AFFECTED_SHARD_ID"] == "all"
+    assert "--co" in prediction["run"]
+    assert "--splits" not in prediction["run"]
+    assert "--group" not in prediction["run"]
+    prediction_artifact = next(
+        step for step in selection_job["steps"] if step.get("name") == "Retain selection prediction"
+    )
+    assert prediction_artifact["with"]["name"].startswith("affected-report-all-")
+
+    newest = jobs["unit-newest"]
+    assert newest["name"] == "unit (3.14)"
+    setup_uv = next(
+        step for step in newest["steps"] if step.get("uses", "").startswith("astral-sh/setup-uv@")
+    )
+    assert setup_uv["with"]["python-version"] == "3.14"
+    assert any("make test-unit" in step.get("run", "") for step in newest["steps"])
+
+    gate = jobs["ci-ok"]
+    assert "unit-newest" in gate["needs"]
+    gate_step = next(
+        step
+        for step in gate["steps"]
+        if step.get("name") == "Check required jobs and gate decisions"
+    )
+    assert gate_step["env"]["UNIT_NEWEST_REQUIRED"] == "${{ github.event_name == 'pull_request' }}"
+    assert gate_step["env"]["UNIT_NEWEST_RESULT"] == "${{ needs.unit-newest.result }}"
+    run = gate_step["run"]
+    assert 'check_conditional_job "$UNIT_NEWEST_REQUIRED" "$UNIT_NEWEST_RESULT" unit-newest' in run

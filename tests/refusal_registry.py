@@ -24,7 +24,7 @@ def walk_refusal_registries() -> dict[str, list[tuple[str, RefusalSpec | Warning
         for attr, value in vars(module).items():
             if isinstance(value, spec_types):
                 registrations.setdefault(value.code, []).append((f"{name}.{attr}", value))
-            elif isinstance(value, dict):
+            elif isinstance(value, Mapping):
                 for key, spec in value.items():
                     if isinstance(spec, spec_types):
                         registrations.setdefault(spec.code, []).append(

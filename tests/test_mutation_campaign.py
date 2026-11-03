@@ -9,6 +9,8 @@ import pytest
 
 from scripts.mutation_campaign import COLLECTION_ERROR, RUNNER_ERROR, _rates, classify, execute
 
+pytestmark = pytest.mark.tooling
+
 
 @pytest.fixture
 def worker_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -219,12 +221,17 @@ def test_string_literal_mutants_are_flagged():
 
 @pytest.mark.integration
 class TestKillMatrix:
+    # Complete mutation campaigns distinguish redundant killers from non-killing tests.
+    @pytest.mark.slow
     def test_kill_matrix_attributes_every_killed_mutant(
         self, worker_project, tmp_path: Path, monkeypatch
     ):
         import json
 
         from scripts import mutation_campaign
+
+        # The isolated sample uses its own pytest configuration and import path.
+        monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
 
         work, _ = worker_project
         pyproject = work / "pyproject.toml"

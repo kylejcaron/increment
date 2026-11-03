@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
@@ -57,8 +58,12 @@ def _require_compact_request(source, metric, method: Method) -> None:
 def categorical_cells_source(source, metric, request: _ResolvedCupedRequest) -> CategoricalCells:
     """Capture categorical evidence on the source's pinned warehouse relation."""
     _require_compact_request(source, metric, request.method)
-    with source.cuped_relation(metric, request) as (relation, execute, _scratch):
-        return categorical_cells_from_relation(relation, execute, metric=metric, request=request)
+    with source.cuped_relation(metric, request) as (relation, execute, scratch_factory):
+        scratch_context = scratch_factory() if scratch_factory is not None else None
+        with scratch_context if scratch_context is not None else nullcontext() as scratch:
+            return categorical_cells_from_relation(
+                relation, execute, metric=metric, request=request, scratch=scratch
+            )
 
 
 def categorical_request_cells(
@@ -81,11 +86,15 @@ def categorical_request_cells(
         population=population,
     )
     _require_compact_request(source, metric, method)
-    with source.cuped_relation(metric, request) as (relation, execute, _scratch):
+    with source.cuped_relation(metric, request) as (relation, execute, scratch_factory):
         labels = {row["group_id"] for row in _rows(execute(relation.select("group_id").distinct()))}
         arms = sorted(str(label) for label in labels if label is not None and str(label) != control)
         request = replace(request, arm_order=(control, *arms))
-        return categorical_cells_from_relation(relation, execute, metric=metric, request=request)
+        scratch_context = scratch_factory() if scratch_factory is not None else None
+        with scratch_context if scratch_context is not None else nullcontext() as scratch:
+            return categorical_cells_from_relation(
+                relation, execute, metric=metric, request=request, scratch=scratch
+            )
 
 
 def resolved_multicovariate_request(
@@ -272,49 +281,62 @@ def fit_multicovariate_source(
         from increment.estimation.variance import require_positive_denominator_mean
         from increment.query._cuped_qr import _stable_arm_means
 
-        withheld = {}
-        fitted_request = request
-        if metric.type == "ratio":
-            denominator_means = _stable_arm_means(
-                relation, relation["y_den"].cast("float64"), execute=execute
-            )
-            for arm, mean in denominator_means.items():
+        scratch_context = scratch_factory() if scratch_factory is not None else None
+        if scratch_context is None:
+            scratch_context = nullcontext()
+        with scratch_context as scratch:
+            if scratch is not None and metric.type == "ratio" and not categorical_only:
+                relation = scratch.materialize_input(relation, label="magnitude_checked")
+            withheld = {}
+            fitted_request = request
+            if metric.type == "ratio":
+                denominator_relation = relation.select("group_id", "y_den")
+                denominator_means = _stable_arm_means(
+                    denominator_relation,
+                    denominator_relation["y_den"].cast("float64"),
+                    execute=execute,
+                )
+                for arm, mean in denominator_means.items():
+                    try:
+                        require_positive_denominator_mean(
+                            metric=metric.name, group_id=arm, d_bar=mean
+                        )
+                    except CodedError as exc:
+                        withheld[arm] = exc
+                admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
+                if request.control in withheld or len(admitted) < 2:
+                    return warehouse_cuped_fit_evidence(
+                        None, request.arm_order, tuple(withheld.items())
+                    )
+                relation = relation.filter(relation["group_id"].isin(admitted))
+                fitted_request = replace(
+                    request,
+                    arm_order=admitted,
+                    identity=request.identity + ("admitted_arms", admitted),
+                )
+            if (
+                categorical_only
+                and not return_components
+                and not _known_cells_outcome_domain(source, metric, relation, outcomes)
+            ):
                 try:
-                    require_positive_denominator_mean(metric=metric.name, group_id=arm, d_bar=mean)
+                    fit = fit_categorical_cells(
+                        categorical_cells_from_relation(
+                            relation,
+                            execute,
+                            metric=metric,
+                            request=fitted_request,
+                            magnitude_checked=True,
+                            scratch=scratch,
+                        ),
+                        control=fitted_request.control,
+                    )
+                    return warehouse_cuped_fit_evidence(
+                        fit, request.arm_order, tuple(withheld.items())
+                    )
                 except CodedError as exc:
-                    withheld[arm] = exc
-            admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
-            if request.control in withheld or len(admitted) < 2:
-                return warehouse_cuped_fit_evidence(
-                    None, request.arm_order, tuple(withheld.items())
-                )
-            relation = relation.filter(relation["group_id"].isin(admitted))
-            fitted_request = replace(
-                request,
-                arm_order=admitted,
-                identity=request.identity + ("admitted_arms", admitted),
-            )
-        if (
-            categorical_only
-            and not return_components
-            and not _known_cells_outcome_domain(source, metric, relation, outcomes)
-        ):
-            try:
-                fit = fit_categorical_cells(
-                    categorical_cells_from_relation(
-                        relation,
-                        execute,
-                        metric=metric,
-                        request=fitted_request,
-                        magnitude_checked=True,
-                    ),
-                    control=fitted_request.control,
-                )
-                return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
-            except CodedError as exc:
-                if exc.code not in CELL_REFUSALS:
-                    raise
-        with scratch_factory() as scratch:
+                    if exc.code not in CELL_REFUSALS:
+                        raise
             fit = fit_warehouse_qr(
                 relation,
                 metric=metric,
@@ -324,7 +346,7 @@ def fit_multicovariate_source(
                 return_components=return_components,
                 magnitude_checked=True,
             )
-        return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
+            return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
 
 
 def _portable_categorical_domain(source, metric, method, population) -> None:

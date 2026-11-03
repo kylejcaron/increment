@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import pytest
 from scripts.selection_map import SelectionMap, is_stale
 from tests._selection import AffectedHandler, SelectionGraph, kept_test_files
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 class _Tach:
@@ -96,6 +97,8 @@ def _scratch_commit(root: Path, message: str) -> None:
     _scratch_git(
         root,
         "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
         "user.email=tests@example.com",
         "-c",
         "user.name=Tests",
@@ -104,6 +107,40 @@ def _scratch_commit(root: Path, message: str) -> None:
         "-qm",
         message,
     )
+
+
+def test_scratch_commits_isolate_hooks_without_disabling_normal_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    marker = tmp_path / "post-commit-ran"
+    hook = hooks / "post-commit"
+    hook.write_text('#!/bin/sh\nprintf "ran\\n" >> "$INCREMENT_TEST_HOOK_MARKER"\n')
+    hook.chmod(0o755)
+    monkeypatch.setenv("INCREMENT_TEST_HOOK_MARKER", str(marker))
+    _scratch_git(root, "init", "-q")
+    _scratch_git(root, "config", "core.hooksPath", str(hooks))
+    (root / "data").write_text("fixture\n")
+
+    _scratch_commit(root, "fixture input")
+
+    assert not marker.exists()
+    (root / "data").write_text("ordinary change\n")
+    _scratch_git(root, "add", "-A")
+    _scratch_git(
+        root,
+        "-c",
+        "user.email=tests@example.com",
+        "-c",
+        "user.name=Tests",
+        "commit",
+        "-qm",
+        "ordinary change",
+    )
+    assert marker.read_text() == "ran\n"
 
 
 def _scratch_map(root: Path) -> str:
@@ -140,7 +177,7 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
             "-m",
             "pytest",
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
             "-q",
             "--tach-base",
             base,

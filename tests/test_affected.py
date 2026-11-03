@@ -12,7 +12,7 @@ import pytest
 
 from scripts.affected import Selection, _pytest_arguments, _pytest_invocations, main, select
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.tooling]
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -146,7 +146,7 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
     assert selection.test_files == ()
     assert _pytest_arguments(selection, base, "fast", ["-n", "2"]) == [
         "-m",
-        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
         "--tach-base",
         base,
         "--affected-tier",
@@ -1044,7 +1044,7 @@ def test_unit_tier_uses_unit_marker_expression(tmp_path: Path) -> None:
     selection = _change(root, base, "tests/test_example.py", "def test_new(): pass\n")
     assert _pytest_arguments(selection, base, "unit", []) == [
         "-m",
-        "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+        "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
         "-p",
         "scripts.affected_filter",
         "tests",
@@ -1080,7 +1080,7 @@ def test_full_tier_preserves_doc_pages_and_uncovered_paths(tmp_path: Path) -> No
     assert selection.uncovered == ("scripts/x.py",)
     assert _pytest_arguments(selection, base, "fast", []) == [
         "-m",
-        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
         "-p",
         "scripts.affected_filter",
         "tests",
@@ -1177,7 +1177,7 @@ def test_small_selection_runs_without_workers() -> None:
     )
     assert _pytest_arguments(selection, "base", "fast", ["-n", "4", "--dist", "loadgroup"]) == [
         "-m",
-        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
         "-p",
         "scripts.affected_filter",
         "tests",
@@ -1191,7 +1191,7 @@ def test_small_selection_runs_without_workers() -> None:
     ):
         assert _pytest_arguments(selection, "base", "fast", worker_args) == [
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress and not benchmark and not tooling",
             "-p",
             "scripts.affected_filter",
             "tests",
