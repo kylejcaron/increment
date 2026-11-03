@@ -104,6 +104,24 @@ SEEDED_RESAMPLING_FIELD_PATHS = frozenset(
     }
 )
 _MODE_METADATA_FIELDS = frozenset({"coherence", "effective_modes"})
+_PUBLIC_CATALOGUE = frozenset(
+    {
+        ("mean_ratio_conversion_cuped_fixed_horizon", "from_definitions"),
+        ("conversion_route_straddles_the_dense_threshold", "from_unit_summary"),
+        ("mean_ratio_conversion_cuped_fixed_horizon", "from_moments"),
+        ("mixed-cuped-multicovariate-fixed-horizon", "from_unit_day_artifact"),
+        ("quantile_tied_rounded_outcomes", "from_unit_panel"),
+        ("sequential-mixed-quantile-catalog-checkpoint", "from_unit_summary"),
+        ("triggered_daily", "from_definitions"),
+        ("triggered_asof", "from_unit_day_artifact"),
+        ("triggered-sitewide-population-results", "from_definitions"),
+        ("triggered_encouragement_compliance_asof", "from_unit_day_artifact"),
+        ("breakout_store_dimension", "from_definitions"),
+        ("clustered_assignment_integrity_scope", "from_unit_day_artifact"),
+        ("multiplicity_primary_secondaries_guardrail", "from_definitions"),
+        ("audit-switchback-neighboring-integers", "from_switchback_panel"),
+    }
+)
 
 
 def _mode_metadata(metadata: object) -> Mapping[str, object]:
@@ -161,7 +179,7 @@ def _json_context(value: Any) -> Any:
 
 def _compare(expected: Any, actual: Any, path: str = "") -> None:
     if expected is None or actual is None or isinstance(expected, (bool, str)):
-        assert expected == actual
+        assert expected == actual, path
     elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
         assert isinstance(actual, (int, float)) and not isinstance(actual, bool)
         if abs(expected) > TOLERANCE or abs(actual) > TOLERANCE:
@@ -170,11 +188,11 @@ def _compare(expected: Any, actual: Any, path: str = "") -> None:
         rtol = 1e-6 if path in SEEDED_RESAMPLING_FIELD_PATHS else 1e-9
         assert math.isclose(expected, actual, rel_tol=rtol, abs_tol=TOLERANCE)
     elif isinstance(expected, Mapping):
-        assert isinstance(actual, Mapping) and expected.keys() == actual.keys()
+        assert isinstance(actual, Mapping) and expected.keys() == actual.keys(), path
         for key in expected:
             _compare(expected[key], actual[key], f"{path}.{key}" if path else str(key))
     elif isinstance(expected, (list, tuple)):
-        assert isinstance(actual, (list, tuple)) and len(expected) == len(actual)
+        assert isinstance(actual, (list, tuple)) and len(expected) == len(actual), path
         for index, (left, right) in enumerate(zip(expected, actual, strict=True)):
             _compare(left, right, f"{path}.{index}")
     else:
@@ -452,6 +470,37 @@ def _without_snapshot_identity(value: Any, *, clear_content_digest: bool = False
     return value
 
 
+def _post_capture_absolute_contrast_projection(expected: Any, actual: Any) -> Any:
+    if isinstance(expected, Mapping) and isinstance(actual, Mapping):
+        projected = {
+            key: _post_capture_absolute_contrast_projection(expected.get(key), value)
+            for key, value in actual.items()
+        }
+        if (
+            actual.get("kind") == "contrast"
+            and "value_scale" in expected
+            and expected["value_scale"] is None
+        ):
+            # The retained contrast CellKey predates its explicit absolute scale.
+            assert actual.get("value_scale") == "absolute"
+            projected["value_scale"] = None
+        elif (
+            actual.get("assignment") == "switchback"
+            and actual.get("method") == "switchback_unit_t_approximation"
+            and actual.get("estimand") == "retained_window_total_difference"
+            and "value_scale" not in expected
+        ):
+            assert actual.get("value_scale") == "absolute"
+            projected.pop("value_scale")
+        return projected
+    if isinstance(expected, list) and isinstance(actual, list) and len(expected) == len(actual):
+        return [
+            _post_capture_absolute_contrast_projection(left, right)
+            for left, right in zip(expected, actual, strict=True)
+        ]
+    return actual
+
+
 def _decode_fitted_cuped_evidence(value: Any) -> Any:
     """Compare serialized fitted evidence numerically without relaxing declarations."""
     if isinstance(value, Mapping):
@@ -620,6 +669,37 @@ def _identity_hash_without_snapshot(value: object, *, clear_content_digest: bool
     return identity.model_copy(update=update).hash()
 
 
+def _retained_capture_projection(expected: Mapping[str, Any], actual: Mapping[str, Any]):
+    missing_fields = {
+        field
+        for field in ("allocation_alpha", "family_nominal_alpha")
+        if expected.get(field) is None
+    }
+    allocation_alpha = actual.get("allocation_alpha")
+    allowed: set[str] = set()
+    if allocation_alpha is not None:
+        assert isinstance(allocation_alpha, (int, float))
+        assert 0.0 < allocation_alpha < 1.0
+        assert actual.get("discovery") is True
+        allowed.update(missing_fields)
+    elif (
+        "family_nominal_alpha" in missing_fields and actual.get("family_nominal_alpha") is not None
+    ):
+        assert actual.get("discovery") is True
+        assert actual.get("family_procedure") == "bh"
+        allowed.add("family_nominal_alpha")
+    for field in missing_fields - allowed:
+        assert actual.get(field) is None
+    # Selected-cell reissue allocations were added after these captures.
+    projected = dict(actual)
+    for field in allowed:
+        if field in expected:
+            projected[field] = None
+        else:
+            projected.pop(field, None)
+    return projected, allowed
+
+
 def _assert_cell_matches(
     expected: Mapping[str, Any],
     actual: object,
@@ -637,35 +717,11 @@ def _assert_cell_matches(
     expected_retained = expected_cell.get("retained_row")
     actual_retained = actual_payload.get("retained_row")
     if isinstance(expected_retained, Mapping) and isinstance(actual_retained, Mapping):
-        missing_fields = {
-            field
-            for field in ("allocation_alpha", "family_nominal_alpha")
-            if expected_retained.get(field) is None
-        }
-        allocation_alpha = actual_retained.get("allocation_alpha")
-        allowed_post_capture_fields: set[str] = set()
-        if allocation_alpha is not None:
-            assert isinstance(allocation_alpha, (int, float))
-            assert 0.0 < allocation_alpha < 1.0
-            assert actual_retained.get("discovery") is True
-            allowed_post_capture_fields.update(missing_fields)
-        elif (
-            "family_nominal_alpha" in missing_fields
-            and actual_retained.get("family_nominal_alpha") is not None
-        ):
-            assert actual_retained.get("discovery") is True
-            assert actual_retained.get("family_procedure") == "bh"
-            allowed_post_capture_fields.add("family_nominal_alpha")
-        for field in missing_fields - allowed_post_capture_fields:
-            assert actual_retained.get(field) is None
+        normalized_retained, allowed_post_capture_fields = _retained_capture_projection(
+            expected_retained,
+            actual_retained,
+        )
         if allowed_post_capture_fields:
-            # Step 8 re-issues selected cells; frozen captures predate these row fields.
-            normalized_retained = dict(actual_retained)
-            for field in allowed_post_capture_fields:
-                if field in expected_retained:
-                    normalized_retained[field] = None
-                else:
-                    normalized_retained.pop(field)
             actual_payload = dict(actual_payload)
             actual_payload["retained_row"] = normalized_retained
             expected_projection = expected_cell.get("projection_fields")
@@ -810,6 +866,7 @@ def _assert_outcome_matches(
     expected: Mapping[str, Any],
     actual: Mapping[str, object],
     *,
+    current_schema: bool = True,
     allow_raw_moment_identity_drift: bool = False,
 ) -> Mapping[str, object]:
     if "aggregate_evidence" in expected:
@@ -899,6 +956,10 @@ def _assert_outcome_matches(
             actual_metadata = _project_post_capture_artifact_digests(
                 expected_metadata, actual_metadata
             )
+        if current_schema:
+            actual_metadata = _post_capture_absolute_contrast_projection(
+                expected_metadata, actual_metadata
+            )
         _compare(expected_metadata, actual_metadata)
         for field in (
             "population_identity",
@@ -926,7 +987,12 @@ def _assert_outcome_matches(
                 elif field == "family_selection":
                     _compare_family_selection(expected_value, actual_value)
                 else:
-                    _compare(expected_value, actual_value)
+                    _compare(
+                        expected_value,
+                        _post_capture_absolute_contrast_projection(expected_value, actual_value)
+                        if current_schema
+                        else actual_value,
+                    )
         modes = _mode_metadata(actual["metadata"])
         if modes:
             return modes
@@ -1269,6 +1335,9 @@ NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE6_ADAPTERS}
 
 REGISTERED = {**REGISTERED, "line7": _LINE7_PAIRS}
 NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, **_LINE7_ADAPTERS}
+_CONTRAST_PAIR = ("audit-switchback-neighboring-integers", "from_switchback_panel")
+REGISTERED = {**REGISTERED, "contrast": frozenset({_CONTRAST_PAIR})}
+NEW_PATH_ADAPTERS = {**NEW_PATH_ADAPTERS, _CONTRAST_PAIR: _line1_actual_outcome}
 
 
 def test_line7_registry_matches_frozen_artifact_inventory() -> None:
@@ -1304,6 +1373,13 @@ def test_capture_scenario_inventory_matches_fixture() -> None:
         for ingress in scenario
     }
     assert actual == expected
+    registered = set().union(*REGISTERED.values())
+    assert len(_PUBLIC_CATALOGUE) == 14
+    assert _PUBLIC_CATALOGUE <= actual & registered
+    assert all(
+        record["scenarios"][scenario][ingress]["kind"] == "cells"
+        for scenario, ingress in _PUBLIC_CATALOGUE
+    )
 
 
 def test_line1_registration_inventory_matches_frozen_capture() -> None:
@@ -1354,39 +1430,19 @@ def test_line3_registration_inventory_matches_frozen_capture() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.grid("One actual public journey per readout kind and source family")
 @pytest.mark.parametrize(
     ("scenario_id", "ingress", "expected"),
     [
-        # The artifact ingress materializes identity for 4,004,003 units (~535s vs ~185s via definitions).
         pytest.param(
             scenario_id,
             ingress,
-            outcome,
-            marks=[
-                pytest.mark.slow,
-                pytest.mark.numerical_certification,
-                pytest.mark.stress,
-                pytest.mark.timeout(900),
-            ],
+            _capture()["scenarios"][scenario_id][ingress],
+            marks=pytest.mark.slow,
         )
-        if (scenario_id, ingress)
-        == ("exact_binomial_beyond_the_former_arm_ceiling", "from_unit_day_artifact")
-        else pytest.param(
-            scenario_id,
-            ingress,
-            outcome,
-            marks=[pytest.mark.slow, pytest.mark.numerical_certification],
-        )
-        if scenario_id == "exact_binomial_beyond_the_former_arm_ceiling"
-        # Scale scenarios taking 15-130s per pair run in the slow tier.
-        else pytest.param(scenario_id, ingress, outcome, marks=pytest.mark.slow)
         if scenario_id == "mixed-cuped-multicovariate-fixed-horizon"
-        else (scenario_id, ingress, outcome)
-        for scenario_id, ingress, outcome in sorted(
-            (scenario_id, ingress, outcome)
-            for scenario_id, scenario in _capture()["scenarios"].items()
-            for ingress, outcome in scenario.items()
-        )
+        else (scenario_id, ingress, _capture()["scenarios"][scenario_id][ingress])
+        for scenario_id, ingress in sorted(_PUBLIC_CATALOGUE)
     ],
 )
 def test_frozen_capture_outcome(
@@ -1547,7 +1603,7 @@ def test_frozen_capture_replays_every_outcome_against_itself() -> None:
     for scenario in _capture()["scenarios"].values():
         for expected in scenario.values():
             actual = _actual_from_capture(expected) if expected["kind"] == "cells" else expected
-            _assert_outcome_matches(expected, actual)
+            _assert_outcome_matches(expected, actual, current_schema=False)
 
 
 @pytest.mark.parametrize("mutation", ("missing", "extra"))
@@ -1569,7 +1625,7 @@ def test_frozen_capture_rejects_missing_or_extra_cell(mutation: str) -> None:
     else:
         actual["cells"]["unexpected-identity"] = next(iter(actual["cells"].values()))
     with pytest.raises(AssertionError):
-        _assert_outcome_matches(expected, actual)
+        _assert_outcome_matches(expected, actual, current_schema=False)
 
 
 def test_frozen_capture_rejects_ingress_metadata_mismatch() -> None:
@@ -1587,7 +1643,7 @@ def test_frozen_capture_rejects_ingress_metadata_mismatch() -> None:
         "metadata": {**expected["metadata"], "unexpected": True},
     }
     with pytest.raises(AssertionError):
-        _assert_outcome_matches(expected, actual)
+        _assert_outcome_matches(expected, actual, current_schema=False)
 
 
 @pytest.mark.parametrize("field", ("kind", "code", "stage"))
@@ -1717,7 +1773,7 @@ def test_frozen_capture_rejects_constant_relative_offset(fraction: float) -> Non
     payload = expected["cells"][offset_key]["result_cell"]
     actual_cells[offset_key] = _offset_payload(payload, fraction)
     with pytest.raises(AssertionError):
-        _assert_outcome_matches(expected, actual)
+        _assert_outcome_matches(expected, actual, current_schema=False)
 
 
 @pytest.mark.parametrize(
@@ -1771,7 +1827,7 @@ def _actual_from_capture(expected: Mapping[str, Any]) -> dict[str, object]:
 
 def _assert_unchanged_capture_matches(expected: Mapping[str, Any]) -> None:
     actual = _actual_from_capture(expected) if expected["kind"] == "cells" else expected
-    _assert_outcome_matches(expected, actual)
+    _assert_outcome_matches(expected, actual, current_schema=False)
 
 
 @pytest.mark.parametrize("field", ("population_identity", "daily_values", "family_selection"))
@@ -1787,7 +1843,132 @@ def test_frozen_capture_rejects_ingress_evidence_mismatch(field: str) -> None:
     actual[field] = {"unexpected": True}
 
     with pytest.raises(AssertionError):
-        _assert_outcome_matches(expected, actual)
+        _assert_outcome_matches(expected, actual, current_schema=False)
+
+
+@pytest.fixture
+def qualified_capture_repository(tmp_path: Path) -> Path:
+    import shutil
+
+    repository = Path(__file__).resolve().parents[1]
+    isolated = tmp_path / "qualified-capture"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "clone",
+            "--shared",
+            "--no-checkout",
+            str(repository),
+            str(isolated),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-C",
+            str(isolated),
+            "checkout",
+            "7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+            "--",
+            "increment",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (isolated / "scripts").mkdir()
+    shutil.copy2(
+        repository / "scripts" / "capture_evidence_identity.py",
+        isolated / "scripts" / "capture_evidence_identity.py",
+    )
+    return isolated
+
+
+@pytest.mark.integration
+def test_consumer_capture_rejects_foreign_imported_production_before_writing(
+    tmp_path: Path,
+    qualified_capture_repository: Path,
+) -> None:
+    import shutil
+
+    repository = Path(__file__).resolve().parents[1]
+    foreign_repository = tmp_path / "foreign"
+    foreign_package = foreign_repository / "increment"
+    shutil.copytree(qualified_capture_repository / "increment", foreign_package)
+    output = tmp_path / "consumer-inputs"
+    script = qualified_capture_repository / "scripts" / "capture_evidence_identity.py"
+    command = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(repository)!r}); "
+        f"sys.path.insert(0, {str(qualified_capture_repository)!r}); "
+        "import tests; "
+        f"sys.path.insert(0, {str(foreign_repository)!r}); "
+        "import increment; "
+        f"assert increment.__file__.startswith({str(foreign_package)!r}); "
+        "print(increment.__file__); "
+        f"sys.argv = [{str(script)!r}, "
+        "'--consumer-inputs', '--scenario', 'arm-facts-parity', '--out', "
+        f"{str(output)!r}]; "
+        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == str(foreign_package / "__init__.py")
+    assert not output.exists()
+
+
+@pytest.mark.integration
+def test_consumer_capture_accepts_valid_production_root_and_records_it(
+    tmp_path: Path,
+    qualified_capture_repository: Path,
+) -> None:
+    import gzip
+
+    repository = Path(__file__).resolve().parents[1]
+    output = tmp_path / "consumer-inputs"
+    script = qualified_capture_repository / "scripts" / "capture_evidence_identity.py"
+    command = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(repository)!r}); "
+        f"sys.path.insert(0, {str(qualified_capture_repository)!r}); "
+        "import tests; "
+        "import increment; "
+        "print(increment.__file__); "
+        f"sys.argv = [{str(script)!r}, '--consumer-inputs', '--scenario', "
+        "'arm-facts-parity', '--out', "
+        f"{str(output)!r}]; "
+        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(qualified_capture_repository / "increment" / "__init__.py")
+    captured = json.loads(
+        gzip.decompress((output / "arm-facts-parity--from_unit_summary.json.gz").read_bytes())
+    )
+    assert captured["runtime"]["production_root"] == str(qualified_capture_repository / "increment")
 
 
 def test_frozen_capture_rejects_operation_mismatch() -> None:
@@ -1821,7 +2002,7 @@ def test_frozen_capture_rejects_operation_mismatch() -> None:
     ]["0.01"]["result_cell"]["summary"]["point"]
     operation["result_cell"]["retained_row"]["lift"]["log_mean"] += 1.0
     with pytest.raises(AssertionError):
-        _assert_outcome_matches(expected, _actual_from_capture(expected))
+        _assert_outcome_matches(expected, _actual_from_capture(expected), current_schema=False)
     assert (
         capture["scenarios"][scenario_id][ingress]["cells"][key]["operations"]["relevel"]["0.01"][
             "result_cell"

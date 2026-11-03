@@ -393,6 +393,21 @@ context checks and no-read assertion; isolate its read tracking so one method
 cannot affect the next. A failure anywhere in a method's checks must identify
 the cell, source and failing method while preserving the original traceback.
 
+Frozen evidence checks acquire each declared source coordinate once and retain
+only materialized inputs. Estimator and readout checks consume distinct input
+representations with their complete configurations, against unchanged historical
+outputs or independent raw references. Keep source refusals, population identity,
+nulls, row order and field ownership explicit; use a small public journey catalogue
+for end-to-end assembly rather than repeating every estimator on every loader.
+Consumer-input capture is separate from expected-output capture and must verify
+the pinned production revision before replacing input files.
+
+Hash receipts must own the preimage of their actual protocol, not a similarly
+named digest. Preserve complete archived metadata while independently checking
+current source and family identities; comparison-only version projections must
+not modify real results. See the [fixture ownership rules](tests/evidence_fixtures/FAULTS.md#frozen-input-and-readout-ownership)
+for raw-byte, warehouse aggregate and current-only scope boundaries.
+
 Red check: every new test is observed failing before it is accepted. For a
 bugfix, run it against the pre-change code; for new code, introduce a
 deliberate one-line break in the code under test, watch the test catch it,

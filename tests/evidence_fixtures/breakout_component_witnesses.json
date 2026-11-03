@@ -1,0 +1,98 @@
+[
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_definitions.json.gz",
+    "receipt": 0,
+    "entry": 0,
+    "kind": "warehouse_qr_breakout:country:region:east",
+    "metric": "revenue",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "8a364b31c61dcfe04e59ea104357ffb20b141802f550a2ba69798e152417d538",
+    "lower": 0.06935294896893884,
+    "upper": 0.2681460095278831
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_definitions.json.gz",
+    "receipt": 0,
+    "entry": 1,
+    "kind": "warehouse_qr_breakout:country:region:west",
+    "metric": "revenue",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "24ada386c4907a699a06ba1a5e4ce08f8fac2b6b2800bcf5b19e9712ed8aee21",
+    "lower": 0.07010026958255768,
+    "upper": 0.2658831928957018
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_definitions.json.gz",
+    "receipt": 0,
+    "entry": 2,
+    "kind": "warehouse_qr_breakout:country:region:east",
+    "metric": "revenue_per_spend",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "d809ae438357d0f4e9fc2cf953dfd8062d695858a6a9c17f188e761d2bd8b1bd",
+    "lower": 0.06351295468673598,
+    "upper": 0.2480288431020238
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_definitions.json.gz",
+    "receipt": 0,
+    "entry": 3,
+    "kind": "warehouse_qr_breakout:country:region:west",
+    "metric": "revenue_per_spend",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "7676571b4fa9b6a0f4089574786cf432b861f52b7be778a1ebac85fcac65b584",
+    "lower": 0.06459569885224897,
+    "upper": 0.24616674844215097
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_unit_day_artifact.json.gz",
+    "receipt": 0,
+    "entry": 0,
+    "kind": "warehouse_qr_breakout:country:region:east",
+    "metric": "revenue",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "b5b535d34013f1957a7ca73f7c5e9571217765146c9b653b244ae8aee07340b1",
+    "lower": 0.06935294896893883,
+    "upper": 0.2681460095278831
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_unit_day_artifact.json.gz",
+    "receipt": 0,
+    "entry": 1,
+    "kind": "warehouse_qr_breakout:country:region:west",
+    "metric": "revenue",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "d195cff7ed74c176ae38a5c3e0e8583efa8d12f729c01a9d9cb2b5140f971c5f",
+    "lower": 0.07010026958255768,
+    "upper": 0.2658831928957018
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_unit_day_artifact.json.gz",
+    "receipt": 0,
+    "entry": 2,
+    "kind": "warehouse_qr_breakout:country:region:east",
+    "metric": "revenue_per_spend",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "19a731385dfea4f8b7b6bc7da5483580db4e5deb591171bc606c4b640c29dfdc",
+    "lower": 0.063512954686736,
+    "upper": 0.24802884310202378
+  },
+  {
+    "fixture": "categorical-cuped-moments-format-13--from_unit_day_artifact.json.gz",
+    "receipt": 0,
+    "entry": 3,
+    "kind": "warehouse_qr_breakout:country:region:west",
+    "metric": "revenue_per_spend",
+    "arm": "treatment",
+    "alpha": 0.05,
+    "archived_sha256": "0ccf81f4e8234b3dca669cb645a2399f10a9407b17113f88644e35090b32097a",
+    "lower": 0.06459569885224899,
+    "upper": 0.24616674844215097
+  }
+]

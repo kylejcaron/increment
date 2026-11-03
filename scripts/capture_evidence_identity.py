@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from itertools import count
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import patch
 from uuid import UUID
 
@@ -146,16 +146,74 @@ def load_operations_capture(path: Path) -> dict[str, Any]:
     return data
 
 
-def _population_identity(bound: Bound, case: Any, cells: Sequence[Any]) -> dict[str, Any]:
+def _population_membership_by_arm(frames: Sequence[Any]) -> dict[str, dict[str, Any]]:
+    import pyarrow as pa
+
+    rows = pa.concat_tables(frames).group_by(["group_id", "unit_id"]).aggregate([])
+    if rows.num_rows == 0:
+        return {}
+    rows = rows.sort_by([("group_id", "ascending"), ("unit_id", "ascending")])
+    by_arm: dict[str, dict[str, Any]] = {}
+    current_arm: str | None = None
+    digest = hashlib.sha256(b"[")
+    count = 0
+    first = True
+    for batch in rows.to_batches(max_chunksize=1024):
+        arms = batch.column(batch.schema.get_field_index("group_id")).to_pylist()
+        identifiers = batch.column(batch.schema.get_field_index("unit_id")).to_pylist()
+        for arm, identifier in zip(arms, identifiers, strict=True):
+            if arm != current_arm:
+                if current_arm is not None:
+                    digest.update(b"]")
+                    by_arm[current_arm] = {"digest": digest.hexdigest(), "unit_count": count}
+                    digest = hashlib.sha256(b"[")
+                current_arm = arm
+                count = 0
+                first = True
+            if not first:
+                digest.update(b",")
+            digest.update(
+                json.dumps(
+                    identifier, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                ).encode("utf-8")
+            )
+            first = False
+            count += 1
+    if current_arm is not None:
+        digest.update(b"]")
+        by_arm[current_arm] = {"digest": digest.hexdigest(), "unit_count": count}
+    return by_arm
+
+
+def _population_identity(
+    bound: Bound,
+    case: Any,
+    cells: Sequence[Any],
+    *,
+    population_selection: Sequence[Literal["assigned", "triggered"]] | None = None,
+    metric_selection: Sequence[str] | None = None,
+) -> dict[str, Any]:
     import narwhals as nw
+    import pyarrow as pa
+    import pyarrow.compute as pc
 
     from increment._execute import readout_source
     from increment.cate import _cate_source
     from increment.errors import CodedError, InvalidRequestError
 
     binding = binding_for(*bound)
-    populations = {cell.identity.key.analysis_population for cell in cells} or {case.population}
-    by_population: dict[str, dict[str, set[str]]] = {}
+    populations: set[Literal["assigned", "triggered"]]
+    if population_selection is None:
+        populations = {cell.identity.key.analysis_population for cell in cells} or {case.population}
+    else:
+        populations = set(population_selection)
+    if metric_selection is None:
+        cell_metrics = {cell.identity.key.metric for cell in cells}
+        if not cell_metrics and case.metrics is not None:
+            cell_metrics = set(case.metrics)
+    else:
+        cell_metrics = set(metric_selection)
+    by_population: dict[str, dict[str, dict[str, Any]]] = {}
     for population in sorted(populations):
         try:
             source = readout_source(binding, population=population)
@@ -165,30 +223,41 @@ def _population_identity(bound: Bound, case: Any, cells: Sequence[Any]) -> dict[
             continue
         if not hasattr(source, "unit_frame"):
             continue
-        cell_metrics = {cell.identity.key.metric for cell in cells}
         if not cell_metrics:
+            if metric_selection is not None:
+                continue
             cell_metrics = {config.metric.name for config in source.context.configs}
-        by_arm: dict[str, set[str]] = {}
+        frames = []
         for config in source.context.configs:
-            metric = config.metric
-            if metric.name not in cell_metrics:
+            if config.metric.name not in cell_metrics:
                 continue
             try:
-                frame = nw.from_native(source.unit_frame(metric), eager_only=True)
-                for row in frame.select("unit_id", "group_id").iter_rows(named=True):
-                    by_arm.setdefault(str(row["group_id"]), set()).add(str(row["unit_id"]))
+                membership_reader = getattr(source, "_population_membership", source.unit_frame)
+                native = nw.from_native(
+                    membership_reader(config.metric), eager_only=True
+                ).to_native()
             except (CodedError, InvalidRequestError, KeyError, ValueError, TypeError):
                 continue
+            if not isinstance(native, pa.Table):
+                native = pa.Table.from_pandas(native, preserve_index=False)
+            try:
+                ids = native.column("unit_id")
+                arms = native.column("group_id")
+            except KeyError:
+                continue
+            ids = pc.cast(ids, pa.string())
+            arms = pc.cast(arms, pa.string())
+            ids = ids.fill_null("None")
+            arms = arms.fill_null("None")
+            frames.append(pa.Table.from_arrays([arms, ids], names=["group_id", "unit_id"]))
+        if not frames:
+            continue
+        by_arm = _population_membership_by_arm(frames)
         if by_arm:
             by_population[population] = by_arm
     if not by_population:
         return {"status": "unavailable", "reason": "source retains aggregate moments only"}
-    return population_identity_from_ids(
-        {
-            population: {arm: tuple(unit_ids) for arm, unit_ids in by_arm.items()}
-            for population, by_arm in by_population.items()
-        }
-    )
+    return by_population
 
 
 def population_digest(unit_ids: Iterable[object], *, population: str, arm: str) -> tuple[str, int]:
@@ -853,12 +922,98 @@ def _write_checkpoint(path: Path) -> None:
         _close_parity_binding(bound)
 
 
+def capture_consumer_inputs(
+    out: Path,
+    *,
+    resume: bool = False,
+    replace_inputs: bool = False,
+    scenarios: tuple[str, ...] = (),
+) -> None:
+    """Capture typed consumer inputs, never expected statistical outputs."""
+    import importlib.metadata
+    import platform
+    import subprocess
+    import sys
+
+    import increment
+    from tests.evidence_fixtures.scenarios import acquire_scenario, scenario_roster
+    from tests.evidence_fixtures.transcript import Transcript
+
+    baseline = "7c324b66f9f758eb78298e6ecf2d1aea29c66709"
+    repository = Path(__file__).resolve().parents[1]
+    expected_production_root = (repository / "increment").resolve()
+    actual_production_root = Path(increment.__file__).resolve().parent
+    if actual_production_root != expected_production_root:
+        raise ValueError(
+            f"production package is outside the validated repository: {actual_production_root}"
+        )
+    subprocess.run(
+        ["git", "-C", str(repository), "diff", "--exit-code", baseline, "--", "increment"],
+        check=True,
+    )
+    runtime = {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "production_root": str(Path(increment.__file__).resolve().parent),
+        "dependency_versions": {
+            name: importlib.metadata.version(name)
+            for name in ("increment", "pydantic", "numpy", "scipy", "pyarrow", "narwhals")
+        },
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    for entry in scenario_roster():
+        if entry.disposition != "source" or (scenarios and entry.scenario_id not in scenarios):
+            continue
+        path = out / f"{entry.scenario_id}--{entry.ingress}.json.gz"
+        if path.exists() and not replace_inputs:
+            if not resume:
+                raise FileExistsError(f"consumer input already exists: {path}")
+            saved = json.loads(gzip.decompress(path.read_bytes()))
+            if (
+                saved["baseline_revision"] != baseline
+                or saved["scenario_id"] != entry.scenario_id
+                or saved["ingress"] != entry.ingress
+            ):
+                raise ValueError(f"consumer input authority differs: {path}")
+            continue
+        acquired = acquire_scenario(entry.scenario_id, entry.ingress, observe_membership=False)
+        if acquired.missing_representations:
+            raise ValueError(acquired.missing_representations)
+        transcript = Transcript(
+            baseline_revision=baseline,
+            scenario_id=entry.scenario_id,
+            ingress=entry.ingress,
+            runtime=runtime,
+            provenance=acquired.provenance,
+            records=acquired.records,
+        )
+        # The closed codec validates requests, field inventories and provenance.
+        payload = transcript.to_payload()
+        path.write_bytes(gzip.compress(_json_bytes(payload), mtime=0))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--cutover")
+    parser.add_argument("--consumer-inputs", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--replace-inputs", action="store_true")
+    parser.add_argument("--scenario", action="append", default=[])
     args = parser.parse_args()
-    capture(args.out, cutover=args.cutover)
+    if args.consumer_inputs:
+        if args.cutover is not None:
+            parser.error("--consumer-inputs and --cutover are separate capture modes")
+        capture_consumer_inputs(
+            args.out,
+            resume=args.resume,
+            replace_inputs=args.replace_inputs,
+            scenarios=tuple(args.scenario),
+        )
+    else:
+        if args.resume or args.replace_inputs or args.scenario:
+            parser.error("input selection options require --consumer-inputs")
+        capture(args.out, cutover=args.cutover)
 
 
 if __name__ == "__main__":

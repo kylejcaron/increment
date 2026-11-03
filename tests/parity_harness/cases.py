@@ -95,6 +95,44 @@ _ARTIFACT_EXTENSION_KINDS = (
 Bound = tuple[Experiment, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class MomentInputReceipt:
+    row_index: int
+    metric: object
+    group_id: object
+    payload: str
+
+
+class BoundWithMomentInputs(tuple[Experiment, Any]):
+    """A normal experiment/resolver pair with its original immutable wire inputs."""
+
+    _moment_inputs: tuple[MomentInputReceipt, ...]
+
+    def __new__(cls, bound: Bound, inputs: tuple[MomentInputReceipt, ...]):
+        pair = super().__new__(cls, bound)
+        object.__setattr__(pair, "_moment_inputs", inputs)
+        return pair
+
+    @property
+    def moment_inputs(self) -> tuple[MomentInputReceipt, ...]:
+        return self._moment_inputs
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("moment input receipts are immutable")
+
+
+def _moment_input_receipts(rows: list[dict[str, Any]]) -> tuple[MomentInputReceipt, ...]:
+    receipts = []
+    for index, row in enumerate(rows):
+        payload = row.get("cuped_evidence")
+        if payload is not None:
+            assert isinstance(payload, str)
+            receipts.append(
+                MomentInputReceipt(index, row.get("metric"), row.get("group_id"), payload)
+            )
+    return tuple(receipts)
+
+
 @dataclass(frozen=True)
 class ParityDataset:
     """One case's own copy of the shared per-unit(-day) truth."""
@@ -883,6 +921,7 @@ class _Fixture:
 
     boolean_store: bool = False
     window_by_route: Mapping[str, tuple[str, str]] | None = None
+    unit_id_prefix: str | None = None
 
     def declare_store_dtype(self, defs_dict: dict[str, Any]) -> None:
         if self.boolean_store:
@@ -905,6 +944,8 @@ _NO_FIXTURE = _Fixture()
 
 
 def _fixture_rows(rows: list[dict[str, Any]], fixture: _Fixture) -> list[dict[str, Any]]:
+    if fixture.unit_id_prefix is not None:
+        rows = [{**row, "user_id": fixture.unit_id_prefix + str(row["user_id"])} for row in rows]
     if fixture.boolean_store:
         rows = [{**row, "store_id": _BOOLEAN_STORE_VALUE[row["store_id"]]} for row in rows]
     if fixture.window_by_route is not None:
@@ -9405,13 +9446,15 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
                 ]
                 assert {item["kind"] for item in envelopes} == {"fitted_multicovariate"}
                 replay_plan = plan if alpha is None else plan.model_copy(update={"alpha": alpha})
-                return builders.from_moments(
+                receipts = _moment_input_receipts(payload)
+                replayed = builders.from_moments(
                     payload,
                     metrics=replay_metrics,
                     design=design,
                     plan=replay_plan,
                     experiment_id="mixed_cuped",
                 )
+                return BoundWithMomentInputs(replayed, receipts)
         finally:
             _close_parity_binding(native)
 
@@ -9619,12 +9662,14 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                 } == {"categorical_cells"}
             finally:
                 _close_parity_binding(native)
-        return builders.from_moments(
+        receipts = _moment_input_receipts(payload)
+        replayed = builders.from_moments(
             payload,
             metrics=metrics,
             design=design,
             experiment_id="mixed_cuped",
         )
+        return BoundWithMomentInputs(replayed, receipts)
 
     def switchback_analysis() -> Bound:
         from increment.semantics.design import Randomized as SwitchbackDesign
@@ -9711,11 +9756,12 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
     )
 
 
-def _arm_facts_parity_case() -> ParityCase:
+def _arm_facts_parity_case(*, fixture: _Fixture = _NO_FIXTURE) -> ParityCase:
     case = _fixed_horizon_case(
         id="arm-facts-parity",
         breakout=False,
         include_cuped=False,
+        fixture=fixture,
     )
     return replace(case, waive={"from_switchback_panel": "SOURCE: fixed-horizon frame inputs."})
 
