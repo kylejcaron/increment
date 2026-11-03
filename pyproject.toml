@@ -66,9 +66,9 @@ warehouse = [
     # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
     # exposes that module and ships CPython 3.14 wheels exists.
     "ibis-framework>=11.0.0; python_version >= '3.14'",
-    # Ibis 12 emits Drop(this=...), while SQLGlot 30.18–30.27 reads Drop.targets from `tables`.
+    # Ibis 12's DuckDB cleanup Drop(this=...) is malformed with SQLGlot 30.18–30.27 and 30.29.
     # Reassess these SDK-incompatible releases when a stable Ibis fix is published.
-    "sqlglot>=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0",
+    "sqlglot>=30.14,!=30.18.0,!=30.19.0,!=30.20.0,!=30.21.0,!=30.22.0,!=30.23.0,!=30.24.0,!=30.25.0,!=30.26.0,!=30.27.0,!=30.29.0",
 ]
 demo   = [
     "increment[warehouse]",
