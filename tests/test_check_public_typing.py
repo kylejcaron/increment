@@ -3391,3 +3391,177 @@ def test_qualified_property_update_retains_the_local_class_getter(tmp_path: Path
         1,
         before,
     )
+
+
+@pytest.mark.integration
+def test_loop_break_exit_keeps_the_loop_target_unknown(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any, LiteralString
+                __all__ = ["read"]
+                _Payload = LiteralString
+                for _Payload in (Any,):
+                    _Payload = LiteralString
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(
+            "    _Payload = LiteralString",
+            "    if sys.argv[1:]:\n        break\n    _Payload = LiteralString",
+        )
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "loop",
+    [
+        """
+        for _Payload in (Any,):
+            if sys.argv[1:]:
+                continue
+            _Payload = LiteralString
+        """,
+        """
+        for _ in (0,):
+            try:
+                if sys.argv[1:]:
+                    break
+            finally:
+                _Payload = Any
+            _Payload = LiteralString
+        """,
+    ],
+    ids=["continue", "break-through-finally"],
+)
+def test_continue_and_break_through_finally_keep_their_exit_bindings(
+    tmp_path: Path, loop: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": (
+                "import sys\nfrom typing import Any, LiteralString\n__all__ = ['read']\n"
+                "_Payload = LiteralString\n"
+                + dedent(loop).lstrip()
+                + "def read(value: _Payload) -> None: ...\n"
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+@pytest.mark.integration
+def test_loop_else_decides_the_bindings_left_by_a_continue(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any, LiteralString
+                __all__ = ["read"]
+                _Payload = LiteralString
+                for _Payload in (Any,):
+                    if sys.argv[1:]:
+                        continue
+                    _Payload = LiteralString
+                else:
+                    _Payload = LiteralString
+                def read(value: _Payload) -> None: ...
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace("else:\n    _Payload = LiteralString", "else:\n    _Payload = Any")
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.read": 1}
+
+
+@pytest.mark.integration
+def test_break_through_finally_skips_the_statements_after_the_try(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any, LiteralString
+                __all__ = ["read"]
+                _Payload = LiteralString
+                _Copy = LiteralString
+                for _ in (0,):
+                    try:
+                        if sys.argv[1:]:
+                            _Payload = Any
+                            break
+                        _Payload = LiteralString
+                    finally:
+                        pass
+                    _Copy = _Payload
+                def read(value: _Copy) -> None: ...
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("pass", "_Payload = Any"))
+
+    # The normal route now copies Any while `break` leaves the earlier copy.
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+
+
+@pytest.mark.integration
+def test_container_change_in_finally_reaches_fields_after_a_break_exit(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                import sys
+                from typing import Any, TypedDict
+                __all__ = ["Holder"]
+                class Holder:
+                    def __init__(self) -> None:
+                        _fields = {"value": str}
+                        for _ in (0,):
+                            try:
+                                if sys.argv[1:]:
+                                    break
+                                _fields = {"value": str}
+                            finally:
+                                pass
+                            Record = TypedDict("Record", _fields)
+                            self.record: Record
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("pass", '_fields["value"] = Any'))
+
+    with pytest.raises(ValueError):
+        public_any(root, ["sample"])
+    assert (main(args), baseline.read_text()) == (1, before)

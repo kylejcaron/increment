@@ -568,7 +568,12 @@ either branch. A known condition selects its branch when the module or class
 body runs; rebinding the condition's name afterwards does not change that
 selection. An unconditional assignment or import replaces a conditional
 star-import candidate; an annotation alone does not. A loop's `else` suite
-starts from the bindings before the loop joined with those its body leaves.
+starts from the bindings before the loop joined with those an iteration leaves
+at the end of its body or at a `continue`. The bindings after the loop join those
+`else` leaves with those at each `break`, after any `finally` it runs on the way
+out; statements after that `try` see only the routes that finish it normally. A
+`finally` that stores, imports or changes a container in place is treated
+conservatively: statements after its `try` also see the early exits' bindings.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
@@ -601,6 +606,16 @@ return or field. Counts may fall, never grow. Review any intentional public
 typing change before explicitly regenerating with
 `uv run python scripts/check_public_typing.py --write-baseline`; do not regenerate
 the file just to silence a failure.
+
+The check guards ordinary edits; it is not a sandbox against deliberate
+evasion. It does not follow these runtime patterns, so do not use them in
+public typing code: a module object assigned to another name (`t = typing`, then
+`t.Any`); container methods called inside a larger expression
+(`_unused = __all__.append(...)`); assignments to attributes of a local class
+after it is defined (`_Types.Payload = Any`); rebinding a builtin name
+(`str = Any`); names whose values depend on an earlier loop iteration
+(`_Payload = _Other; _Other = _t`); and changing an imported container before
+passing it to a typing factory.
 
 
 Additional commands:

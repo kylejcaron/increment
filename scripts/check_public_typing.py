@@ -202,6 +202,32 @@ class _Module:
         self.mutations = {**self.mutations, root: (*self.mutations.get(root, ()), mutation)}
 
 
+@dataclass
+class _LoopExits:
+    """Bindings where `break` or `continue` leaves the innermost loop or `try` being bound."""
+
+    module: _Module
+    breaks: list[_ModuleState] = field(default_factory=list)
+    continues: list[_ModuleState] = field(default_factory=list)
+
+
+def _changes_nothing(body: list[ast.stmt]) -> bool:
+    """Whether a suite has no store, import or possible in-place change of a container."""
+    for node in (part for statement in body for part in ast.walk(statement)):
+        if isinstance(node, (*_FUNCTION, ast.ClassDef, ast.Import, ast.ImportFrom)):
+            return False
+        if isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
+            return False
+        # Any method call may change its receiver in place.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            return False
+        if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+            return False
+        if isinstance(node, ast.MatchMapping) and node.rest:
+            return False
+    return True
+
+
 def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
     args = node.args
     return [
@@ -290,6 +316,8 @@ class _Source:
         self.ambiguous_overloads: dict[
             ast.FunctionDef | ast.AsyncFunctionDef, tuple[_Binding, _Reference]
         ] = {}
+        # Early exits of each loop, or `try` with `finally` inside one, being bound; innermost last.
+        self.loop_exits: list[_LoopExits] = []
 
     def path(self, name: str) -> Path | None:
         path = self.root.joinpath(*name.split("."))
@@ -784,10 +812,68 @@ class _Source:
             else:
                 self.change_containers(name, module, statement, leaf, scope)
 
+    def _loop_exits(self, module: _Module) -> _LoopExits | None:
+        """Where an early exit in this body is recorded; a nested scope's loops are its own."""
+        exits = self.loop_exits[-1] if self.loop_exits else None
+        return exits if exits is not None and exits.module is module else None
+
+    def _bind_loop(
+        self,
+        name: str,
+        module: _Module,
+        package: str,
+        node: ast.For | ast.AsyncFor | ast.While,
+        scope: _Scope | None,
+    ) -> None:
+        entry = self._snapshot(module)
+        exits = _LoopExits(module)
+        self.loop_exits.append(exits)
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            self._unknown_target(name, module, node, node.target, scope)
+        self._bind_suite(name, module, package, node.body, scope)
+        self.loop_exits.pop()
+        # An iteration ends with its body or at a `continue`.
+        iterated = [self._snapshot(module), *exits.continues]
+        # `else` runs once the loop ends after zero or more complete iterations.
+        self._merge_states(module, node, [entry, *iterated])
+        self._bind_suite(name, module, package, node.orelse, scope)
+        # Only `break` skips `else`, keeping the bindings it saw.
+        if exits.breaks:
+            self._merge_states(module, node, [self._snapshot(module), *exits.breaks])
+
+    def _bind_finally(
+        self,
+        name: str,
+        module: _Module,
+        package: str,
+        node: ast.Try | ast.TryStar,
+        scope: _Scope | None,
+        leaving: _LoopExits | None,
+    ) -> None:
+        """Bind `finally`, which also runs before `break` or `continue` leaves its `try`."""
+        if leaving is not None:
+            self.loop_exits.pop()
+        if leaving is None or not (leaving.breaks or leaving.continues):
+            self._bind_suite(name, module, package, node.finalbody, scope)
+            return
+        normal = self._snapshot(module)
+        # One binding of `finally` covers the normal route and every early exit.
+        self._merge_states(module, node, [normal, *leaving.breaks, *leaving.continues])
+        self._bind_suite(name, module, package, node.finalbody, scope)
+        exits = self.loop_exits[-1]
+        if leaving.breaks:
+            exits.breaks.append(self._snapshot(module))
+        if leaving.continues:
+            exits.continues.append(self._snapshot(module))
+        if _changes_nothing(node.finalbody):
+            # Only the normal route reaches the statements after the `try`.
+            self._restore(module, normal)
+
     def _bind_control(
         self, name: str, module: _Module, package: str, node: ast.stmt, scope: _Scope | None
     ) -> bool:
         targets: list[list[ast.expr | str]]
+        leaving: _LoopExits | None = None
         if isinstance(node, ast.If):
             condition = self._condition(name, node.test, scope)
             self.guards[node] = condition
@@ -799,9 +885,12 @@ class _Source:
             suites = [node.body, node.orelse] if node.orelse else [node.body, []]
             targets = [[] for _ in suites]
         elif isinstance(node, (ast.Try, ast.TryStar)):
+            if node.finalbody and self._loop_exits(module) is not None:
+                leaving = _LoopExits(module)
+                self.loop_exits.append(leaving)
             if not node.handlers:
                 self._bind_suite(name, module, package, [*node.body, *node.orelse], scope)
-                self._bind_suite(name, module, package, node.finalbody, scope)
+                self._bind_finally(name, module, package, node, scope, leaving)
                 return True
             suites = [
                 [*node.body, *node.orelse],
@@ -828,16 +917,12 @@ class _Source:
                 suites.append([])
                 targets.append([])
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-            entry = self._snapshot(module)
-            if isinstance(node, (ast.For, ast.AsyncFor)):
-                self._unknown_target(name, module, node, node.target, scope)
-            self._bind_suite(name, module, package, node.body, scope)
-            iterated = self._snapshot(module)
-            # `else` runs once the loop ends after zero or more complete iterations.
-            self._merge_states(module, node, [entry, iterated])
-            self._bind_suite(name, module, package, node.orelse, scope)
-            # `break` can leave after any part of an iteration, skipping `else`.
-            self._merge_states(module, node, [iterated, self._snapshot(module), entry])
+            self._bind_loop(name, module, package, node, scope)
+            return True
+        elif isinstance(node, (ast.Break, ast.Continue)):
+            if (exits := self._loop_exits(module)) is not None:
+                stopped = exits.breaks if isinstance(node, ast.Break) else exits.continues
+                stopped.append(self._snapshot(module))
             return True
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
@@ -861,7 +946,7 @@ class _Source:
             states.append(self._snapshot(module))
         self._merge_states(module, node, states)
         if isinstance(node, (ast.Try, ast.TryStar)):
-            self._bind_suite(name, module, package, node.finalbody, scope)
+            self._bind_finally(name, module, package, node, scope, leaving)
         return True
 
     def _named_expressions(
