@@ -2398,3 +2398,183 @@ def test_receiver_fields_keep_unknown_guard_arms_captured_before_rebinding(
     observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
 
     assert observed == (expected, 1, baseline_before_growth)
+
+
+def test_export_list_alias_keeps_names_bound_before_rebinding(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                _names = ["read"]
+                __all__ = _names
+                _names = ["helper"]
+                def read(value: str) -> str: ...
+                def helper() -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("def read(value: str)", "def read(value: Any)"))
+    baseline_before_growth = baseline.read_text()
+    observed = (initial, public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.read": 0}, {"sample.read": 1}, 1, baseline_before_growth)
+
+
+def test_public_method_alias_counts_private_signature_under_public_name(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    def _read(self, value: Any) -> str: ...
+                    read = _read
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    expected = {"sample.Holder": 1}
+
+    assert public_any(root, ["sample"]) == expected
+    assert main([*args, "--write-baseline"]) == 0
+    baseline_before_transfer = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("_read", "_load"))
+    renamed = main(args)
+    path.write_text(path.read_text().replace("value: Any) -> str", "value: str) -> Any"))
+    observed = (renamed, public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == (0, expected, 1, baseline_before_transfer)
+
+
+def test_class_split_value_annotation_excludes_initializer_any(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TypeAliasType
+                __all__ = ["Holder"]
+                class Holder:
+                    value: object
+                    value = TypeAliasType("Internal", str)
+            """,
+        },
+    )
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace('TypeAliasType("Internal", str)', 'TypeAliasType("Internal", Any)')
+    )
+    baseline_before_initializer_change = baseline.read_text()
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 0}, 0, baseline_before_initializer_change)
+
+
+def test_class_guard_keeps_definition_time_selection_after_rebinding(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, TYPE_CHECKING
+                __all__ = ["Record"]
+                class Record:
+                    if TYPE_CHECKING:
+                        value: str
+                    else:
+                        value: Any
+                    TYPE_CHECKING = False
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("value: str", "value: Any"))
+    baseline_before_growth = baseline.read_text()
+    observed = (initial, public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Record": 0}, {"sample.Record": 1}, 1, baseline_before_growth)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    ["Payload = str", "from .types import Text as Payload"],
+    ids=["assignment", "explicit-import"],
+)
+def test_unconditional_rebinding_clears_conditional_star_import_uncertainty(
+    tmp_path: Path, replacement: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": f"""
+                import sys
+                __all__ = ["Payload"]
+                if sys.platform == "win32":
+                    from .types import *
+                {replacement}
+            """,
+            "types.py": """
+                from typing import Any
+                __all__ = ["Payload"]
+                Payload = Any
+                Text = str
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.Payload": 0}
+
+
+def test_runtime_type_tuples_stay_ordinary_data(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["types", "Holder"]
+                types = (str, Any)
+                class Holder:
+                    types = (str, Any)
+            """,
+        },
+    )
+
+    assert public_any(root, ["sample"]) == {"sample.types": 0, "sample.Holder": 0}
+
+
+def test_implicit_recursive_alias_counts_any_once_and_rejects_growth(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Tree"]
+                Tree = int | list["Tree"]
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    initial = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("Tree = int |", "Tree = Any |"))
+    baseline_before_growth = baseline.read_text()
+    observed = (initial, public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Tree": 0}, {"sample.Tree": 1}, 1, baseline_before_growth)

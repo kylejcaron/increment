@@ -85,7 +85,7 @@ class _Body:
 class _ValueScope:
     """Eager value-expression scope, distinct from a deferred annotation scope."""
 
-    declaration: ast.Assign | ast.AnnAssign
+    declaration: ast.Assign | ast.AnnAssign | ast.AugAssign | ast.Expr
 
 
 @dataclass(frozen=True)
@@ -110,11 +110,19 @@ class _Uncertainty:
 
 
 @dataclass(frozen=True)
+class _Mutation:
+    """An in-place change to a list or mapping; without an operand it cannot be followed."""
+
+    statement: ast.AST
+    operand: ast.expr | None = None
+    scope: _Scope | None = None
+
+
+@dataclass(frozen=True)
 class _ModuleState:
     declarations: dict[str, _Binding]
     bindings: dict[str, _Binding]
-    values: dict[str, ast.expr]
-    uncertain_values: frozenset[str]
+    mutations: dict[_Binding, tuple[_Mutation, ...]]
     stars: tuple[str, ...]
     uncertain_star_names: dict[str, _Uncertainty]
     functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]
@@ -127,8 +135,8 @@ class _Module:
     parent: _Reference | None = None
     declarations: dict[str, _Binding] = field(default_factory=dict)
     bindings: dict[str, _Binding] = field(default_factory=dict)
-    values: dict[str, ast.expr] = field(default_factory=dict)
-    uncertain_values: set[str] = field(default_factory=set)
+    # Replaced, never updated in place: each scope keeps the changes made before it.
+    mutations: dict[_Binding, tuple[_Mutation, ...]] = field(default_factory=dict)
     uncertain_star_names: dict[str, _Uncertainty] = field(default_factory=dict)
     stars: list[str] = field(default_factory=list)
     functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
@@ -140,26 +148,38 @@ class _Module:
         value_binding: ast.AST | _Reference | _Binding | None = None,
         *,
         owner: _Reference | None = None,
-    ) -> None:
+    ) -> _Binding:
         value = binding.value if isinstance(binding, (ast.AnnAssign, ast.TypeAlias)) else binding
         record = _Binding(
             binding,
             value_binding if value_binding is not None else value,
             owner if owner is not None else _Reference(self.owner.module, name, self.owner.scope),
         )
+        self.assign(name, record)
+        return record
+
+    def assign(self, name: str, record: _Binding) -> None:
+        """Apply one binding occurrence in statement order."""
         declaration = self.declarations.get(name)
         if (
             declaration is not None
             and isinstance(declaration.declaration, ast.AnnAssign)
-            and not isinstance(binding, (ast.AnnAssign, ast.TypeAlias, ast.ClassDef, *_FUNCTION))
+            and not isinstance(
+                record.declaration, (ast.AnnAssign, ast.TypeAlias, ast.ClassDef, *_FUNCTION)
+            )
         ):
             self.bindings[name] = record
-            self.uncertain_values.discard(name)
-            return
-        self.declarations[name] = record
-        if not isinstance(binding, ast.AnnAssign) or binding.value is not None:
+        else:
+            self.declarations[name] = record
+            if isinstance(record.declaration, ast.AnnAssign) and record.declaration.value is None:
+                # An annotation alone declares the name; it binds no runtime value.
+                return
             self.bindings[name] = record
-        self.uncertain_values.discard(name)
+        # A runtime binding supersedes a conditional star-import candidate.
+        self.uncertain_star_names.pop(name, None)
+
+    def change(self, root: _Binding, mutation: _Mutation) -> None:
+        self.mutations = {**self.mutations, root: (*self.mutations.get(root, ()), mutation)}
 
 
 def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
@@ -170,6 +190,12 @@ def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
         *args.kwonlyargs,
         *(argument for argument in (args.vararg, args.kwarg) if argument is not None),
     ]
+
+
+def _assigned_value(binding: _Binding) -> ast.AST | _Reference | None:
+    """The value expression a binding evaluated, apart from any annotation."""
+    declaration = binding.declaration
+    return declaration.value if isinstance(declaration, ast.AnnAssign) else declaration
 
 
 def _receiver_body_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
@@ -191,6 +217,10 @@ class _Source:
         self.root = root
         self.modules: dict[str, _Module] = {}
         self.scopes: dict[_Scope, _Module] = {}
+        # Branches selected when each body was bound; later rebinding cannot reselect them.
+        self.guards: dict[ast.If, bool | None] = {}
+        # Every assignment target's binding, kept after the name is rebound.
+        self.assignments: dict[_Reference, _Binding] = {}
 
     def path(self, name: str) -> Path | None:
         path = self.root.joinpath(*name.split("."))
@@ -219,6 +249,7 @@ class _Source:
             scope if scope is not None else ast.parse(path.read_text(), filename=str(path)),
             _Reference(name, None, scope),
             parent=_Reference(name, None) if scope is not None else None,
+            mutations=self.modules[name].mutations if scope is not None else {},
         )
         if scope is None:
             self.modules[name] = module
@@ -262,7 +293,10 @@ class _Source:
                 _TypeParameters(node) if node.type_params else parent,
             )
         environment = _Module(
-            node, _Reference(name, None, node), parent=_Reference(name, None, parent)
+            node,
+            _Reference(name, None, node),
+            parent=_Reference(name, None, parent),
+            mutations=self.modules[name].mutations,
         )
         self.scopes[node] = environment
         self.bind_type_parameters(
@@ -281,7 +315,10 @@ class _Source:
     ) -> _Module:
         """Capture names resolved when an eager expression is evaluated."""
         environment = _Module(
-            key, _Reference(name, None, key), parent=_Reference(name, None, parent)
+            key,
+            _Reference(name, None, key),
+            parent=_Reference(name, None, parent),
+            mutations=self.modules[name].mutations,
         )
         self.scopes[key] = environment
         if defer_future_annotations and self.deferred(name):
@@ -327,6 +364,7 @@ class _Source:
             _Reference(name, None, key),
             parent=lexical_parent,
             bindings=body_bindings,
+            mutations=self.modules[name].mutations,
         )
         self.scopes[key] = body
         self.bind(name, body, self.package(name))
@@ -390,7 +428,7 @@ class _Source:
             # only an unbound name loads that submodule.
             current = self.lookup(name, alias.name) if target == name else None
             if isinstance(current, _Binding):
-                module.declarations[local] = module.bindings[local] = current
+                module.assign(local, current)
             elif current is not None:
                 module.define(local, current)
             elif target == name and self.path(submodule) is not None:
@@ -402,8 +440,7 @@ class _Source:
         return _ModuleState(
             dict(module.declarations),
             dict(module.bindings),
-            dict(module.values),
-            frozenset(module.uncertain_values),
+            dict(module.mutations),
             tuple(module.stars),
             dict(module.uncertain_star_names),
             {name: list(nodes) for name, nodes in module.functions.items()},
@@ -412,8 +449,7 @@ class _Source:
     def _restore(self, module: _Module, state: _ModuleState) -> None:
         module.declarations = dict(state.declarations)
         module.bindings = dict(state.bindings)
-        module.values = dict(state.values)
-        module.uncertain_values = set(state.uncertain_values)
+        module.mutations = dict(state.mutations)
         module.stars = list(state.stars)
         module.uncertain_star_names = dict(state.uncertain_star_names)
         module.functions = {name: list(nodes) for name, nodes in state.functions.items()}
@@ -477,30 +513,29 @@ class _Source:
         reference = self._typing_condition_reference(module, node, scope)
         return True if reference is not None and reference.name == "TYPE_CHECKING" else None
 
-    def contract_statements(
-        self, body: list[ast.stmt], module: str, scope: _Scope | None
-    ) -> Iterator[ast.stmt]:
+    def contract_statements(self, body: list[ast.stmt]) -> Iterator[ast.stmt]:
         for node in body:
             yield node
             if isinstance(node, (*_FUNCTION, ast.ClassDef)):
                 continue
             if isinstance(node, ast.If):
-                condition = self._condition(module, node.test, scope)
+                # Bound branches only; a guard not bound yet has no known selection.
+                condition = self.guards.get(node)
                 suites = (
                     [node.body if condition else node.orelse]
                     if condition is not None
                     else [node.body, node.orelse]
                 )
                 for suite in suites:
-                    yield from self.contract_statements(suite, module, scope)
+                    yield from self.contract_statements(suite)
                 continue
             for _, children in ast.iter_fields(node):
                 if isinstance(children, list):
                     for child in children:
                         if isinstance(child, ast.stmt):
-                            yield from self.contract_statements([child], module, scope)
+                            yield from self.contract_statements([child])
                         elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
-                            yield from self.contract_statements(child.body, module, scope)
+                            yield from self.contract_statements(child.body)
 
     def _same_binding(
         self, left: _Binding | _Reference | None, right: _Binding | _Reference | None
@@ -594,18 +629,15 @@ class _Source:
             )
             if candidate is not None:
                 bindings[name] = candidate
-        values: dict[str, ast.expr] = {}
-        uncertain_values = set().union(*(state.uncertain_values for state in states))
-        names = set().union(*(state.values for state in states))
-        for name in names:
-            candidates = tuple(state.values.get(name) for state in states)
-            first = candidates[0]
-            if all(candidate is first for candidate in candidates[1:]) and first is not None:
-                values[name] = first
-            else:
-                if first is not None:
-                    values[name] = first
-                uncertain_values.add(name)
+        mutations: dict[_Binding, tuple[_Mutation, ...]] = {}
+        for root in set().union(*(state.mutations for state in states)):
+            changes = [state.mutations.get(root, ()) for state in states]
+            # A change made on only some paths leaves the object's contents unknown.
+            mutations[root] = (
+                changes[0]
+                if all(change == changes[0] for change in changes[1:])
+                else (_Mutation(control),)
+            )
         ordered_stars = list(dict.fromkeys(star for state in states for star in state.stars))
         common_stars = set(states[0].stars).intersection(
             *(set(state.stars) for state in states[1:])
@@ -632,8 +664,7 @@ class _Source:
                 target.extend(node for node in nodes if node not in target)
         module.declarations = declarations
         module.bindings = bindings
-        module.values = values
-        module.uncertain_values = uncertain_values
+        module.mutations = mutations
         module.stars = ordered_stars
         module.uncertain_star_names = uncertain_star_names
         module.functions = functions
@@ -643,6 +674,7 @@ class _Source:
     ) -> bool:
         if isinstance(node, ast.If):
             condition = self._condition(name, node.test, scope)
+            self.guards[node] = condition
             if condition is not None:
                 self._bind_suite(
                     name, module, package, node.body if condition else node.orelse, scope
@@ -722,18 +754,19 @@ class _Source:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     binding_owner = _Reference(name, target.id, node)
-                    module.define(
+                    self.assignments[binding_owner] = module.define(
                         target.id,
                         node.value,
                         self.copied_binding(name, node.value, scope, binding_owner),
                         owner=binding_owner,
                     )
-                    module.values[target.id] = node.value
                 elif exports and any(
                     isinstance(part, ast.Name) and part.id in _EXPORT_MAPS
                     for part in ast.walk(target)
                 ):
                     raise ValueError(f"Unsupported export assignment in {name}")
+                elif exports:
+                    self.change_containers(name, module, node, target, scope)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             annotation_expressions = [] if self.deferred(name) else [node.annotation]
             self.capture(
@@ -761,72 +794,164 @@ class _Source:
                 self.copied_binding(name, node.value, scope, binding_owner),
                 owner=binding_owner,
             )
-            if node.value is not None:
-                module.values[node.target.id] = node.value
         elif isinstance(node, ast.AnnAssign) and isinstance(module.tree, _FUNCTION):
             expressions = [] if self.deferred(name) else [node.annotation]
             self.capture(name, node, expressions, scope, defer_future_annotations=False)
         elif isinstance(node, ast.TypeAlias):
             self.declaration_scope(name, node, scope)
             module.define(node.name.id, node, owner=_Reference(name, node.name.id, node))
+        elif exports and isinstance(node, ast.AnnAssign) and node.value is not None:
+            self.change_containers(name, module, node, node.target, scope)
         elif exports and isinstance(node, ast.AugAssign):
-            target = node.target
-            if (
-                isinstance(target, ast.Name)
-                and target.id in module.values
-                and isinstance(node.op, (ast.Add, ast.BitOr))
-            ):
-                module.values[target.id] = ast.BinOp(
-                    left=module.values[target.id], op=node.op, right=node.value
-                )
-            elif any(
-                isinstance(part, ast.Name) and part.id in _EXPORT_MAPS for part in ast.walk(target)
-            ):
-                raise ValueError(f"Unsupported export mutation in {name}")
+            self.bind_augmented(name, module, node, scope)
+        elif exports and isinstance(node, ast.Delete):
+            for target in node.targets:
+                self.change_containers(name, module, node, target, scope)
         elif (
             exports
             and isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Call)
             and isinstance(node.value.func, ast.Attribute)
-            and isinstance(node.value.func.value, ast.Name)
-            and node.value.func.value.id in _EXPORT_MAPS
         ):
-            call = node.value
-            if (
-                node.value.func.value.id == "__all__"
-                and node.value.func.attr in {"append", "extend"}
-                and len(call.args) == 1
-                and not call.keywords
-                and "__all__" in module.values
+            self.bind_method_call(name, module, node, node.value, node.value.func, scope)
+
+    def bind_augmented(
+        self, name: str, module: _Module, node: ast.AugAssign, scope: _Scope | None
+    ) -> None:
+        target = node.target
+        if not isinstance(target, ast.Name):
+            if any(
+                isinstance(part, ast.Name) and part.id in _EXPORT_MAPS for part in ast.walk(target)
             ):
-                extra = (
-                    ast.List(elts=[call.args[0]])
-                    if node.value.func.attr == "append"
-                    else call.args[0]
-                )
-                module.values["__all__"] = ast.BinOp(
-                    left=module.values["__all__"], op=ast.Add(), right=extra
-                )
-            else:
                 raise ValueError(f"Unsupported export mutation in {name}")
+            self.change_containers(name, module, node, target, scope)
+            return
+        value_scope = _ValueScope(node)
+        root = self.container_root(self.lookup(name, target.id, scope))
+        kind = self.container_type(root)
+        if root is not None and kind is not None:
+            # A list or mapping changes in place, so every name sharing it sees the change.
+            supported = (
+                kind == "list"
+                and isinstance(node.op, ast.Add)
+                or kind == "dict"
+                and isinstance(node.op, ast.BitOr)
+            )
+            if supported:
+                self.capture(name, value_scope, [node.value], scope, defer_future_annotations=False)
+            module.change(root, _Mutation(node, node.value if supported else None, value_scope))
+            return
+        # Other values rebind the name to a new object built from the current one.
+        value = ast.copy_location(
+            ast.BinOp(left=ast.Name(id=target.id, ctx=ast.Load()), op=node.op, right=node.value),
+            node,
+        )
+        self.capture(name, value_scope, [value], scope, defer_future_annotations=False)
+        module.define(target.id, value, owner=_Reference(name, target.id, value_scope))
+
+    def bind_method_call(
+        self,
+        name: str,
+        module: _Module,
+        node: ast.Expr,
+        call: ast.Call,
+        method: ast.Attribute,
+        scope: _Scope | None,
+    ) -> None:
+        root = self.changed_container(name, method, scope)
+        if root is None:
+            if isinstance(method.value, ast.Name) and method.value.id in _EXPORT_MAPS:
+                raise ValueError(f"Unsupported export mutation in {name}")
+            return
+        value_scope = _ValueScope(node)
+        operand: ast.expr | None = None
+        if (
+            isinstance(method.value, ast.Name)
+            and method.attr in {"append", "extend"}
+            and len(call.args) == 1
+            and not isinstance(call.args[0], ast.Starred)
+            and not call.keywords
+            and self.container_type(root) == "list"
+        ):
+            self.capture(name, value_scope, call.args, scope, defer_future_annotations=False)
+            operand = (
+                ast.List(elts=[call.args[0]], ctx=ast.Load())
+                if method.attr == "append"
+                else call.args[0]
+            )
+        # Other methods can change the container in ways exports cannot follow.
+        module.change(root, _Mutation(node, operand, value_scope))
+
+    def change_containers(
+        self, name: str, module: _Module, node: ast.stmt, target: ast.expr, scope: _Scope | None
+    ) -> None:
+        """Item and attribute stores change a tracked container beyond static evaluation."""
+        for part in ast.walk(target):
+            if isinstance(part, (ast.Subscript, ast.Attribute)) and isinstance(
+                part.ctx, (ast.Store, ast.Del)
+            ):
+                root = self.changed_container(name, part, scope)
+                if root is not None:
+                    module.change(root, _Mutation(node))
+
+    def changed_container(
+        self, module: str, node: ast.expr, scope: _Scope | None
+    ) -> _Binding | None:
+        """The tracked list or mapping that a change through `node` reaches."""
+        while isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return None
+        root = self.container_root(self.lookup(module, node.id, scope))
+        return root if self.container_type(root) is not None else None
+
+    def container_root(self, binding: _Binding | _Reference | None) -> _Binding | None:
+        """The binding whose expression created the object a name refers to."""
+        seen: set[_Binding] = set()
+        while isinstance(binding, _Binding) and binding.uncertainty is None and binding not in seen:
+            seen.add(binding)
+            expression = _assigned_value(binding)
+            if not (isinstance(expression, ast.Name) and isinstance(binding.value, _Binding)):
+                return binding
+            binding = binding.value
+        return None
+
+    def container_type(
+        self, binding: _Binding | None, seen: frozenset[_Binding] = frozenset()
+    ) -> str | None:
+        """The mutable builtin that a display, constructor call or concatenation creates."""
+        if binding is None or binding in seen:
+            return None
+        expression = _assigned_value(binding)
+        while isinstance(expression, ast.BinOp):
+            expression = expression.left
+        if isinstance(expression, ast.Name):
+            # Concatenation creates an object of its left operand's type.
+            operand = self.lookup(binding.owner.module, expression.id, binding.owner.scope)
+            return self.container_type(self.container_root(operand), seen | {binding})
+        if isinstance(expression, (ast.List, ast.ListComp)):
+            return "list"
+        if isinstance(expression, (ast.Dict, ast.DictComp)):
+            return "dict"
+        if isinstance(expression, (ast.Set, ast.SetComp)):
+            return "set"
+        if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name):
+            constructors = {"list": "list", "sorted": "list", "dict": "dict", "set": "set"}
+            return constructors.get(expression.func.id)
+        return None
 
     def literal(
         self,
         name: str,
         node: ast.expr,
-        seen: frozenset[str] = frozenset(),
+        seen: frozenset[_Binding] = frozenset(),
         scope: _Scope | None = None,
     ) -> object:
-        if isinstance(node, ast.Name) and node.id not in seen:
-            source = self.module(name, scope)
-            if node.id in source.uncertain_values:
-                raise ValueError(f"Ambiguous export map binding {name}.{node.id}")
-            if scope is not None and node.id not in source.values and source.parent is not None:
-                parent = source.parent
-                return self.literal(parent.module, node, seen, parent.scope)
-            value = self.module(name, scope).values.get(node.id)
-            if value is not None:
-                return self.literal(name, value, seen | {node.id}, scope)
+        if isinstance(node, ast.Name):
+            # A name holds the object bound when the enclosing expression ran.
+            binding = self.lookup(name, node.id, scope)
+            if isinstance(binding, _Binding):
+                return self.export_value(name, binding, self.module(name, scope).mutations, seen)
         if isinstance(node, ast.Constant):
             return node.value
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -864,18 +989,51 @@ class _Source:
                     return list(value)
         raise ValueError(f"Cannot statically resolve exports in {name}: {ast.unparse(node)}")
 
+    def export_value(
+        self,
+        module: str,
+        binding: _Binding,
+        mutations: dict[_Binding, tuple[_Mutation, ...]],
+        seen: frozenset[_Binding] = frozenset(),
+    ) -> object:
+        """The value of a name's object, with in-place changes made before it is read."""
+        if binding.uncertainty is not None:
+            raise ValueError(
+                f"Ambiguous export map binding {binding.owner.module}.{binding.owner.name}"
+            )
+        if binding in seen or binding.owner.module != module:
+            raise ValueError(f"Cannot statically resolve exports in {module}: {binding.owner.name}")
+        seen = seen | {binding}
+        expression = _assigned_value(binding)
+        if isinstance(expression, ast.Name) and isinstance(binding.value, _Binding):
+            # Assignment shares the object, so its later in-place changes stay visible.
+            return self.export_value(module, binding.value, mutations, seen)
+        if not isinstance(expression, ast.expr):
+            raise ValueError(f"Cannot statically resolve exports in {module}: {binding.owner.name}")
+        value = self.literal(module, expression, seen, binding.owner.scope)
+        for mutation in mutations.get(binding, ()):
+            operand = (
+                None
+                if mutation.operand is None
+                else self.literal(module, mutation.operand, seen, mutation.scope)
+            )
+            if isinstance(value, list) and isinstance(operand, list):
+                value = value + operand
+            elif isinstance(value, dict) and isinstance(operand, dict):
+                value = value | operand
+            else:
+                line = getattr(mutation.statement, "lineno", 0)
+                raise ValueError(f"Unsupported export mutation in {module} at line {line}")
+        return value
+
     def exports(self, name: str) -> list[str]:
         source = self.module(name)
-        if "__all__" in source.uncertain_values:
-            raise ValueError(f"Ambiguous export map binding {name}.__all__")
-        node = source.values.get("__all__")
-        if node is None:
+        binding = source.bindings.get("__all__")
+        if binding is None:
             # Explicit `as` re-exports cover older facades without __all__.
             names = [
                 alias.asname
-                for statement in self.contract_statements(
-                    cast(ast.Module, self.module(name).tree).body, name, None
-                )
+                for statement in self.contract_statements(cast(ast.Module, source.tree).body)
                 if isinstance(statement, ast.ImportFrom)
                 for alias in statement.names
                 if alias.asname is not None and not alias.asname.startswith("_")
@@ -883,7 +1041,7 @@ class _Source:
             if not names:
                 raise ValueError(f"Missing __all__ or explicit re-exports in {name}")
             return names
-        names = self.literal(name, node)
+        names = self.export_value(name, binding, source.mutations)
         if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
             raise ValueError(f"Invalid __all__ in {name}")
         return cast(list[str], names)
@@ -1021,7 +1179,6 @@ class _Source:
         seen = seen | {key}
         source = self.module(module, scope)
         record = source.declarations.get(name)
-        binding = record.declaration if record is not None else None
         if record is not None and record.uncertainty is not None:
             return key, record
         if name in source.uncertain_star_names:
@@ -1029,11 +1186,10 @@ class _Source:
             return key, _Binding(
                 uncertainty.control, None, _Reference(module, name, scope), uncertainty
             )
+        binding: ast.AST | _Binding | _Reference | None = None
         for map_name in ("_LAZY_IMPORTS", "_EXPORTS") if scope is None else ():
-            if map_name in source.values:
-                if map_name in source.uncertain_values:
-                    raise ValueError(f"Ambiguous export map binding {module}.{map_name}")
-                exports = self.literal(module, source.values[map_name])
+            if map_name in source.bindings:
+                exports = self.export_value(module, source.bindings[map_name], source.mutations)
                 if isinstance(exports, dict) and name in exports:
                     target = cast(dict[str, object], exports)[name]
                     if (
@@ -1044,6 +1200,9 @@ class _Source:
                     ):
                         raise ValueError(f"Invalid lazy export {module}.{name}")
                     binding = _Reference(target[0], target[1])
+        if binding is None and record is not None:
+            key, record = self.assigned_origin(key, record)
+            binding = self.contract(record)
         if binding is None:
             for star in reversed(source.stars):
                 if star in _TYPING:
@@ -1055,28 +1214,6 @@ class _Source:
             if scope is None and self.path(f"{module}.{name}") is not None:
                 return _Reference(f"{module}.{name}", None), None
             raise ValueError(f"Unresolved public export: {module}.{name}")
-        # An ordinary assignment exports the value its name held at that point.
-        while (
-            isinstance(binding, (ast.Name, ast.Attribute))
-            and record is not None
-            and isinstance(record.value, _Binding)
-        ):
-            record = record.value
-            key, binding = record.owner, record.declaration
-        if isinstance(binding, (ast.Name, ast.Attribute)) and record is not None:
-            target = (
-                record.value
-                if isinstance(record.value, (_Reference, _Binding))
-                else self.reference(key.module, binding, key.scope, allow_forward_strings=False)
-            )
-            if target is not None and self.is_type_expression(
-                key.module,
-                target,
-                scope=key.scope,
-                allow_forward_strings=False,
-            ):
-                return key, record
-            binding = target or binding
         if isinstance(binding, _Reference):
             if binding.name is None:
                 if self.path(binding.module) is None:
@@ -1087,27 +1224,58 @@ class _Source:
                     f"No Python source for public export {binding.module}.{binding.name}"
                 )
             return self.resolve(binding.module, binding.name, seen, binding.scope)
-        # Declared aliases count through their own record, not a later name lookup.
-        if (
-            record is not None
-            and record.declaration is binding
-            and isinstance(binding, (ast.TypeAlias, ast.AnnAssign))
-        ):
-            return key, record
-        if (
-            record is not None
-            and record.declaration is binding
-            and not isinstance(binding, (ast.ClassDef, *_FUNCTION))
-            and not self.ordinary_uncertainty(record)
-            and self.is_type_expression(
-                module,
-                record,
-                scope=record.owner.scope,
-                allow_forward_strings=False,
-            )
-        ):
-            return key, record
         return key, binding
+
+    def assigned_origin(self, key: _Reference, record: _Binding) -> tuple[_Reference, _Binding]:
+        """Follow assigned names to the binding that held their value at that point."""
+        while isinstance(record.declaration, (ast.Name, ast.Attribute)) and isinstance(
+            record.value, _Binding
+        ):
+            record = record.value
+            key = record.owner
+        return key, record
+
+    def contract(self, record: _Binding) -> ast.AST | _Binding | _Reference:
+        """Classify a binding as a type alias, a definition, an import or runtime data."""
+        binding = record.declaration
+        owner = record.owner
+        if isinstance(binding, (ast.Name, ast.Attribute)):
+            target = (
+                record.value
+                if isinstance(record.value, (_Reference, _Binding))
+                else self.reference(owner.module, binding, owner.scope, allow_forward_strings=False)
+            )
+            if target is not None and self.is_type_expression(
+                owner.module, target, scope=owner.scope, allow_forward_strings=False
+            ):
+                return record
+            return target or binding
+        if isinstance(binding, (_Reference, ast.ClassDef, *_FUNCTION)):
+            return binding
+        # Declared aliases count through their own record, not a later name lookup.
+        if isinstance(binding, (ast.TypeAlias, ast.AnnAssign)):
+            return record
+        if not self.ordinary_uncertainty(record) and self.is_type_expression(
+            owner.module, record, scope=owner.scope, allow_forward_strings=False
+        ):
+            return record
+        return binding
+
+    def member_contract(
+        self, key: _Reference, record: _Binding
+    ) -> tuple[_Reference, ast.AST | _Binding | None]:
+        """Interpret an assigned class attribute; external and unbound values stay opaque."""
+        key, record = self.assigned_origin(key, record)
+        node = self.contract(record)
+        if not isinstance(node, _Reference):
+            return key, node
+        if (
+            node is record.declaration
+            and node.name is not None
+            and self.path(node.module) is not None
+        ):
+            return self.resolve(node.module, node.name, scope=node.scope)
+        return key, None
 
     def typing_name(
         self,
@@ -1225,6 +1393,11 @@ class _Source:
                 self.require_certain(node)
             if isinstance(node, _Binding):
                 module, scope = node.owner.module, node.owner.scope
+                if node in self.module(module).mutations:
+                    raise ValueError(
+                        f"Cannot statically resolve typing fields changed in place: "
+                        f"{module}.{node.owner.name}"
+                    )
                 node = node.value
             else:
                 if node.name is None or self.path(node.module) is None:
@@ -1458,8 +1631,12 @@ class _Source:
             if kind == "Annotated":
                 first = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) else node.slice
                 return self.annotation(module, first, seen, scope, productive)
+            # Reaching an alias again inside a type constructor is finite recursion.
             productive = productive | frozenset(
-                item for item in seen if isinstance(item, _Binding) and self.declared_alias(item)
+                item
+                for item in seen
+                if isinstance(item, _Binding)
+                and self.type_value(item.owner.module, item, item.owner.scope) is not None
             )
         return sum(
             self.annotation(module, child, seen, scope, productive)
@@ -1619,13 +1796,7 @@ class _Source:
                     allow_forward_strings=allow_forward_strings,
                 )
             )
-        if isinstance(node, ast.Tuple):
-            return bool(node.elts) and all(
-                self.is_type_expression(
-                    module, element, seen, scope, allow_forward_strings=allow_forward_strings
-                )
-                for element in node.elts
-            )
+        # A complete type expression is never a tuple; tuples only list type arguments.
         ref = self.reference(module, node, scope, allow_forward_strings=allow_forward_strings)
         if ref is None or ref.name is None:
             return False
@@ -1823,31 +1994,6 @@ class _Source:
             )
         return False
 
-    def factory_origin(self, record: _Binding | None) -> tuple[str, ast.Call, _Scope | None] | None:
-        visited: set[_Binding] = set()
-        while record is not None and record not in visited:
-            visited.add(record)
-            self.require_certain(record)
-            if isinstance(record.declaration, ast.Call):
-                return record.owner.module, record.declaration, record.owner.scope
-            if isinstance(record.declaration, (ast.Name, ast.Attribute)) and isinstance(
-                record.value, _Binding
-            ):
-                record = record.value
-                continue
-            if isinstance(record.declaration, _Reference):
-                reference = record.declaration
-                if reference.name is None or self.path(reference.module) is None:
-                    return None
-                key, binding = self.resolve(reference.module, reference.name, scope=reference.scope)
-                if isinstance(binding, _Binding):
-                    record = binding
-                    continue
-                if isinstance(binding, ast.Call):
-                    return key.module, binding, key.scope
-            return None
-        return None
-
     def sites(
         self,
         module: str,
@@ -1860,14 +2006,15 @@ class _Source:
             if self.ordinary_uncertainty(record):
                 return {}
             self.require_certain(record)
-        factory = self.factory_origin(record)
-        if factory is not None:
-            factory_module, factory_call, factory_scope = factory
-            return (
-                self.factory_sites(factory_module, factory_call, frozenset(), factory_scope) or {}
-            )
         if record is not None:
             declaration = record.declaration
+            if isinstance(declaration, ast.Call):
+                return (
+                    self.factory_sites(
+                        record.owner.module, declaration, frozenset(), record.owner.scope
+                    )
+                    or {}
+                )
             if not isinstance(declaration, (ast.TypeAlias, ast.AnnAssign)):
                 # A bare implicit alias such as `Alias = Any` has no other definition.
                 return {"alias": self.annotation(module, record, scope=scope)}
@@ -1924,7 +2071,7 @@ class _Source:
         source = self.module(module, scope)
         sites = self.type_parameter_sites(module, node)
         members: dict[str, list[ast.AST | _Binding]] = {}
-        for member in self.contract_statements(node.body, module, scope):
+        for member in self.contract_statements(node.body):
             if isinstance(member, ast.Assign):
                 for target in member.targets:
                     if isinstance(target, ast.Name) and (
@@ -1932,23 +2079,12 @@ class _Source:
                         or target.id.startswith("__")
                         and target.id.endswith("__")
                     ):
-                        record = source.declarations.get(target.id)
-                        if record is not None and record.uncertainty is not None:
-                            if self.ordinary_uncertainty(record):
-                                continue
-                            self.require_certain(record)
-                        members.setdefault(target.id, []).append(
-                            record
-                            if record is not None
-                            and record.declaration is member.value
-                            and self.is_type_expression(
-                                module,
-                                record,
-                                scope=record.owner.scope,
-                                allow_forward_strings=False,
+                        declared = source.declarations.get(target.id)
+                        # An annotated attribute's contract is its annotation, not its value.
+                        if declared is None or not isinstance(declared.declaration, ast.AnnAssign):
+                            members.setdefault(target.id, []).append(
+                                self.assignments[_Reference(module, target.id, member)]
                             )
-                            else member.value
-                        )
                 continue
             if isinstance(member, (*_FUNCTION, ast.ClassDef)):
                 name = member.name
@@ -1994,10 +2130,17 @@ class _Source:
                 definitions = [
                     member
                     for member in definitions
-                    if binding is not None and binding.declaration is member
+                    if binding is not None and (member is binding or member is binding.declaration)
                 ]
             for member in definitions:
-                for site, count in self.sites(module, member, name, scope).items():
+                owner, definition = (
+                    self.member_contract(_Reference(module, name, scope), member)
+                    if isinstance(member, _Binding)
+                    else (_Reference(module, name, scope), member)
+                )
+                if definition is None:
+                    continue
+                for site, count in self.sites(owner.module, definition, name, owner.scope).items():
                     label = f"{name}.{site}"
                     sites[label] = sites.get(label, 0) + count
         return sites

@@ -506,14 +506,18 @@ importing its own name gets the attribute it already holds, otherwise that
 submodule; dotted external members keep their qualified path.
 Annotation-only fields are declarations, not runtime name bindings.
 Eager signatures and ordinary assignments use bindings available at that point;
-quoted forward references resolve late, using final bindings.
+quoted forward references resolve late, using final bindings. Export lists and
+maps follow the same rule: a name assigned from another shares its list or
+mapping, so rebinding that name later does not change the exports, while
+`append`, `extend`, `+=` or mapping `|=` on the shared object does; other
+in-place changes to an export container refuse.
 Type-expression unions retain local `Any` counts when paired with
 an imported external type; generic subscripts with recognized type arguments do
 likewise, including external names re-exported through local modules. External
 sources are opaque and never imported or traversed. Runtime values such as
-string-keyed dictionary subscripts, unions or plain string assignments are not
-treated as type aliases; an annotation that names string data still evaluates
-that string as a forward reference.
+string-keyed dictionary subscripts, unions, tuples or plain string assignments
+are not treated as type aliases; an annotation that names string data still
+evaluates that string as a forward reference.
 When an unmarked public expression using an opaque imported object and a quoted
 argument could mean either a runtime lookup or an `Any`-bearing alias, the check
 fails closed. Add the accurate value annotation, or declare the intended alias
@@ -528,20 +532,25 @@ type-parameter lists and runtime flags are metadata, not additional annotations.
 PEP 695 parameter bounds, constraints and supported defaults have independent
 declaration sites; parameter uses do not repeat those counts. They resolve lazily
 in the declaration's enclosing scope, never through the generic class body or a
-function's eagerly evaluated signature names. Recursive aliases
-count finitely through type constructors, including when re-exported under
-another name, while unresolved flat cycles refuse.
+function's eagerly evaluated signature names. Declared and implicit recursive
+aliases count finitely through type constructors, including when re-exported
+under another name, while unresolved flat cycles refuse.
 Typing star imports use the standard-library export inventory; unresolved
 Any-bearing generic forms refuse rather than silently counting zero.
 When an unresolved conditional leaves a binding ambiguous and an exported
 typing declaration depends on it, the checker refuses rather than assuming
-either branch.
+either branch. A known condition selects its branch when the module or class
+body runs; rebinding the condition's name afterwards does not change that
+selection. An unconditional assignment or import replaces a conditional
+star-import candidate; an annotation alone does not.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
-aliases. Record declarations retain
+aliases. A public class attribute assigned a function exposes that function's
+signature and overloads under the attribute's name. Record declarations retain
 separate allowances per field. An ordinary value's declared annotation is
-authoritative, so its factory initializer does not add type sites.
+authoritative, so its factory initializer does not add type sites, even when a
+class assigns that initializer separately.
 TypedDict field-map unions use rightmost field definitions; field containers
 that cannot be statically resolved refuse instead of producing empty schemas.
 Public receiver fields count even in private helpers or compound statements, and
