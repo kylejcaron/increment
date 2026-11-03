@@ -9,7 +9,8 @@ retains.
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from collections.abc import Callable
+from typing import Any, Literal, cast
 
 from ibis import Table
 from ibis.backends.sql import SQLBackend
@@ -79,10 +80,13 @@ def validate_cluster_uniqueness(
         )
 
 
-def arm_counts(con: SQLBackend, population: Table) -> dict[str, int]:
-    """Unit counts per arm off an already-narrowed population table."""
+def arm_counts(fetch: Callable[[Table], Any], population: Table) -> dict[str, int]:
+    """Unit counts per arm off an already-narrowed population table.
+
+    ``fetch`` executes the bounded aggregate, so a caller's snapshot cache serves repeats.
+    """
     counts_tbl = population.group_by("group_id").agg(n=population.unit_id.count())
-    rows = con.to_pyarrow(counts_tbl).to_pylist()
+    rows = fetch(counts_tbl).to_pylist()
     return {str(r["group_id"]): int(r["n"]) for r in rows}
 
 

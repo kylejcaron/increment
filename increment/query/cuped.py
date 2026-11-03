@@ -291,9 +291,9 @@ def fit_multicovariate_source(
             fitted_request = request
             if metric.type == "ratio":
                 denominator_relation = relation.select("group_id", "y_den")
-                denominator_means = _stable_arm_means(
+                (denominator_means,) = _stable_arm_means(
                     denominator_relation,
-                    denominator_relation["y_den"].cast("float64"),
+                    (denominator_relation["y_den"].cast("float64"),),
                     execute=execute,
                 )
                 for arm, mean in denominator_means.items():
