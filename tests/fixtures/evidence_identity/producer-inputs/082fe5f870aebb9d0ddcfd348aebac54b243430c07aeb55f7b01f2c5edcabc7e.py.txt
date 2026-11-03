@@ -1,0 +1,585 @@
+"""One per-unit dataset read through the dataframe oracle and both warehouse readers.
+
+Every per-unit value is a small dyadic rational so each SQL/Arrow sum is exact
+and the warehouse paths can agree with the dataframe path bit for bit. The
+warehouse covariate is the metric's pre-period total (a ratio's numerator);
+the frame carries the same total as an explicit ``pre`` column.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import shutil
+import tempfile
+import weakref
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pyarrow as pa
+import pytest
+
+from increment import (
+    CupedCovariate,
+    Definitions,
+    Method,
+    MetricSpec,
+    from_definitions,
+    from_frame,
+    from_moments,
+    from_unit_day_artifact,
+)
+from increment.artifacts import publish_unit_day_artifact
+from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+from increment.query.artifact_publish import artifact_context
+from increment.query.session import WarehouseArtifactStore
+from increment.semantics.design import Randomized
+from increment.semantics.loader import load
+from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment.workflows import capture_sequential, experiment_definition, export_moments
+from tests.analysis_factory import view_readout
+
+CUPED = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous", missing="impute"))
+UNADJUSTED = Method(name="unadjusted")
+DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+AS_OF = dt.date(2025, 1, 14)
+_EXPOSURE = dt.datetime(2025, 1, 10, 8, tzinfo=dt.UTC)
+_POST = dt.datetime(2025, 1, 11, 9, tzinfo=dt.UTC)
+_PRE = dt.datetime(2025, 1, 7, 9, tzinfo=dt.UTC)  # inside the 7-day lookback
+
+
+def unit_rows(seed: int = 7, n: int = 200) -> list[dict]:
+    rng = np.random.default_rng(seed)
+    base = rng.normal(5.0, 1.5, n)
+    rows = []
+    for variant, lift in (("control", 1.0), ("treatment", 1.05)):
+        pre = rng.permutation(base)
+        orders = np.clip(np.rint(6.0 + 0.5 * (pre - 5.0) + rng.normal(0.0, 1.0, n)), 1, None)
+        revenue = orders * (2.0 + 0.4 * (pre - 5.0)) * lift + rng.normal(0.0, 0.5, n)
+        for i in range(n):
+            rows.append(
+                {
+                    "user_id": f"{variant}-{i:04d}",
+                    "variant": variant,
+                    "revenue": float(np.rint(max(revenue[i], 0.25) * 4) / 4),
+                    "orders": float(int(orders[i])),
+                    "pre": float(np.rint(max(pre[i], 0.0) * 4) / 4),
+                }
+            )
+    return rows
+
+
+def event_rows(units: list[dict]) -> list[dict]:
+    def event(u, ts, name, value=None, exposure=False):
+        return {
+            "user_id": u["user_id"],
+            "ts": ts,
+            "event": name,
+            "experiment_id": "exp" if exposure else None,
+            "group_id": u["variant"] if exposure else None,
+            "value": value,
+        }
+
+    events = []
+    for u in units:
+        events.append(event(u, _EXPOSURE, "enrolled", exposure=True))
+        events.append(event(u, _PRE, "rev", u["pre"]))
+        events.append(event(u, _POST, "rev", u["revenue"]))
+        events.extend(
+            event(u, _POST + dt.timedelta(minutes=j), "ord") for j in range(int(u["orders"]))
+        )
+    return events
+
+
+def definitions_yaml(dialect: str, source: str, *, n_pre_periods: int, plan: str) -> str:
+    return f"""
+dialect: {dialect}
+fact_sources:
+  - name: events
+    sql: SELECT * FROM {source}
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {{name: enrolled, column: null}}
+      - {{name: rev, column: value}}
+      - {{name: ord, column: null}}
+exposures:
+  - {{name: enrollment, fact: enrolled}}
+metrics:
+  - name: rpo
+    type: ratio
+    entity: user_id
+    numerator: {{fact: rev, aggregation: sum, window_days: 2}}
+    denominator: {{fact: ord, aggregation: count, window_days: 2}}
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: rev
+    aggregation: sum
+    window_days: 2
+experiments:
+  - name: exp
+    exposure: enrollment
+    unit: user_id
+    start: 2025-01-10T00:00:00
+    end: 2025-01-12T00:00:00
+    control_group: control
+    allocation: {{control: 0.5, treatment: 0.5}}
+    n_pre_periods: {n_pre_periods}
+    plan:
+{plan}
+"""
+
+
+def _spec(metric: str, *, cuped: bool) -> MetricSpec:
+    covariate = CupedCovariate(name="pre", kind="continuous", missing="impute")
+    method = Method.cuped(covariates=covariate) if cuped else None
+    return (
+        MetricSpec(
+            name="rpo",
+            type="ratio",
+            numerator="revenue",
+            denominator="orders",
+            decision_method=method,
+        )
+        if metric == "rpo"
+        else MetricSpec(name="revenue", type="mean", decision_method=method)
+    )
+
+
+def frame_fixed(units, metric: str):
+    """``(unadjusted, cuped)`` fixed-horizon rows from the unit-summary frame."""
+    experiment, resolver = from_frame(
+        pa.Table.from_pylist(units),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics=[_spec(metric, cuped=True)],
+        design=DESIGN,
+    )
+    return view_readout(experiment, resolver, decision_method=UNADJUSTED)[0], view_readout(
+        experiment, resolver
+    )[0]
+
+
+def frame_sequential(units, metric: str, *, cuped: bool):
+    """``(snapshot, row)`` from the unit-summary frame under asymptotic_mean."""
+    experiment, resolver = from_frame(
+        pa.Table.from_pylist([{**u, "enrolled": _EXPOSURE.date()} for u in units]),
+        shape="summary",
+        unit="user_id",
+        group="variant",
+        metrics=[_spec(metric, cuped=cuped)],
+        design=DESIGN,
+        plan=AnalysisPlan(
+            primary=metric,
+            inference=InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=400),
+        ),
+        experiment_id="exp",
+        exposure_date="enrolled",
+    )
+    return capture_sequential(experiment, resolver, finalized=True), view_readout(
+        experiment, resolver
+    )[0]
+
+
+def _adopt(native: tuple[Any, Any], definitions: Definitions, con) -> Any:
+    """Publish ``native``'s unit-day artifact and reopen it through the public reader."""
+    native_experiment, native_resolver = native
+    context = artifact_context(
+        definitions, experiment_definition(native_experiment, native_resolver), "error"
+    )
+    requests = [
+        entry.request
+        for entry in unit_day_artifact_extension_catalog(context)
+        if entry.request.kind == "cuped_preperiod"
+    ]
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref = publish_unit_day_artifact(native_experiment, native_resolver, store, extensions=requests)
+    native_resolver.close()
+    return from_unit_day_artifact(store, ref, expected_context=context)
+
+
+def _open(con, dialect: str, source: str, plan: str, *, artifact: bool) -> Any:
+    # The definitions builder rewrites its catalog beside the file after each run,
+    # so the file lives as long as the resolver.
+    directory = tempfile.mkdtemp()
+    path = Path(directory) / "defs.yaml"
+    path.write_text(definitions_yaml(dialect, source, n_pre_periods=7, plan=plan))
+    definitions = load(path)
+    native = from_definitions(path, con, experiment_name="exp", store="none")
+    weakref.finalize(native[1], shutil.rmtree, directory, True)
+    return _adopt(native, definitions, con) if artifact else native
+
+
+def warehouse_fixed(con, dialect: str, source: str, metric: str, *, artifact: bool = False):
+    """``(unadjusted, cuped)`` fixed-horizon rows from a warehouse reader."""
+    plan = (
+        f"      secondaries:\n        - metric: {metric}\n"
+        "          decision_method: {name: unadjusted}\n"
+        "          sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
+    )
+    experiment, resolver = _open(con, dialect, source, plan, artifact=artifact)
+    rows = {row.method: row for row in view_readout(experiment, resolver)}
+    resolver.close()
+    return rows["unadjusted"], rows["cuped"]
+
+
+def warehouse_sequential(
+    con, dialect: str, source: str, metric: str, *, cuped: bool, artifact: bool = False
+):
+    """``(snapshot, row)`` from a warehouse reader under asymptotic_mean."""
+    binding = (
+        f"      primary:\n        metric: {metric}\n"
+        "        decision_method: {name: cuped, variance_reduction: cuped}\n"
+        if cuped
+        else f"      primary: {metric}\n"
+    )
+    plan = (
+        binding + "      inference: {kind: asymptotic_mean, expected_decision_sample_size: 400}\n"
+    )
+    experiment, resolver = _open(con, dialect, source, plan, artifact=artifact)
+    snapshot = capture_sequential(experiment, resolver, finalized=True, as_of=AS_OF)
+    row = view_readout(experiment, resolver)[0]
+    resolver.close()
+    return snapshot, row
+
+
+def assert_same_interval(a, b, *, tolerance: float = 1e-12) -> None:
+    la, lb = a.require_lift(), b.require_lift()
+    assert abs(la.value - lb.value) <= tolerance, (la.value, lb.value)
+    assert abs(la.lb - lb.lb) <= tolerance and abs(la.ub - lb.ub) <= tolerance, (la, lb)
+
+
+def check_fixed_horizon_parity(con, dialect: str, source: str, tmp_path=None) -> dict[str, tuple]:
+    """Ratio CUPED: dataframe oracle, definitions, artifact and portable moments agree."""
+    units = unit_rows()
+    frame_plain, frame_adj = frame_fixed(units, "rpo")
+    intervals = {"frame": (frame_plain, frame_adj)}
+    for artifact in (False, True):
+        plain, adjusted = warehouse_fixed(con, dialect, source, "rpo", artifact=artifact)
+        assert_same_interval(frame_plain, plain)
+        assert_same_interval(frame_adj, adjusted)
+        assert adjusted.reference_df == pytest.approx(frame_adj.reference_df)
+        assert adjusted.abs_se == pytest.approx(frame_adj.abs_se, rel=1e-12)
+        intervals["artifact" if artifact else dialect] = (plain, adjusted)
+    if tmp_path is not None:
+        plain, adjusted = portable_fixed(con, dialect, source, "rpo", tmp_path)
+        assert_same_interval(frame_plain, plain)
+        assert_same_interval(frame_adj, adjusted)
+        assert adjusted.abs_se == pytest.approx(frame_adj.abs_se, rel=1e-12)
+        intervals["portable"] = (plain, adjusted)
+    return intervals
+
+
+def portable_fixed(con, dialect: str, source: str, metric: str, tmp_path):
+    """``(unadjusted, cuped)`` from an exported moments cube replayed through from_moments."""
+    import pyarrow.parquet as pq
+
+    from increment import Method
+    from increment.frame import MetricSpec
+
+    plan = (
+        f"      secondaries:\n        - metric: {metric}\n"
+        "          decision_method: {name: unadjusted}\n"
+        "          sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
+    )
+    analysis_experiment, analysis_resolver = _open(con, dialect, source, plan, artifact=False)
+    path = tmp_path / "moments.parquet"
+    export_moments(analysis_experiment, analysis_resolver, path)
+    analysis_resolver.close()
+    rows = pq.read_table(path).to_pylist()
+    replay_experiment, replay_resolver = from_moments(
+        rows,
+        metrics=[MetricSpec(name=metric, type="ratio", numerator="revenue", denominator="orders")],
+        control="control",
+    )
+    plain = [
+        r for r in view_readout(replay_experiment, replay_resolver) if r.method == "unadjusted"
+    ][0]
+    adjusted = [
+        r
+        for r in view_readout(
+            replay_experiment,
+            replay_resolver,
+            sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")],
+        )
+        if r.method == "cuped"
+    ][0]
+    return plain, adjusted
+
+
+def check_sequential_parity(con, dialect: str, source: str) -> dict[str, tuple]:
+    """Adjusted laws: retained states and intervals agree across every reader."""
+    units = unit_rows()
+    widths: dict[str, tuple] = {}
+    for metric in ("revenue", "rpo"):
+        frame_plain_snap, frame_plain = frame_sequential(units, metric, cuped=False)
+        frame_adj_snap, frame_adj = frame_sequential(units, metric, cuped=True)
+        plain_snap, plain = warehouse_sequential(con, dialect, source, metric, cuped=False)
+        adj_snap, adjusted = warehouse_sequential(con, dialect, source, metric, cuped=True)
+        art_snap, art_adjusted = warehouse_sequential(
+            con, dialect, source, metric, cuped=True, artifact=True
+        )
+        expected_law = "adjusted_ratio_mean" if metric == "rpo" else "adjusted_mean"
+        for snapshot in (frame_adj_snap, adj_snap, art_snap):
+            assert snapshot.registration.models[0].law == expected_law
+        assert frame_plain_snap.states == plain_snap.states
+        assert frame_adj_snap.states == adj_snap.states == art_snap.states
+        assert adj_snap.prefix_id == art_snap.prefix_id
+        assert_same_interval(frame_plain, plain, tolerance=0.0)
+        assert_same_interval(frame_adj, adjusted, tolerance=0.0)
+        assert_same_interval(frame_adj, art_adjusted, tolerance=0.0)
+        widths[metric] = (plain, adjusted)
+    return widths
+
+
+def check_day_axis_parity(con, dialect: str, source: str) -> None:
+    """Day-axis ratio CUPED: the final as-of equals the total, and both readers agree."""
+    from increment import Method, Scope
+    from increment.results import LiftEstimate
+
+    cuped = Method(name="cuped", variance_reduction="cuped")
+    plan = (
+        "      secondaries:\n        - metric: rpo\n"
+        "          decision_method: {name: unadjusted}\n"
+        "          sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
+    )
+    definitions = _open(con, dialect, source, plan, artifact=False)
+    artifact = _open(con, dialect, source, plan, artifact=True)
+    asof_lift = Scope(view="asof", grain="asof")
+    daily_lift = Scope(view="daily", grain="daily")
+    try:
+        total_row = [r for r in view_readout(*definitions) if r.method == "cuped"][0]
+        assert isinstance(total_row, LiftEstimate)
+        total = total_row.require_lift()
+
+        def rows(pair, scope):
+            experiment, resolver = pair
+            return {
+                (r.group_id, r.ds): r
+                for r in view_readout(
+                    experiment, resolver, scope, metrics=["rpo"], sensitivity_methods=[cuped]
+                )
+                if r.method == "cuped"
+            }
+
+        asof = rows(definitions, asof_lift)
+        last = max(ds for _, ds in asof)
+        final = asof[("treatment", last)].require_lift()
+        # Cumulative through the last day is the whole experiment.
+        assert final.value == pytest.approx(total.value, abs=1e-12)
+        assert final.lb == pytest.approx(total.lb, abs=1e-12)
+        assert final.ub == pytest.approx(total.ub, abs=1e-12)
+        for view_name, scope in (("asof_lift", asof_lift), ("daily_lift", daily_lift)):
+            left = rows(definitions, scope)
+            right = rows(artifact, scope)
+            assert set(left) == set(right)
+            available = 0
+            for key in left:
+                a, b = left[key].lift, right[key].lift
+                assert (a is None) == (b is None), key
+                if a is None:
+                    continue
+                available += 1
+                assert a.value == pytest.approx(b.value, abs=1e-12), key
+                assert a.lb == pytest.approx(b.lb, abs=1e-12), key
+                assert a.ub == pytest.approx(b.ub, abs=1e-12), key
+            assert available >= 1, view_name
+    finally:
+        definitions[1].close()
+        artifact[1].close()
+
+
+def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
+    """Warehouse events carrying the same per-unit outcomes and covariates as the frame fixture."""
+    events = []
+    exposure = dt.datetime(2025, 1, 10, 8)
+    history = dt.datetime(2025, 1, 7, 9)
+    outcome = dt.datetime(2025, 1, 11, 9)
+    for row in rows:
+        user_id = row["user_id"]
+        arm = row["variant"]
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": exposure,
+                "event": "enrolled",
+                "experiment_id": "mixed_cuped",
+                "group_id": arm,
+                "value": None,
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": history,
+                "event": "history",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["pre_revenue"],
+                "pre_revenue": row["pre_revenue"],
+                "region": row["region"],
+                "country": row["country"],
+                "device": row["device"],
+                "new_user": row["new_user"],
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": history,
+                "event": "revenue",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["pre_revenue"],
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": outcome,
+                "event": "revenue",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["revenue"],
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        for _ in range(int(row["orders"])):
+            events.append(
+                {
+                    "user_id": user_id,
+                    "ts": outcome,
+                    "event": "order",
+                    "experiment_id": None,
+                    "group_id": None,
+                    "value": None,
+                    "pre_revenue": None,
+                    "region": None,
+                    "country": None,
+                    "device": None,
+                    "new_user": None,
+                }
+            )
+        for _ in range(int(row["signups"])):
+            events.append(
+                {
+                    "user_id": user_id,
+                    "ts": outcome,
+                    "event": "signup",
+                    "experiment_id": None,
+                    "group_id": None,
+                    "value": None,
+                    "pre_revenue": None,
+                    "region": None,
+                    "country": None,
+                    "device": None,
+                    "new_user": None,
+                }
+            )
+    return events
+
+
+def mixed_cuped_definitions_yaml(
+    source: str,
+    *,
+    breakout: bool = False,
+    scalar_cuped: bool = False,
+    n_pre_periods: int = 0,
+    fixed_winsorization: bool = False,
+) -> str:
+    entries = (
+        "{name: pre_revenue, kind: continuous, property: pre_revenue, source: events, missing: impute-indicator}",
+        "{name: country, kind: categorical, property: country, source: events}",
+        "{name: device, kind: categorical, property: device, source: events}",
+        "{name: new_user, kind: categorical, property: new_user, source: events}",
+    )
+    method = (
+        "decision_method: {name: linear, variance_reduction: cuped_multicovariate, "
+        "covariates: [" + ", ".join(entries) + "]}"
+    )
+    scalar_sensitivity = (
+        "        sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
+        if scalar_cuped
+        else ""
+    )
+    pre_period_section = f"    n_pre_periods: {n_pre_periods}\n" if n_pre_periods else ""
+    winsorization_section = (
+        "    winsorization: {lower_value: 7.0, upper_value: 11.0}\n" if fixed_winsorization else ""
+    )
+    breakout_section = (
+        "    breakouts:\n      - property: region\n        source: events\n" if breakout else ""
+    )
+    return f"""
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM {source}
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {{name: enrolled, column: null}}
+      - {{name: revenue, column: value}}
+      - {{name: order, column: null}}
+      - {{name: signup, column: null}}
+    properties:
+      - {{name: pre_revenue, column: pre_revenue, dtype: float, as_of: pre_exposure}}
+      - {{name: region, column: region, dtype: string, as_of: pre_exposure}}
+      - {{name: country, column: country, dtype: string, as_of: pre_exposure}}
+      - {{name: device, column: device, dtype: string, as_of: pre_exposure}}
+      - {{name: new_user, column: new_user, dtype: string, as_of: pre_exposure}}
+exposures:
+  - {{name: enrollment, fact: enrolled}}
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: revenue
+    aggregation: sum
+    window_days: 2
+{winsorization_section}
+  - name: rpo
+    type: ratio
+    entity: user_id
+    numerator: {{fact: revenue, aggregation: sum, window_days: 2}}
+    preferred_direction: increase
+    denominator: {{fact: order, aggregation: count, window_days: 2}}
+  - name: signups
+    type: conversion
+    entity: user_id
+    fact: signup
+    window_days: 2
+experiments:
+  - name: mixed_cuped
+    exposure: enrollment
+    unit: user_id
+    start: "2025-01-10"
+    end: "2025-01-12"
+    control_group: control
+    allocation: {{control: 0.5, treatment: 0.5}}
+{pre_period_section}{breakout_section}    plan:
+      primary:
+        metric: revenue
+        {method}
+{scalar_sensitivity}      guardrails:
+        - metric: rpo
+          {method}
+      secondaries:
+        - metric: signups
+          {method}
+"""

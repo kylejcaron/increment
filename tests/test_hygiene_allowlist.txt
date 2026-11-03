@@ -83,8 +83,18 @@ tests/test_warehouse_cuped_qr.py 5
 # remain covered by the public evidence API contract.
 # Test-only evidence-fixture inspection of retired internal acquisition envelopes.
 tests/evidence_fixtures/capture.py 2
-# Direct construction of retired compound requests/envelopes for evidence-fixture contracts.
-tests/test_evidence_level_parity.py 3
+# Captured declarations and genuine data-only family, alpha, identity and readout consumers.
+tests/test_evidence_level_parity.py 42
+# Pinned acquisition, genuine slice routes, qualified fit/frame receipts and source identity.
+tests/evidence_fixtures/scenarios.py 22
+# Closed request/answer codecs and genuine pinned warehouse input source identity.
+tests/evidence_fixtures/transcript.py 8
+# Retained CUPED envelopes and full method-fit identity for pure estimators.
+tests/evidence_fixtures/replay.py 5
+# Source-free observational and result-row assembly consumers.
+tests/evidence_fixtures/method_replay.py 6
+# Borrowed internal day/contrast acquisition and source-free temporal scope consumers.
+tests/evidence_fixtures/temporal.py 44
 tests/test_analysis_breakout.py 3
 # These counts cover breakout, day-axis, and metric-evidence request tests.
 tests/test_evidence_provider.py 11

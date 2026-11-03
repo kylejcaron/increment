@@ -1,12 +1,21 @@
 {
-  "baseline_revision": "7c324b66",
-  "declaration_sha256": "078fcddc993a63f42bef7d11ac3396d348d09707b9838ace662832e023bf5007",
+  "baseline_revision": "7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+  "declaration_sha256": "ffacc16a84ce9f8bb30adaf09c3e848b2c0300fcc00fd28e9e672e312b7ee61c",
   "ingress": "from_moments",
-  "input_sha256": "20fcbcf401c6d627de42c73008d1ef13ec244948b965ff4d4e5c3e4a9ceee210",
+  "input_sha256": "703ff581f364a6fdec1b1d3892ee4f19396e1eec809359d8473a49f15e443fec",
   "provenance": {
-    "input": "case-owned fixed-horizon input and baseline M export",
+    "baseline_revision": "7c324b66f9f758eb78298e6ecf2d1aea29c66709",
+    "declaration_sha256": "ffacc16a84ce9f8bb30adaf09c3e848b2c0300fcc00fd28e9e672e312b7ee61c",
+    "input_sha256": "703ff581f364a6fdec1b1d3892ee4f19396e1eec809359d8473a49f15e443fec",
+    "ingress": "from_moments",
     "kind": "baseline-input-capture",
-    "scenario": "mean_ratio_conversion_cuped_fixed_horizon"
+    "scenario": "mean_ratio_conversion_cuped_fixed_horizon",
+    "source_inputs": [
+      {
+        "path": "tests/parity_harness/cases.py",
+        "sha256": "d161e60cd18d584f067a19ba05312e86c584f296fa641e3e24af237c0a62f8a4"
+      }
+    ]
   },
   "records": [
     {
@@ -32,6 +41,10 @@
         "evidence_kind": "moments_rows",
         "evidence_sha256": "3b6537c482a62634be3923604af311dc9fcc7d12b7ceb4dc52c67ba961a8ce23",
         "method_rows": [],
+        "unit_frame": null,
+        "method_refusals": [],
+        "method_cell_refusals": [],
+        "method_fit_answers": [],
         "n_treatment_arms": 1,
         "observed_arms": [
           "control",
@@ -152,6 +165,10 @@
         "evidence_kind": "moments_rows",
         "evidence_sha256": "e8aea500120f87fd2e0358e08b27eedbe24d920c9979743041c90d37f2c6fc97",
         "method_rows": [],
+        "unit_frame": null,
+        "method_refusals": [],
+        "method_cell_refusals": [],
+        "method_fit_answers": [],
         "n_treatment_arms": 1,
         "observed_arms": [
           "control",
@@ -270,6 +287,10 @@
         "evidence_kind": "moments_rows",
         "evidence_sha256": "20a941bde4e4fbffb7433151f0caf68710d124406c2067c362bb4b49998f49a7",
         "method_rows": [],
+        "unit_frame": null,
+        "method_refusals": [],
+        "method_cell_refusals": [],
+        "method_fit_answers": [],
         "n_treatment_arms": 1,
         "observed_arms": [
           "control",
@@ -720,9 +741,18 @@
     }
   ],
   "runtime": {
+    "dependency_versions": {
+      "increment": "0.1.0a3.dev237+g7c324b66f.d20261102",
+      "narwhals": "2.27.1",
+      "numpy": "2.5.4",
+      "pydantic": "2.14.1",
+      "pyarrow": "26.0.0",
+      "scipy": "1.18.1"
+    },
     "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+    "production_root": "/Users/kylejcaron/orca/workspaces/increment/te-t11/increment",
     "python": "3.13.5"
   },
   "scenario_id": "mean_ratio_conversion_cuped_fixed_horizon",
-  "schema_version": 1
+  "schema_version": 2
 }

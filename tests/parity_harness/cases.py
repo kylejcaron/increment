@@ -95,6 +95,44 @@ _ARTIFACT_EXTENSION_KINDS = (
 Bound = tuple[Experiment, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class MomentInputReceipt:
+    row_index: int
+    metric: object
+    group_id: object
+    payload: str
+
+
+class BoundWithMomentInputs(tuple[Experiment, Any]):
+    """A normal experiment/resolver pair with its original immutable wire inputs."""
+
+    _moment_inputs: tuple[MomentInputReceipt, ...]
+
+    def __new__(cls, bound: Bound, inputs: tuple[MomentInputReceipt, ...]):
+        pair = super().__new__(cls, bound)
+        object.__setattr__(pair, "_moment_inputs", inputs)
+        return pair
+
+    @property
+    def moment_inputs(self) -> tuple[MomentInputReceipt, ...]:
+        return self._moment_inputs
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("moment input receipts are immutable")
+
+
+def _moment_input_receipts(rows: list[dict[str, Any]]) -> tuple[MomentInputReceipt, ...]:
+    receipts = []
+    for index, row in enumerate(rows):
+        payload = row.get("cuped_evidence")
+        if payload is not None:
+            assert isinstance(payload, str)
+            receipts.append(
+                MomentInputReceipt(index, row.get("metric"), row.get("group_id"), payload)
+            )
+    return tuple(receipts)
+
+
 @dataclass(frozen=True)
 class ParityDataset:
     """One case's own copy of the shared per-unit(-day) truth."""
@@ -9403,13 +9441,15 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
                 ]
                 assert {item["kind"] for item in envelopes} == {"fitted_multicovariate"}
                 replay_plan = plan if alpha is None else plan.model_copy(update={"alpha": alpha})
-                return builders.from_moments(
+                receipts = _moment_input_receipts(payload)
+                replayed = builders.from_moments(
                     payload,
                     metrics=replay_metrics,
                     design=design,
                     plan=replay_plan,
                     experiment_id="mixed_cuped",
                 )
+                return BoundWithMomentInputs(replayed, receipts)
         finally:
             _close_parity_binding(native)
 
@@ -9617,12 +9657,14 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                 } == {"categorical_cells"}
             finally:
                 _close_parity_binding(native)
-        return builders.from_moments(
+        receipts = _moment_input_receipts(payload)
+        replayed = builders.from_moments(
             payload,
             metrics=metrics,
             design=design,
             experiment_id="mixed_cuped",
         )
+        return BoundWithMomentInputs(replayed, receipts)
 
     def switchback_analysis() -> Bound:
         from increment.semantics.design import Randomized as SwitchbackDesign

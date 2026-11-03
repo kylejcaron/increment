@@ -38,6 +38,67 @@ fact sources remain distinct. Method-fit records retain the full
 full method declaration remains in the key and the full request remains in the
 payload, so changing fitted numerical values still fails comparison.
 
+## Frozen input and readout ownership
+
+The compressed operations captures define the complete scenario inventory.
+Every declared source success, refusal and absence remains covered by acquired
+input parity. The smaller public-journey catalogue does not reduce that
+inventory or the retained population and coherence checks.
+
+Pure readout consumers receive closed data, effective calculation and identity
+plans, declared context, rosters and requests. They do not receive a Source,
+provider, capabilities or acquisition callback. Published rows and complete
+metadata retain every archived key. Current snapshot and family identifiers are
+reconstructed from their complete authentic input preimages before historical
+identifiers are rebound in a comparison copy. Canonical sorting of opaque family
+identifiers after rebinding does not reorder rows, days, checkpoints or source
+components.
+
+The archived nonempty daily domains have four owners: 31 ordinary or encouragement
+breakouts, 16 sequential breakouts, 24 daily/as-of coordinates and one contrast.
+Three categorical-CUPED coordinates have no archived segment estimates. Their
+additional segment scopes exercise current source-input identity, fit/frame
+association and metadata declarations only; they are not extra numerical gold.
+Their archived main-run estimates remain covered by the fixed readout consumer.
+
+Ordinary breakout inputs retain 27 directly materialized slice paths and seven
+genuine derived summary-source paths. The latter do not relabel the root's
+unsupported typed response. Every materialized scope has its actual pinned
+source context, request and normalized caller route. Missing required input
+receipts fail rather than reducing the eligible domain.
+
+Warehouse fit-record components are independently rebuilt from the genuine
+rehydrated fit, its complete field inventory and real relative/ratio projections.
+This checks identity data, not an independent implementation of projection
+mathematics. Local frame components retain their original columns and values and
+are hashed after the actual declared dimension-alias transformation.
+
+Warehouse raw-relation fingerprints are a distinct protocol from fitted-wire
+hashes and fit-record components. Their receipts retain ordered backend schema,
+the exact two backend aggregate sum strings and row count. An additional bounded
+acquisition inside the same pinned source lifetime supplies these preimages;
+it is not an interception of the original aggregate execution. Each frozen and
+current fingerprint is independently rehashed before comparison. No column
+sorting, float conversion of decimal strings or admitted-arm filtering is
+applied. The backend's hash implementation itself is not independently proven.
+Retained categorical and fitted payload hashes still use their original strings.
+
+Original source frame/table/state/manifest receipts without stored raw bytes are
+historical provenance, not independently rehashed frozen byte oracles. Current
+original-byte hashes are checked before semantic keying. Consumed numeric and
+categorical values retain their independent references and unchanged bounds.
+Current source payloads use one immutable canonical byte sequence: sorted-key,
+compact JSON with ASCII escaping, strict nonfinite handling and UTF-8 encoding.
+Observation, row and column order and numeric/null spellings are preserved.
+Claim and audit SHA-256 values are calculated separately from those bytes;
+neither calculation copies the other's digest or hash state. The detached audit
+tuple is compared with emitted receipt claims before projection. A literal-byte
+protocol assertion owns the shared encoder; a truncated-claim preimage fault
+must fail the retained input comparison.
+The narrow post-capture alpha and absolute-contrast serialization projections
+operate only on comparison copies; actual result objects and archived records
+remain unmodified.
+
 ## Producer inventory
 
 The wrapper inventory is `capture.PRODUCERS`. Aliases already imported by readouts
@@ -82,16 +143,14 @@ counts. The scenario's denominators, exact successes and optional null moments
 are compared, not just the final estimate.
 
 
-### Executed fault proofs
+### Original loader fault proofs
 
-All twenty replacements below were executed separately in the detached disposable
-worktree `/tmp/increment-evidence-faults`, based on
-`25f819138e4b82367748b42bb5e66b7ea505fa4a`. Each replacement changes exactly one
-production line; that line was restored before the next execution. Every final
-fault failed at an **evidence comparison or capture-roster assertion**, not merely
-an import failure, timeout, estimator refusal or readout difference. The pristine
-boundary-sensitive scenario passed before the replacements (`1 passed in 8.73s`)
-and after restoration (`1 passed in 6.02s`).
+The measurements below record the original fault campaign at
+`25f819138e4b82367748b42bb5e66b7ea505fa4a`. Each replacement changed exactly one
+production line, restored before the next execution. Every fault failed at an
+evidence comparison or capture-roster assertion, not an import failure, timeout,
+estimator refusal or final readout difference. These elapsed times are historical
+observations, not performance thresholds.
 
 Command for each row (substitute its ID for `<id>`):
 
@@ -337,10 +396,10 @@ ce54d1465e7a667ad5ef5b731b5cc30d2b4caf4a2f73483d72b61e4dc068e780  increment/quer
 ```
 
 The producer inventory includes daily, as-of, sequential, breakout, switchback
-and multicovariate-fit boundaries. The four tests added here execute fixed-horizon
-mean/conversion/ratio and two scalar-CUPED companions; the inventory is not a
-claim that every other readout scenario was executed here. Existing parity and
-end-to-end scenarios remain in place. No tests or assertions were deleted.
+and multicovariate-fit boundaries. The shared loader detector acquires typed
+evidence directly, without running a successful public readout. Frozen-input
+consumers own statistical and assembly fields; the public journey catalogue owns
+source-coupled completion, identity, reopening and forwarding contracts.
 
 ### Duplicate producer output
 
@@ -352,7 +411,7 @@ A separate production fault duplicated the acquired `MetricEvidence.rows` at
 +    return __import__("dataclasses").replace(evidence := _load_metric_evidence(src, request, _snapshot_active=scope_active), rows=evidence.rows + evidence.rows)
 ```
 
-The same public-run evidence test failed **inside capture**, before estimation:
+The original public-run detector failed inside capture, before estimation:
 `AssertionError: Duplicate capture key` for revenue/control (`1 failed in 4.08s`).
-The original producer was restored. The restored scenario was executed again;
-its result is recorded with the verification evidence.
+The retained typed-acquisition detector preserves duplicate-key rejection.
+Each fault proof requires a separate pristine execution after restoration.

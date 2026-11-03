@@ -853,12 +853,92 @@ def _write_checkpoint(path: Path) -> None:
         _close_parity_binding(bound)
 
 
+def capture_consumer_inputs(
+    out: Path,
+    *,
+    resume: bool = False,
+    replace_inputs: bool = False,
+    scenarios: tuple[str, ...] = (),
+) -> None:
+    """Capture typed consumer inputs, never expected statistical outputs."""
+    import importlib.metadata
+    import platform
+    import subprocess
+    import sys
+
+    import increment
+    from tests.evidence_fixtures.scenarios import acquire_scenario, scenario_roster
+    from tests.evidence_fixtures.transcript import Transcript
+
+    baseline = "7c324b66f9f758eb78298e6ecf2d1aea29c66709"
+    repository = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        ["git", "-C", str(repository), "diff", "--exit-code", baseline, "--", "increment"],
+        check=True,
+    )
+    runtime = {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "production_root": str(Path(increment.__file__).resolve().parent),
+        "dependency_versions": {
+            name: importlib.metadata.version(name)
+            for name in ("increment", "pydantic", "numpy", "scipy", "pyarrow", "narwhals")
+        },
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    for entry in scenario_roster():
+        if entry.disposition != "source" or (scenarios and entry.scenario_id not in scenarios):
+            continue
+        path = out / f"{entry.scenario_id}--{entry.ingress}.json.gz"
+        if path.exists() and not replace_inputs:
+            if not resume:
+                raise FileExistsError(f"consumer input already exists: {path}")
+            saved = json.loads(gzip.decompress(path.read_bytes()))
+            if (
+                saved["baseline_revision"] != baseline
+                or saved["scenario_id"] != entry.scenario_id
+                or saved["ingress"] != entry.ingress
+            ):
+                raise ValueError(f"consumer input authority differs: {path}")
+            continue
+        acquired = acquire_scenario(entry.scenario_id, entry.ingress)
+        if acquired.missing_representations:
+            raise ValueError(acquired.missing_representations)
+        transcript = Transcript(
+            baseline_revision=baseline,
+            scenario_id=entry.scenario_id,
+            ingress=entry.ingress,
+            runtime=runtime,
+            provenance=acquired.provenance,
+            records=acquired.records,
+        )
+        # The closed codec validates requests, field inventories and provenance.
+        payload = transcript.to_payload()
+        path.write_bytes(gzip.compress(_json_bytes(payload), mtime=0))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--cutover")
+    parser.add_argument("--consumer-inputs", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--replace-inputs", action="store_true")
+    parser.add_argument("--scenario", action="append", default=[])
     args = parser.parse_args()
-    capture(args.out, cutover=args.cutover)
+    if args.consumer_inputs:
+        if args.cutover is not None:
+            parser.error("--consumer-inputs and --cutover are separate capture modes")
+        capture_consumer_inputs(
+            args.out,
+            resume=args.resume,
+            replace_inputs=args.replace_inputs,
+            scenarios=tuple(args.scenario),
+        )
+    else:
+        if args.resume or args.replace_inputs or args.scenario:
+            parser.error("input selection options require --consumer-inputs")
+        capture(args.out, cutover=args.cutover)
 
 
 if __name__ == "__main__":

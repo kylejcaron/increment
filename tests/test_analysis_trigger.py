@@ -4072,6 +4072,14 @@ def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_
         assert all(row.lift is None and row.unavailable == "no_control_arm" for row in treatment)
         assert {row.failure_code for row in treatment} == {"readout.cell.missing_arm"}
         assert {row.sampling_reason_code for row in treatment} == {"readout.cell.missing_arm"}
+        assert all(row.decision_scope_complete is False for row in treatment)
+        assert {row.decision_scope_reason_code for row in treatment} == {
+            "readout.scope.decision_incomplete"
+        }
+        assert all(
+            row.decision_scope_reason_context == {"reason": "triggered_cell_unavailable"}
+            for row in treatment
+        )
         cell = next(
             cell
             for cell in estimates.metadata.cells
