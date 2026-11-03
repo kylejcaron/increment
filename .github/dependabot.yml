@@ -24,3 +24,22 @@ updates:
     labels:
       - dependencies
       - "python:uv"
+    ignore:
+      - dependency-name: sqlglot
+        versions:
+          - "30.18.0"
+          - "30.19.0"
+          - "30.20.0"
+          - "30.21.0"
+          - "30.22.0"
+          - "30.23.0"
+          - "30.24.0"
+          - "30.25.0"
+          - "30.26.0"
+          - "30.27.0"
+      - dependency-name: duckdb
+        versions:
+          - "2.0.0"
+      - dependency-name: pyarrow
+        versions:
+          - "25.0.0"
