@@ -2589,27 +2589,44 @@ def test_superseded_class_values_do_not_create_public_any_sites(tmp_path: Path) 
                 from typing import Any
                 __all__ = ["Holder"]
                 class Holder:
+                    count: Any
                     def _old(self, value: Any) -> str: ...
                     def _new(self, value: str) -> str: ...
                     value = 0
                     read = _new
+                    from .types import load
+                    @property
+                    def size(self) -> Any: ...
+                    @size.setter
+                    def size(self, value: int) -> None: ...
+            """,
+            "types.py": """
+                from typing import Any
+                def load(self, value: Any) -> None: ...
             """,
         },
     )
     baseline = root / "baseline.txt"
     args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
-    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert public_any(root, ["sample"]) == {"sample.Holder": 3}
     assert main([*args, "--write-baseline"]) == 0
     before = baseline.read_text()
     path = root / "sample/__init__.py"
     path.write_text(
         path.read_text()
+        .replace("    count: Any", "    count: Any\n    def count(self) -> int: ...")
         .replace("    value = 0", "    value = Any\n    value = 0")
-        .replace("    read = _new", "    read = _old\n    read = _new")
+        .replace(
+            "    read = _new",
+            "    def read(self, value: Any) -> str: ...\n    read = _old\n    read = _new",
+        )
+        .replace("    from .types", "    def load(self, value: Any) -> None: ...\n    from .types")
+        + "    class Inner:\n        def read(self, value: Any) -> None: ...\n        read = None\n"
+        + "    class Shadow:\n        field: Any\n    Shadow = None\n"
     )
     observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
 
-    assert observed == ({"sample.Holder": 0}, 0, before)
+    assert observed == ({"sample.Holder": 3}, 0, before)
 
 
 @pytest.mark.integration
@@ -2741,3 +2758,159 @@ def test_class_imported_function_resolves_overloads_where_it_was_defined(
     observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
 
     assert observed == ({"sample.Holder": 1}, 1, before)
+
+
+@pytest.mark.integration
+def test_overloads_keep_the_decorator_bound_when_each_definition_ran(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, overload
+                __all__ = ["Holder", "read"]
+                @overload
+                def read(value: str) -> str: ...
+                @overload
+                def read(value: bytes) -> bytes: ...
+                def read(value: object) -> object: ...
+                class Holder:
+                    load = read
+                overload = None
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0, "sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text().replace("value: str", "value: Any", 1))
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 1, "sample.read": 1}, 1, before)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "body",
+    [
+        """
+        class Holder:
+            _fields = {"value": str}
+            Record = TypedDict("Record", _fields)
+            _fields["value"] = Any
+        """,
+        """
+        class Holder:
+            def __init__(self) -> None:
+                fields = {"value": str}
+                Record = TypedDict("Record", fields)
+                fields["value"] = Any
+                self.record: Record
+        """,
+    ],
+    ids=["class-body", "method-body"],
+)
+def test_class_and_function_body_factories_refuse_earlier_container_changes(
+    tmp_path: Path, body: str
+) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": (
+                "from typing import Any, TypedDict\n__all__ = ['Holder']\n" + dedent(body).lstrip()
+            ),
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    lines = path.read_text().splitlines(keepends=True)
+    call = next(index for index, line in enumerate(lines) if "TypedDict(" in line)
+    lines[call : call + 2] = [lines[call + 1], lines[call]]
+    path.write_text("".join(lines))
+    try:
+        public_any(root, ["sample"])
+    except ValueError:
+        analysis_refused = True
+    else:
+        analysis_refused = False
+
+    assert (analysis_refused, main(args), baseline.read_text()) == (True, 1, before)
+
+
+@pytest.mark.integration
+def test_unpacked_names_bind_their_elements_or_refuse_public_use(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["read"]
+                def _types() -> tuple[type, type]: ...
+                Payload, Other = str, str
+                def read(value: Other) -> None: ...
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.read": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    source = path.read_text()
+    path.write_text(
+        source.replace(
+            "Payload, Other = str, str",
+            "Payload, Other = Any, str\nPayload, Other = Other, Payload",
+        )
+    )
+    swapped = (public_any(root, ["sample"]), main(args))
+    path.write_text(source.replace("Payload, Other = str, str", "Payload, Other = _types()"))
+    try:
+        public_any(root, ["sample"])
+    except ValueError:
+        analysis_refused = True
+    else:
+        analysis_refused = False
+    observed = (swapped, analysis_refused, main(args), baseline.read_text())
+
+    assert observed == (({"sample.read": 1}, 1), True, 1, before)
+
+
+@pytest.mark.integration
+def test_class_member_imports_stop_at_external_objects_on_every_route(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                __all__ = ["Holder"]
+                class Holder:
+                    from .types import date, Payload
+            """,
+            "types.py": """
+                from datetime import date
+                from typing import Any as Payload
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    reexported = public_any(root, ["sample"])
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(
+            "    from .types import date, Payload",
+            "    from datetime import date\n    from typing import Any as Payload",
+        )
+    )
+    observed = (reexported, public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 1}, {"sample.Holder": 1}, 0, before)

@@ -518,6 +518,9 @@ maps follow the same rule: a name assigned from another shares its list or
 mapping, so rebinding that name later does not change the exports, while
 `append`, `extend`, `+=` or mapping `|=` on the shared object does; other
 in-place changes to an export container refuse.
+Unpacking a tuple or list display binds each name to its element, all evaluated
+before any name is rebound; a name unpacked from another value is unknown, so the
+checker refuses when an exported typing declaration depends on it.
 Type-expression unions retain local `Any` counts when paired with
 an imported external type; generic subscripts with recognized type arguments do
 likewise, including external names re-exported through local modules. External
@@ -531,9 +534,11 @@ fails closed. Add the accurate value annotation, or declare the intended alias
 with `TypeAlias`/`type`; explicit declarations determine whether its `Any` counts.
 Unambiguous quoted arguments that do not resolve to `Any` remain ordinary
 zero-count names. Function and method overloads retain separate signature
-allowances, independent of their implementations. Standard typing factories
-inspect only type-bearing positions: type-variable constraints, bounds and
-defaults; `NewType` supertypes; `TypeAliasType` values; and `NamedTuple`/`TypedDict`
+allowances, independent of their implementations. Decorators resolve when their
+definition runs, so rebinding `overload` afterwards does not drop an overload.
+Standard typing factories inspect only type-bearing positions: type-variable
+constraints, bounds and defaults; `NewType` supertypes; `TypeAliasType` values;
+and `NamedTuple`/`TypedDict`
 field types, including locally bound field entries. Constructor and field names,
 type-parameter lists and runtime flags are metadata, not additional annotations.
 PEP 695 parameter bounds, constraints and supported defaults have independent
@@ -553,9 +558,12 @@ star-import candidate; an annotation alone does not.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
-aliases. Only an attribute's final assignment or import counts, following an
-import into its local source; an earlier assigned value adds no sites unless an
-annotation captured it. A function assigned or imported as a public class
+aliases. Only an attribute's final binding counts, whether an assignment, import,
+function or class. An import is followed through local sources to an external
+object, which is opaque unless it is a typing name. Earlier values and definitions
+add no sites unless an annotation captured them, while field annotations always
+count, and a decorator built from the previous value, such as a property `setter`,
+keeps that value's accessors. A function assigned or imported as a public class
 attribute exposes its signature and the overloads defined before it under the
 attribute's name, even after the original name is rebound. Those overloads and
 annotations resolve where the function was defined, so a name the class body
@@ -565,8 +573,9 @@ declared annotation is authoritative, so its factory initializer does not add
 type sites, even when a class assigns that initializer separately.
 TypedDict field-map unions use rightmost field definitions; field containers
 that cannot be statically resolved refuse instead of producing empty schemas.
-A factory reads its field container as it was at the call: an in-place change
-before the call refuses, and a later change does not alter the declared fields.
+A factory reads its field container as it was at the call, in module, class and
+function bodies alike: an in-place change before the call refuses, and a later
+change does not alter the declared fields.
 Public receiver fields count even in private helpers or compound statements, and
 resolve method-local imports and aliases bound before each field;
 private signatures, nested implementation scopes and inherited external members

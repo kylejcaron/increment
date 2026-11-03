@@ -83,9 +83,16 @@ class _Body:
 
 @dataclass(frozen=True)
 class _ValueScope:
-    """Eager value-expression scope, distinct from a deferred annotation scope."""
+    """Eager value-expression scope, such as a definition's decorators, apart from annotations."""
 
-    declaration: ast.Assign | ast.AnnAssign | ast.AugAssign | ast.Expr
+    declaration: (
+        ast.Assign
+        | ast.AnnAssign
+        | ast.AugAssign
+        | ast.Expr
+        | ast.FunctionDef
+        | ast.AsyncFunctionDef
+    )
 
 
 @dataclass(frozen=True)
@@ -197,10 +204,43 @@ def _assigned_value(binding: _Binding) -> ast.AST | _Reference | None:
     return declaration.value if isinstance(declaration, ast.AnnAssign) else declaration
 
 
+def _target_leaves(target: ast.expr) -> Iterator[ast.expr]:
+    """Names, items and attributes an assignment target stores into."""
+    if isinstance(target, ast.Starred):
+        yield from _target_leaves(target.value)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            yield from _target_leaves(element)
+    else:
+        yield target
+
+
+def _unpacked(target: ast.expr, value: ast.expr) -> Iterator[tuple[ast.expr, ast.expr, bool]]:
+    """Pair each stored target with its value; inexact when it gets an unknown part of `value`."""
+    if (
+        isinstance(target, (ast.Tuple, ast.List))
+        and isinstance(value, (ast.Tuple, ast.List))
+        and len(target.elts) == len(value.elts)
+        and not any(isinstance(part, ast.Starred) for part in (*target.elts, *value.elts))
+    ):
+        for part, element in zip(target.elts, value.elts, strict=True):
+            yield from _unpacked(part, element)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for leaf in _target_leaves(target):
+            yield leaf, value, False
+    else:
+        yield target, value, True
+
+
 def _bound_names(node: ast.Assign | ast.Import | ast.ImportFrom) -> list[str]:
     """Names an assignment or import statement binds, as the binder defines them."""
     if isinstance(node, ast.Assign):
-        return [target.id for target in node.targets if isinstance(target, ast.Name)]
+        return [
+            leaf.id
+            for target in node.targets
+            for leaf in _target_leaves(target)
+            if isinstance(leaf, ast.Name)
+        ]
     if isinstance(node, ast.Import):
         return [alias.asname or alias.name.split(".")[0] for alias in node.names]
     return [alias.asname or alias.name for alias in node.names if alias.name != "*"]
@@ -241,7 +281,13 @@ class _Source:
             return module
         return None
 
-    def module(self, name: str, scope: _Scope | None = None) -> _Module:
+    def module(
+        self,
+        name: str,
+        scope: _Scope | None = None,
+        *,
+        changes: dict[_Binding, tuple[_Mutation, ...]] | None = None,
+    ) -> _Module:
         if scope is None and name in self.modules:
             return self.modules[name]
         # Annotation captures are created while binding their function body.
@@ -260,6 +306,7 @@ class _Source:
             scope if scope is not None else ast.parse(path.read_text(), filename=str(path)),
             _Reference(name, None, scope),
             parent=_Reference(name, None) if scope is not None else None,
+            mutations={} if changes is None else changes,
         )
         if scope is None:
             self.modules[name] = module
@@ -292,7 +339,8 @@ class _Source:
         if isinstance(node, (*_FUNCTION, ast.ClassDef)) and node.type_params:
             self.declaration_scope(name, _TypeParameters(node), parent)
         if isinstance(node, ast.ClassDef):
-            return self.module(name, node)
+            # A class body runs in order with the body that defines it.
+            return self.module(name, node, changes=self.body_changes(name, parent))
         if node in self.scopes:
             return self.scopes[node]
         if isinstance(node, _FUNCTION):
@@ -327,7 +375,7 @@ class _Source:
             key,
             _Reference(name, None, key),
             parent=_Reference(name, None, parent),
-            mutations=self.modules[name].mutations,
+            mutations=self.body_changes(name, parent),
         )
         self.scopes[key] = environment
         if defer_future_annotations and self.deferred(name):
@@ -373,6 +421,8 @@ class _Source:
             _Reference(name, None, key),
             parent=lexical_parent,
             bindings=body_bindings,
+            # A call runs once the module or function body defining it has finished.
+            mutations=self.body_changes(name, parent, late=True),
         )
         self.scopes[key] = body
         self.bind(name, body, self.package(name))
@@ -745,7 +795,19 @@ class _Source:
     ) -> None:
         exports = isinstance(module.tree, ast.Module)
         if isinstance(node, (*_FUNCTION, ast.ClassDef)):
-            self.declaration_scope(name, node, scope)
+            if isinstance(node, _FUNCTION):
+                # Decorators run with the definition; rebinding their names later changes nothing.
+                self.capture(
+                    name,
+                    _ValueScope(node),
+                    node.decorator_list,
+                    scope,
+                    defer_future_annotations=False,
+                )
+            declared = self.declaration_scope(name, node, scope)
+            if isinstance(node, ast.ClassDef):
+                # Changes the class body made stay visible to the statements after it.
+                module.mutations = declared.mutations
             module.define(node.name, node)
             if isinstance(node, _FUNCTION):
                 self.overload_candidates[node] = tuple(module.functions.get(node.name, ()))
@@ -760,22 +822,16 @@ class _Source:
             self.bind_from_import(name, module, package, node)
         elif isinstance(node, ast.Assign):
             self.capture(name, node, [node.value], scope, defer_future_annotations=False)
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    binding_owner = _Reference(name, target.id, node)
-                    module.define(
-                        target.id,
-                        node.value,
-                        self.copied_binding(name, node.value, scope, binding_owner),
-                        owner=binding_owner,
-                    )
-                elif exports and any(
+            if exports and any(
+                not isinstance(target, ast.Name)
+                and any(
                     isinstance(part, ast.Name) and part.id in _EXPORT_MAPS
                     for part in ast.walk(target)
-                ):
-                    raise ValueError(f"Unsupported export assignment in {name}")
-                elif exports:
-                    self.change_containers(name, module, node, target, scope)
+                )
+                for target in node.targets
+            ):
+                raise ValueError(f"Unsupported export assignment in {name}")
+            self.bind_targets(name, module, node, scope)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             annotation_expressions = [] if self.deferred(name) else [node.annotation]
             self.capture(
@@ -803,33 +859,61 @@ class _Source:
                 self.copied_binding(name, node.value, scope, binding_owner),
                 owner=binding_owner,
             )
-        elif isinstance(node, ast.AnnAssign) and isinstance(module.tree, _FUNCTION):
-            expressions = [] if self.deferred(name) else [node.annotation]
-            self.capture(name, node, expressions, scope, defer_future_annotations=False)
         elif isinstance(node, ast.TypeAlias):
             self.declaration_scope(name, node, scope)
             module.define(node.name.id, node, owner=_Reference(name, node.name.id, node))
-        elif exports and isinstance(node, ast.AnnAssign) and node.value is not None:
-            self.change_containers(name, module, node, node.target, scope)
-        elif exports and isinstance(node, ast.AugAssign):
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(module.tree, _FUNCTION):
+                expressions = [] if self.deferred(name) else [node.annotation]
+                self.capture(name, node, expressions, scope, defer_future_annotations=False)
+            if node.value is not None:
+                self.change_containers(name, module, node, node.target, scope)
+        elif isinstance(node, ast.AugAssign):
             self.bind_augmented(name, module, node, scope)
-        elif exports and isinstance(node, ast.Delete):
+        elif isinstance(node, ast.Delete):
             for target in node.targets:
                 self.change_containers(name, module, node, target, scope)
         elif (
-            exports
-            and isinstance(node, ast.Expr)
+            isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Call)
             and isinstance(node.value.func, ast.Attribute)
         ):
             self.bind_method_call(name, module, node, node.value, node.value.func, scope)
+
+    def bind_targets(
+        self, name: str, module: _Module, node: ast.Assign, scope: _Scope | None
+    ) -> None:
+        """Store every target's value, all evaluated before the first name is rebound."""
+        received = [
+            (
+                target,
+                value,
+                exact,
+                self.copied_binding(name, value, scope, _Reference(name, target.id, node))
+                if isinstance(target, ast.Name)
+                else None,
+            )
+            for whole in node.targets
+            for target, value, exact in _unpacked(whole, node.value)
+        ]
+        for target, value, exact, copied in received:
+            if not isinstance(target, ast.Name):
+                self.change_containers(name, module, node, target, scope)
+                continue
+            owner = _Reference(name, target.id, node)
+            if exact:
+                module.define(target.id, value, copied, owner=owner)
+                continue
+            # A name receiving an unknown part of a value holds unknown data from it.
+            unpacked = _Binding(value, value if copied is None else copied, owner)
+            module.assign(target.id, _Binding(node, None, owner, _Uncertainty(node, (unpacked,))))
 
     def bind_augmented(
         self, name: str, module: _Module, node: ast.AugAssign, scope: _Scope | None
     ) -> None:
         target = node.target
         if not isinstance(target, ast.Name):
-            if any(
+            if isinstance(module.tree, ast.Module) and any(
                 isinstance(part, ast.Name) and part.id in _EXPORT_MAPS for part in ast.walk(target)
             ):
                 raise ValueError(f"Unsupported export mutation in {name}")
@@ -869,7 +953,11 @@ class _Source:
     ) -> None:
         root = self.changed_container(name, method, scope)
         if root is None:
-            if isinstance(method.value, ast.Name) and method.value.id in _EXPORT_MAPS:
+            if (
+                isinstance(module.tree, ast.Module)
+                and isinstance(method.value, ast.Name)
+                and method.value.id in _EXPORT_MAPS
+            ):
                 raise ValueError(f"Unsupported export mutation in {name}")
             return
         value_scope = _ValueScope(node)
@@ -957,7 +1045,21 @@ class _Source:
             isinstance(scope, (ast.AnnAssign, *_FUNCTION)) and not self.deferred(module)
         )
         # Eager captures keep the changes made before them; other scopes evaluate late.
-        return self.module(module, scope if eager else None).mutations
+        if eager:
+            return self.module(module, scope).mutations
+        return self.body_changes(module, scope, late=True)
+
+    def body_changes(
+        self, module: str, scope: _Scope | None, *, late: bool = False
+    ) -> dict[_Binding, tuple[_Mutation, ...]]:
+        """In-place changes made so far by the module, class or function body running `scope`."""
+        # A late read sees the whole module or function body, including its class bodies.
+        while scope is not None and not isinstance(scope, _Body):
+            if isinstance(scope, ast.ClassDef) and not late:
+                break
+            parent = self.module(module, scope).parent
+            scope = None if parent is None else parent.scope
+        return self.module(module, scope).mutations
 
     def changed_before(self, reader: _Reference, root: _Binding) -> bool:
         """Whether a container changed in place before the scope `reader` evaluated it."""
@@ -1202,7 +1304,10 @@ class _Source:
         name: str,
         seen: frozenset[_Reference] = frozenset(),
         scope: _Scope | None = None,
-    ) -> tuple[_Reference, ast.AST | _Binding | None]:
+        *,
+        member: bool = False,
+    ) -> tuple[_Reference, ast.AST | _Binding | _Reference | None]:
+        """Follow a name to its contract; a class `member` may end at an external object."""
         key = _Reference(module, name, scope)
         if key in seen:
             raise ValueError(f"Cyclic public re-export: {module}.{name}")
@@ -1237,14 +1342,18 @@ class _Source:
             for star in reversed(source.stars):
                 if star in _TYPING:
                     if name in _TYPING_NAMES:
+                        if member:
+                            return key, _Reference(star, name)
                         raise ValueError(f"No Python source for public export {star}.{name}")
                     continue
                 if name in self.exports(star):
-                    return self.resolve(star, name, seen)
+                    return self.resolve(star, name, seen, member=member)
             if scope is None and self.path(f"{module}.{name}") is not None:
                 return _Reference(f"{module}.{name}", None), None
             raise ValueError(f"Unresolved public export: {module}.{name}")
         if isinstance(binding, _Reference):
+            if member and self.path(binding.module) is None:
+                return key, binding
             if binding.name is None:
                 if self.path(binding.module) is None:
                     raise ValueError(f"No Python source for public module {binding.module}")
@@ -1253,7 +1362,7 @@ class _Source:
                 raise ValueError(
                     f"No Python source for public export {binding.module}.{binding.name}"
                 )
-            return self.resolve(binding.module, binding.name, seen, binding.scope)
+            return self.resolve(binding.module, binding.name, seen, binding.scope, member=member)
         return key, binding
 
     def assigned_origin(self, key: _Reference, record: _Binding) -> tuple[_Reference, _Binding]:
@@ -1293,22 +1402,20 @@ class _Source:
 
     def member_contract(
         self, key: _Reference, record: _Binding
-    ) -> tuple[_Reference, ast.AST | _Binding | None]:
-        """Interpret an assigned class attribute; external and unbound values stay opaque."""
+    ) -> tuple[_Reference, ast.AST | _Binding | _Reference | None]:
+        """Interpret an assigned class attribute; imports follow local sources to their objects."""
         key, record = self.assigned_origin(key, record)
         node = self.contract(record)
         if isinstance(node, _FUNCTION):
-            # A copied function keeps the scope its decorators and signature were evaluated in.
+            # A copied function keeps the scope its signature was evaluated in.
             return record.owner, node
         if not isinstance(node, _Reference):
             return key, node
-        if (
-            node is record.declaration
-            and node.name is not None
-            and self.path(node.module) is not None
-        ):
-            return self.resolve(node.module, node.name, scope=node.scope)
-        return key, None
+        if node is not record.declaration or node.name is None:
+            return key, None
+        if self.path(node.module) is None:
+            return key, node
+        return self.resolve(node.module, node.name, scope=node.scope, member=True)
 
     def typing_name(
         self,
@@ -1724,16 +1831,28 @@ class _Source:
             "return": self.annotation(module, node.returns, scope=scope),
         }
 
-    def is_overload(
-        self,
-        module: str,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-        scope: _Scope | None = None,
-    ) -> bool:
+    def is_overload(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """Whether a definition registered an overload, by the decorators bound when it ran."""
+        decorators = _ValueScope(node)
+        module = self.scopes[decorators].owner.module
         return any(
-            self.typing_name(self.reference(module, decorator, scope)) == "overload"
+            self.typing_name(self.reference(module, decorator, decorators)) == "overload"
             for decorator in node.decorator_list
         )
+
+    def extended_binding(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _Binding | None:
+        """The earlier binding a decorator such as a property's `setter` builds this value from."""
+        decorators = self.scopes[_ValueScope(node)]
+        for decorator in node.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == node.name
+                and isinstance(previous := decorators.bindings.get(node.name), _Binding)
+            ):
+                return previous
+        return None
 
     def is_type_expression(
         self,
@@ -2040,10 +2159,13 @@ class _Source:
     def sites(
         self,
         module: str,
-        node: ast.AST | _Binding,
+        node: ast.AST | _Binding | _Reference,
         name: str | None = None,
         scope: _Scope | None = None,
     ) -> dict[str, int]:
+        if isinstance(node, _Reference):
+            # An external object is opaque, but a typing name is a type expression.
+            return {"alias": self.annotation(module, node)} if node.module in _TYPING else {}
         record = node if isinstance(node, _Binding) else None
         if record is not None and record.uncertainty is not None:
             if self.ordinary_uncertainty(record):
@@ -2068,7 +2190,7 @@ class _Source:
             overloads = [
                 definition
                 for definition in self.overload_candidates[node]
-                if self.is_overload(module, definition, scope)
+                if self.is_overload(definition)
             ]
             for index, definition in enumerate(overloads, 1):
                 sites.update(
@@ -2077,6 +2199,13 @@ class _Source:
                         for site, count in self.signature(module, definition, scope).items()
                     }
                 )
+            extended = self.extended_binding(node)
+            if extended is not None:
+                # A property accessor keeps the accessors it was built from.
+                owner, base = self.member_contract(extended.owner, extended)
+                earlier = {} if base is None else self.sites(owner.module, base, name, owner.scope)
+                for site, count in earlier.items():
+                    sites[site] = sites.get(site, 0) + count
             return sites
         if isinstance(node, ast.AnnAssign):
             # TypeAlias's value is itself an annotation, not an implementation value.
@@ -2113,10 +2242,10 @@ class _Source:
         sites = self.type_parameter_sites(module, node)
         members: dict[str, list[ast.AST | _Binding]] = {}
         for member in self.contract_statements(node.body):
-            occurrence: ast.AST | None = member
+            # Every field annotation stays declared; other bindings count only if final.
+            occurrence: ast.AST | None = None
             if isinstance(member, (ast.Assign, ast.Import, ast.ImportFrom)):
-                # Assigned and imported values count once, through the final declaration.
-                names, occurrence = _bound_names(member), None
+                names = _bound_names(member)
             elif isinstance(member, (*_FUNCTION, ast.ClassDef)):
                 names = [member.name]
                 if isinstance(member, _FUNCTION) and not any(
@@ -2140,7 +2269,7 @@ class _Source:
                                     module, statement.annotation, scope=statement
                                 )
             elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
-                names = [member.target.id]
+                names, occurrence = [member.target.id], member
             elif isinstance(member, ast.TypeAlias):
                 names = [member.name.id]
             else:
@@ -2159,19 +2288,9 @@ class _Source:
             if record is not None and not any(
                 member is record.declaration for member in definitions
             ):
-                # A final assigned or imported value is the attribute's contract; values it
+                # The final binding is the attribute's contract; values and definitions it
                 # replaced and an annotated attribute's initializer add no sites.
                 definitions = [*definitions, record]
-            if any(
-                isinstance(member, _FUNCTION) and self.is_overload(module, member, scope)
-                for member in definitions
-            ):
-                binding = source.bindings.get(name)
-                definitions = [
-                    member
-                    for member in definitions
-                    if binding is not None and (member is binding or member is binding.declaration)
-                ]
             for member in definitions:
                 owner, definition = (
                     self.member_contract(_Reference(module, name, scope), member)
