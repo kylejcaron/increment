@@ -546,13 +546,17 @@ star-import candidate; an annotation alone does not.
 Unannotated factory declarations and explicit type aliases count when exported
 directly as well as when used by public annotations; so do public class
 attributes assigned type expressions, including generic, union and bare `Any`
-aliases. A public class attribute assigned a function exposes that function's
-signature and overloads under the attribute's name. Record declarations retain
-separate allowances per field. An ordinary value's declared annotation is
-authoritative, so its factory initializer does not add type sites, even when a
-class assigns that initializer separately.
+aliases. Only an attribute's final assignment counts; an earlier assigned value
+adds no sites unless an annotation captured it. A public class attribute
+assigned a function exposes that function's signature and the overloads defined
+before it under the attribute's name, even after the original name is rebound.
+Record declarations retain separate allowances per field. An ordinary value's
+declared annotation is authoritative, so its factory initializer does not add
+type sites, even when a class assigns that initializer separately.
 TypedDict field-map unions use rightmost field definitions; field containers
 that cannot be statically resolved refuse instead of producing empty schemas.
+A factory reads its field container as it was at the call: an in-place change
+before the call refuses, and a later change does not alter the declared fields.
 Public receiver fields count even in private helpers or compound statements, and
 resolve method-local imports and aliases bound before each field;
 private signatures, nested implementation scopes and inherited external members

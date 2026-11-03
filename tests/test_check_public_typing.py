@@ -2578,3 +2578,101 @@ def test_implicit_recursive_alias_counts_any_once_and_rejects_growth(tmp_path: P
     observed = (initial, public_any(root, ["sample"]), main(args), baseline.read_text())
 
     assert observed == ({"sample.Tree": 0}, {"sample.Tree": 1}, 1, baseline_before_growth)
+
+
+@pytest.mark.integration
+def test_superseded_class_values_do_not_create_public_any_sites(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any
+                __all__ = ["Holder"]
+                class Holder:
+                    def _old(self, value: Any) -> str: ...
+                    def _new(self, value: str) -> str: ...
+                    value = 0
+                    read = _new
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text()
+        .replace("    value = 0", "    value = Any\n    value = 0")
+        .replace("    read = _new", "    read = _old\n    read = _new")
+    )
+    observed = (public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 0}, 0, before)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("factory", ["TypedDict", "NamedTuple"])
+def test_factory_fields_keep_creation_contract_after_container_mutation(
+    tmp_path: Path, factory: str
+) -> None:
+    fields = '{"value": str}' if factory == "TypedDict" else '[("value", str)]'
+    mutation = '_fields["value"] = Any' if factory == "TypedDict" else '_fields[0] = ("value", Any)'
+    declaration = f'Record = {factory}("Record", _schema)'
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": f"""
+                from typing import Any, {factory}
+                __all__ = ["Record"]
+                _fields = {fields}
+                _schema = _fields
+                {declaration}
+                {mutation}
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Record": 0}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(
+        path.read_text().replace(f"{declaration}\n{mutation}", f"{mutation}\n{declaration}")
+    )
+
+    assert (main(args), baseline.read_text()) == (1, before)
+
+
+@pytest.mark.integration
+def test_method_alias_keeps_captured_overloads_after_original_rebinding(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        **{
+            "__init__.py": """
+                from typing import Any, overload
+                __all__ = ["Holder"]
+                class Holder:
+                    @overload
+                    def _read(self, value: Any) -> str: ...
+                    @overload
+                    def _read(self, value: str) -> str: ...
+                    def _read(self, value: object) -> str: ...
+                    read = _read
+            """,
+        },
+    )
+    baseline = root / "baseline.txt"
+    args = ["--root", str(root), "--namespace", "sample", "--baseline", str(baseline)]
+    assert public_any(root, ["sample"]) == {"sample.Holder": 1}
+    assert main([*args, "--write-baseline"]) == 0
+    before = baseline.read_text()
+    path = root / "sample/__init__.py"
+    path.write_text(path.read_text() + "    _read = None\n")
+    captured = public_any(root, ["sample"])
+    path.write_text(path.read_text().replace("value: str) -> str", "value: Any) -> str"))
+    observed = (captured, public_any(root, ["sample"]), main(args), baseline.read_text())
+
+    assert observed == ({"sample.Holder": 1}, {"sample.Holder": 2}, 1, before)

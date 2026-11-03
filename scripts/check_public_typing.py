@@ -135,7 +135,7 @@ class _Module:
     parent: _Reference | None = None
     declarations: dict[str, _Binding] = field(default_factory=dict)
     bindings: dict[str, _Binding] = field(default_factory=dict)
-    # Replaced, never updated in place: each scope keeps the changes made before it.
+    # Replaced, never updated in place: an eager capture keeps the changes made before it.
     mutations: dict[_Binding, tuple[_Mutation, ...]] = field(default_factory=dict)
     uncertain_star_names: dict[str, _Uncertainty] = field(default_factory=dict)
     stars: list[str] = field(default_factory=list)
@@ -148,7 +148,7 @@ class _Module:
         value_binding: ast.AST | _Reference | _Binding | None = None,
         *,
         owner: _Reference | None = None,
-    ) -> _Binding:
+    ) -> None:
         value = binding.value if isinstance(binding, (ast.AnnAssign, ast.TypeAlias)) else binding
         record = _Binding(
             binding,
@@ -156,7 +156,6 @@ class _Module:
             owner if owner is not None else _Reference(self.owner.module, name, self.owner.scope),
         )
         self.assign(name, record)
-        return record
 
     def assign(self, name: str, record: _Binding) -> None:
         """Apply one binding occurrence in statement order."""
@@ -219,8 +218,11 @@ class _Source:
         self.scopes: dict[_Scope, _Module] = {}
         # Branches selected when each body was bound; later rebinding cannot reselect them.
         self.guards: dict[ast.If, bool | None] = {}
-        # Every assignment target's binding, kept after the name is rebound.
-        self.assignments: dict[_Reference, _Binding] = {}
+        # Same-name definitions bound before each function; its overloads are among them.
+        self.overload_candidates: dict[
+            ast.FunctionDef | ast.AsyncFunctionDef,
+            tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...],
+        ] = {}
 
     def path(self, name: str) -> Path | None:
         path = self.root.joinpath(*name.split("."))
@@ -249,7 +251,6 @@ class _Source:
             scope if scope is not None else ast.parse(path.read_text(), filename=str(path)),
             _Reference(name, None, scope),
             parent=_Reference(name, None) if scope is not None else None,
-            mutations=self.modules[name].mutations if scope is not None else {},
         )
         if scope is None:
             self.modules[name] = module
@@ -296,7 +297,6 @@ class _Source:
             node,
             _Reference(name, None, node),
             parent=_Reference(name, None, parent),
-            mutations=self.modules[name].mutations,
         )
         self.scopes[node] = environment
         self.bind_type_parameters(
@@ -364,7 +364,6 @@ class _Source:
             _Reference(name, None, key),
             parent=lexical_parent,
             bindings=body_bindings,
-            mutations=self.modules[name].mutations,
         )
         self.scopes[key] = body
         self.bind(name, body, self.package(name))
@@ -740,6 +739,7 @@ class _Source:
             self.declaration_scope(name, node, scope)
             module.define(node.name, node)
             if isinstance(node, _FUNCTION):
+                self.overload_candidates[node] = tuple(module.functions.get(node.name, ()))
                 module.functions.setdefault(node.name, []).append(node)
         elif isinstance(node, ast.Import):
             for alias in node.names:
@@ -754,7 +754,7 @@ class _Source:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     binding_owner = _Reference(name, target.id, node)
-                    self.assignments[binding_owner] = module.define(
+                    module.define(
                         target.id,
                         node.value,
                         self.copied_binding(name, node.value, scope, binding_owner),
@@ -940,6 +940,27 @@ class _Source:
             return constructors.get(expression.func.id)
         return None
 
+    def mutations_seen(
+        self, module: str, scope: _Scope | None
+    ) -> dict[_Binding, tuple[_Mutation, ...]]:
+        """In-place changes visible to an expression evaluated in `scope`."""
+        eager = isinstance(scope, (ast.Assign, _ValueScope)) or (
+            isinstance(scope, (ast.AnnAssign, *_FUNCTION)) and not self.deferred(module)
+        )
+        # Eager captures keep the changes made before them; other scopes evaluate late.
+        return self.module(module, scope if eager else None).mutations
+
+    def changed_before(self, reader: _Reference, root: _Binding) -> bool:
+        """Whether a container changed in place before the scope `reader` evaluated it."""
+        owner = root.owner.module
+        # An imported module has finished running before its importer reads it.
+        log = (
+            self.mutations_seen(reader.module, reader.scope)
+            if owner == reader.module
+            else self.module(owner).mutations
+        )
+        return root in log
+
     def literal(
         self,
         name: str,
@@ -951,7 +972,7 @@ class _Source:
             # A name holds the object bound when the enclosing expression ran.
             binding = self.lookup(name, node.id, scope)
             if isinstance(binding, _Binding):
-                return self.export_value(name, binding, self.module(name, scope).mutations, seen)
+                return self.export_value(name, binding, self.mutations_seen(name, scope), seen)
         if isinstance(node, ast.Constant):
             return node.value
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -1379,6 +1400,7 @@ class _Source:
         seen: frozenset[_Reference | _Binding],
         scope: _Scope | None,
         *,
+        reader: _Reference,
         mapping: bool,
         entry: bool = False,
         keyword_flags: bool = False,
@@ -1393,7 +1415,7 @@ class _Source:
                 self.require_certain(node)
             if isinstance(node, _Binding):
                 module, scope = node.owner.module, node.owner.scope
-                if node in self.module(module).mutations:
+                if self.changed_before(reader, node):
                     raise ValueError(
                         f"Cannot statically resolve typing fields changed in place: "
                         f"{module}.{node.owner.name}"
@@ -1413,6 +1435,7 @@ class _Source:
                 node.left,
                 seen,
                 scope,
+                reader=reader,
                 mapping=True,
                 keyword_flags=keyword_flags,
                 productive=productive,
@@ -1423,6 +1446,7 @@ class _Source:
                     node.right,
                     seen,
                     scope,
+                    reader=reader,
                     mapping=True,
                     keyword_flags=keyword_flags,
                     productive=productive,
@@ -1441,6 +1465,7 @@ class _Source:
                         value,
                         seen,
                         scope,
+                        reader=reader,
                         mapping=True,
                         keyword_flags=keyword_flags,
                         productive=productive,
@@ -1463,6 +1488,7 @@ class _Source:
                         pair,
                         seen,
                         scope,
+                        reader=reader,
                         mapping=False,
                         entry=True,
                         productive=productive,
@@ -1476,6 +1502,7 @@ class _Source:
                 ref,
                 seen,
                 scope,
+                reader=reader,
                 mapping=mapping,
                 entry=entry,
                 keyword_flags=keyword_flags,
@@ -1497,6 +1524,8 @@ class _Source:
             return None
         arguments: list[ast.AST] = []
         fields: dict[str, int] = {}
+        # Field containers hold the contents they had when this call evaluated them.
+        reader = _Reference(module, None, scope)
         if kind in {"TypeVar", "ParamSpec", "TypeVarTuple"}:
             if kind == "TypeVar":
                 arguments.extend(node.args[1:])
@@ -1519,6 +1548,7 @@ class _Source:
                     node.args[1],
                     seen,
                     scope,
+                    reader=reader,
                     mapping=kind == "TypedDict",
                     productive=productive,
                 )
@@ -1530,6 +1560,7 @@ class _Source:
                             keyword.value,
                             seen,
                             scope,
+                            reader=reader,
                             mapping=True,
                             keyword_flags=kind == "TypedDict",
                             productive=productive,
@@ -2021,21 +2052,19 @@ class _Source:
             node = declaration
         if isinstance(node, _FUNCTION):
             sites = self.signature(module, node, scope)
-            source = self.module(module, scope)
-            binding = source.bindings.get(node.name)
-            if binding is not None and binding.declaration is node:
-                overloads = [
-                    definition
-                    for definition in source.functions[node.name]
-                    if definition is not node and self.is_overload(module, definition, scope)
-                ]
-                for index, definition in enumerate(overloads, 1):
-                    sites.update(
-                        {
-                            f"overload:{index}.{site}": count
-                            for site, count in self.signature(module, definition, scope).items()
-                        }
-                    )
+            # Overloads stay with the definition they preceded, under any later name.
+            overloads = [
+                definition
+                for definition in self.overload_candidates[node]
+                if self.is_overload(module, definition, scope)
+            ]
+            for index, definition in enumerate(overloads, 1):
+                sites.update(
+                    {
+                        f"overload:{index}.{site}": count
+                        for site, count in self.signature(module, definition, scope).items()
+                    }
+                )
             return sites
         if isinstance(node, ast.AnnAssign):
             # TypeAlias's value is itself an annotation, not an implementation value.
@@ -2079,12 +2108,14 @@ class _Source:
                         or target.id.startswith("__")
                         and target.id.endswith("__")
                     ):
+                        # The final declaration is the attribute's contract: superseded values
+                        # and an annotated attribute's initializer add no sites.
                         declared = source.declarations.get(target.id)
-                        # An annotated attribute's contract is its annotation, not its value.
-                        if declared is None or not isinstance(declared.declaration, ast.AnnAssign):
-                            members.setdefault(target.id, []).append(
-                                self.assignments[_Reference(module, target.id, member)]
-                            )
+                        occurrences = members.setdefault(target.id, [])
+                        if declared is not None and declared.owner == _Reference(
+                            module, target.id, member
+                        ):
+                            occurrences.append(declared)
                 continue
             if isinstance(member, (*_FUNCTION, ast.ClassDef)):
                 name = member.name
