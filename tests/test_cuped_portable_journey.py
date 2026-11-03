@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import replace
 from typing import Any, cast
 
 import ibis
@@ -28,7 +29,7 @@ from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.semantics.models import CupedCovariateBinding
 from increment.workflows import export_moments
-from tests.analysis_factory import view_readout
+from tests.analysis_factory import bound_source, view_readout
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -250,6 +251,8 @@ def test_categorical_covariate_named_n_exports_identically(tmp_path, ingress):
                         connection, (native_experiment, native_resolver)
                     )
                     source_resolver = adopted_resolver
+                    source = bound_source(source_resolver)
+                    source._snapshot = replace(source._snapshot, _qr_scratch=None)
                 expected = _cells(view_readout(native_experiment, native_resolver))
                 destination = tmp_path / f"{ingress}-{name}.parquet"
                 export_moments(source_experiment, source_resolver, destination)

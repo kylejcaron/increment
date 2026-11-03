@@ -21,7 +21,6 @@ from increment.semantics.models import AnalysisPlan
 from increment.workflows import export_moments
 from scripts.capture_evidence_identity import (
     _frame_rows,
-    _rows,
     _views,
     build_pairs,
     replay_export,
@@ -66,35 +65,52 @@ def _assert_replay_rows_close(expected, actual):
     )
 
 
-def _without_platform_sensitive_identity_hashes(value):
+def _without_platform_sensitive_identity_hashes(value, *, allow_raw_moments=False):
     if isinstance(value, list):
-        return [_without_platform_sensitive_identity_hashes(item) for item in value]
+        return [
+            _without_platform_sensitive_identity_hashes(item, allow_raw_moments=allow_raw_moments)
+            for item in value
+        ]
     if not isinstance(value, dict):
         return value
     normalized = {
-        key: _without_platform_sensitive_identity_hashes(item) for key, item in value.items()
+        key: _without_platform_sensitive_identity_hashes(item, allow_raw_moments=allow_raw_moments)
+        for key, item in value.items()
     }
     components = value.get("evidence_components", []) + value.get(
         "decision_evidence_components", []
     )
-    if any(component.get("kind", "").startswith("warehouse_qr:") for component in components):
+    qr_sensitive = any(
+        component.get("kind", "").startswith("warehouse_qr:") for component in components
+    )
+    raw_moment_sensitive = allow_raw_moments and any(
+        component.get("kind") == "moments_rows" for component in components
+    )
+    if qr_sensitive or raw_moment_sensitive:
         normalized["source_snapshot_id"] = None
+    if raw_moment_sensitive and "source_content_digest" in normalized:
+        normalized["source_content_digest"] = None
     for key in ("evidence_components", "decision_evidence_components"):
         normalized[key] = [
             {
                 field: item
                 for field, item in component.items()
                 if not (component.get("kind", "").startswith("warehouse_qr:") and field == "sha256")
+                and not (
+                    raw_moment_sensitive
+                    and component.get("kind") == "moments_rows"
+                    and field == "sha256"
+                )
             }
             for component in value.get(key, [])
         ]
     return normalized
 
 
-def _assert_identity_equal(expected, actual):
-    assert _without_platform_sensitive_identity_hashes(expected) == (
-        _without_platform_sensitive_identity_hashes(actual)
-    )
+def _assert_identity_equal(expected, actual, *, allow_raw_moments=False):
+    assert _without_platform_sensitive_identity_hashes(
+        expected, allow_raw_moments=allow_raw_moments
+    ) == _without_platform_sensitive_identity_hashes(actual, allow_raw_moments=allow_raw_moments)
 
 
 # QR floats differ at machine epsilon across BLAS platforms, making hashes platform-dependent;
@@ -215,27 +231,137 @@ def _warehouse_fit_payload(cube_path):
     ]
 
 
+def _assert_export_moment_rows_close(expected_rows, actual_rows):
+    from tests.test_evidence_identity_parity import _compare_aggregate
+
+    assert len(expected_rows) == len(actual_rows)
+    for expected_row, actual_row in zip(expected_rows, actual_rows, strict=True):
+        assert expected_row.keys() == actual_row.keys()
+        for field in (
+            "record_kind",
+            "metric",
+            "group_id",
+            "n",
+            "assignment_counts",
+            "moments_format",
+        ):
+            assert expected_row[field] == actual_row[field]
+        expected_fit = expected_row.get("cuped_evidence")
+        actual_fit = actual_row.get("cuped_evidence")
+        expected_without_fit = {
+            key: value for key, value in expected_row.items() if key != "cuped_evidence"
+        }
+        actual_without_fit = {
+            key: value for key, value in actual_row.items() if key != "cuped_evidence"
+        }
+        _compare_aggregate(expected_without_fit, actual_without_fit)
+        if expected_fit is not None or actual_fit is not None:
+            assert expected_fit is not None and actual_fit is not None
+            _compare_aggregate(json.loads(expected_fit), json.loads(actual_fit))
+
+
+def _assert_export_moments_close(expected, actual):
+    _assert_export_moment_rows_close(
+        pq.read_table(expected).to_pylist(),
+        pq.read_table(actual).to_pylist(),
+    )
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
     from increment import builders, workflows
     from tests.parity_harness.cases import _close_parity_binding
     from tests.parity_harness.views import read
+    from tests.test_evidence_identity_parity import (
+        _assert_raw_moment_fingerprints_match,
+        _capture_raw_moment_inputs,
+    )
 
     fixture = json.loads((_FIXTURES / "readouts.json").read_text())
-    pairs = build_pairs()
+    moment_inputs = []
+    moment_kwargs = []
+    original_from_moments = builders.from_moments
+
+    def capture_moment_inputs(rows, **kwargs):
+        payload = [dict(row) for row in rows]
+        moment_inputs.append(payload)
+        moment_kwargs.append(kwargs)
+        return original_from_moments(payload, **kwargs)
+
+    from unittest.mock import patch
+
+    with patch.object(builders, "from_moments", capture_moment_inputs):
+        pairs = build_pairs()
+    assert len(moment_inputs) == 2
+    _assert_export_moment_rows_close(
+        pq.read_table(_FIXTURES / "exports" / "mixed_warehouse.parquet").to_pylist(),
+        moment_inputs[0],
+    )
+    _assert_export_moment_rows_close(
+        pq.read_table(_FIXTURES / "exports" / "mixed_categorical_replay.parquet").to_pylist(),
+        moment_inputs[1],
+    )
+    from scripts.capture_evidence_identity import _rows
+
+    fixed_payload = pq.read_table(_FIXTURES / "exports" / "mixed_warehouse.parquet").to_pylist()
+    fixed_replay = builders.from_moments(fixed_payload, **moment_kwargs[0])
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            fixed_identities = {"run": _rows(read(fixed_replay))}
+        fixed_components = [
+            component
+            for component in fixed_identities["run"][0]["evidence_components"]
+            if component["kind"] == "moments_rows"
+        ]
+        pinned_components = [
+            component
+            for component in fixture["mixed_fitted_replay"]["rows"]["run"][0]["evidence_components"]
+            if component["kind"] == "moments_rows"
+        ]
+        assert fixed_components == pinned_components
+    finally:
+        from tests.parity_harness.cases import _close_parity_binding
+
+        _close_parity_binding(fixed_replay)
+
     baseline = pairs.pop("parity_baseline")
     try:
         _, baseline_identity = _views(baseline)
         original_results = {}
+        live_raw_inputs = {}
+        raw_moment_cases = {
+            "mixed_warehouse",
+            "mixed_fitted_replay",
+            "mixed_categorical_replay",
+        }
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
             original_results["parity_baseline"] = read(baseline)
             for name, pair in pairs.items():
-                original_results[name] = read(pair)
+                if name in raw_moment_cases:
+                    original_results[name], live_raw_inputs[name] = _capture_raw_moment_inputs(
+                        lambda pair=pair: read(pair)
+                    )
+                else:
+                    original_results[name] = read(pair)
         _assert_identity_equal(baseline_identity, fixture["parity_baseline"]["rows"])
         for name in pairs:
-            _assert_identity_equal({"run": _rows(original_results[name])}, fixture[name]["rows"])
+            if name in raw_moment_cases:
+                rows = _rows(original_results[name])
+                components = [
+                    component
+                    for row in rows
+                    for field in ("evidence_components", "decision_evidence_components")
+                    for component in row[field]
+                ]
+                _assert_raw_moment_fingerprints_match(components, live_raw_inputs[name])
+            _assert_identity_equal(
+                {"run": _rows(original_results[name])},
+                fixture[name]["rows"],
+                allow_raw_moments=name in raw_moment_cases,
+            )
 
         # Moments export stamps format 13 and `_cuped_evidence.py` emits this
         # field with kind="fitted_multicovariate" for the retained fitted case.
@@ -254,6 +380,7 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             _warehouse_fit_payload(_FIXTURES / "exports" / "mixed_warehouse.parquet"),
             _warehouse_fit_payload(live_cube),
         )
+        _assert_export_moments_close(_FIXTURES / "exports" / "mixed_warehouse.parquet", live_cube)
         replay_templates = {
             "parity_baseline": baseline,
             "mixed_warehouse": pairs["mixed_warehouse"],
