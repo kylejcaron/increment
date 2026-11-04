@@ -486,6 +486,7 @@ def test_percentile_winsor_size_route_runs_the_analytic_interval_on_every_raw_so
     """Past the pooled-size threshold the default route executes the influence interval;
     every raw-outcome source agrees and records the executed method."""
     from tests.parity_harness.cases import _winsor_size_routed_case
+    from tests.parity_harness.matrix_data import scaled_units_per_arm
 
     case = _winsor_size_routed_case()
     result = run_case(case)
@@ -495,6 +496,8 @@ def test_percentile_winsor_size_route_runs_the_analytic_interval_on_every_raw_so
         "from_unit_day_artifact",
         "from_unit_summary",
     }
+    # The case repeats each enrolled unit 170 times: (arm, arm units, pooled units).
+    per_arm = 170 * scaled_units_per_arm()
     for rows in result.rows.values():
         (methods,) = rows.values()
         (payload,) = methods.values()
@@ -502,8 +505,8 @@ def test_percentile_winsor_size_route_runs_the_analytic_interval_on_every_raw_so
         assert confidence["reference"]["method"] == "influence-normal-v1"
         assert confidence["raw"]["inference"]["method"] == "pooled-size-route-v1"
         assert confidence["raw"]["allocation"] == (
-            ("control", 10200, 20400),
-            ("treatment", 10200, 20400),
+            ("control", per_arm, 2 * per_arm),
+            ("treatment", per_arm, 2 * per_arm),
         )
 
 
