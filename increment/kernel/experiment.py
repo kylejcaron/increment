@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from increment._canonical import canonical_json_bytes
 from increment._evidence_types import EvidenceScope
 from increment._source_types import EvidenceCapabilities, ScalarEvidenceDeclaration
-from increment.errors import CodedError
+from increment.errors import CodedError, _thaw
 from increment.kernel.contracts import (
     AnalysisRequest,
     ImplementationRef,
@@ -103,6 +103,23 @@ class SourceReference:
         """The canonical payload without recorded column types, which never change an analysis."""
         return {**self.canonical_payload(), "schema": None}
 
+    def __reduce__(self) -> tuple[type[SourceReference], tuple[object, ...]]:
+        capabilities = self.capabilities
+        if capabilities is not None and capabilities.scalar is not None:
+            bindings = capabilities.scalar.bindings
+            scalar = dataclasses.replace(
+                capabilities.scalar, bindings=None if bindings is None else dict(bindings)
+            )
+            capabilities = dataclasses.replace(capabilities, scalar=scalar)
+        return type(self), (
+            self.name,
+            self.uri,
+            self.expected_digest,
+            None if self.schema is None else dict(self.schema),
+            capabilities,
+            self.declaration_version,
+        )
+
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> SourceReference:
         raw_capabilities = payload.get("capabilities")
@@ -179,6 +196,23 @@ def _freeze(value: Any) -> Any:
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _hashable(value: object) -> object:
+    """A hashable stand-in that is equal whenever the values compare equal."""
+    if isinstance(value, Mapping):
+        return frozenset((key, _hashable(item)) for key, item in value.items())
+    if isinstance(value, (tuple, list)):
+        return tuple(_hashable(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_hashable(item) for item in value)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return tuple(
+            _hashable(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+            if field.compare
+        )
     return value
 
 
@@ -287,6 +321,16 @@ class Experiment:
         )
         object.__setattr__(self, "analysis_context", _freeze(self.analysis_context))
         object.__setattr__(self, "request_options", _freeze(self.request_options))
+
+    def __reduce__(self) -> tuple[type[Experiment], tuple[object, ...]]:
+        """Rebuild from plain containers; typed values such as scopes stay typed."""
+        return type(self), tuple(
+            _thaw(getattr(self, field.name)) for field in dataclasses.fields(self)
+        )
+
+    def __hash__(self) -> int:
+        """Hash the compared fields; ``hash()`` may separate values that compare equal."""
+        return hash(_hashable(self))
 
     def canonical_payload(self) -> dict[str, object]:
         return {

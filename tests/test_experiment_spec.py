@@ -1,14 +1,90 @@
 from __future__ import annotations
 
+import copy
+import copyreg
 import dataclasses
+import io
 import json
+import pickle
+from fractions import Fraction
+from types import MappingProxyType
 from typing import cast
 
+import numpy as np
+import pandas as pd
 import pytest
 
-from increment import Experiment, SourceReference
-from increment.evidence import EvidenceProvider
+from increment import (
+    CupedCovariate,
+    Experiment,
+    Method,
+    MetricSpec,
+    SourceReference,
+    from_frame,
+)
+from increment.errors import CodedError
+from increment.evidence import EvidenceCapabilities, EvidenceProvider, ScalarEvidenceDeclaration
 from increment.kernel.contracts import ImplementationRef, Registration, Scope
+
+
+class _ConstantPropensity:
+    """A module-level learner factory, so pickle stores it by reference."""
+
+    def fit(self, x: np.ndarray, d: np.ndarray) -> None:
+        return None
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        return np.full(len(x), 0.5)
+
+
+def _recorded_experiment() -> Experiment:
+    scope = Scope(view="daily", grain="daily")
+    capabilities = EvidenceCapabilities(
+        kind="unit_summary",
+        grains=frozenset({"total", "daily"}),
+        breakouts=(),
+        shape=None,
+        operations=frozenset(),
+        unit_rows=True,
+        raw_outcomes=False,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset({"unit"}),
+        populations=frozenset({"assigned"}),
+        sequential_capture="none",
+        scalar=ScalarEvidenceDeclaration(
+            bindings={"orders": (CupedCovariate(name="pre_orders", kind="continuous"),)},
+            moments_only=False,
+            recipe_fixed=False,
+            recipe_configs=(),
+            anonymous_metrics=frozenset(),
+            method_evidence=False,
+            breakout_evidence=False,
+            covariate_grains=None,
+        ),
+        available_covariates=frozenset({"pre_orders"}),
+    )
+    return Experiment(
+        experiment_id="checkout",
+        design={"mechanism": "randomized"},
+        metrics={"orders": {"kind": "mean"}},
+        registration=Registration(registration_hash="registration-hash"),
+        source_refs=(
+            SourceReference(
+                name="events",
+                uri="warehouse://events",
+                schema={"events.orders": "double"},
+                capabilities=capabilities,
+            ),
+        ),
+        scopes=(scope,),
+        implementation_refs={
+            ("orders:decision", "propensity_learner"): ImplementationRef(
+                import_path="models.propensity:build", version_pin="1", config_digest="p"
+            ),
+        },
+        operations={scope.hash(): "run_daily_lift"},
+    )
 
 
 def test_top_level_run_resolves_and_executes_experiment():
@@ -83,6 +159,87 @@ def test_recorded_schema_does_not_change_experiment_identity():
     assert unrecorded.hash() == empty.hash() == recorded.hash()
     assert unrecorded.analysis_spec_hash == empty.analysis_spec_hash == recorded.analysis_spec_hash
     assert unrecorded.to_json() != recorded.to_json()
+
+
+def test_experiment_survives_pickle_and_deepcopy():
+    experiment = _recorded_experiment()
+
+    for restored in (pickle.loads(pickle.dumps(experiment)), copy.deepcopy(experiment)):
+        assert restored == experiment
+        assert restored.hash() == experiment.hash()
+        assert restored.to_json() == experiment.to_json()
+        assert type(next(iter(restored.implementation_refs.values()))) is ImplementationRef
+
+
+def test_equal_experiments_are_one_dict_key():
+    experiment = _recorded_experiment()
+    half, point_five = (
+        dataclasses.replace(_recorded_experiment(), request_options={"null_lift": value})
+        for value in (Fraction(1, 2), 0.5)
+    )
+
+    assert hash(experiment) == hash(copy.deepcopy(experiment))
+    assert {experiment: 1}[pickle.loads(pickle.dumps(experiment))] == 1
+    assert half == point_five
+    assert half.hash() != point_five.hash()
+    assert {half: 1}[point_five] == 1
+    assert {point_five: 1}[half] == 1
+
+
+def test_non_portable_experiment_round_trips():
+    experiment = Experiment(
+        experiment_id="checkout",
+        design={"mechanism": "observational"},
+        metrics={"orders": {"kind": "mean"}},
+        registration=Registration(registration_hash="registration-hash"),
+        source_refs=(SourceReference(name="events", uri="frame://events"),),
+        scopes=(Scope(view="run", grain="total"),),
+        implementation_refs={
+            ("orders:decision", "propensity_learner"): ImplementationRef(
+                import_path=f"{__name__}._ConstantPropensity", version_pin="1", config_digest="c"
+            ),
+        },
+        request_options={
+            "decision_method": Method(name="iptw", propensity_learner=_ConstantPropensity)
+        },
+    )
+
+    with pytest.raises(CodedError) as portable:
+        experiment.to_json()
+    assert portable.value.code == "kernel.method.implementation_ref_missing"
+    assert copy.deepcopy(experiment) == experiment
+    assert pickle.loads(pickle.dumps(experiment)) == experiment
+
+
+def test_reader_stays_unpicklable_and_experiment_copies_leave_it_alone():
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{index}" for index in range(8)],
+            "arm": ["control", "treatment"] * 4,
+            "value": [float(index) for index in range(8)],
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="value", type="mean")],
+    )
+
+    # Cached fixtures register MappingProxyType with copyreg; pickle without that registration.
+    pickler = pickle.Pickler(io.BytesIO())
+    pickler.dispatch_table = {
+        kind: reducer
+        for kind, reducer in copyreg.dispatch_table.items()
+        if kind is not MappingProxyType
+    }
+    with pytest.raises(TypeError):
+        pickler.dump(reader)
+    memo: dict[int, object] = {}
+    assert copy.deepcopy(experiment, memo) == experiment
+    assert id(reader) not in memo
 
 
 @pytest.mark.parametrize(

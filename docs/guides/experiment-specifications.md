@@ -16,7 +16,9 @@ one another. Their registration identity is process-local, not a portable
 implementation/configuration identifier. Stable experiment hashes and portable
 exports refuse raw factories even when `implementation_refs` records their
 provenance. An `ImplementationRef` does not replace or reconstruct a raw
-factory; experiments containing one remain in-memory-only.
+factory; experiments containing one remain in-memory-only. They still
+deep-copy and pickle when the factory itself pickles, such as a module-level
+function or class; unpickle only data you trust.
 
 `run(experiment, resolver)` returns one `RunResult` for all declared supported
 scopes, sharing one physical evidence capture. `views=(scope, ...)` selects
@@ -225,7 +227,10 @@ source. Saving and loading the declaration preserves
 its hash; it does not serialize the data or a warehouse connection. Column types
 recorded for a source are saved with the declaration (`SourceReference.schema`), and
 `experiment.provides()` lists the recorded columns, but the types are not part of its
-`hash()` or `analysis_spec_hash`.
+`hash()` or `analysis_spec_hash`. `hash(experiment)` agrees with
+`==`, so equal experiments are one dictionary key; `experiment.hash()` can still
+differ between declarations that compare equal, such as `Fraction(1, 2)` and
+`0.5`.
 
 Use the resolver as a context manager when it owns temporary warehouse tables or
 an opened artifact snapshot. Exiting the block releases those resources; it
