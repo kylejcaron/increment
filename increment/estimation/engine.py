@@ -2531,7 +2531,9 @@ def _infer_binomial_lift_result(
         binomial_set=binomial_set,
         note=binomial_rr.precision_note(ci),
     )
-    return result.model_copy(update=_winsorization_result_fields(control, treatment)), None
+    update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
+    update.update(n_control=n_c, n_treat=n_t, mean_control=x_c / n_c, mean_treat=x_t / n_t)
+    return result.model_copy(update=update), None
 
 
 class _NonPositiveMeanFailure(LiftGuardError):

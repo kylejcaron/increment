@@ -28,8 +28,37 @@ from scripts.capture_evidence_identity import (
 from tests.analysis_factory import view_readout
 from tests.parity_harness import dataset as ds
 from tests.parity_harness.comparison import nested_close
+from tests.parity_harness.expected_differences import (
+    ExpectedDifference,
+    without_binomial_arm_facts,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "evidence_identity"
+_BINOMIAL_ARM_COUNT_SNAPSHOTS = tuple(
+    ExpectedDifference(
+        scenario="parity_baseline",
+        ingress="from_definitions",
+        field=f"{view} source_snapshot_id",
+        frozen=frozen,
+        current=current,
+        reason=(
+            "The lift snapshot digests arm counts, which the captured exact binomial rows "
+            "left off; every other identity field is unchanged."
+        ),
+    )
+    for view, frozen, current in (
+        (
+            "run_daily_lift",
+            "sha256:2179318f45d86080ad8df6f0dad6d51a876f9ac439510ddc69327036626ba9f3",
+            "sha256:7b55c2d488d499e6f3516966ac974f59ff14d7109d74121d0ba5939ed6bd08c8",
+        ),
+        (
+            "run_asof_lift",
+            "sha256:144f6c7d41a83d1e59a465cbf877a6b0a09f621017fc658c55ecd54e73b61213",
+            "sha256:02edf0b3c1ed107ca16529618b79d2dc3ecd80ced791fccd8d498bbb1c4fc0d8",
+        ),
+    )
+)
 
 
 def _strict_nested_close(expected, actual) -> bool:
@@ -202,6 +231,23 @@ def _normalize_step8_replay_rows(expected, actual):
     return sorted(expected, key=sort_key), sorted(normalized, key=sort_key)
 
 
+def _replayed_binomial_counts(payload, rows):
+    """``(x_c, n_c, x_t, n_t)`` of each exact binomial row, read from the replayed moments."""
+    arms = {
+        (row["metric"], row["group_id"]): (row["successes"], row["n"])
+        for row in payload
+        if row.get("record_kind") is None and row.get("successes") is not None
+    }
+    return {
+        (row["metric"], row["group_id"]): (
+            *arms[(row["metric"], row["control_group"])],
+            *arms[(row["metric"], row["group_id"])],
+        )
+        for row in rows
+        if row.get("reference_kind") == "binomial"
+    }
+
+
 def test_warehouse_replay_comparison_ignores_denominator_support_order():
     rows = [
         {
@@ -346,7 +392,10 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
                     )
                 else:
                     original_results[name] = read(pair)
-        _assert_identity_equal(baseline_identity, fixture["parity_baseline"]["rows"])
+        expected_baseline = fixture["parity_baseline"]["rows"]
+        for difference in _BINOMIAL_ARM_COUNT_SNAPSHOTS:
+            expected_baseline = difference.applied_to(expected_baseline)
+        _assert_identity_equal(baseline_identity, expected_baseline)
         for name in pairs:
             if name in raw_moment_cases:
                 rows = _rows(original_results[name])
@@ -400,6 +449,9 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
             if name in {"mixed_warehouse", "mixed_fitted_replay"}:
                 expected_rows = _normalize_warehouse_replay_rows(expected_rows)
                 replay_rows = _normalize_warehouse_replay_rows(replay_rows)
+            replay_rows = without_binomial_arm_facts(
+                expected_rows, replay_rows, _replayed_binomial_counts(payload, replay_rows)
+            )
             expected_rows, replay_rows = _normalize_step8_replay_rows(expected_rows, replay_rows)
             _assert_replay_rows_close(expected_rows, replay_rows)
 

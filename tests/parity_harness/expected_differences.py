@@ -3,13 +3,20 @@
 Each record names one scenario and ingress, the identity field that differs and
 why. Every other value of the case is still compared. Both the frozen and the
 current value are pinned, so a change on either side fails the comparison, and
-a record whose difference no longer occurs fails until it is removed.
+a record whose difference no longer occurs fails until it is removed. Fields a
+row gained after the capture are projected away only when their value follows
+from the row's own captured evidence.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from tests.parity_harness.comparison import nested_close
+
+BinomialCounts = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,3 +77,70 @@ def with_expected_difference(scenario: str, ingress: str, expected: Any) -> Any:
     """The frozen outcome of one case, migrated by its recorded difference when it has one."""
     difference = EXPECTED_DIFFERENCES.get((scenario, ingress))
     return expected if difference is None else difference.applied_to(expected)
+
+
+def _binomial_arm_facts(counts: BinomialCounts) -> dict[str, int | float]:
+    x_c, n_c, x_t, n_t = counts
+    return {"n_control": n_c, "n_treat": n_t, "mean_control": x_c / n_c, "mean_treat": x_t / n_t}
+
+
+def without_binomial_arm_facts(
+    expected: Any,
+    actual: Any,
+    counts: Mapping[tuple[str, str], BinomialCounts] | None = None,
+) -> Any:
+    """``actual`` without the arm counts and rates exact binomial rows gained after a capture.
+
+    Only a ``reference_kind == "binomial"`` row is projected, and only a field its captured
+    row lacks or holds as null. The counts must equal ``n_c`` and ``n_t`` exactly, as integers
+    on a typed row; the rates must equal ``x_c / n_c`` and ``x_t / n_t`` within the harness
+    tolerance. Both come from the row's own ``binomial_set`` or, for a flattened row without
+    one, from ``counts`` keyed by ``(metric, group_id)`` as ``(x_c, n_c, x_t, n_t)``. Every other
+    field is left to the caller's comparison. Lists and tuples pair by position, so a captured
+    model's ``(type name, fields)`` form is projected too.
+    """
+    if isinstance(expected, Mapping) and isinstance(actual, Mapping):
+        projected = {
+            key: without_binomial_arm_facts(expected.get(key), value, counts)
+            for key, value in actual.items()
+        }
+        if actual.get("reference_kind") != "binomial":
+            return projected
+        exact = actual.get("binomial_set")
+        if isinstance(exact, tuple) and len(exact) == 2:
+            exact = exact[1]
+        if isinstance(exact, Mapping):
+            implied = _binomial_arm_facts((exact["x_c"], exact["n_c"], exact["x_t"], exact["n_t"]))
+        elif counts is not None:
+            implied = _binomial_arm_facts(counts[(actual["metric"], actual["group_id"])])
+        else:
+            return projected
+        for field, value in implied.items():
+            if actual.get(field) is None or expected.get(field) is not None:
+                continue
+            if field in ("n_control", "n_treat"):
+                # A frame holds counts in a float column; a typed row holds integers.
+                count_types = (int,) if isinstance(exact, Mapping) else (int, float)
+                assert type(actual[field]) in count_types and actual[field] == value, (
+                    field,
+                    value,
+                    actual[field],
+                )
+            else:
+                assert nested_close(value, actual[field]), (field, value, actual[field])
+            if field in expected:
+                projected[field] = None
+            else:
+                del projected[field]
+        return projected
+    if (
+        isinstance(expected, (list, tuple))
+        and isinstance(actual, (list, tuple))
+        and len(expected) == len(actual)
+    ):
+        paired = [
+            without_binomial_arm_facts(left, right, counts)
+            for left, right in zip(expected, actual, strict=True)
+        ]
+        return tuple(paired) if isinstance(actual, tuple) else paired
+    return actual

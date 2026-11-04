@@ -158,6 +158,12 @@ values.
   format moves to schema 2; a schema-1 catalog refuses offline with
   `kernel.definitions.catalog_stale`, and rebinding the definitions with a
   connection rebuilds it. Experiment identity hashes are unchanged.
+- Release note (bug fix): an exact binomial conversion or retention row reports
+  its arm unit counts and observed rates in `n_control`, `n_treat`,
+  `mean_control` and `mean_treat`, as other unclustered conversion rows do.
+  Estimates, intervals and p-values are unchanged. Because those rows now carry
+  arm counts, the snapshot and family IDs of daily and as-of lift readouts that
+  contain them change once; runs saved before the change still reopen.
 
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal

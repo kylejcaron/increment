@@ -422,7 +422,7 @@ raise `results.frame.unknown_columns`.
 <!-- output -->
 ```text
 assigned — treatment vs control
-converted: control → treatment; estimand=itt; stat_sig=True
+converted: control → treatment; n control=89; n treatment=111; mean control=0; mean treatment=0.36036; estimand=itt; stat_sig=True
 converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 converted additive effect: 0.36036, set [0.270641, 0.45008].
 converted binomial set central: [1.61559, +∞] at 0.95 confidence.

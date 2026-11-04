@@ -33,6 +33,7 @@ from tests.evidence_fixtures.replay import (
     estimate_unit_cuped_transcript,
 )
 from tests.evidence_fixtures.transcript import Transcript
+from tests.parity_harness.expected_differences import without_binomial_arm_facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,7 +565,7 @@ def assert_encouragement_breakout_matches_old_row(
     if assembled.sampling_available is None:
         readout_updates["sampling_available"] = True
     assembled = assembled.model_copy(update=readout_updates)
-    actual = assembled.model_dump(mode="python")
+    actual = without_binomial_arm_facts(old_row, assembled.model_dump(mode="python"))
     legacy_absent = breakout_fields - old_row.keys() - _BREAKOUT_LATER_ASSEMBLY_FIELDS
     permitted_absent = _BREAKOUT_FIELDS_WITHOUT_OLD_AUTHORITY | _BREAKOUT_OPTIONAL_OLD_FIELDS
     if (

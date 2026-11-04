@@ -168,6 +168,35 @@ class TestRowsCarryTheirRoute:
         assert row.scale == "linear"
         assert row.binomial_set is not None
 
+    def test_binomial_conversion_rows_report_arm_counts_and_rates(self):
+        import pandas as pd
+
+        from increment.frame import MetricSpec
+
+        # Unequal arm sizes and rates, so swapped or duplicated fields fail.
+        frame = pd.DataFrame(
+            [
+                {"unit_id": f"{group}{i}", "group_id": group, "converted": int(i < successes)}
+                for group, n, successes in (("control", 200, 40), ("treatment", 100, 30))
+                for i in range(n)
+            ]
+        )
+        rows = view_readout(
+            *from_frame(
+                frame,
+                shape="summary",
+                unit="unit_id",
+                group="group_id",
+                control="control",
+                metrics=[MetricSpec(name="converted", type="conversion")],
+            )
+        )
+        (row,) = [row for row in rows if row.metric == "converted"]
+        assert row.reference_kind == "binomial"
+        assert (row.n_control, row.n_treat) == (200, 100)
+        assert row.mean_control == pytest.approx(0.2)
+        assert row.mean_treat == pytest.approx(0.3)
+
     @pytest.mark.slow
     def test_finite_sample_mode_labels_a_dense_row_binomial(self):
         counts = (50_000, 1_000_000, 51_500, 1_000_000)

@@ -4,6 +4,8 @@ from typing import Any, cast
 
 import pytest
 
+from tests.parity_harness.expected_differences import ExpectedDifference
+
 pytestmark = pytest.mark.integration
 
 
@@ -12,6 +14,33 @@ def _snapshot_id(result: Any) -> str | None:
     if metadata is not None:
         return metadata.scope.snapshot_id
     return result[0].source_snapshot_id if result else None
+
+
+ARM_COUNT_SNAPSHOT_DIFFERENCES = tuple(
+    ExpectedDifference(
+        scenario="breakout_store_dimension",
+        ingress="from_definitions",
+        field=f"{view} snapshot_id",
+        frozen=frozen,
+        current=current,
+        reason=(
+            "Lift snapshots digest arm counts, which the pre-kernel route left off exact "
+            "binomial rows; every other snapshot ID is unchanged."
+        ),
+    )
+    for view, frozen, current in (
+        (
+            "daily_lift",
+            "sha256:ed34e487c261b462afc2663879586ddb9a0317d4d2feb0f94fd1049778f54678",
+            "sha256:1a0d99b5bda0e711c1d810ea5e7f99a981eb20f94e518ea99ec2b72afeb93651",
+        ),
+        (
+            "asof_lift",
+            "sha256:e85a35071b539ee939d5d29fb3e5f31c526aa2241f9617323539c8c52d1139dd",
+            "sha256:36131f8f91f411dcc8fb459c7ccb38664729046acff35f6456dd829fb7a21b23",
+        ),
+    )
+)
 
 
 @pytest.mark.parametrize(
@@ -62,6 +91,9 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
             "asof_lift": Scope(view="asof", grain="asof"),
             "breakout": Scope(view="breakout", grain="total"),
         }
+        if ingress == "from_definitions":
+            for difference in ARM_COUNT_SNAPSHOT_DIFFERENCES:
+                expected = difference.applied_to(expected)
         assert {
             name: _snapshot_id(view_readout(experiment, resolver, scope))
             for name, scope in views.items()
