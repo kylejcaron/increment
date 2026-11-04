@@ -382,11 +382,34 @@ def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
 
     gate = jobs["ci-ok"]
     assert "unit-newest" in gate["needs"]
+    duration_job = jobs["duration-ratchet"]
+    assert duration_job["needs"] == ["test", "slow"]
+    duration_report = next(
+        step
+        for step in duration_job["steps"]
+        if step.get("name") == "Report aggregate per-layer duration ratchet"
+    )
+    assert 'tee -a "$GITHUB_STEP_SUMMARY"' in duration_report["run"]
+    assert "continue-on-error" not in duration_report
+    assert "duration-ratchet" in gate["needs"]
+    assert duration_report.get("shell") == "bash"
+    assert "3.12-1,3.12-2,3.12-3,slow-1" in duration_report["env"]["EXPECTED_DURATION_SHARDS"]
+    assert "3.13-1,3.13-2,3.13-3,3.14-1" in duration_report["env"]["EXPECTED_DURATION_SHARDS"]
+    slow_job = jobs["slow"]
+    slow_tests = next(step for step in slow_job["steps"] if step.get("id") == "slow-tests")
+    assert slow_tests["env"]["INCREMENT_COLLECT_SHARD_ID"] == "slow-${{ matrix.group }}"
+    slow_artifact = next(
+        step for step in slow_job["steps"] if step.get("name") == "Retain slow JUnit report"
+    )
+    assert {"junit.xml", "junit-collection.json", "junit-metadata.json"} == set(
+        slow_artifact["with"]["path"].splitlines()
+    )
     gate_step = next(
         step
         for step in gate["steps"]
         if step.get("name") == "Check required jobs and gate decisions"
     )
+    assert "${{ needs.duration-ratchet.result }}" in gate_step["run"]
     assert gate_step["env"]["UNIT_NEWEST_REQUIRED"] == "${{ github.event_name == 'pull_request' }}"
     assert gate_step["env"]["UNIT_NEWEST_RESULT"] == "${{ needs.unit-newest.result }}"
     run = gate_step["run"]
