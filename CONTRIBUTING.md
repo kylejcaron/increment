@@ -532,6 +532,119 @@ Before pushing, the pre-push checks run lint, type-checking and the affected
 fast tier. CI is the authoritative full-suite gate; `make check` is an optional
 broader local check. Use `make fmt` to apply formatting and safe lint fixes.
 
+`make lint` also checks explicit `Any` annotations in public signatures and
+fields without importing the package. `scripts/check_public_typing.py` resolves
+`__all__`, lazy export maps (including dictionary unions), re-exports and local
+type aliases from source, including qualified aliases in local classes. A package
+importing its own name gets the attribute it already holds, otherwise that
+submodule; dotted external members keep their qualified path.
+Annotation-only fields are declarations, not runtime name bindings.
+Eager signatures and ordinary assignments use bindings available at that point;
+quoted forward references resolve late, using final bindings. Export lists and
+maps follow the same rule: a name assigned from another shares its list or
+mapping, so rebinding that name later does not change the exports, while
+`append`, `extend`, `+=` or mapping `|=` on the shared object does; other
+in-place changes to an export container refuse.
+Unpacking a tuple or list display binds each name to its element, all evaluated
+before any name is rebound; a name unpacked from another value is unknown, so the
+checker refuses when an exported typing declaration depends on it.
+Function parameters and unsupported runtime stores, including loop targets and
+pattern captures, shadow outer names with unknown values. A public typing
+declaration that depends on one refuses rather than reusing an older alias.
+Ordinary reads and aliases of unknown runtime attributes do not refuse unless
+a typing declaration depends on them.
+Declared value annotations and unknown runtime provenance remain separate.
+Known boolean short circuits and conditional-expression choices skip inactive
+stores. Any other assignment expression rebinds its name for the whole statement
+containing it, including reads earlier in that statement and generator
+expressions that may run later; a typing declaration depending on it refuses.
+Type-expression unions retain local `Any` counts when paired with
+an imported external type; generic subscripts with recognized type arguments do
+likewise, including external names re-exported through local modules. External
+sources are opaque and never imported or traversed. Runtime values such as
+string-keyed dictionary subscripts, unions, tuples or plain string assignments
+are not treated as type aliases; an annotation that names string data still
+evaluates that string as a forward reference.
+When an unmarked public expression using an opaque imported object and a quoted
+argument could mean either a runtime lookup or an `Any`-bearing alias, the check
+fails closed. Add the accurate value annotation, or declare the intended alias
+with `TypeAlias`/`type`; explicit declarations determine whether its `Any` counts.
+Unambiguous quoted arguments that do not resolve to `Any` remain ordinary
+zero-count names. Function and method overloads retain separate signature
+allowances, independent of their implementations. Decorators resolve when their
+definition runs, so rebinding `overload` afterwards does not drop an overload.
+A replacement function does not inherit the previous function's overloads;
+an alias captured before replacement keeps the original group. An overload group
+whose members differ by a branch the check cannot decide refuses.
+Standard typing factories inspect only type-bearing positions: type-variable
+constraints, bounds and defaults; `NewType` supertypes; `TypeAliasType` values;
+and `NamedTuple`/`TypedDict`
+field types, including locally bound field entries. Constructor and field names,
+type-parameter lists and runtime flags are metadata, not additional annotations.
+PEP 695 parameter bounds, constraints and supported defaults have independent
+declaration sites; parameter uses do not repeat those counts. They resolve lazily
+in the declaration's enclosing scope, never through the generic class body or a
+function's eagerly evaluated signature names. Declared and implicit recursive
+aliases count finitely through type constructors, including when re-exported
+under another name, while unresolved flat cycles refuse.
+Typing star imports use the standard-library export inventory; unresolved
+Any-bearing generic forms refuse rather than silently counting zero.
+When an unresolved conditional leaves a binding ambiguous and an exported
+typing declaration depends on it, the checker refuses rather than assuming
+either branch. A known condition selects its branch when the module or class
+body runs; rebinding the condition's name afterwards does not change that
+selection. An unconditional assignment or import replaces a conditional
+star-import candidate; an annotation alone does not. A loop's `else` suite
+starts from the bindings before the loop joined with those an iteration leaves
+at the end of its body or at a `continue`. The bindings after the loop join those
+`else` leaves with those at each `break`, after any `finally` it runs on the way
+out; statements after that `try` see only the routes that finish it normally. A
+`finally` that stores, imports or changes a container in place is treated
+conservatively: statements after its `try` also see the early exits' bindings.
+Unannotated factory declarations and explicit type aliases count when exported
+directly as well as when used by public annotations; so do public class
+attributes assigned type expressions, including generic, union and bare `Any`
+aliases. Only an attribute's final binding counts, whether an assignment, import,
+function or class. An import is followed through local sources to an external
+object, which is opaque unless it is a typing name. Earlier values and definitions
+add no sites unless an annotation captured them, while field annotations always
+count. A property update replaces its selected getter, setter or deleter and
+retains the other accessors, including when cloned under another name or made
+through a local class's property, as in `@Base.value.setter`.
+A function assigned or imported as a public class attribute exposes its signature
+and the overloads defined before it under the attribute's name, even after the
+original name is rebound. Those overloads and annotations resolve where the
+function was defined, so a name the class body binds cannot hide them.
+Record declarations retain separate allowances per field. An ordinary value's
+declared annotation is authoritative, so its factory initializer does not add
+type sites, even when a class assigns that initializer separately.
+TypedDict field-map unions use rightmost field definitions; field containers
+that cannot be statically resolved refuse instead of producing empty schemas.
+A factory reads its field container as it was at the call, in module, class and
+function bodies alike: an in-place change before the call refuses, and a later
+change does not alter the declared fields.
+Public receiver fields count even in private helpers or compound statements, and
+resolve method-local imports and aliases bound before each field;
+private signatures, nested implementation scopes and inherited external members
+are excluded. Only the manifest's promised namespace sections are inspected.
+The allowances in `tests/public_any_baseline.txt` are per qualified name and annotation site,
+including names with no `Any`: a reduction cannot hide a new name, parameter,
+return or field. Counts may fall, never grow. Review any intentional public
+typing change before explicitly regenerating with
+`uv run python scripts/check_public_typing.py --write-baseline`; do not regenerate
+the file just to silence a failure.
+
+The check guards ordinary edits; it is not a sandbox against deliberate
+evasion. It does not follow these runtime patterns, so do not use them in
+public typing code: a module object assigned to another name (`t = typing`, then
+`t.Any`); container methods called inside a larger expression
+(`_unused = __all__.append(...)`); assignments to attributes of a local class
+after it is defined (`_Types.Payload = Any`); rebinding a builtin name
+(`str = Any`); names whose values depend on an earlier loop iteration
+(`_Payload = _Other; _Other = _t`); and changing an imported container before
+passing it to a typing factory.
+
+
 Additional commands:
 
 - `make test-unit` runs the local unit tier; `make test` aliases it.
