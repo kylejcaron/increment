@@ -258,8 +258,19 @@ jobs:
           gh label create selection-map --color 1d76db --description "Generated test selection map" 2>/dev/null || true
           if gh pr view bot/selection-map >/dev/null 2>&1; then
             gh pr edit bot/selection-map --title "Refresh fast selection map" --body "Regenerate \`tests/selection_map.json\` from the nightly fast-tier coverage run." --add-label selection-map
+          elif created="$(gh pr create --base main --head bot/selection-map --title "Refresh fast selection map" --body "Regenerate \`tests/selection_map.json\` from the nightly fast-tier coverage run." --label selection-map 2>&1)"; then
+            echo "$created"
           else
-            gh pr create --base main --head bot/selection-map --title "Refresh fast selection map" --body "Regenerate \`tests/selection_map.json\` from the nightly fast-tier coverage run." --label selection-map
+            status=$?
+            echo "$created" >&2
+            # The repository does not let workflow tokens open pull requests; the pushed branch is the result.
+            case "$created" in
+              *"GitHub Actions is not permitted to create or approve pull requests"*) ;;
+              *) exit "$status" ;;
+            esac
+            message="Pushed bot/selection-map, but this repository does not let GitHub Actions open pull requests. Open one from $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...bot/selection-map"
+            echo "::warning::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   test-scientific:

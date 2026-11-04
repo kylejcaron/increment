@@ -1,5 +1,6 @@
 import ast
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -125,14 +126,23 @@ def test_miss_report_uses_one_writer_and_preserves_metadata_in_summary() -> None
     assert 'cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"' in run
 
 
-def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
-    workflow = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())
-    job = workflow["jobs"]["refresh-selection-map"]
-    run = next(
+def _refresh_selection_map_job() -> dict:
+    return yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())["jobs"][
+        "refresh-selection-map"
+    ]
+
+
+def _selection_map_pr_script(job: dict) -> str:
+    return next(
         step["run"]
         for step in job["steps"]
         if step.get("name") == "Open or update selection-map PR"
     )
+
+
+def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
+    job = _refresh_selection_map_job()
+    run = _selection_map_pr_script(job)
 
     assert "git fetch --prune origin" in run
     assert "--force-with-lease=refs/heads/bot/selection-map:" in run
@@ -140,6 +150,150 @@ def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
     # A map built on another ref names a base that a squash merge drops, so it arrives stale.
     assert "github.ref == 'refs/heads/main'" in job["if"]
     assert "needs.record-durations.result == 'success'" in job["if"]
+
+
+_ACTIONS_MAY_NOT_OPEN_PRS = (
+    "pull request create failed: GraphQL: GitHub Actions is not permitted to create or approve"
+    " pull requests (createPullRequest)"
+)
+
+
+def _outside_this_repository() -> dict[str, str]:
+    """The caller's environment without variables that would point git at this repository."""
+    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+
+def _scratch_git(repository: Path, *args: str) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "user.name=CI Test",
+            "-c",
+            "user.email=ci@example.invalid",
+            *args,
+        ],
+        cwd=repository,
+        env=_outside_this_repository(),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def nightly_checkout(tmp_path: Path) -> Path:
+    """A checkout of ``main`` whose remote records a selection map and has no bot branch."""
+    checkout = tmp_path / "checkout"
+    _scratch_git(tmp_path, "init", "-q", "--bare", "remote.git")
+    _scratch_git(tmp_path, "init", "-q", "-b", "main", str(checkout))
+    (checkout / "tests").mkdir()
+    (checkout / "tests" / "selection_map.json").write_text(
+        '{"tests/test_a.py": ["increment/a.py"]}\n'
+    )
+    _scratch_git(checkout, "add", ".")
+    _scratch_git(checkout, "commit", "-qm", "Record selection map")
+    _scratch_git(checkout, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    _scratch_git(checkout, "push", "-q", "origin", "HEAD:refs/heads/main")
+    return checkout
+
+
+def _run_selection_map_pr_step(
+    checkout: Path, create_error: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run the step where no PR exists yet and ``gh pr create`` fails with *create_error*; return the step summary too."""
+    stub = checkout.parent / "bin"
+    stub.mkdir()
+    gh = stub / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2" in\n'
+        '  "pr view") exit 1 ;;\n'
+        f'  "pr create") echo {shlex.quote(create_error)} >&2; exit 1 ;;\n'
+        "esac\n"
+    )
+    gh.chmod(0o755)
+    script = checkout.parent / "step.sh"
+    script.write_text(_selection_map_pr_script(_refresh_selection_map_job()))
+    summary = checkout.parent / "summary.md"
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", str(script)],
+        cwd=checkout,
+        env=_outside_this_repository()
+        | {
+            # The step's own commit and push take the scratch settings that ``git -c`` gives above.
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "commit.gpgSign",
+            "GIT_CONFIG_VALUE_1": "false",
+            "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_SERVER_URL": "https://github.example",
+            "GITHUB_REPOSITORY": "owner/increment",
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return result, summary.read_text() if summary.exists() else ""
+
+
+def _remote_bot_branch(checkout: Path) -> str:
+    return _scratch_git(checkout, "ls-remote", "origin", "refs/heads/bot/selection-map").partition(
+        "\t"
+    )[0]
+
+
+@pytest.mark.integration
+def test_selection_map_pr_refused_to_actions_leaves_pushed_branch_and_compare_link(
+    nightly_checkout: Path,
+) -> None:
+    """The map is advisory: a repository that bars Actions from opening PRs still gets the branch and a link."""
+    refreshed = '{"tests/test_b.py": ["increment/b.py"]}\n'
+    (nightly_checkout / "tests" / "selection_map.json").write_text(refreshed)
+
+    result, summary = _run_selection_map_pr_step(nightly_checkout, _ACTIONS_MAY_NOT_OPEN_PRS)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    pushed = _remote_bot_branch(nightly_checkout)
+    assert pushed == _scratch_git(nightly_checkout, "rev-parse", "HEAD")
+    assert (
+        _scratch_git(nightly_checkout, "show", f"{pushed}:tests/selection_map.json")
+        == refreshed.strip()
+    )
+    compare = "https://github.example/owner/increment/compare/main...bot/selection-map"
+    warnings = [line for line in result.stdout.splitlines() if line.startswith("::warning::")]
+    assert len(warnings) == 1, result.stdout
+    assert compare in warnings[0]
+    assert "bot/selection-map" in warnings[0].replace(compare, "")
+    assert compare in summary
+
+
+@pytest.mark.integration
+def test_selection_map_pr_failing_for_another_reason_fails_the_step(nightly_checkout: Path) -> None:
+    (nightly_checkout / "tests" / "selection_map.json").write_text(
+        '{"tests/test_b.py": ["increment/b.py"]}\n'
+    )
+
+    result, _ = _run_selection_map_pr_step(
+        nightly_checkout, "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
+@pytest.mark.integration
+def test_unchanged_selection_map_pushes_nothing(nightly_checkout: Path) -> None:
+    result, _ = _run_selection_map_pr_step(nightly_checkout, _ACTIONS_MAY_NOT_OPEN_PRS)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _remote_bot_branch(nightly_checkout) == ""
 
 
 def test_nightly_refresh_jobs_do_not_wait_for_the_full_suite() -> None:
