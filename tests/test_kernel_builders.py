@@ -422,18 +422,40 @@ def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_
     assert raised.value.code == "kernel.run.resolver_missing"
 
 
+def _change_metric_window(definitions: Path) -> None:
+    metrics_path = definitions / "metrics.yaml"
+    declared = yaml.safe_load(metrics_path.read_text(encoding="utf-8"))
+    purchase_rate = next(m for m in declared["metrics"] if m["name"] == "purchase_rate")
+    purchase_rate["window_days"] = 7
+    metrics_path.write_text(yaml.safe_dump(declared), encoding="utf-8")
+
+
+def _write_impossible_date(definitions: Path) -> None:
+    experiments_path = definitions / "experiments.yaml"
+    text = experiments_path.read_text(encoding="utf-8")
+    experiments_path.write_text(
+        text.replace("start: 2025-01-15", "start: 2025-13-15"), encoding="utf-8"
+    )
+
+
+def _write_undecodable_bytes(definitions: Path) -> None:
+    experiments_path = definitions / "experiments.yaml"
+    experiments_path.write_bytes(experiments_path.read_bytes() + b"\xff\n")
+
+
 @pytest.mark.integration
-def test_edited_definitions_refuse_before_any_read(seeded_defs, seeded_con):
+@pytest.mark.parametrize(
+    "edit",
+    [_change_metric_window, _write_impossible_date, _write_undecodable_bytes],
+    ids=["changed_metric", "impossible_date", "undecodable_bytes"],
+)
+def test_edited_definitions_refuse_before_any_read(seeded_defs, seeded_con, edit):
     from tests.parity_harness.query_log import enable_query_log, query_log
 
     experiment, reader = from_definitions(
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
-    metrics_path = Path(seeded_defs) / "metrics.yaml"
-    declared = yaml.safe_load(metrics_path.read_text(encoding="utf-8"))
-    purchase_rate = next(m for m in declared["metrics"] if m["name"] == "purchase_rate")
-    purchase_rate["window_days"] = 7
-    metrics_path.write_text(yaml.safe_dump(declared), encoding="utf-8")
+    edit(Path(seeded_defs))
     assert enable_query_log(seeded_con)
     try:
         for read in (run, unit_counts):
@@ -455,6 +477,7 @@ def test_edited_definitions_refuse_before_any_read(seeded_defs, seeded_con):
     with pytest.raises(CodedError) as offline:
         from_definitions(seeded_defs)
     assert offline.value.code == "kernel.definitions.catalog_stale"
+    assert dict(offline.value.context) == {"path": str(Path(seeded_defs))}
 
 
 @pytest.mark.integration

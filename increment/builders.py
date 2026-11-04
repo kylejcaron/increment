@@ -579,9 +579,10 @@ def _definitions_digest(path: Path) -> str:
 
 def _loaded_digest(path: Path) -> str | None:
     """The digest of the definitions on disk, or None when they no longer load."""
+    # Coded refusals, undecodable text and impossible YAML values are all ValueErrors.
     try:
         return _definitions_digest(path)
-    except (CodedError, OSError):
+    except (ValueError, OSError):
         return None
 
 
