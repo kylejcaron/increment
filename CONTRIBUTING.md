@@ -651,11 +651,12 @@ Functional-slow CI uses eight isolated shards and the certification job two,
 with workers inside each shard; `ci-ok` requires their aggregate success. Every
 case remains selected exactly once. Both split by the recorded weights in
 `.github/slow-test-durations.json` and `.github/certification-test-durations.json`;
-a test without a weight still runs. The slow weights come from a complete,
-passing local slow run on 2026-11-01 (Python 3.13, four `xdist` workers),
-normalized like the fast weights. Proportions matter, not absolute seconds, so
-refresh the weights from the nightly artifact or a complete local run of the
-tier when the tier changes materially:
+a test without a weight still runs. The slow weights are the nightly producer's
+`slow-test-durations` artifact, which covers the whole slow collection, so the
+nightly and weekly floor runs split by it too; PR splitting ignores weights for
+unselected items. Eight shards keep every PR slow job under 15 minutes at the
+measured two workers, with margin for the observed shard imbalance. Refresh the
+weights from that artifact, or record them locally, after material tier changes:
 
 ```bash
 make test-slow WORKERS=4 PYTEST_ARGS="--store-durations --clean-durations --durations-path .github/slow-test-durations.json"
