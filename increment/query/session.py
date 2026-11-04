@@ -29,6 +29,7 @@ import ibis.expr.types as ir
 import sqlglot
 from ibis import Table
 from ibis.backends.sql import SQLBackend
+from ibis.common.exceptions import TableNotFound
 from ibis.expr import operations as ops
 
 from increment.errors import (
@@ -989,7 +990,7 @@ class WarehouseArtifactStore:
             generation_id=generation.generation_id,
             role=cast("Any", role),
         )
-        existing = locator.name in self._con.list_tables(database=cast("Any", self._database))
+        existing = _relation_exists(self._con, locator.name, self._database)
         if existing:
             refuse(
                 _RELATION_NAME_OCCUPIED,
@@ -1011,7 +1012,7 @@ class WarehouseArtifactStore:
             digest = self._digest_table_for_write(persisted, role)
         except BaseException:
             try:
-                if locator.name in self._con.list_tables(database=cast("Any", self._database)):
+                if _relation_exists(self._con, locator.name, self._database):
                     _drop_owned_table(self._con, locator.name, database=self._database)
                 del generation.unregistered[locator.name]
             except BaseException:  # never replace the propagating error; abort retries
@@ -1614,7 +1615,26 @@ def _temporary_relation_exists(con: SQLBackend, relation: _MaterializedRelation)
         database = (relation.catalog, relation.schema)
     else:
         database = relation.schema
-    return relation.name in cast(Any, con).list_tables(database=database)
+    return _relation_exists(con, relation.name, database)
+
+
+def _relation_exists(con: SQLBackend, name: str, database: str | tuple[str, str] | None) -> bool:
+    """Whether ``database`` holds ``name``.
+
+    A qualified BigQuery dataset is not listed: listing reads every table in it, and
+    a session dataset also holds the connection's recent query results.
+    """
+    if con.name == "bigquery" and isinstance(database, tuple):
+        project, dataset = database
+        backend = cast(Any, con)
+        try:
+            backend.table(name, database=database)
+        except TableNotFound:
+            # Listing a missing dataset raised; looking the dataset up raises the same way.
+            backend.client.get_dataset(f"{project}.{dataset}")
+            return False
+        return True
+    return name in cast(Any, con).list_tables(database=database)
 
 
 def _cleanup_failed_temporary_relation(

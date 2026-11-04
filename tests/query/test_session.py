@@ -1307,9 +1307,11 @@ def test_non_duckdb_partial_temp_create_is_cleaned_in_creation_namespace(backend
             database = physical_database
         elif backend == "snowflake" and database == ("memory", "materialized"):
             database = physical_database
-        elif backend == "bigquery" and database == ("memory", "session_dataset"):
-            database = physical_database
         return con.list_tables(database=database)
+
+    def table(relation_name, *, database=None):
+        assert database == ("memory", "session_dataset")
+        return con.table(relation_name, database=physical_database)
 
     def raw_sql(statement):
         import sqlglot
@@ -1343,6 +1345,10 @@ def test_non_duckdb_partial_temp_create_is_cleaned_in_creation_namespace(backend
         raw_sql=raw_sql,
         _safe_raw_sql=safe_raw_sql,
     )
+    if backend == "bigquery":
+        # BigQuery looks one table up rather than listing its session dataset.
+        adapter.table = table
+        adapter.client = SimpleNamespace(get_dataset=lambda dataset_ref: dataset_ref)
     session = WarehouseSession(adapter, defs=None)  # type: ignore[ty:invalid-argument-type]
     expression = con.table("t")
     try:
@@ -2655,6 +2661,72 @@ def test_bigquery_missing_default_dataset_refuses_before_metadata_ddl(
         boundary.real.disconnect()
 
 
+@pytest.mark.integration
+def test_bigquery_publish_and_adopt_never_list_a_dataset(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Listing reads every table in a dataset, and the session dataset holds every query result.
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    try:
+        store = WarehouseArtifactStore(boundary.backend)
+        ref, measure = _publish_in(store, unit_id="looked-up")
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+            snapshot.verify_relation(manifest.base.exposures, expected_role="exposures")
+            verified = snapshot.verify_relation(measure, expected_role="measure_stats")
+            assert snapshot.execute(verified).column("sum_value").to_pylist() == [2.0]
+        assert boundary.listed == []
+    finally:
+        boundary.real.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("state", ["occupied", "missing", "forbidden"])
+def test_bigquery_relation_existence_keeps_the_listing_outcomes(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    boundary = _BigQueryNetworkBoundary(monkeypatch)
+    namespace = ("data-project", "default_dataset")
+    errors = {
+        "missing": boundary.api_errors.NotFound("Not found: Dataset data-project:default_dataset"),
+        "forbidden": boundary.api_errors.Forbidden(
+            "Access Denied: Dataset data-project:default_dataset"
+        ),
+    }
+    sentinel = [{"sentinel": 314159}]
+    try:
+        store = WarehouseArtifactStore(boundary.backend)
+        with store.begin_publication(expected_context=_artifact_context()) as publication:
+            name = (
+                f"ud_{publication.artifact_id.hex[:12]}_"
+                f"{publication.generation_id.hex[:12]}_exposures"
+            )
+            source = ibis.table({"sentinel": "int64"}, name="not_materialized")
+            if state == "occupied":
+                boundary.backend.create_table(name, ibis.memtable(sentinel), database=namespace)
+                with pytest.raises(CapabilityError) as raised:
+                    publication.write_relation("exposures", source)
+                assert raised.value.code == "query.relation.name_occupied"
+                assert {
+                    key: value for key, value in raised.value.context.items() if key != "route"
+                } == {
+                    "backend": "bigquery",
+                    "catalog": "data-project",
+                    "schema": "default_dataset",
+                    "name": name,
+                }
+            else:
+                boundary.unavailable[namespace] = errors[state]
+                statements = len(boundary.executed_ddl)
+                with pytest.raises(type(errors[state])):
+                    publication.write_relation("exposures", source)
+                assert boundary.executed_ddl[statements:] == []
+                boundary.unavailable.clear()
+        if state == "occupied":
+            stored = boundary.backend.table(name, database=namespace)
+            assert boundary.backend.to_pyarrow(stored).to_pylist() == sentinel
+    finally:
+        boundary.real.disconnect()
+
+
 class _DuckDBBigQueryResult:
     def __init__(self, cursor) -> None:
         self._cursor = cursor
@@ -2667,15 +2739,30 @@ class _DuckDBBigQueryResult:
 
 
 class _BigQueryNetworkBoundary:
-    """Apply BigQuery SQL to an isolated DuckDB-backed dataset service."""
+    """Apply BigQuery SQL to an isolated DuckDB-backed dataset service.
+
+    ``listed`` records every dataset listing. A dataset in ``unavailable`` fails
+    every metadata call with its error, as a missing or forbidden dataset does.
+    """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.sqlglot = pytest.importorskip("sqlglot")
         module = pytest.importorskip("ibis.backends.bigquery")
+        self.bigquery = pytest.importorskip("google.cloud.bigquery")
+        self.api_errors = pytest.importorskip("google.api_core.exceptions")
         self.backend = module.Backend()
         self.backend.billing_project = "billing-project"
         self.backend.data_project = "data-project"
         self.backend.dataset = "default_dataset"
+        # A connected backend's anonymous dataset, which also holds its query results.
+        monkeypatch.setattr(
+            self.backend,
+            "_Backend__session_dataset",
+            self.bigquery.DatasetReference("billing-project", "_session_results"),
+        )
+        monkeypatch.setattr(self.backend, "client", _BigQueryDatasetClient(self), raising=False)
+        self.listed: list[tuple[str, str]] = []
+        self.unavailable: dict[tuple[str, str], Exception] = {}
         self.real = ibis.duckdb.connect()
         duckdb = pytest.importorskip("duckdb")
         self.real.con.create_function(
@@ -2750,12 +2837,26 @@ class _BigQueryNetworkBoundary:
         self.executed_ddl.append("CREATE DATABASE")
         return self._ensure_database(catalog or self.backend.billing_project, name)
 
+    def require_available(self, project: str, dataset: str) -> None:
+        error = self.unavailable.get((project, dataset))
+        if error is not None:
+            raise error
+
     def table(self, name, *, database=None):
+        from ibis.common.exceptions import TableNotFound
+
         project, dataset = self._resolve_location(database)
+        try:
+            self.require_available(project, dataset)
+        except self.api_errors.NotFound as missing:
+            # Ibis reports a missing dataset as a missing table.
+            raise TableNotFound(name) from missing
         return self.real.table(name, database=self._ensure_database(project, dataset))
 
     def list_tables(self, *, database=None, **kwargs):
         project, dataset = self._resolve_location(database)
+        self.listed.append((project, dataset))
+        self.require_available(project, dataset)
         return self.real.list_tables(database=self._ensure_database(project, dataset), **kwargs)
 
     def insert(self, name, obj, *, database=None, **kwargs):
@@ -2804,6 +2905,19 @@ class _BigQueryNetworkBoundary:
             cursor.close()
             return None
         return cursor
+
+
+class _BigQueryDatasetClient:
+    """The ``google.cloud.bigquery.Client`` dataset lookup, served by the boundary."""
+
+    def __init__(self, boundary: _BigQueryNetworkBoundary) -> None:
+        self._boundary = boundary
+
+    def get_dataset(self, dataset_ref: str):
+        reference = self._boundary.bigquery.DatasetReference.from_string(dataset_ref)
+        self._boundary.require_available(reference.project, reference.dataset_id)
+        self._boundary._ensure_database(reference.project, reference.dataset_id)
+        return reference
 
 
 def test_locator_refusals_carry_the_rejected_value_in_their_context() -> None:

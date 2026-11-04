@@ -356,6 +356,8 @@ def tests_warehouse_bigquery(session: nox.Session) -> None:
         session,
         "pytest",
         "tests/query/test_session.py::test_hosted_metadata_creation_targets_the_explicit_catalog",
+        "tests/query/test_session.py::test_bigquery_publish_and_adopt_never_list_a_dataset",
+        "tests/query/test_session.py::test_bigquery_relation_existence_keeps_the_listing_outcomes",
         "-q",
         "-k",
         "bigquery",
