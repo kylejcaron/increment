@@ -549,17 +549,23 @@ def unwrap_coded(exc: ValidationError) -> None:
     ``ValidationError`` unchanged.
 
     The raised refusal is a copy of the one ``exc`` holds, carrying the
-    validator's traceback; the held one is left without a traceback or chained
-    exception. ``exc`` keeps the held refusal out of reach of Python's cycle
-    collector, so any link from it back to the raised refusal would keep every
-    caller's variables in memory for the life of the process.
+    validator's traceback and notes; every error ``exc`` holds is then left
+    without a traceback or chained exception. ``exc`` keeps those errors out of
+    reach of Python's cycle collector, so any link from them back to the raised
+    refusal would keep every caller's variables in memory for the life of the
+    process.
     """
-    for err in exc.errors():
-        inner = err.get("ctx", {}).get("error")
-        if isinstance(inner, CodedError):
-            surfaced = copy.copy(inner).with_traceback(inner.__traceback__)
-            inner.__traceback__ = inner.__context__ = inner.__cause__ = None
-            raise surfaced from exc
+    held = [err.get("ctx", {}).get("error") for err in exc.errors()]
+    inner = next((error for error in held if isinstance(error, CodedError)), None)
+    if inner is None:
+        return
+    surfaced = copy.copy(inner).with_traceback(inner.__traceback__)
+    if hasattr(inner, "__notes__"):
+        surfaced.__notes__ = list(inner.__notes__)
+    for error in held:
+        if isinstance(error, BaseException):
+            error.__traceback__ = error.__context__ = error.__cause__ = None
+    raise surfaced from exc
 
 
 def unwrap_coded_serialization(exc: PydanticSerializationError) -> None:

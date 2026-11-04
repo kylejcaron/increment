@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import pickle
+import traceback
 import weakref
 from datetime import date
 from typing import Any, cast
@@ -63,10 +64,40 @@ def test_coded_model_surfaces_code_on_every_direct_model_entry_path(construct):
     assert exc_info.value.context["value"] == -1
 
 
-def test_surfaced_refusal_releases_the_callers_frames():
-    """pydantic holds a validator's error where the cycle collector cannot see it, so no path
-    may lead from that error back to the surfaced refusal: otherwise a caller that keeps the
-    refusal keeps it, its traceback and every caller's locals alive for the life of the
+class _Pair(CodedModel, BaseModel):
+    left: int
+    right: int
+
+    @field_validator("left", "right")
+    @classmethod
+    def _non_negative(cls, v: int) -> int:
+        if v < 0:
+            refuse(_SPEC, value=v)
+        return v
+
+
+class _Noted(CodedModel, BaseModel):
+    value: int
+
+    @field_validator("value")
+    @classmethod
+    def _noted(cls, v: int) -> int:
+        try:
+            refuse(_SPEC, value=v)
+        except InvalidRequestError as refusal:
+            refusal.add_note("validator note")
+            raise
+
+
+@pytest.mark.parametrize(
+    "construct",
+    [lambda: _Widget(value=-1), lambda: _Pair(left=-1, right=-2)],
+    ids=["one-error", "two-errors"],
+)
+def test_surfaced_refusal_releases_the_callers_frames(construct):
+    """pydantic holds every validator error where the cycle collector cannot see it, so no
+    path may lead from any of them back to the surfaced refusal: otherwise a caller that keeps
+    the refusal keeps it, its traceback and every caller's locals alive for the life of the
     process."""
 
     class _Local:
@@ -76,7 +107,7 @@ def test_surfaced_refusal_releases_the_callers_frames():
         local = _Local()
         refusals = []
         try:
-            _Widget(value=-1)
+            construct()
         except InvalidRequestError as refusal:
             refusals.append(refusal)
         assert [refusal.code for refusal in refusals] == ["test.coded_model.negative"]
@@ -85,6 +116,15 @@ def test_surfaced_refusal_releases_the_callers_frames():
     released = caller()
     gc.collect()
     assert released() is None
+
+
+def test_surfaced_refusal_keeps_validator_notes_and_accepts_more():
+    with pytest.raises(InvalidRequestError) as raised:
+        _Noted(value=-1)
+    raised.value.add_note("caller note")
+    shown = "".join(traceback.format_exception(raised.value))
+    assert "validator note" in shown
+    assert "caller note" in shown
 
 
 def test_coded_model_nested_revalidation_surfaces_code():
