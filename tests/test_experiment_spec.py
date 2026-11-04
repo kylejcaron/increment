@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import copy
+import copyreg
 import dataclasses
+import io
 import json
 import pickle
 from fractions import Fraction
+from types import MappingProxyType
 from typing import cast
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from increment import CupedCovariate, Experiment, Method, SourceReference
+from increment import (
+    CupedCovariate,
+    Experiment,
+    Method,
+    MetricSpec,
+    SourceReference,
+    from_frame,
+)
 from increment.errors import CodedError
 from increment.evidence import EvidenceCapabilities, EvidenceProvider, ScalarEvidenceDeclaration
 from increment.kernel.contracts import ImplementationRef, Registration, Scope
@@ -198,6 +209,37 @@ def test_non_portable_experiment_round_trips():
     assert portable.value.code == "kernel.method.implementation_ref_missing"
     assert copy.deepcopy(experiment) == experiment
     assert pickle.loads(pickle.dumps(experiment)) == experiment
+
+
+def test_reader_stays_unpicklable_and_experiment_copies_leave_it_alone():
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{index}" for index in range(8)],
+            "arm": ["control", "treatment"] * 4,
+            "value": [float(index) for index in range(8)],
+        }
+    )
+    experiment, reader = from_frame(
+        frame,
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="value", type="mean")],
+    )
+
+    # Cached fixtures register MappingProxyType with copyreg; pickle without that registration.
+    pickler = pickle.Pickler(io.BytesIO())
+    pickler.dispatch_table = {
+        kind: reducer
+        for kind, reducer in copyreg.dispatch_table.items()
+        if kind is not MappingProxyType
+    }
+    with pytest.raises(TypeError):
+        pickler.dump(reader)
+    memo: dict[int, object] = {}
+    assert copy.deepcopy(experiment, memo) == experiment
+    assert id(reader) not in memo
 
 
 @pytest.mark.parametrize(
