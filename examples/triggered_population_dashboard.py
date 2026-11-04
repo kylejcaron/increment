@@ -14,7 +14,7 @@ def _():
     import numpy as np
     import pyarrow as pa
 
-    from increment import from_definitions
+    import increment
     from increment.artifacts import SourceSnapshotEvidence
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
 
@@ -23,8 +23,8 @@ def _():
         Path,
         SourceSnapshotEvidence,
         dt,
-        from_definitions,
         ibis,
+        increment,
         np,
         pa,
         prepare_dashboard,
@@ -126,8 +126,8 @@ def _(ibis, np, pa):
 
 
 @app.cell
-def _(SourceSnapshotEvidence, con, definitions, dt, from_definitions):
-    experiment, resolver = from_definitions(
+def _(SourceSnapshotEvidence, con, definitions, dt, increment):
+    experiment, reader = increment.from_definitions(
         definitions,
         con,
         experiment_name="checkout",
@@ -136,13 +136,13 @@ def _(SourceSnapshotEvidence, con, definitions, dt, from_definitions):
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
-    return experiment, resolver
+    return experiment, reader
 
 
 @app.cell
-def _(DashboardConfig, experiment, prepare_dashboard, resolver):
+def _(DashboardConfig, experiment, prepare_dashboard, reader):
     config = DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}, title="Triggered checkout")
-    snapshot = prepare_dashboard(experiment, resolver, config=config)
+    snapshot = prepare_dashboard(experiment, reader, config=config)
     return (snapshot,)
 
 

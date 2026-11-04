@@ -10,37 +10,11 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import (
-        AnalysisPlan,
-        Encouragement,
-        ExclusionRestriction,
-        InferenceSpec,
-        MetricSpec,
-        UptakeSpec,
-        View,
-        from_frame,
-        run,
-    )
+    import increment
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import capture_sequential
 
-    return (
-        AnalysisPlan,
-        InferenceSpec,
-        Encouragement,
-        ExclusionRestriction,
-        MetricSpec,
-        View,
-        UptakeSpec,
-        capture_sequential,
-        estimates_to_readout,
-        from_frame,
-        mo,
-        np,
-        pd,
-        readout_table,
-        run,
-    )
+    return capture_sequential, estimates_to_readout, increment, mo, np, pd, readout_table
 
 
 @app.cell
@@ -175,23 +149,16 @@ def _(np, pd):
 
 
 @app.cell
-def _(
-    Encouragement,
-    ExclusionRestriction,
-    UptakeSpec,
-    encouragement_df,
-    from_frame,
-    run,
-):
-    encouragement_design = Encouragement(
+def _(encouragement_df, increment):
+    encouragement_design = increment.Encouragement(
         control_group="control",
-        uptake=UptakeSpec(fact="clicked"),
-        exclusion_restriction=ExclusionRestriction(
+        uptake=increment.UptakeSpec(fact="clicked"),
+        exclusion_restriction=increment.ExclusionRestriction(
             justification="the randomized prompt affects revenue only through help-button clicks",
         ),
         one_sided=False,
     )
-    _experiment, _resolver = from_frame(
+    _experiment, _reader = increment.from_frame(
         encouragement_df,
         shape="summary",
         unit="user_id",
@@ -199,7 +166,7 @@ def _(
         metrics={"revenue": "mean"},
         design=encouragement_design,
     )
-    encouragement_results = run(_experiment, _resolver).readout()
+    encouragement_results = increment.run(_experiment, _reader).readout()
     return encouragement_design, encouragement_results
 
 
@@ -279,7 +246,7 @@ def _(mo):
 
 
 @app.cell
-def _(encouragement_design, from_frame, np, run, simulate_encouragement):
+def _(encouragement_design, increment, np, simulate_encouragement):
     weak_df = simulate_encouragement(
         np.random.default_rng(7),
         n_per_arm=40,
@@ -287,7 +254,7 @@ def _(encouragement_design, from_frame, np, run, simulate_encouragement):
         encouraged_uptake=0.16,
         tau=18.0,
     )
-    _experiment, _resolver = from_frame(
+    _experiment, _reader = increment.from_frame(
         weak_df,
         shape="summary",
         unit="user_id",
@@ -295,7 +262,7 @@ def _(encouragement_design, from_frame, np, run, simulate_encouragement):
         metrics={"revenue": "mean"},
         design=encouragement_design,
     )
-    weak_results = run(_experiment, _resolver).readout()
+    weak_results = increment.run(_experiment, _reader).readout()
     return (weak_results,)
 
 
@@ -350,21 +317,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(
-    AnalysisPlan,
-    Encouragement,
-    ExclusionRestriction,
-    InferenceSpec,
-    MetricSpec,
-    View,
-    UptakeSpec,
-    capture_sequential,
-    from_frame,
-    np,
-    pd,
-    run,
-    simulate_encouragement,
-):
+def _(capture_sequential, increment, np, pd, simulate_encouragement):
     from increment.estimators import (
         JointReveal,
         PredictivePrior,
@@ -378,15 +331,15 @@ def _(
     )
 
     _window_days = 7
-    _design = Encouragement(
+    _design = increment.Encouragement(
         control_group="control",
-        uptake=UptakeSpec(fact="clicked", window_days=_window_days),
-        exclusion_restriction=ExclusionRestriction(
+        uptake=increment.UptakeSpec(fact="clicked", window_days=_window_days),
+        exclusion_restriction=increment.ExclusionRestriction(
             justification="the randomized prompt affects revenue only through help-button clicks",
         ),
         one_sided=False,
     )
-    _specs = [MetricSpec(name="revenue", type="mean", window_days=_window_days)]
+    _specs = [increment.MetricSpec(name="revenue", type="mean", window_days=_window_days)]
     _prior = PredictivePrior(kind="beta", a=1, b=1)
     _registration = SequentialRegistration(
         source_id="help_button_prompt",
@@ -424,8 +377,8 @@ def _(
         ),
         roster=(SequentialCell(metric="uptake", group_id="encouraged", estimand="compliance"),),
     )
-    _registered_plan = AnalysisPlan(
-        inference=InferenceSpec(kind="always_valid", registration=_registration),
+    _registered_plan = increment.AnalysisPlan(
+        inference=increment.InferenceSpec(kind="always_valid", registration=_registration),
         compliance=SequentialCompliancePolicy(alpha=_registration.roster[0].alpha),
     )
     _rng = np.random.default_rng(3)
@@ -450,44 +403,46 @@ def _(
     _panel = pd.concat([_exposure_rows, _completion_rows], ignore_index=True)[
         ["user_id", "variant", "ds", "exposed_on", "revenue", "clicked"]
     ]
-    _experiment, _resolver = from_frame(
+    _experiment, _reader = increment.from_frame(
         _panel,
         shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
-        metrics=[MetricSpec(name="revenue", type="mean", window_days=_window_days)],
+        metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=_window_days)],
         design=_design,
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
-    _av_experiment, _av_resolver = from_frame(
+    _av_experiment, _av_reader = increment.from_frame(
         _panel,
         shape="panel",
         unit="user_id",
         group="variant",
         date="ds",
-        metrics=[MetricSpec(name="revenue", type="mean", window_days=_window_days)],
+        metrics=[increment.MetricSpec(name="revenue", type="mean", window_days=_window_days)],
         design=_design,
         plan=_registered_plan,
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
-    _completed = View.asof(completion_policy=True)
+    _completed = increment.View.asof(completion_policy=True)
 
     def _late_trend(results):
         return [row for row in results if row.estimand == "late" and row.value_scale == "relative"]
 
     fixed_late_trend = _late_trend(
-        run(_experiment.with_views(_completed), _resolver, views=(_completed,)).readout(_completed)
+        increment.run(_experiment.with_views(_completed), _reader, views=(_completed,)).readout(
+            _completed
+        )
     )
     uptake_trend = []
     for _day in sorted(set(_completion_rows["ds"])):
-        capture_sequential(_av_experiment, _av_resolver, finalized=True, as_of=_day)
+        capture_sequential(_av_experiment, _av_reader, finalized=True, as_of=_day)
         uptake_trend.extend(
-            run(
+            increment.run(
                 _av_experiment.with_views(_completed),
-                _av_resolver,
+                _av_reader,
                 views=(_completed,),
                 estimands=("compliance",),
             ).readout(_completed)

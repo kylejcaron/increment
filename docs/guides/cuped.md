@@ -30,7 +30,7 @@ covariate whose column holds text or dates is refused with
 ```python
 import numpy as np
 import polars as pl
-from increment import CupedCovariate, Method, MetricSpec, from_frame, run
+import increment
 
 rng = np.random.default_rng(11)
 n = 20_000
@@ -52,19 +52,19 @@ df = pl.DataFrame(
     }
 )
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[
-        MetricSpec(
+        increment.MetricSpec(
             name="revenue",
             type="mean",
             sensitivity_methods=(
-                Method.cuped(
-                    covariates=CupedCovariate(
+                increment.Method.cuped(
+                    covariates=increment.CupedCovariate(
                         name="pre_revenue", kind="continuous", missing="impute"
                     )
                 ),
@@ -72,7 +72,9 @@ experiment, resolver = from_frame(
         )
     ],
 )
-results = run(experiment, resolver, decision_method=Method.unadjusted(name="unadjusted")).readout()
+results = increment.run(
+    experiment, reader, decision_method=increment.Method.unadjusted(name="unadjusted")
+).readout()
 
 for r in results:
     width = r.lift.ub - r.lift.lb
@@ -128,7 +130,7 @@ enclosing horizon. An unselected feed is not fetched just to extend a snapshot.
 ```python
 import numpy as np
 import polars as pl
-from increment import CupedCovariate, Method, MetricSpec, from_frame, run
+import increment
 
 rng = np.random.default_rng(21)
 n_per_arm = 80
@@ -136,9 +138,9 @@ arm = np.repeat(["control", "variant_a", "variant_b"], n_per_arm)
 pre_period = rng.normal(size=3 * n_per_arm)
 effect = np.repeat([0.0, 0.4, 0.8], n_per_arm)
 outcome = 10 + effect + 0.9 * pre_period + rng.normal(0, 1, size=3 * n_per_arm)
-covariate = CupedCovariate(name="pre_period", kind="continuous")
+covariate = increment.CupedCovariate(name="pre_period", kind="continuous")
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     pl.DataFrame(
         {
             "unit": [f"u{i}" for i in range(len(arm))],
@@ -152,15 +154,17 @@ experiment, resolver = from_frame(
     group="arm",
     control="control",
     metrics=[
-        MetricSpec(
+        increment.MetricSpec(
             name="outcome",
-            decision_method=Method.cuped(covariates=covariate),
-            sensitivity_methods=(Method.cuped_multicovariate(name="hc2_bm", covariates=covariate),),
+            decision_method=increment.Method.cuped(covariates=covariate),
+            sensitivity_methods=(
+                increment.Method.cuped_multicovariate(name="hc2_bm", covariates=covariate),
+            ),
         )
     ],
 )
 
-for row in run(experiment, resolver).readout():
+for row in increment.run(experiment, reader).readout():
     lift = row.require_lift()
     print(
         f"{row.method:>6} {row.group_id}: "
@@ -221,13 +225,15 @@ denominator separately, then the ratio is formed. The target remains
 $E[N]/E[D]$:
 
 ```python
-MetricSpec(
+increment.MetricSpec(
     name="revenue_per_order",
     type="ratio",
     numerator="revenue",
     denominator="orders",
-    decision_method=Method.cuped(
-        covariates=CupedCovariate(name="pre_revenue_per_order", kind="continuous", missing="impute")
+    decision_method=increment.Method.cuped(
+        covariates=increment.CupedCovariate(
+            name="pre_revenue_per_order", kind="continuous", missing="impute"
+        )
     ),
 )
 ```
@@ -412,7 +418,7 @@ experiments:
     control_group: C
 ```
 
-Each `run(experiment, resolver)` now reports unadjusted and CUPED rows for
+Each `run(experiment, reader)` now reports unadjusted and CUPED rows for
 `purchase_rate`; `avg_session_duration` stays unadjusted. Call-wide
 `decision_method` and `sensitivity_methods` overrides take precedence. The
 dataframe path uses the same precedence through
@@ -441,14 +447,18 @@ data at each look. A method declares the source covariate and registers
 
 <!-- skip: next "requires a prepared unit frame" -->
 ```python
-from increment import AnalysisPlan, CupedCovariate, InferenceSpec, Method, MetricSpec, from_frame
+import increment
 
-plan = AnalysisPlan(primary="revenue", inference=InferenceSpec(kind="asymptotic_mean"))
-spec = MetricSpec(
-    name="revenue",
-    decision_method=Method.cuped(covariates=CupedCovariate(name="revenue_pre", kind="continuous")),
+plan = increment.AnalysisPlan(
+    primary="revenue", inference=increment.InferenceSpec(kind="asymptotic_mean")
 )
-experiment, resolver = from_frame(
+spec = increment.MetricSpec(
+    name="revenue",
+    decision_method=increment.Method.cuped(
+        covariates=increment.CupedCovariate(name="revenue_pre", kind="continuous")
+    ),
+)
+experiment, reader = increment.from_frame(
     units,
     shape="summary",
     unit="user_id",
@@ -469,8 +479,8 @@ covariate reports `zero_covariate_variance`) and per-unit covariate data:
 - `from_unit_day_artifact`: publish each adjusted method's `cuped_preperiod`
   extension. Select its `entry.request` from
   `unit_day_artifact_extension_catalog(context)` and pass it through
-  `extensions=` to `increment.artifacts.publish_unit_day_artifact(experiment, resolver, store, ...)`.
-  The trusted `context` comes from `increment.artifacts.artifact_context(experiment, resolver)`.
+  `extensions=` to `increment.artifacts.publish_unit_day_artifact(experiment, reader, store, ...)`.
+  The trusted `context` comes from `increment.artifacts.artifact_context(experiment, reader)`.
   Default publication (`extensions=()`) omits CUPED covariates. See the
   [artifact extension matrix](data-model.md#operation-and-extension-matrix).
 
@@ -508,7 +518,7 @@ per unit. The exact Bernoulli method does not accept this adjustment.
 
 <!-- skip: next "requires a prepared pre-period frame" -->
 ```python
-from increment import AnalysisPlan, CupedCovariate, InferenceSpec, Method, MetricSpec
+import increment
 from increment.estimators import fit_predeclared_adjustment
 
 adjustment = fit_predeclared_adjustment(
@@ -519,13 +529,15 @@ adjustment = fit_predeclared_adjustment(
     metric="revenue_pre_window",
     covariate="revenue_earlier_window",
 )
-plan = AnalysisPlan(
+plan = increment.AnalysisPlan(
     primary="revenue",
-    inference=InferenceSpec(kind="asymptotic_mean", adjustments={"revenue": adjustment}),
+    inference=increment.InferenceSpec(kind="asymptotic_mean", adjustments={"revenue": adjustment}),
 )
-spec = MetricSpec(
+spec = increment.MetricSpec(
     name="revenue",
-    decision_method=Method.cuped(covariates=CupedCovariate(name="revenue_pre", kind="continuous")),
+    decision_method=increment.Method.cuped(
+        covariates=increment.CupedCovariate(name="revenue_pre", kind="continuous")
+    ),
 )
 ```
 
@@ -593,32 +605,32 @@ df = pl.DataFrame(
 -->
 
 ```python
-import increment as inc
+import increment
 
-experiment, resolver = inc.from_frame(
+experiment, reader = increment.from_frame(
     df,  # one row per unit, carrying the uptake column and the pre-period covariate
     shape="summary",
     unit="user_id",
     group="variant",
     metrics=[
-        inc.MetricSpec(
+        increment.MetricSpec(
             name="revenue",
-            decision_method=inc.Method.cuped(
-                covariates=inc.CupedCovariate(name="revenue_pre", kind="continuous")
+            decision_method=increment.Method.cuped(
+                covariates=increment.CupedCovariate(name="revenue_pre", kind="continuous")
             ),
         )
     ],
-    design=inc.Encouragement(
+    design=increment.Encouragement(
         control_group="control",
-        uptake=inc.UptakeSpec(fact="clicked"),
-        exclusion_restriction=inc.ExclusionRestriction(
+        uptake=increment.UptakeSpec(fact="clicked"),
+        exclusion_restriction=increment.ExclusionRestriction(
             justification="The prompt only changes behavior through the click.",
         ),
     ),
 )
-results = inc.run(
+results = increment.run(
     experiment,
-    resolver,
+    reader,
     estimands=("itt", "compliance", "late"),
 ).readout()
 ```
@@ -689,25 +701,25 @@ df = pl.DataFrame(
 -->
 
 ```python
-import increment as inc
+import increment
 
-experiment, resolver = inc.from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
-    design=inc.Encouragement(
+    design=increment.Encouragement(
         control_group="control",
-        uptake=inc.UptakeSpec(fact="took"),
-        exclusion_restriction=inc.ExclusionRestriction(
+        uptake=increment.UptakeSpec(fact="took"),
+        exclusion_restriction=increment.ExclusionRestriction(
             justification="The banner only changes behavior through the click.",
         ),
         one_sided=True,
     ),
     cluster="store_id",  # the randomization-grain column
 )
-results = inc.run(experiment, resolver, estimands=("itt", "compliance", "late")).readout()
+results = increment.run(experiment, reader, estimands=("itt", "compliance", "late")).readout()
 (late,) = [r for r in results if r.estimand == "late" and r.value_scale == "absolute"]
 print(f"LATE={late.lift.value:+.2f}  CI=({late.lift.lb:+.2f}, {late.lift.ub:+.2f})")
 print(f"K={late.n_clusters}, dof={late.dof:g}")
@@ -808,9 +820,9 @@ each method; they may share a source binding while choosing independent
 missing-value policies:
 
 ```python
-history = CupedCovariate(name="pre_revenue", kind="continuous")
-scalar = Method.cuped(covariates=history)
-mixed = Method.cuped_multicovariate(name="linear", covariates=history)
+history = increment.CupedCovariate(name="pre_revenue", kind="continuous")
+scalar = increment.Method.cuped(covariates=history)
+mixed = increment.Method.cuped_multicovariate(name="linear", covariates=history)
 ```
 
 Assign one estimator as the decision method and the other as a sensitivity
@@ -834,7 +846,7 @@ must be strings (encode a Boolean as labels such as `"new"` and `"returning"`).
 ```python
 import numpy as np
 import polars as pl
-from increment import CupedCovariate, Method, MetricSpec, from_frame, run
+import increment
 
 rng = np.random.default_rng(20261013)
 n = 4_000
@@ -879,25 +891,25 @@ units = pl.DataFrame(
     }
 )
 covariates = [
-    CupedCovariate(name="country", kind="categorical"),
-    CupedCovariate(name="device", kind="categorical"),
-    CupedCovariate(name="new_user", kind="categorical"),
-    CupedCovariate(
+    increment.CupedCovariate(name="country", kind="categorical"),
+    increment.CupedCovariate(name="device", kind="categorical"),
+    increment.CupedCovariate(name="new_user", kind="categorical"),
+    increment.CupedCovariate(
         name="pre_revenue",
         kind="continuous",
         missing="impute-indicator",
     ),
 ]
 methods = [
-    MetricSpec(name="revenue", type="mean"),
-    MetricSpec(
+    increment.MetricSpec(name="revenue", type="mean"),
+    increment.MetricSpec(
         name="revenue_per_order",
         type="ratio",
         numerator="revenue",
         denominator="orders",
     ),
 ]
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     units,
     shape="summary",
     unit="user_id",
@@ -905,11 +917,13 @@ experiment, resolver = from_frame(
     control="control",
     metrics=methods,
 )
-results = run(
+results = increment.run(
     experiment,
-    resolver,
-    decision_method=Method.unadjusted(name="unadjusted"),
-    sensitivity_methods=(Method.cuped_multicovariate(name="linear", covariates=covariates),),
+    reader,
+    decision_method=increment.Method.unadjusted(name="unadjusted"),
+    sensitivity_methods=(
+        increment.Method.cuped_multicovariate(name="linear", covariates=covariates),
+    ),
 ).readout()
 
 for result in results:
@@ -1163,7 +1177,7 @@ Warehouse QR batches independent summary reductions to reduce database round tri
 it uses the same observations and interval calculation.
 
 From definitions or an adopted unit-day artifact, use
-`increment.workflows.export_moments(experiment, resolver, path)` to write the
+`increment.workflows.export_moments(experiment, reader, path)` to write the
 cube. Build the pair with `from_definitions(...)` or
 `from_unit_day_artifact(...)`. Reload its rows with `from_moments`,
 passing each metric's name and type (`MetricSpec(name="revenue")`) and the experiment's

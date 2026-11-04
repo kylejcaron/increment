@@ -10,21 +10,11 @@ def _():
     import marimo as mo
     from _seed import seed_event_log
 
-    from increment import Method, from_definitions, run
+    import increment
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
 
-    return (
-        LiftEstimate,
-        Method,
-        estimates_to_readout,
-        from_definitions,
-        ibis,
-        mo,
-        readout_table,
-        run,
-        seed_event_log,
-    )
+    return LiftEstimate, estimates_to_readout, ibis, increment, mo, readout_table, seed_event_log
 
 
 @app.cell
@@ -43,12 +33,12 @@ def _(mo):
 
 
 @app.cell
-def _(Method):
+def _(increment):
     DEFINITIONS = "examples/definitions/"
     EXPERIMENT = "new_onboarding_v2"
 
-    UNADJUSTED = Method(name="unadjusted")
-    CUPED = Method(name="cuped", variance_reduction="cuped")
+    UNADJUSTED = increment.Method(name="unadjusted")
+    CUPED = increment.Method(name="cuped", variance_reduction="cuped")
 
     # Put the continuous metric first: it shows the clearest variance reduction.
     METRIC_ORDER = ("avg_session_duration", "purchase_rate", "d7_retention")
@@ -67,21 +57,21 @@ def _(LiftEstimate):
 
 
 @app.cell
-def _(DEFINITIONS, EXPERIMENT, from_definitions, ibis, seed_event_log):
+def _(DEFINITIONS, EXPERIMENT, ibis, increment, seed_event_log):
     con = ibis.duckdb.connect()
 
     # generate events
     seed_event_log(con, with_pre_period=True)
 
-    experiment, resolver = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
-    return experiment, resolver
+    experiment, reader = increment.from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    return experiment, reader
 
 
 @app.cell
-def _(CUPED, UNADJUSTED, experiment, resolver, run):
+def _(CUPED, UNADJUSTED, experiment, increment, reader):
     # One run computes both methods from the same queried moments.
-    estimates = run(
-        experiment, resolver, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
+    estimates = increment.run(
+        experiment, reader, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
     ).readout()
 
     by_method = {(est.metric, est.group_id, est.method): est for est in estimates}

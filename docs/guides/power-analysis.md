@@ -115,7 +115,7 @@ size, including `power`, `mde_relative`, and `effective_var`.
 | `Baseline.from_summary(summary_stats)` | A pilot variance with its confidence-bound inflation. |
 | `Baseline.from_ratio(...)` | A ratio metric's linearized numerator, denominator, and covariance moments. |
 | `Baseline.from_absorption(mean, var, icc)` | A measured one-way factor absorption reduction. |
-| `increment.workflows.planning_baseline(experiment, resolver, metric)` | The `(experiment, resolver)` pair a builder returns for a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly. |
+| `increment.workflows.planning_baseline(experiment, reader, metric)` | The `(experiment, reader)` pair a builder returns for a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly. |
 
 `Baseline.metric_type` defaults to `"mean"` and is omitted from dumps at that
 default, so existing mean baselines keep their serialized form. Conversion,
@@ -534,10 +534,12 @@ registration, with `expected_decision_sample_size` set to the solved
 `n_total`, so planning and the runtime never silently disagree on N:
 
 ```python
-from increment import InferenceSpec
+import increment
 from increment.power import ArmPlanningProcedure
 
-procedure = ArmPlanningProcedure.standard("mean", inference=InferenceSpec(kind="asymptotic_mean"))
+procedure = ArmPlanningProcedure.standard(
+    "mean", inference=increment.InferenceSpec(kind="asymptotic_mean")
+)
 sized = required_sample_size(0.02, baseline, procedure, planned_looks=14)
 # Declare the same boundary at runtime registration:
 runtime_inference = sized.inference_to_declare
@@ -614,7 +616,7 @@ for interpreting the analysis the plan feeds.
 ## Switchback contrasts
 
 Switchback planning uses a `ContrastDecisionProcedure` and a frozen
-`SwitchbackBaseline`, usually `planning_baseline(experiment, resolver, metric)`
+`SwitchbackBaseline`, usually `planning_baseline(experiment, reader, metric)`
 on a pilot built by `from_switchback_frame(...)`, or
 `source.planning_baseline(source.metrics[0])` on a source built by
 `increment.frame.from_switchback_panel(...)`; both return the same baseline.

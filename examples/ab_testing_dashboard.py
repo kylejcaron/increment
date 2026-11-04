@@ -22,10 +22,10 @@ def _():
     import _dashboard_demo as demo
     import ibis
 
-    from increment import from_definitions
+    import increment
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
 
-    return DashboardConfig, Path, demo, from_definitions, ibis, prepare_dashboard, render_dashboard
+    return DashboardConfig, Path, demo, ibis, increment, prepare_dashboard, render_dashboard
 
 
 @app.cell
@@ -42,11 +42,11 @@ def _(ibis):
 
 
 @app.cell
-def _(con, demo_manifest, from_definitions):
-    experiment, resolver = from_definitions(
+def _(con, demo_manifest, increment):
+    experiment, reader = increment.from_definitions(
         "examples/realistic_demo/definitions", con, experiment_name="checkout_redesign"
     )
-    return experiment, resolver
+    return experiment, reader
 
 
 @app.cell
@@ -66,8 +66,8 @@ def _(DashboardConfig, demo, demo_manifest):
 
 
 @app.cell
-def _(config, experiment, prepare_dashboard, resolver):
-    snapshot = prepare_dashboard(experiment, resolver, config=config)
+def _(config, experiment, prepare_dashboard, reader):
+    snapshot = prepare_dashboard(experiment, reader, config=config)
     return (snapshot,)
 
 

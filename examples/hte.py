@@ -11,7 +11,7 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import from_frame, run
+    import increment
     from increment.estimators import (
         Covariate,
         estimate_cate,
@@ -19,18 +19,7 @@ def _():
         validate_cate,
     )
 
-    return (
-        Covariate,
-        ct,
-        estimate_cate,
-        from_frame,
-        mo,
-        np,
-        pd,
-        run,
-        targeting_rule,
-        validate_cate,
-    )
+    return Covariate, ct, estimate_cate, increment, mo, np, pd, targeting_rule, validate_cate
 
 
 @app.cell
@@ -154,8 +143,8 @@ def _(mo):
 
 
 @app.cell
-def _(from_frame, hetero_df, run):
-    _experiment, _resolver = from_frame(
+def _(hetero_df, increment):
+    _experiment, _reader = increment.from_frame(
         hetero_df,
         shape="summary",
         unit="user_id",
@@ -163,7 +152,7 @@ def _(from_frame, hetero_df, run):
         control="control",
         metrics={"revenue": "mean"},
     )
-    headline = run(_experiment, _resolver).readout()
+    headline = increment.run(_experiment, _reader).readout()
     return (headline,)
 
 
@@ -210,7 +199,7 @@ def _(mo):
 
 
 @app.cell
-def _(Covariate, estimate_cate, from_frame, hetero_df):
+def _(Covariate, estimate_cate, hetero_df, increment):
     INTERACT = [
         "spend",
         Covariate(name="tenure", knots=4),
@@ -218,7 +207,7 @@ def _(Covariate, estimate_cate, from_frame, hetero_df):
     ]
     ADJUST = []
 
-    hetero_experiment, hetero_resolver = from_frame(
+    hetero_experiment, hetero_reader = increment.from_frame(
         hetero_df,
         shape="summary",
         unit="user_id",
@@ -228,13 +217,13 @@ def _(Covariate, estimate_cate, from_frame, hetero_df):
     )
     fit = estimate_cate(
         hetero_experiment,
-        hetero_resolver,
+        hetero_reader,
         "revenue",
         control="control",
         interact=INTERACT,
         adjust=ADJUST,
     )
-    return ADJUST, INTERACT, fit, hetero_experiment, hetero_resolver
+    return ADJUST, INTERACT, fit, hetero_experiment, hetero_reader
 
 
 @app.cell(hide_code=True)
@@ -379,10 +368,10 @@ def _(mo):
 
 
 @app.cell
-def _(ADJUST, INTERACT, hetero_experiment, hetero_resolver, validate_cate):
+def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, validate_cate):
     validation = validate_cate(
         hetero_experiment,
-        hetero_resolver,
+        hetero_reader,
         "revenue",
         control="control",
         interact=INTERACT,
@@ -643,16 +632,9 @@ def _(Covariate, np):
 
 
 @app.cell
-def _(
-    CANDIDATES,
-    estimate_cate,
-    from_frame,
-    simulate,
-    top_group_in_sample,
-    validate_cate,
-):
+def _(CANDIDATES, estimate_cate, increment, simulate, top_group_in_sample, validate_cate):
     null_df = simulate(1_200, 20260813, heterogeneous=False)
-    null_experiment, null_resolver = from_frame(
+    null_experiment, null_reader = increment.from_frame(
         null_df,
         shape="summary",
         unit="user_id",
@@ -663,20 +645,20 @@ def _(
 
     # The naive path: one fit on everything, then read its own top quintile.
     null_fit = estimate_cate(
-        null_experiment, null_resolver, "revenue", control="control", interact=CANDIDATES
+        null_experiment, null_reader, "revenue", control="control", interact=CANDIDATES
     )
     null_in_sample = top_group_in_sample(null_df, null_fit)
 
     # The honest path: fit on half, re-estimate on the other half.
     null_validation = validate_cate(
         null_experiment,
-        null_resolver,
+        null_reader,
         "revenue",
         control="control",
         interact=CANDIDATES,
         n_groups=5,
     )
-    return null_experiment, null_fit, null_in_sample, null_resolver, null_validation
+    return null_experiment, null_fit, null_in_sample, null_reader, null_validation
 
 
 @app.cell(hide_code=True)
@@ -728,19 +710,11 @@ def _(mo):
 
 
 @app.cell
-def _(
-    CANDIDATES,
-    estimate_cate,
-    from_frame,
-    np,
-    simulate,
-    top_group_in_sample,
-    validate_cate,
-):
+def _(CANDIDATES, estimate_cate, increment, np, simulate, top_group_in_sample, validate_cate):
     _in_sample, _honest, _fired = [], [], 0
     for _seed in range(800_000, 800_040):
         df_i = simulate(1_200, _seed, heterogeneous=False)
-        _experiment_i = from_frame(
+        _experiment_i = increment.from_frame(
             df_i,
             shape="summary",
             unit="user_id",
@@ -815,10 +789,10 @@ def _(mo):
 
 
 @app.cell
-def _(ADJUST, INTERACT, hetero_experiment, hetero_resolver, targeting_rule):
+def _(ADJUST, INTERACT, hetero_experiment, hetero_reader, targeting_rule):
     rule = targeting_rule(
         hetero_experiment,
-        hetero_resolver,
+        hetero_reader,
         "revenue",
         control="control",
         interact=INTERACT,
@@ -860,10 +834,10 @@ def _(COVARIATE_COLUMNS, hetero_df, mo, rule):
 
 
 @app.cell
-def _(CANDIDATES, null_experiment, null_resolver, targeting_rule):
+def _(CANDIDATES, null_experiment, null_reader, targeting_rule):
     null_rule = targeting_rule(
         null_experiment,
-        null_resolver,
+        null_reader,
         "revenue",
         control="control",
         interact=CANDIDATES,

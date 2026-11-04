@@ -111,7 +111,7 @@ corrected rerun:
 ```python
 import pandas as pd
 
-from increment import AnalysisPlan, InferenceSpec, MetricSpec, Randomized, from_frame, run
+import increment
 from increment.errors import CapabilityError
 
 frame = pd.DataFrame(
@@ -122,16 +122,18 @@ frame = pd.DataFrame(
         {"unit": "t2", "arm": "treatment", "outcome": 5.0, "exposure": 4},
     ]
 )
-plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
-metrics = [MetricSpec(name="outcome", type="mean")]
+plan = increment.AnalysisPlan(
+    primary="outcome", inference=increment.InferenceSpec(kind="asymptotic_mean")
+)
+metrics = [increment.MetricSpec(name="outcome", type="mean")]
 
 try:
-    from_frame(
+    increment.from_frame(
         frame,
         shape="summary",
         unit="unit",
         group="arm",
-        design=Randomized(control_group="control"),
+        design=increment.Randomized(control_group="control"),
         metrics=metrics,
         experiment_id="example",
         plan=plan,
@@ -146,18 +148,20 @@ else:
     raise AssertionError("the missing allocation should be refused")
 
 # This example's units were assigned 1:1; use the real allocation.
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     frame,
     shape="summary",
     unit="unit",
     group="arm",
-    design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+    design=increment.Randomized(
+        control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+    ),
     metrics=metrics,
     experiment_id="example",
     plan=plan,
     exposure_date="exposure",
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 assert len(results) == 1
 assert results[0].metric == "outcome"
 ```

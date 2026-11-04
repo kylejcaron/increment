@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import re
 import warnings
 from pathlib import Path
@@ -11,6 +13,20 @@ from increment.results import LiftEstimate
 from tests.analysis_factory import view_readout
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _python_blocks(path: Path, heading: str) -> list[str]:
+    section = path.read_text().split(f"\n{heading}\n", maxsplit=1)[1].split("\n## ", maxsplit=1)[0]
+    return re.findall(r"```python\s*\n(.*?)\n```", section, flags=re.DOTALL)
+
+
+def _execute(code: str, label: str, namespace: dict[str, object]) -> str:
+    """Run a documented block in ``namespace`` and return what it printed."""
+    printed = io.StringIO()
+    with warnings.catch_warnings(record=True), contextlib.redirect_stdout(printed):
+        warnings.simplefilter("always")
+        exec(compile(code, label, "exec"), namespace)
+    return printed.getvalue()
 
 
 def test_legacy_analysis_run_result_type_is_unchanged() -> None:
@@ -77,3 +93,26 @@ def test_readme_quickstart_executes_recommended_run() -> None:
 
     for audience in ("brief", "full"):
         assert render(result, audience) == render(result.envelope, audience)
+
+
+def test_quickstart_guide_reports_the_missing_guardrail_as_unavailable() -> None:
+    (example,) = _python_blocks(
+        ROOT / "docs" / "guides" / "quickstart.md", "## Report a guardrail that cannot be checked"
+    )
+
+    namespace: dict[str, object] = {}
+    rendered = _execute(example, "quickstart.md missing guardrail", namespace)
+
+    result = namespace["result"]
+    assert isinstance(result, RunResult)
+    from increment.results import LiftEstimates
+
+    readout = result.readout()
+    assert isinstance(readout, LiftEstimates)
+    rows = {row.metric: row for row in readout}
+    assert rows["revenue"].lift is not None
+    assert rows["complaints"].lift is None
+    assert rows["complaints"].failure_code == "readout.cell.missing_metric_observations"
+    complaint_lines = [line for line in rendered.splitlines() if line.startswith("complaints")]
+    assert complaint_lines
+    assert all("unavailable" in line for line in complaint_lines)

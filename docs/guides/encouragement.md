@@ -22,18 +22,18 @@ encouragement_df = pd.DataFrame(
     }
 )
 
-from increment import Encouragement, ExclusionRestriction, UptakeSpec, from_frame, run
+import increment
 
-design = Encouragement(
+design = increment.Encouragement(
     control_group="control",
-    uptake=UptakeSpec(fact="clicked"),
-    exclusion_restriction=ExclusionRestriction(
+    uptake=increment.UptakeSpec(fact="clicked"),
+    exclusion_restriction=increment.ExclusionRestriction(
         justification=("the randomized prompt affects revenue only through help-button clicks"),
     ),
     one_sided=False,
 )
 
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     encouragement_df,
     shape="summary",
     unit="user_id",
@@ -41,7 +41,7 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
     design=design,
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 ```
 
 LATE needs the exclusion restriction: assignment must affect the outcome only through treatment receipt.
@@ -49,18 +49,18 @@ LATE needs the exclusion restriction: assignment must affect the outcome only th
 ITT and compliance do not require exclusion. Omit it when requesting only those estimands:
 
 ```python
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     encouragement_df,
     shape="summary",
     unit="user_id",
     group="variant",
     metrics={"revenue": "mean"},
-    design=Encouragement(
+    design=increment.Encouragement(
         control_group="control",
-        uptake=UptakeSpec(fact="clicked"),
+        uptake=increment.UptakeSpec(fact="clicked"),
     ),
 )
-assignment_and_uptake = run(experiment, resolver, estimands=("itt", "compliance")).readout()
+assignment_and_uptake = increment.run(experiment, reader, estimands=("itt", "compliance")).readout()
 ```
 
 The default requests all three estimands. If exclusion is not declared, any request containing `late` raises `identification.encouragement.exclusion_required` before reading outcomes, even if a weak first stage would later make LATE unavailable. The same omission works in YAML and survives artifact and moments round trips. Supported sequential ITT/compliance monitoring also needs no exclusion declaration; declaring one does not make sequential LATE supported.
@@ -158,7 +158,7 @@ from pathlib import Path
 import ibis
 import pyarrow as pa
 
-from increment import View, from_definitions, run
+import increment
 from increment.artifacts import SourceSnapshotEvidence
 
 definitions = Path("encouragement.yml")
@@ -240,7 +240,7 @@ con.create_table(
         }
     ),
 )
-experiment, resolver = from_definitions(
+experiment, reader = increment.from_definitions(
     definitions,
     con,
     experiment_name="encouragement_example",
@@ -249,11 +249,11 @@ experiment, resolver = from_definitions(
         {"events": dt.datetime(2026, 1, 4, tzinfo=dt.UTC)},
     ),
 )
-triggered_daily = View.daily(population="triggered")
-with resolver:
-    run(
+triggered_daily = increment.View.daily(population="triggered")
+with reader:
+    increment.run(
         experiment.with_views(triggered_daily),
-        resolver,
+        reader,
         views=(triggered_daily,),
         estimands=("compliance",),
     ).readout(triggered_daily)
@@ -276,7 +276,7 @@ con.disconnect()
     When compliance joins the family, the joint continuous-ITT/Bernoulli-compliance roster is selected by the same e-BH rule as any other in-family sequential secondary -- exact for the Bernoulli compliance member, asymptotic for the continuous ITT member -- with one shared `family_guarantee` (`asymptotic_sequential` whenever the continuous member is present) reported on every row; see [Sequential inference](sequential-inference.md).
 
     Triggered readouts restrict compliance to the triggered enrollment population. Frame as-of summaries retain the panel's calendar, numeric, or structured string day labels and use the same chronological ordering as metric moments. For open-ended native experiments, compliance dates extend through the latest enrollment or post-enrollment uptake event, including repeats outside the uptake window. Outcome filters and missing values do not shorten this axis, and an explicit observation horizon takes precedence.
-    For custom stores behind a builder's resolver, providers implement `compliance_series(ComplianceSeriesRequest)` to supply that design-level timeline independently of outcome metrics. Providers without that evidence receive the shared capability refusal. Outcome dates are not a substitute for the compliance timeline. This typed provider contract also applies to standalone custom stores; direct calls to separate source facades follow their own contracts.
+    For custom stores behind a builder's reader, providers implement `compliance_series(ComplianceSeriesRequest)` to supply that design-level timeline independently of outcome metrics. Providers without that evidence receive the shared capability refusal. Outcome dates are not a substitute for the compliance timeline. This typed provider contract also applies to standalone custom stores; direct calls to separate source facades follow their own contracts.
     For custom acquisition code, see the [evidence-provider guide](../development/adding-an-estimator.md#custom-evidence-providers).
 
     For clustered assignment, compliance is the ratio of total uptake to total members, with uncertainty from the centered cluster uptake-total/size moments. It does not average cluster uptake rates. The public `ComplianceSummary` type retains immutable sufficient state and separates member counts from independent cluster counts.

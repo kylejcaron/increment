@@ -54,9 +54,9 @@ probabilities throughout the experiment. Older definitions may omit this
 field; declaring `allocation` alone does not imply independence.
 
 ```python
-from increment import Randomized
+import increment
 
-design = Randomized(
+design = increment.Randomized(
     control_group="control",
     allocation={"control": 4, "treatment": 1},
     allocation_scheme="independent",
@@ -74,7 +74,7 @@ comparisons have no randomized allocation. Report these as unsupported or not
 applicable, not "no SRM."
 
 `sample_ratio_mismatch()` requires an explicit `expected` allocation. For
-`increment.workflows.srm(experiment, resolver)`, pass `expected` or declare
+`increment.workflows.srm(experiment, reader)`, pass `expected` or declare
 `allocation` on the design.
 Without either declaration, both fixed and always-valid inference refuse
 before producing an SRM result; observed arm proportions never define the
@@ -86,7 +86,7 @@ constant `allocation` weights, and cumulative assigned counts at the
 randomization grain. Otherwise `health_check()` and `print(results)` record an
 unavailable status (for example, missing allocation is
 `not_checked_missing_declaration`). To request one predeclared fixed look,
-declare the target allocation and call `srm(experiment, resolver, inference="fixed")`.
+declare the target allocation and call `srm(experiment, reader, inference="fixed")`.
 
 ??? info "How the always-valid SRM guarantee differs"
     That e-process is a distinct construction from the `AlwaysValid` guarantee
@@ -105,7 +105,7 @@ snapshot and reports every assignment and trigger check with its population.
 ```python
 import pyarrow as pa
 
-from increment import Randomized, from_frame
+import increment
 from increment.workflows import health_check, srm
 
 units = pa.table(
@@ -115,21 +115,21 @@ units = pa.table(
         "value": [float(i % 7) for i in range(40)],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     units,
     shape="summary",
     unit="unit",
     group="arm",
     metrics={"value": "mean"},
-    design=Randomized(
+    design=increment.Randomized(
         control_group="control",
         allocation={"control": 0.5, "treatment": 0.5},
         allocation_scheme="independent",
     ),
 )
-fixed = srm(experiment, resolver, inference="fixed")
+fixed = srm(experiment, reader, inference="fixed")
 print(f"fixed: is_srm={fixed.is_srm} grain={fixed.grain}")
-for check in health_check(experiment, resolver).checks:
+for check in health_check(experiment, reader).checks:
     print(check.check, check.analysis_population, check.availability, check.conclusion)
 ```
 
@@ -165,7 +165,7 @@ Check all assigned or targeted units, or a demonstrably pre-treatment,
 arm-invariant exposure. A treatment-affected triggered subset can reflect
 selection or telemetry, not assignment failure.
 
-`run(experiment, resolver)` attaches automatic integrity results to the assigned
+`run(experiment, reader)` attaches automatic integrity results to the assigned
 population. Triggered counts are not checked as assignment integrity and say
 nothing about trigger-selection validity. Clustered artifact readouts use
 assigned clusters, not member units. Registered sequential reads use

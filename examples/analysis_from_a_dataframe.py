@@ -10,28 +10,13 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import CupedCovariate, Method, MetricSpec, View, from_frame, run
+    import increment
     from increment.estimators import Normal
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import srm
 
-    return (
-        CupedCovariate,
-        LiftEstimate,
-        Method,
-        MetricSpec,
-        Normal,
-        View,
-        estimates_to_readout,
-        from_frame,
-        mo,
-        np,
-        pd,
-        readout_table,
-        run,
-        srm,
-    )
+    return LiftEstimate, Normal, estimates_to_readout, increment, mo, np, pd, readout_table, srm
 
 
 @app.cell
@@ -151,9 +136,9 @@ def _(mo):
 
 
 @app.cell
-def _(checkout_df, estimates_to_readout, from_frame, readout_table, run):
+def _(checkout_df, estimates_to_readout, increment, readout_table):
     # pass in your experiment
-    experiment, resolver = from_frame(
+    experiment, reader = increment.from_frame(
         checkout_df,
         shape="summary",
         unit="user_id",
@@ -161,11 +146,11 @@ def _(checkout_df, estimates_to_readout, from_frame, readout_table, run):
         control="control",
         metrics={"revenue": "mean", "converted": "conversion"},
     )
-    baseline_results = run(experiment, resolver).readout()
+    baseline_results = increment.run(experiment, reader).readout()
 
     # visualize the readout
     readout_table(estimates_to_readout(baseline_results), title="Checkout experiment")
-    return experiment, resolver
+    return experiment, reader
 
 
 @app.cell
@@ -184,35 +169,28 @@ def _(mo):
 
 
 @app.cell
-def cuped(
-    CupedCovariate,
-    Method,
-    MetricSpec,
-    checkout_df,
-    estimates_to_readout,
-    from_frame,
-    readout_table,
-    run,
-):
-    UNADJUSTED = Method(name="unadjusted")
-    CUPED = Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
+def _(checkout_df, estimates_to_readout, increment, readout_table):
+    UNADJUSTED = increment.Method(name="unadjusted")
+    CUPED = increment.Method.cuped(
+        covariates=increment.CupedCovariate(name="pre_revenue", kind="continuous")
+    )
 
-    _experiment, _resolver = from_frame(
+    _experiment, _reader = increment.from_frame(
         checkout_df,
         shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[
-            MetricSpec(
+            increment.MetricSpec(
                 name="revenue",
                 type="mean",
                 sensitivity_methods=(CUPED,),
             )
         ],
     )
-    cuped_estimates = run(
-        _experiment, _resolver, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
+    cuped_estimates = increment.run(
+        _experiment, _reader, decision_method=UNADJUSTED, sensitivity_methods=(CUPED,)
     ).readout()
     readout_table(estimates_to_readout(cuped_estimates), title="CUPED Comparison", nest_by="method")
     return (cuped_estimates,)
@@ -251,7 +229,7 @@ def _(mo):
     Priors on the lift can be set via
 
     ```python
-    run(experiment, resolver, prior=Normal(mu=mu, sigma=sigma))
+    increment.run(experiment, reader, prior=Normal(mu=mu, sigma=sigma))
     ```
 
     This adds a separate posterior summary; it does not replace the sampling inference or the declared multiplicity/sequential procedure.
@@ -260,8 +238,8 @@ def _(mo):
 
 
 @app.cell
-def _(Normal, estimates_to_readout, experiment, readout_table, resolver, run):
-    prior_results = run(experiment, resolver, prior=Normal(mu=0.0, sigma=0.05)).readout()
+def _(Normal, estimates_to_readout, experiment, increment, reader, readout_table):
+    prior_results = increment.run(experiment, reader, prior=Normal(mu=0.0, sigma=0.05)).readout()
     readout_table(
         estimates_to_readout(prior_results),
         title="Checkout experiment — informative prior",
@@ -288,33 +266,33 @@ def _(mo):
 
 
 @app.cell
-def _(MetricSpec, checkout_df, estimates_to_readout, from_frame, readout_table, run):
-    _experiment, _resolver = from_frame(
+def _(checkout_df, estimates_to_readout, increment, readout_table):
+    _experiment, _reader = increment.from_frame(
         checkout_df,
         shape="summary",
         unit="user_id",
         group="variant",
         control="control",
         metrics=[
-            MetricSpec(
+            increment.MetricSpec(
                 name="Avg. Order Value",
                 type="ratio",
                 numerator="revenue",
                 denominator="orders",
             ),
-            MetricSpec(
+            increment.MetricSpec(
                 name="Revenue per User",
                 type="mean",
                 value_column="revenue",
             ),
-            MetricSpec(
+            increment.MetricSpec(
                 name="Avg. Orders",
                 type="mean",
                 value_column="orders",
             ),
         ],
     )
-    ratio_result = run(_experiment, _resolver).readout()
+    ratio_result = increment.run(_experiment, _reader).readout()
 
     readout_table(
         estimates_to_readout(ratio_result),
@@ -355,12 +333,12 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, resolver, srm):
+def _(experiment, reader, srm):
     from rich.pretty import pprint
 
     # Request one fixed-look check on the simulated population.
     srm_result = srm(
-        experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
+        experiment, reader, expected={"control": 0.5, "treatment": 0.5}, inference="fixed"
     )
     pprint(srm_result, expand_all=True)
     return
@@ -386,8 +364,8 @@ def _(panel_df):
 
 
 @app.cell
-def _(View, estimates_to_readout, from_frame, mo, panel_df, readout_table, run):
-    _experiment, _resolver = from_frame(
+def _(estimates_to_readout, increment, mo, panel_df, readout_table):
+    _experiment, _reader = increment.from_frame(
         panel_df,
         shape="panel",
         unit="user_id",
@@ -397,9 +375,9 @@ def _(View, estimates_to_readout, from_frame, mo, panel_df, readout_table, run):
         metrics={"revenue": "mean"},
     )
     # One run reads the whole-window readout and the per-day values together.
-    _whole_window = View.overall()
-    _daily = View.daily(values=True)
-    _panel_run = run(_experiment.with_views(_daily), _resolver)
+    _whole_window = increment.View.overall()
+    _daily = increment.View.daily(values=True)
+    _panel_run = increment.run(_experiment.with_views(_daily), _reader)
     daily_values = _panel_run.readout(_daily)
     panel_results = _panel_run.readout(_whole_window)
     panel_readout = readout_table(
@@ -435,12 +413,12 @@ def _(mo):
 
 
 @app.cell
-def _(MetricSpec, estimates_to_readout, from_frame, panel_df, readout_table, run):
+def _(estimates_to_readout, increment, panel_df, readout_table):
     # Every unit in this synthetic panel enrolled on the same day; a real
     # dataset would carry its own per-unit exposure_date column instead.
     panel_df_exposed = panel_df.assign(exposure_date="2026-02-01")
 
-    _experiment, _resolver = from_frame(
+    _experiment, _reader = increment.from_frame(
         panel_df_exposed,
         shape="panel",
         unit="user_id",
@@ -448,14 +426,14 @@ def _(MetricSpec, estimates_to_readout, from_frame, panel_df, readout_table, run
         date="day",
         control="control",
         metrics=[
-            MetricSpec(name="revenue", type="mean"),
-            MetricSpec(
+            increment.MetricSpec(name="revenue", type="mean"),
+            increment.MetricSpec(
                 name="revenue (3d window)", value_column="revenue", type="mean", window_days=3
             ),
         ],
         exposure_date="exposure_date",
     )
-    windowed_lift_breakout = run(_experiment, _resolver).readout()
+    windowed_lift_breakout = increment.run(_experiment, _reader).readout()
 
     readout_table(
         estimates_to_readout(windowed_lift_breakout),
@@ -466,15 +444,8 @@ def _(MetricSpec, estimates_to_readout, from_frame, panel_df, readout_table, run
 
 
 @app.cell
-def _(
-    MetricSpec,
-    estimates_to_readout,
-    from_frame,
-    panel_df_exposed,
-    readout_table,
-    run,
-):
-    _experiment, _resolver = from_frame(
+def _(estimates_to_readout, increment, panel_df_exposed, readout_table):
+    _experiment, _reader = increment.from_frame(
         panel_df_exposed,
         shape="panel",
         unit="user_id",
@@ -482,7 +453,7 @@ def _(
         date="day",
         control="control",
         metrics=[
-            MetricSpec(
+            increment.MetricSpec(
                 name="returned",
                 type="retention",
                 value_column="revenue",
@@ -491,7 +462,7 @@ def _(
         ],
         exposure_date="exposure_date",
     )
-    retention_lift = run(_experiment, _resolver).readout()
+    retention_lift = increment.run(_experiment, _reader).readout()
 
     readout_table(
         estimates_to_readout(retention_lift),

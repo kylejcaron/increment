@@ -1,6 +1,6 @@
 # Reading results
 
-`run(experiment, resolver)` returns a `RunResult`: inspect its `cells`,
+`run(experiment, reader)` returns a `RunResult`: inspect its `cells`,
 `effects`, and `decisions`, or pass it to `render` or `readout_table` to retain
 scope, integrity, and availability qualifications. Its other consumers each
 keep one format:
@@ -28,7 +28,7 @@ extension, and older readers continue to refuse it.
 ```python
 import polars as pl
 
-from increment import AnalysisPlan, Randomized, from_frame, run
+import increment
 from increment.tables import readout_table
 
 frame = pl.DataFrame(
@@ -38,20 +38,20 @@ frame = pl.DataFrame(
         "value": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     frame,
     shape="summary",
     unit="unit",
     group="arm",
-    design=Randomized(
+    design=increment.Randomized(
         control_group="control",
         allocation={"control": 0.5, "treatment": 0.5},
         allocation_scheme="independent",
     ),
     metrics={"value": "mean"},
-    plan=AnalysisPlan(primary="value"),
+    plan=increment.AnalysisPlan(primary="value"),
 )
-result = run(experiment, resolver)
+result = increment.run(experiment, reader)
 table = readout_table(result)
 summary = result.to_frame(backend="polars", columns=["metric", "group_id", "lift", "lb", "ub"])
 rows = result.readout()
@@ -149,7 +149,7 @@ representation and table header identify live or provider-owned results, and
 flattened outputs retain both the requested coherence and the effective
 per-stream modes.
 
-Pass a `ResultsStore` to `run(experiment, resolver, results_store=store)` to
+Pass a `ResultsStore` to `run(experiment, reader, results_store=store)` to
 persist the completed result cells without changing the returned result. The
 saved run's identity is `result.run`; use
 `store.open_run(result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id)`
@@ -353,7 +353,7 @@ from random import Random
 
 import polars as pl
 
-from increment import Randomized, from_frame, run
+import increment
 
 rng = Random(13)
 n = 200
@@ -366,19 +366,19 @@ df = pl.DataFrame(
         "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     df,
     shape="summary",
     unit="user_id",
     group="variant",
-    design=Randomized(
+    design=increment.Randomized(
         control_group="control",
         allocation={"control": 0.5, "treatment": 0.5},
         allocation_scheme="independent",
     ),
     metrics={"revenue": "mean", "converted": "conversion"},
 )
-results = run(experiment, resolver).readout()
+results = increment.run(experiment, reader).readout()
 print(results)
 
 for r in results:
@@ -730,7 +730,7 @@ negative = pl.DataFrame(
         "delta": [-3.0 + (i * 7) % 5 for i in range(k)] + [-1.0 + (i * 7) % 5 for i in range(k)],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     negative,
     shape="summary",
     unit="user_id",
@@ -738,7 +738,7 @@ experiment, resolver = from_frame(
     control="control",
     metrics={"delta": "mean"},
 )
-flat_mean = run(experiment, resolver).readout()[0]
+flat_mean = increment.run(experiment, reader).readout()[0]
 
 assert flat_mean.lift is None and flat_mean.relative_confidence_set is None
 assert flat_mean.relative_unavailable_reason == "nonpositive_arm_mean"
@@ -752,7 +752,7 @@ a finite lower and an unbounded upper relative endpoint, each with its own
 status:
 
 ```python
-from increment import MetricSpec
+import increment
 
 zero_control = pl.DataFrame(
     {
@@ -761,14 +761,14 @@ zero_control = pl.DataFrame(
         "revenue": [0.0] * k + [float(1 + (i * 7) % 5) for i in range(k)],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     zero_control,
     shape="summary",
     unit="user_id",
     group="variant",
     control="control",
     metrics=[
-        MetricSpec(
+        increment.MetricSpec(
             name="revenue",
             type="mean",
             winsorization={
@@ -779,7 +779,7 @@ experiment, resolver = from_frame(
         )
     ],
 )
-winsorized = run(experiment, resolver).readout()[0]
+winsorized = increment.run(experiment, reader).readout()[0]
 
 relative = winsorized.confidence_set.relative
 assert winsorized.lift is None and winsorized.reference_kind == "confidence_set"
@@ -806,7 +806,7 @@ degenerate = pl.DataFrame(
         "revenue": [10.0] * m + [11.0] * m,
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     degenerate,
     shape="summary",
     unit="user_id",
@@ -815,7 +815,7 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
     cluster="store",
 )
-flat = run(experiment, resolver).readout()[0]
+flat = increment.run(experiment, reader).readout()[0]
 
 assert flat.lift is not None and flat.lift.lb is None and flat.lift.ub is None
 assert flat.relative_unavailable_reason == "zero_relative_variance"
@@ -834,7 +834,7 @@ A directional conversion test returns an open interval. `open_side` names the
 unbounded end, and that bound is `None`:
 
 ```python
-from increment import AnalysisPlan, MetricSpec
+import increment
 
 n = 100
 purchases = pl.DataFrame(
@@ -844,16 +844,16 @@ purchases = pl.DataFrame(
         "purchased": [1] * 30 + [0] * 70 + [1] * 45 + [0] * 55,
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     purchases,
     shape="summary",
     unit="user_id",
     group="variant",
     control="control",
-    metrics=[MetricSpec(name="purchased", type="conversion")],
-    plan=AnalysisPlan(primary="purchased", alternative="greater"),
+    metrics=[increment.MetricSpec(name="purchased", type="conversion")],
+    plan=increment.AnalysisPlan(primary="purchased", alternative="greater"),
 )
-directional = run(experiment, resolver).readout()[0]
+directional = increment.run(experiment, reader).readout()[0]
 
 lift = directional.lift
 assert lift.open_side == "upper" and lift.ub is None
@@ -897,7 +897,7 @@ where `1.0` means no effect, and displays it on the **lift** scale, where
 ```python
 import polars as pl
 
-from increment import AnalysisPlan, InferenceSpec, MetricSpec, Randomized, from_frame, run
+import increment
 
 k = 200
 monitored = pl.DataFrame(
@@ -909,21 +909,25 @@ monitored = pl.DataFrame(
         + [11.5 + (i * 37) % 17 for i in range(k)],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     monitored,
     shape="summary",
     unit="unit",
     group="arm",
-    design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
-    metrics=[MetricSpec(name="revenue", type="mean")],
+    design=increment.Randomized(
+        control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+    ),
+    metrics=[increment.MetricSpec(name="revenue", type="mean")],
     experiment_id="revenue-monitor",
-    plan=AnalysisPlan(
+    plan=increment.AnalysisPlan(
         primary="revenue",
-        inference=InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=400),
+        inference=increment.InferenceSpec(
+            kind="asymptotic_mean", expected_decision_sample_size=400
+        ),
     ),
     exposure_date="enrolled_on",
 )
-sequential = run(experiment, resolver).readout()
+sequential = increment.run(experiment, reader).readout()
 row = sequential[0]
 assert row.inference != "fixed"
 
@@ -954,21 +958,23 @@ registered = pl.DataFrame(
         for arm, value in zip(("control", "treatment"), pair, strict=True)
     ]
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     registered,
     shape="summary",
     unit="unit",
     group="arm",
     exposure_date="exposure",
-    metrics=[MetricSpec(name="outcome", type="conversion")],
-    design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+    metrics=[increment.MetricSpec(name="outcome", type="conversion")],
+    design=increment.Randomized(
+        control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+    ),
     experiment_id="experiment",
-    plan=AnalysisPlan(
+    plan=increment.AnalysisPlan(
         primary="outcome",
-        inference=InferenceSpec(kind="always_valid", baseline_rate=Fraction(3, 10)),
+        inference=increment.InferenceSpec(kind="always_valid", baseline_rate=Fraction(3, 10)),
     ),
 )
-exact = run(experiment, resolver).readout()[0]
+exact = increment.run(experiment, reader).readout()[0]
 
 result = exact.require_sequential_result()
 assert exact.inference == "always_valid" and exact.stat_sig()
@@ -989,7 +995,7 @@ its null. This panel has four independent blocks over a three-unit roster:
 ```python
 import math
 
-from increment import Randomized, from_switchback_frame
+import increment
 from increment.estimators import SharedScheduleOrder, SwitchbackAssignment, SwitchbackWindow
 
 orders = [("control", "treatment")] * 2 + [("treatment", "control")] * 2
@@ -1009,7 +1015,7 @@ panel = pl.DataFrame(
         for period, group in enumerate(order)
     ]
 )
-experiment, resolver = from_switchback_frame(
+experiment, reader = increment.from_switchback_frame(
     panel,
     unit="unit",
     cycle="cycle",
@@ -1017,7 +1023,7 @@ experiment, resolver = from_switchback_frame(
     step="step",
     group="group",
     metrics={"value": "mean"},
-    identification=Randomized(
+    identification=increment.Randomized(
         control_group="control",
         allocation={"control": 0.5, "treatment": 0.5},
     ),
@@ -1026,7 +1032,7 @@ experiment, resolver = from_switchback_frame(
         window=SwitchbackWindow(washout_steps=0, observation_steps=1),
     ),
 )
-contrasts = run(experiment, resolver).readout()
+contrasts = increment.run(experiment, reader).readout()
 c = contrasts[0]
 
 estimate = c.estimate

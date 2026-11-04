@@ -55,7 +55,7 @@ namespace:
   presentation and synthetic data;
 - `increment.errors` for errors and warnings callers catch;
 - `increment.query` for `build_panel_for_metric`, `panel_sql`, and `summary_sql`.
-  Each operates on an `(experiment, resolver)` pair; SQL previews preserve
+  Each operates on an `(experiment, reader)` pair; SQL previews preserve
   their optional-breakout defaults and use adopted SQL as the summary fallback.
 - `increment.workflows` promises only `materialize`, `export_moments`,
   `breakout_summaries`, `factor_summaries`, `experiment_definition`, `metrics`,
@@ -63,18 +63,18 @@ namespace:
   `trigger_rates`, `allocation_history`, `health_check`,
   `assignment_diagnostic`, `planning_baseline`, `capture_sequential`, and
   `sequential_snapshot`.
-  These functions operate on an `(experiment, resolver)` pair; the experiment
+  These functions operate on an `(experiment, reader)` pair; the experiment
   definition inspection returns the semantic source declaration, not the
-  kernel execution request. A sequential capture is kept by the resolver's
-  source, so the next `run(experiment, resolver)` and `export_moments` with
-  that resolver read it.
+  kernel execution request. A sequential capture is kept by the reader's
+  source, so the next `run(experiment, reader)` and `export_moments` with
+  that reader read it.
 - `increment.artifacts.artifact_context` and `publish_unit_day_artifact`
-  operate on an `(experiment, resolver)` pair; publication retains trusted
+  operate on an `(experiment, reader)` pair; publication retains trusted
   extension selection and refresh semantics. `WarehouseArtifactStore`
   implements the artifact store contract for warehouse publication.
 - `increment.estimators` conditional-effect operations `estimate_cate`,
   `validate_cate`, `targeting_rule`, and `select_targeting_rule`, and the
-  whole-site estimate `sitewide`, operate on an `(experiment, resolver)` pair;
+  whole-site estimate `sitewide`, operate on an `(experiment, reader)` pair;
   their remaining parameters are unchanged. The data-only array kernels in
   `increment.estimation.targeting` and `increment.estimation.sitewide`, and the
   `increment.power` solvers, take no source.
@@ -127,6 +127,21 @@ values.
 
 ### Earlier release notes
 
+- Release note (usability): reading a public submodule such as
+  `increment.workflows` from the package before importing it raises an
+  `AttributeError` that names the import, `from increment.workflows import ...`;
+  the submodule is not imported for you. Guides and examples call top-level
+  names as `increment.<name>` after `import increment`, import submodule names
+  with `from increment.<submodule> import ...`, and name a builder's pair
+  `experiment, reader`.
+- Release note (bug fix): a `from_frame` reader keeps the rows its dataframe
+  held when the builder ran. Previously a quantile or other raw-row read of a
+  summary, or a CUPED covariate of a panel, could read a Polars dataframe
+  changed in place after the build, such as with `replace_column`. A Polars
+  dataframe is cloned without copying its columns, an Arrow table is kept as
+  is, a pandas 3 dataframe is shallow-copied under copy-on-write, and other
+  pandas-like dataframes are copied. Estimates from unchanged dataframes and
+  experiment identity hashes are unchanged.
 - Release note (breaking API cutover): `MetricSpec(missing="drop")` is now
   spelled `missing="skip"`, with the same computation: the metric uses only the
   units with a value, and those units stay in every other metric. Estimates are
@@ -171,7 +186,7 @@ values.
   `hash(experiment)` now works and agrees with `==`, so equal experiments are
   one dictionary key; it is not `experiment.hash()`, the portable identity,
   which can tell apart declarations that compare equal, such as `Fraction(1, 2)`
-  and `0.5`. Resolvers still do not pickle. `to_json()`, `hash()` and
+  and `0.5`. Readers still do not pickle. `to_json()`, `hash()` and
   `analysis_spec_hash` are unchanged.
 - Release note (bug fix): an experiment's `hash()` and `analysis_spec_hash`, and
   the identities of its runs, no longer include the column types recorded for
@@ -186,8 +201,8 @@ values.
   switchback and artifact experiments record no column types, so their
   identities are unchanged.
 - Release note (bug fix): after the definitions behind a `from_definitions`
-  resolver change, `run(experiment, resolver)` and every function that reads
-  data through that resolver refuse with `kernel.definitions.catalog_stale`
+  reader change, `run(experiment, reader)` and every function that reads
+  data through that reader refuse with `kernel.definitions.catalog_stale`
   before reading anything, instead of reading the data and then refusing.
   Comment and whitespace edits no longer count as changes. The offline catalog
   format moves to schema 2; a schema-1 catalog refuses offline with
@@ -288,7 +303,7 @@ values.
     | --- | --- | --- |
     | `increment.estimators` | `ESTIMATORS`, `estimator_id`, `load`, `observational_estimator_id`, `randomized_estimator_id`, `routes`, `resolve` | Registry and dispatch plumbing; use `runnable` for offline preflight and `Method` for method selection. |
     | `increment.estimators` | `refuse`, `warn`, `WarningSpec` | Refusal/warning emission plumbing; catch `CodedError` or filter `IncrementWarning` instead. Custom providers may return `RefusalSpec` with their breakout rows. |
-    | `increment.artifacts` | `compile_unit_day_artifact_context` | Context-compilation plumbing; use `artifact_context(experiment, resolver)`. |
+    | `increment.artifacts` | `compile_unit_day_artifact_context` | Context-compilation plumbing; use `artifact_context(experiment, reader)`. |
     | `increment.evidence` | `BreakoutRoute`, `BreakoutSlice`, `BreakoutSlices`, `BreakoutSlicesRequest`, `BreakoutUnitRows`, `BreakoutUnitRowsRequest`, `DayAxisRequest`, `DayAxisRoute`, `DayAxisRows`, `MetricEvidence`, `MetricEvidenceRequest`, `PreparedMulticovariateFit`, `EvidenceSource`, `warehouse_cuped_fit_evidence` | Compound-request and acquisition plumbing; custom providers implement the primitive `EvidenceProvider` requests. |
     | `increment.errors` | `CodedValidationMixin`, `MODEL_FIELD_REFUSALS`, `PACKAGE_FRAMES`, `WarningSpec`, `raiser`, `refusals`, `refuse`, `warn`, `unwrap_coded_serialization` | Model-validation, registry, and emission plumbing; use catchable errors and warnings, `CodedModel`, and `unwrap_coded`. |
 
@@ -322,13 +337,13 @@ values.
   analysis and its recorded evidence declarations; `runnable()` reports offline
   unknowns and deferred data checks. Module builders `from_frame`,
   `from_definitions`, `from_unit_day_artifact`, `from_switchback_frame`, and
-  `from_moments` return an experiment/resolver pair, and top-level
-  `run(experiment, resolver)` returns `RunResult`. See the
+  `from_moments` return an experiment/reader pair, and top-level
+  `run(experiment, reader)` returns `RunResult`. See the
   [experiment specification guide](guides/experiment-specifications.md).
 - Release note (breaking API cutover): the `Analysis` class, its
   `increment.Analysis` export and the `increment.analysis` module are removed
-  without an alias. Build an experiment and resolver with a module builder and
-  read results with `run(experiment, resolver)`; source operations moved to
+  without an alias. Build an experiment and reader with a module builder and
+  read results with `run(experiment, reader)`; source operations moved to
   `increment.workflows`, `increment.query`, `increment.artifacts`,
   `increment.estimators` and `increment.dashboard`. The narrow builder aliases
   `increment.builders.from_unit_summary` and `from_unit_panel`, the
@@ -341,14 +356,14 @@ values.
   No refusal code is retired with `Analysis`, so `increment.errors.RETIRED_CODES`
   is unchanged.
   `repr(experiment)` is one bounded line naming the experiment, its design,
-  metrics, view count and identity prefix; `repr(resolver)` names its source
+  metrics, view count and identity prefix; `repr(reader)` names its source
   and whether it is closed without reopening it. See
   [Migrating from `Analysis`](#migrating-from-analysis) for every replacement.
 - Release note (breaking API cutover): `ResultsStore.persist_results`,
   `ParquetResultsStore.persist_results`, `WarehouseResultsStore.persist_results`
   and the `increment.store.producer` module with its `PersistenceIdentity` are
   removed without an alias; save a run with
-  `run(experiment, resolver, results_store=store)`. The saved run
+  `run(experiment, reader, results_store=store)`. The saved run
   and cell identities are on `RunResult.run` and `RunResult.cells` rather than
   on the returned rows. A compliance-only selection made with a call-time
   `estimands=("compliance",)` cannot be saved, and a live percentile-winsorized
@@ -356,24 +371,24 @@ values.
   before any read. Readout JSON written with persisted cells stays readable.
   `dashboard.prepare_dashboard` replaces the dashboard capture members; a
   dataframe or moments experiment refuses with `dashboard.unsupported_experiment`.
-- Release note (breaking API cutover): the module-builder resolver no longer
+- Release note (breaking API cutover): the module-builder reader no longer
   has a `capture_sequential` method. Call
-  `increment.workflows.capture_sequential(experiment, resolver, ...)`, and read
+  `increment.workflows.capture_sequential(experiment, reader, ...)`, and read
   the retained checkpoint with `increment.workflows.sequential_snapshot`.
 - Release note (breaking API cutover): `increment.estimators.estimate_cate`,
   `validate_cate`, `targeting_rule`, and `select_targeting_rule` take the
-  `(experiment, resolver)` pair returned by a builder such as `from_frame` or
+  `(experiment, reader)` pair returned by a builder such as `from_frame` or
   `from_definitions` instead of a source. Their remaining parameters, defaults,
   results, and refusal codes are unchanged; `estimate_cate`'s `control` defaults
   to the declared control arm, and a declared trigger restricts every operation
   to triggered units.
-- Release note (breaking API cutover): `increment.workflows.planning_baseline(experiment, resolver, metric)`
-  and `increment.estimators.sitewide(experiment, resolver, metric, *, arm=None, alpha=0.05, population="assigned")`
+- Release note (breaking API cutover): `increment.workflows.planning_baseline(experiment, reader, metric)`
+  and `increment.estimators.sitewide(experiment, reader, metric, *, arm=None, alpha=0.05, population="assigned")`
   replace `Analysis.planning_baseline` and `Analysis.sitewide`. Results,
   trigger/CUPED/cluster/quantile/compliance handling, switchback baselines,
   calendar-window site volume, randomized-only restrictions, and refusal codes
   are unchanged. `increment.power` gains no source-reading function.
-- Release note (breaking API cutover): `run(experiment, resolver, ...)` no
+- Release note (breaking API cutover): `run(experiment, reader, ...)` no
   longer accepts `analysis_options`. Pass the same readout options as keywords:
   `decision_method`, `sensitivity_methods`, `prior`, `metrics`, `estimands`,
   `value_scale`, `exploratory_metrics`, `population` and `coherence`; only the
@@ -382,7 +397,7 @@ values.
   open shared evidence capture as `execution_context=`. The `store` option is
   not accepted. A `population` that differs from a selected scope refuses with
   `kernel.request.population_scope_only`; declare it on `Scope(population=...)`.
-- Release note (API addition): `run(experiment, resolver, ...)` saves and logs
+- Release note (API addition): `run(experiment, reader, ...)` saves and logs
   runs. `results_store=`, `decision_log=` and `run_id=` are checked against the
   experiment's registration before any data is read, and a refused run writes
   nothing; an ID is generated when `run_id` is omitted.
@@ -434,7 +449,7 @@ values.
   registration, scope and method identities differ.
 - Release note (bug fix): an experiment saved with `to_json` keeps the view
   parameters it declared, so its hash does not change with a private executor
-  parameter and it runs against a new resolver. A `coherence` saved in an
+  parameter and it runs against a new reader. A `coherence` saved in an
   experiment's request options applies to every selected view, and a
   `coherence` passed to `run` replaces the saved one in either direction.
 - Release note (breaking packaging change): Ibis and SQLGlot are optional.
@@ -453,45 +468,45 @@ values.
 ### Migrating from `Analysis`
 
 Every removed `Analysis` member, every public name moved since, and every renamed
-option has one replacement. In the table, `experiment, resolver` is the pair a
+option has one replacement. In the table, `experiment, reader` is the pair a
 builder returns, `workflows`, `query`, `artifacts`, `estimators` and `dashboard`
 are the `increment.*` namespaces of those names, and parameters not shown keep
 their names, defaults and refusals.
 
 | Removed call | Replacement |
 |---|---|
-| `Analysis(experiment_name, definitions_path, con, ...)`, `Analysis.from_definitions(experiment_name, definitions_path, con, ...)` | `experiment, resolver = from_definitions(definitions_path, con, experiment_name=..., ...)`; the path comes first and the name is a keyword |
+| `Analysis(experiment_name, definitions_path, con, ...)`, `Analysis.from_definitions(experiment_name, definitions_path, con, ...)` | `experiment, reader = from_definitions(definitions_path, con, experiment_name=..., ...)`; the path comes first and the name is a keyword |
 | `Analysis.from_unit_summary(frame, ...)`, `increment.builders.from_unit_summary(frame, ...)` | `from_frame(frame, shape="summary", ...)` |
 | `Analysis.from_unit_panel(frame, ...)`, `increment.builders.from_unit_panel(frame, ...)` | `from_frame(frame, shape="panel", ...)` |
 | `Analysis.from_unit_day_artifact(store, ref, expected_context=..., ...)` | `from_unit_day_artifact(store, ref, expected_context=..., ...)` |
 | `Analysis.from_moments(rows, ...)` | `from_moments(rows, ...)` |
 | `Analysis.from_switchback_panel(frame, ...)` | `from_switchback_frame(frame, ...)` |
-| `with analysis:`, `analysis.close()` | `with resolver:`, `resolver.close()`; neither closes a connection you supplied |
-| `resolver.run_experiment(experiment, provider, ...)`, `resolver.resolve(...)`, `resolver.verify(...)`, `resolver.validate_experiment(experiment)` | `run(experiment, resolver, ...)`, which checks the experiment against the resolver and verifies its source declarations before reading |
-| `resolver.binding` and the source, plan, design and metrics it held | `resolver.experiment`, and the `workflows`, `query`, `artifacts` and `estimators` functions taking `(experiment, resolver)`, such as `workflows.metrics`, `workflows.compiled_decision_plan` and `workflows.experiment_definition` |
-| `resolver.catalog_writer(experiment)` | `run(experiment, resolver)` on a connected `from_definitions` pair, which records the offline catalog |
-| reading through a resolver after `close()` or its `with` block | build a new pair with the builder that returned it; a closed resolver refuses with `kernel.run.reader_closed` |
-| `analysis.run(**options)` | `run(experiment, resolver, **options).readout()`, the same `LiftEstimates` or `ContrastResults` |
-| `analysis.run(population="triggered")` | `view = View.overall(population="triggered")`, then `run(experiment.with_views(view), resolver, views=(view,)).readout(view)`; omit `views=` to read the builder's assigned view beside it |
-| `analysis.run(store=store)` | `run(experiment, resolver, results_store=store)`; `decision_log=` and `run_id=` are checked before any read |
-| `run(analysis, registration, compiled_plan, *, experiment_id=..., analysis_spec_hash=..., execution_identity_hash=..., run_id=..., ...)` | `run(experiment, resolver, run_id=..., results_store=..., decision_log=..., ...)`; the experiment supplies its registration and identities |
+| `with analysis:`, `analysis.close()` | `with reader:`, `reader.close()`; neither closes a connection you supplied |
+| `reader.run_experiment(experiment, provider, ...)`, `reader.resolve(...)`, `reader.verify(...)`, `reader.validate_experiment(experiment)` | `run(experiment, reader, ...)`, which checks the experiment against the reader and verifies its source declarations before reading |
+| `reader.binding` and the source, plan, design and metrics it held | `reader.experiment`, and the `workflows`, `query`, `artifacts` and `estimators` functions taking `(experiment, reader)`, such as `workflows.metrics`, `workflows.compiled_decision_plan` and `workflows.experiment_definition` |
+| `reader.catalog_writer(experiment)` | `run(experiment, reader)` on a connected `from_definitions` pair, which records the offline catalog |
+| reading through a reader after `close()` or its `with` block | build a new pair with the builder that returned it; a closed reader refuses with `kernel.run.reader_closed` |
+| `analysis.run(**options)` | `run(experiment, reader, **options).readout()`, the same `LiftEstimates` or `ContrastResults` |
+| `analysis.run(population="triggered")` | `view = View.overall(population="triggered")`, then `run(experiment.with_views(view), reader, views=(view,)).readout(view)`; omit `views=` to read the builder's assigned view beside it |
+| `analysis.run(store=store)` | `run(experiment, reader, results_store=store)`; `decision_log=` and `run_id=` are checked before any read |
+| `run(analysis, registration, compiled_plan, *, experiment_id=..., analysis_spec_hash=..., execution_identity_hash=..., run_id=..., ...)` | `run(experiment, reader, run_id=..., results_store=..., decision_log=..., ...)`; the experiment supplies its registration and identities |
 | `analysis.run_breakout(...)` | `View.breakout(segment)`; `segment=(BreakoutIdentity(property, source), ...)` selects declared breakouts, and `()` selects all |
 | `analysis.run_daily(dimension=property, ...)` | `View.daily(values=True, segment=(BreakoutIdentity(property, None),))` |
 | `analysis.run_daily_lift(dimension=property, ...)` | `View.daily(segment=(BreakoutIdentity(property, None),))` |
 | `analysis.run_asof(completed_windows_only=flag, ...)` | `View.asof(values=True, completion_policy=flag)` |
 | `analysis.run_asof_lift(completed_windows_only=flag, ...)` | `View.asof(completion_policy=flag)` |
 | `population=` on a day-axis or breakout method | `population=` on `View.daily`, `View.asof` or `View.breakout` |
-| `increment.readouts.run_scoped(analysis, ...)` | `declared = {view.hash() for view in experiment.views}` and `added = [view for view in views if view.hash() not in declared]`, then `run(experiment.with_views(*added) if added else experiment, resolver, views=views)`: one capture of the data serves every selected view; `with_views` refuses a view the experiment already declares, such as the builder's `View.overall()` |
-| `analysis.materialize()`, `analysis.materialize().run()` | `workflows.materialize(experiment, resolver)`, then `run(experiment, resolver)` |
-| `analysis.export(path)` | `workflows.export_moments(experiment, resolver, path)` |
-| `analysis.experiment` | `workflows.experiment_definition(experiment, resolver)`, the semantic declaration |
-| `analysis.metrics`, `analysis.compiled_decision_plan`, `analysis.available_metrics` | `workflows.metrics(...)`, `workflows.compiled_decision_plan(...)`, `workflows.available_metrics(...)`, each taking `(experiment, resolver)` |
-| `analysis.unit_counts()`, `srm(...)`, `trigger_rates()`, `allocation_history(...)`, `health_check(...)`, `assignment_diagnostic()`, `planning_baseline(metric)`, `breakout_summaries(...)`, `factor_summaries()`, `capture_sequential(...)`, `sequential_snapshot(...)` | `workflows.<name>(experiment, resolver, ...)` with the same remaining parameters |
-| `analysis.artifact_context` | `artifacts.artifact_context(experiment, resolver)` |
-| `analysis.publish_unit_day_artifact(store, ...)` | `artifacts.publish_unit_day_artifact(experiment, resolver, store, ...)` |
-| `analysis.build_panel_for_metric(...)`, `panel_sql(...)`, `summary_sql(...)` | `query.<name>(experiment, resolver, ...)` |
-| `analysis.estimate_cate(...)`, `validate_cate(...)`, `targeting_rule(...)`, `select_targeting_rule(...)`, `sitewide(...)` | `estimators.<name>(experiment, resolver, ...)` |
-| `analysis.dashboard_snapshot(...)`, `dashboard_breakout_reads(...)`, `dashboard_group_data(...)` | `dashboard.prepare_dashboard(experiment, resolver, config=...)` captures the headline, group data and Explore reads once; `load_explore(experiment, snapshot=...)` and `render_dashboard(experiment, snapshot=...)` read the snapshot |
+| `increment.readouts.run_scoped(analysis, ...)` | `declared = {view.hash() for view in experiment.views}` and `added = [view for view in views if view.hash() not in declared]`, then `run(experiment.with_views(*added) if added else experiment, reader, views=views)`: one capture of the data serves every selected view; `with_views` refuses a view the experiment already declares, such as the builder's `View.overall()` |
+| `analysis.materialize()`, `analysis.materialize().run()` | `workflows.materialize(experiment, reader)`, then `run(experiment, reader)` |
+| `analysis.export(path)` | `workflows.export_moments(experiment, reader, path)` |
+| `analysis.experiment` | `workflows.experiment_definition(experiment, reader)`, the semantic declaration |
+| `analysis.metrics`, `analysis.compiled_decision_plan`, `analysis.available_metrics` | `workflows.metrics(...)`, `workflows.compiled_decision_plan(...)`, `workflows.available_metrics(...)`, each taking `(experiment, reader)` |
+| `analysis.unit_counts()`, `srm(...)`, `trigger_rates()`, `allocation_history(...)`, `health_check(...)`, `assignment_diagnostic()`, `planning_baseline(metric)`, `breakout_summaries(...)`, `factor_summaries()`, `capture_sequential(...)`, `sequential_snapshot(...)` | `workflows.<name>(experiment, reader, ...)` with the same remaining parameters |
+| `analysis.artifact_context` | `artifacts.artifact_context(experiment, reader)` |
+| `analysis.publish_unit_day_artifact(store, ...)` | `artifacts.publish_unit_day_artifact(experiment, reader, store, ...)` |
+| `analysis.build_panel_for_metric(...)`, `panel_sql(...)`, `summary_sql(...)` | `query.<name>(experiment, reader, ...)` |
+| `analysis.estimate_cate(...)`, `validate_cate(...)`, `targeting_rule(...)`, `select_targeting_rule(...)`, `sitewide(...)` | `estimators.<name>(experiment, reader, ...)` |
+| `analysis.dashboard_snapshot(...)`, `dashboard_breakout_reads(...)`, `dashboard_group_data(...)` | `dashboard.prepare_dashboard(experiment, reader, config=...)` captures the headline, group data and Explore reads once; `load_explore(experiment, snapshot=...)` and `render_dashboard(experiment, snapshot=...)` read the snapshot |
 | `increment.analysis.fit_predeclared_adjustment` | `estimators.fit_predeclared_adjustment` |
 | `increment.Resolver`, `increment.BoundResolver` | `increment.evidence.Resolver`, `increment.evidence.BoundResolver`, under the same names |
 | `resolver=` on `run` and on every function that reads data | `reader=`; positional calls are unchanged |
@@ -512,7 +527,7 @@ describe:
 ```python
 import polars as pl
 
-from increment import View, from_frame, run
+import increment
 from increment.evidence import BreakoutIdentity
 
 panel = pl.DataFrame(
@@ -524,7 +539,7 @@ panel = pl.DataFrame(
         "revenue": [float(index % 5) for index in range(16)],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     panel,
     shape="panel",
     unit="user_id",
@@ -534,10 +549,10 @@ experiment, resolver = from_frame(
     metrics={"revenue": "mean"},
     breakouts=["country"],
 )
-whole = View.overall()
-daily_by_country = View.daily(values=True, segment=(BreakoutIdentity("country", None),))
-asof_lift = View.asof()
-result = run(experiment.with_views(daily_by_country, asof_lift), resolver)
+whole = increment.View.overall()
+daily_by_country = increment.View.daily(values=True, segment=(BreakoutIdentity("country", None),))
+asof_lift = increment.View.asof()
+result = increment.run(experiment.with_views(daily_by_country, asof_lift), reader)
 estimates = result.readout(whole)  # was analysis.run()
 values = result.readout(daily_by_country)  # was analysis.run_daily(dimension="country")
 trend = result.readout(asof_lift)  # was analysis.run_asof_lift()
@@ -574,7 +589,7 @@ Serialize the collection and reopen it with its dedicated decoder:
 ```python
 import polars as pl
 
-from increment import MetricSpec, Randomized, from_frame, run
+import increment
 from increment.results import ReadoutResults
 
 frame = pl.DataFrame(
@@ -584,19 +599,19 @@ frame = pl.DataFrame(
         "revenue": [1.0, 2.0, 1.5, 2.5],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     frame,
     shape="summary",
     unit="unit",
     group="arm",
-    design=Randomized(
+    design=increment.Randomized(
         control_group="control",
         allocation={"control": 0.5, "treatment": 0.5},
         allocation_scheme="independent",
     ),
-    metrics=[MetricSpec(name="revenue", type="mean")],
+    metrics=[increment.MetricSpec(name="revenue", type="mean")],
 )
-rows = run(experiment, resolver).readout()
+rows = increment.run(experiment, reader).readout()
 payload = rows.model_dump_json()
 restored = ReadoutResults.model_validate_json(payload)
 ```
@@ -640,7 +655,7 @@ envelope to render its table or text report:
 ```python
 import json
 
-from increment import render
+import increment
 from increment.results import AnalysisEnvelope, ResultCell
 from increment.tables import readout_table
 
@@ -649,7 +664,7 @@ envelope = AnalysisEnvelope(cells, rows.metadata)
 saved = json.dumps(envelope.to_payload())
 reopened = AnalysisEnvelope.from_payload(json.loads(saved))
 table = readout_table(reopened)
-brief = render(reopened)
+brief = increment.render(reopened)
 ```
 
 Version-2 cells also cover breakout rows, daily/as-of lift and absolute metric
@@ -692,7 +707,7 @@ construction details and operation limits.
     or register a defensible new protocol.
 
 ??? info "Statistical and wire-format details"
-    **Moments cubes.** `increment.workflows.export_moments(experiment, resolver, path)` stamps each row with `moments_format`;
+    **Moments cubes.** `increment.workflows.export_moments(experiment, reader, path)` stamps each row with `moments_format`;
     `from_moments` reads it. Formats vary by writer:
 
     | Format | Written by | Read by `from_moments` |
@@ -904,15 +919,15 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 
 ## Analysis and reporting
 
-`increment.workflows.unit_counts(experiment, resolver)` returns enrolled counts
+`increment.workflows.unit_counts(experiment, reader)` returns enrolled counts
 by canonical group label, including excluded units as `"(unassigned)"`. The
 source must retain total-grain counts; day-axis views refuse.
 
-`increment.artifacts.artifact_context(experiment, resolver)` returns the trusted
+`increment.artifacts.artifact_context(experiment, reader)` returns the trusted
 context for a definitions-backed experiment. Pass it as `expected_context` when
 opening an artifact published from that experiment.
 
-`increment.workflows.allocation_history(experiment, resolver, population=...)`
+`increment.workflows.allocation_history(experiment, reader, population=...)`
 returns a PyArrow table with `experiment_id`, `analysis_population`, `ds`,
 `group_id`, `n_daily`, and `n_cumulative`, ordered by population, date, and
 arm. Native assigned cohorts are binned by first exposure date; triggered
@@ -960,7 +975,7 @@ The day-axis collections returned by daily and as-of views, values or lift, are
 ordered chronologically by day, then by requested metric and a stable row
 identity order. The order is independent of backend row order.
 
-`increment.workflows.available_metrics(experiment, resolver)` lists undeclared
+`increment.workflows.available_metrics(experiment, reader)` lists undeclared
 saved per-unit metrics on the experiment's unit, in definitions order. It
 excludes report-only `total` and `active` metrics and metrics for other
 entities. Whole-window run, breakout, as-of lift, as-of values and daily
@@ -1389,7 +1404,7 @@ different approximations and limits.
 
 `increment.estimators.confounding_sensitivity` reports a marginal conversion risk-ratio interval for an observational `LiftEstimate`; `increment.results.ConfoundingSensitivity` is its receive-only result type.
 
-`increment.workflows.health_check(experiment, resolver)` combines assignment
+`increment.workflows.health_check(experiment, reader)` combines assignment
 balance, triggered-cohort balance, descriptive trigger rates, retained
 source-maturity/completeness evidence, and declared trigger assumptions. Use it
 alongside estimates; it is not a general safety verdict or causal-validity test.
@@ -1415,7 +1430,7 @@ not verified; robustness is not identification.
 ```python
 import pandas as pd
 
-from increment import from_frame
+import increment
 from increment.workflows import health_check
 
 units = pd.DataFrame(
@@ -1425,7 +1440,7 @@ units = pd.DataFrame(
         "value": [1.0, 0.0, 1.5, 1.0],
     }
 )
-experiment, resolver = from_frame(
+experiment, reader = increment.from_frame(
     units,
     shape="summary",
     unit="unit",
@@ -1433,7 +1448,7 @@ experiment, resolver = from_frame(
     control="control",
     metrics={"value": "mean"},
 )
-report = health_check(experiment, resolver)
+report = health_check(experiment, reader)
 for check in report.checks:
     print(check.check, check.analysis_population, check.availability, check.conclusion)
 ```
@@ -1445,7 +1460,7 @@ for check in report.checks:
 `estimate_cate` estimates how treatment effects vary with user characteristics.
 Validation and targeting refit through honest or nested splits; their reports
 give evidence for those procedures, not for a separate `estimate_cate` fit.
-Each operation takes the `(experiment, resolver)` pair from a builder, reads
+Each operation takes the `(experiment, reader)` pair from a builder, reads
 the experiment's unit-grain rows (triggered units when a trigger is declared),
 and records the source identity on its report.
 
@@ -1664,11 +1679,11 @@ locations when loading YAML definitions.
 from pydantic import TypeAdapter, ValidationError
 
 from increment.estimators import DefinitionError
-from increment import Definitions
+import increment
 from increment.errors import unwrap_coded
 
 try:
-    TypeAdapter(Definitions).validate_python({"day_boundary": "EST"})
+    TypeAdapter(increment.Definitions).validate_python({"day_boundary": "EST"})
 except ValidationError as exc:
     try:
         unwrap_coded(exc)
@@ -1733,10 +1748,10 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 ## Results (`increment.results`)
 
 Sitewide behavior is exposed through
-`increment.estimators.sitewide(experiment, resolver, metric=...)`, with output
+`increment.estimators.sitewide(experiment, reader, metric=...)`, with output
 values available from the receive-only results namespace.
 
-`sitewide(experiment, resolver, metric, population="assigned")` reports an assigned
+`sitewide(experiment, reader, metric, population="assigned")` reports an assigned
 intent-to-treat whole-site impact, including when the experiment declares a
 trigger. For triggered experiments, `population="triggered"` reports a
 conditional impact scaled to enrolled units in finalized trigger membership.

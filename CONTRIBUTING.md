@@ -1254,7 +1254,7 @@ A new method needs all of the following:
 4. **Planning matches runtime.** Where the planner and the runtime derive the
    same quantity, an equivalence test at matched inputs.
 5. **Ingress parity.** For a capability reachable through `run(experiment,
-   resolver)`, a row or axis value in the enumerated
+   reader)`, a row or axis value in the enumerated
    [parity matrix](tests/parity_harness/COVERAGE.md) with a stated disposition
    for each of the six builder ingresses (`from_frame` summary and panel
    shapes, `from_definitions`, `from_unit_day_artifact`, `from_moments`,

@@ -130,12 +130,34 @@ _LAZY_IMPORTS = {
     "EvidenceProvider": ("increment.evidence", "EvidenceProvider"),
 }
 
+# Public submodules load only when imported; attribute access before that names the import.
+_SUBMODULES = frozenset(
+    {
+        "artifacts",
+        "dashboard",
+        "digest",
+        "errors",
+        "estimators",
+        "evidence",
+        "power",
+        "query",
+        "results",
+        "simulate",
+        "store",
+        "tables",
+        "workflows",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     try:
         module_name, attr_name = _LAZY_IMPORTS[name]
     except KeyError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+        message = f"module {__name__!r} has no attribute {name!r}"
+        if name in _SUBMODULES:
+            message += f"; import the submodule first: from {__name__}.{name} import ..."
+        raise AttributeError(message) from None
     value = getattr(importlib.import_module(module_name), attr_name)
     globals()[name] = value
     return value

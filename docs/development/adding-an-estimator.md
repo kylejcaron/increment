@@ -42,6 +42,20 @@ This required method set is a compatibility contract: never add a required
 `EvidenceProvider` method. New evidence capabilities must remain optional or be
 served through an explicitly versioned contract.
 
+To check a provider against an experiment's recorded declarations without
+running anything, wrap it in a resolver:
+`increment.evidence.BoundResolver(provider).verify(experiment.source_refs)`
+returns refusals instead of raising them. `kernel.provider.digest_mismatch`
+means the provider's `context.source_digest` differs from a recorded digest or
+the `expected_digest=` you passed, `kernel.provider.capabilities_missing` that
+it declares no `EvidenceCapabilities`, `kernel.provider.capability_mismatch`
+that a source reference records different capabilities, and
+`kernel.provider.mismatch` that `verify` received a different provider; an
+empty list means the declarations match. `increment.evidence.Resolver` is the
+`resolve` and `verify` interface it implements. A resolver only verifies:
+`run` and every function that reads data accept only the `ExperimentReader` a
+builder returns and refuse a resolver with `kernel.run.reader_required`.
+
 When `evidence.assignment_relation` is `"ledger"` or `"reduced"`, implement
 `assignment(request: AssignmentRequest) -> AssignmentEvidence` to serve
 `AssignmentRequest`s. It returns reduced assignment metadata (arm counts,
@@ -98,17 +112,17 @@ provided like this:
 from datetime import date, datetime
 from types import SimpleNamespace
 
-from increment import AnalysisPlan, ExperimentDefinition
+import increment
 
 provider = SimpleNamespace()
-provider.experiment = ExperimentDefinition(
+provider.experiment = increment.ExperimentDefinition(
     name="trial",
     exposure="assigned",
     trigger="seen",
     unit="user_id",
     start=datetime(2025, 1, 1),
     control_group="control",
-    plan=AnalysisPlan(),
+    plan=increment.AnalysisPlan(),
 )
 provider.triggered_observation_edges = lambda metric: (
     date(2025, 1, 1),
@@ -225,7 +239,7 @@ make test TESTS=tests/test_parity_harness.py
 
 ### Contract, assumptions and source requirements
 
-`increment.workflows.health_check(experiment, resolver)` returns a frozen `ExperimentHealth` report (`increment/estimation/health.py`) with ordered `HealthCheck` entries. Availability is not a conclusion: missing trigger membership or feed-completeness evidence remains unavailable with its exact code and context, not a failure or pass. Assigned allocation integrity and triggered-population balance are separate.
+`increment.workflows.health_check(experiment, reader)` returns a frozen `ExperimentHealth` report (`increment/estimation/health.py`) with ordered `HealthCheck` entries. Availability is not a conclusion: missing trigger membership or feed-completeness evidence remains unavailable with its exact code and context, not a failure or pass. Assigned allocation integrity and triggered-population balance are separate.
 
 !!! warning "Balanced triggers do not establish causal validity"
     Balanced trigger rates do not establish treatment-independent membership,

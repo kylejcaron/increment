@@ -8,7 +8,7 @@ app = marimo.App(width="medium")
 def _():
     import marimo as mo
 
-    from increment import InferenceSpec, MethodSpec
+    import increment
     from increment.estimators import (
         Baseline,
         FixedInference,
@@ -34,14 +34,13 @@ def _():
         Baseline,
         FamilyPolicy,
         FixedInference,
-        InferenceSpec,
         MetricCapabilities,
-        MethodSpec,
         ParallelAssignment,
         PlanningFamilyExpansion,
         PowerDesign,
         RelativeDecisionPolicy,
         achieved_power,
+        increment,
         minimum_detectable_effect,
         mo,
         power_curve,
@@ -113,14 +112,14 @@ def _(
     Baseline,
     FamilyPolicy,
     FixedInference,
+    MEAN_REVENUE,
     MetricCapabilities,
-    MethodSpec,
     ParallelAssignment,
     PlanningFamilyExpansion,
     PowerDesign,
     RelativeDecisionPolicy,
-    MEAN_REVENUE,
     VAR_REVENUE,
+    increment,
 ):
     baseline = Baseline(mean=MEAN_REVENUE, var=VAR_REVENUE)
     design = PowerDesign(power=0.80)
@@ -152,7 +151,7 @@ def _(
         family_expansion=PlanningFamilyExpansion(family_size=1),
         # The decision method is the estimator the ship decision will use;
         # sensitivity methods only add reporting-only comparison rows.
-        decision_method=MethodSpec(name="unadjusted"),
+        decision_method=increment.MethodSpec(name="unadjusted"),
         sensitivity_methods=(),
         prior_present=False,
     )
@@ -378,17 +377,17 @@ def _(
     Baseline,
     CUPED_RHO,
     MEAN_REVENUE,
-    MethodSpec,
     TARGET_LIFT,
     VAR_REVENUE,
     design,
+    increment,
     procedure,
     required_sample_size,
     rss,
 ):
     baseline_cuped = Baseline(mean=MEAN_REVENUE, var=VAR_REVENUE, cuped_rho=CUPED_RHO)
     procedure_cuped = procedure.model_copy(
-        update={"decision_method": MethodSpec(name="cuped", variance_reduction="cuped")}
+        update={"decision_method": increment.MethodSpec(name="cuped", variance_reduction="cuped")}
     )
     rss_cuped = required_sample_size(TARGET_LIFT, baseline_cuped, procedure_cuped, design)
 
@@ -516,16 +515,16 @@ def _(mo):
 @app.cell
 def _(
     ArmPlanningProcedure,
-    InferenceSpec,
     TARGET_LIFT,
     achieved_power,
     baseline,
+    increment,
     minimum_detectable_effect,
     mo,
     required_sample_size,
 ):
     sequential_procedure = ArmPlanningProcedure.standard(
-        "mean", inference=InferenceSpec(kind="asymptotic_mean")
+        "mean", inference=increment.InferenceSpec(kind="asymptotic_mean")
     )
 
     sample_size = required_sample_size(

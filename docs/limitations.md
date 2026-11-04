@@ -81,7 +81,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 ## What runs where
 
 A capability is a claim only when its path is named. Six builders feed
-`run(experiment, resolver)`, in three families: **dataframe**
+`run(experiment, reader)`, in three families: **dataframe**
 (`from_frame(..., shape="summary")`, one row per unit;
 `from_frame(..., shape="panel")`, one row per unit per day;
 `from_switchback_frame`); **warehouse** (`from_definitions`, compiling from raw
@@ -318,7 +318,7 @@ row count nor crossing the 40-cluster warning threshold establishes otherwise.
 
 ### Triggered-population sitewide impact needs an external assumption
 
-`increment.estimators.sitewide(experiment, resolver, metric, population="triggered")` scales the triggered-cohort lift to the
+`increment.estimators.sitewide(experiment, reader, metric, population="triggered")` scales the triggered-cohort lift to the
 enrolled triggered members while keeping the full-site volume. Reading it as whole-site
 impact assumes that trigger membership does not depend on treatment and that
 never-triggered units are unaffected; the allocation balance diagnostic can catch some
@@ -344,7 +344,7 @@ assigned-population result when those assumptions are not defensible.
 
     Both assigned and triggered `sitewide()` require randomized
     identification. Observational and encouragement designs refuse before
-    sitewide evidence is loaded; use `run(experiment, resolver)` for their estimands.
+    sitewide evidence is loaded; use `run(experiment, reader)` for their estimands.
 
     Both populations refuse conversion metrics with
     `facade.analysis.sitewide_metric_unaligned`: a converter indicator is a
@@ -1048,7 +1048,7 @@ rounded data power has a ceiling below one, and `required_sample_size` refuses a
 above it with `power.quantile_size_search_unreachable`.
 
 ??? info "Statistical details: the pilot projection and the recording-grid ceiling"
-    `increment.workflows.planning_baseline(experiment, resolver, metric)` builds a `QuantileBaseline` from the pilot's own
+    `increment.workflows.planning_baseline(experiment, reader, metric)` builds a `QuantileBaseline` from the pilot's own
     control-arm values; at each candidate sample size the solver applies the runtime's own
     half-width rule to a bracket projected from the pilot -- on continuous data the pilot's
     classical order-statistic standard error scaled by the asymptotic `1/sqrt(n)` rate, on

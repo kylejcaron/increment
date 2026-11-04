@@ -12,7 +12,7 @@ def imports():
     import marimo as mo
     import pyarrow.parquet as pq
 
-    from increment import MetricSpec, View, from_definitions, from_moments, run
+    import increment
     from increment.query import summary_sql
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import experiment_definition, export_moments, srm
@@ -25,20 +25,16 @@ def imports():
         DEFINITIONS,
         EXPERIMENT,
         MOMENTS_PARQUET,
-        MetricSpec,
         Path,
-        View,
         WAREHOUSE,
         estimates_to_readout,
         experiment_definition,
         export_moments,
-        from_definitions,
-        from_moments,
         ibis,
+        increment,
         mo,
         pq,
         readout_table,
-        run,
         srm,
         summary_sql,
     )
@@ -178,22 +174,15 @@ def _(mo, warehouse_manifest):
 
 
 @app.cell
-def _(
-    DEFINITIONS,
-    EXPERIMENT,
-    con,
-    experiment_definition,
-    from_definitions,
-    warehouse_ready,
-):
+def _(DEFINITIONS, EXPERIMENT, con, experiment_definition, increment, warehouse_ready):
     assert (warehouse_ready / "manifest.json").exists(), (
         "warehouse missing; run the generation cell above first"
     )
-    experiment, resolver = from_definitions(
+    experiment, reader = increment.from_definitions(
         DEFINITIONS, con, experiment_name=EXPERIMENT, store="always"
     )
-    definition = experiment_definition(experiment, resolver)
-    return definition, experiment, resolver
+    definition = experiment_definition(experiment, reader)
+    return definition, experiment, reader
 
 
 @app.cell(hide_code=True)
@@ -231,8 +220,8 @@ def _(definition, mo):
 
 
 @app.cell(hide_code=True)
-def _(experiment, mo, resolver, summary_sql):
-    conversion_sql = summary_sql(experiment, resolver)["conversion_rate"]
+def _(experiment, mo, reader, summary_sql):
+    conversion_sql = summary_sql(experiment, reader)["conversion_rate"]
     mo.vstack(
         [
             mo.md(r"""
@@ -251,10 +240,10 @@ def _(experiment, mo, resolver, summary_sql):
 
 
 @app.cell(hide_code=True)
-def _(experiment, mo, resolver, srm):
+def _(experiment, mo, reader, srm):
     # The realistic generator uses independent 50/50 assignment; declare the anytime-valid check.
     srm_result = srm(
-        experiment, resolver, expected={"control": 0.5, "treatment": 0.5}, inference="always_valid"
+        experiment, reader, expected={"control": 0.5, "treatment": 0.5}, inference="always_valid"
     )
     srm_status = "SRM detected" if srm_result.is_srm else "No SRM detected"
     mo.md(
@@ -293,9 +282,9 @@ def _(mo):
 
 
 @app.cell
-def _(experiment, resolver, run):
+def _(experiment, increment, reader):
     # This readout materializes once for all declared metrics.
-    estimates = run(experiment, resolver).readout()
+    estimates = increment.run(experiment, reader).readout()
     return (estimates,)
 
 
@@ -323,10 +312,10 @@ def _(mo):
 
 
 @app.cell
-def _(View, estimates_to_readout, experiment, readout_table, resolver, run):
-    breakout_scope = View.breakout(())
-    breakout_estimates = run(
-        experiment.with_views(breakout_scope), resolver, views=(breakout_scope,)
+def _(estimates_to_readout, experiment, increment, reader, readout_table):
+    breakout_scope = increment.View.breakout(())
+    breakout_estimates = increment.run(
+        experiment.with_views(breakout_scope), reader, views=(breakout_scope,)
     ).readout(breakout_scope)
     country_breakout_estimates = [
         estimate
@@ -345,11 +334,11 @@ def _(View, estimates_to_readout, experiment, readout_table, resolver, run):
 
 
 @app.cell
-def _(View, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
-    asof_lift_scope = View.asof()
-    daily_estimates = run(
+def _(estimates, estimates_to_readout, experiment, increment, reader, readout_table):
+    asof_lift_scope = increment.View.asof()
+    daily_estimates = increment.run(
         experiment.with_views(asof_lift_scope),
-        resolver,
+        reader,
         views=(asof_lift_scope,),
         metrics=["conversion_rate"],
     ).readout(asof_lift_scope)
@@ -382,27 +371,27 @@ def _(mo):
 
 
 @app.cell
-def _(MOMENTS_PARQUET, experiment, export_moments, pq, resolver):
-    export_moments(experiment, resolver, MOMENTS_PARQUET)
+def _(MOMENTS_PARQUET, experiment, export_moments, pq, reader):
+    export_moments(experiment, reader, MOMENTS_PARQUET)
     exported_moments = pq.read_table(MOMENTS_PARQUET).to_pylist()
     return (exported_moments,)
 
 
 @app.cell
-def _(MetricSpec, definition, exported_moments, from_moments, run):
+def _(definition, exported_moments, increment):
     moment_metrics = [
-        MetricSpec(
+        increment.MetricSpec(
             name="conversion_rate",
             type="conversion",
             window_days=14,
             preferred_direction="increase",
         ),
-        MetricSpec(
+        increment.MetricSpec(
             name="revenue_per_user",
             window_days=14,
             preferred_direction="increase",
         ),
-        MetricSpec(
+        increment.MetricSpec(
             name="average_order_value",
             type="ratio",
             numerator="revenue",
@@ -410,13 +399,13 @@ def _(MetricSpec, definition, exported_moments, from_moments, run):
             window_days=14,
             preferred_direction="increase",
         ),
-        MetricSpec(
+        increment.MetricSpec(
             name="d7_retention",
             type="retention",
             threshold_days=(7, 14),
             preferred_direction="increase",
         ),
-        MetricSpec(
+        increment.MetricSpec(
             name="checkout_latency_ms",
             type="ratio",
             numerator="load_time",
@@ -425,13 +414,13 @@ def _(MetricSpec, definition, exported_moments, from_moments, run):
             preferred_direction="decrease",
         ),
     ]
-    _experiment, _resolver = from_moments(
+    _experiment, _reader = increment.from_moments(
         exported_moments,
         metrics=moment_metrics,
         control=definition.control_group,
         experiment_id=definition.name,
     )
-    rehydrated_estimates = run(_experiment, _resolver).readout()
+    rehydrated_estimates = increment.run(_experiment, _reader).readout()
     return (rehydrated_estimates,)
 
 

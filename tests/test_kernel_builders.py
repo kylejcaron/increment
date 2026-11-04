@@ -447,6 +447,56 @@ def test_reader_public_surface_is_pinned(tmp_path):
     )
 
 
+@pytest.mark.parametrize("backend", ["polars", "pandas"])
+def test_frame_reader_keeps_the_rows_it_was_built_from(backend):
+    import numpy as np
+    import polars as pl
+
+    rng = np.random.default_rng(11)
+    arm = np.where(np.arange(200) % 2, "treatment", "control")
+    columns = {
+        "unit": [f"u{index}" for index in range(200)],
+        "arm": arm,
+        "revenue": rng.gamma(2.0, 5.0, 200),
+        "latency": rng.gamma(3.0, 20.0, 200),
+    }
+    frame = pl.DataFrame(columns) if backend == "polars" else pd.DataFrame(columns)
+
+    def lifts(experiment, reader):
+        from increment.results import LiftEstimates
+
+        readout = run(experiment, reader).readout()
+        assert isinstance(readout, LiftEstimates)
+        return {row.metric: row.require_lift().value for row in readout}
+
+    def build():
+        return from_frame(
+            frame,
+            shape="summary",
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(name="revenue", type="mean"),
+                MetricSpec(name="latency", type="quantile", quantile=0.5),
+            ],
+        )
+
+    experiment, reader = build()
+    built = lifts(experiment, reader)
+    treated = arm == "treatment"
+    if isinstance(frame, pl.DataFrame):
+        for name in ("revenue", "latency"):
+            scaled = frame[name].to_numpy() * np.where(treated, 5.0, 1.0)
+            frame.replace_column(frame.get_column_index(name), pl.Series(name, scaled))
+    else:
+        frame.loc[treated, ["revenue", "latency"]] *= 5.0
+
+    assert lifts(experiment, reader) == built
+    rebuilt = lifts(*build())
+    assert all(rebuilt[name] != built[name] for name in ("revenue", "latency"))
+
+
 def test_closed_reader_refuses_every_read(tmp_path):
     import polars as pl
 

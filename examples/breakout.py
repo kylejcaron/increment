@@ -11,23 +11,20 @@ def _():
     import marimo as mo
     from _seed import seed_event_log
 
-    from increment import Method, View, from_definitions, run
+    import increment
     from increment.evidence import BreakoutIdentity
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import experiment_definition
 
     return (
         BreakoutIdentity,
-        Method,
-        View,
         ct,
         estimates_to_readout,
         experiment_definition,
-        from_definitions,
         ibis,
+        increment,
         mo,
         readout_table,
-        run,
         seed_event_log,
     )
 
@@ -59,9 +56,9 @@ def _(ibis, seed_event_log):
 
 
 @app.cell
-def _(DEFINITIONS, EXPERIMENT, con, from_definitions):
-    experiment, resolver = from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
-    return experiment, resolver
+def _(DEFINITIONS, EXPERIMENT, con, increment):
+    experiment, reader = increment.from_definitions(DEFINITIONS, con, experiment_name=EXPERIMENT)
+    return experiment, reader
 
 
 @app.cell
@@ -82,26 +79,17 @@ def _(mo):
 
 
 @app.cell
-def _(
-    BreakoutIdentity,
-    Method,
-    View,
-    estimates_to_readout,
-    experiment,
-    readout_table,
-    resolver,
-    run,
-):
+def _(BreakoutIdentity, estimates_to_readout, experiment, increment, reader, readout_table):
     # new_onboarding_v2 declares Bonferroni segmented views in
     # examples/definitions/experiments.yaml; its plan keeps fixed-horizon
     # inference because the declared retention guardrail carries a prior.
-    by_country = View.breakout(())
-    asof_lift_by_country = View.asof(segment=(BreakoutIdentity("country", None),))
-    segment_result = run(
+    by_country = increment.View.breakout(())
+    asof_lift_by_country = increment.View.asof(segment=(BreakoutIdentity("country", None),))
+    segment_result = increment.run(
         experiment.with_views(by_country, asof_lift_by_country),
-        resolver,
+        reader,
         views=(by_country, asof_lift_by_country),
-        decision_method=Method(name="unadjusted"),
+        decision_method=increment.Method(name="unadjusted"),
     )
     breakout_table = readout_table(
         estimates_to_readout(segment_result.readout(by_country)),
@@ -128,11 +116,11 @@ def _(mo):
 
 
 @app.cell
-def _(View, ct, experiment, resolver, run):
-    daily_scope = View.daily(values=True)
-    daily_values = run(experiment.with_views(daily_scope), resolver, views=(daily_scope,)).readout(
-        daily_scope
-    )
+def _(ct, experiment, increment, reader):
+    daily_scope = increment.View.daily(values=True)
+    daily_values = increment.run(
+        experiment.with_views(daily_scope), reader, views=(daily_scope,)
+    ).readout(daily_scope)
     daily_frame = daily_values.to_frame(backend="pandas")
 
     value_table = (
@@ -167,13 +155,15 @@ def _(mo):
 
 
 @app.cell
-def _(BreakoutIdentity, View, ct, experiment, experiment_definition, resolver, run):
-    segment_daily_scope = View.daily(values=True, segment=(BreakoutIdentity("country", None),))
-    segment_daily_values = run(
-        experiment.with_views(segment_daily_scope), resolver, views=(segment_daily_scope,)
+def _(BreakoutIdentity, ct, experiment, experiment_definition, increment, reader):
+    segment_daily_scope = increment.View.daily(
+        values=True, segment=(BreakoutIdentity("country", None),)
+    )
+    segment_daily_values = increment.run(
+        experiment.with_views(segment_daily_scope), reader, views=(segment_daily_scope,)
     ).readout(segment_daily_scope)
     segment_daily_frame = segment_daily_values.to_frame(backend="pandas")
-    control_group = experiment_definition(experiment, resolver).control_group
+    control_group = experiment_definition(experiment, reader).control_group
     segment_daily_frame = segment_daily_frame[segment_daily_frame["group_id"] != control_group]
 
     segment_value_table = (
@@ -211,12 +201,12 @@ def _(mo):
 
 
 @app.cell
-def _(View, ct, experiment, resolver, run):
+def _(ct, experiment, increment, reader):
     # its series starts late, absent until the first cohort matures.
-    asof_scope = View.asof(values=True)
-    asof_values = run(experiment.with_views(asof_scope), resolver, views=(asof_scope,)).readout(
-        asof_scope
-    )
+    asof_scope = increment.View.asof(values=True)
+    asof_values = increment.run(
+        experiment.with_views(asof_scope), reader, views=(asof_scope,)
+    ).readout(asof_scope)
     asof_frame = asof_values.to_frame(backend="pandas")
 
     asof_table = (
@@ -249,13 +239,13 @@ def _(mo):
 
 
 @app.cell
-def _(Method, View, estimates_to_readout, experiment, readout_table, resolver, run):
-    whole_window = View.overall()
-    daily_lift_scope = View.daily()
-    lift_result = run(
+def _(estimates_to_readout, experiment, increment, reader, readout_table):
+    whole_window = increment.View.overall()
+    daily_lift_scope = increment.View.daily()
+    lift_result = increment.run(
         experiment.with_views(daily_lift_scope),
-        resolver,
-        decision_method=Method(name="unadjusted"),
+        reader,
+        decision_method=increment.Method(name="unadjusted"),
     )
     calendar_daily_lift = [
         e for e in lift_result.readout(daily_lift_scope) if e.ds_basis == "calendar"
@@ -285,17 +275,17 @@ def _(mo):
 
 
 @app.cell
-def _(Method, View, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
-    asof_lift_scope = View.asof()
+def _(estimates, estimates_to_readout, experiment, increment, reader, readout_table):
+    asof_lift_scope = increment.View.asof()
     readout_table(
         estimates_to_readout(estimates),
         title="new_onboarding_v2 readout, as-of trend",
         subtitle="Relative lift vs control, 95 % credible interval",
-        trend=run(
+        trend=increment.run(
             experiment.with_views(asof_lift_scope),
-            resolver,
+            reader,
             views=(asof_lift_scope,),
-            decision_method=Method(name="unadjusted"),
+            decision_method=increment.Method(name="unadjusted"),
         ).readout(asof_lift_scope),
         trend_label="As-of lift trend",
     )

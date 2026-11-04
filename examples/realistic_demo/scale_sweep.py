@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 import ibis
 import pyarrow.parquet as pq
 
-from increment import from_definitions, run
+import increment
 from increment.workflows import export_moments, materialize
 
 if TYPE_CHECKING:
@@ -141,19 +141,19 @@ def sweep(
 
             con = ibis.duckdb.connect()
             try:
-                experiment, resolver = from_definitions(
+                experiment, reader = increment.from_definitions(
                     _DEFINITIONS, con, experiment_name=_EXPERIMENT
                 )
 
                 start = time.perf_counter()
-                materialize(experiment, resolver)
-                run(experiment, resolver)
+                materialize(experiment, reader)
+                increment.run(experiment, reader)
                 wall_clock_secs = time.perf_counter() - start
 
                 export_dir = _WAREHOUSE / ".scale_sweep_tmp"
                 export_dir.mkdir(parents=True, exist_ok=True)
                 export_path = export_dir / f"moments_{partitions:05d}.parquet"
-                export_moments(experiment, resolver, export_path)
+                export_moments(experiment, reader, export_path)
 
                 moments_rows = pq.read_metadata(export_path).num_rows
                 moments_bytes = export_path.stat().st_size
