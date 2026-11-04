@@ -922,24 +922,49 @@ def _write_checkpoint(path: Path) -> None:
         _close_parity_binding(bound)
 
 
+def _capture_base(repository: Path, declared: str | None) -> str:
+    """Resolve the base main commit and require committed production code identical to it."""
+    import subprocess
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repository), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    revision = declared if declared is not None else git("merge-base", "HEAD", "origin/main")
+    base = git("rev-parse", "--verify", f"{revision}^{{commit}}")
+    git("merge-base", "--is-ancestor", base, "HEAD")
+    uncommitted = git("status", "--porcelain", "--untracked-files=all", "--", "increment")
+    if uncommitted:
+        raise ValueError(f"production package has uncommitted changes:\n{uncommitted}")
+    subprocess.run(
+        ["git", "-C", str(repository), "diff", "--exit-code", base, "--", "increment"],
+        check=True,
+    )
+    return base
+
+
 def capture_consumer_inputs(
     out: Path,
     *,
+    baseline: str | None = None,
     resume: bool = False,
     replace_inputs: bool = False,
     scenarios: tuple[str, ...] = (),
 ) -> None:
-    """Capture typed consumer inputs, never expected statistical outputs."""
+    """Capture typed consumer inputs, never expected statistical outputs.
+
+    Production code must be committed and identical to the base main commit of the capturing
+    change (``baseline``, else the merge base with ``origin/main``), which stamps each new input.
+    """
     import importlib.metadata
     import platform
-    import subprocess
     import sys
 
     import increment
     from tests.evidence_fixtures.scenarios import acquire_scenario, scenario_roster
     from tests.evidence_fixtures.transcript import Transcript
 
-    baseline = "7c324b66f9f758eb78298e6ecf2d1aea29c66709"
     repository = Path(__file__).resolve().parents[1]
     expected_production_root = (repository / "increment").resolve()
     actual_production_root = Path(increment.__file__).resolve().parent
@@ -947,10 +972,7 @@ def capture_consumer_inputs(
         raise ValueError(
             f"production package is outside the validated repository: {actual_production_root}"
         )
-    subprocess.run(
-        ["git", "-C", str(repository), "diff", "--exit-code", baseline, "--", "increment"],
-        check=True,
-    )
+    base = _capture_base(repository, baseline)
     runtime = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
@@ -970,17 +992,19 @@ def capture_consumer_inputs(
                 raise FileExistsError(f"consumer input already exists: {path}")
             saved = json.loads(gzip.decompress(path.read_bytes()))
             if (
-                saved["baseline_revision"] != baseline
+                saved["baseline_revision"] != base
                 or saved["scenario_id"] != entry.scenario_id
                 or saved["ingress"] != entry.ingress
             ):
                 raise ValueError(f"consumer input authority differs: {path}")
             continue
-        acquired = acquire_scenario(entry.scenario_id, entry.ingress, observe_membership=False)
+        acquired = acquire_scenario(
+            entry.scenario_id, entry.ingress, baseline_revision=base, observe_membership=False
+        )
         if acquired.missing_representations:
             raise ValueError(acquired.missing_representations)
         transcript = Transcript(
-            baseline_revision=baseline,
+            baseline_revision=base,
             scenario_id=entry.scenario_id,
             ingress=entry.ingress,
             runtime=runtime,
@@ -997,6 +1021,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--cutover")
     parser.add_argument("--consumer-inputs", action="store_true")
+    parser.add_argument("--baseline", metavar="SHA")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--replace-inputs", action="store_true")
     parser.add_argument("--scenario", action="append", default=[])
@@ -1006,13 +1031,14 @@ def main() -> None:
             parser.error("--consumer-inputs and --cutover are separate capture modes")
         capture_consumer_inputs(
             args.out,
+            baseline=args.baseline,
             resume=args.resume,
             replace_inputs=args.replace_inputs,
             scenarios=tuple(args.scenario),
         )
     else:
-        if args.resume or args.replace_inputs or args.scenario:
-            parser.error("input selection options require --consumer-inputs")
+        if args.baseline is not None or args.resume or args.replace_inputs or args.scenario:
+            parser.error("consumer-input options require --consumer-inputs")
         capture(args.out, cutover=args.cutover)
 
 
