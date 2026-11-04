@@ -416,6 +416,7 @@ class ResolverBinding:
         self.binding = binding
         self.experiment = experiment
         self.catalog_writer = catalog_writer
+        self.definitions_guard: Callable[[], None] | None = None
         self._reopen_artifact = reopen_artifact
         self._closed = False
 
@@ -432,6 +433,8 @@ class ResolverBinding:
 
     def resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> object:
         del source_refs, ctx
+        if self.definitions_guard is not None:
+            self.definitions_guard()
         source = self.binding.state.source
         if self.binding.artifact_open is not None and getattr(source, "closed", False):
             if self._reopen_artifact is None:

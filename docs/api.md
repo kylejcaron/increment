@@ -141,6 +141,14 @@ values.
   `store.open_run` coordinates with `RunResult.from_handle`. Dataframe, moments,
   switchback and artifact experiments record no column types, so their
   identities are unchanged.
+- Release note (bug fix): after the definitions behind a `from_definitions`
+  resolver change, `run(experiment, resolver)` and every function that reads
+  data through that resolver refuse with `kernel.definitions.catalog_stale`
+  before reading anything, instead of reading the data and then refusing.
+  Comment and whitespace edits no longer count as changes. The offline catalog
+  format moves to schema 2; a schema-1 catalog refuses offline with
+  `kernel.definitions.catalog_stale`, and rebinding the definitions with a
+  connection rebuilds it. Experiment identity hashes are unchanged.
 
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal

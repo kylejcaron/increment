@@ -762,10 +762,16 @@ def test_sitewide_serves_a_clustered_multi_arm_experiment(tmp_path):
     named, nets the OTHER arm's clusters out of the baseline exactly like
     it would at iid grain."""
     rows = [*_event_rows(), *_third_arm_rows()]
+    # Each resolver refuses once its definitions file is rewritten, so each gets its own.
+    clustered_path, flat_path = tmp_path / "clustered", tmp_path / "flat"
+    clustered_path.mkdir()
+    flat_path.mkdir()
     clustered_experiment, clustered_resolver = _experiment(
-        tmp_path, cluster=True, rows=rows, windowed=False
+        clustered_path, cluster=True, rows=rows, windowed=False
     )
-    flat_experiment, flat_resolver = _experiment(tmp_path, cluster=False, rows=rows, windowed=False)
+    flat_experiment, flat_resolver = _experiment(
+        flat_path, cluster=False, rows=rows, windowed=False
+    )
 
     with pytest.raises(InvalidRequestError) as refused:
         sitewide(clustered_experiment, clustered_resolver, "revenue_per_user")

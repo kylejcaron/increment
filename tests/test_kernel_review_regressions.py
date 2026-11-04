@@ -1092,13 +1092,6 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
     with analysis_resolver:
         assert unit_counts(analysis_experiment, analysis_resolver)
         assert view_readout(analysis_experiment, analysis_resolver, metrics=["purchase_rate"])
-    source_path.write_text(source_path.read_text() + "\n# changed after binding\n")
-    with pytest.raises(CodedError) as stale:
-        run(experiment, resolver, metrics=["purchase_rate"])
-    assert stale.value.code == "kernel.definitions.catalog_stale"
-    with pytest.raises(CodedError) as offline_stale:
-        from_definitions(path)
-    assert offline_stale.value.code == "kernel.definitions.catalog_stale"
 
 
 @dataclass

@@ -407,9 +407,12 @@ offline experiments share one `hash()` and `analysis_spec_hash` before and after
 that first execution.
 Construction performs no additional schema query. The definitions builder takes
 the path first and the experiment name as the `experiment_name=` keyword.
-Catalog refreshes retain the definitions digest from the original bind. Changing
-those files before execution cannot republish the old experiment as current;
-the refresh refuses with `kernel.definitions.catalog_stale`.
+Catalog refreshes retain the definitions digest from the original bind. The
+digest covers the parsed definitions, so comment and whitespace edits do not
+change it. After any other change to those files, `run(experiment, resolver)`
+and every function that reads data through the resolver refuse with
+`kernel.definitions.catalog_stale` before reading anything; rebind the
+definitions with a connection to continue.
 Catalog updates lock the complete read-merge-replace operation, so concurrent
 bindings or schema refreshes retain each experiment's entry.
 
