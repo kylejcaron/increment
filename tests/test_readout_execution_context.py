@@ -4,7 +4,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from increment import Scope, builders, from_definitions, from_frame, workflows
+from increment import View, builders, from_definitions, from_frame, workflows
 from increment import run as run_views
 from increment._dashboard_capture import capture_dashboard
 from increment.evidence import BreakoutIdentity
@@ -20,13 +20,13 @@ from tests.analysis_factory import (
 )
 from tests.source_conformance import definitions_source
 
-_ASSIGNED = Scope(view="run", grain="total")
-_TRIGGERED = Scope(view="run", grain="total", population="triggered")
+_ASSIGNED = View(view="run", grain="total")
+_TRIGGERED = View(view="run", grain="total", population="triggered")
 
 
 def _both_populations(experiment: Any, resolver: Any, **options: Any) -> list[Any]:
     """Whole-window rows of the assigned and triggered populations, read in one run."""
-    result = run_views(experiment.with_views(_ASSIGNED, _TRIGGERED), resolver, **options)
+    result = run_views(experiment.with_views(_TRIGGERED), resolver, **options)
     return [*result.readout(_ASSIGNED), *result.readout(_TRIGGERED)]
 
 
@@ -654,8 +654,8 @@ def test_collection_concat_preserves_and_checks_coherence_metadata(tmp_path):
 def test_daily_and_asof_collections_keep_distinct_scope_identity_and_mode(tmp_path):
     (experiment, resolver), _ = definitions_source(tmp_path, return_binding=True)
     try:
-        daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
-        asof = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
+        daily = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
+        asof = view_readout(experiment, resolver, View(view="asof", grain="asof", values=True))
         assert daily and asof
         assert daily.metadata is not None
         assert asof.metadata is not None
@@ -719,9 +719,9 @@ def test_artifact_day_axis_keeps_captured_metadata(tmp_path, view):
     experiment, resolver = unit_day_artifact_analysis(tmp_path)
     try:
         collection = (
-            view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+            view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
             if view == "daily"
-            else view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
+            else view_readout(experiment, resolver, View(view="asof", grain="asof", values=True))
         )
         assert collection.metadata is not None
         assert collection.metadata.coherence == "captured"
@@ -764,7 +764,7 @@ def test_clustered_day_axis_refuses_before_opening_context(tmp_path, monkeypatch
     monkeypatch.setattr(source, "readout_snapshot", count_snapshot)
     try:
         with pytest.raises(CodedError):
-            view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+            view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
         assert reads == 0
     finally:
         resolver.close()
@@ -843,8 +843,8 @@ def test_standalone_value_read_skips_separately_sourced_cuped_covariate(
     con.drop_table("profiles")
     try:
         scope = {
-            "run_daily": Scope(view="daily", grain="daily", values=True),
-            "run_asof": Scope(view="asof", grain="asof", values=True),
+            "run_daily": View(view="daily", grain="daily", values=True),
+            "run_asof": View(view="asof", grain="asof", values=True),
         }[operation]
         rows = view_readout(analysis_experiment, analysis_resolver, scope, metrics=["revenue"])
         assert rows
@@ -1201,10 +1201,10 @@ def test_standalone_frame_panel_readouts_own_mode_metadata():
     experiment, resolver = frame_panel_analysis()
     try:
         for scope in (
-            Scope(view="daily", grain="daily", values=True),
-            Scope(view="daily", grain="daily"),
-            Scope(view="asof", grain="asof"),
-            Scope(view="breakout", grain="total"),
+            View(view="daily", grain="daily", values=True),
+            View(view="daily", grain="daily"),
+            View(view="asof", grain="asof"),
+            View(view="breakout", grain="total"),
         ):
             rows = view_readout(experiment, resolver, scope)
             assert rows
@@ -1681,7 +1681,7 @@ def test_undeclared_breakout_source_refuses_before_the_read(tmp_path, monkeypatc
             view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 execution_context=context,
             )
         assert refused.value.code == "kernel.context.undeclared_stream"
@@ -1815,7 +1815,7 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell_without_extra_event(tmp
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 values=True,
@@ -2000,24 +2000,24 @@ def test_breakout_override_preserves_sibling_daily_lift_configuration(tmp_path):
     )
     try:
         standalone_daily = view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily"), metrics=("revenue_cuped",)
+            experiment, resolver, View(view="daily", grain="daily"), metrics=("revenue_cuped",)
         )
         standalone_asof = view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof"), metrics=("revenue_cuped",)
+            experiment, resolver, View(view="asof", grain="asof"), metrics=("revenue_cuped",)
         )
         view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             metrics=("revenue_cuped",),
             decision_method=Method.unadjusted(name="breakout-only"),
         )
         scoped = {
             "daily_lift": view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily"), metrics=("revenue_cuped",)
+                experiment, resolver, View(view="daily", grain="daily"), metrics=("revenue_cuped",)
             ),
             "asof_lift": view_readout(
-                experiment, resolver, Scope(view="asof", grain="asof"), metrics=("revenue_cuped",)
+                experiment, resolver, View(view="asof", grain="asof"), metrics=("revenue_cuped",)
             ),
         }
         assert standalone_daily and standalone_asof
@@ -2056,10 +2056,10 @@ def test_unsegmented_day_axis_reads_do_not_require_separate_breakout_sources(tmp
     ):
         con.drop_table("profiles", database="analytics")
         for scope in (
-            Scope(view="daily", grain="daily", values=True),
-            Scope(view="asof", grain="asof", values=True),
-            Scope(view="daily", grain="daily"),
-            Scope(view="asof", grain="asof"),
+            View(view="daily", grain="daily", values=True),
+            View(view="asof", grain="asof", values=True),
+            View(view="daily", grain="daily"),
+            View(view="asof", grain="asof"),
         ):
             rows = view_readout(experiment, resolver, scope, metrics=["revenue_per_user"])
             assert rows
@@ -2133,7 +2133,7 @@ def test_breakout_scope_excludes_unselected_metric_fact_source(tmp_path):
     try:
         con.drop_table("unused_events")
         rows = view_readout(
-            experiment, resolver, Scope(view="breakout", grain="total"), metrics=["revenue"]
+            experiment, resolver, View(view="breakout", grain="total"), metrics=["revenue"]
         )
         assert rows
         assert {row.metric for row in rows} == {"revenue"}
@@ -2194,7 +2194,7 @@ def test_daily_dimension_does_not_capture_unselected_dimension_source(tmp_path):
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
             ),
             metrics=["revenue"],
@@ -2224,7 +2224,7 @@ def test_standalone_daily_lift_rejects_sequential_plan_before_snapshot(tmp_path,
     monkeypatch.setattr(source, "readout_snapshot", count_snapshot)
     try:
         with pytest.raises(UnsupportedRequestError) as raised:
-            view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+            view_readout(experiment, resolver, View(view="daily", grain="daily"))
         assert raised.value.code == "readout.inference.disjoint_slices"
         assert snapshots == 0
     finally:
@@ -2265,7 +2265,7 @@ def test_undeclared_breakout_dimension_refuses_before_the_read(tmp_path, monkeyp
             view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 execution_context=context,
             )
         assert refused.value.code == "kernel.context.undeclared_stream"
@@ -2289,14 +2289,14 @@ def test_run_reuses_one_capture_for_primary_and_auxiliary_views(tmp_path, monkey
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path)
     scopes = (
-        Scope(view="run", grain="total"),
-        Scope(view="breakout", grain="total", segment=(BreakoutIdentity("store", None),)),
-        Scope(view="daily", grain="daily"),
-        Scope(view="daily", grain="daily", values=True),
-        Scope(view="asof", grain="asof"),
-        Scope(view="asof", grain="asof", values=True),
+        View(view="run", grain="total"),
+        View(view="breakout", grain="total", segment=(BreakoutIdentity("store", None),)),
+        View(view="daily", grain="daily"),
+        View(view="daily", grain="daily", values=True),
+        View(view="asof", grain="asof"),
+        View(view="asof", grain="asof", values=True),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     source = resolver._binding.source
     captures = 0
     original = source.readout_snapshot
@@ -2378,7 +2378,7 @@ def test_daily_missing_date_keeps_exact_segment_arm_cell(tmp_path):
         rows = view_readout(
             experiment,
             resolver,
-            Scope(
+            View(
                 view="daily",
                 grain="daily",
                 values=True,
@@ -2494,7 +2494,7 @@ def test_line_four_daily_readout_preserves_triggered_population(tmp_path):
         result = view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", values=True, population="triggered"),
+            View(view="daily", grain="daily", values=True, population="triggered"),
         )
         assert result
         assert {row.analysis_population for row in result} == {"triggered"}
@@ -2591,8 +2591,8 @@ def test_triggered_day_axis_borrows_the_run_capture(tmp_path):
         return_binding=True,
         return_connection=True,
     )
-    whole = Scope(view="run", grain="total", population="triggered")
-    daily = Scope(view="daily", grain="daily", values=True, population="triggered")
+    whole = View(view="run", grain="total", population="triggered")
+    daily = View(view="daily", grain="daily", values=True, population="triggered")
     try:
         expected = view_readout(experiment, resolver, daily)
         context = _population_context(resolver, population="triggered")
@@ -2600,7 +2600,10 @@ def test_triggered_day_axis_borrows_the_run_capture(tmp_path):
             context.open()
             connection.raw_sql("DELETE FROM raw_events WHERE event = 'purchase'")
             result = run_views(
-                experiment.with_views(whole, daily), resolver, execution_context=context
+                experiment.with_views(whole, daily),
+                resolver,
+                views=(whole, daily),
+                execution_context=context,
             )
             assert result.readout(whole)
             actual = result.readout(daily)
@@ -2648,7 +2651,7 @@ def test_compliance_only_day_axis_rejects_another_analysis_source():
             view_readout(
                 experiment,
                 resolver,
-                Scope(view="asof", grain="asof"),
+                View(view="asof", grain="asof"),
                 estimands=("compliance",),
                 execution_context=context,
             )
@@ -2677,7 +2680,7 @@ def test_scoped_run_result_supports_pickle_and_deepcopy(tmp_path):
 
     (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
     try:
-        result = run_views(experiment.with_views(_ASSIGNED, _TRIGGERED), resolver)
+        result = run_views(experiment.with_views(_TRIGGERED), resolver)
         for rows in (result.readout(_ASSIGNED), result.readout(_TRIGGERED)):
             assert rows.metadata is not None
             for restored in (pickle.loads(pickle.dumps(rows)), copy.deepcopy(rows)):
@@ -2695,7 +2698,7 @@ def test_scoped_callback_uses_its_actual_encouragement_estimands():
     experiment, resolver = encouragement_panel_analysis()
     try:
         rows = view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily"), estimands=("itt",)
+            experiment, resolver, View(view="daily", grain="daily"), estimands=("itt",)
         )
         assert rows
         assert {row.estimand for row in rows} == {"itt"}

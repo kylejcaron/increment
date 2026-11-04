@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from increment.evidence import EvidenceCapabilities
-from increment.kernel.contracts import Registration, Scope
+from increment.kernel.contracts import Registration, View
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import resolve, runnable
 
@@ -33,7 +33,7 @@ def test_resolve_refuses_scope_grain_missing_from_declared_capabilities():
         source_refs=(
             SourceReference(name="events", uri="frame://events", capabilities=capabilities),
         ),
-        scopes=(Scope(view="daily", grain="daily"),),
+        views=(View(view="daily", grain="daily"),),
     )
 
     refusals = resolve("randomized.unadjusted", experiment, "orders")
@@ -76,7 +76,7 @@ def test_runnable_uses_recorded_capabilities_after_json_restore():
                 capabilities=capabilities,
             ),
         ),
-        scopes=(Scope(view="daily", grain="daily"),),
+        views=(View(view="daily", grain="daily"),),
     )
     unsupported = Experiment(
         experiment_id="checkout",
@@ -91,7 +91,7 @@ def test_runnable_uses_recorded_capabilities_after_json_restore():
                 capabilities=replace(capabilities, grains=frozenset({"total"})),
             ),
         ),
-        scopes=(Scope(view="daily", grain="daily"),),
+        views=(View(view="daily", grain="daily"),),
     )
 
     supported_loaded = Experiment.from_json(supported.to_json())
@@ -120,8 +120,8 @@ def test_runnable_reports_unknown_without_recorded_capabilities_after_json_resto
                 schema={"orders": "float64"},
             ),
         ),
-        scopes=(
-            Scope(
+        views=(
+            View(
                 view="daily",
                 grain="daily",
                 segment=({"property": "country", "source": None},),
@@ -160,8 +160,8 @@ def test_runnable_names_authored_source_and_selection_for_unavailable_breakouts(
         source_refs=(
             SourceReference(name="events", uri="frame://events", capabilities=capabilities),
         ),
-        scopes=(
-            Scope(
+        views=(
+            View(
                 view="breakout",
                 grain="total",
                 segment=({"property": "unknown", "source": None},),
@@ -224,7 +224,7 @@ def test_multicovariate_runnability_uses_alternative_evidence_routes():
                     capabilities=declared,
                 ),
             ),
-            scopes=(Scope(view="run", grain="total"),),
+            views=(View(view="run", grain="total"),),
         )
 
     refused = runnable(experiment_for(capabilities), "orders")[

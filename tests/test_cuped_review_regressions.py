@@ -5,7 +5,7 @@ from typing import Any, cast
 import pyarrow as pa
 import pytest
 
-from increment import AnalysisPlan, Method, MetricSpec, Scope, from_frame
+from increment import AnalysisPlan, Method, MetricSpec, View, from_frame
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import IncrementWarning
 from increment.estimation.decision_types import PValueEvidence
@@ -301,7 +301,7 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
     )
     headline = view_readout(experiment, resolver)
     with pytest.warns():
-        breakout = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        breakout = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     for results in (headline, breakout):
         for restored in (
             results,

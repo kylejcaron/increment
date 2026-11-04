@@ -973,7 +973,7 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
 
     import ibis
 
-    from increment import Scope, run
+    from increment import View, run
     from increment.readouts import _sequential_scope
     from tests.analysis_factory import lift_rows
     from tests.test_sequential_public_sources import _native_fixture
@@ -1012,11 +1012,11 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
         return original_integrity(*args, **kwargs)
 
     monkeypatch.setattr(_sequential_scope, "assignment_integrity", counted_integrity)
-    assigned_scope = Scope(view="run", grain="total")
-    triggered_scope = Scope(view="run", grain="total", population="triggered")
+    assigned_scope = View(view="run", grain="total")
+    triggered_scope = View(view="run", grain="total", population="triggered")
     armed = True
     try:
-        shared = run(experiment.with_views(assigned_scope, triggered_scope), resolver)
+        shared = run(experiment.with_views(triggered_scope), resolver)
     finally:
         armed = False
         resolver.close()

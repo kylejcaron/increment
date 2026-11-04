@@ -16,7 +16,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from increment import AnalysisPlan, MetricSpec, Scope, from_frame, from_switchback_frame
+from increment import AnalysisPlan, MetricSpec, View, from_frame, from_switchback_frame
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import estimate_lift
 from increment.estimation.readout_types import ReadoutResults
@@ -137,7 +137,7 @@ def test_observational_and_breakout_rows_carry_metric_type():
     )
     try:
         breakout = view_readout(
-            panel_experiment, panel_resolver, Scope(view="breakout", grain="total")
+            panel_experiment, panel_resolver, View(view="breakout", grain="total")
         )
     finally:
         panel_resolver.close()
@@ -309,7 +309,7 @@ def test_daily_lift_rows_carry_metric_type():
         metrics=FRAME_METRICS,
     )
     try:
-        rows = view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+        rows = view_readout(experiment, resolver, View(view="daily", grain="daily"))
     finally:
         resolver.close()
     _assert_stamped(rows, DECLARED)
@@ -329,8 +329,8 @@ def test_daily_and_asof_value_rows_carry_metric_type():
         metrics=FRAME_METRICS,
     )
     try:
-        daily = view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
-        asof = view_readout(experiment, resolver, Scope(view="asof", grain="asof", values=True))
+        daily = view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
+        asof = view_readout(experiment, resolver, View(view="asof", grain="asof", values=True))
     finally:
         resolver.close()
     for values in (daily, asof):

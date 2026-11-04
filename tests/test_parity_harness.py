@@ -701,8 +701,8 @@ class _SplitDayAxis:
         from increment.breakout.estimates import DailyMetricValue
         from increment.errors import CapabilityError
 
-        self.calls.append(tuple((scope.view, scope.values) for scope in experiment.scopes))
-        if not all(scope.values for scope in experiment.scopes):
+        self.calls.append(tuple((scope.view, scope.values) for scope in experiment.views))
+        if not all(scope.values for scope in experiment.views):
             raise CapabilityError("lift refuses", code="facade.analysis.lift_refused", context={})
         rows = [
             DailyMetricValue(

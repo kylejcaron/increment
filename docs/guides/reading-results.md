@@ -7,7 +7,7 @@ keep one format:
 
 | Need | Read | Format |
 |---|---|---|
-| The full result collection one view produced | `result.readout(scope)` | The `LiftEstimates`, `BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues` or `ContrastResults` described below, with every row field and live confidence set. `model_dump_json()` writes its full-row JSON. |
+| The full result collection one view produced | `result.readout(view)` | The `LiftEstimates`, `BreakoutEstimates`, `DailyLiftEstimates`, `DailyMetricValues` or `ContrastResults` described below, with every row field and live confidence set. `model_dump_json()` writes its full-row JSON. |
 | One frame of every result row | `result.to_frame()` | Each row's `scope_view`, `scope_values` and `scope_key`, then its collection's `to_frame` columns, with qualification columns that describe the whole run. |
 | Portable cells to exchange or archive | `result.envelope.to_payload()` or `.to_arrow()` | Versioned result cells and run metadata; no raw outcomes. |
 | A saved run to decide again | `results_store=` on `run`, then `RunResult.from_handle` | The stored run's cells and decision plan. |
@@ -59,13 +59,13 @@ saved_rows = rows.model_dump_json()
 ```
 
 A table compares rows of one view, so table each view of a several-view run
-with `readout_table(result.readout(scope))`. A frame of several views shares
+with `readout_table(result.readout(view))`. A frame of several views shares
 their common columns; a column one row type lacks is null on the other rows.
 Every `result.to_frame()` row leads with three scope columns, null only for a
 saved cell that records no scope. `scope_view` (string) and `scope_values`
 (nullable boolean) are the `view` and `values` of the scope that produced the
 row. `scope_key` (string) identifies the view a row came from: every row of one
-view shares it. It is `Scope.hash()` of the row's scope without its day,
+view shares it. It is `View.hash()` of the row's view without its day,
 segment and population, which are row columns (`ds`, `dimension`/
 `dimension_value` and `analysis_population`), so a view declared without
 `through_day`, `segment` or a `triggered` population has
@@ -229,7 +229,7 @@ live result refuses rather than dropping the set or exposing its raw outcomes;
 confidence set and the raw outcomes it depends on, when that is required.
 
 Each view reads one population, declared by its view constructor; for example,
-`Scope.daily(population="triggered")`. The default is `"assigned"`. To read a
+`View.daily(population="triggered")`. The default is `"assigned"`. To read a
 triggered experiment's assigned and triggered results together, declare one
 view per population; a view never pools the two.
 Under a registered sequential plan each population reads its own retained chain of the
@@ -503,8 +503,8 @@ LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='d
     `ContrastResults.to_frame` does not, because every contrast is additive; only
     the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
-    Each view reads the population its `Scope` declares, `"assigned"` by
-    default; declare `Scope.run(population="triggered")`
+    Each view reads the population its `View` declares, `"assigned"` by
+    default; declare `View.overall(population="triggered")`
     beside the default view to read both populations as separate rows. A triggered row belongs
     to its own multiplicity family. Conditioning on triggering is causally
     valid only under the experiment's assumptions; triggering affected by

@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from examples._seed import seed_event_log
-from increment import Scope, from_definitions, from_unit_day_artifact, workflows
+from increment import View, from_definitions, from_unit_day_artifact, workflows
 from increment._moment_plan import SLOTS
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
@@ -45,7 +45,13 @@ from increment.semantics.loader import load
 from increment.semantics.models import Definitions
 from increment.workflows import experiment_definition, export_moments, srm
 from tests._shared_cache import fixture_cache_key, get_or_build
-from tests.analysis_factory import bound_source, lift_rows, make_binding_like, view_readout
+from tests.analysis_factory import (
+    bound_source,
+    declare_views,
+    lift_rows,
+    make_binding_like,
+    view_readout,
+)
 
 
 def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> pa.Table:
@@ -777,14 +783,14 @@ def test_publish_open_runs_the_same_arm_operations_and_refuses_after_close() -> 
         view_readout(
             adopted_experiment,
             adopted_resolver,
-            Scope(view="daily", grain="daily", values=True),
+            View(view="daily", grain="daily", values=True),
             metrics=["purchase_rate"],
         )
     ) == len(
         view_readout(
             native_experiment,
             native_resolver,
-            Scope(view="daily", grain="daily", values=True),
+            View(view="daily", grain="daily", values=True),
             metrics=["purchase_rate"],
         )
     )
@@ -837,11 +843,11 @@ def _population_readouts(
     """
     from increment import run
 
-    scopes = [
-        Scope(view=view, grain="total", population=population)
+    scopes = tuple(
+        View(view=view, grain="total", population=population)
         for population in ("assigned", "triggered")
-    ]
-    result = run(experiment.with_views(*scopes), resolver, **options)
+    )
+    result = run(declare_views(experiment, *scopes), resolver, views=scopes, **options)
     return result, [row for scope in scopes for row in result.readout(scope)]
 
 
@@ -933,7 +939,7 @@ def test_public_extension_selection_uses_the_immutable_catalog() -> None:
     assert view_readout(
         adopted_experiment,
         adopted_resolver,
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=["purchase_rate"],
     )
     with pytest.raises(ArtifactContractError):
@@ -1242,7 +1248,7 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
         assert any(row.method == "cuped" for row in rows)
         assert view_readout(
             *adopted,
-            Scope(view="breakout", grain="total", population="assigned"),
+            View(view="breakout", grain="total", population="assigned"),
             metrics=["purchase_rate"],
         )
         assert digest_batch_sizes == []
@@ -1567,7 +1573,7 @@ def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
     assert view_readout(
         adopted_experiment,
         adopted_resolver,
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=["purchase_rate"],
     )
 
@@ -1638,7 +1644,7 @@ def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     assert view_readout(
         adopted_experiment,
         adopted_resolver,
-        Scope(view="daily", grain="daily"),
+        View(view="daily", grain="daily"),
         metrics=["d7_retention"],
     )
 
@@ -1756,7 +1762,7 @@ def test_incomplete_breakout_coverage_refuses_before_reduction(tmp_path: Path) -
         view_readout(
             adopted_experiment,
             adopted_resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             metrics=["purchase_rate"],
         )
     assert raised.value.code == "artifact.extension.missing"
@@ -1811,9 +1817,9 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
     experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     country = (BreakoutIdentity("country", None),)
     scopes = (
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         *(
-            Scope(view=view, grain=view, values=values, segment=country)
+            View(view=view, grain=view, values=values, segment=country)
             for view in ("daily", "asof")
             for values in (False, True)
         ),
@@ -1823,6 +1829,7 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
         result = run(
             experiment.with_views(*scopes),
             resolver,
+            views=scopes,
             metrics=["purchase_rate"],
         )
         by_view: dict[tuple[str, bool], set[tuple[str | None, str | None]]] = {}
@@ -1835,10 +1842,15 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
         assert by_view == {(scope.view, scope.values): both for scope in scopes}
         run_metadata = result.run.metadata
         assert run_metadata is not None and len(run_metadata.captures) == 1
-        secondary = (BreakoutIdentity("country", "event_log_secondary"),)
+        secondary = View(
+            view="breakout",
+            grain="total",
+            segment=(BreakoutIdentity("country", "event_log_secondary"),),
+        )
         qualified = run(
-            experiment.with_views(Scope(view="breakout", grain="total", segment=secondary)),
+            experiment.with_views(secondary),
             resolver,
+            views=(secondary,),
             metrics=["purchase_rate"],
         )
     assert qualified.cells
@@ -2070,10 +2082,10 @@ def test_clustered_sitewide_supplies_assignment_counts(tmp_path: Path) -> None:
     from increment.errors import CapabilityError
 
     for method, scope in (
-        ("run_daily", Scope(view="daily", grain="daily", values=True)),
-        ("run_daily_lift", Scope(view="daily", grain="daily")),
-        ("run_asof", Scope(view="asof", grain="asof", values=True)),
-        ("run_asof_lift", Scope(view="asof", grain="asof")),
+        ("run_daily", View(view="daily", grain="daily", values=True)),
+        ("run_daily_lift", View(view="daily", grain="daily")),
+        ("run_asof", View(view="asof", grain="asof", values=True)),
+        ("run_asof_lift", View(view="asof", grain="asof")),
     ):
         with pytest.raises(CapabilityError) as raised:
             view_readout(adopted_experiment, adopted_resolver, scope, metrics=["revenue"])
@@ -2980,8 +2992,8 @@ def test_mixed_daily_metrics_preserve_calendar_and_cohort_axes(con, tmp_path):
     ]
     assert {metric.name for metric in metrics} == {"avg_session_duration", "d7_retention"}
     scopes = {
-        "run_daily": Scope(view="daily", grain="daily", values=True),
-        "run_daily_lift": Scope(view="daily", grain="daily"),
+        "run_daily": View(view="daily", grain="daily", values=True),
+        "run_daily_lift": View(view="daily", grain="daily"),
     }
     expected = {
         method: list(view_readout(*native, scope, metrics=metrics))

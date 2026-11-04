@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from itertools import chain
 from typing import Any, Literal
 
-from increment import Experiment, Scope, run
+from increment import Experiment, View, run
 from increment.evidence import BreakoutIdentity
+from tests.analysis_factory import declare_views
 
-View = Literal["run", "breakout", "daily", "daily_lift", "asof", "asof_lift"]
+ViewName = Literal["run", "breakout", "daily", "daily_lift", "asof", "asof_lift"]
 Population = Literal["assigned", "triggered"]
 
 
@@ -52,12 +53,12 @@ def captured_populations(experiment: Experiment) -> tuple[Population, ...]:
 
 def view_scopes(
     experiment: Experiment,
-    view: View = "run",
+    view: ViewName = "run",
     *,
     population: Population | None = None,
     dimension: str | None = None,
     completed: bool = False,
-) -> tuple[Scope, ...]:
+) -> tuple[View, ...]:
     """The scopes one read declares: one per selected population of a whole-window or
     breakout read, or the single scope of a day-axis read."""
     if view in ("run", "breakout"):
@@ -65,15 +66,15 @@ def view_scopes(
             "breakout"
             if view == "breakout"
             else next(
-                (scope.view for scope in experiment.scopes if scope.view == "switchback"), "run"
+                (scope.view for scope in experiment.views if scope.view == "switchback"), "run"
             )
         )
         populations = captured_populations(experiment) if population is None else (population,)
-        return tuple(Scope(view=kind, grain="total", population=item) for item in populations)
+        return tuple(View(view=kind, grain="total", population=item) for item in populations)
     axis, _, lift = view.partition("_")
     grain: Literal["daily", "asof"] = "daily" if axis == "daily" else "asof"
     return (
-        Scope(
+        View(
             view=grain,
             grain=grain,
             values=not lift,
@@ -84,7 +85,7 @@ def view_scopes(
     )
 
 
-def collect(result: Any, scopes: tuple[Scope, ...]) -> Any:
+def collect(result: Any, scopes: tuple[View, ...]) -> Any:
     """The read's collection: one scope's readout unchanged, or every population's together."""
     if len(scopes) == 1:
         return result.readout(scopes[0])
@@ -93,7 +94,7 @@ def collect(result: Any, scopes: tuple[Scope, ...]) -> Any:
 
 def read(
     bound: tuple[Experiment, Any],
-    view: View = "run",
+    view: ViewName = "run",
     *,
     population: Population | None = None,
     dimension: str | None = None,
@@ -105,4 +106,6 @@ def read(
     scopes = view_scopes(
         experiment, view, population=population, dimension=dimension, completed=completed
     )
-    return collect(run(experiment.with_views(*scopes), resolver, **options), scopes)
+    return collect(
+        run(declare_views(experiment, *scopes), resolver, views=scopes, **options), scopes
+    )

@@ -79,7 +79,7 @@ from tests.estimation._binomial_endpoint_reference import assert_set_contains_fi
 from tests.parity_harness.scalar_capability_cases import capability_cases
 
 from . import dataset as ds
-from .views import View, read
+from .views import ViewName, read
 
 if TYPE_CHECKING:
     from increment.query.artifact_contract import ArtifactContext
@@ -671,7 +671,7 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
         ):
             candidate = builder()
             try:
-                views: tuple[tuple[View, dict[str, Any]], ...] = (
+                views: tuple[tuple[ViewName, dict[str, Any]], ...] = (
                     ("run", {}),
                     ("breakout", {}),
                     ("daily_lift", {"estimands": ("compliance",)}),

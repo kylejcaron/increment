@@ -18,7 +18,7 @@ import ibis
 import pytest
 
 from examples._seed import seed_event_log
-from increment import Method, Scope, from_definitions, from_unit_day_artifact, readouts, workflows
+from increment import Method, View, from_definitions, from_unit_day_artifact, readouts, workflows
 from increment.breakout.estimates import run_daily as _day_axis_values
 from increment.evidence import (
     BreakoutIdentity,
@@ -198,11 +198,11 @@ def _run_public_view(
     experiment, resolver = analysis
     segment = () if dimension is None else (BreakoutIdentity(dimension, None),)
     scopes = {
-        "daily": Scope(view="daily", grain="daily", values=True, segment=segment),
-        "daily_lift": Scope(view="daily", grain="daily", segment=segment),
-        "asof": Scope(view="asof", grain="asof", values=True, segment=segment),
-        "asof_lift": Scope(view="asof", grain="asof", segment=segment),
-        "breakout": Scope(view="breakout", grain="total"),
+        "daily": View(view="daily", grain="daily", values=True, segment=segment),
+        "daily_lift": View(view="daily", grain="daily", segment=segment),
+        "asof": View(view="asof", grain="asof", values=True, segment=segment),
+        "asof_lift": View(view="asof", grain="asof", segment=segment),
+        "breakout": View(view="breakout", grain="total"),
     }
     if view not in scopes:
         raise AssertionError(f"unknown public view {view!r}")
@@ -384,7 +384,7 @@ def test_adopted_breakout_refusal_has_stable_extension_code(readonly_publication
         view_readout(
             adopted_experiment,
             adopted_resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             metrics=["purchase_rate"],
         )
     assert raised.value.code == "artifact.extension.missing"
@@ -419,13 +419,13 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric(example_definitio
     daily_rows = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True),
+        View(view="daily", grain="daily", values=True),
         metrics=["avg_session_duration", metric],
     )
     asof_rows = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", values=True),
+        View(view="asof", grain="asof", values=True),
         metrics=["avg_session_duration", metric],
     )
 
@@ -459,7 +459,7 @@ def test_run_daily_shares_native_day_source_across_selected_metrics(
         rows = view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", values=True),
+            View(view="daily", grain="daily", values=True),
             metrics=list(selected),
         )
 
@@ -514,7 +514,7 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_daily(cross_sou
     results = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
     )
     sources_seen = {r.source for r in results}
     assert sources_seen == {"src_a", "src_b"}
@@ -546,7 +546,7 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_daily_lift(cros
     results = view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
         decision_method=Method(name="unadjusted"),
     )
     assert {e.source for e in results} == {"src_a", "src_b"}
@@ -572,7 +572,7 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof(cross_sour
     results = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="asof", grain="asof", values=True, segment=BreakoutIdentity("country", None)),
     )
     assert {e.source for e in results} == {"src_a", "src_b"}
     for source in ("src_a", "src_b"):
@@ -597,7 +597,7 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
     results = view_readout(
         experiment,
         resolver,
-        Scope(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
+        View(view="asof", grain="asof", segment=BreakoutIdentity("country", None)),
         decision_method=Method(name="unadjusted"),
     )
     assert {e.source for e in results} == {"src_a", "src_b"}
@@ -688,7 +688,7 @@ def test_public_run_breakout_preserves_cuped_variance_reduction(pre_period_analy
         view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             decision_method=methods[0],
             sensitivity_methods=tuple(methods[1:]),
             metrics=selected,
@@ -754,7 +754,7 @@ def test_public_run_breakout_disambiguates_multiple_fact_sources(cross_source_co
         UserWarning,
         match=r"run_breakout: segment .* (?:excluded|skipped|no usable|fewer than)",
     ):
-        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        results = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     sources_seen = {r.source for r in results}
     assert sources_seen == {"src_a", "src_b"}
     assert {r.metric for r in results} == {"visit_rate", "checkout"}
@@ -795,7 +795,7 @@ def test_breakout_moments_source_survives_mixed_winsorization_metrics(seeded_ana
     rows = view_readout(
         experiment,
         resolver,
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         metrics=[winsorized, purchase_rate],
     )
     public_winsorized_rows = [r for r in rows if r.metric == "avg_session_duration"]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from increment import Scope, from_frame, from_switchback_frame
+from increment import View, from_frame, from_switchback_frame
 from increment._evidence_dispatch import ContrastReadoutRequest
 from increment.artifacts import publish_unit_day_artifact
 from increment.decision import ContrastDecisionProcedure
@@ -45,11 +45,11 @@ def _assignment() -> SwitchbackAssignment:
 
 
 _DAY_AXIS_AND_BREAKOUT_SCOPES = {
-    "run_daily": Scope(view="daily", grain="daily", values=True),
-    "run_daily_lift": Scope(view="daily", grain="daily"),
-    "run_asof": Scope(view="asof", grain="asof", values=True),
-    "run_asof_lift": Scope(view="asof", grain="asof"),
-    "run_breakout": Scope(view="breakout", grain="total"),
+    "run_daily": View(view="daily", grain="daily", values=True),
+    "run_daily_lift": View(view="daily", grain="daily"),
+    "run_asof": View(view="asof", grain="asof", values=True),
+    "run_asof_lift": View(view="asof", grain="asof"),
+    "run_breakout": View(view="breakout", grain="total"),
 }
 
 

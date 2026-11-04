@@ -12,7 +12,7 @@ def imports():
     import marimo as mo
     import pyarrow.parquet as pq
 
-    from increment import MetricSpec, Scope, from_definitions, from_moments, run
+    from increment import MetricSpec, View, from_definitions, from_moments, run
     from increment.query import summary_sql
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import experiment_definition, export_moments, srm
@@ -27,7 +27,7 @@ def imports():
         MOMENTS_PARQUET,
         MetricSpec,
         Path,
-        Scope,
+        View,
         WAREHOUSE,
         estimates_to_readout,
         experiment_definition,
@@ -323,11 +323,11 @@ def _(mo):
 
 
 @app.cell
-def _(Scope, estimates_to_readout, experiment, readout_table, resolver, run):
-    breakout_scope = Scope(view="breakout", grain="total")
-    breakout_estimates = run(experiment.with_views(breakout_scope), resolver).readout(
-        breakout_scope
-    )
+def _(View, estimates_to_readout, experiment, readout_table, resolver, run):
+    breakout_scope = View.breakout(())
+    breakout_estimates = run(
+        experiment.with_views(breakout_scope), resolver, views=(breakout_scope,)
+    ).readout(breakout_scope)
     country_breakout_estimates = [
         estimate
         for estimate in breakout_estimates
@@ -345,11 +345,12 @@ def _(Scope, estimates_to_readout, experiment, readout_table, resolver, run):
 
 
 @app.cell
-def _(Scope, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
-    asof_lift_scope = Scope(view="asof", grain="asof")
+def _(View, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
+    asof_lift_scope = View.asof()
     daily_estimates = run(
         experiment.with_views(asof_lift_scope),
         resolver,
+        views=(asof_lift_scope,),
         metrics=["conversion_rate"],
     ).readout(asof_lift_scope)
 

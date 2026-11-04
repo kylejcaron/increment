@@ -10,7 +10,7 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import CupedCovariate, Method, MetricSpec, Scope, from_frame, run
+    from increment import CupedCovariate, Method, MetricSpec, View, from_frame, run
     from increment.estimators import Normal
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
@@ -22,7 +22,7 @@ def _():
         Method,
         MetricSpec,
         Normal,
-        Scope,
+        View,
         estimates_to_readout,
         from_frame,
         mo,
@@ -386,7 +386,7 @@ def _(panel_df):
 
 
 @app.cell
-def _(Scope, estimates_to_readout, from_frame, mo, panel_df, readout_table, run):
+def _(View, estimates_to_readout, from_frame, mo, panel_df, readout_table, run):
     _experiment, _resolver = from_frame(
         panel_df,
         shape="panel",
@@ -397,9 +397,9 @@ def _(Scope, estimates_to_readout, from_frame, mo, panel_df, readout_table, run)
         metrics={"revenue": "mean"},
     )
     # One run reads the whole-window readout and the per-day values together.
-    _whole_window = Scope(view="run", grain="total")
-    _daily = Scope(view="daily", grain="daily", values=True)
-    _panel_run = run(_experiment.with_views(_whole_window, _daily), _resolver)
+    _whole_window = View.overall()
+    _daily = View.daily(values=True)
+    _panel_run = run(_experiment.with_views(_daily), _resolver)
     daily_values = _panel_run.readout(_daily)
     panel_results = _panel_run.readout(_whole_window)
     panel_readout = readout_table(

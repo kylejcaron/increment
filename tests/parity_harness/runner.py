@@ -84,7 +84,7 @@ from __future__ import annotations
 
 import inspect
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, get_overloads
 
 import pytest
@@ -447,7 +447,8 @@ def _read(
         scopes = view_scopes(
             experiment, case.view, population=case.population, dimension=case.breakout_dimension
         )
-    selected = experiment.with_views(*scopes)
+    # The executed experiment is the restored one, so it declares exactly the read's views.
+    selected = replace(experiment, views=scopes)
     restored = Experiment.from_json(selected.to_json())
     if restored.hash() != selected.hash():
         raise AssertionError("A parity experiment changed identity after JSON round-trip")

@@ -12,7 +12,7 @@ from increment import (
     Method,
     MetricSpec,
     MultiplicitySpec,
-    Scope,
+    View,
     from_frame,
     from_moments,
 )
@@ -416,7 +416,7 @@ def test_selected_breakout_cell_with_unrepresentable_fcr_bounds_keeps_its_select
         plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh", q=1e-5)),
         breakouts=["segment"],
     )
-    result = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+    result = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     deep = next(row for row in result if row.dimension_value == "north" and row.group_id == "deep")
 
     assert deep.discovery is True
@@ -454,7 +454,7 @@ def test_fcr_reinversion_rebuilds_selected_cuped_cells_only_in_breakout():
     )
     rows = {
         (row.dimension_value, row.group_id): row
-        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
     }
 
     assert all(rows[(seg, "strong")].discovery is True for seg in ("north", "south"))
@@ -501,7 +501,7 @@ def test_scalar_cuped_constant_covariate_is_localized_to_its_breakout_cell():
     )
     result = {
         (row.dimension_value, row.method): row
-        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
     }
 
     assert result[("north", "scalar")].lift is None
@@ -519,7 +519,7 @@ def test_failed_breakout_cell_reports_requested_posterior_unavailability():
         result = view_readout(
             experiment,
             resolver,
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
             prior=Normal(mu=0.0, sigma=0.1),
         )
     failed = next(row for row in result if row.dimension_value == "unsupported")
@@ -901,7 +901,7 @@ def test_breakout_unit_covariate_values_enter_the_source_identity():
                 metrics=[metric],
                 breakouts=["segment"],
             ),
-            Scope(view="breakout", grain="total"),
+            View(view="breakout", grain="total"),
         )
 
     first, second = with_scaled_pre(1.0), with_scaled_pre(1.0)
@@ -909,7 +909,7 @@ def test_breakout_unit_covariate_values_enter_the_source_identity():
     assert first.metadata.scope.snapshot_id == second.metadata.scope.snapshot_id
     experiment, resolver = _breakout_analysis()
     assert (
-        view_readout(experiment, resolver, Scope(view="breakout", grain="total")).metadata
+        view_readout(experiment, resolver, View(view="breakout", grain="total")).metadata
         is not None
     )
     changed = with_scaled_pre(2.0)
@@ -955,7 +955,7 @@ def test_ordinary_lane_breakout_failure_states_posterior_unavailability():
             metrics=[metric],
             breakouts=["segment"],
         ),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
         prior=Normal(mu=0.0, sigma=0.1),
     )
     failed = next(
@@ -1015,7 +1015,7 @@ def test_no_covariate_metric_keeps_its_source_snapshot_identity():
             metrics=[MetricSpec(name="revenue")],
             breakouts=["segment"],
         ),
-        Scope(view="breakout", grain="total"),
+        View(view="breakout", grain="total"),
     )
 
     assert run.metadata is not None and breakout.metadata is not None

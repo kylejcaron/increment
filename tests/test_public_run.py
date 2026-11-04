@@ -6,7 +6,7 @@ import pytest
 from increment import (
     AnalysisPlan,
     RunResult,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     run,
@@ -713,14 +713,14 @@ experiments:
         experiment_name="exp",
         source_snapshot_evidence=SourceSnapshotEvidence(snapshot_at, {"events": snapshot_at}),
     )
-    assigned = Scope(view="run", grain="total")
-    triggered = Scope(view="run", grain="total", population="triggered")
+    assigned = View(view="run", grain="total")
+    triggered = View(view="run", grain="total", population="triggered")
     try:
         legacy = [
             *view_readout(experiment, resolver, assigned),
             *view_readout(experiment, resolver, triggered),
         ]
-        result = run(experiment.with_views(assigned, triggered), resolver, run_id="triggered-run")
+        result = run(experiment.with_views(triggered), resolver, run_id="triggered-run")
     finally:
         cast(Any, resolver).close()
         con.disconnect()
@@ -782,7 +782,7 @@ def test_breakout_declared_analysis_run_matches_legacy_whole_window_results():
     )
     try:
         legacy = view_readout(experiment, resolver)
-        breakout_rows = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        breakout_rows = view_readout(experiment, resolver, View(view="breakout", grain="total"))
         result = run(experiment, resolver, run_id="breakout-run")
     finally:
         resolver.close()
@@ -952,7 +952,7 @@ def _daily_panel_run(tmp_path, scopes):
         breakouts=["region"],
         plan=AnalysisPlan(primary="value"),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     store = ParquetResultsStore(tmp_path / "runs")
     result = run(experiment, resolver, results_store=store)
     restored = RunResult.from_handle(
@@ -966,8 +966,8 @@ def test_run_result_returns_each_scope_collection_and_refuses_ambiguous_selectio
     from increment.breakout.estimates import DailyMetricValues, LiftEstimates
     from increment.errors import CodedError
 
-    whole = Scope(view="run", grain="total")
-    values = Scope(view="daily", grain="daily", values=True)
+    whole = View(view="run", grain="total")
+    values = View(view="daily", grain="daily", values=True)
     result, restored, days = _daily_panel_run(tmp_path, (whole, values))
 
     whole_rows = result.readout(whole)
@@ -978,7 +978,7 @@ def test_run_result_returns_each_scope_collection_and_refuses_ambiguous_selectio
         (arm, day) for arm in ("control", "treatment") for day in days
     }
     run_id = result.run.run_id
-    lift = Scope(view="daily", grain="daily")
+    lift = View(view="daily", grain="daily")
     for select, code, context in (
         (
             result.readout,
@@ -1006,13 +1006,13 @@ def test_run_frame_keys_each_row_to_its_view_through_store_and_pickle(tmp_path):
     import narwhals as nw
 
     views = (
-        Scope(view="run", grain="total"),
-        Scope(view="breakout", grain="total"),
-        Scope(view="daily", grain="daily"),
-        Scope(view="daily", grain="daily", values=True),
-        Scope(view="asof", grain="asof"),
-        Scope(view="asof", grain="asof", values=True),
-        Scope(view="asof", grain="asof", completion_policy=True),
+        View(view="run", grain="total"),
+        View(view="breakout", grain="total"),
+        View(view="daily", grain="daily"),
+        View(view="daily", grain="daily", values=True),
+        View(view="asof", grain="asof"),
+        View(view="asof", grain="asof", values=True),
+        View(view="asof", grain="asof", completion_policy=True),
     )
     result, restored, _ = _daily_panel_run(tmp_path, views)
     daily_lift, asof_lift = result.readout(views[2]), result.readout(views[4])
@@ -1348,9 +1348,7 @@ def test_event_log_replays_bonferroni_breakout_families(tmp_path):
         ),
         experiment_id="exp",
     )
-    experiment = experiment.with_views(
-        Scope(view="run", grain="total"), Scope(view="breakout", grain="total")
-    )
+    experiment = experiment.with_views(View(view="breakout", grain="total"))
     store = ParquetResultsStore(tmp_path / "runs")
     log_path = tmp_path / "decisions.jsonl"
     result = run(experiment, resolver, results_store=store, decision_log=DecisionLog(path=log_path))
@@ -1434,10 +1432,10 @@ def test_unicode_daily_metadata_order_roundtrips_after_run():
         control="control",
         metrics={"value": "mean"},
     )
-    scope = Scope(view="daily", grain="daily")
+    scope = View(view="daily", grain="daily")
     requested = replace(
         experiment,
-        scopes=(scope,),
+        views=(scope,),
         operations={scope.hash(): "run_daily"},
     )
 

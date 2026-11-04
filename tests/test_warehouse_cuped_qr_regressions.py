@@ -11,7 +11,7 @@ import ibis
 import numpy as np
 import pytest
 
-from increment import Scope, from_definitions, from_unit_day_artifact
+from increment import View, from_definitions, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.cuped import fit_cuped_multicovariate
@@ -666,13 +666,13 @@ def test_artifact_assigned_breakout_uses_single_canonical_escape(tmp_path):
         expected = {
             row.dimension_value
             for row in view_readout(
-                native_experiment, native_resolver, Scope(view="breakout", grain="total")
+                native_experiment, native_resolver, View(view="breakout", grain="total")
             )
         }
         observed = {
             row.dimension_value
             for row in view_readout(
-                adopted_experiment, adopted_resolver, Scope(view="breakout", grain="total")
+                adopted_experiment, adopted_resolver, View(view="breakout", grain="total")
             )
         }
         assert observed == expected

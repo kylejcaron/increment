@@ -14,7 +14,7 @@ from increment import (
     InferenceSpec,
     Method,
     MetricSpec,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_unit_day_artifact,
@@ -148,7 +148,7 @@ def _readout(experiment: Any, resolver: Any, operation: str) -> Callable[[], obj
         case "all" | "run":
             return lambda: view_readout(experiment, resolver)
         case "breakout" | "breakout_lift":
-            return lambda: view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+            return lambda: view_readout(experiment, resolver, View(view="breakout", grain="total"))
         case "daily" | "daily_conversion" | "daily_mean":
             metric = {
                 "daily_conversion": ["purchase_rate"],
@@ -157,18 +157,18 @@ def _readout(experiment: Any, resolver: Any, operation: str) -> Callable[[], obj
             return lambda: view_readout(
                 experiment,
                 resolver,
-                Scope(view="daily", grain="daily", values=True),
+                View(view="daily", grain="daily", values=True),
                 metrics=metric,
             )
         case "asof" | "asof_conversion":
             metric = ["purchase_rate"] if operation == "asof_conversion" else None
             return lambda: view_readout(
-                experiment, resolver, Scope(view="asof", grain="asof", values=True), metrics=metric
+                experiment, resolver, View(view="asof", grain="asof", values=True), metrics=metric
             )
         case "daily_lift":
-            return lambda: view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+            return lambda: view_readout(experiment, resolver, View(view="daily", grain="daily"))
         case "asof_lift":
-            return lambda: view_readout(experiment, resolver, Scope(view="asof", grain="asof"))
+            return lambda: view_readout(experiment, resolver, View(view="asof", grain="asof"))
         case "cuped" | "cuped_readout":
             return lambda: view_readout(experiment, resolver, sensitivity_methods=(Method.cuped(),))
         case "windowed_conversion":

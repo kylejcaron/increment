@@ -10,7 +10,7 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Scope, from_definitions, from_unit_day_artifact, run
+from increment import View, from_definitions, from_unit_day_artifact, run
 from increment.artifacts import (
     SourceSnapshotEvidence,
     artifact_context,
@@ -185,8 +185,10 @@ experiments:
         assert actual.lift.value == pytest.approx(expected.lift.value, rel=1e-12)
         assert actual.lift.lb == pytest.approx(expected.lift.lb, rel=1e-12)
         assert actual.lift.ub == pytest.approx(expected.lift.ub, rel=1e-12)
-        breakout = Scope(view="breakout", grain="total", population="assigned")
-        assert run(experiment.with_views(breakout), adopted, metrics=["revenue"]).readout(breakout)
+        breakout = View(view="breakout", grain="total", population="assigned")
+        assert run(
+            experiment.with_views(breakout), adopted, views=(breakout,), metrics=["revenue"]
+        ).readout(breakout)
         assert transfers
         if damage == "tamper":
             with store.open_snapshot(ref) as snapshot:

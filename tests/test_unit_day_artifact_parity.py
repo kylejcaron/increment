@@ -12,7 +12,7 @@ from uuid import uuid4
 import ibis
 import pytest
 
-from increment import Scope, from_definitions, from_moments, from_unit_day_artifact
+from increment import View, from_definitions, from_moments, from_unit_day_artifact
 from increment._dashboard_capture import dashboard_group_data
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.errors import CapabilityError, IncrementWarning
@@ -190,10 +190,10 @@ def _flatten_readout_row(row: Any) -> dict[str, Any]:
 
 
 # The whole-experiment readout and the daily and as-of value series.
-_READOUT_VIEWS: tuple[Scope | None, ...] = (
+_READOUT_VIEWS: tuple[View | None, ...] = (
     None,
-    Scope(view="daily", grain="daily", values=True),
-    Scope(view="asof", grain="asof", values=True),
+    View(view="daily", grain="daily", values=True),
+    View(view="asof", grain="asof", values=True),
 )
 
 
@@ -2949,7 +2949,7 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
         second_ref = publish_unit_day_artifact(native_experiment, native_resolver, store)
         adopted_again = from_unit_day_artifact(store, second_ref, expected_context=context)
         again_experiment, again_resolver = adopted_again
-        asof_lift = Scope(view="asof", grain="asof")
+        asof_lift = View(view="asof", grain="asof")
         first_ids = {
             row.source_snapshot_id
             for row in view_readout(adopted_experiment, adopted_resolver, asof_lift)

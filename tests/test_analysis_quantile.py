@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 import increment as inc
-from increment import Scope
+from increment import View
 from increment.query import panel_sql, summary_sql
 from increment.workflows import factor_summaries, metrics
 from tests.analysis_factory import lift_rows, make_binding_like, view_readout
@@ -315,12 +315,10 @@ def test_moments_only_surfaces_refuse_a_quantile_metric(tmp_path, surface):
     read = {
         "panel_sql": panel_sql,
         "summary_sql": summary_sql,
-        "daily_values": partial(
-            view_readout, scope=Scope(view="daily", grain="daily", values=True)
-        ),
-        "asof_values": partial(view_readout, scope=Scope(view="asof", grain="asof", values=True)),
-        "daily_lift": partial(view_readout, scope=Scope(view="daily", grain="daily")),
-        "asof_lift": partial(view_readout, scope=Scope(view="asof", grain="asof")),
+        "daily_values": partial(view_readout, scope=View(view="daily", grain="daily", values=True)),
+        "asof_values": partial(view_readout, scope=View(view="asof", grain="asof", values=True)),
+        "daily_lift": partial(view_readout, scope=View(view="daily", grain="daily")),
+        "asof_lift": partial(view_readout, scope=View(view="asof", grain="asof")),
     }[surface]
     experiment, resolver = _analysis(tmp_path, _events_table(n_per_arm=50))
     with pytest.raises(CapabilityError) as raised:
@@ -360,7 +358,7 @@ def test_unit_day_artifact_daily_quantile_refuses_before_estimation(tmp_path):
                 view_readout(
                     artifact_experiment,
                     artifact_resolver,
-                    Scope(view="daily", grain="daily", values=True),
+                    View(view="daily", grain="daily", values=True),
                 )
         assert raised.value.code == "readout.metric.quantile_grain"
     finally:
@@ -381,7 +379,7 @@ def test_run_breakout_refuses_a_quantile_metric(tmp_path):
     )
     experiment, resolver = _analysis_with_breakout(tmp_path, table)
     with pytest.raises(CapabilityError) as raised:
-        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        view_readout(experiment, resolver, View(view="breakout", grain="total"))
     assert raised.value.code == "readout.metric.quantile_breakout"
 
 

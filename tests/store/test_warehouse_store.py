@@ -8,7 +8,7 @@ import pytest
 
 from increment import from_frame, run
 from increment.errors import CodedError
-from increment.kernel.contracts import Scope
+from increment.kernel.contracts import View
 from increment.store import HistorySelector, Run, WarehouseResultsStore
 from tests.analysis_factory import view_readout
 
@@ -21,7 +21,7 @@ def _warehouse_run(
     analysis_spec_hash="spec",
     committed_day=2,
 ):
-    scope = Scope(view="run", grain="total")
+    scope = View(view="run", grain="total")
     cells = tuple(
         replace(
             cell,
@@ -122,7 +122,7 @@ def test_warehouse_store_publishes_and_pins_complete_run():
             experiment_id="exp",
         )
         rows = view_readout(experiment, resolver)
-        scope = Scope(view="run", grain="total")
+        scope = View(view="run", grain="total")
         cells = tuple(
             replace(
                 cell,
@@ -171,7 +171,7 @@ def test_warehouse_store_publishes_and_pins_complete_run():
                 estimator_id="t",
                 method_config_hash="config",
                 method_instance_id="instance",
-                scope_hash=Scope(view="run", grain="total").hash(),
+                scope_hash=View(view="run", grain="total").hash(),
                 contrast="control:treatment",
             ),
         )
@@ -366,7 +366,7 @@ def test_warehouse_contrast_matches_control_labels_containing_colons():
                 estimator_id="t",
                 method_config_hash="config",
                 method_instance_id="instance",
-                scope_hash=Scope(view="run", grain="total").hash(),
+                scope_hash=View(view="run", grain="total").hash(),
                 contrast="control:v1:treatment",
             ),
         )

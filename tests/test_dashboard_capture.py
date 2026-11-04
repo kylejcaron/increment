@@ -38,7 +38,7 @@ import pytest
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
 
-from increment import Scope
+from increment import View
 from increment.breakout.estimates import BreakoutEstimates, DailyMetricValues, LiftEstimates
 from increment.dashboard import (
     DashboardConfig,
@@ -428,11 +428,11 @@ def _engine_read(experiment, resolver, snapshot: DashboardSnapshot, request) -> 
     names = [model.name for model in snapshot.metrics] if metric is None else [metric]
     segment = None if breakout is None else BreakoutIdentity(breakout[1], None)
     if view == "segments":
-        scope = Scope(view="breakout", grain="total")
+        scope = View(view="breakout", grain="total")
     elif view == "daily_values":
-        scope = Scope(view="daily", grain="daily", values=True, segment=segment)
+        scope = View(view="daily", grain="daily", values=True, segment=segment)
     else:
-        scope = Scope(
+        scope = View(
             view="asof",
             grain="asof",
             values=view == "cumulative_values",
@@ -1221,8 +1221,8 @@ def test_registered_sequential_explore_is_captured_at_its_checkpoint():
         capture_sequential(experiment, resolver, finalized=True, as_of=dt.date(2025, 1, 16))
         config = DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
         snapshot = prepare_dashboard(experiment, resolver, config=config)
-        asof_lift = Scope(view="asof", grain="asof")
-        asof_values = Scope(view="asof", grain="asof", values=True)
+        asof_lift = View(view="asof", grain="asof")
+        asof_values = View(view="asof", grain="asof", values=True)
         live_lift = view_readout(experiment, resolver, asof_lift, metrics=["conversion"])
         live_values = view_readout(experiment, resolver, asof_values, metrics=["mean"])
         assert live_lift and live_values

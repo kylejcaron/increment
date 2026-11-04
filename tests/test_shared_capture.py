@@ -14,7 +14,7 @@ from increment.builders import from_definitions
 from increment.declarations import Method
 from increment.errors import CodedError, IncrementWarning
 from increment.evidence import BreakoutIdentity
-from increment.kernel.contracts import Scope
+from increment.kernel.contracts import View
 from increment.query import panel_sql
 from increment.semantics.models import AnalysisPlan, Definitions
 from tests.analysis_factory import make_binding, view_readout
@@ -136,7 +136,7 @@ def _builder(
     return from_definitions(path, con, experiment_name="exp", store="none", **kwargs)
 
 
-def _scope(cell) -> Scope:
+def _scope(cell) -> View:
     scope = cell.identity.scope
     assert scope is not None
     return scope
@@ -287,15 +287,15 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
     experiment, resolver = _builder(con, tmp_path)
     try:
         scopes = (
-            Scope(view="run", grain="total"),
-            Scope(view="daily", grain="daily"),
-            Scope(view="asof", grain="asof"),
-            Scope(view="breakout", grain="total", segment=(BreakoutIdentity("store", None),)),
+            View(view="run", grain="total"),
+            View(view="daily", grain="daily"),
+            View(view="asof", grain="asof"),
+            View(view="breakout", grain="total", segment=(BreakoutIdentity("store", None),)),
         )
-        experiment = replace(experiment, scopes=scopes)
+        experiment = replace(experiment, views=scopes)
         separate = [
             run(
-                replace(experiment, scopes=(scope,)),
+                replace(experiment, views=(scope,)),
                 resolver,
                 decision_method=Method(name="unadjusted"),
             )
@@ -357,10 +357,10 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             window_days=1,
         )
         day_scopes = (
-            Scope(view="daily", grain="daily"),
-            Scope(view="asof", grain="asof"),
+            View(view="daily", grain="daily"),
+            View(view="asof", grain="asof"),
         )
-        day_experiment = replace(experiment, scopes=day_scopes)
+        day_experiment = replace(experiment, views=day_scopes)
         day_values = run(
             day_experiment,
             resolver,
@@ -393,7 +393,7 @@ def test_selected_late_ad_hoc_metric_keeps_family_horizon_in_both_modes(tmp_path
     definitions["fact_sources"][0]["facts"].append({"name": "ad_hoc_late", "column": "revenue"})
     definitions_path = tmp_path / "running-ad-hoc.yaml"
     definitions_path.write_text(json.dumps(definitions), encoding="utf-8")
-    day_scopes = (Scope(view="daily", grain="daily"), Scope(view="asof", grain="asof"))
+    day_scopes = (View(view="daily", grain="daily"), View(view="asof", grain="asof"))
     late_metric = MeanMetric(
         name="late_ad_hoc",
         entity="user_id",
@@ -407,7 +407,7 @@ def test_selected_late_ad_hoc_metric_keeps_family_horizon_in_both_modes(tmp_path
             experiment, resolver = from_definitions(
                 definitions_path, cast(SQLBackend, con), experiment_name="exp", store="none"
             )
-            experiment = replace(experiment, scopes=day_scopes)
+            experiment = replace(experiment, views=day_scopes)
             cast(Any, resolver._resolve(experiment.source_refs)).panel_sql()
             values = run(
                 experiment,
@@ -452,14 +452,14 @@ def test_unit_panel_declared_breakout_runs_with_combined_total_view():
         breakouts=["country"],
     )
     scopes = (
-        Scope(view="run", grain="total"),
-        Scope(
+        View(view="run", grain="total"),
+        View(
             view="breakout",
             grain="total",
             segment=(BreakoutIdentity("country", None),),
         ),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     result = run(experiment, resolver)
     assert {_scope(cell).view for cell in result.cells} == {"run", "breakout"}
     assert {
@@ -496,12 +496,12 @@ def _encouragement_panel_analysis(frame: Any) -> tuple[Any, Any]:
 
 def test_dimensioned_empty_encouragement_values_keep_permissions():
     experiment, resolver = _encouragement_panel_analysis(_shared_panel_frame())
-    run_scope = Scope(view="run", grain="total")
-    daily_scope = Scope(view="daily", grain="daily")
-    asof_scope = Scope(view="asof", grain="asof")
+    run_scope = View(view="run", grain="total")
+    daily_scope = View(view="daily", grain="daily")
+    asof_scope = View(view="asof", grain="asof")
     experiment = replace(
         experiment,
-        scopes=(run_scope, daily_scope, asof_scope),
+        views=(run_scope, daily_scope, asof_scope),
         operations={
             run_scope.hash(): "run",
             daily_scope.hash(): "run_daily",
@@ -512,12 +512,12 @@ def test_dimensioned_empty_encouragement_values_keep_permissions():
     assert empty_values.cells == ()
 
     dimensioned_scopes = (
-        Scope(
+        View(
             view="daily",
             grain="daily",
             segment=(BreakoutIdentity("country", None),),
         ),
-        Scope(
+        View(
             view="asof",
             grain="asof",
             segment=(BreakoutIdentity("country", None),),
@@ -525,7 +525,7 @@ def test_dimensioned_empty_encouragement_values_keep_permissions():
     )
     dimensioned_experiment = replace(
         experiment,
-        scopes=dimensioned_scopes,
+        views=dimensioned_scopes,
         operations={
             dimensioned_scopes[0].hash(): "run_daily",
             dimensioned_scopes[1].hash(): "run_asof",
@@ -537,12 +537,12 @@ def test_dimensioned_empty_encouragement_values_keep_permissions():
 
 def test_combined_encouragement_views_preserve_compliance_rows():
     experiment, resolver = _encouragement_panel_analysis(_shared_panel_frame())
-    run_scope = Scope(view="run", grain="total")
-    daily_scope = Scope(view="daily", grain="daily")
-    asof_scope = Scope(view="asof", grain="asof")
+    run_scope = View(view="run", grain="total")
+    daily_scope = View(view="daily", grain="daily")
+    asof_scope = View(view="asof", grain="asof")
     experiment = replace(
         experiment,
-        scopes=(run_scope, daily_scope, asof_scope),
+        views=(run_scope, daily_scope, asof_scope),
         operations={
             run_scope.hash(): "run",
             daily_scope.hash(): "run_daily",
@@ -562,25 +562,25 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path)
     scopes = (
-        Scope(view="run", grain="total"),
-        Scope(view="daily", grain="daily"),
-        Scope(
+        View(view="run", grain="total"),
+        View(view="daily", grain="daily"),
+        View(
             view="breakout",
             grain="total",
             segment=(BreakoutIdentity("store", None),),
         ),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
 
     try:
-        for views in ((), (scopes[0], scopes[0]), (Scope(view="asof", grain="asof"),)):
+        for views in ((), (scopes[0], scopes[0]), (View(view="asof", grain="asof"),)):
             with pytest.raises(CodedError) as error:
                 run(experiment, resolver, views=views)
             assert error.value.code == "kernel.run.execution_unavailable"
         empty = run(experiment, resolver, metrics=[])
         assert empty.cells == ()
         invalid = replace(
-            experiment, scopes=(*scopes, Scope(view="asof", grain="asof", through_day="2025-01-11"))
+            experiment, views=(*scopes, View(view="asof", grain="asof", through_day="2025-01-11"))
         )
         with pytest.raises(CodedError) as error:
             run(invalid, resolver)
@@ -593,9 +593,9 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
         assert error.value.code == "kernel.run.execution_unavailable"
         invalid_breakout = replace(
             experiment,
-            scopes=(
-                Scope(view="run", grain="total"),
-                Scope(
+            views=(
+                View(view="run", grain="total"),
+                View(
                     view="breakout",
                     grain="total",
                     segment=(BreakoutIdentity("store", None),),
@@ -612,14 +612,14 @@ def test_invalid_view_selection_and_late_capability_refuse_without_capture(tmp_p
         )
         trigger_experiment = replace(
             trigger_experiment,
-            scopes=(
-                Scope(
+            views=(
+                View(
                     view="breakout",
                     grain="total",
                     segment=(BreakoutIdentity("store", None),),
                     population="assigned",
                 ),
-                Scope(
+                View(
                     view="breakout",
                     grain="total",
                     segment=(BreakoutIdentity("store", None),),
@@ -645,10 +645,10 @@ def test_live_confidence_rows_align_across_scopes_without_raw_persistence(tmp_pa
     con = ds.duckdb_connection(ds.event_rows(n_per_arm=40))
     experiment, resolver = _builder(con, tmp_path, triggered=True, winsorized=True)
     scopes = (
-        Scope(view="run", grain="total", population="assigned"),
-        Scope(view="run", grain="total", population="triggered"),
+        View(view="run", grain="total", population="assigned"),
+        View(view="run", grain="total", population="triggered"),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     result = run(experiment, resolver, decision_method=Method(name="unadjusted"))
     assert len(result.live_rows) == len(result.cells) == len(result.effects)
     assert any(row is None for row in result.live_rows)
@@ -680,15 +680,15 @@ def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path, triggered=True)
     scopes = (
-        Scope(view="run", grain="total", population="assigned"),
-        Scope(view="run", grain="total", population="triggered"),
-        Scope(view="asof", grain="asof", population="triggered"),
+        View(view="run", grain="total", population="assigned"),
+        View(view="run", grain="total", population="triggered"),
+        View(view="asof", grain="asof", population="triggered"),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     method = Method(name="unadjusted")
     try:
         separate = [
-            run(replace(experiment, scopes=(scope,)), resolver, decision_method=method)
+            run(replace(experiment, views=(scope,)), resolver, decision_method=method)
             for scope in scopes
         ]
         actual = run(experiment, resolver, decision_method=method)
@@ -720,14 +720,14 @@ def test_two_population_run_advises_each_unused_covariate_once(tmp_path):
     con = ds.duckdb_connection()
     experiment, resolver = _builder(con, tmp_path, triggered=True)
     scopes = (
-        Scope(view="run", grain="total", population="assigned"),
-        Scope(view="run", grain="total", population="triggered"),
+        View(view="run", grain="total", population="assigned"),
+        View(view="run", grain="total", population="triggered"),
     )
 
     def advisories(selected):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            run(replace(experiment, scopes=selected), resolver)
+            run(replace(experiment, views=selected), resolver)
         return [
             dict(item.message.context)
             for item in caught
@@ -756,15 +756,15 @@ def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_varian
     declared = MeanMetric.model_validate(dict(experiment.metrics["revenue"]))
     variant = declared.model_copy(update={"fact": "alternate_purchase"})
     scopes = (
-        Scope(view="run", grain="total", population="assigned"),
-        Scope(view="run", grain="total", population="triggered"),
+        View(view="run", grain="total", population="assigned"),
+        View(view="run", grain="total", population="triggered"),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     method = Method(name="unadjusted")
     try:
         separate = [
             run(
-                replace(experiment, scopes=(scope,)),
+                replace(experiment, views=(scope,)),
                 resolver,
                 metrics=["revenue"],
                 decision_method=method,
@@ -808,21 +808,21 @@ def test_whole_window_and_daily_capture_same_name_metric_sources(tmp_path):
     declared = MeanMetric.model_validate(dict(experiment.metrics["revenue"]))
     variant = declared.model_copy(update={"fact": "alternate_purchase", "window_days": None})
     scopes = (
-        Scope(view="run", grain="total", population="assigned"),
-        Scope(view="daily", grain="daily", population="assigned"),
+        View(view="run", grain="total", population="assigned"),
+        View(view="daily", grain="daily", population="assigned"),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     method = Method(name="unadjusted")
     try:
         separate = (
             run(
-                replace(experiment, scopes=(scopes[0],)),
+                replace(experiment, views=(scopes[0],)),
                 resolver,
                 metrics=[variant],
                 decision_method=method,
             ),
             run(
-                replace(experiment, scopes=(scopes[1],)),
+                replace(experiment, views=(scopes[1],)),
                 resolver,
                 metrics=[variant],
                 decision_method=method,
@@ -865,13 +865,13 @@ def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
     )
     breakout = BreakoutIdentity("store", None)
     scopes = (
-        Scope(view="breakout", grain="total", population="assigned", segment=(breakout,)),
-        Scope(view="breakout", grain="total", population="triggered", segment=(breakout,)),
+        View(view="breakout", grain="total", population="assigned", segment=(breakout,)),
+        View(view="breakout", grain="total", population="triggered", segment=(breakout,)),
     )
-    experiment = replace(experiment, scopes=scopes)
+    experiment = replace(experiment, views=scopes)
     try:
         separate = tuple(
-            run(replace(experiment, scopes=(scope,)), resolver, metrics=[variant])
+            run(replace(experiment, views=(scope,)), resolver, metrics=[variant])
             for scope in scopes
         )
         actual = run(experiment, resolver, metrics=[variant])
@@ -917,12 +917,12 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
         bound = build()
         try:
             experiment, resolver = bound
-            scopes = (Scope(view="run", grain="total"), Scope(view="daily", grain="daily"))
-            experiment = replace(experiment, scopes=scopes)
+            scopes = (View(view="run", grain="total"), View(view="daily", grain="daily"))
+            experiment = replace(experiment, views=scopes)
             disposition = dispositions[ingress]
 
             if isinstance(disposition, matrix.Runs):
-                separate = [run(replace(experiment, scopes=(scope,)), resolver) for scope in scopes]
+                separate = [run(replace(experiment, views=(scope,)), resolver) for scope in scopes]
                 result = run(experiment, resolver)
                 for scope, expected in zip(scopes, separate, strict=True):
                     _same_cells(
@@ -966,14 +966,14 @@ def test_switchback_metric_selection_scopes_share_contrast_evidence():
     bound = case.build["from_switchback_panel"]()
     try:
         experiment, resolver = bound
-        scope = Scope(
+        scope = View(
             view="switchback",
             grain="total",
             metrics=tuple(dict(cast(Any, item)) for item in experiment.metrics.values()),
         )
-        scopes = (*experiment.scopes, scope)
-        experiment = replace(experiment, scopes=scopes)
-        separate = [run(replace(experiment, scopes=(item,)), resolver) for item in scopes]
+        scopes = (*experiment.views, scope)
+        experiment = replace(experiment, views=scopes)
+        separate = [run(replace(experiment, views=(item,)), resolver) for item in scopes]
         result = run(experiment, resolver)
         metadata = result.run.metadata
         assert metadata is not None and len(metadata.captures) == 1

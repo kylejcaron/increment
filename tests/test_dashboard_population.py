@@ -306,7 +306,7 @@ def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp
 
     from increment.breakout.estimates import LiftEstimates
     from increment.estimation.readout_types import ReadoutResults
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
 
     experiment, resolver = _triggered_dashboard(tmp_path, sequential=True)
     try:
@@ -314,8 +314,8 @@ def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp
             experiment, resolver, finalized=True, as_of=dt.date(2024, 1, 15)
         )
         assert captured.triggered is not None
-        triggered = Scope(view="run", grain="total", population="triggered")
-        results = run(replace(experiment, scopes=(triggered,)), resolver).readout(triggered)
+        triggered = View(view="run", grain="total", population="triggered")
+        results = run(replace(experiment, views=(triggered,)), resolver).readout(triggered)
         assert isinstance(results, LiftEstimates)
         assert results
         assert {result.analysis_population for result in results} == {"triggered"}

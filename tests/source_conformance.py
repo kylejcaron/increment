@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from increment import (
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_switchback_frame,
@@ -717,7 +717,7 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
             control="control",
             metrics={"revenue": "mean"},
         )
-        return view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+        return view_readout(experiment, resolver, View(view="daily", grain="daily"))
 
     def moments_result() -> Any:
         from increment import readouts
@@ -736,7 +736,7 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
             metrics={"revenue": "mean"},
             breakouts=["segment"],
         )
-        return view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        return view_readout(experiment, resolver, View(view="breakout", grain="total"))
 
     def sql_result() -> Any:
         from increment import readouts

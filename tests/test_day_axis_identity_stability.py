@@ -72,7 +72,7 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
     ingress: str, expected: dict[str, str]
 ):
     """Kernel-4 commit 192a5026 pre-kernel IDs are spec oracles for this exact fixture data."""
-    from increment import Scope
+    from increment import View
     from tests.analysis_factory import view_readout
     from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
     from tests.source_conformance import frame_panel_analysis
@@ -85,11 +85,11 @@ def test_day_axis_source_snapshot_ids_match_pre_kernel_route(
     experiment, resolver = analysis
     try:
         views = {
-            "daily": Scope(view="daily", grain="daily", values=True),
-            "daily_lift": Scope(view="daily", grain="daily"),
-            "asof": Scope(view="asof", grain="asof", values=True),
-            "asof_lift": Scope(view="asof", grain="asof"),
-            "breakout": Scope(view="breakout", grain="total"),
+            "daily": View(view="daily", grain="daily", values=True),
+            "daily_lift": View(view="daily", grain="daily"),
+            "asof": View(view="asof", grain="asof", values=True),
+            "asof_lift": View(view="asof", grain="asof"),
+            "breakout": View(view="breakout", grain="total"),
         }
         if ingress == "from_definitions":
             for difference in ARM_COUNT_SNAPSHOT_DIFFERENCES:
@@ -139,7 +139,7 @@ def test_triggered_day_axis_source_snapshot_ids_match_frozen_capture(
     by a recorded expected difference where the case has one."""
     from tests.parity_harness.cases import PARITY_CASES, _close_parity_binding
     from tests.parity_harness.expected_differences import with_expected_difference
-    from tests.parity_harness.views import View, read
+    from tests.parity_harness.views import ViewName, read
 
     case = next(case for case in PARITY_CASES if case.id == scenario)
     bound = case.build["from_definitions"]()
@@ -147,7 +147,7 @@ def test_triggered_day_axis_source_snapshot_ids_match_frozen_capture(
         kwargs: dict[str, Any] = {"population": "triggered"}
         if scenario == "triggered_encouragement_compliance_asof":
             kwargs["estimands"] = ("compliance",)
-        result = read(bound, cast(View, operation.removeprefix("run_")), **kwargs)
+        result = read(bound, cast(ViewName, operation.removeprefix("run_")), **kwargs)
         assert _snapshot_id(result) == with_expected_difference(
             scenario, "from_definitions", expected
         )

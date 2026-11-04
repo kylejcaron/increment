@@ -7,7 +7,7 @@ import narwhals as nw
 import pytest
 
 from increment import (
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -363,13 +363,13 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
             view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="daily", grain="daily", values=True),
+                View(view="daily", grain="daily", values=True),
                 metrics=["revenue"],
             ),
             view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="asof", grain="asof", values=True),
+                View(view="asof", grain="asof", values=True),
                 metrics=["revenue"],
             ),
         )
@@ -380,12 +380,12 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
         defs_path, con, experiment_name="cat_test", store="none"
     )
     scopes = (
-        Scope(view="daily", grain="daily"),
-        Scope(view="asof", grain="asof"),
+        View(view="daily", grain="daily"),
+        View(view="asof", grain="asof"),
     )
     experiment = replace(
         experiment,
-        scopes=scopes,
+        views=scopes,
         operations={scopes[0].hash(): "run_daily", scopes[1].hash(): "run_asof"},
     )
     values = run(experiment, resolver, metrics=["revenue"])
@@ -1576,7 +1576,7 @@ def test_native_breakout_uses_effective_scalar_family(tmp_path):
             (actual,) = view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 decision_method=methods[1],
                 sensitivity_methods=(),
             )
@@ -1820,7 +1820,7 @@ def test_breakout_and_daily_lift_covariates_use_frame_refusals(route, column, co
                     breakouts=("segment",),
                     metrics=[metric],
                 ),
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 decision_method=method,
             )
         else:
@@ -1834,7 +1834,7 @@ def test_breakout_and_daily_lift_covariates_use_frame_refusals(route, column, co
                     control="control",
                     metrics=[metric],
                 ),
-                Scope(view="daily", grain="daily"),
+                View(view="daily", grain="daily"),
                 decision_method=method,
             )
 

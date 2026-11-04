@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
 
-from increment import Method, Scope, from_definitions, from_frame, from_moments, run, workflows
+from increment import Method, View, from_definitions, from_frame, from_moments, run, workflows
 from increment._evidence_types import BreakoutSlicesRequest, BreakoutUnitRowsRequest, DayAxisRequest
 from increment.errors import CapabilityError, CodedError
 from increment.evidence import (
@@ -2310,7 +2310,7 @@ def test_custom_provider_daily_uses_typed_triggered_moments(tmp_path) -> None:
 
     (experiment, resolver), _ = definitions_source(tmp_path, trigger=True, return_binding=True)
     source = cast(Any, held_source(resolver))
-    triggered_daily = Scope(view="daily", grain="daily", population="triggered")
+    triggered_daily = View(view="daily", grain="daily", population="triggered")
 
     class Provider:
         evidence = source.evidence
@@ -2466,7 +2466,7 @@ def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_p
         tmp_path, trigger=True, partial_trigger=True, return_binding=True
     )
     source = cast(Any, held_source(resolver))
-    triggered_daily = Scope(view="daily", grain="daily", population="triggered")
+    triggered_daily = View(view="daily", grain="daily", population="triggered")
     builtin = evidence_provider(source)
 
     class Provider:
@@ -2619,13 +2619,13 @@ def test_provider_declaring_breakouts_runs_breakouts_through_analysis() -> None:
     analysis_experiment, analysis_resolver = _categorical_cuped_analysis()
     try:
         expected = view_readout(
-            analysis_experiment, analysis_resolver, Scope(view="breakout", grain="total")
+            analysis_experiment, analysis_resolver, View(view="breakout", grain="total")
         )
         provider_experiment, provider_resolver = bind_pair(
             _forwarding_provider(held_source(analysis_resolver))
         )
         actual = view_readout(
-            provider_experiment, provider_resolver, Scope(view="breakout", grain="total")
+            provider_experiment, provider_resolver, View(view="breakout", grain="total")
         )
     finally:
         analysis_resolver.close()
@@ -3188,7 +3188,7 @@ def test_triggered_daily_lift_without_trigger_edges_refuses_before_reading(tmp_p
             view_readout(
                 provider_experiment,
                 provider_resolver,
-                Scope(view="daily", grain="daily", population="triggered"),
+                View(view="daily", grain="daily", population="triggered"),
             )
     finally:
         native_resolver.close()
@@ -3255,8 +3255,8 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
 
     provider = Provider()
     provider_experiment, provider_resolver = bind_pair(cast(Any, provider))
-    daily_values = Scope(view="daily", grain="daily", values=True)
-    daily_by_country = Scope(
+    daily_values = View(view="daily", grain="daily", values=True)
+    daily_by_country = View(
         view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
     )
     try:
@@ -3265,7 +3265,11 @@ def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) 
             tuple((item.property, item.source) for item in items) for items in scoped_breakouts
         ) == [(("country", "app"),), (("country", "web"),)]
         scoped_breakouts.clear()
-        run(provider_experiment.with_views(daily_values, daily_by_country), provider_resolver)
+        run(
+            provider_experiment.with_views(daily_values, daily_by_country),
+            provider_resolver,
+            views=(daily_values, daily_by_country),
+        )
         scoped_identities = {
             tuple((item.property, item.source) for item in items) for items in scoped_breakouts
         }
@@ -3439,7 +3443,7 @@ def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading()
         view_readout(
             experiment,
             resolver,
-            Scope(view="daily", grain="daily", values=True, population="triggered"),
+            View(view="daily", grain="daily", values=True, population="triggered"),
         )
 
     assert refused.value.code == "evidence.operation_unavailable"
@@ -3754,7 +3758,7 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
     actual = view_readout(
         forwarding_experiment,
         forwarding_resolver,
-        Scope(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)),
     )
     identities = [
         (row.source, row.ds, row.dimension, row.dimension_value, row.group_id) for row in actual

@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from increment import Method, Scope, from_definitions, from_frame, from_moments
+from increment import Method, View, from_definitions, from_frame, from_moments
 from increment.errors import CodedError
 from increment.estimation.results import LiftEstimate
 from increment.evidence import BreakoutIdentity
@@ -57,11 +57,11 @@ _READOUT_VIEWS: dict[
 }
 
 
-def _readout_scope(operation: str, dimension: str | None = None) -> Scope:
+def _readout_scope(operation: str, dimension: str | None = None) -> View:
     """The view one scalar readout operation reads, optionally by one breakout property."""
     view, grain = _READOUT_VIEWS[operation]
     segment = () if dimension is None else (BreakoutIdentity(dimension, None),)
-    return Scope(view=view, grain=grain, segment=segment)
+    return View(view=view, grain=grain, segment=segment)
 
 
 def _frame_pair(frame: Any, *, panel: bool, **options: Any) -> tuple[Any, Any]:
@@ -311,7 +311,7 @@ def test_summary_breakout_refusing_input_precedes_outcome_deletion():
     assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     rows = {
         (row.dimension_value, row.method): row
-        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
     }
     assert (
         rows[("unavailable", "adjusted")].failure_code == "frame.validation.metric_covariate_column"
@@ -358,7 +358,7 @@ def test_native_breakout_scalar_missing_is_method_and_segment_local(tmp_path, ro
         with resolver:
             rows = {
                 (row.dimension_value, row.method): row
-                for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+                for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
             }
         expected_code = (
             "frame.validation.metric_covariate_column"

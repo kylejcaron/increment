@@ -189,20 +189,20 @@ def _assert_runnable_refusal(
     from increment import Experiment, runnable, workflows
     from increment.errors import CodedError
     from increment.evidence import BreakoutIdentity
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
     from tests.analysis_factory import held_source
     from tests.parity_harness.cases import _capture_kwargs
     from tests.parity_harness.runner import _read
     from tests.test_metric_evidence import _CountingSource
 
     experiment, resolver = bound
-    scope = Scope(
+    scope = View(
         view=cell.view,
         grain=cell.view if cell.view in {"daily", "asof"} else "total",
         values=method == "values",
         segment=(BreakoutIdentity("store", None),) if cell.view == "breakout" else (),
     )
-    experiment = experiment.with_views(scope)
+    experiment = replace(experiment, views=(scope,))
     counted = _CountingSource(held_source(resolver))
     counted.loader_reads.clear()
     for name in (

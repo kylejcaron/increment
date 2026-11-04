@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from increment import Scope, from_definitions, from_frame, from_moments
+from increment import View, from_definitions, from_frame, from_moments
 from increment.query import panel_sql
 from increment.workflows import experiment_definition, export_moments, metrics
 from tests.analysis_factory import bound_source, held_source, view_readout
@@ -592,10 +592,10 @@ def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source
         )
         source = bound_source(resolver)
         entry_points["run(daily values)"] = lambda: view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily", values=True)
+            experiment, resolver, View(view="daily", grain="daily", values=True)
         )
         entry_points["run(daily lift)"] = lambda: view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily")
+            experiment, resolver, View(view="daily", grain="daily")
         )
     _trap_source_reads(monkeypatch, source)
     entry_points["readouts.daily"] = lambda: readouts.daily(source)
@@ -634,7 +634,7 @@ def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_ar
     try:
         _trap_source_reads(monkeypatch, bound_source(resolver))
         dimension = experiment_definition(experiment, resolver).breakouts[0].property
-        scope = Scope(
+        scope = View(
             view="daily",
             grain="daily",
             values=method == "run_daily",
@@ -702,10 +702,10 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
             "run(asof values)": lambda: view_readout(
                 experiment,
                 resolver,
-                Scope(view="asof", grain="asof", values=True, completion_policy=True),
+                View(view="asof", grain="asof", values=True, completion_policy=True),
             ),
             "run(asof lift)": lambda: view_readout(
-                experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+                experiment, resolver, View(view="asof", grain="asof", completion_policy=True)
             ),
             "readouts.asof_lift": lambda: readouts.asof_lift(source, completed_windows_only=True),
         }
@@ -761,10 +761,10 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
         _trap_source_reads(monkeypatch, source)
         entry_points = {
             "run(daily values)": lambda: view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+                experiment, resolver, View(view="daily", grain="daily", values=True)
             ),
             "run(daily lift)": lambda: view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily")
+                experiment, resolver, View(view="daily", grain="daily")
             ),
             "readouts.daily": lambda: readouts.daily(source),
         }
@@ -870,7 +870,7 @@ def test_evidence_refusals_round_trip_pickle_and_deepcopy() -> None:
     )
     try:
         with pytest.raises(CapabilityError) as raised:
-            view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+            view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
         refusal = raised.value
         assert refusal.code == "evidence.grain_unavailable"
         assert set(refusal.context) == {"constructor", "requested", "offered", "route"}

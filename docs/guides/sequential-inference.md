@@ -934,8 +934,8 @@ execution on `from_definitions` and `from_unit_day_artifact`
 triggered `assignment_counts` extensions); `from_moments` replays an exported
 checkpoint carrying both chains and cannot start one; frame sources have no
 trigger declaration. A view declared with
-`Scope(..., population="triggered")`, whole-window or as-of lift, reads the
-triggered checkpoint rows; declare an assigned view beside it to read both
+`View.overall(population="triggered")` or `View.asof(population="triggered")`
+reads the triggered checkpoint rows; declare an assigned view beside it to read both
 populations in one run.
 
 Keep three states separate when a triggered row is absent or unavailable. A

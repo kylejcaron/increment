@@ -32,7 +32,7 @@ import pyarrow.parquet as pq
 from increment import (
     Method,
     MetricSpec,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -299,7 +299,7 @@ def axis_run(inference: InferenceSpec, *, seed: int = 7, **axes) -> Callable[[],
     def run():
         experiment, resolver = frame_analysis(unit_rows(seed=seed, **axes), inference, **axes)
         if axes.get("breakout"):
-            return list(view_readout(experiment, resolver, Scope(view="breakout", grain="total")))
+            return list(view_readout(experiment, resolver, View(view="breakout", grain="total")))
         return list(view_readout(experiment, resolver))
 
     return run

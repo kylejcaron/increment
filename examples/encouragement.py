@@ -16,8 +16,8 @@ def _():
         ExclusionRestriction,
         InferenceSpec,
         MetricSpec,
-        Scope,
         UptakeSpec,
+        View,
         from_frame,
         run,
     )
@@ -30,7 +30,7 @@ def _():
         Encouragement,
         ExclusionRestriction,
         MetricSpec,
-        Scope,
+        View,
         UptakeSpec,
         capture_sequential,
         estimates_to_readout,
@@ -342,8 +342,8 @@ def _(mo):
     `InferenceSpec(kind="always_valid", registration=...)` on the source's
     `AnalysisPlan` before the simulation runs -- `always_valid` inference is
     read from that declaration, never passed at call time. Both series read
-    the completed-window as-of view (`Scope(view="asof", grain="asof",
-    completion_policy=True)`), so every displayed date admits a unit
+    the completed-window as-of view (`View.asof(completion_policy=True)`),
+    so every displayed date admits a unit
     only once its finalized outcome and uptake windows have closed.
     """)
     return
@@ -356,7 +356,7 @@ def _(
     ExclusionRestriction,
     InferenceSpec,
     MetricSpec,
-    Scope,
+    View,
     UptakeSpec,
     capture_sequential,
     from_frame,
@@ -473,20 +473,23 @@ def _(
         exposure_date="exposed_on",
         experiment_id="help_button_prompt",
     )
-    _completed = Scope(view="asof", grain="asof", completion_policy=True)
+    _completed = View.asof(completion_policy=True)
 
     def _late_trend(results):
         return [row for row in results if row.estimand == "late" and row.value_scale == "relative"]
 
     fixed_late_trend = _late_trend(
-        run(_experiment.with_views(_completed), _resolver).readout(_completed)
+        run(_experiment.with_views(_completed), _resolver, views=(_completed,)).readout(_completed)
     )
     uptake_trend = []
     for _day in sorted(set(_completion_rows["ds"])):
         capture_sequential(_av_experiment, _av_resolver, finalized=True, as_of=_day)
         uptake_trend.extend(
             run(
-                _av_experiment.with_views(_completed), _av_resolver, estimands=("compliance",)
+                _av_experiment.with_views(_completed),
+                _av_resolver,
+                views=(_completed,),
+                estimands=("compliance",),
             ).readout(_completed)
         )
     return uptake_trend, fixed_late_trend

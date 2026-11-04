@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from increment.declarations import Method
     from increment.evidence import EvidenceProvider
     from increment.frame import MetricSpec
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
     from increment.kernel.experiment import Experiment, SourceReference
     from increment.kernel.resolver import Runnable, runnable
     from increment.result_envelope import render
@@ -56,7 +56,7 @@ __all__ = [
     "ExperimentDefinition",
     "ExperimentReader",
     "SourceReference",
-    "Scope",
+    "View",
     "RunResult",
     "run",
     "render",
@@ -97,7 +97,7 @@ _LAZY_IMPORTS = {
     "Experiment": ("increment.kernel.experiment", "Experiment"),
     "SourceReference": ("increment.kernel.experiment", "SourceReference"),
     "ExperimentReader": ("increment._binding", "ExperimentReader"),
-    "Scope": ("increment.kernel.contracts", "Scope"),
+    "View": ("increment.kernel.contracts", "View"),
     "from_frame": ("increment.builders", "from_frame"),
     "render": ("increment.result_envelope", "render"),
     "from_definitions": ("increment.builders", "from_definitions"),

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from increment import Scope, from_frame, from_moments, from_unit_day_artifact, workflows
+from increment import View, from_frame, from_moments, from_unit_day_artifact, workflows
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.results import LiftEstimate
@@ -372,14 +372,14 @@ def test_encouragement_asof_requires_completion_before_legacy_checkpoint():
     try:
         with pytest.raises(InvalidRequestError) as exc:
             view_readout(
-                experiment, resolver, Scope(view="asof", grain="asof"), estimands=("compliance",)
+                experiment, resolver, View(view="asof", grain="asof"), estimands=("compliance",)
             )
         assert exc.value.code == "readout.encouragement.asof_completion"
         with pytest.raises(CapabilityError) as missing:
             view_readout(
                 experiment,
                 resolver,
-                Scope(view="asof", grain="asof", completion_policy=True),
+                View(view="asof", grain="asof", completion_policy=True),
                 estimands=("compliance",),
             )
         assert missing.value.code == "sequential.continuation.legacy"
@@ -459,7 +459,7 @@ def test_breakout_registered_q_mismatch_precedes_missing_checkpoint(correction):
         plan=plan,
     )
     with pytest.raises(CapabilityError) as exc:
-        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        view_readout(experiment, resolver, View(view="breakout", grain="total"))
     assert exc.value.code == "sequential.source.invalid"
 
 
@@ -510,7 +510,7 @@ def test_breakout_bonferroni_allocation_precedes_missing_checkpoint(arms):
         plan=plan,
     )
     with pytest.raises(CapabilityError) as exc:
-        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        view_readout(experiment, resolver, View(view="breakout", grain="total"))
     assert exc.value.code == "sequential.source.invalid"
 
 
@@ -1276,8 +1276,8 @@ def test_automatic_segments_match_the_manual_breakout_and_retain_absent_levels(t
         ((("segment", "y"),), True),
         ((("segment", "absent"),), False),
     }
-    rows = view_readout(*auto_source, Scope(view="breakout", grain="total"))
-    assert _rows(rows) == _rows(view_readout(*manual_source, Scope(view="breakout", grain="total")))
+    rows = view_readout(*auto_source, View(view="breakout", grain="total"))
+    assert _rows(rows) == _rows(view_readout(*manual_source, View(view="breakout", grain="total")))
     by_level = {row.dimension_value: row for row in rows}
     assert set(by_level) == set(levels)
     absent = by_level["absent"]
@@ -1301,7 +1301,7 @@ def test_automatic_segments_match_the_manual_breakout_and_retain_absent_levels(t
     )
     assert sequential_snapshot(replay_experiment, replay_resolver) == snapshot
     with pytest.raises(CapabilityError) as no_catalog:
-        view_readout(replay_experiment, replay_resolver, Scope(view="breakout", grain="total"))
+        view_readout(replay_experiment, replay_resolver, View(view="breakout", grain="total"))
     assert no_catalog.value.code == "evidence.breakout_unavailable"
 
     # An undeclared level in the data joins no cell; a redeclared family refuses.
@@ -1487,7 +1487,7 @@ def test_automatic_segments_on_a_unit_panel_match_the_manual_registration():
         capture_sequential(experiment, resolver, finalized=True, as_of=2)
         return experiment, resolver
 
-    breakout = Scope(view="breakout", grain="total")
+    breakout = View(view="breakout", grain="total")
     auto_experiment, auto_resolver = panel(automatic)
     manual_experiment, manual_resolver = panel(manual)
     assert sequential_snapshot(auto_experiment, auto_resolver) == sequential_snapshot(
@@ -1544,11 +1544,11 @@ def test_automatic_segments_under_an_explicit_bh_view_read_out_at_the_view_level
         auto_source_experiment, auto_source_resolver
     ).registration.q == Fraction(0.3)
     rows = view_readout(
-        auto_source_experiment, auto_source_resolver, Scope(view="breakout", grain="total")
+        auto_source_experiment, auto_source_resolver, View(view="breakout", grain="total")
     )
     assert _rows(rows) == _rows(
         view_readout(
-            manual_source_experiment, manual_source_resolver, Scope(view="breakout", grain="total")
+            manual_source_experiment, manual_source_resolver, View(view="breakout", grain="total")
         )
     )
     assert {row.family_q for row in rows if row.method_role == "decision"} == {0.3}
@@ -1562,7 +1562,7 @@ def test_automatic_segments_under_an_explicit_bh_view_read_out_at_the_view_level
     )
     with pytest.raises(CapabilityError) as refused:
         view_readout(
-            *_summary(frame, specs, plan_level, design), Scope(view="breakout", grain="total")
+            *_summary(frame, specs, plan_level, design), View(view="breakout", grain="total")
         )
     assert refused.value.code == "sequential.source.invalid"
 
@@ -1598,7 +1598,7 @@ def test_automatic_segments_under_encouragement_keep_the_breakout_estimand_refus
     assert all(not c.family for c in roster)
     assert {c.alpha for c in roster if c.estimand == "compliance"} == {Fraction(1, 40)}
     with pytest.raises(CapabilityError) as refused:
-        view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        view_readout(experiment, resolver, View(view="breakout", grain="total"))
     assert refused.value.code == "sequential.route.unsupported"
 
 
@@ -1750,9 +1750,9 @@ def test_boolean_and_null_summary_segments_match_the_canonical_string_oracle(kin
     snapshot = sequential_snapshot(typed_experiment, typed_resolver)
     assert snapshot == sequential_snapshot(oracle_experiment, oracle_resolver)
     assert _occupancy(snapshot) == {(level, level != "absent") for level in levels}
-    rows = view_readout(typed_experiment, typed_resolver, Scope(view="breakout", grain="total"))
+    rows = view_readout(typed_experiment, typed_resolver, View(view="breakout", grain="total"))
     assert _rows(rows) == _rows(
-        view_readout(oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total"))
+        view_readout(oracle_experiment, oracle_resolver, View(view="breakout", grain="total"))
     )
     by_level = {row.dimension_value: row for row in rows}
     assert set(by_level) == set(levels)
@@ -1815,9 +1815,9 @@ def test_boolean_and_null_panel_segments_match_the_canonical_string_oracle(kind)
     assert snapshot == sequential_snapshot(oracle_experiment, oracle_resolver)
     assert _occupancy(snapshot) == {(level, level != "absent") for level in levels}
     assert _rows(
-        view_readout(typed_experiment, typed_resolver, Scope(view="breakout", grain="total"))
+        view_readout(typed_experiment, typed_resolver, View(view="breakout", grain="total"))
     ) == _rows(
-        view_readout(oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total"))
+        view_readout(oracle_experiment, oracle_resolver, View(view="breakout", grain="total"))
     )
 
 

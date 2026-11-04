@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from increment import Scope, from_frame, from_moments
+from increment import View, from_frame, from_moments
 from increment.breakout.estimates import DailyLiftEstimate, LiftEstimates
 from increment.errors import CapabilityError
 from increment.estimation.sequential_result import AsymptoticSequentialResult
@@ -708,7 +708,7 @@ def test_public_breakout_retains_absent_segments():
     experiment, resolver = _analysis(frame, specs, plan)
     rows = {
         row.dimension_value: row
-        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
     }
     assert rows["present"].discovery is True
     assert rows["absent"].discovery is False
@@ -755,7 +755,7 @@ def test_public_ratio_breakout_uses_predeclared_bonferroni():
     rows = {
         row.dimension_value: row
         for row in view_readout(
-            *_analysis(frame, specs, plan), scope=Scope(view="breakout", grain="total")
+            *_analysis(frame, specs, plan), scope=View(view="breakout", grain="total")
         )
     }
     assert rows["present"].discovery is True
@@ -801,7 +801,7 @@ def test_segmented_registration_as_of_refuses_like_run():
     )
     capture_sequential(*analysis, finalized=True, as_of=start + timedelta(days=14))
     contexts = []
-    for scope in (None, Scope(view="asof", grain="asof")):
+    for scope in (None, View(view="asof", grain="asof")):
         with pytest.raises(CapabilityError) as raised:
             view_readout(*analysis, scope=scope)
         assert raised.value.code == "sequential.route.unsupported"
@@ -838,7 +838,7 @@ def test_panel_finalization_daily_projection_and_replay(tmp_path):
     full = capture_sequential(*analysis, finalized=True, as_of=start + timedelta(days=14))
     assert len(full.records) == 80
     assert full.parent_id == early.prefix_id
-    daily = view_readout(*analysis, Scope(view="asof", grain="asof", completion_policy=True))
+    daily = view_readout(*analysis, View(view="asof", grain="asof", completion_policy=True))
     assert len(daily) == 1 and daily[0].n_control == 40
     assert daily[0].sequential_result == _row(analysis).sequential_result
     assert DailyLiftEstimate.model_validate_json(daily[0].model_dump_json()) == daily[0]
@@ -848,7 +848,7 @@ def test_panel_finalization_daily_projection_and_replay(tmp_path):
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
     assert list(
-        view_readout(experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True))
+        view_readout(experiment, resolver, View(view="asof", grain="asof", completion_policy=True))
     ) == list(daily)
 
 
@@ -876,7 +876,7 @@ def test_asymptotic_daily_repr_keeps_disconnected_bounds_and_reasons():
         )
         capture_sequential(experiment, resolver, finalized=True, as_of=start + timedelta(days=14))
         rows = view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof", completion_policy=True)
+            experiment, resolver, View(view="asof", grain="asof", completion_policy=True)
         )
         assert len(rows) == 1
         return rows[0]
@@ -938,7 +938,7 @@ def test_secondary_family_daily_decisions_preserve_allocations_and_replay(tmp_pa
     daily = view_readout(
         analysis_experiment,
         analysis_resolver,
-        Scope(view="asof", grain="asof", completion_policy=True),
+        View(view="asof", grain="asof", completion_policy=True),
     )
     assert {row.metric: row.discovery for row in daily} == {"outcome": True, "other": False}
     expected_decision_alpha = {"outcome": F(1, 20), "other": F(1, 40)}
@@ -961,7 +961,7 @@ def test_secondary_family_daily_decisions_preserve_allocations_and_replay(tmp_pa
         view_readout(
             replay_experiment,
             replay_resolver,
-            Scope(view="asof", grain="asof", completion_policy=True),
+            View(view="asof", grain="asof", completion_policy=True),
         )
     ) == list(daily)
 
@@ -985,7 +985,7 @@ def test_explicitly_uncorrected_continuous_breakout_has_no_family_discovery():
     experiment, resolver = _analysis(frame, specs, plan)
     rows = {
         row.dimension_value: row
-        for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        for row in view_readout(experiment, resolver, View(view="breakout", grain="total"))
     }
     assert rows["present"].require_lift().value == pytest.approx(5.0)
     assert rows["present"].discovery is None
@@ -1122,7 +1122,7 @@ def test_automatic_asymptotic_segments_keep_bonferroni_and_match_the_manual_form
     readouts = [
         {
             (row.metric, row.dimension_value): row
-            for row in view_readout(*source, scope=Scope(view="breakout", grain="total"))
+            for row in view_readout(*source, scope=View(view="breakout", grain="total"))
         }
         for source in sources
     ]
@@ -1250,13 +1250,13 @@ def test_boolean_and_null_segments_match_the_canonical_string_oracle(kind, regis
     rows = {
         row.dimension_value: row
         for row in view_readout(
-            typed_experiment, typed_resolver, Scope(view="breakout", grain="total")
+            typed_experiment, typed_resolver, View(view="breakout", grain="total")
         )
     }
     expected = {
         row.dimension_value: row
         for row in view_readout(
-            oracle_experiment, oracle_resolver, Scope(view="breakout", grain="total")
+            oracle_experiment, oracle_resolver, View(view="breakout", grain="total")
         )
     }
     assert {k: v.model_dump() for k, v in rows.items()} == {
@@ -1343,11 +1343,11 @@ def test_boolean_covariate_also_declared_as_a_segment_keeps_the_adjusted_state(k
     assert {row[1] for row in retained(typed) if row[2] > 0} == {"true", "false"}
     rows = {
         row.dimension_value: row
-        for row in view_readout(*typed, scope=Scope(view="breakout", grain="total"))
+        for row in view_readout(*typed, scope=View(view="breakout", grain="total"))
     }
     expected = {
         row.dimension_value: row
-        for row in view_readout(*oracle, scope=Scope(view="breakout", grain="total"))
+        for row in view_readout(*oracle, scope=View(view="breakout", grain="total"))
     }
     for level in levels:
         got, want = rows[level].sequential_result, expected[level].sequential_result

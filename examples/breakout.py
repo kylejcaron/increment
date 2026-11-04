@@ -11,7 +11,7 @@ def _():
     import marimo as mo
     from _seed import seed_event_log
 
-    from increment import Method, Scope, from_definitions, run
+    from increment import Method, View, from_definitions, run
     from increment.evidence import BreakoutIdentity
     from increment.tables import estimates_to_readout, readout_table
     from increment.workflows import experiment_definition
@@ -19,7 +19,7 @@ def _():
     return (
         BreakoutIdentity,
         Method,
-        Scope,
+        View,
         ct,
         estimates_to_readout,
         experiment_definition,
@@ -85,7 +85,7 @@ def _(mo):
 def _(
     BreakoutIdentity,
     Method,
-    Scope,
+    View,
     estimates_to_readout,
     experiment,
     readout_table,
@@ -95,13 +95,12 @@ def _(
     # new_onboarding_v2 declares Bonferroni segmented views in
     # examples/definitions/experiments.yaml; its plan keeps fixed-horizon
     # inference because the declared retention guardrail carries a prior.
-    by_country = Scope(view="breakout", grain="total")
-    asof_lift_by_country = Scope(
-        view="asof", grain="asof", segment=BreakoutIdentity("country", None)
-    )
+    by_country = View.breakout(())
+    asof_lift_by_country = View.asof(segment=(BreakoutIdentity("country", None),))
     segment_result = run(
         experiment.with_views(by_country, asof_lift_by_country),
         resolver,
+        views=(by_country, asof_lift_by_country),
         decision_method=Method(name="unadjusted"),
     )
     breakout_table = readout_table(
@@ -129,9 +128,11 @@ def _(mo):
 
 
 @app.cell
-def _(Scope, ct, experiment, resolver, run):
-    daily_scope = Scope(view="daily", grain="daily", values=True)
-    daily_values = run(experiment.with_views(daily_scope), resolver).readout(daily_scope)
+def _(View, ct, experiment, resolver, run):
+    daily_scope = View.daily(values=True)
+    daily_values = run(experiment.with_views(daily_scope), resolver, views=(daily_scope,)).readout(
+        daily_scope
+    )
     daily_frame = daily_values.to_frame(backend="pandas")
 
     value_table = (
@@ -166,13 +167,11 @@ def _(mo):
 
 
 @app.cell
-def _(BreakoutIdentity, Scope, ct, experiment, experiment_definition, resolver, run):
-    segment_daily_scope = Scope(
-        view="daily", grain="daily", values=True, segment=BreakoutIdentity("country", None)
-    )
-    segment_daily_values = run(experiment.with_views(segment_daily_scope), resolver).readout(
-        segment_daily_scope
-    )
+def _(BreakoutIdentity, View, ct, experiment, experiment_definition, resolver, run):
+    segment_daily_scope = View.daily(values=True, segment=(BreakoutIdentity("country", None),))
+    segment_daily_values = run(
+        experiment.with_views(segment_daily_scope), resolver, views=(segment_daily_scope,)
+    ).readout(segment_daily_scope)
     segment_daily_frame = segment_daily_values.to_frame(backend="pandas")
     control_group = experiment_definition(experiment, resolver).control_group
     segment_daily_frame = segment_daily_frame[segment_daily_frame["group_id"] != control_group]
@@ -212,10 +211,12 @@ def _(mo):
 
 
 @app.cell
-def _(Scope, ct, experiment, resolver, run):
+def _(View, ct, experiment, resolver, run):
     # its series starts late, absent until the first cohort matures.
-    asof_scope = Scope(view="asof", grain="asof", values=True)
-    asof_values = run(experiment.with_views(asof_scope), resolver).readout(asof_scope)
+    asof_scope = View.asof(values=True)
+    asof_values = run(experiment.with_views(asof_scope), resolver, views=(asof_scope,)).readout(
+        asof_scope
+    )
     asof_frame = asof_values.to_frame(backend="pandas")
 
     asof_table = (
@@ -242,17 +243,17 @@ def _(mo):
     mo.md("""
     ## Lift over time
 
-    This view shows the independent daily lift each day. Note, this is different than the running lift (the as-of view, `Scope(view="asof", grain="asof")`), as this approach just looks at only data from a single day. It is particularly useful for identifying **novelty effects**
+    This view shows the independent daily lift each day. Note, this is different than the running lift (the as-of view, `View.asof()`), as this approach just looks at only data from a single day. It is particularly useful for identifying **novelty effects**
     """)
     return
 
 
 @app.cell
-def _(Method, Scope, estimates_to_readout, experiment, readout_table, resolver, run):
-    whole_window = Scope(view="run", grain="total")
-    daily_lift_scope = Scope(view="daily", grain="daily")
+def _(Method, View, estimates_to_readout, experiment, readout_table, resolver, run):
+    whole_window = View.overall()
+    daily_lift_scope = View.daily()
     lift_result = run(
-        experiment.with_views(whole_window, daily_lift_scope),
+        experiment.with_views(daily_lift_scope),
         resolver,
         decision_method=Method(name="unadjusted"),
     )
@@ -276,7 +277,7 @@ def _(mo):
     mo.md("""
     ## Running lift over time
 
-    The running-total counterpart to the section above: the as-of view (`Scope(view="asof", grain="asof")`) tells us "what was the experiment lift as of a certain date?"
+    The running-total counterpart to the section above: the as-of view (`View.asof()`) tells us "what was the experiment lift as of a certain date?"
 
     It is typically the best starting point for diving into an experiment
     """)
@@ -284,8 +285,8 @@ def _(mo):
 
 
 @app.cell
-def _(Method, Scope, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
-    asof_lift_scope = Scope(view="asof", grain="asof")
+def _(Method, View, estimates, estimates_to_readout, experiment, readout_table, resolver, run):
+    asof_lift_scope = View.asof()
     readout_table(
         estimates_to_readout(estimates),
         title="new_onboarding_v2 readout, as-of trend",
@@ -293,6 +294,7 @@ def _(Method, Scope, estimates, estimates_to_readout, experiment, readout_table,
         trend=run(
             experiment.with_views(asof_lift_scope),
             resolver,
+            views=(asof_lift_scope,),
             decision_method=Method(name="unadjusted"),
         ).readout(asof_lift_scope),
         trend_label="As-of lift trend",

@@ -18,12 +18,12 @@ from increment import Method, MetricSpec, from_definitions, run
 from increment.builders import from_frame
 from increment.errors import CodedError
 from increment.evidence import SequentialCaptureRequest
-from increment.kernel.contracts import ImplementationRef, Scope
+from increment.kernel.contracts import ImplementationRef, View
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.workflows import capture_sequential, export_moments, unit_counts
-from tests.analysis_factory import view_readout
+from tests.analysis_factory import declare_views, view_readout
 from tests.test_kernel_builders import _frame
 
 
@@ -38,7 +38,7 @@ def _experiment():
     )
 
 
-def _scope(cell) -> Scope:
+def _scope(cell) -> View:
     scope = cell.identity.scope
     assert scope is not None
     return scope
@@ -47,7 +47,7 @@ def _scope(cell) -> Scope:
 @pytest.mark.parametrize("view,grain", [("run", "total"), ("daily", "daily"), ("asof", "asof")])
 def test_compile_retains_declared_metrics(view, grain):
     experiment, _ = _experiment()
-    experiment = replace(experiment, scopes=(Scope(view=view, grain=grain),))
+    experiment = replace(experiment, views=(View(view=view, grain=grain),))
     inventory, requests = experiment.compile()
     assert tuple(metric.name for metric in inventory.metrics) == ("value",)
     assert tuple(metric["name"] for metric in requests[0].requests[0].fields["metrics"]) == (
@@ -59,7 +59,7 @@ def test_runnable_keeps_known_refusals_with_unknown_sources():
     experiment, _ = _experiment()
     experiment = replace(
         experiment,
-        scopes=(Scope(view="daily", grain="daily"),),
+        views=(View(view="daily", grain="daily"),),
         source_refs=(
             *experiment.source_refs,
             SourceReference(name="missing", uri="frame://missing"),
@@ -163,7 +163,7 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
         metrics={"value": "mean"},
         breakouts=["country"],
     )
-    daily = replace(experiment, scopes=(Scope(view="daily", grain="daily"),))
+    daily = replace(experiment, views=(View(view="daily", grain="daily"),))
     assert {cell.identity.key.ds for cell in run(daily, resolver).cells} == {
         pd.Timestamp("2025-01-01").date(),
         pd.Timestamp("2025-01-02").date(),
@@ -172,8 +172,8 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
 
     segmented = replace(
         daily,
-        scopes=(
-            Scope(
+        views=(
+            View(
                 view="daily",
                 grain="daily",
                 segment=(BreakoutIdentity(property="country", source=None),),
@@ -184,8 +184,8 @@ def test_builder_executes_declared_daily_scope_and_preflights_segment():
 
     breakout = replace(
         experiment,
-        scopes=(
-            Scope(
+        views=(
+            View(
                 view="breakout",
                 grain="total",
                 segment=(BreakoutIdentity(property="country", source=None),),
@@ -219,7 +219,7 @@ def test_multibreakout_frame_runs_every_declared_selection_and_refuses_unknown_b
     def selected(*identities):
         return replace(
             experiment,
-            scopes=(Scope(view="breakout", grain="total", segment=identities),),
+            views=(View(view="breakout", grain="total", segment=identities),),
         )
 
     def compiled(requested):
@@ -304,7 +304,7 @@ def test_registered_sequential_breakout_refuses_declared_breakouts_it_cannot_sup
 
     def selected(*identities):
         return replace(
-            experiment, scopes=(Scope(view="breakout", grain="total", segment=identities),)
+            experiment, views=(View(view="breakout", grain="total", segment=identities),)
         )
 
     for requested_capture in (None, capture):
@@ -456,11 +456,11 @@ def test_observational_preflight_matches_execution_by_operation(operation, view,
             adjustment=AdjustmentSet(covariates=("pre",)),
         ),
     )
-    scope = Scope(view=view, grain=grain)
+    scope = View(view=view, grain=grain)
     requested = Experiment.from_json(
         replace(
             experiment,
-            scopes=(scope,),
+            views=(scope,),
             operations={scope.hash(): operation},
         ).to_json()
     )
@@ -500,7 +500,7 @@ def test_encouragement_daily_preflight_matches_saved_estimands(estimands):
     requested = Experiment.from_json(
         replace(
             experiment,
-            scopes=(Scope(view="daily", grain="daily"),),
+            views=(View(view="daily", grain="daily"),),
             request_options={"estimands": estimands},
         ).to_json()
     )
@@ -569,7 +569,7 @@ def test_daily_lift_run_decisions_are_not_evaluated_against_registered_plan():
         control="control",
         metrics={"value": "mean"},
     )
-    result = run(replace(experiment, scopes=(Scope(view="daily", grain="daily"),)), resolver)
+    result = run(replace(experiment, views=(View(view="daily", grain="daily"),)), resolver)
     assert result.cells
     assert {verdict.status for verdict in result.decisions.cells} == {"not_evaluated"}
     assert {code for verdict in result.decisions.cells for code in verdict.reason_codes} == {
@@ -594,7 +594,7 @@ def test_monitoring_scope_is_not_evaluated_against_whole_experiment_plan():
         metrics={"value": "mean"},
         plan=AnalysisPlan(primary="value"),
     )
-    result = run(replace(experiment, scopes=(Scope(view="daily", grain="daily"),)), resolver)
+    result = run(replace(experiment, views=(View(view="daily", grain="daily"),)), resolver)
 
     assert result.cells
     assert {cell.identity.key.method_role for cell in result.cells} == {"decision"}
@@ -859,7 +859,7 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
     expected = view_readout(
         analysis_experiment,
         analysis_resolver,
-        Scope(view="asof", grain="asof", completion_policy=True),
+        View(view="asof", grain="asof", completion_policy=True),
     )
     path = tmp_path / "checkpoint.parquet"
     export_moments(analysis_experiment, analysis_resolver, path)
@@ -867,10 +867,10 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
         pq.read_table(path).to_pylist(), metrics=specs, control="control"
     )
     scopes = (
-        Scope(view="run", grain="total"),
-        Scope(view="asof", grain="asof", completion_policy=True),
+        View(view="run", grain="total"),
+        View(view="asof", grain="asof", completion_policy=True),
     )
-    requested = Experiment.from_json(replace(experiment, scopes=scopes).to_json())
+    requested = Experiment.from_json(replace(experiment, views=scopes).to_json())
     capabilities = requested.source_refs[0].capabilities
     assert capabilities is not None and capabilities.grains == frozenset({"total"})
     from increment.results import ResultCell
@@ -895,7 +895,7 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
         [retained_data(cell) for cell in actual_captured.cells if _scope(cell).view == "asof"],
         expected_payloads,
     )
-    values = replace(requested, operations={requested.scopes[1].hash(): "run_asof"})
+    values = replace(requested, operations={requested.views[1].hash(): "run_asof"})
     assert "evidence.grain_unavailable" in {
         refusal.code
         for refusal in runnable(values, "outcome")["randomized.unadjusted"].static_refusals
@@ -928,8 +928,8 @@ def test_workflow_capture_sequential_checkpoint_feeds_builder_run():
         ),
     )
     capture_sequential(experiment, resolver, finalized=True, as_of=1)
-    scope = Scope(view="asof", grain="asof", completion_policy=True)
-    requested = replace(experiment, scopes=(scope,))
+    scope = View(view="asof", grain="asof", completion_policy=True)
+    requested = replace(experiment, views=(scope,))
 
     result = run(requested, resolver)
 
@@ -1264,8 +1264,8 @@ def test_switchback_scope_refusals_match_execution(view, grain, population, segm
     )
     requested = replace(
         experiment,
-        scopes=(
-            Scope(
+        views=(
+            View(
                 view=view,
                 grain=grain,
                 population=population,
@@ -1306,12 +1306,12 @@ def test_frozen_metric_keeps_undeclared_direction_on_day_axis(view, grain):
     )
     requested = replace(
         experiment,
-        scopes=(Scope(view=view, grain=grain),),
+        views=(View(view=view, grain=grain),),
         request_options={"metrics": [metric]},
     )
     restored = Experiment.from_json(requested.to_json())
     direct = run(
-        replace(experiment, scopes=requested.scopes),
+        replace(experiment, views=requested.views),
         resolver,
         metrics=[metric],
     )
@@ -1399,7 +1399,7 @@ def _frame_read_calls():
 
 def test_arm_experiment_refuses_switchback_scope_before_reads():
     experiment, resolver = _experiment()
-    requested = replace(experiment, scopes=(Scope(view="switchback", grain="total"),))
+    requested = replace(experiment, views=(View(view="switchback", grain="total"),))
     with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
         run(requested, resolver)
     assert reads == []
@@ -1414,12 +1414,12 @@ def test_unavailable_breakout_selection_refuses_alike_before_reads():
     from increment.evidence import BreakoutIdentity
 
     experiment, resolver = _experiment()
-    selection = Scope(
+    selection = View(
         view="breakout",
         grain="total",
         segment=(BreakoutIdentity(property="country", source=None),),
     )
-    requested = replace(experiment, scopes=(selection,))
+    requested = replace(experiment, views=(selection,))
     with _frame_read_calls() as reads, pytest.raises(CodedError) as error:
         run(requested, resolver)
     assert reads == []
@@ -1656,7 +1656,7 @@ def test_builder_preflight_matches_execution_before_reads(
         and operation == "run_daily"
     )
     experiment, resolver = _plain_builder(kind, conversion=conversion)
-    scope = Scope(
+    scope = View(
         view=view,
         grain=view if view in {"daily", "asof"} else "total",
         segment=(
@@ -1673,7 +1673,7 @@ def test_builder_preflight_matches_execution_before_reads(
     requested = Experiment.from_json(
         replace(
             experiment,
-            scopes=(scope,),
+            views=(scope,),
             operations={} if operation is None else {scope.hash(): operation},
             request_options=options,
         ).to_json()
@@ -1746,10 +1746,10 @@ def test_daily_lift_preflight_checks_finite_sample_conversion_compatibility():
         control="control",
         metrics=[metric],
     )
-    scope = Scope(view="daily", grain="daily")
+    scope = View(view="daily", grain="daily")
     requested = replace(
         experiment,
-        scopes=(scope,),
+        views=(scope,),
         operations={scope.hash(): "run_daily_lift"},
         request_options={"prior": Normal(mu=0, sigma=1), "metrics": ["value"]},
     )
@@ -1786,10 +1786,10 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
         control="control",
         metrics={"value": "mean"},
     )
-    scope = Scope(view=view, grain=grain)
+    scope = View(view=view, grain=grain)
     requested = replace(
         experiment,
-        scopes=(scope,),
+        views=(scope,),
         operations={scope.hash(): operation},
     )
     original_hashes = (
@@ -1797,7 +1797,7 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
         requested.analysis_spec_hash,
         requested.execution_identity_hash,
     )
-    requested_scope = requested.scopes[0]
+    requested_scope = requested.views[0]
     restored = type(requested).from_json(requested.to_json())
 
     assert requested_scope.values is True
@@ -1819,7 +1819,7 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
     returned_scope = _scope(result.cells[0]).model_copy(
         update={"through_day": None, "time_basis": "calendar"}
     )
-    selected = run(restored.with_views(returned_scope), resolver)
+    selected = run(declare_views(restored, returned_scope), resolver, views=(returned_scope,))
     assert selected.cells
     assert all(_scope(cell).values for cell in selected.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in selected.cells)
@@ -1833,24 +1833,24 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
         metrics={"value": "mean"},
     )
     direct_values = view_readout(
-        direct_experiment, direct_resolver, Scope(view=view, grain=grain, values=True)
+        direct_experiment, direct_resolver, View(view=view, grain=grain, values=True)
     )
     direct_cell = direct_values.as_cells()[0]
     assert direct_cell.identity.scope.values is True
     direct_scope = direct_cell.identity.scope.model_copy(
         update={"through_day": None, "time_basis": "calendar"}
     )
-    declarative = run(restored.with_views(direct_scope), resolver)
+    declarative = run(declare_views(restored, direct_scope), resolver, views=(direct_scope,))
     assert declarative.cells
     assert all(_scope(cell).values for cell in declarative.cells)
     assert all(cell.identity.key.value_scale == "absolute" for cell in declarative.cells)
-    direct_lifts = view_readout(direct_experiment, direct_resolver, Scope(view=view, grain=grain))
+    direct_lifts = view_readout(direct_experiment, direct_resolver, View(view=view, grain=grain))
     lift_cell = direct_lifts.as_cells()[0]
     assert lift_cell.identity.scope.values is False
     lift_scope = lift_cell.identity.scope.model_copy(
         update={"through_day": None, "time_basis": "calendar"}
     )
-    declarative_lift = run(restored.with_views(lift_scope), resolver)
+    declarative_lift = run(declare_views(restored, lift_scope), resolver, views=(lift_scope,))
     assert declarative_lift.cells
     assert all(_scope(cell).values is False for cell in declarative_lift.cells)
     assert all(cell.identity.key.value_scale == "relative" for cell in declarative_lift.cells)

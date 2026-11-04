@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Scope, from_definitions, from_frame, query, workflows
+from increment import View, from_definitions, from_frame, query, workflows
 from increment.artifacts import SourceSnapshotEvidence
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import (
@@ -36,7 +36,7 @@ from tests.analysis_factory import (
 from tests.sequential_cases import registration
 from tests.warning_codes import warning_codes
 
-_BREAKOUT = Scope(view="breakout", grain="total")
+_BREAKOUT = View(view="breakout", grain="total")
 
 
 def _analysis_with_country_breakout(
@@ -180,7 +180,7 @@ def country_daily_lift_by_segment(con):
     return view_readout(
         experiment,
         resolver,
-        Scope(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
+        View(view="daily", grain="daily", segment=BreakoutIdentity("country", None)),
     )
 
 
@@ -784,7 +784,7 @@ def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
     )
     with pytest.raises(CapabilityError) as refused:
         view_readout(
-            experiment, resolver, Scope(view="breakout", grain="total", population="triggered")
+            experiment, resolver, View(view="breakout", grain="total", population="triggered")
         )
     assert refused.value.code == "facade.analysis.trigger_unsupported"
 
@@ -1736,7 +1736,7 @@ def _selected_breakout_sources(tmp_path):
 
 def _breakout_scope(*identities):
 
-    return Scope(view="breakout", grain="total", segment=identities)
+    return View(view="breakout", grain="total", segment=identities)
 
 
 def _identity_order(cells):
@@ -1779,7 +1779,7 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
             (_breakout_scope(BreakoutIdentity("region", None)), (declared[0], declared[2])),
         ):
             requested = experiment.with_views(scope)
-            _, (compiled,) = requested.compile()
+            _, (_, compiled) = requested.compile()
             assert (
                 tuple(
                     (item["source"], item["property"])
@@ -1787,15 +1787,15 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
                 )
                 == expected
             )
-            assert _identity_order(run(requested, resolver).cells) == expected
+            assert _identity_order(run(requested, resolver, views=(scope,)).cells) == expected
 
         for view in ("daily", "asof"):
-            qualified = Scope(
+            qualified = View(
                 view=view, grain=view, segment=(BreakoutIdentity("region", "profiles"),)
             )
-            assert _identity_order(run(experiment.with_views(qualified), resolver).cells) == (
-                ("profiles", "region"),
-            )
+            assert _identity_order(
+                run(experiment.with_views(qualified), resolver, views=(qualified,)).cells
+            ) == (("profiles", "region"),)
     finally:
         resolver.close()
         con.disconnect()
@@ -1807,14 +1807,13 @@ def test_distinct_property_breakout_selection_keeps_declared_family_results(tmp_
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
     try:
-        every = run(experiment.with_views(_breakout_scope()), resolver).cells
+        every_scope = _breakout_scope()
+        every = run(experiment.with_views(every_scope), resolver, views=(every_scope,)).cells
+        selected_scope = _breakout_scope(
+            BreakoutIdentity("region", "profiles"), BreakoutIdentity("device", None)
+        )
         selected = run(
-            experiment.with_views(
-                _breakout_scope(
-                    BreakoutIdentity("region", "profiles"), BreakoutIdentity("device", None)
-                )
-            ),
-            resolver,
+            experiment.with_views(selected_scope), resolver, views=(selected_scope,)
         ).cells
     finally:
         resolver.close()
@@ -1983,14 +1982,14 @@ def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp
             expected = view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total", population="assigned"),
+                View(view="breakout", grain="total", population="assigned"),
                 metrics=["revenue"],
             )
             provider_experiment, provider_resolver = bind_pair(Provider())
             actual = view_readout(
                 provider_experiment,
                 provider_resolver,
-                Scope(view="breakout", grain="total", population="triggered"),
+                View(view="breakout", grain="total", population="triggered"),
                 metrics=["revenue"],
             )
     finally:
@@ -2071,14 +2070,14 @@ def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path)
             expected = view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total", population="triggered"),
+                View(view="breakout", grain="total", population="triggered"),
                 metrics=["revenue"],
             )
             provider_experiment, provider_resolver = bind_pair(Provider())
             actual = view_readout(
                 provider_experiment,
                 provider_resolver,
-                Scope(view="breakout", grain="total", population="triggered"),
+                View(view="breakout", grain="total", population="triggered"),
                 metrics=["revenue"],
             )
     finally:

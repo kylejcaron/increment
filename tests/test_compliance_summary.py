@@ -12,7 +12,7 @@ import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import Scope, from_frame, from_moments, readouts, run, runnable
+from increment import View, from_frame, from_moments, readouts, run, runnable
 from increment.artifacts import SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning, IncrementWarning
 from increment.estimation.encouragement import (
@@ -51,9 +51,9 @@ def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_pat
     path.write_text(json.dumps(definitions.model_dump(mode="json")), encoding="utf-8")
     experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")
     try:
-        scopes = (Scope(view="run", grain="total"), Scope(view="asof", grain="asof"))
+        scopes = (View(view="run", grain="total"), View(view="asof", grain="asof"))
         result = run(
-            replace(experiment, scopes=scopes),
+            replace(experiment, views=scopes),
             resolver,
             estimands=["compliance"],
         )
@@ -344,7 +344,7 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
             daily = view_readout(
                 analysis_experiment,
                 analysis_resolver,
-                Scope(view="daily", grain="daily"),
+                View(view="daily", grain="daily"),
                 estimands=("compliance",),
             )
             assert daily
@@ -409,13 +409,13 @@ def test_compliance_only_preflight_ignores_retention_configuration(tmp_path):
 @pytest.mark.parametrize("triggered", [False, True])
 @pytest.mark.parametrize(("outcome", "metrics"), [("mean", None), ("mean", []), (None, None)])
 def test_public_compliance_does_not_reduce_unusable_outcomes(triggered, outcome, metrics):
-    from tests.analysis_factory import lift_rows
+    from tests.analysis_factory import declare_views, lift_rows
 
     populations = ("assigned", "triggered") if triggered else ("assigned",)
-    scopes = tuple(Scope(view="run", grain="total", population=item) for item in populations)
+    scopes = tuple(View(view="run", grain="total", population=item) for item in populations)
 
     def population_rows(experiment: Any, resolver: Any, **options: Any) -> list[Any]:
-        result = run(experiment.with_views(*scopes), resolver, **options)
+        result = run(declare_views(experiment, *scopes), resolver, **options)
         return [row for scope in scopes for row in lift_rows(result.readout(scope))]
 
     (analysis_experiment, analysis_resolver), con = _warehouse_compliance_analysis(
@@ -463,7 +463,7 @@ def test_compliance_only_ignores_unusable_outcome_in_separate_shared_sql_source(
         )
         assert [(row.metric, row.estimand) for row in readout_rows] == [("uptake", "compliance")]
         day_rows = view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily"), estimands=("compliance",)
+            experiment, resolver, View(view="daily", grain="daily"), estimands=("compliance",)
         )
         assert day_rows
         assert {(row.metric, row.estimand) for row in day_rows} == {("uptake", "compliance")}
@@ -869,7 +869,7 @@ def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
     )
     estimands = ["compliance", "itt"]
     results = (
-        view_readout(experiment, resolver, Scope(view="asof", grain="asof"), estimands=estimands)
+        view_readout(experiment, resolver, View(view="asof", grain="asof"), estimands=estimands)
         if path == "analysis"
         else readouts.asof_lift(source, estimands=estimands)
     )
@@ -1033,7 +1033,7 @@ def test_completed_compliance_excludes_open_staggered_cohorts(axis, path, outcom
         results = view_readout(
             experiment,
             resolver,
-            Scope(view="asof", grain="asof", completion_policy=True),
+            View(view="asof", grain="asof", completion_policy=True),
             estimands=["compliance"],
         )
     else:

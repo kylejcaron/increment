@@ -219,10 +219,10 @@ def _scalar_preparation(covariates: Sequence[CupedCovariate] | None) -> tuple[st
 
 # The public view each day-axis readout operation serves, named in refusal routes.
 DAY_AXIS_ROUTES = {
-    "run_daily": 'Scope(view="daily", grain="daily", values=True)',
-    "run_daily_lift": 'Scope(view="daily", grain="daily")',
-    "run_asof": 'Scope(view="asof", grain="asof", values=True)',
-    "run_asof_lift": 'Scope(view="asof", grain="asof")',
+    "run_daily": "View.daily(values=True)",
+    "run_daily_lift": "View.daily()",
+    "run_asof": "View.asof(values=True)",
+    "run_asof_lift": "View.asof()",
 }
 
 

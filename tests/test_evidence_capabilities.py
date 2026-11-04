@@ -9,7 +9,7 @@ import pytest
 
 from increment import (
     Method,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -641,10 +641,10 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
     method = Method.cuped(covariates="pre")
     with pytest.raises(InvalidRequestError) as raised:
         if constructor == "panel":
-            view_readout(*analysis, Scope(view="daily", grain="daily"), decision_method=method)
+            view_readout(*analysis, View(view="daily", grain="daily"), decision_method=method)
         elif constructor == "breakout":
             view_readout(
-                *analysis, Scope(view="breakout", grain="total"), sensitivity_methods=(method,)
+                *analysis, View(view="breakout", grain="total"), sensitivity_methods=(method,)
             )
         else:
             view_readout(*analysis, decision_method=method)
@@ -737,7 +737,7 @@ def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
 
     with pytest.raises(InvalidRequestError) as raised:
         view_readout(
-            experiment, resolver, Scope(view="daily", grain="daily"), decision_method=method
+            experiment, resolver, View(view="daily", grain="daily"), decision_method=method
         )
     assert raised.value.code == "estimation.cuped.arm_no_covariate"
     assert view_readout(experiment, resolver, decision_method=method)

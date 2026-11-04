@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 from narwhals.typing import IntoDataFrame
 
-from increment import Scope, from_frame, from_unit_day_artifact
+from increment import View, from_frame, from_unit_day_artifact
 from increment.artifacts import publish_unit_day_artifact
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import (
@@ -2508,7 +2508,7 @@ class TestDailyInferenceRefusalIsCoded:
         )
 
         with pytest.raises(CodedError) as exc:
-            view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+            view_readout(experiment, resolver, View(view="daily", grain="daily"))
         assert exc.value.code == "readout.inference.disjoint_slices"
         assert exc.value.context["inference"] == "AsymptoticMean"
 
@@ -2525,7 +2525,7 @@ class TestDailyInferenceRefusalIsCoded:
             plan=AnalysisPlan(primary="revenue"),
         )
 
-        assert view_readout(experiment, resolver, Scope(view="daily", grain="daily"))
+        assert view_readout(experiment, resolver, View(view="daily", grain="daily"))
 
 
 def test_readout_cells_refuse_duplicate_metric_group_rows():

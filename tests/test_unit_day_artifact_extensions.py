@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 
-from increment import Scope, from_definitions, from_unit_day_artifact
+from increment import View, from_definitions, from_unit_day_artifact
 from increment.artifacts import SourceSnapshotEvidence, publish_unit_day_artifact
 from increment.estimators import sitewide
 from increment.evidence import EvidenceCapabilities
@@ -1548,7 +1548,7 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
             view_readout(
                 adopted_experiment,
                 adopted_resolver,
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 metrics=["purchase_rate"],
             )
         assert exc.value.code == "artifact.extension.invalid"
@@ -1674,7 +1674,7 @@ def test_extension_relation_publishes_and_reopens_under_digest_format_four() -> 
             breakout = view_readout(
                 experiment,
                 resolver,
-                Scope(view="breakout", grain="total"),
+                View(view="breakout", grain="total"),
                 metrics=["purchase_rate"],
             )
             return sorted((str(row.dimension_value), row.abs_diff) for row in breakout)

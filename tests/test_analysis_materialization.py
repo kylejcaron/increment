@@ -8,7 +8,7 @@ from typing import Any, cast
 import ibis
 import pytest
 
-from increment import Scope, from_definitions, workflows
+from increment import View, from_definitions, workflows
 from increment.query import panel_sql, summary_sql
 from increment.semantics.models import (
     AnalysisPlan,
@@ -191,9 +191,9 @@ def test_retention_cohort_observes_in_place_return_time_corrections(store):
     try:
         experiment, resolver = _union_horizon_analysis(con, defs, store=store, metrics=[metric])
         with resolver:
-            view_readout(experiment, resolver, Scope(view="daily", grain="daily", values=True))
+            view_readout(experiment, resolver, View(view="daily", grain="daily", values=True))
             before = view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+                experiment, resolver, View(view="daily", grain="daily", values=True)
             )
             assert {row.group_id: row.value.value for row in before if row.value} == {
                 "control": 0.5,
@@ -204,7 +204,7 @@ def test_retention_cohort_observes_in_place_return_time_corrections(store):
                 "WHERE event='late_event' AND user_id='t1'"
             )
             after = view_readout(
-                experiment, resolver, Scope(view="daily", grain="daily", values=True)
+                experiment, resolver, View(view="daily", grain="daily", values=True)
             )
             assert {row.ds_basis for row in after} == {"cohort"}
             assert {row.ds for row in after} == {datetime(2025, 8, 1).date()}

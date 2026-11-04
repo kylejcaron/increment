@@ -32,7 +32,7 @@ from increment import (
     CupedCovariate,
     Method,
     MetricSpec,
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -225,7 +225,7 @@ def test_breakout_country_segments_have_no_null_bin(analysis: tuple[Any, Any]):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = view_readout(*analysis, Scope(view="breakout", grain="total"))
+            estimates = view_readout(*analysis, View(view="breakout", grain="total"))
     _assert_breakout_warnings(record)
     country_rows = [
         e for e in estimates if e.metric == "conversion_rate" and e.dimension == "country"
@@ -264,7 +264,7 @@ def test_breakout_plan_segments_are_pre_exposure_free_only(analysis: tuple[Any, 
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            estimates = view_readout(*analysis, Scope(view="breakout", grain="total"))
+            estimates = view_readout(*analysis, View(view="breakout", grain="total"))
     _assert_breakout_warnings(record)
     plan_segments = {e.dimension_value for e in estimates if e.dimension == "plan"}
     assert plan_segments == {"free"}
@@ -287,7 +287,7 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis: tuple[Any, Any]):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            daily = view_readout(*analysis, Scope(view="daily", grain="daily"))
+            daily = view_readout(*analysis, View(view="daily", grain="daily"))
     _assert_ratio_skew_warnings(daily_warnings)
     assert daily
     assert {e.metric for e in daily} == METRIC_NAMES
@@ -300,7 +300,7 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis: tuple[Any, Any]):
                 category=DeprecationWarning,
                 module=r"ibis\.backends\.duckdb",
             )
-            asof = view_readout(*analysis, Scope(view="asof", grain="asof"))
+            asof = view_readout(*analysis, View(view="asof", grain="asof"))
     _assert_ratio_skew_warnings(asof_warnings)
     assert asof
     assert {e.metric for e in asof} == METRIC_NAMES

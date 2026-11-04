@@ -764,7 +764,7 @@ class ResultCell:
                     if source_identity is not None
                     else None
                 ),
-                "scope": contracts.Scope.model_validate(identity_context["scope"]),
+                "scope": contracts.View.model_validate(identity_context["scope"]),
             }
         )
         return cls.from_report_payload(

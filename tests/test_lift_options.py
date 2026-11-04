@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from increment import AnalysisPlan, MetricSpec, Scope, from_frame
+from increment import AnalysisPlan, MetricSpec, View, from_frame
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.priors import StudentTPrior
@@ -15,7 +15,7 @@ from tests.analysis_factory import view_readout
 
 def _daily_lift(pair: tuple[Any, Any], **options: Any) -> Any:
     experiment, resolver = pair
-    return view_readout(experiment, resolver, Scope(view="daily", grain="daily"), **options)
+    return view_readout(experiment, resolver, View(view="daily", grain="daily"), **options)
 
 
 def _panel_analysis(**overrides):

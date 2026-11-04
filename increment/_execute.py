@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from increment.estimation.contrast_results import ContrastResults
     from increment.estimation.inference import Prior
     from increment.kernel.context import EvidenceExecutionContext
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
     from increment.kernel.experiment import Experiment
     from increment.readouts._run_acquisition import PreparedRunAcquisition
     from increment.semantics.models import Metric
@@ -605,7 +605,7 @@ def _borrowed(
     return execution_context_scope(execution_context)
 
 
-def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scope) -> SourceBinding:
+def selected_binding(binding: SourceBinding, experiment: Experiment, scope: View) -> SourceBinding:
     """Narrow a binding to the breakout identities its scope selects, before any read.
 
     Identities come from the same declaration-based expansion ``Experiment.compile()``
@@ -679,9 +679,9 @@ def _run_identity_hashes(
                 "metrics": _json_value(experiment.metrics),
                 "registration_hash": experiment.registration.registration_hash,
                 "source_refs": [item.identity_payload() for item in experiment.source_refs],
-                "scopes": [item.canonical_payload() for item in experiment.scopes],
+                "scopes": [item.canonical_payload() for item in experiment.views],
                 "operations": {
-                    scope.hash(): scope_operation(experiment, scope) for scope in experiment.scopes
+                    scope.hash(): scope_operation(experiment, scope) for scope in experiment.views
                 },
                 "request_options_runtime": declaration_value(experiment.request_options),
             },
@@ -735,7 +735,7 @@ def _run_identity_hashes(
 def execute_views(
     binding: SourceBinding,
     experiment: Experiment,
-    scopes: Sequence[Scope],
+    scopes: Sequence[View],
     *,
     options: Mapping[str, object],
     capture: SequentialCaptureRequest | None = None,
@@ -807,7 +807,7 @@ def execute_views(
                 retained_sequential_capture(binding.source, capture, current_execution_context())
             scoped = []
             for scope, operation, kwargs, scope_binding in planned:
-                single = replace(experiment, scopes=(scope,), operations={scope.hash(): operation})
+                single = replace(experiment, views=(scope,), operations={scope.hash(): operation})
                 scope_hash, _ = _run_identity_hashes(single, kwargs)
                 scoped.append(
                     ScopedReadout(

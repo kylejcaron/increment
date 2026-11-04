@@ -277,7 +277,7 @@ def experiment_for_binding(
     """Declare the portable experiment a source binding executes."""
     from increment._runnability import context_payload
     from increment._source_types import EvidenceCapabilities
-    from increment.kernel.contracts import Registration, Scope, contract_hash
+    from increment.kernel.contracts import Registration, View, contract_hash
     from increment.kernel.experiment import Experiment, SourceReference
 
     state = binding.state
@@ -296,7 +296,7 @@ def experiment_for_binding(
     if not isinstance(capabilities, EvidenceCapabilities):
         capabilities = None
     kind = capabilities.kind if capabilities is not None else "switchback"
-    scope = Scope(
+    scope = View(
         view="switchback" if contrast else "run",
         grain="total",
         population=population,
@@ -320,7 +320,7 @@ def experiment_for_binding(
                 capabilities=capabilities,
             ),
         ),
-        scopes=(scope,),
+        views=(scope,),
         analysis_context={
             **context_payload(source),
             "operation_parameters": operation_parameters,
@@ -461,7 +461,7 @@ class ExperimentReader:
                 context={"field": "store"},
             )
         merged = dict(options or {})
-        for scope in experiment.scopes:
+        for scope in experiment.views:
             refusals = scope_refusals(experiment, scope)
             if refusals:
                 raise refusals[0]
@@ -470,7 +470,7 @@ class ExperimentReader:
         scoped = execute_views(
             self._binding,
             experiment,
-            experiment.scopes,
+            experiment.views,
             options=merged,
             capture=capture,
             execution_context=execution_context,

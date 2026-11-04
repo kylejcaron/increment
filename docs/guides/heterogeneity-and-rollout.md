@@ -12,7 +12,7 @@ For trigger-declared experiments, breakout output includes assigned and triggere
 ```python
 import numpy as np
 import polars as pl
-from increment import MetricSpec, Scope, from_frame, run
+from increment import MetricSpec, View, from_frame, run
 from increment.estimators import segment_heterogeneity, segment_rollout_recommendation
 
 rng = np.random.default_rng(21)
@@ -44,8 +44,10 @@ experiment, resolver = from_frame(
     metrics=[MetricSpec(name="revenue", type="mean")],
     breakouts=["segment"],
 )
-breakout_view = Scope(view="breakout", grain="total")
-breakout_estimates = run(experiment.with_views(breakout_view), resolver).readout(breakout_view)
+breakout_view = View.breakout(())
+breakout_estimates = run(
+    experiment.with_views(breakout_view), resolver, views=(breakout_view,)
+).readout(breakout_view)
 summary, segments = segment_heterogeneity(breakout_estimates)
 for row in summary:
     print(f"{row.metric} dim={row.dimension} Q={row.q:.2f} tau2={row.tau2} i2={row.i2}")

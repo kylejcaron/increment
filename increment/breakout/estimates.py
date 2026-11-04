@@ -156,7 +156,7 @@ _REFUSALS = refusals(
         "readout.inference.disjoint_slices": RefusalSpec(
             "readout.inference.disjoint_slices",
             UnsupportedRequestError,
-            template='run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view=\'asof\' (Scope(view="asof", grain="asof") with run()), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)',
+            template="run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view='asof' (View.asof() with run()), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)",
             keys=frozenset({"view"}),
         ),
         "breakout.breakout.exactly_one_lift": RefusalSpec(
@@ -1772,7 +1772,7 @@ def _envelope_identity(
     ds = getattr(row, "ds", None)
     through_day = ds.date() if isinstance(ds, datetime) else ds
     updates = {
-        "scope": contracts.Scope(
+        "scope": contracts.View(
             view=view,
             grain="total" if view == "breakout" else view,
             values=view in {"daily", "asof"} and isinstance(row, DailyMetricValue),

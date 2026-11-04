@@ -13,7 +13,7 @@ import ibis
 import ibis.expr.types as ir
 import pytest
 
-from increment import Scope, from_definitions, from_moments, from_unit_day_artifact, workflows
+from increment import View, from_definitions, from_moments, from_unit_day_artifact, workflows
 from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.frame import MetricSpec
@@ -1277,7 +1277,7 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     native_asof = view_readout(
         late_experiment,
         late_resolver,
-        Scope(view="asof", grain="asof", values=True),
+        View(view="asof", grain="asof", values=True),
         metrics=[metric.name],
     )
     assert late_max_ds == max(row.ds for row in native_asof)

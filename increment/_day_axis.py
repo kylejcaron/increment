@@ -141,7 +141,7 @@ _UNDECLARED_METRIC_FOR_DIMENSION = RefusalSpec(
 _ENCOURAGEMENT_DAILY_LATE = RefusalSpec(
     "facade.analysis.encouragement_daily_late",
     InvalidRequestError,
-    template="daily lift: per-day incremental LATE is statistically meaningless under a weak daily first stage; read the as-of trend with a Scope(view='asof', grain='asof') view instead",
+    template="daily lift: per-day incremental LATE is statistically meaningless under a weak daily first stage; read the as-of trend with a View.asof() view instead",
     keys=frozenset({"experiment"}),
 )
 _OBSERVATIONAL_DAY_AXIS = RefusalSpec(
@@ -1290,7 +1290,7 @@ def _fill_daily_domain_gaps(rows: list[Any], req: DayAxisRequest) -> list[Any]:
 
 def _day_axis_scope(req: DayAxisRequest):
     from increment._evidence_types import BreakoutIdentity
-    from increment.kernel.contracts import Scope
+    from increment.kernel.contracts import View
 
     experiment = req.experiment
     time_basis = (
@@ -1309,7 +1309,7 @@ def _day_axis_scope(req: DayAxisRequest):
             None,
         )
         segment = BreakoutIdentity(req.dimension, source_name)
-    return Scope(
+    return View(
         view=req.grain,
         grain=req.grain,
         day_domain=_day_axis_domain(req),

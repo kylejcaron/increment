@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from increment import (
-    Scope,
+    View,
     from_definitions,
     from_frame,
     from_moments,
@@ -3021,7 +3021,7 @@ def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
         breakouts=("segment",),
     )
     with pytest.warns(IncrementWarning):
-        results = view_readout(experiment, resolver, Scope(view="breakout", grain="total"))
+        results = view_readout(experiment, resolver, View(view="breakout", grain="total"))
     by_segment = {row.dimension_value: row for row in results}
     assert set(by_segment) == {"empty-arm", "all-null"}
     assert by_segment["empty-arm"].excluded == "no_control_arm"

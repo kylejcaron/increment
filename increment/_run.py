@@ -20,7 +20,7 @@ from increment.kernel.contracts import (
     CellKey,
     CompiledPlanBinding,
     Registration,
-    Scope,
+    View,
     _refuse,
     contract_hash,
     method_config_hash,
@@ -75,13 +75,13 @@ _LIVE_RAW_SET_NOT_PORTABLE = RefusalSpec(
 _READOUT_SCOPE_REQUIRED = RefusalSpec(
     "results.readout.scope_required",
     InvalidRequestError,
-    template="run {run_id} holds several result views; pass one of its scopes to readout(scope)",
+    template="run {run_id} holds several result views; pass one of them to readout(view)",
     keys=frozenset({"scope_hashes"}),
 )
 _READOUT_SCOPE_UNKNOWN = RefusalSpec(
     "results.readout.scope_unknown",
     InvalidRequestError,
-    template="run {run_id} did not execute the requested scope; pass a scope the run selected",
+    template="run {run_id} did not execute the requested view; pass a view the run selected",
     keys=frozenset({"scope_hash"}),
 )
 _READOUT_NOT_RETAINED = RefusalSpec(
@@ -138,18 +138,18 @@ class RunResult:
         return AnalysisEnvelope(self.cells, self.run.metadata)
 
     def readout(
-        self, scope: Scope | None = None
+        self, view: View | None = None
     ) -> (
         LiftEstimates | DailyLiftEstimates | DailyMetricValues | BreakoutEstimates | ContrastResults
     ):
-        """Return the result collection one executed scope produced, unchanged.
+        """Return the result collection one executed view produced, unchanged.
 
-        ``scope`` may be omitted only when the run executed one scope. A result
+        ``view`` may be omitted only when the run executed one view. A result
         restored from a store or a pickle keeps its portable cells only.
         """
         if not self._scoped:
             refuse(_READOUT_NOT_RETAINED, run_id=self.run.run_id)
-        if scope is None:
+        if view is None:
             if len(self._scoped) != 1:
                 refuse(
                     _READOUT_SCOPE_REQUIRED,
@@ -159,7 +159,7 @@ class RunResult:
                     ),
                 )
             return self._scoped[0].collection
-        scope_hash = scope.hash()
+        scope_hash = view.hash()
         for part in self._scoped:
             if part.scope is not None and part.scope.hash() == scope_hash:
                 return part.collection
@@ -176,7 +176,7 @@ class RunResult:
         columns describe the whole run. A restored result projects its saved cells
         the same way, and a live confidence-set row appears as ``render`` shows it.
         Views with different row types share their common columns;
-        ``readout(scope).to_frame()`` returns one view's frame. ``columns`` selects
+        ``readout(view).to_frame()`` returns one view's frame. ``columns`` selects
         typed columns as there.
         """
         from itertools import groupby
@@ -691,17 +691,17 @@ def _execution_overrides(
     return methods, metrics, runtime_method_unavailable
 
 
-def _scope_for_cell(cell: ResultCell, declared_scope: Scope | None) -> Scope:
+def _scope_for_cell(cell: ResultCell, declared_scope: View | None) -> View:
     key = cell.identity.key
     if declared_scope is None:
         if key.kind == "segment":
-            return Scope(
+            return View(
                 view="breakout",
                 grain="total",
                 population=key.analysis_population,
                 segment=(BreakoutIdentity(property=key.dimension or "", source=key.source),),
             )
-        return Scope(
+        return View(
             view="run",
             grain="total",
             population=key.analysis_population,
@@ -1020,11 +1020,9 @@ def _coherence_override(experiment: Experiment, overrides: dict[str, object]) ->
 
 
 def _scope_population(experiment: Experiment, overrides: dict[str, object]) -> dict[str, object]:
-    """Admit a run population only where every selected scope already declares it."""
+    """Admit a run population only where every selected view already declares it."""
     population = overrides.pop("population", None)
-    if population is not None and any(
-        scope.population != population for scope in experiment.scopes
-    ):
+    if population is not None and any(view.population != population for view in experiment.views):
         _refuse("kernel.request.population_scope_only")
     return overrides
 
@@ -1058,7 +1056,7 @@ def _preflight_persistence(
     _validate_registered_options(binding.plan if contrast is None else contrast, registered)
     if saving and any(
         _selected_percentile_winsorization(binding, operation_options(experiment, scope, overrides))
-        for scope in experiment.scopes
+        for scope in experiment.views
     ):
         refuse(_LIVE_RAW_SET_NOT_PORTABLE, action="saving")
 
@@ -1067,7 +1065,7 @@ def run(  # noqa: PLR0913
     experiment: Experiment,
     reader: ExperimentReader,
     *,
-    views: Sequence[Scope] | None = None,
+    views: Sequence[View] | None = None,
     run_id: str | None = None,
     results_store: ResultsStorePort | None = None,
     decision_log: DecisionLogPort | None = None,
@@ -1085,11 +1083,11 @@ def run(  # noqa: PLR0913
 ) -> RunResult:
     """Run an experiment through its reader.
 
-    ``views`` selects declared Experiment scopes by hash, in declaration order.
-    ``None`` executes all declared scopes in one capture. Only the readout
+    ``views`` selects declared experiment views by hash, in declaration order.
+    ``None`` executes all declared views in one capture. Only the readout
     options set by the caller apply; ``coherence`` defaults to the experiment's
     saved value, else ``captured``. A population must match every selected
-    scope, which declares it. ``results_store`` and ``decision_log`` save or log
+    view, which declares it. ``results_store`` and ``decision_log`` save or log
     the run under the experiment's registration, checked before the source is
     read; ``run_id`` is generated when omitted.
     """

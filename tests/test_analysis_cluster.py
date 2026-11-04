@@ -17,7 +17,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Scope, from_definitions, from_frame, run
+from increment import View, from_definitions, from_frame, run
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.sitewide import SitewideImpact
@@ -596,10 +596,10 @@ def test_declared_plan_always_valid_inference_refuses_cluster_through_the_real_r
 @pytest.mark.parametrize(
     "scope",
     [
-        Scope(view="daily", grain="daily", values=True),
-        Scope(view="daily", grain="daily"),
-        Scope(view="asof", grain="asof", values=True),
-        Scope(view="asof", grain="asof"),
+        View(view="daily", grain="daily", values=True),
+        View(view="daily", grain="daily"),
+        View(view="asof", grain="asof", values=True),
+        View(view="asof", grain="asof"),
     ],
     ids=["daily_values", "daily_lift", "asof_values", "asof_lift"],
 )

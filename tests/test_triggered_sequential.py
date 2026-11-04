@@ -38,7 +38,7 @@ from increment.evidence import (
     evidence_provider,
     request_evidence,
 )
-from increment.kernel.contracts import Scope
+from increment.kernel.contracts import View
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
@@ -274,14 +274,14 @@ def _by_population(rows):
 
 
 _POPULATION_VIEWS = (
-    Scope(view="run", grain="total"),
-    Scope(view="run", grain="total", population="triggered"),
+    View(view="run", grain="total"),
+    View(view="run", grain="total", population="triggered"),
 )
 
 
 def _both_populations(experiment, resolver, **options) -> Any:
     """The assigned and triggered whole-window rows of one run, as one collection."""
-    result = run(experiment.with_views(*_POPULATION_VIEWS), resolver, **options)
+    result = run(experiment.with_views(_POPULATION_VIEWS[1]), resolver, **options)
     assigned, triggered = (result.readout(scope) for scope in _POPULATION_VIEWS)
     return cast("LiftEstimates", assigned).concat(cast("LiftEstimates", triggered))
 
@@ -305,11 +305,11 @@ def _assert_selected_registered_family_capture(tmp_path):
         with resolver:
             assert run(experiment, resolver, metrics=[]).cells == ()
             scopes = (
-                Scope(view="run", grain="total", population="assigned"),
-                Scope(view="run", grain="total", population="triggered"),
+                View(view="run", grain="total", population="assigned"),
+                View(view="run", grain="total", population="triggered"),
             )
             result = run(
-                replace(experiment, scopes=scopes),
+                replace(experiment, views=scopes),
                 resolver,
                 metrics=["aux_a"],
                 capture=SequentialCaptureRequest(finalized=True, as_of=_LATER),
@@ -322,7 +322,7 @@ def _assert_selected_registered_family_capture(tmp_path):
             capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
             connection.raw_sql("DROP TABLE events")
             reversed_result = run(
-                replace(experiment, scopes=(scopes[1], scopes[0])),
+                replace(experiment, views=(scopes[1], scopes[0])),
                 resolver,
                 metrics=["aux_a"],
             )
@@ -348,10 +348,10 @@ def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
         source_snapshot_evidence=_CERTIFIED,
         store="none",
     )
-    run_scope = Scope(view="run", grain="total")
+    run_scope = View(view="run", grain="total")
     run_experiment = replace(
         experiment,
-        scopes=(run_scope,),
+        views=(run_scope,),
         operations={run_scope.hash(): "run"},
     )
     try:
@@ -365,7 +365,7 @@ def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
         initial_prefix = initial_state.fields["sequential_result"]["checkpoint"]["prefix_id"]
         scopes = (
             run_scope,
-            Scope(
+            View(
                 view="asof",
                 grain="asof",
                 segment=(BreakoutIdentity("region", None),),
@@ -373,7 +373,7 @@ def test_registered_segmented_asof_refuses_before_shared_capture(tmp_path):
         )
         experiment = replace(
             experiment,
-            scopes=scopes,
+            views=scopes,
             operations={
                 scopes[0].hash(): "run",
                 scopes[1].hash(): "run_asof_lift",
@@ -434,7 +434,7 @@ def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
         capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         scoped = replace(
             experiment,
-            scopes=(Scope(view="run", grain="total", population="triggered"),),
+            views=(View(view="run", grain="total", population="triggered"),),
         )
         result = run(scoped, resolver)
         assert {cell.identity.key.analysis_population for cell in result.cells} == {"triggered"}
@@ -471,10 +471,10 @@ def _assert_combined_compliance_family_requests(tmp_path):
             store="none",
         )
         scopes = (
-            Scope(view="run", grain="total", population="assigned"),
-            Scope(view="run", grain="total", population="triggered"),
+            View(view="run", grain="total", population="assigned"),
+            View(view="run", grain="total", population="triggered"),
         )
-        combined = replace(experiment, scopes=scopes)
+        combined = replace(experiment, views=scopes)
         capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         mixed = run(
             combined,
@@ -517,10 +517,10 @@ def test_registered_combined_compliance_replays_after_event_source_removal(tmp_p
         capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         connection.drop_table("events")
         scopes = (
-            Scope(view="run", grain="total", population="assigned"),
-            Scope(view="run", grain="total", population="triggered"),
+            View(view="run", grain="total", population="assigned"),
+            View(view="run", grain="total", population="triggered"),
         )
-        combined = replace(experiment, scopes=scopes)
+        combined = replace(experiment, views=scopes)
 
         result = run(combined, resolver, estimands=["compliance"])
 
@@ -550,11 +550,11 @@ def test_triggered_daily_family_refuses_before_assigned_warehouse_read(tmp_path)
         )
         connection.drop_table("events")
         scopes = (
-            Scope(view="run", grain="total", population="assigned"),
-            Scope(view="daily", grain="daily", population="triggered"),
+            View(view="run", grain="total", population="assigned"),
+            View(view="daily", grain="daily", population="triggered"),
         )
         operations = {scopes[0].hash(): "run", scopes[1].hash(): "run_daily_lift"}
-        combined = replace(experiment, scopes=scopes, operations=operations)
+        combined = replace(experiment, views=scopes, operations=operations)
 
         with pytest.raises(CodedError) as raised:
             run(combined, resolver, metrics=["revenue"])
@@ -605,7 +605,7 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
             (row.analysis_population, row.require_sequential_result()) for row in rows
         ]
         history = view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof", population="triggered")
+            experiment, resolver, View(view="asof", grain="asof", population="triggered")
         )
         assert [(row.analysis_population, row.ds) for row in history] == [("triggered", _LATER)]
         assert history[0].sequential_result == triggered.require_sequential_result()
@@ -621,9 +621,9 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         moments_closer = moments_resolver
         moments_scoped = replace(
             moments_experiment,
-            scopes=(
-                Scope(view="run", grain="total", population="triggered"),
-                Scope(
+            views=(
+                View(view="run", grain="total", population="triggered"),
+                View(
                     view="asof",
                     grain="asof",
                     population="triggered",
@@ -819,7 +819,7 @@ def test_triggered_asof_replays_from_exported_moments(tmp_path):
         history = view_readout(
             replay_experiment,
             replay_resolver,
-            Scope(view="asof", grain="asof", population="triggered"),
+            View(view="asof", grain="asof", population="triggered"),
         )
         assert history
         assert {row.analysis_population for row in history} == {"triggered"}
@@ -833,8 +833,8 @@ def test_triggered_asof_replays_from_exported_moments(tmp_path):
             metrics={"revenue": "mean"},
             control="C",
         )
-        scope = Scope(view="asof", grain="asof", population="triggered")
-        requested = replace(experiment, scopes=(scope,))
+        scope = View(view="asof", grain="asof", population="triggered")
+        requested = replace(experiment, views=(scope,))
         assert runnable(requested, "revenue")["randomized.unadjusted"].static_refusals == ()
         resolved_history = run(requested, resolver)
         assert resolved_history.cells
@@ -1043,7 +1043,7 @@ def test_assigned_only_process_continues_assigned_only_and_refuses_backfill(tmp_
             ("triggered", "readout.cell.unsupported_request"),
         ]
         history = view_readout(
-            experiment, resolver, Scope(view="asof", grain="asof", population="triggered")
+            experiment, resolver, View(view="asof", grain="asof", population="triggered")
         )
         assert [(row.ds, row.failure_context["reason"]) for row in history] == [
             (_LATER, "triggered_chain_uncommitted")
@@ -1440,7 +1440,7 @@ def test_assigned_checkpoint_exposes_next_same_metric_triggered_block(tmp_path):
         assert frozen.control == early.triggered.arm("revenue", "C")
         assert frozen.treatment == early.triggered.arm("revenue", "T")
         triggered = replace(
-            experiment, scopes=(Scope(view="run", grain="total", population="triggered"),)
+            experiment, views=(View(view="run", grain="total", population="triggered"),)
         )
         (row,) = _sequential_rows(run(triggered, resolver))
         assert row["sequential_result"]["checkpoint"] == frozen.model_dump(mode="json")
@@ -1467,9 +1467,9 @@ def test_metric_freeze_reaches_the_triggered_chain_once_it_is_ready(tmp_path):
         assert later.triggered.arm("revenue", "T").n > 0
         both = replace(
             experiment,
-            scopes=(
-                Scope(view="run", grain="total", population="assigned"),
-                Scope(view="run", grain="total", population="triggered"),
+            views=(
+                View(view="run", grain="total", population="assigned"),
+                View(view="run", grain="total", population="triggered"),
             ),
         )
         rows = _sequential_rows(run(both, resolver))
@@ -1770,7 +1770,7 @@ def test_breakout_route_keeps_refusing_triggered_sequential_segments(tmp_path):
         capture_sequential(experiment, resolver, finalized=True, as_of=_LATER)
         with pytest.raises(CapabilityError) as raised:
             view_readout(
-                experiment, resolver, Scope(view="breakout", grain="total", population="triggered")
+                experiment, resolver, View(view="breakout", grain="total", population="triggered")
             )
         assert raised.value.code == "sequential.route.unsupported"
     finally:
