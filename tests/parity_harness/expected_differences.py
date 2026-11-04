@@ -92,9 +92,10 @@ def without_binomial_arm_facts(
     """``actual`` without the arm counts and rates exact binomial rows gained after a capture.
 
     Only a ``reference_kind == "binomial"`` row is projected, and only a field its captured
-    row lacks or holds as null. The value must equal ``n_c``, ``n_t``, ``x_c / n_c`` or
-    ``x_t / n_t`` from the row's own ``binomial_set``, or, for a flattened row without one,
-    from ``counts`` keyed by ``(metric, group_id)`` as ``(x_c, n_c, x_t, n_t)``. Every other
+    row lacks or holds as null. The counts must equal ``n_c`` and ``n_t`` exactly, as integers
+    on a typed row; the rates must equal ``x_c / n_c`` and ``x_t / n_t`` within the harness
+    tolerance. Both come from the row's own ``binomial_set`` or, for a flattened row without
+    one, from ``counts`` keyed by ``(metric, group_id)`` as ``(x_c, n_c, x_t, n_t)``. Every other
     field is left to the caller's comparison. Lists and tuples pair by position, so a captured
     model's ``(type name, fields)`` form is projected too.
     """
@@ -117,7 +118,16 @@ def without_binomial_arm_facts(
         for field, value in implied.items():
             if actual.get(field) is None or expected.get(field) is not None:
                 continue
-            assert nested_close(value, actual[field]), (field, value, actual[field])
+            if field in ("n_control", "n_treat"):
+                # A frame holds counts in a float column; a typed row holds integers.
+                count_types = (int,) if isinstance(exact, Mapping) else (int, float)
+                assert type(actual[field]) in count_types and actual[field] == value, (
+                    field,
+                    value,
+                    actual[field],
+                )
+            else:
+                assert nested_close(value, actual[field]), (field, value, actual[field])
             if field in expected:
                 projected[field] = None
             else:
