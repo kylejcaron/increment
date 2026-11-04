@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 def test_arm_counts_returns_per_arm_unit_counts(con, exposures):
     """u1/u3 land in treatment, u2 in control - the mixed unit u4 is
     already dropped by `first_exposures` upstream of this table."""
-    counts = arm_counts(con, exposures)
+    counts = arm_counts(con.to_pyarrow, exposures)
     assert counts == {"treatment": 2, "control": 1}
 
 

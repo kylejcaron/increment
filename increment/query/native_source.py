@@ -4322,7 +4322,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def _arm_counts(self, population: Table) -> dict[str, int]:
         """Unit counts per arm off an already-narrowed population table."""
-        return arm_counts(self._con, population)
+        return arm_counts(self._session.fetch_arrow, population)
 
     def trigger_rates(self) -> dict[str, float]:
         """Observed triggered share per arm."""
