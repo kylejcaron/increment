@@ -16,7 +16,7 @@ from increment.result_envelope import AnalysisEnvelope, ResultCell
 class CateOperations(Protocol):
     """CATE operations supplied by the observational implementation.
 
-    Each operation takes an experiment and its resolver.
+    Each operation takes an experiment and its reader.
     """
 
     estimate_cate: Callable[..., Any]

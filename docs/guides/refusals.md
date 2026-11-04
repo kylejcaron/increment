@@ -53,7 +53,7 @@ reader accepts.
 
 `kernel.request.capture_not_supported` means sequential capture or checkpoint
 adoption was placed in saved request options. Call
-`increment.workflows.capture_sequential(experiment, resolver, ...)` with the
+`increment.workflows.capture_sequential(experiment, reader, ...)` with the
 module-builder pair, then run the experiment, or pass
 `capture=SequentialCaptureRequest(...)` to `run`.
 `kernel.request.population_scope_only` means population was placed in request
@@ -65,6 +65,13 @@ the type. A `BoundResolver` only verifies a custom provider, so build a reader
 with a module builder to run an experiment. `kernel.run.reader_closed` means the
 reader was closed; build a new one. `kernel.run.reader_offline` means the reader
 came from an offline catalog; build it with a connection.
+`kernel.run.execution_unavailable` with a `reader_experiment_id` means the
+experiment passed with a reader is not the one the reader was built for;
+`field` names the first declaration that differs. Pass the experiment the
+builder returned with the reader, or build a new pair from the changed
+declarations. `kernel.provider.digest_mismatch` and
+`kernel.provider.capability_mismatch` mean a source no longer matches the
+declarations its experiment recorded; build the experiment and its reader again.
 
 `kernel.scope.family_mismatch` means a switchback view was requested from an
 ordinary arm experiment. Build a switchback experiment with

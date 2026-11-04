@@ -84,7 +84,7 @@ def _summary_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) 
 
 def build_panel_for_metric(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     exposures: Table,
     metric: Metric,
     *,
@@ -95,29 +95,29 @@ def build_panel_for_metric(
 
     require_warehouse("build_panel_for_metric")
     return _build_panel_for_metric_binding(
-        binding_for(experiment, resolver), exposures, metric, population=population
+        binding_for(experiment, reader), exposures, metric, population=population
     )
 
 
 def panel_sql(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     breakouts: list[Breakout] | None = None,
 ) -> dict[str, str]:
     """Return per-metric panel SQL without executing."""
     from increment._binding import binding_for
 
     require_warehouse("panel_sql")
-    return _panel_sql_binding(binding_for(experiment, resolver), breakouts)
+    return _panel_sql_binding(binding_for(experiment, reader), breakouts)
 
 
 def summary_sql(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     breakouts: list[Breakout] | None = None,
 ) -> dict[str, str]:
     """Return per-metric group-summary SQL without executing."""
     from increment._binding import binding_for
 
     require_warehouse("summary_sql")
-    return _summary_sql_binding(binding_for(experiment, resolver), breakouts)
+    return _summary_sql_binding(binding_for(experiment, reader), breakouts)

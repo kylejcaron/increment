@@ -506,6 +506,118 @@ def test_reads_refuse_anything_but_a_reader():
             assert refused.value.context["received"] == type(arguments[1]).__name__
 
 
+@pytest.mark.parametrize(
+    "field", ["experiment_id", "design", "registration", "analysis_context", "metrics"]
+)
+def test_mismatch_refusal_names_the_first_differing_field(field):
+    _, reader = from_frame(
+        _frame(),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    declared = reader.experiment
+    changed = {
+        "experiment_id": "other",
+        "design": {**declared.design, "control_group": "treatment"},
+        "registration": declared.registration.model_copy(update={"registration_hash": "changed"}),
+        "analysis_context": {**declared.analysis_context, "source_name": "other"},
+        "metrics": {**declared.metrics, "other": declared.metrics["value"]},
+    }[field]
+    experiment = replace(declared, **{field: changed})
+
+    with pytest.raises(CodedError) as mismatch:
+        run(experiment, reader)
+
+    assert mismatch.value.code == "kernel.run.execution_unavailable"
+    assert dict(mismatch.value.context) == {
+        "experiment_id": experiment.experiment_id,
+        "reader_experiment_id": reader.experiment.experiment_id,
+        "field": field,
+    }
+
+
+def test_bound_resolver_refusals_use_provider_codes():
+    from types import SimpleNamespace
+
+    from increment.evidence import BoundResolver, EvidenceCapabilities, EvidenceProvider
+
+    capabilities = EvidenceCapabilities(
+        kind="unit_summary",
+        grains=frozenset({"total"}),
+        breakouts=(),
+        shape="unit_summary",
+        operations=frozenset(),
+        unit_rows=True,
+        raw_outcomes=True,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset({"unit"}),
+        populations=frozenset({"assigned"}),
+        sequential_capture="none",
+        scalar=None,
+        available_covariates=frozenset(),
+    )
+    source = SourceReference(
+        name="events",
+        uri="frame://events",
+        expected_digest="source-recorded",
+        capabilities=capabilities,
+    )
+    changed = cast(
+        EvidenceProvider,
+        SimpleNamespace(evidence=capabilities, context=SimpleNamespace(source_digest="current")),
+    )
+    undeclared = cast(
+        EvidenceProvider,
+        SimpleNamespace(evidence=None, context=SimpleNamespace(source_digest="source-recorded")),
+    )
+
+    assert [error.code for error in BoundResolver(changed).verify((source,), changed)] == [
+        "kernel.provider.digest_mismatch"
+    ]
+    assert [error.code for error in BoundResolver(undeclared).verify((source,))] == [
+        "kernel.provider.capabilities_missing"
+    ]
+
+
+def test_digest_mismatch_carries_one_context_from_every_raise_site():
+    from types import SimpleNamespace
+
+    from increment.evidence import BoundResolver, EvidenceProvider
+
+    experiment, reader = from_frame(
+        _frame(),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    reference = experiment.source_refs[0]
+    refusals = []
+    for changed in (
+        replace(reference, uri="other://source"),
+        replace(reference, expected_digest="sha256:other"),
+    ):
+        with pytest.raises(CodedError) as mismatch:
+            run(replace(experiment, source_refs=(changed,)), reader)
+        refusals.append(mismatch.value)
+    provider = cast(
+        EvidenceProvider,
+        SimpleNamespace(
+            evidence=reference.capabilities, context=SimpleNamespace(source_digest="sha256:now")
+        ),
+    )
+    refusals.extend(BoundResolver(provider).verify((reference,), provider))
+
+    assert [(refusal.code, dict(refusal.context)) for refusal in refusals] == [
+        ("kernel.provider.digest_mismatch", {"source_refs": (reference.name,)})
+    ] * 3
+
+
 @pytest.mark.integration
 def test_offline_reader_supports_with_and_refuses_reads(seeded_defs, seeded_con):
     _, connected = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
@@ -740,7 +852,7 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     assert online_resolver._verify(offline.source_refs, provider) == []
     changed = (replace(offline.source_refs[0], expected_digest="sha256:changed"),)
     assert [error.code for error in online_resolver._verify(changed, provider)] == [
-        "kernel.resolver.digest_mismatch"
+        "kernel.provider.digest_mismatch"
     ]
     assert offline.source_refs[0].capabilities == online.source_refs[0].capabilities
     assert runnable(offline, "purchase_rate") == runnable(online, "purchase_rate")

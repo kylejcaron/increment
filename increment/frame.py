@@ -2,12 +2,12 @@
 
     import increment as inc
 
-    experiment, resolver = inc.from_frame(
+    experiment, reader = inc.from_frame(
         df, shape="summary", unit="user_id", group="variant",
         design=inc.Randomized(control_group="control"),
         metrics={"revenue": "mean", "converted": "conversion"},
     )
-    result = inc.run(experiment, resolver)
+    result = inc.run(experiment, reader)
 
 Pure narwhals over pandas/polars/pyarrow, so this works with no backend
 installed and can never import ibis or `increment/query/`. `from_unit_panel`

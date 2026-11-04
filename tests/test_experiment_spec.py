@@ -314,8 +314,7 @@ def test_runnable_marks_missing_capabilities_unknown_per_estimator():
 def test_bound_resolver_refuses_missing_digest_provenance():
     from types import SimpleNamespace
 
-    from increment import BoundResolver
-    from increment.evidence import EvidenceCapabilities
+    from increment.evidence import BoundResolver, EvidenceCapabilities
 
     capabilities = EvidenceCapabilities(
         kind="unit_summary",
@@ -344,14 +343,13 @@ def test_bound_resolver_refuses_missing_digest_provenance():
 
     refusals = resolver.verify((source,))
 
-    assert [refusal.code for refusal in refusals] == ["kernel.resolver.digest_mismatch"]
+    assert [refusal.code for refusal in refusals] == ["kernel.provider.digest_mismatch"]
 
 
 def test_bound_resolver_refuses_runtime_capability_mismatch():
     from types import SimpleNamespace
 
-    from increment import BoundResolver
-    from increment.evidence import EvidenceCapabilities
+    from increment.evidence import BoundResolver, EvidenceCapabilities
 
     capabilities = EvidenceCapabilities(
         kind="unit_summary",
@@ -380,7 +378,7 @@ def test_bound_resolver_refuses_runtime_capability_mismatch():
 
     refusals = resolver.verify((source,))
 
-    assert [refusal.code for refusal in refusals] == ["kernel.resolver.capability_mismatch"]
+    assert [refusal.code for refusal in refusals] == ["kernel.provider.capability_mismatch"]
 
 
 @pytest.mark.parametrize("question", ["prior", "estimands", "operation"])

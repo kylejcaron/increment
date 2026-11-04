@@ -187,6 +187,29 @@ values.
   closed=...)`, where `reads` is `"dataframe snapshot"`, `"warehouse, read live"`,
   `"artifact"`, `"moments file"` or `"offline: cannot read"`. Results and
   experiment identity hashes are unchanged.
+- Release note (breaking API cutover): `run` and every function that reads data
+  name their second parameter `reader`, the `ExperimentReader` a builder
+  returns, instead of `resolver`; positional calls are unchanged, and refusal
+  and health-check routes that name a call, such as `run(experiment, reader)`,
+  use the new name. Because a health report's `source_snapshot_id` covers its
+  checks, a report whose allocation check carries that route gets a new ID once.
+  `Resolver` and `BoundResolver` move from the package root to
+  `increment.evidence` under the same names. The four `kernel.resolver.*`
+  codes, which readers and `BoundResolver` raise for the same hazards, become
+  `kernel.provider.digest_mismatch`, `kernel.provider.capability_mismatch`,
+  `kernel.provider.mismatch` (was `kernel.resolver.provider_mismatch`) and
+  `kernel.provider.capabilities_missing`; `increment.errors.RETIRED_CODES` maps
+  each retired code to its replacement. `kernel.provider.digest_mismatch` now
+  carries one context from every source, `source_refs` (the names of the
+  source references that did not verify); the recorded and provider digests,
+  previously the `source_ref`, `expected` and `actual` keys, are in its message.
+  The other three codes keep their context keys.
+  When the experiment passed with a reader is not the one the reader was built
+  for, `kernel.run.execution_unavailable` now names the first differing
+  declaration in `field` (`experiment_id`, `design`, `registration`,
+  `analysis_context` or `metrics`, previously `declarations`) and the reader's
+  experiment in a new `reader_experiment_id` context key. Results and
+  experiment identity hashes are unchanged.
 
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal
@@ -378,10 +401,11 @@ values.
 
 ### Migrating from `Analysis`
 
-Every removed `Analysis` member has one replacement. In the table, `experiment,
-resolver` is the pair a builder returns, `workflows`, `query`, `artifacts`,
-`estimators` and `dashboard` are the `increment.*` namespaces of those names,
-and parameters not shown keep their names, defaults and refusals.
+Every removed `Analysis` member, and every public name moved since, has one
+replacement. In the table, `experiment, resolver` is the pair a builder returns,
+`workflows`, `query`, `artifacts`, `estimators` and `dashboard` are the
+`increment.*` namespaces of those names, and parameters not shown keep their
+names, defaults and refusals.
 
 | Removed call | Replacement |
 |---|---|
@@ -418,6 +442,8 @@ and parameters not shown keep their names, defaults and refusals.
 | `analysis.estimate_cate(...)`, `validate_cate(...)`, `targeting_rule(...)`, `select_targeting_rule(...)`, `sitewide(...)` | `estimators.<name>(experiment, resolver, ...)` |
 | `analysis.dashboard_snapshot(...)`, `dashboard_breakout_reads(...)`, `dashboard_group_data(...)` | `dashboard.prepare_dashboard(experiment, resolver, config=...)` captures the headline, group data and Explore reads once; `load_explore(experiment, snapshot=...)` and `render_dashboard(experiment, snapshot=...)` read the snapshot |
 | `increment.analysis.fit_predeclared_adjustment` | `estimators.fit_predeclared_adjustment` |
+| `increment.Resolver`, `increment.BoundResolver` | `increment.evidence.Resolver`, `increment.evidence.BoundResolver`, under the same names |
+| `resolver=` on `run` and on every function that reads data | `reader=`; positional calls are unchanged |
 
 Readout options such as `decision_method`, `prior`, `metrics`, `estimands`,
 `exploratory_metrics` and `coherence` are `run` keywords and apply to every

@@ -396,7 +396,7 @@ def _sitewide_binding(
 
 def sitewide(
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     metric: str,
     *,
     arm: str | None = None,
@@ -428,7 +428,7 @@ def sitewide(
     ----------
     experiment : Experiment
         The experiment returned by a builder such as ``from_definitions``.
-    resolver : ExperimentReader
+    reader : ExperimentReader
         The reader returned with *experiment*.
     metric : str
         Name of a metric declared on this experiment.
@@ -461,7 +461,7 @@ def sitewide(
     unknown requested arm, or alpha outside the open unit interval.
     """
     return _sitewide_binding(
-        binding_for(experiment, resolver),
+        binding_for(experiment, reader),
         metric,
         arm=arm,
         alpha=alpha,

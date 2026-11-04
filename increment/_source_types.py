@@ -13,7 +13,7 @@ from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeGuard, runtime_checkable
 
 from increment._evidence_types import ScalarBreakoutRows as ScalarBreakoutRows
-from increment.errors import CapabilityError, RefusalSpec, refuse
+from increment.errors import CapabilityError, CodedError, RefusalSpec, refusals, refuse
 
 if TYPE_CHECKING:
     from increment._evidence_types import (
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         UnitRows,
         UnitRowsRequest,
     )
+    from increment.kernel.experiment import SourceReference
 
 
 def breakout_dimension_column(covariates: Sequence[str]) -> str:
@@ -290,6 +291,99 @@ PROVIDER_UNAVAILABLE = RefusalSpec(
 
 def refuse_provider_unavailable(source: object) -> NoReturn:
     refuse(PROVIDER_UNAVAILABLE, constructor=type(source).__name__)
+
+
+# Readers and BoundResolver report the same provider hazards under these codes.
+_PROVIDER_REFUSALS = refusals(
+    CodedError,
+    {
+        "kernel.provider.digest_mismatch": (
+            "The declarations recorded for sources {source_refs!r} do not match the provider; "
+            "pass the experiment built from this source, or build both again"
+        ),
+        "kernel.provider.capability_mismatch": (
+            "Source {source_ref!r} provides different evidence than its experiment recorded; "
+            "build the experiment again from the current source"
+        ),
+        "kernel.provider.mismatch": (
+            "This is not the provider the BoundResolver was built with; verify that provider"
+        ),
+        "kernel.provider.capabilities_missing": (
+            "The provider declares no EvidenceCapabilities; set its evidence attribute "
+            "before verifying it"
+        ),
+    },
+)
+
+
+def provider_refusal(code: str, /, *, detail: str | None = None, **context: object) -> CodedError:
+    """Build a provider-verification refusal that ``verify`` returns instead of raising.
+
+    ``detail`` extends the message for one raise site and never enters the context.
+    """
+    spec = _PROVIDER_REFUSALS[code]
+    message = spec.render(**context)
+    return spec.error_type(
+        message if detail is None else f"{message} ({detail})", code=spec.code, context=context
+    )
+
+
+@runtime_checkable
+class Resolver(Protocol):
+    """Bind source declarations to a custom evidence provider and verify them."""
+
+    def resolve(
+        self, source_refs: Sequence[SourceReference], ctx: object | None = None
+    ) -> object: ...
+
+    def verify(
+        self, source_refs: Sequence[SourceReference], provider: object
+    ) -> list[CodedError]: ...
+
+
+class BoundResolver:
+    """Verify a caller-owned EvidenceProvider without executing experiments."""
+
+    def __init__(self, provider: EvidenceProvider, *, expected_digest: str | None = None) -> None:
+        self.provider = provider
+        self.expected_digest = expected_digest
+
+    def resolve(
+        self,
+        source_refs: Sequence[SourceReference],
+        ctx: object | None = None,
+    ) -> EvidenceProvider:
+        return self.provider
+
+    def verify(
+        self,
+        source_refs: Sequence[SourceReference],
+        provider: object = None,
+    ) -> list[CodedError]:
+        if provider is not None and provider is not self.provider:
+            return [provider_refusal("kernel.provider.mismatch")]
+        candidate = self.provider
+        expected = {ref.expected_digest for ref in source_refs if ref.expected_digest is not None}
+        if self.expected_digest is not None:
+            expected.add(self.expected_digest)
+        actual = getattr(candidate.context, "source_digest", None)
+        if expected and (actual is None or expected != {actual}):
+            return [
+                provider_refusal(
+                    "kernel.provider.digest_mismatch",
+                    source_refs=tuple(ref.name for ref in source_refs),
+                    detail=f"expected digests {tuple(sorted(expected))!r}, provider {actual!r}",
+                )
+            ]
+        declared = getattr(candidate, "evidence", None)
+        if not isinstance(declared, EvidenceCapabilities):
+            return [provider_refusal("kernel.provider.capabilities_missing")]
+        for ref in source_refs:
+            if ref.capabilities is not None and ref.capabilities != declared:
+                return [
+                    provider_refusal("kernel.provider.capability_mismatch", source_ref=ref.name)
+                ]
+        return []
 
 
 def compliance_summary_series(

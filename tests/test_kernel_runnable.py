@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import cast
 
-from increment.evidence import EvidenceCapabilities, EvidenceProvider
+from increment.evidence import EvidenceCapabilities
 from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import resolve, runnable
@@ -240,43 +239,3 @@ def test_multicovariate_runnability_uses_alternative_evidence_routes():
         "evidence.unit_rows_unavailable",
     )
     assert alternative == ()
-
-
-def test_bound_resolver_refuses_changed_source_digest_during_verify():
-    from types import SimpleNamespace
-
-    from increment.kernel.resolver import BoundResolver
-
-    capabilities = EvidenceCapabilities(
-        kind="unit_summary",
-        grains=frozenset({"total"}),
-        breakouts=(),
-        shape="unit_summary",
-        operations=frozenset(),
-        unit_rows=True,
-        raw_outcomes=True,
-        method_fit="none",
-        compliance_axis="none",
-        count_grains=frozenset({"unit"}),
-        populations=frozenset({"assigned"}),
-        sequential_capture="none",
-        scalar=None,
-        available_covariates=frozenset(),
-    )
-    provider = cast(
-        "EvidenceProvider",
-        SimpleNamespace(
-            evidence=capabilities,
-            context=SimpleNamespace(source_digest="source-current"),
-        ),
-    )
-    source = SourceReference(
-        name="events",
-        uri="frame://events",
-        expected_digest="source-recorded",
-        capabilities=capabilities,
-    )
-
-    errors = BoundResolver(provider).verify((source,), provider)
-
-    assert tuple(error.code for error in errors) == ("kernel.resolver.digest_mismatch",)

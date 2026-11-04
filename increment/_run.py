@@ -1030,7 +1030,7 @@ def _scope_population(experiment: Experiment, overrides: dict[str, object]) -> d
 
 
 def _preflight_persistence(
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     experiment: Experiment,
     overrides: Mapping[str, object],
     *,
@@ -1040,13 +1040,13 @@ def _preflight_persistence(
     """Refuse a run that cannot be saved or logged under its registration, before any read."""
     from increment._runnability import operation_options, typed_request_options
 
-    binding = resolver._binding
+    binding = reader._binding
     contrast = _contrast_context(binding)
     if contrast is None:
         _require_registered_plan(experiment.registration, binding.plan)
     else:
         _require_registered_contrast(experiment.registration, contrast)
-    resolver._validate_experiment(experiment)
+    reader._validate_experiment(experiment)
     if contrast is None:
         CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
     elif logging:
@@ -1065,7 +1065,7 @@ def _preflight_persistence(
 
 def run(  # noqa: PLR0913
     experiment: Experiment,
-    resolver: ExperimentReader,
+    reader: ExperimentReader,
     *,
     views: Sequence[Scope] | None = None,
     run_id: str | None = None,
@@ -1083,7 +1083,7 @@ def run(  # noqa: PLR0913
     population: Literal["assigned", "triggered"] | None = None,
     coherence: Literal["captured", "live"] | _Unset = UNSET,
 ) -> RunResult:
-    """Run an experiment through its resolver.
+    """Run an experiment through its reader.
 
     ``views`` selects declared Experiment scopes by hash, in declaration order.
     ``None`` executes all declared scopes in one capture. Only the readout
@@ -1107,7 +1107,7 @@ def run(  # noqa: PLR0913
         population=population,
         coherence=coherence,
     )
-    reader = require_reader(resolver)
+    require_reader(reader)
     selected = _select_views(experiment, views)
     overrides = _coherence_override(selected, _scope_population(selected, overrides))
     if run_id is not None and not run_id:

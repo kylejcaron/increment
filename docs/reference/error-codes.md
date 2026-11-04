@@ -1087,6 +1087,10 @@ Retired codes and their replacements are listed below.
 | `kernel.definitions.catalog_stale` | `InvalidRequestError` | `path` | `increment.kernel.contracts` |
 | `kernel.method.duplicate_instance` | `InvalidRequestError` | `method_instance_id` | `increment.kernel.contracts` |
 | `kernel.method.implementation_ref_missing` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
+| `kernel.provider.capabilities_missing` | `CodedError` | — | `increment._source_types` |
+| `kernel.provider.capability_mismatch` | `CodedError` | `source_ref` | `increment._source_types` |
+| `kernel.provider.digest_mismatch` | `CodedError` | `source_refs` | `increment._source_types` |
+| `kernel.provider.mismatch` | `CodedError` | — | `increment._source_types` |
 | `kernel.request.capture_not_supported` | `InvalidRequestError` | — | `increment.kernel.contracts` |
 | `kernel.request.datetime_timezone` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
 | `kernel.request.invalid` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
@@ -1681,6 +1685,10 @@ Retired codes and their replacements are listed below.
 | `frame.frame_panel.metric_was_declared` | `frame.frame_totals.metric_was_declared` |
 | `frame.metric.finite_sample_metric_type` | `conversion_inference.finite_sample.metric_type` |
 | `frame.moments.metric_covariate_column` | `frame.validation.metric_covariate_impute_all_null` |
+| `kernel.resolver.capabilities_missing` | `kernel.provider.capabilities_missing` |
+| `kernel.resolver.capability_mismatch` | `kernel.provider.capability_mismatch` |
+| `kernel.resolver.digest_mismatch` | `kernel.provider.digest_mismatch` |
+| `kernel.resolver.provider_mismatch` | `kernel.provider.mismatch` |
 | `kernel.run.provider_execution_unavailable` | `kernel.run.reader_required` |
 | `kernel.run.resolver_missing` | `kernel.run.reader_required`, `kernel.run.reader_offline` |
 | `plan.contrast_configs_template_mismatch` | `plan.compile_configs_template_mismatch` |
