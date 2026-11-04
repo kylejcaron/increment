@@ -1255,6 +1255,118 @@ def test_unresolved_backend_namespace_cleanup_survives_namespace_switch(
         con.disconnect()
 
 
+@pytest.mark.parametrize("cleanup", ["invalidation", "close"])
+def test_snowflake_live_store_cleanup_targets_the_creation_schema_after_a_schema_change(
+    tmp_path, monkeypatch, cleanup
+):
+    """Live ``store="always"`` tables drop from the schema they were created in, leaving
+    same-named tables in a later default schema intact."""
+    from increment import from_definitions, run
+
+    definitions = tmp_path / "defs.yaml"
+    definitions.write_text(
+        """
+dialect: snowflake
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: enrolled, column: null}
+      - {name: purchase, column: value}
+exposures:
+  - {name: enrollment, fact: enrolled}
+metrics:
+  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 2}
+experiments:
+  - name: exp
+    exposure: enrollment
+    unit: user_id
+    start: 2025-01-01T00:00:00
+    end: 2025-01-03T00:00:00
+    control_group: control
+    plan: {secondaries: [revenue]}
+"""
+    )
+    rows = [
+        row
+        for arm in ("control", "treatment")
+        for index in range(4)
+        for row in (
+            {
+                "user_id": f"{arm}{index}",
+                "ts": datetime(2025, 1, 1, 8),
+                "event": "enrolled",
+                "experiment_id": "exp",
+                "group_id": arm,
+                "value": None,
+            },
+            {
+                "user_id": f"{arm}{index}",
+                "ts": datetime(2025, 1, 2, 9),
+                "event": "purchase",
+                "experiment_id": None,
+                "group_id": None,
+                "value": 10.0 + index,
+            },
+        )
+    ]
+    con = ibis.duckdb.connect()
+    con.create_database("other")
+    for schema in ("main", "other"):
+        con.create_table("events", ibis.memtable(rows), database=schema)
+    create_table = con.create_table
+    created: list[tuple[str, tuple[str, str]]] = []
+
+    def create_temp_in_current_schema(name, obj=None, *, temp=False, database=None, **kwargs):
+        if not temp:
+            return create_table(name, obj, database=database, **kwargs)
+        # Model Snowflake's ordinary schema for TEMP tables in in-memory DuckDB.
+        location = ("memory", con.current_database)
+        assert database == f'"memory"."{location[1]}"'
+        created.append((name, location))
+        return create_table(name, obj, database=location, **kwargs)
+
+    monkeypatch.setattr(con, "name", "snowflake")
+    monkeypatch.setattr(con, "create_table", create_temp_in_current_schema)
+    sentinel = [{"sentinel": 314159}]
+
+    def live_readout(experiment, resolver):
+        start = len(created)
+        run(experiment, resolver, coherence="live")
+        batch = tuple(created[start:])
+        assert sorted(name.rsplit("_", 1)[0] for name, _ in batch) == [
+            "exp_spine",
+            "exp_stats_revenue",
+        ]
+        assert all(name in con.list_tables(database=location) for name, location in batch)
+        return batch
+
+    def shadow_in_other_schema(batch):
+        for name, _ in batch:
+            con.create_table(name, ibis.memtable(sentinel), database="other")
+        con.raw_sql('USE "memory"."other"')
+
+    try:
+        experiment, resolver = from_definitions(
+            definitions, con, experiment_name="exp", store="always"
+        )
+        first = live_readout(experiment, resolver)
+        if cleanup == "invalidation":
+            shadow_in_other_schema(first)
+        second = live_readout(experiment, resolver)
+        assert not any(name in con.list_tables(database=location) for name, location in first)
+        if cleanup == "close":
+            shadow_in_other_schema(second)
+        cast(Any, resolver).close()
+        assert not any(name in con.list_tables(database=location) for name, location in second)
+        for name, _ in first if cleanup == "invalidation" else second:
+            assert con.table(name, database="other").to_pyarrow().to_pylist() == sentinel
+    finally:
+        con.disconnect()
+
+
 def test_snowflake_unknown_creation_namespace_does_not_create(monkeypatch):
     con, session = _session()
     expr = con.table("t")

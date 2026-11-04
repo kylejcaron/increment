@@ -286,15 +286,57 @@ def test_scratch_index_table_uses_a_string_database():
     assert con.databases == ["ud_probe_x"]
 
 
+def _bare_owned_drop(statement, fault_hits: set[str]):
+    """Rewrite an owned materialization's qualified DROP to resolve in the default schema."""
+    import sqlglot
+    from sqlglot import exp
+
+    if not isinstance(statement, str) or not statement.lstrip().upper().startswith("DROP"):
+        return statement
+    parsed = sqlglot.parse(statement, read="snowflake")
+    drop = parsed[0] if len(parsed) == 1 else None
+    if not isinstance(drop, exp.Drop):
+        return statement
+    targets = drop.args.get("tables") or [drop.this]
+    target = targets[0]
+    if (
+        len(targets) != 1
+        or not isinstance(target, exp.Table)
+        or not target.db
+        or not target.name.startswith(("exp_spine_", "exp_stats_revenue_"))
+    ):
+        return statement
+    fault_hits.add(target.name)
+    target.set("db", None)
+    target.set("catalog", None)
+    return drop.sql(dialect="snowflake")
+
+
+def _patch_bare_name_cleanup(con, monkeypatch, fault_hits: set[str]):
+    """Send raw SQL through ``_bare_owned_drop``; return the callback restoring real cleanup."""
+    raw_sql = con.raw_sql
+
+    def bare_name_cleanup(query, *args, **kwargs):
+        return raw_sql(_bare_owned_drop(query, fault_hits), *args, **kwargs)
+
+    monkeypatch.setattr(con, "raw_sql", bare_name_cleanup)
+    return lambda: monkeypatch.setattr(con, "raw_sql", raw_sql)
+
+
 def _run_changed_default_namespace_probe(
     con,
     monkeypatch,
     sentinel_schema: str,
     *,
     cleanup: str,
-    force_bare_name_cleanup: bool,
+    bare_fault_hits: set[str] | None = None,
 ) -> set[str]:
-    """Keep permanent sentinels separate from the owned TEMP namespace."""
+    """Keep permanent sentinels separate from the owned TEMP namespace.
+
+    Runs read live: a captured run reads one TEMP source snapshot and builds no ``store``
+    materializations. Passing ``bare_fault_hits`` rewrites owned cleanup SQL to bare names and
+    records each rewritten table.
+    """
     original_catalog = con.current_catalog
     original_schema = con.current_database
     con.create_database(sentinel_schema, catalog=original_catalog)
@@ -314,15 +356,12 @@ def _run_changed_default_namespace_probe(
             created_relations.append((name, _physical_temp_relation(con, relation, "snowflake")))
         return relation
 
-    def bare_name_drop(name, *args, **kwargs):
-        if name.startswith(("exp_spine_", "exp_stats_revenue_")):
-            return drop_table(name, force=True)
-        return drop_table(name, *args, **kwargs)
-
     monkeypatch.setattr(con, "create_table", recording_create_table)
-    if force_bare_name_cleanup:
-        monkeypatch.setattr(con, "drop_table", bare_name_drop)
-
+    restore_cleanup = (
+        None
+        if bare_fault_hits is None
+        else _patch_bare_name_cleanup(con, monkeypatch, bare_fault_hits)
+    )
     resolver = None
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -331,7 +370,7 @@ def _run_changed_default_namespace_probe(
             experiment, resolver = from_definitions(
                 path, con, experiment_name="exp", store="always"
             )
-            before = run(experiment, resolver).readout()[0].lift.value
+            before = run(experiment, resolver, coherence="live").readout()[0].lift.value
             first_materializations = _required_materializations(con, created_relations)
             first_creation_count = len(created_relations)
 
@@ -350,7 +389,7 @@ def _run_changed_default_namespace_probe(
                 with con.raw_sql(f'USE SCHEMA "{original_catalog}"."{sentinel_schema}"'):
                     pass
 
-            cached = run(experiment, resolver).readout()[0].lift.value
+            cached = run(experiment, resolver, coherence="live").readout()[0].lift.value
             second_materializations = _required_materializations(
                 con, created_relations[first_creation_count:]
             )
@@ -359,7 +398,10 @@ def _run_changed_default_namespace_probe(
             with con.raw_sql(f'USE SCHEMA "{original_catalog}"."{original_schema}"'):
                 pass
             current = (
-                run(*from_definitions(path, con, experiment_name="exp", store="none"))
+                run(
+                    *from_definitions(path, con, experiment_name="exp", store="none"),
+                    coherence="live",
+                )
                 .readout()[0]
                 .lift.value
             )
@@ -378,6 +420,8 @@ def _run_changed_default_namespace_probe(
             resolver.close()
             _assert_materializations_absent(con, second_materializations)
     finally:
+        if restore_cleanup is not None:
+            restore_cleanup()
         if resolver is not None:
             resolver.close()
         with con.raw_sql(f'USE SCHEMA "{original_catalog}"."{original_schema}"'):
@@ -394,11 +438,7 @@ def test_changed_default_namespace_sentinel_survives_cleanup(snowflake_con, monk
     sentinel_schema = f"cleanup_probe_{uuid4().hex}"
     try:
         sentinel_names = _run_changed_default_namespace_probe(
-            con,
-            monkeypatch,
-            sentinel_schema,
-            cleanup=cleanup,
-            force_bare_name_cleanup=False,
+            con, monkeypatch, sentinel_schema, cleanup=cleanup
         )
         assert sentinel_names
         for name in sentinel_names:
@@ -412,17 +452,15 @@ def test_changed_default_namespace_sentinel_survives_cleanup(snowflake_con, monk
 def test_changed_default_namespace_bare_name_cleanup_mutation(snowflake_con, monkeypatch, cleanup):
     con = snowflake_con
     sentinel_schema = f"cleanup_probe_{uuid4().hex}"
+    fault_hits: set[str] = set()
     try:
         with pytest.raises(AssertionError, match="materialization leaked"):
             _run_changed_default_namespace_probe(
-                con,
-                monkeypatch,
-                sentinel_schema,
-                cleanup=cleanup,
-                force_bare_name_cleanup=True,
+                con, monkeypatch, sentinel_schema, cleanup=cleanup, bare_fault_hits=fault_hits
             )
     finally:
         con.drop_database(sentinel_schema, catalog=con.current_catalog, force=True)
+    assert fault_hits, "bare-name mutation missed the owned cleanup SQL"
 
 
 def test_artifact_abort_after_manifest_leaves_nothing_visible(snowflake_con):
