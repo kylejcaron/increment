@@ -1,6 +1,7 @@
 import ast
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -547,3 +548,132 @@ def test_pr_slow_job_excludes_exhaustive_unless_required() -> None:
         'check_conditional_job "$EXHAUSTIVE_REQUIRED" "$EXHAUSTIVE_RESULT" exhaustive'
         in gate_step["run"]
     )
+
+
+def _makefile_recipes() -> dict[str, str]:
+    """Recipe text of each Makefile target."""
+    recipes: dict[str, str] = {}
+    target = None
+    for line in Path("Makefile").read_text().splitlines():
+        rule = re.match(r"([\w.-]+):(?!=)", line)
+        if rule is not None:
+            target = rule.group(1)
+            recipes[target] = ""
+        elif line.startswith("\t") and target is not None:
+            recipes[target] += line + "\n"
+    return recipes
+
+
+def _make_tiers(arguments: list[str], recipes: dict[str, str]) -> set[str]:
+    """Test tiers a ``make`` invocation runs, following nested ``$(MAKE)`` calls."""
+    variables = dict(argument.split("=", 1) for argument in arguments if "=" in argument)
+    tiers: set[str] = set()
+    for target in arguments:
+        if "=" in target or target.startswith("-"):
+            continue
+        if target == "test-tier":
+            tiers.add(variables["TIER"])
+        for nested in re.findall(r"\$\(MAKE\) (.*)", recipes.get(target, "")):
+            tiers |= _make_tiers(shlex.split(nested), recipes)
+    return tiers
+
+
+def _nox_tiers(sessions: list[str], markers: dict[str, str], functions: dict[str, str]) -> set[str]:
+    """Test tiers the named nox sessions run without narrowing them to named paths."""
+    tiers: set[str] = set()
+    for session in sessions:
+        function = ast.parse(functions[session.split("-", 1)[0]])
+        assigned: dict[str, set[str]] = {}
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assigned.setdefault(target.id, set()).add(str(node.value.value))
+        for call in ast.walk(function):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id.startswith("_run_pytest")
+            ):
+                continue
+            tier, *arguments = call.args[1:]
+            if any(
+                isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+                and Path(argument.value.split("::", 1)[0]).exists()
+                for argument in arguments
+            ):
+                continue
+            if isinstance(tier, ast.Constant):
+                tiers |= {str(tier.value)} & markers.keys()
+            elif isinstance(tier, ast.Name):
+                tiers |= assigned.get(tier.id, set()) & markers.keys()
+    return tiers
+
+
+def _expand(line: str, environment: dict[str, str], job: dict) -> set[str]:
+    """The command lines a run-step line becomes across the job's matrix."""
+    for variable in re.finditer(r"\$\{?(\w+)\}?", line):
+        value = environment.get(variable.group(1))
+        if value is None:
+            continue
+        matrix_key = re.fullmatch(r"\$\{\{ *matrix\.([\w-]+) *\}\}", str(value))
+        values = [str(value)]
+        if matrix_key is not None:
+            matrix = job["strategy"]["matrix"]
+            values = [
+                str(entry[matrix_key.group(1)])
+                for entry in matrix.get("include", [])
+                if matrix_key.group(1) in entry
+            ] + [str(entry) for entry in matrix.get(matrix_key.group(1), [])]
+        return {
+            expanded
+            for value in values
+            for expanded in _expand(
+                line[: variable.start()] + value + line[variable.end() :], environment, job
+            )
+        }
+    return {line}
+
+
+def _job_test_tiers(job: dict) -> set[str]:
+    """Test tiers a workflow job runs through ``make`` targets or nox sessions."""
+    markers, functions = _noxfile()
+    recipes = _makefile_recipes()
+    tiers: set[str] = set()
+    for step in job.get("steps", []):
+        environment = {**job.get("env", {}), **step.get("env", {})}
+        for line in step.get("run", "").splitlines():
+            for command in _expand(line, environment, job):
+                if make := re.match(r"\s*make (.*)", command):
+                    tiers |= _make_tiers(shlex.split(make.group(1)), recipes)
+                if nox := re.search(r"\bnox -s (.*)", command):
+                    sessions = shlex.split(nox.group(1))
+                    sessions = sessions[: sessions.index("--")] if "--" in sessions else sessions
+                    tiers |= _nox_tiers(sessions, markers, functions)
+    return tiers
+
+
+def test_jobs_running_the_fast_or_full_tier_fetch_full_history() -> None:
+    # Integration tests in the fast and full tiers check out recorded commits
+    # (tests/test_evidence_identity_parity.py), which a shallow clone lacks.
+    markers, _ = _noxfile()
+    shallow: list[tuple[str, str]] = []
+    for workflow in ("ci", "nightly", "weekly"):
+        jobs = yaml.safe_load(Path(f".github/workflows/{workflow}.yml").read_text())["jobs"]
+        running = [
+            name
+            for name, job in jobs.items()
+            if any(_selects(markers[tier], "integration") for tier in _job_test_tiers(job))
+        ]
+        assert running, workflow
+        shallow.extend(
+            (workflow, name)
+            for name in running
+            if not any(
+                step.get("uses", "").startswith("actions/checkout@")
+                and step.get("with", {}).get("fetch-depth") == 0
+                for step in jobs[name]["steps"]
+            )
+        )
+    assert shallow == []
