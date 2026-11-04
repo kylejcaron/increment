@@ -1169,11 +1169,29 @@ def test_dataclass_learner_factory_stays_callable_until_export(with_reference):
 
 
 def test_recorded_schema_does_not_change_runtime_only_run_identity():
-    experiment, resolver = _runtime_experiment(_ConfiguredPropensity)
+    declared, resolver = from_frame(
+        _frame().assign(age=[0, 0, 1, 1] * 10),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("age",))
+        ),
+    )
+    experiment = replace(
+        declared,
+        request_options={
+            "decision_method": Method(name="iptw", propensity_learner=_ConfiguredPropensity)
+        },
+    )
     recorded = replace(
         experiment,
         source_refs=tuple(replace(ref, schema={"t.c": "string"}) for ref in experiment.source_refs),
     )
+    with pytest.raises(CodedError) as portable:
+        _ = experiment.analysis_spec_hash
+    assert portable.value.code == "kernel.method.implementation_ref_missing"
 
     unrecorded_run, recorded_run = run(experiment, resolver).run, run(recorded, resolver).run
 
