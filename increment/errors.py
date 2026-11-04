@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import os
 import string
@@ -546,11 +547,19 @@ def unwrap_coded(exc: ValidationError) -> None:
     ``BaseModel`` containing a ``CodedModel``. Returns (does nothing) if no
     coded error is found, so the caller can re-raise the original
     ``ValidationError`` unchanged.
+
+    The raised refusal is a copy of the one ``exc`` holds, carrying the
+    validator's traceback; the held one is left without a traceback or chained
+    exception. ``exc`` keeps the held refusal out of reach of Python's cycle
+    collector, so any link from it back to the raised refusal would keep every
+    caller's variables in memory for the life of the process.
     """
     for err in exc.errors():
         inner = err.get("ctx", {}).get("error")
         if isinstance(inner, CodedError):
-            raise inner from exc
+            surfaced = copy.copy(inner).with_traceback(inner.__traceback__)
+            inner.__traceback__ = inner.__context__ = inner.__cause__ = None
+            raise surfaced from exc
 
 
 def unwrap_coded_serialization(exc: PydanticSerializationError) -> None:

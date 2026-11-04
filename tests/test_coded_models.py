@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import pickle
+import weakref
 from datetime import date
 from typing import Any, cast
 
@@ -59,6 +61,30 @@ def test_coded_model_surfaces_code_on_every_direct_model_entry_path(construct):
         construct()
     assert exc_info.value.code == "test.coded_model.negative"
     assert exc_info.value.context["value"] == -1
+
+
+def test_surfaced_refusal_releases_the_callers_frames():
+    """pydantic holds a validator's error where the cycle collector cannot see it, so no path
+    may lead from that error back to the surfaced refusal: otherwise a caller that keeps the
+    refusal keeps it, its traceback and every caller's locals alive for the life of the
+    process."""
+
+    class _Local:
+        pass
+
+    def caller() -> weakref.ref[_Local]:
+        local = _Local()
+        refusals = []
+        try:
+            _Widget(value=-1)
+        except InvalidRequestError as refusal:
+            refusals.append(refusal)
+        assert [refusal.code for refusal in refusals] == ["test.coded_model.negative"]
+        return weakref.ref(local)
+
+    released = caller()
+    gc.collect()
+    assert released() is None
 
 
 def test_coded_model_nested_revalidation_surfaces_code():
