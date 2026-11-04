@@ -125,6 +125,11 @@ values.
 
 ### Earlier release notes
 
+- Release note (bug fix): an `ExperimentDefinition` prints as
+  `ExperimentDefinition(...)`, the name it is imported under, instead of
+  `Experiment(...)`, the name of the execution specification. Its fields, saved
+  JSON and identity hashes are unchanged.
+
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal
   codes, saved formats and identity hashes are unchanged; a recorded `source_name`
