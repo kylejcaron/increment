@@ -2468,14 +2468,18 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
 def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
     from tests.analysis_factory import native_connection
 
+    # Each resolver refuses once its definitions file is rewritten, so each gets its own.
+    triggered_path, untriggered_path = tmp_path / "triggered", tmp_path / "untriggered"
+    triggered_path.mkdir()
+    untriggered_path.mkdir()
     native = _experiment(
-        tmp_path,
+        triggered_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         end="2024-01-15",
         window_days=None,
     )
     untriggered = _experiment(
-        tmp_path,
+        untriggered_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         trigger=None,
         end="2024-01-15",

@@ -565,28 +565,30 @@ def _catalog_lock(lock_path: Path) -> Iterator[None]:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+_CATALOG_VERSION = 2
+
+
 def _definitions_digest(path: Path) -> str:
-    files = (
-        (path,)
-        if path.is_file()
-        else tuple(
-            sorted(
-                file
-                for file in path.rglob("*")
-                if file.is_file() and file.suffix in {".yaml", ".yml"}
-            )
-        )
-    )
-    digest = hashlib.sha256()
-    for file in files:
-        relative = file.name if path.is_file() else file.relative_to(path).as_posix()
-        encoded = relative.encode("utf-8")
-        payload = file.read_bytes()
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-        digest.update(len(payload).to_bytes(8, "big"))
-        digest.update(payload)
-    return digest.hexdigest()
+    """Hash the parsed definitions, so comment and formatting edits keep the digest."""
+    from increment.semantics.loader import _load
+
+    declared = _load(path, advise=False).model_dump(mode="json")
+    encoded = json.dumps(declared, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _loaded_digest(path: Path) -> str | None:
+    """The digest of the definitions on disk, or None when they no longer load."""
+    try:
+        return _definitions_digest(path)
+    except (CodedError, OSError):
+        return None
+
+
+def _require_unchanged_definitions(path: Path, expected_digest: str | None) -> None:
+    digest = _loaded_digest(path)
+    if digest is None or digest != expected_digest:
+        _refuse("kernel.definitions.catalog_stale", path=str(path))
 
 
 def _catalog_path(path: Path) -> Path:
@@ -597,22 +599,23 @@ def _catalog_path(path: Path) -> Path:
     )
 
 
-def _write_catalog(path: Path, experiment: Experiment, expected_digest: str) -> None:
+def _write_catalog(path: Path, experiment: Experiment, expected_digest: str | None) -> None:
     catalog_path = _catalog_path(path)
     payload = json.loads(experiment.to_json())
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     with _catalog_lock(catalog_path.with_suffix(catalog_path.suffix + ".lock")):
-        digest = _definitions_digest(path)
-        if digest != expected_digest:
-            _refuse("kernel.definitions.catalog_stale", path=str(path))
+        _require_unchanged_definitions(path, expected_digest)
         catalog: dict[str, Any] = {
-            "schema_version": 1,
-            "definitions_digest": digest,
+            "schema_version": _CATALOG_VERSION,
+            "definitions_digest": expected_digest,
             "experiments": {},
         }
         if catalog_path.exists():
             previous = json.loads(catalog_path.read_text(encoding="utf-8"))
-            if previous.get("schema_version") == 1 and previous.get("definitions_digest") == digest:
+            if (
+                previous.get("schema_version") == _CATALOG_VERSION
+                and previous.get("definitions_digest") == expected_digest
+            ):
                 catalog = previous
         catalog["experiments"][experiment.experiment_id] = payload
         data = json.dumps(catalog, sort_keys=True, separators=(",", ":")) + "\n"
@@ -653,7 +656,7 @@ class _OfflineResolver:
 
     def verify(self, source_refs: object, provider: object) -> list[CodedError]:
         del source_refs, provider
-        if _definitions_digest(self.definitions_path) != self.expected_digest:
+        if _loaded_digest(self.definitions_path) != self.expected_digest:
             return [
                 CodedError(
                     "Definitions changed since the offline catalog was loaded",
@@ -825,12 +828,9 @@ def from_definitions(
             catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             _refuse("kernel.definitions.catalog_stale", path=str(path))
-        if (
-            not isinstance(catalog, dict)
-            or catalog.get("schema_version") != 1
-            or catalog.get("definitions_digest") != _definitions_digest(path)
-        ):
+        if not isinstance(catalog, dict) or catalog.get("schema_version") != _CATALOG_VERSION:
             _refuse("kernel.definitions.catalog_stale", path=str(path))
+        _require_unchanged_definitions(path, catalog.get("definitions_digest"))
         experiments = catalog.get("experiments")
         if not isinstance(experiments, dict):
             _refuse("kernel.definitions.catalog_stale", path=str(path))
@@ -847,7 +847,9 @@ def from_definitions(
 
     from increment.semantics.loader import load
 
-    definitions_digest = _definitions_digest(path)
+    # Digest before binding, so an edit during the build fails the catalog write;
+    # definitions that do not load are reported by the binding itself.
+    definitions_digest = _loaded_digest(path)
     if experiment_name is None:
         definitions = load(path)
         if len(definitions.experiments) != 1:
@@ -866,6 +868,7 @@ def from_definitions(
     experiment, resolver = resolver_for(binding, record_schema=True)
     _write_catalog(path, experiment, definitions_digest)
     resolver.catalog_writer = lambda captured: _write_catalog(path, captured, definitions_digest)
+    resolver.definitions_guard = lambda: _require_unchanged_definitions(path, definitions_digest)
     return experiment, resolver
 
 

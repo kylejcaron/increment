@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pandas as pd
 import pytest
+import yaml
 
 from increment import MetricSpec, Randomized, RunResult, Winsorization, run
 from increment.builders import from_definitions, from_frame, from_moments
@@ -20,7 +21,7 @@ from increment.errors import CodedError, IncrementWarning
 from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
-from increment.workflows import export_moments, materialize
+from increment.workflows import export_moments, materialize, unit_counts
 from tests.analysis_factory import replace_bound_source, view_readout
 from tests.warning_codes import warning_codes
 
@@ -362,7 +363,7 @@ def test_offline_definitions_builder_refuses_stale_catalog(tmp_path):
     catalog.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "definitions_digest": "stale",
                 "experiments": {},
             }
@@ -377,16 +378,14 @@ def test_offline_definitions_builder_refuses_stale_catalog(tmp_path):
 
 
 def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_path):
+    from increment.semantics import load
+
     definitions = tmp_path / "definitions.yaml"
     definitions.write_text("experiments: []\n", encoding="utf-8")
-    encoded_path = definitions.name.encode("utf-8")
-    contents = definitions.read_bytes()
-    digest = hashlib.sha256(
-        len(encoded_path).to_bytes(8, "big")
-        + encoded_path
-        + len(contents).to_bytes(8, "big")
-        + contents
-    ).hexdigest()
+    declared = json.dumps(
+        load(definitions).model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    digest = hashlib.sha256(declared.encode("utf-8")).hexdigest()
     experiment = Experiment(
         experiment_id="exp",
         design={},
@@ -399,7 +398,7 @@ def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_
     catalog.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "definitions_digest": digest,
                 "experiments": {"exp": json.loads(experiment.to_json())},
             }
@@ -421,6 +420,84 @@ def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_
     with pytest.raises(CodedError) as raised:
         run(restored, resolver)
     assert raised.value.code == "kernel.run.resolver_missing"
+
+
+@pytest.mark.integration
+def test_edited_definitions_refuse_before_any_read(seeded_defs, seeded_con):
+    from tests.parity_harness.query_log import enable_query_log, query_log
+
+    experiment, reader = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    metrics_path = Path(seeded_defs) / "metrics.yaml"
+    declared = yaml.safe_load(metrics_path.read_text(encoding="utf-8"))
+    purchase_rate = next(m for m in declared["metrics"] if m["name"] == "purchase_rate")
+    purchase_rate["window_days"] = 7
+    metrics_path.write_text(yaml.safe_dump(declared), encoding="utf-8")
+    assert enable_query_log(seeded_con)
+    try:
+        for read in (run, unit_counts):
+            logged = len(query_log(seeded_con))
+            with warnings.catch_warnings(), pytest.raises(CodedError) as stale:
+                warnings.simplefilter("ignore", IncrementWarning)
+                read(experiment, reader)
+            statements = [
+                statement
+                for statement in query_log(seeded_con)[logged:]
+                if "duckdb_logs" not in statement
+            ]
+            assert statements == [], read
+            assert stale.value.code == "kernel.definitions.catalog_stale", read
+            assert dict(stale.value.context) == {"path": str(Path(seeded_defs))}
+    finally:
+        seeded_con.con.execute("CALL disable_logging()")
+        cast(Any, reader).close()
+    with pytest.raises(CodedError) as offline:
+        from_definitions(seeded_defs)
+    assert offline.value.code == "kernel.definitions.catalog_stale"
+
+
+@pytest.mark.integration
+def test_comment_only_definitions_edit_still_runs(seeded_defs, seeded_con):
+    experiment, reader = from_definitions(
+        seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
+    )
+    experiments_path = Path(seeded_defs) / "experiments.yaml"
+    experiments_path.write_text(
+        experiments_path.read_text(encoding="utf-8") + "# note\n", encoding="utf-8"
+    )
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            result = run(experiment, reader)
+    finally:
+        cast(Any, reader).close()
+
+    assert result.cells
+    # The build records no column types; the run's catalog refresh records them.
+    restored, _ = from_definitions(seeded_defs)
+    assert restored.source_refs[0].schema
+
+
+@pytest.mark.integration
+def test_version_one_catalog_refuses_with_rebuild_route(seeded_defs, seeded_con):
+    def build() -> None:
+        _, reader = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
+        cast(Any, reader).close()
+
+    build()
+    catalog_path = Path(seeded_defs) / ".increment-kernel-catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_path.write_text(json.dumps({**catalog, "schema_version": 1}), encoding="utf-8")
+
+    with pytest.raises(CodedError) as stale:
+        from_definitions(seeded_defs)
+    assert stale.value.code == "kernel.definitions.catalog_stale"
+    assert dict(stale.value.context) == {"path": str(Path(seeded_defs))}
+
+    build()
+    restored, _ = from_definitions(seeded_defs)
+    assert restored.experiment_id == "new_onboarding_v2"
 
 
 def test_module_builders_are_root_exports():

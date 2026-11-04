@@ -188,12 +188,15 @@ def load(path: str | Path) -> Definitions:
     files, merged and validated. Raises ``DefinitionError`` on invalid
     YAML, invalid SQL, duplicate names, or dangling references.
     """
-    path_obj = Path(path)
+    return _load(Path(path), advise=True)
 
+
+def _load(path_obj: Path, *, advise: bool) -> Definitions:
+    """Load and validate definitions, emitting load-time warnings only when ``advise``."""
     if path_obj.is_file():
         raw, origins = _load_single(path_obj)
     elif path_obj.is_dir():
-        raw, origins = _load_dir(path_obj)
+        raw, origins = _load_dir(path_obj, advise=advise)
     else:
         refuse(_MISSING_PATH, path=str(path_obj))
 
@@ -203,12 +206,18 @@ def load(path: str | Path) -> Definitions:
     # exposures are all user-supplied SQL and go through the same check.
     for fs in raw.get("fact_sources", []):
         sql = fs.get("sql", "")
-        _check_sql(dialect, sql, f"fact source '{fs.get('name', '?')}'", path_obj)
+        _check_sql(dialect, sql, f"fact source '{fs.get('name', '?')}'", path_obj, advise=advise)
     for ds in raw.get("dim_sources", []):
-        _check_sql(dialect, ds.get("sql", ""), f"dim source '{ds.get('name', '?')}'", path_obj)
+        _check_sql(
+            dialect,
+            ds.get("sql", ""),
+            f"dim source '{ds.get('name', '?')}'",
+            path_obj,
+            advise=advise,
+        )
     for ex in raw.get("exposures", []):
         sql = ex.get("sql") or ""
-        _check_sql(dialect, sql, f"exposure '{ex.get('name', '?')}'", path_obj)
+        _check_sql(dialect, sql, f"exposure '{ex.get('name', '?')}'", path_obj, advise=advise)
     for experiment in raw.get("experiments", []):
         binding = experiment.get("assignment_ledger")
         if binding is not None:
@@ -217,6 +226,7 @@ def load(path: str | Path) -> Definitions:
                 binding.get("sql", "") if isinstance(binding, Mapping) else "",
                 f"assignment ledger for experiment '{experiment.get('name', '?')}'",
                 path_obj,
+                advise=advise,
             )
 
     # Reject `metrics:`/`guardrails:` directly on an experiment (they belong under
@@ -302,9 +312,10 @@ def load(path: str | Path) -> Definitions:
     # (`_inherit_day_boundary`), so model_validate and load() agree.
 
     # Warn when variable-window metrics omit window_days
-    for m in defs.metrics:
-        if isinstance(m, MeanMetric | ConversionMetric) and m.window_days is None:
-            warn(_VARIABLE_WINDOW_DAYS_NONE_WARNING, context={"name": m.name}, stacklevel=2)
+    if advise:
+        for m in defs.metrics:
+            if isinstance(m, MeanMetric | ConversionMetric) and m.window_days is None:
+                warn(_VARIABLE_WINDOW_DAYS_NONE_WARNING, context={"name": m.name}, stacklevel=3)
     return defs
 
 
@@ -320,16 +331,16 @@ def _load_single(path: Path) -> tuple[dict[str, Any], dict[str, list[str]]]:
     return data, origins
 
 
-def _load_dir(path: Path) -> tuple[dict[str, Any], dict[str, list[str]]]:
+def _load_dir(path: Path, *, advise: bool) -> tuple[dict[str, Any], dict[str, list[str]]]:
     merged: dict[str, Any] = {}
     origins: dict[str, list[str]] = {}
     scalar_files: dict[str, str] = {}
 
     files = sorted({*path.rglob("*.yaml"), *path.rglob("*.yml")})
-    if not files:
+    if not files and advise:
         # A warning, not a refusal: an empty directory is a valid workflow,
         # but is more often a typo'd path whose symptom lands far from the cause.
-        warn(_NO_YAML_FILES_WARNING, context={"path": path}, stacklevel=3)
+        warn(_NO_YAML_FILES_WARNING, context={"path": path}, stacklevel=4)
     for yaml_file in files:
         data = _read_yaml(yaml_file)
         _validate_merge_sections(data, yaml_file)
@@ -791,7 +802,7 @@ def admit_read_only_sql(sql: str, *, dialect: str | None, label: str) -> None:
     )
 
 
-def _check_sql(dialect: str | None, sql: Any, label: str, path: Path):
+def _check_sql(dialect: str | None, sql: Any, label: str, path: Path, *, advise: bool):
     """Validate definition SQL, retaining guessed-dialect parse warnings."""
     if sql is not None and not isinstance(sql, str):
         refuse(
@@ -810,7 +821,7 @@ def _check_sql(dialect: str | None, sql: Any, label: str, path: Path):
     try:
         admit_read_only_sql(sql, dialect=dialect, label=label)
     except ValueError as exc:
-        if dialect is None:
+        if dialect is None and advise:
             import sqlglot
 
             try:
@@ -819,7 +830,7 @@ def _check_sql(dialect: str | None, sql: Any, label: str, path: Path):
                 warn(
                     _DIALECT_GUESS_PARSE_FAILED_WARNING,
                     context={"label": label, "parse_exc": str(parse_exc)},
-                    stacklevel=2,
+                    stacklevel=3,
                 )
         if isinstance(exc, CodedError):
             raise _DefinitionError(
