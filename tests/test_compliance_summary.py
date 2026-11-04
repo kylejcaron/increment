@@ -2,6 +2,7 @@
 
 import json
 import math
+import warnings
 from contextlib import nullcontext
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, date, datetime, timedelta
@@ -115,8 +116,8 @@ def witness(order=("full", "drop")):
                     "drop": y if observed else None,
                 }
             )
-    warning = pytest.warns(IncrementWarning) if "drop" in order else nullcontext()
-    with warning as rec:
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         source = from_unit_summary(
             pa.Table.from_pylist(rows),
             unit="unit",
@@ -124,14 +125,13 @@ def witness(order=("full", "drop")):
             control="control",
             design=design(),
             metrics=[
-                MetricSpec(name=name, type="mean", missing="drop" if name == "drop" else "error")
+                MetricSpec(name=name, type="mean", missing="skip" if name == "drop" else "error")
                 for name in order
             ],
             experiment_id="witness",
         )
-    if "drop" in order:
-        assert rec is not None
-        assert "frame.validation.metric_missing_drop" in warning_codes(rec)
+    # Missing 90/100 units in each arm: equal rates, chi-square 0, so no missing-by-arm warning.
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(rec)
     return source
 
 
@@ -160,7 +160,7 @@ def compliance_missingness_source(*, missing_treatment: bool, clustered: bool = 
         control="control",
         design=design(),
         metrics=[
-            MetricSpec(name=name, type="mean", missing="drop" if name == "drop" else "error")
+            MetricSpec(name=name, type="mean", missing="skip" if name == "drop" else "error")
             for name in ("full", "drop")
         ],
         experiment_id="compliance-missingness",
@@ -170,8 +170,10 @@ def compliance_missingness_source(*, missing_treatment: bool, clustered: bool = 
 
 @pytest.mark.parametrize("metrics", [("drop",), ("full", "drop"), ("drop", "full")])
 def test_compliance_only_readout_is_independent_of_outcome_missingness(metrics):
-    with pytest.warns(IncrementWarning):
+    # Missing 0/20 control vs 20/20 treatment: chi-square 40 on 1 df, p = 2.5e-10 < 0.001.
+    with pytest.warns(IncrementWarning) as recorded:
         missing = compliance_missingness_source(missing_treatment=True)
+    assert "frame.validation.metric_missing_differs_by_arm" in warning_codes(recorded)
     complete = compliance_missingness_source(missing_treatment=False)
 
     expected = readouts.run(complete, metrics=metrics, estimands=["compliance"])
@@ -186,8 +188,10 @@ def test_compliance_only_readout_is_independent_of_outcome_missingness(metrics):
 
 
 def test_mixed_outcome_request_still_requires_available_outcomes():
-    with pytest.warns(IncrementWarning):
+    # Missing 0/20 control vs 20/20 treatment: chi-square 40 on 1 df, p = 2.5e-10 < 0.001.
+    with pytest.warns(IncrementWarning) as recorded:
         source = compliance_missingness_source(missing_treatment=True)
+    assert "frame.validation.metric_missing_differs_by_arm" in warning_codes(recorded)
     with pytest.raises(CodedError) as error:
         readouts.run(source, metrics=["drop"], estimands=["compliance", "late"])
     assert error.value.code == "readout.arms.no_treatment"
@@ -567,14 +571,23 @@ def test_portable_compliance_is_independent_of_missing_outcomes(tmp_path, cluste
 
     from tests.analysis_factory import lift_rows
 
-    with pytest.warns(IncrementWarning):
+    # Missing 0/20 control vs 20/20 treatment. Unclustered: chi-square 40 on 1 df, p = 2.5e-10.
+    # Clustered: the check is not run, so no warning, while the account keeps unit counts.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         source = compliance_missingness_source(missing_treatment=True, clustered=clustered)
+    assert warning_codes(recorded).count("frame.validation.metric_missing_differs_by_arm") == (
+        0 if clustered else 1
+    )
+    (skipped,) = [metric for metric in source.context.metrics if metric.name == "drop"]
+    account = source.missing_value_account(skipped)
+    assert dict(account.observed_by_arm) == {"control": 20, "treatment": 0}
     complete = compliance_missingness_source(missing_treatment=False, clustered=clustered)
     path = tmp_path / "moments.parquet"
     source.export_moments(path)
     experiment, resolver = from_moments(
         pq.read_table(path).to_pylist(),
-        metrics=[MetricSpec(name="drop", missing="drop")],
+        metrics=[MetricSpec(name="drop", missing="skip")],
         design=design(),
     )
     try:
@@ -1072,7 +1085,8 @@ def test_late_suppression_uses_outcome_cohort(strong_design, estimands, order):
         for group in ("control", "treatment")
         for i in range(100)
     ]
-    with pytest.warns(IncrementWarning) as rec:
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         source = from_unit_summary(
             pa.Table.from_pylist(rows),
             unit="unit",
@@ -1080,12 +1094,19 @@ def test_late_suppression_uses_outcome_cohort(strong_design, estimands, order):
             control="control",
             design=declared,
             metrics=[
-                MetricSpec(name=name, type="mean", missing="drop" if name == "y" else "error")
+                MetricSpec(name=name, type="mean", missing="skip" if name == "y" else "error")
                 for name in order
             ],
         )
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec)
+    # Both arms observe the same units (missing 50/100 or 97/100 in each), so chi-square is 0.
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(rec)
     results = readouts.run(source, estimands=estimands)
+    # The skip metric's LATE rows state its observed population.
+    assert {
+        row.population is not None
+        for row in results
+        if row.metric == "y" and row.estimand == "late"
+    } == {True}
     late = [row for row in results if row.estimand == "late"]
     estimates = [row for row in late if row.failure_code is None]
     failed = [row for row in late if row.failure_code is not None]

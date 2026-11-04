@@ -33,6 +33,7 @@ from increment._evidence_types import (
     AssignmentRequest,
     ComplianceArm,
     ComplianceSummary,
+    MissingValueAccount,
     SourceContext,
     unit_frame_covariate_columns,
 )
@@ -95,6 +96,7 @@ from increment._frame_validation import (  # noqa: F401
     check_covariate_columns,
     refuse_observational_quantile,
     require_eager_frame,
+    skip_missing_accounts,
 )
 from increment._metric_specs import (
     CupedCovariate,
@@ -446,9 +448,19 @@ class FrameTotalsSource(SequentialSourceMixin):
                 names=undeclared,
                 declared=declared_names,
             )
+        self._missing_value_accounts: Mapping[str, MissingValueAccount] = MappingProxyType(
+            skip_missing_accounts(frame, self._specs, group=group, cluster=cluster)
+        )
         if self._moments and getattr(plan.inference, "registration", None) is None:
             groups = {str(r["group_id"]) for r in self._moments}
-            if str(control) not in groups:
+            # Every metric skipping all values of an enrolled control leaves no control row.
+            control_skipped = all(
+                (account := self._missing_value_accounts.get(spec.name)) is not None
+                and account.units_by_arm.get(str(control), 0) > 0
+                and not account.observed_by_arm.get(str(control))
+                for spec in self._specs
+            )
+            if str(control) not in groups and not control_skipped:
                 _raise("frame.frame_totals.control_group_absent", control=control, groups=groups)
         metric_catalog = tuple(
             synthesised_metrics
@@ -683,7 +695,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         The metric's declared null/NaN policy applies here exactly as it
         does to the moments (mirroring ``_apply_spec_missing``'s combined
         predicate over ``y``/``y_den``): ``missing="zero"`` fills both,
-        ``missing="drop"`` excludes a row null in either - a quantile or
+        ``missing="skip"`` excludes a row null in either - a quantile or
         observational readout served from this view must see the same
         values the moments path declared, never a raw null the entry
         chokepoint already ruled on.
@@ -749,7 +761,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             out = out.with_columns(
                 *(nw.col(c).fill_nan(None).fill_null(0.0).alias(c) for c in value_cols)
             )
-        elif spec.missing == "drop":
+        elif spec.missing == "skip":
             predicate = nw.col(value_cols[0]).is_null() | nw.col(value_cols[0]).is_nan()
             for c in value_cols[1:]:
                 predicate = predicate | nw.col(c).is_null() | nw.col(c).is_nan()
@@ -776,9 +788,9 @@ class FrameTotalsSource(SequentialSourceMixin):
         """Per-group unit counts.
 
         Counted off the retained one-row-per-unit frame - the enrolled
-        population, before any metric's ``missing="drop"`` is applied at
+        population, before any metric's ``missing="skip"`` is applied at
         moment construction. Reading a metric's moment ``n`` instead would
-        report that metric's post-drop count and vary with declaration
+        report that metric's post-skip count and vary with declaration
         order; the enrolled count is what the sample-ratio check needs.
         The clustered branch counts the same retained rows as units, while
         :meth:`cluster_counts` serves the randomization grain there.
@@ -792,6 +804,10 @@ class FrameTotalsSource(SequentialSourceMixin):
         if self._unassigned:
             counts[UNASSIGNED_LABEL] = self._unassigned
         return counts
+
+    def missing_value_account(self, metric: Metric) -> MissingValueAccount | None:
+        """Enrolled and observed units per arm of a ``missing="skip"`` metric, else None."""
+        return self._missing_value_accounts.get(metric.name)
 
     def cluster_counts(self) -> dict[str, int]:
         """Per-group distinct cluster counts - the randomization grain.
@@ -1869,11 +1885,11 @@ class FramePanelSource(SequentialSourceMixin):
                     total_panel = self._sparse_panel
                     summary_roster = (
                         total_panel.select(*reducer_by, "group_id").unique().rows(named=True)
-                        if self._summary_reducer and reducer_by and specs[0].missing == "drop"
+                        if self._summary_reducer and reducer_by and specs[0].missing == "skip"
                         else []
                     )
                     covariates, covariate_failures = self._total_covariates(specs)
-                    if self._summary_reducer and specs[0].missing == "drop":
+                    if self._summary_reducer and specs[0].missing == "skip":
                         missing = nw.col(specs[0].y_column).is_null()
                         if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
                             missing = missing | nw.col(specs[0].y_column).is_nan()

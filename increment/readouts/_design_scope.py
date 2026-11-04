@@ -170,16 +170,15 @@ def _collect_expected_cells(
                 if item.group_id in roster.known_arms
                 else "readout.cell.missing_arm"
             )
-            failures[cell] = CellFailure(
-                hypothesis=cell.hypothesis(),
-                code=code,
-                context={
-                    "metric": item.metric,
-                    "group_id": item.group_id,
-                    "observed_arms": sorted(roster.arms_by_metric.get(item.metric, set())),
-                    "roster_source": roster.source,
-                },
-            )
+            context = {
+                "metric": item.metric,
+                "group_id": item.group_id,
+                "observed_arms": sorted(roster.arms_by_metric.get(item.metric, set())),
+                "roster_source": roster.source,
+            }
+            if code == "readout.cell.missing_metric_observations":
+                context["unobserved_arm"] = item.group_id
+            failures[cell] = CellFailure(hypothesis=cell.hypothesis(), code=code, context=context)
         else:
             failures[cell] = CellFailure(
                 hypothesis=cell.hypothesis(),

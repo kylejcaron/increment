@@ -63,7 +63,7 @@ _POOLED_MEAN_ROLE_UNDECLARED = _WARNINGS["impute.pooled_mean_role_undeclared"] =
     ),
 )
 _OUTCOME_ROUTE = (
-    "declare MetricSpec(missing='zero') if null means no events, MetricSpec(missing='drop') "
+    "declare MetricSpec(missing='zero') if null means no events, MetricSpec(missing='skip') "
     "if not observed, or repair upstream with increment.estimators.impute.zeros / drop_null"
 )
 _UNDECLARED_ROUTE = (

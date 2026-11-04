@@ -417,7 +417,7 @@ depends_on = []
 [[modules]]
 path = "increment._evidence_types"
 layer = "core"
-depends_on = ["increment._moment_plan", "increment.errors", "increment.semantics"]
+depends_on = ["increment._immutable", "increment._moment_plan", "increment.errors", "increment.semantics"]
 
 [[modules]]
 path = "increment.estimation"
@@ -466,7 +466,7 @@ depends_on = ["increment._day_axis_labels", "increment._frame_validation", "incr
 [[modules]]
 path = "increment._frame_validation"
 layer = "core"
-depends_on = ["increment._labels", "increment._metric_specs", "increment.errors", "increment.estimation", "increment.plan", "increment.semantics", "increment.sources"]
+depends_on = ["increment._evidence_types", "increment._labels", "increment._metric_specs", "increment.errors", "increment.estimation", "increment.plan", "increment.semantics", "increment.sources"]
 
 [[modules]]
 path = "increment._frame_sequential"
@@ -1169,7 +1169,7 @@ expose = [
   "MetricEvidence", "MetricEvidenceRequest",
   "ContrastStatsRequest",
   "MomentsRequest", "MomentRows", "UnitRowsRequest", "UnitRows",
-  "CountsRequest", "CountEvidence", "SequentialCaptureRequest", "SequentialCapture",
+  "CountsRequest", "CountEvidence", "MissingValueAccount", "SequentialCaptureRequest", "SequentialCapture",
   "SequentialSnapshotRequest",
   "EvidenceScopeResult",
   "AssignmentEvidence", "AssignmentRequest",

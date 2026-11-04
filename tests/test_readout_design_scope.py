@@ -136,7 +136,7 @@ def _observational(frame):
         group="arm",
         metrics=[
             MetricSpec(name="rev", type="mean"),
-            MetricSpec(name="other", type="mean", missing="drop"),
+            MetricSpec(name="other", type="mean", missing="skip"),
         ],
         design=design,
     )
@@ -175,10 +175,13 @@ def test_design_scoped_cell_records_retain_declared_posterior(mechanism, with_pr
 
 
 def test_observational_metric_lacking_an_arm_is_a_typed_failed_cell_beside_a_complete_metric():
+    # Missing 0/400 C, 0/400 T1 and 400/400 T2 values of `other`: chi-square 1200 on 2 df.
     with pytest.warns(IncrementWarning) as captured:
         experiment, resolver = _observational(_observational_frame())
-    assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
-    assert warning_context(captured, "frame.validation.metric_missing_drop")["name"] == "other"
+    assert warning_codes(captured) == ["frame.validation.metric_missing_differs_by_arm"]
+    assert warning_context(captured, "frame.validation.metric_missing_differs_by_arm")[
+        "metric"
+    ] == ("other")
     results = view_readout(experiment, resolver)
     assert results.metadata is not None
     assert {row.multiplicity_status for row in results} == {"undeclared_plan"}

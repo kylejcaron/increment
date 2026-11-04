@@ -1537,7 +1537,7 @@ def test_unadjusted_joint_unequal_members_keep_observed_ratio_of_totals(ratio):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-@pytest.mark.parametrize("missing", ["drop", "zero"])
+@pytest.mark.parametrize("missing", ["skip", "zero"])
 @pytest.mark.parametrize("ratio", [False, True])
 def test_unadjusted_joint_metric_missingness_retains_only_contributing_clusters(missing, ratio):
     records = _joint_table(unequal=True, ratio=ratio).to_pylist()
@@ -1570,11 +1570,11 @@ def test_unadjusted_joint_metric_missingness_retains_only_contributing_clusters(
     for record in records:
         if record["g"] == "U":
             continue
-        if missing == "drop" and (record["y"] is None or (ratio and record["den"] is None)):
+        if missing == "skip" and (record["y"] is None or (ratio and record["den"] is None)):
             continue
         kept.append({**record, "y": record["y"] or 0.0, "den": record["den"] or 0.0})
     oracle = _joint_oracle(pa.Table.from_pylist(kept), ratio=ratio)
-    assert row.n_clusters == (10 if missing == "drop" else 11)
+    assert row.n_clusters == (10 if missing == "skip" else 11)
     assert row.abs_se is not None
     assert row.abs_diff == pytest.approx(oracle["difference"])
     assert row.abs_se**2 == pytest.approx(oracle["absolute_variance"])

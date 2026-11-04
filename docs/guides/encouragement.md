@@ -129,7 +129,7 @@ See the [capabilities by entry point](../reference/capabilities-by-entry-point.m
 For fixed-horizon uptake alone, use `run(estimands=["compliance"])`; no outcome catalog or sequential policy is needed. Pass `metrics=[]` to dataframe and portable constructors when there are no outcomes.
 
 !!! warning "Outcome data and sequential monitoring"
-    The existing unit-panel refusal of `missing="drop"` remains; do not replace undefined outcomes with zeros to bypass it. Mixed ITT/LATE requests still require their outcome data.
+    The unit-panel refusal of `missing="skip"` (`frame.missing_policy.panel_skip`) remains; do not replace undefined outcomes with zeros to bypass it. Mixed ITT/LATE requests still require their outcome data.
 
     For uptake-only sequential monitoring, use `InferenceSpec(kind="always_valid")` and an explicit `SequentialCompliancePolicy`; no scalar outcome law is needed. An empty catalog alone does not enable monitoring: without a compliance policy or an uptake registration it is refused. Request `estimands=("compliance",)`; an `("itt",)` request contains no outcome rows to scope, and the default request also includes unsupported LATE. Outcome-consuming requests still refuse an unbounded retention metric (`sequential.route.unsupported`).
 

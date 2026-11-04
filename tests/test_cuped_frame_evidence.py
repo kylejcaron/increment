@@ -20,6 +20,7 @@ from increment.frame import CupedCovariate, from_unit_panel, from_unit_summary
 from increment.readouts import breakout, run
 from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import view_readout
+from tests.warning_codes import warning_codes
 
 
 def _moments(source, metric, **kwargs) -> tuple[dict[str, Any], ...]:
@@ -166,19 +167,22 @@ def test_summary_breakout_imputes_before_outcome_deletion():
             "segment": ["all"] * 4,
         }
     )
-    with pytest.warns(IncrementWarning):
+    # Missing 1/2 control vs 0/2 treatment: chi-square 1.33 on 1 df, p = 0.25, so only the
+    # covariate imputation warns.
+    with pytest.warns(IncrementWarning) as recorded:
         source = _source(
             table,
             [
                 MetricSpec(
                     name="outcome",
-                    missing="drop",
+                    missing="skip",
                     decision_method=_scalar("scalar", missing="impute"),
                 )
             ],
             panel=False,
             breakouts=("segment",),
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     metric = source.context.metrics[0]
     headline = {row["group_id"]: row for row in _moments(source, metric)}
     breakout = {row["group_id"]: row for row in _moments(source, metric, by=("segment",))}

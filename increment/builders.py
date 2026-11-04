@@ -514,6 +514,8 @@ def _bind_moments(
             )
             else "moments"
         )
+    # Only a skip policy is recorded: it qualifies the rows' population, and
+    # recording any other policy would change every moments experiment's identity.
     source = MomentsSource(
         rows,
         metrics=metric_catalog,
@@ -521,6 +523,7 @@ def _bind_moments(
         design=design,
         plan=plan,
         configs=configs,
+        metric_missingness={spec.name: "skip" for spec in specs if spec.missing == "skip"},
     )
     return bind_source(source, design)
 

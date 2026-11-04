@@ -396,6 +396,41 @@ def sample_ratio_mismatch(
     )
 
 
+def missing_by_arm_p_value(
+    n_missing: Mapping[str, int], n_units: Mapping[str, int]
+) -> float | None:
+    """Pearson chi-square p-value of missing versus present units across arms.
+
+    The 2 x k table holds each arm's missing and present counts. The statistic
+    sums ``(observed - expected) ** 2 / expected`` with ``expected = row total x
+    arm total / N`` and no continuity correction, on ``k - 1`` degrees of freedom;
+    the p-value is the chi-square survival function. ``None`` when no value is
+    missing, no value is present or fewer than two arms hold units (an empty
+    margin leaves nothing to test), or when an expected count is below 5, where the
+    chi-square approximation is not trusted.
+    """
+    from scipy.stats import chi2 as chi2_dist
+
+    arms = [arm for arm, units in n_units.items() if units > 0]
+    total = sum(n_units[arm] for arm in arms)
+    missing = sum(n_missing[arm] for arm in arms)
+    present = total - missing
+    if len(arms) < 2 or missing == 0 or present == 0:
+        return None
+    cells = [
+        (observed, margin * n_units[arm] / total)
+        for arm in arms
+        for observed, margin in (
+            (n_missing[arm], missing),
+            (n_units[arm] - n_missing[arm], present),
+        )
+    ]
+    if min(expected for _observed, expected in cells) < 5:
+        return None
+    statistic = math.fsum((observed - expected) ** 2 / expected for observed, expected in cells)
+    return float(chi2_dist.sf(statistic, len(arms) - 1))
+
+
 class AllocationBand(BaseModel):
     """A Beta posterior credible band on one arm's allocation share at one ``ds``.
 

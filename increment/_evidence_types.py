@@ -10,6 +10,7 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeAlias, cast
 
+from increment._immutable import _FrozenMapping
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment.errors import (
     CapabilityError,
@@ -497,6 +498,31 @@ class CountEvidence:
     grain: str
     counts: Mapping[str, int]
     unit_counts: Mapping[str, int] = dataclass_field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MissingValueAccount:
+    """Enrolled and observed unit counts per arm for a ``missing="skip"`` metric.
+
+    ``observed_by_arm`` counts the units whose value (and, for a ratio, whose
+    denominator) is present; the metric's moments are reduced over exactly
+    those units. Counts are units even when a cluster is declared.
+    """
+
+    metric: str
+    units_by_arm: Mapping[str, int]
+    observed_by_arm: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "units_by_arm", _FrozenMapping(self.units_by_arm))
+        object.__setattr__(self, "observed_by_arm", _FrozenMapping(self.observed_by_arm))
+
+    @property
+    def missing_by_arm(self) -> Mapping[str, int]:
+        """Units per arm that the metric skips."""
+        return {
+            arm: self.units_by_arm[arm] - self.observed_by_arm[arm] for arm in self.units_by_arm
+        }
 
 
 @dataclass(frozen=True, slots=True)

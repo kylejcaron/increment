@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from functools import cache
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
@@ -88,7 +89,7 @@ if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
     from increment._analysis_config import ResolvedMetricConfig
-    from increment._evidence_types import ComplianceSummary
+    from increment._evidence_types import ComplianceSummary, MissingValueAccount
     from increment._source_types import EvidenceCapabilities
     from increment.decision import CompiledDecisionPlan
     from increment.query.artifact_reader import ArtifactMomentSource as _ArtifactBase
@@ -174,7 +175,7 @@ def _melt_to_unit_totals(
             base = base.mutate(y=ibis.coalesce(base.y, ibis.literal(0.0)))
             if spec.denominator:
                 base = base.mutate(y_den=ibis.coalesce(base.y_den, ibis.literal(0.0)))
-        elif spec.missing == "drop":
+        elif spec.missing == "skip":
             missing = base.y.isnull()
             if spec.denominator:
                 missing = missing | base.y_den.isnull()
@@ -251,6 +252,7 @@ class SqlPanelSource:
         self._summary = summary
         self._unassigned = unassigned
         self._enrollment_counts: dict[str, int] | None = None
+        self._missing_value_accounts: Mapping[str, MissingValueAccount] = {}
         metric_catalog = tuple(metrics)
         from increment.decision import CompiledDecisionPlan
         from increment.plan import (
@@ -337,6 +339,7 @@ class SqlPanelSource:
             _validate_control,
             _validate_conversion_binary,
             _validate_frame_boundary,
+            skip_missing_accounts,
         )
 
         specs = coerce_metrics(metrics)
@@ -373,6 +376,7 @@ class SqlPanelSource:
             _validate_control(nwf, group, design.control_group)
         nwf = _enforce_missing_policy(nwf, specs, shape="summary")
         _validate_conversion_binary(nwf, specs)
+        missing_value_accounts = skip_missing_accounts(nwf, specs, group=group)
 
         tbl = ibis.memtable(nwf.to_native())
         metric_objects = [synthesise_metric(s) for s in specs]
@@ -396,6 +400,7 @@ class SqlPanelSource:
             specs=specs,
         )
         source._enrollment_counts = _group_counts(nwf, group)
+        source._missing_value_accounts = MappingProxyType(missing_value_accounts)
         return source
 
     def moments(
@@ -451,6 +456,10 @@ class SqlPanelSource:
         if self._unassigned:
             counts[UNASSIGNED_LABEL] = self._unassigned
         return counts
+
+    def missing_value_account(self, metric: Metric) -> MissingValueAccount | None:
+        """Enrolled and observed units per arm of a ``missing="skip"`` metric, else None."""
+        return self._missing_value_accounts.get(metric.name)
 
     def cluster_counts(self) -> dict[str, int]:
         from increment._evidence_refusals import refuse_cluster, require_evidence

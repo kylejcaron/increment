@@ -109,15 +109,15 @@ _UNSUPPORTED_REFUSALS = refusals(
 _CELL_FAILURE_REFUSALS = refusals(
     InvalidRequestError,
     {
-        # Templates name {observed_arms} so only producers that know the requested arm is the
-        # one lacking observations render them; other contexts fall back to code and context.
+        # Templates name {observed_arms} (and {unobserved_arm}) so only producers that know which
+        # arm lacks observations render them; other contexts fall back to code and context.
         "readout.cell.missing_arm": (
             "Metric {metric} has no observations for requested arm {group_id} (observed arms: "
             "{observed_arms}); check the observed group label and control spelling, then "
             "correct the source or requested contrast and rerun"
         ),
         "readout.cell.missing_metric_observations": (
-            "Metric {metric} has no usable observations for arm {group_id} (arms with "
+            "Metric {metric} has no usable observations for arm {unobserved_arm} (arms with "
             "observations: {observed_arms}); check the metric's missing-value policy and the "
             "values available in that arm, then correct the data or policy and rerun"
         ),

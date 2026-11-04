@@ -267,10 +267,10 @@ def _apply_spec_missing(
     to Float64), so one metric's declaration can never touch another
     metric's values even when both read the same source column.
     ``missing="zero"`` counts a missing value as 0 with the row still in
-    ``n``; ``missing="drop"`` removes the row from THIS metric's moments
-    (complete-case). A missing covariate value is filled with the pooled
+    ``n``; ``missing="skip"`` removes the row from THIS metric's moments
+    (observed units only). A missing covariate value is filled with the pooled
     mean of the observed values (or 0 under ``missing="zero"``),
-    computed from the covariate column alone -- BEFORE ``missing="drop"``
+    computed from the covariate column alone -- BEFORE ``missing="skip"``
     removes any outcome-null rows below, never from the arm or the
     outcome, which is what keeps the adjusted estimate unbiased under
     randomization. NaN is normalized to null first so every backend
@@ -306,7 +306,7 @@ def _apply_spec_missing(
         long = long.with_columns(
             *(nw.col(c).fill_nan(None).fill_null(0.0).alias(c) for c in value_cols)
         )
-    elif spec.missing == "drop":
+    elif spec.missing == "skip":
         predicate = nw.col(value_cols[0]).is_null() | nw.col(value_cols[0]).is_nan()
         for c in value_cols[1:]:
             predicate = predicate | nw.col(c).is_null() | nw.col(c).is_nan()

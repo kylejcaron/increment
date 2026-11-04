@@ -67,7 +67,7 @@ with warnings.catch_warnings(record=True) as data_warnings:
             MetricSpec(
                 name="complaints",
                 type="conversion",
-                missing="drop",
+                missing="skip",
                 preferred_direction="decrease",
             ),
         ],
@@ -81,9 +81,10 @@ print(render(result, "brief"))
 ```
 
 The missing-data warning is surfaced above the rendered report, not discarded:
-it explains that the selected missing-value policy changes the metric's
-population. The report separately keeps the guardrail unavailable and states
-what the remaining evidence does and does not establish.
+complaint values are missing far more often in one group, so the units that
+have a value may not be comparable across groups. The complaints row names the
+units it compares in its `population`, and the report keeps the guardrail
+unavailable and states what the remaining evidence does and does not establish.
 
 `exp` describes the experiment and can be saved with `exp.to_json()` or
 identified with `exp.hash()`. It does not hold a live dataframe. `resolver`
@@ -128,7 +129,7 @@ recovered_exp, recovered_resolver = from_frame(
         MetricSpec(
             name="complaints",
             type="conversion",
-            missing="drop",
+            missing="skip",
             preferred_direction="decrease",
         ),
     ],
@@ -266,11 +267,16 @@ A null or NaN needs a meaning before it can be included in an average:
 | Setting | Use when |
 |---|---|
 | `MetricSpec(missing="zero")` | Missing means no events. |
-| `MetricSpec(missing="drop")` | Missing means not observed. |
+| `MetricSpec(missing="skip")` | Missing means not observed. |
 
-!!! warning "Dropping missing values can bias the result"
-    Dropping values uses only complete cases. This is unbiased only when
-    missingness is unrelated to the values.
+!!! warning "Skipping missing values can bias the result"
+    The metric uses only the units with a value; they stay in every other
+    metric, and the row's `population` states how many units each group
+    observed. This is unbiased only when missingness is unrelated to the
+    values. When the share of missing values differs between groups, the
+    `frame.validation.metric_missing_differs_by_arm` warning reports it.
+    On clustered designs the check is not run; compare missingness across
+    clusters yourself.
 
 You can also prepare the dataframe with `increment.estimators.impute.zeros` or
 `drop_null`. Each returns `(frame, affected_count)` so you can record how many
@@ -299,7 +305,7 @@ A column declared `"outcome"` is refused (`impute.pooled_mean_outcome`) before
 any fill. Filling a column with no declared role still works but emits the
 `impute.pooled_mean_role_undeclared` warning with per-column counts.
 `MetricSpec(missing="impute")` is refused (`frame.metric.missing_impute`); use
-`missing="zero"` or `"drop"` for an outcome. Set a CUPED covariate's policy on
+`missing="zero"` or `"skip"` for an outcome. Set a CUPED covariate's policy on
 its method-owned declaration, for example
 `Method.cuped(covariates=CupedCovariate(name="baseline", kind="continuous", missing="impute"))`.
 

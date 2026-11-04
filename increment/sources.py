@@ -1471,6 +1471,7 @@ class MomentsSource(SequentialSourceMixin):
         _source_snapshot_evidence: Any | None = None,
         _source: Any | None = None,
         _source_identity_record: Mapping[str, object] | None = None,
+        metric_missingness: Mapping[str, str] | None = None,
     ) -> None:
         self._source_snapshot_evidence = _source_snapshot_evidence
         self._source = _source
@@ -1631,6 +1632,7 @@ class MomentsSource(SequentialSourceMixin):
             configs=base_configs,
             cluster=self._compliance.cluster if self._compliance is not None else None,
             trigger_name=trigger_name,
+            metric_missingness={} if metric_missingness is None else metric_missingness,
         )
         if self.scalar_recipe_fixed:
             recorded = {config.metric.name for config in self.scalar_recipe_configs}

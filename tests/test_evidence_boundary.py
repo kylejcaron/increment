@@ -214,6 +214,7 @@ _LEGACY_EVIDENCE_METHODS = frozenset(
         "compliance_summary",
         "day_source",
         "fit_cuped_multicovariate",
+        "missing_value_account",
         "moments",
         "moments_for_method",
         "readout_execution",

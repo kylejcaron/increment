@@ -1097,11 +1097,12 @@ experiments:
         con.disconnect()
 
 
-@pytest.mark.parametrize("missing,expected", [("zero", (0, 1)), ("drop", (1,))])
+@pytest.mark.parametrize("missing,expected", [("zero", (0, 1)), ("skip", (1,))])
 def test_raw_missingness_precedes_support_validation(missing, expected):
+    import warnings
+
     import pyarrow as pa
 
-    from increment.errors import IncrementWarning
     from increment.estimation.winsor import raw_state_from_source
     from increment.frame import from_unit_summary
     from tests.warning_codes import warning_codes
@@ -1126,10 +1127,18 @@ def test_raw_missingness_precedes_support_validation(missing, expected):
             ],
         )
 
-    if missing == "drop":
-        with pytest.warns(IncrementWarning) as rec:
+    if missing == "skip":
+        # Missing 1/2 control vs 0/2 treatment: chi-square 1.33 on 1 df, p = 0.25.
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
             source = _build()
-        assert "frame.validation.metric_missing_drop" in warning_codes(rec)
+        assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(rec)
+        account = source.missing_value_account(source.context.metrics[0])
+        assert account is not None and (
+            account.metric,
+            dict(account.units_by_arm),
+            dict(account.observed_by_arm),
+        ) == ("revenue", {"C": 2, "T": 2}, {"C": 1, "T": 2})
     else:
         source = _build()
     raw = raw_state_from_source(source, source.context.metrics[0])

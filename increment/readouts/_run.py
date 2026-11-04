@@ -4,7 +4,7 @@ import math
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset, effective_methods
-from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
+from increment._evidence_types import MetricEvidence, MetricEvidenceRequest, MissingValueAccount
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
@@ -29,6 +29,7 @@ from increment.readouts._evidence import (
     _builtin_source,
     acquire_observational_inputs,
     artifact_provenance,
+    load_missing_value_account,
     prior_exclusions,
 )
 from increment.readouts._metric_rows import load_metric_evidence
@@ -158,16 +159,21 @@ def run(
     # Request validation is complete before capture.
     if not selected and not prepared.scope.execution:
         return _as_collection(
-            _run_prepared(
-                _builtin_source(src),
+            _label_skipped_populations(
+                _run_prepared(
+                    _builtin_source(src),
+                    selected,
+                    configs,
+                    prior=prior,
+                    by=by,
+                    estimands=estimands,
+                    value_scale=value_scale,
+                    population=_population,
+                    scope_active=False,
+                ),
+                src,
                 selected,
-                configs,
-                prior=prior,
                 by=by,
-                estimands=estimands,
-                value_scale=value_scale,
-                population=_population,
-                scope_active=False,
             )
         )
     from uuid import uuid4
@@ -187,7 +193,7 @@ def run(
                 scope_active=True,
                 snapshot_source=src,
             )
-        return _as_collection(rows)
+        return _as_collection(_label_skipped_populations(rows, src, selected, by=by))
 
     if execution_context is None:
         context, result = RunAcquisitionOwner.execute(
@@ -234,6 +240,62 @@ def run(
 
 def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
     return rows if isinstance(rows, LiftEstimates) else LiftEstimates(rows)
+
+
+_SOURCE_LIMITED_POPULATION = "observed-only population; counts not recorded in moments"
+
+
+def _observed_population_label(account: MissingValueAccount | None) -> str:
+    """Name the observed-only population of a ``missing="skip"`` metric.
+
+    States the metric and, per arm, its observed out of enrolled units. Without an
+    account (a moments cube records no enrolled units) the label says so.
+    """
+    if account is None:
+        return _SOURCE_LIMITED_POPULATION
+    arms = ", ".join(
+        f"{arm} {account.observed_by_arm[arm]} of {account.units_by_arm[arm]} units"
+        for arm in sorted(account.units_by_arm)
+    )
+    return f"observed {account.metric} only ({arms})"
+
+
+def _label_skipped_populations(
+    rows: list[LiftEstimate], src: EvidenceSource, selected: Sequence[Metric], *, by: Sequence[str]
+) -> list[LiftEstimate]:
+    """Qualify each whole-window row of a ``missing="skip"`` metric with its population.
+
+    The skip label comes first; an identification restriction already on the row
+    (complete-case or overlap trimming) follows it after ``"; "``. Assembly owns
+    the label because observational rows carry no metric evidence; segment rows
+    (``by``) and compliance rows are left as estimated.
+    """
+    if by:
+        return rows
+    labels: dict[str, str] = {}
+    for metric in selected:
+        account = load_missing_value_account(src, metric)
+        if account is not None or src.context.metric_missingness.get(metric.name) == "skip":
+            labels[metric.name] = _observed_population_label(account)
+    if not labels:
+        return rows
+    relabelled = [
+        row.model_copy(
+            update={"population": label if row.population is None else f"{label}; {row.population}"}
+        )
+        if (label := labels.get(row.metric)) is not None and row.estimand != "compliance"
+        else row
+        for row in rows
+    ]
+    if not isinstance(rows, LiftEstimates):
+        return relabelled
+    return LiftEstimates(
+        relabelled,
+        metadata=rows.metadata,
+        source=rows.source,
+        sequential_snapshot=rows.sequential_snapshot,
+        default_backend=rows._default_backend,
+    )
 
 
 def _observational_adjustment_identity(src, selected, configs, design, rows, unit_frame_memo):

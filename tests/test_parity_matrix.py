@@ -425,18 +425,50 @@ def test_sequential_quantile_is_refused_by_from_moments_over_an_exported_checkpo
     assert refused.value.code == "sequential.route.unsupported"
 
 
-def test_sequential_quantile_drop_and_impute_are_refused_before_the_portable_ingress() -> None:
-    """`drop` is refused by the mean producer's own sequential registration and `impute` by
+def test_sequential_quantile_skip_and_impute_are_refused_before_the_portable_ingress() -> None:
+    """`skip` is refused by the mean producer's own sequential registration and `impute` by
     the quantile declaration the replay builds first; neither reaches `from_moments`."""
     from increment.errors import CodedError
 
-    drop = matrix_cases._Ingress(_quantile_cell("sequential", "drop"))
+    skip = matrix_cases._Ingress(_quantile_cell("sequential", "skip"))
     with pytest.raises(CodedError) as producer:
-        drop._scalar_moments_producer()
+        skip._scalar_moments_producer()
     assert producer.value.code == "sequential.route.unsupported"
     with pytest.raises(CodedError) as declaration:
         matrix_cases._replay_metrics(_quantile_cell("sequential", "impute"))
     assert declaration.value.code == "frame.metric.missing_impute"
+
+
+@pytest.mark.parametrize(
+    ("ingress", "code", "field", "value"),
+    [
+        ("from_unit_summary", "frame.metric.missing_drop_renamed", "route", "missing='skip'"),
+        ("from_unit_panel", "frame.metric.missing_drop_renamed", "route", "missing='skip'"),
+        ("from_switchback_panel", "frame.metric.missing_drop_renamed", "route", "missing='skip'"),
+        ("from_moments", "frame.metric.missing_drop_renamed", "route", "missing='skip'"),
+        ("from_definitions", "model.field.unknown", "field", "missing"),
+    ],
+)
+def test_drop_missing_policy_is_refused_at_declaration_on_every_ingress(
+    ingress: str, code: str, field: str, value: str
+) -> None:
+    """`drop`, the former spelling of `skip`, refuses with one code routing to `skip` on every
+    ingress declaring a `MetricSpec`; the definitions schema has no missing-policy field."""
+    from increment.errors import CodedError
+
+    cell = matrix.Cell("mean", "run", "none", "utc", "drop")
+    built = matrix_cases._Ingress(cell)
+    build = {
+        "from_unit_summary": built.summary,
+        "from_unit_panel": built.panel,
+        "from_switchback_panel": matrix_cases._switchback_builder(cell),
+        "from_moments": lambda: matrix_cases._replay_metrics(cell),
+        "from_definitions": built.definitions,
+    }[ingress]
+    with pytest.raises(CodedError) as refused:
+        build()
+    assert refused.value.code == code
+    assert refused.value.context[field] == value
 
 
 @pytest.mark.slow
@@ -512,7 +544,7 @@ def test_percentile_winsor_size_route_runs_the_analytic_interval_on_every_raw_so
 
 def test_percentile_winsor_unsupported_ingress_classifications_remain_source_specific() -> None:
     """Moments lack unit outcomes; switchback is a different design, not a parity route."""
-    for missing in ("error", "zero", "drop"):
+    for missing in ("error", "zero", "skip"):
         cell = matrix.Cell("mean", "run", "winsor_percentile", "utc", missing)
         verdicts = matrix.classify(cell).legs["rows"]
         assert verdicts["from_moments"].status == "source_limited"
@@ -526,7 +558,7 @@ def test_percentile_winsor_unsupported_ingress_classifications_remain_source_spe
             )
         else:
             assert verdicts["from_unit_panel"].outcome == matrix.Refuses(
-                "frame.missing_policy.panel_drop"
+                "frame.missing_policy.panel_skip"
             )
         assert verdicts["from_switchback_panel"].status == "source_limited"
         assert verdicts["from_switchback_panel"].outcome == matrix.Refuses(
@@ -556,7 +588,7 @@ def test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell
             ("run", "breakout", "daily", "asof"),
             ("sequential",),
             ("utc", "fixed_offset"),
-            ("error", "zero", "drop", "impute"),
+            ("error", "zero", "skip", "impute"),
             ("asymptotic_mean",),
         )
     )

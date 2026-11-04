@@ -8,6 +8,7 @@ and refuses inconclusive precision; it never chooses repetitions from outputs.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import FrozenInstanceError, replace
 from itertools import combinations, product
 from typing import Any, cast
@@ -18,7 +19,7 @@ import pytest
 from pydantic import ValidationError
 
 from increment import from_frame, from_moments
-from increment.errors import CodedError, IncrementWarning, InvalidRequestError
+from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.targeting import ClusterBootstrap, TargetingRule
 from increment.estimators import (
@@ -1017,7 +1018,9 @@ def _compliance_source(order):
                         "drop": float(y) if j in (0, size - 1) else None,
                     }
                 )
-    with pytest.warns(IncrementWarning) as rec:
+    # Missing 170/250 units in each arm (all but each cluster's first and last): chi-square 0.
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         source = from_unit_summary(
             pa.Table.from_pylist(rows),
             unit="unit_id",
@@ -1027,16 +1030,16 @@ def _compliance_source(order):
             design=design,
             experiment_id="c12-uptake",
             metrics=[
-                MetricSpec(name=name, missing="drop" if name == "drop" else "error")
+                MetricSpec(name=name, missing="skip" if name == "drop" else "error")
                 for name in order
             ],
         )
-    assert "frame.validation.metric_missing_drop" in warning_codes(rec)
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(rec)
     return source, design, pairs
 
 
 @pytest.mark.slow
-def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_path):
+def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_path):  # noqa: PLR0915
     import pyarrow.parquet as pq
     from scipy.stats import t
 
@@ -1112,10 +1115,27 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
         replay = readouts.run(cube, estimands=["compliance", "late"])
 
         def keyed(results):
+            # A cube records no unit counts, so the observed-only population is compared apart.
             return {
-                (r.metric, r.estimand, r.value_scale): r.model_dump(mode="json") for r in results
+                (r.metric, r.estimand, r.value_scale): r.model_dump(
+                    mode="json", exclude={"population"}
+                )
+                for r in results
             }
 
+        # Each of the 40 clusters per arm observes its first and last unit: 80 of 250 units.
+        (skipped,) = [metric for metric in source.context.metrics if metric.name == "drop"]
+        account = source.missing_value_account(skipped)
+        assert account is not None and (
+            dict(account.units_by_arm),
+            dict(account.observed_by_arm),
+        ) == ({"control": 250, "treatment": 250}, {"control": 80, "treatment": 80})
+        assert {(r.metric, r.estimand, r.population is not None) for r in live} == {
+            ("uptake", "compliance", False),
+            ("full", "late", False),
+            ("drop", "late", True),
+        }
+        assert {r.population for r in replay} == {None}
         assert keyed(live) == keyed(replay)
         compliance = next(row for row in live if row.estimand == "compliance").require_lift()
         # Welch-Satterthwaite collapses to df=39 here (single treatment arm,

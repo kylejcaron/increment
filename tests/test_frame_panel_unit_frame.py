@@ -350,9 +350,9 @@ def test_unit_panel_unit_frame_applies_winsorization_matching_unit_summary():
 
 def test_unit_panel_unit_frame_applies_missing_zero_matching_unit_summary():
     """The panel's collapsed unit total must apply missing="zero" the same
-    way moments(grain="total") already applies it. missing="drop" itself is
+    way moments(grain="total") already applies it. missing="skip" itself is
     refused outright at panel construction (densification already
-    zero-fills every absent/null cell, so a "dropped" row would silently
+    zero-fills every absent/null cell, so a "skipped" row would silently
     mean zero anyway) -- "zero" is the only non-default policy a
     panel-backed metric can declare, so it is the one this parity check
     exercises."""

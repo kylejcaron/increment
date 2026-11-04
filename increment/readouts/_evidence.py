@@ -45,6 +45,7 @@ from increment._evidence_types import (
     EvidenceScopeResult,
     MethodFitAnswer,
     MethodFitRequest,
+    MissingValueAccount,
     MomentRows,
     MomentsRequest,
     ScalarBreakoutRows,
@@ -385,6 +386,16 @@ def acquire_evidence_scope(
 def _builtin_source(src: EvidenceSource) -> _BuiltinMomentSource:
     """Bridge typed scoped providers to the loader-shaped acquisition seam."""
     return loader_source(src)
+
+
+def load_missing_value_account(src: EvidenceSource, metric: Any) -> MissingValueAccount | None:
+    """The enrolled and observed units per arm a ``missing="skip"`` metric was reduced
+    over, or None when the source did not count them (a moments cube, a custom provider)."""
+    source = loader_source(src)
+    if not is_builtin_source(source):
+        return None
+    account = getattr(source, "missing_value_account", None)
+    return account(metric) if callable(account) else None
 
 
 def load_counts(src: EvidenceSource, request: CountsRequest) -> CountEvidence:

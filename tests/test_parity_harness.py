@@ -937,7 +937,7 @@ def test_schema_absence_passes_when_the_error_rejects_the_declared_field():
     winsor = _definitions_schema_builder(metric_type="conversion", winsorization=True, missing=None)
     case = _schema_absence_case(winsor, "winsorization")
     assert_parity(case, run_case(case))
-    both = _definitions_schema_builder(metric_type="conversion", winsorization=True, missing="drop")
+    both = _definitions_schema_builder(metric_type="conversion", winsorization=True, missing="skip")
     case = _schema_absence_case(both, "winsorization")
     assert_parity(case, run_case(case))
 
@@ -945,7 +945,7 @@ def test_schema_absence_passes_when_the_error_rejects_the_declared_field():
 def test_schema_absence_fails_when_the_error_is_about_another_field():
     """A validation error is not evidence for a different declared absence: with the
     winsorization guard gone, the unrelated missing-policy error must not satisfy it."""
-    other = _definitions_schema_builder(metric_type="mean", winsorization=False, missing="drop")
+    other = _definitions_schema_builder(metric_type="mean", winsorization=False, missing="skip")
     case = _schema_absence_case(other, "winsorization")
     with pytest.raises(AssertionError, match="refusal named 'missing'"):
         run_case(case)

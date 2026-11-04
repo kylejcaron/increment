@@ -74,7 +74,7 @@ def _analysis(frame, *, drop_missing_guard=False, design=None):
                 name="guard",
                 type="mean",
                 preferred_direction="decrease",
-                missing="drop" if drop_missing_guard else "error",
+                missing="skip" if drop_missing_guard else "error",
             ),
             MetricSpec(name="secondary", type="mean", preferred_direction="increase"),
         ]
@@ -85,7 +85,7 @@ def _analysis(frame, *, drop_missing_guard=False, design=None):
                 name="guard",
                 type="mean",
                 preferred_direction="decrease",
-                missing="drop" if drop_missing_guard else "error",
+                missing="skip" if drop_missing_guard else "error",
             ),
         ],
         plan=(
@@ -503,7 +503,7 @@ def test_failure_passthrough_is_escaped_in_complete_html_table():
             MetricSpec(
                 name=payload,
                 type="mean",
-                missing="drop",
+                missing="skip",
                 preferred_direction="decrease",
             ),
         ],
@@ -1260,12 +1260,15 @@ def test_cell_reason_preserves_persisted_failure():
 def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observes_it(tmp_path):
     import pyarrow.parquet as pq
 
+    # Missing 0/200 control vs 200/200 treatment guard values: chi-square 400 on 1 df.
     with pytest.warns(IncrementWarning) as captured:
         analysis_experiment, analysis_resolver = _analysis(
             _frame(guard_constant=False, drop_guard_treatment=True), drop_missing_guard=True
         )
-    assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
-    assert warning_context(captured, "frame.validation.metric_missing_drop")["name"] == "guard"
+    assert warning_codes(captured) == ["frame.validation.metric_missing_differs_by_arm"]
+    assert warning_context(captured, "frame.validation.metric_missing_differs_by_arm")[
+        "metric"
+    ] == ("guard")
     results = view_readout(analysis_experiment, analysis_resolver)
     (failed,) = [row for row in results if row.failure_code is not None]
     assert failed.metric == "guard"
@@ -1552,6 +1555,7 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
                     "x": x,
                 }
             )
+    # Missing 0/100, 0/100 and 100/100 secondary values: chi-square 300 on 2 df, p < 0.001.
     with pytest.warns(IncrementWarning) as captured:
         experiment, resolver = from_frame(
             pd.DataFrame(frame_rows),
@@ -1564,7 +1568,7 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
                 MetricSpec(
                     name="secondary",
                     type="mean",
-                    missing="drop",
+                    missing="skip",
                     decision_method=Method(name="unadjusted"),
                     sensitivity_methods=(
                         Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
@@ -1573,7 +1577,7 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
             ],
             plan=AnalysisPlan(primary="primary", secondaries=["secondary"], q=0.2),
         )
-    assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
+    assert warning_codes(captured) == ["frame.validation.metric_missing_differs_by_arm"]
     results = _readouts(view_readout(experiment, resolver))
     rows = _lift_rows(results)
     secondary_rows = [row for row in rows if row.metric == "secondary"]

@@ -285,9 +285,13 @@ def test_summary_breakout_refusing_input_precedes_outcome_deletion():
         }
         for i, row in enumerate(_records())
     ]
-    from increment.errors import IncrementWarning
+    import warnings
 
-    with pytest.warns(IncrementWarning):
+    from tests.warning_codes import warning_codes
+
+    # Missing 1/48 control vs 0/48 treatment: chi-square 1.01 on 1 df, p = 0.31.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         experiment, resolver = from_frame(
             pa.Table.from_pylist(records),
             shape="summary",
@@ -297,13 +301,14 @@ def test_summary_breakout_refusing_input_precedes_outcome_deletion():
             metrics=[
                 MetricSpec(
                     name="outcome",
-                    missing="drop",
+                    missing="skip",
                     decision_method=Method.unadjusted(),
                     sensitivity_methods=(scalar,),
                 )
             ],
             breakouts=("segment",),
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     rows = {
         (row.dimension_value, row.method): row
         for row in view_readout(experiment, resolver, Scope(view="breakout", grain="total"))

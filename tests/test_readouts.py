@@ -9,6 +9,7 @@ reports the same number.
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 from typing import Any, cast
 
 import ibis
@@ -49,6 +50,7 @@ from increment.workflows import capture_sequential
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import bound_source, make_binding, view_readout
 from tests.test_sequential_public_sources import gaussian_plan
+from tests.warning_codes import warning_codes
 
 
 def _portable_learner_one() -> None:
@@ -205,18 +207,23 @@ def test_memtable_missingness_keeps_enrollment_and_absent_denominator(con):
         }
     )
     metrics = [
-        MetricSpec(name="dropped", type="conversion", value_column="value", missing="drop"),
+        MetricSpec(name="skipped", type="conversion", value_column="value", missing="skip"),
         MetricSpec(name="filled", type="conversion", value_column="value", missing="zero"),
     ]
-    with pytest.warns(UserWarning):
+    # One missing control value: chi-square 1.14 on 1 df, so no missing-by-arm warning.
+    with warnings.catch_warnings(record=True) as native_warnings:
+        warnings.simplefilter("always")
         native = FrameTotalsSource.from_frame(
             frame, unit="unit", group="arm", control="control", metrics=metrics
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(native_warnings)
     for declared in (metrics, metrics[::-1]):
-        with pytest.warns(UserWarning):
+        with warnings.catch_warnings(record=True) as sql_warnings:
+            warnings.simplefilter("always")
             sql = SqlPanelSource.from_frame_via_memtable(
                 con, frame, unit="unit", group="arm", metrics=declared
             )
+        assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(sql_warnings)
         assert _unit_counts(sql) == _unit_counts(native) == {"control": 4, "treatment": 4}
         for metric in native.context.metrics:
             oracle = {row["group_id"]: row for row in _moments(native, metric)}
@@ -1202,7 +1209,9 @@ def test_control_only_percentile_metric_uses_the_aggregate_arm_gate():
     from increment.frame import from_unit_summary
     from increment.semantics.models import Winsorization
 
-    with pytest.warns(UserWarning):
+    # Missing 0/3 control vs 3/3 treatment: chi-square 6.0, p = 0.014, above the 0.001 alpha.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         source = from_unit_summary(
             pa.table(
                 {
@@ -1218,17 +1227,19 @@ def test_control_only_percentile_metric_uses_the_aggregate_arm_gate():
             metrics=[
                 MetricSpec(
                     name="winsor",
-                    missing="drop",
+                    missing="skip",
                     winsorization=Winsorization(upper_percentile=0.95),
                 ),
                 MetricSpec(name="plain"),
             ],
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     results = readouts.run(source)
     (failed,) = [row for row in results if row.failure_code is not None]
     assert failed.metric == "winsor"
     assert failed.failure_code == "readout.cell.missing_metric_observations"
     assert failed.lift is None
+    assert failed.population is not None
     (result,) = [row for row in results if row.failure_code is None]
     assert result.metric == "plain"
     assert result.require_lift().value == pytest.approx(1.0)

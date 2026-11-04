@@ -12,6 +12,7 @@ import importlib.util
 import math
 import subprocess
 import sys
+import warnings
 from datetime import date
 from typing import Any, cast
 
@@ -22,7 +23,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from increment import from_frame, readouts
-from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
+from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
 from increment.frame import (
@@ -37,6 +38,7 @@ from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests._frame_evidence_requests import _breakout_moments, _counts, _moments, _unit_rows
 from tests.analysis_factory import view_readout
+from tests.warning_codes import warning_codes
 
 
 @settings(max_examples=8, deadline=None)
@@ -1604,14 +1606,17 @@ def test_summary_public_unit_frame_preserves_mixed_declared_covariates():
             ),
         ),
     )
-    with pytest.warns(IncrementWarning):
+    # Missing 1/2 control vs 1/2 treatment for the sibling: equal rates, chi-square 0.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         source = from_unit_summary(
             frame,
             unit="unit",
             group="arm",
             control="control",
-            metrics=[metric, MetricSpec(name="sibling", missing="drop")],
+            metrics=[metric, MetricSpec(name="sibling", missing="skip")],
         )
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
     units = nw.from_native(
         _unit_rows(source, _metric(source, "revenue"), covariates=["prior", "region"]),
         eager_only=True,
@@ -1631,18 +1636,21 @@ def test_unit_frame_checks_identity_after_metric_missingness():
             "value": [None, 10.0, 20.0, 25.0],
         }
     )
-    with pytest.warns(UserWarning):
+    # Missing 1/2 control vs 0/2 treatment: chi-square 1.33, p = 0.25, no warning.
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
         source = from_unit_summary(
             frame,
             unit="unit",
             group="arm",
             control="control",
             metrics=[
-                MetricSpec(name="dropped", value_column="value", missing="drop"),
+                MetricSpec(name="skipped", value_column="value", missing="skip"),
                 MetricSpec(name="filled", value_column="value", missing="zero"),
             ],
         )
-    selected = nw.from_native(_unit_rows(source, _metric(source, "dropped")))
+    assert "frame.validation.metric_missing_differs_by_arm" not in warning_codes(recorded)
+    selected = nw.from_native(_unit_rows(source, _metric(source, "skipped")))
     assert selected["unit_id"].to_list() == ["1", "2", "other"]
     with pytest.raises(InvalidRequestError) as caught:
         _unit_rows(source, _metric(source, "filled"))
