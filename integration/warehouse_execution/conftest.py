@@ -26,6 +26,12 @@ def _require_env(*names: str) -> dict[str, str]:
     return {name: value for name, value in values.items() if value is not None}
 
 
+# Connector 5 warns when this is unset; True keeps its default of checking for
+# running asynchronous queries before logging out. Earlier connectors store the
+# unrecognised parameter without acting on it.
+_SNOWFLAKE_LOGOUT = {"enable_server_session_keep_alive_auto_detection": True}
+
+
 @pytest.fixture
 def postgres_connect():
     import ibis
@@ -91,6 +97,7 @@ def snowflake_con():
         warehouse=env["INCREMENT_TEST_SNOWFLAKE_WAREHOUSE"],
         database=env["INCREMENT_TEST_SNOWFLAKE_DATABASE"],
         schema=env["INCREMENT_TEST_SNOWFLAKE_SCHEMA"],
+        **_SNOWFLAKE_LOGOUT,
     )
     # Snowflake silently ignores a connect-time `schema=` the role cannot see,
     # leaving no current schema and a later, misleading "CREATE TEMPSTAGE" error.
@@ -166,6 +173,7 @@ def snowflake_compile_con():
         ),
         database=env["INCREMENT_TEST_SNOWFLAKE_DATABASE"],
         schema=env["INCREMENT_TEST_SNOWFLAKE_SCHEMA"],
+        **_SNOWFLAKE_LOGOUT,
     )
     try:
         yield connection
