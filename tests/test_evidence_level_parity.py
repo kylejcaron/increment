@@ -1442,9 +1442,13 @@ def _warehouse_request_key(request, source_identity):
 
 
 def _warehouse_preimage_digest(receipt):
+    from packaging.version import Version
+
     backend = receipt["backend"]
     assert backend.keys() == {"name", "module", "qualname", "version", "ibis_version"}
     assert all(isinstance(value, str) and value for value in backend.values())
+    for name in _RUNTIME_VERSION_DISTRIBUTIONS:
+        Version(backend[name])
     preimage = receipt["preimage"]
     assert preimage.keys() == {"protocol", "schema", "hash_sum", "salted_hash_sum", "row_count"}
     assert preimage["protocol"] == "warehouse-method-fit-input-v1"
@@ -1516,6 +1520,11 @@ def _audit_warehouse_input_receipts(coordinate):
     return receipts
 
 
+# Receipt fields naming an installed library release, and the distribution each names.
+# DuckDB's Ibis backend reports the installed ``duckdb`` distribution as its version.
+_RUNTIME_VERSION_DISTRIBUTIONS = {"version": "duckdb", "ibis_version": "ibis-framework"}
+
+
 def _warehouse_receipt_projection(coordinate):
     projected = deepcopy(_audit_warehouse_input_receipts(coordinate))
     for receipt in projected:
@@ -1523,7 +1532,25 @@ def _warehouse_receipt_projection(coordinate):
         # Backend fingerprints are not universal cross-runtime numeric oracles.
         for name in ("hash_sum", "salted_hash_sum"):
             receipt["preimage"][name] = "validated-own-backend-aggregate"
+        # Installed releases describe the runtime, not the source input; they match
+        # the recording only where that runtime is installed (_assert_runtime_versions).
+        for name in _RUNTIME_VERSION_DISTRIBUTIONS:
+            receipt["backend"][name] = "validated-runtime-version"
     return projected
+
+
+def _assert_runtime_versions(live, frozen):
+    """Each recorded release matches the live receipt wherever that release is installed."""
+    from importlib.metadata import version
+
+    def receipts(coordinate):
+        assembly = coordinate.provenance["consumer_configuration"].get("assembly", {})
+        return [receipt["backend"] for receipt in assembly.get("warehouse_input_receipts", [])]
+
+    for index, (actual, recorded) in enumerate(zip(receipts(live), receipts(frozen), strict=True)):
+        for name, distribution in _RUNTIME_VERSION_DISTRIBUTIONS.items():
+            if version(distribution) == recorded[name]:
+                assert actual[name] == recorded[name], (index, name, actual[name])
 
 
 def _source_input_identity_projection(coordinate):
@@ -1629,6 +1656,7 @@ def _assert_coordinate_inputs(live, frozen):
         _source_input_identity_projection(frozen),
         path="source_input_identity",
     )
+    _assert_runtime_versions(live, frozen)
     if live.scenario_id in _RAW_REFERENCE_SCENARIOS:
         from tests.evidence_fixtures.replay import validate_raw_moment_records
 
