@@ -129,6 +129,15 @@ values.
   `ExperimentDefinition(...)`, the name it is imported under, instead of
   `Experiment(...)`, the name of the execution specification. Its fields, saved
   JSON and identity hashes are unchanged.
+- Release note (feature): an `Experiment` now pickles and deep-copies, keeping
+  its scopes, source references and implementation references typed. An
+  in-memory-only experiment that declares a raw learner factory copies too when
+  the factory itself pickles, such as a module-level function or class.
+  `hash(experiment)` now works and agrees with `==`, so equal experiments are
+  one dictionary key; it is not `experiment.hash()`, the portable identity,
+  which can tell apart declarations that compare equal, such as `Fraction(1, 2)`
+  and `0.5`. Resolvers still do not pickle. `to_json()`, `hash()` and
+  `analysis_spec_hash` are unchanged.
 - Release note (bug fix): an experiment's `hash()` and `analysis_spec_hash`, and
   the identities of its runs, no longer include the column types recorded for
   its sources. A connected and an offline `from_definitions` experiment now
