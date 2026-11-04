@@ -105,12 +105,13 @@ def test_schema_one_analysis_envelope_decodes_version_one_cells():
         Path(__file__).parent / "goldens" / "decision_wire" / "result_envelope_v1.payload.json"
     )
     cell = ResultCell.from_payload(json.loads(fixture.read_text()))
-    payload = {
-        "schema_version": 1,
-        "cells": [cell.to_payload() | {"schema_version": 1}],
-        "metadata": None,
-    }
-    restored = AnalysisEnvelope.from_payload(payload)
+    restored = AnalysisEnvelope.from_payload(
+        {
+            "schema_version": 1,
+            "cells": [cell.to_payload() | {"schema_version": 1}],
+            "metadata": None,
+        }
+    )
     assert restored.cells[0].row_kind == "lift_estimate"
 
 
@@ -406,17 +407,16 @@ def test_mixed_lift_and_report_cells_render_and_project_to_table(seeded_con, see
             ResultCell.from_payload(json.loads(json.dumps(cell.to_payload()))) for cell in cells
         )
         envelope = AnalysisEnvelope(decoded, None)
-        breakout = next(
-            cell
-            for cell in decoded
-            if cell.row_kind == "breakout"
-            and cell.row_payload is not None
-            and cell.row_payload["data"]["lift"] is not None
-        )
-        assert breakout.row_payload is not None
+        breakout = None
+        for cell in decoded:
+            match cell.row_kind, cell.row_payload:
+                case "breakout", {"data": {"lift": {"value": _}}}:
+                    breakout = cell
+                    break
+        assert breakout is not None
         assert breakout.summary is not None
         assert breakout.summary.point == pytest.approx(
-            breakout.row_payload["data"]["lift"]["value"]
+            breakout.row_payload["data"]["lift"]["value"]  # ty: ignore[not-subscriptable, invalid-argument-type]
         )
         assert repr(breakout.summary.point) in render(envelope, "brief")
         assert "breakout" in render(envelope, "brief")

@@ -21,14 +21,18 @@ from typing import (
     NoReturn,
     Self,
     TypeAliasType,
+    TypedDict,
     Union,
+    Unpack,
     cast,
     get_args,
     get_origin,
 )
 
 from pydantic import BaseModel, ValidationError
+from pydantic.config import ExtraValues
 from pydantic.fields import FieldInfo
+from pydantic.main import IncEx
 from pydantic_core import PydanticSerializationError
 
 
@@ -567,6 +571,48 @@ _JSON_ONLY_DUMP_OPTIONS: frozenset[str] = frozenset(
 ) - frozenset(inspect.signature(BaseModel.model_dump).parameters)
 
 
+class _ValidationOptions(TypedDict, total=False):
+    """Keyword options shared by pydantic's ``model_validate*`` entry points."""
+
+    strict: bool | None
+    extra: ExtraValues | None
+    context: object
+    by_alias: bool | None
+    by_name: bool | None
+
+
+class _PythonValidationOptions(_ValidationOptions, total=False):
+    from_attributes: bool | None
+
+
+class _DumpOptions(TypedDict, total=False):
+    """Keyword options shared by pydantic's ``model_dump`` and ``model_dump_json``."""
+
+    include: IncEx | None
+    exclude: IncEx | None
+    context: object
+    by_alias: bool | None
+    exclude_unset: bool
+    exclude_defaults: bool
+    exclude_none: bool
+    exclude_computed_fields: bool
+    round_trip: bool
+    warnings: bool | Literal["none", "warn", "error"]
+    # Called with any value the serializer cannot handle.
+    fallback: Callable[[object], object] | None
+    serialize_as_any: bool
+    polymorphic_serialization: bool | None
+
+
+class _PythonDumpOptions(_DumpOptions, total=False):
+    mode: str
+
+
+class _JsonDumpOptions(_DumpOptions, total=False):
+    indent: int | None
+    ensure_ascii: bool
+
+
 MODEL_FIELD_REFUSALS: dict[str, RefusalSpec] = refusals(
     InvalidRequestError,
     {
@@ -767,7 +813,7 @@ class CodedValidationMixin:
     """Re-raise coded validator refusals from ordinary pydantic models."""
 
     @_preserve_base_model_init
-    def __init__(self, /, **data: Any) -> None:
+    def __init__(self, /, **data: object) -> None:
         try:
             super().__init__(**data)
         except ValidationError as exc:
@@ -775,37 +821,39 @@ class CodedValidationMixin:
             raise
 
     @classmethod
-    def model_validate(cls, *args: Any, **kwargs: Any) -> Self:
+    def model_validate(cls, obj: object, **options: Unpack[_PythonValidationOptions]) -> Self:
         try:
-            return super().model_validate(*args, **kwargs)  # ty: ignore[unresolved-attribute]
+            return super().model_validate(obj, **options)  # ty: ignore[unresolved-attribute]
         except ValidationError as exc:
             unwrap_coded(exc)
             raise
 
     @classmethod
-    def model_validate_json(cls, *args: Any, **kwargs: Any) -> Self:
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **options: Unpack[_ValidationOptions]
+    ) -> Self:
         try:
-            return super().model_validate_json(*args, **kwargs)  # ty: ignore[unresolved-attribute]
+            return super().model_validate_json(json_data, **options)  # ty: ignore[unresolved-attribute]
         except ValidationError as exc:
             unwrap_coded(exc)
             raise
 
     @classmethod
-    def model_validate_strings(cls, *args: Any, **kwargs: Any) -> Self:
+    def model_validate_strings(cls, obj: object, **options: Unpack[_ValidationOptions]) -> Self:
         try:
-            return super().model_validate_strings(*args, **kwargs)  # ty: ignore[unresolved-attribute]
+            return super().model_validate_strings(obj, **options)  # ty: ignore[unresolved-attribute]
         except ValidationError as exc:
             unwrap_coded(exc)
             raise
 
-    def model_dump(self, /, **kwargs: Any) -> dict[str, Any]:
+    def model_dump(self, /, **kwargs: Unpack[_PythonDumpOptions]) -> dict[str, Any]:
         try:
             return super().model_dump(**kwargs)  # ty: ignore[unresolved-attribute]
         except PydanticSerializationError as exc:
             unwrap_coded_serialization(exc)
             raise
 
-    def model_dump_json(self, /, **kwargs: Any) -> str:
+    def model_dump_json(self, /, **kwargs: Unpack[_JsonDumpOptions]) -> str:
         try:
             return super().model_dump_json(**kwargs)  # ty: ignore[unresolved-attribute]
         except PydanticSerializationError as exc:
@@ -829,7 +877,7 @@ class CodedModel(CodedValidationMixin):
     """
 
     @_preserve_base_model_init
-    def __init__(self, /, **data: Any) -> None:
+    def __init__(self, /, **data: object) -> None:
         try:
             super().__init__(**data)
         except ValidationError as exc:
@@ -838,27 +886,29 @@ class CodedModel(CodedValidationMixin):
             raise
 
     @classmethod
-    def model_validate(cls, *args: Any, **kwargs: Any) -> Self:
+    def model_validate(cls, obj: object, **options: Unpack[_PythonValidationOptions]) -> Self:
         try:
-            return super().model_validate(*args, **kwargs)
+            return super().model_validate(obj, **options)
         except ValidationError as exc:
             unwrap_coded(exc)
             _translate_field_errors(cls, exc)
             raise
 
     @classmethod
-    def model_validate_json(cls, *args: Any, **kwargs: Any) -> Self:
+    def model_validate_json(
+        cls, json_data: str | bytes | bytearray, **options: Unpack[_ValidationOptions]
+    ) -> Self:
         try:
-            return super().model_validate_json(*args, **kwargs)
+            return super().model_validate_json(json_data, **options)
         except ValidationError as exc:
             unwrap_coded(exc)
             _translate_field_errors(cls, exc)
             raise
 
     @classmethod
-    def model_validate_strings(cls, *args: Any, **kwargs: Any) -> Self:
+    def model_validate_strings(cls, obj: object, **options: Unpack[_ValidationOptions]) -> Self:
         try:
-            return super().model_validate_strings(*args, **kwargs)
+            return super().model_validate_strings(obj, **options)
         except ValidationError as exc:
             unwrap_coded(exc)
             _translate_field_errors(cls, exc)

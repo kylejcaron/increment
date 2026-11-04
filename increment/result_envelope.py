@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args, overload
 
 import pyarrow as pa
 from pydantic import BaseModel
@@ -29,6 +29,7 @@ def _cell_order(cell: Any) -> bytes:
 
 
 if TYPE_CHECKING:
+    from increment._evidence_types import JsonValue
     from increment._run import RunResult
 
 _SCHEMA_VERSION = 3
@@ -205,7 +206,12 @@ def _json(value: object) -> str:
     )
 
 
+@overload
+def _plain(value: JsonValue) -> JsonValue: ...
+@overload
+def _plain(value: object) -> object: ...
 def _plain(value: object) -> object:
+    """Unwrap frozen mappings and sequences into dicts and lists; JSON stays JSON."""
     if isinstance(value, Mapping):
         return {key: _plain(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -213,7 +219,7 @@ def _plain(value: object) -> object:
     return value
 
 
-def _restore_row(value: object) -> LiftEstimate:
+def _restore_row(value: JsonValue) -> LiftEstimate:
     return LiftEstimate.model_validate_json(_json(_plain(value)))
 
 
@@ -289,9 +295,9 @@ class ResultCell:
     components: Mapping[Literal["sampling", "posterior", "sequential"], Component]
     provenance: Provenance
     summary: EffectEstimate | None
-    projection_fields: Mapping[str, Any] = field(default_factory=dict)
+    projection_fields: Mapping[str, JsonValue] = field(default_factory=dict)
     row_kind: str = "lift_estimate"
-    row_payload: Mapping[str, Any] | None = None
+    row_payload: Mapping[str, JsonValue] | None = None
     supports: Mapping[Literal["sampling", "posterior", "sequential"], frozenset[Operation]] = field(
         init=False
     )
@@ -598,7 +604,7 @@ class ResultCell:
         source_snapshot_id: str | None = None,
         family: FamilyScope | None = None,
         created_at: datetime | None = None,
-        identity_context: Mapping[str, Any] | None = None,
+        identity_context: Mapping[str, JsonValue] | None = None,
     ) -> ResultCell:
         """Retain an estimated report row without pretending it is a lift row."""
         if row_kind == "lift_estimate":
@@ -658,7 +664,7 @@ class ResultCell:
         row: BaseModel,
         row_kind: Literal["cate", "cate_validation", "targeting", "targeting_selection"],
         label: str,
-        identity_context: Mapping[str, Any],
+        identity_context: Mapping[str, JsonValue],
         created_at: datetime | None = None,
     ) -> ResultCell:
         from importlib import import_module
@@ -731,38 +737,42 @@ class ResultCell:
                     seed=str(selection.seed),
                 )
         method_config_hash = contracts.contract_hash("report_method_config", method_config)
-        identity = contracts.CellIdentity(
-            key=CellKey(
-                kind="arm",
-                metric=identity_context["metric"],
-                method=row_kind,
-                method_role="decision",
-                estimand=estimand,
-                analysis_population=identity_context["analysis_population"],
-                value_scale="absolute",
-                inference="fixed",
-                alternative="two-sided",
-                group_id=identity_context["treatment"],
-            ),
-            method_config_hash=method_config_hash,
-            source_snapshot_id=identity_context["source_snapshot_id"],
-            experiment_id=source_identity.get("study_id")
-            if isinstance(source_identity, Mapping)
-            else None,
-            trigger_name=identity_context.get("trigger_name"),
-            source_identity_hash=(
-                hashlib.sha256(_json(_plain(source_identity)).encode("utf-8")).hexdigest()
-                if source_identity is not None
-                else None
-            ),
-            scope=contracts.Scope.model_validate(identity_context["scope"]),
+        identity = contracts.CellIdentity.model_validate(
+            {
+                "key": CellKey.model_validate(
+                    {
+                        "kind": "arm",
+                        "metric": identity_context["metric"],
+                        "method": row_kind,
+                        "method_role": "decision",
+                        "estimand": estimand,
+                        "analysis_population": identity_context["analysis_population"],
+                        "value_scale": "absolute",
+                        "inference": "fixed",
+                        "alternative": "two-sided",
+                        "group_id": identity_context["treatment"],
+                    }
+                ),
+                "method_config_hash": method_config_hash,
+                "source_snapshot_id": identity_context["source_snapshot_id"],
+                "experiment_id": source_identity.get("study_id")
+                if isinstance(source_identity, Mapping)
+                else None,
+                "trigger_name": identity_context.get("trigger_name"),
+                "source_identity_hash": (
+                    hashlib.sha256(_json(_plain(source_identity)).encode("utf-8")).hexdigest()
+                    if source_identity is not None
+                    else None
+                ),
+                "scope": contracts.Scope.model_validate(identity_context["scope"]),
+            }
         )
         return cls.from_report_payload(
             row_kind=row_kind,
             identity=identity,
             label=label,
             row=row,
-            source_snapshot_id=identity_context["source_snapshot_id"],
+            source_snapshot_id=identity.source_snapshot_id,
             created_at=created_at,
             identity_context=identity_context,
         )
@@ -836,6 +846,8 @@ class ResultCell:
         reason = status.reason or "sampling evidence is unavailable"
         context = dict(status.context) or {"reason": reason}
         code = status.code or "results.component.unavailable"
+        # LiftEstimate validates each retained JSON field against its declared type.
+        projection: Mapping[str, Any] = self.projection_fields
         return LiftEstimate(
             metric=key.metric,
             group_id=key.group_id or key.treatment_group or "unknown",
@@ -858,18 +870,18 @@ class ResultCell:
             sampling_reason_context=context,
             failure_code=code,
             failure_context=context,
-            **dict(self.projection_fields),
+            **dict(projection),
         )
 
-    def to_payload(self) -> dict[str, Any]:
+    def to_payload(self) -> dict[str, JsonValue]:
         sampling_state = self.components["sampling"][1]
         if sampling_state is None:
             row_payload = None
         else:
             row_payload = _plain(sampling_state.fields)
-        comps = {}
+        comps: dict[str, JsonValue] = {}
         for name, (status, state) in self.components.items():
-            comps[name] = {
+            component: dict[str, JsonValue] = {
                 "status": {
                     "state": status.state,
                     "code": status.code,
@@ -880,8 +892,9 @@ class ResultCell:
                 "construction": None if state is None else state.construction,
                 "reason": None if state is None else state.reason,
                 "kind": None if state is None else state.kind,
-                "supports": sorted(op.value for op in self.supports[name]),
+                "supports": [*sorted(op.value for op in self.supports[name])],
             }
+            comps[name] = component
         identity_payload = self.identity.model_dump(mode="json")
         identity_payload.pop("source_content_digest", None)
         return {
@@ -925,17 +938,19 @@ class ResultCell:
         }
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> ResultCell:
-        schema_version = payload.get("schema_version")
+    def from_payload(cls, payload: Mapping[str, JsonValue]) -> ResultCell:
+        # A saved payload is untrusted JSON: each field is checked or validated where it is read.
+        saved: Mapping[str, Any] = payload
+        schema_version = saved.get("schema_version")
         if schema_version not in {1, 2, _SCHEMA_VERSION}:
             raise CodedError(
                 "Unsupported result-cell schema",
                 code="results.cell.schema_unsupported",
                 context={"schema_version": schema_version},
             )
-        row_kind = payload.get("row_kind", "lift_estimate")
-        row_payload = payload.get("row_payload")
-        row_dump = payload.get("retained_row")
+        row_kind = saved.get("row_kind", "lift_estimate")
+        row_payload = saved.get("row_payload")
+        row_dump = saved.get("retained_row")
         if (row_kind == "lift_estimate") != (row_payload is None) or (
             row_kind != "lift_estimate" and row_dump is not None
         ):
@@ -944,7 +959,7 @@ class ResultCell:
                 code="results.cell.schema_unsupported",
                 context={"row_kind": row_kind},
             )
-        comp_data = payload["components"]
+        comp_data = saved["components"]
         row = None
         if row_dump is not None:
             try:
@@ -1013,7 +1028,7 @@ class ResultCell:
                 )
             )
             components[name] = (status, state)
-        prov = payload["provenance"]
+        prov = saved["provenance"]
         provenance = Provenance(
             prov.get("run_id"),
             prov.get("execution_identity_hash"),
@@ -1024,10 +1039,10 @@ class ResultCell:
             tuple(tuple(item) for item in prov.get("artifact_relation_digests", ())),
             prov.get("source_declaration_identity_unavailable_reason"),
         )
-        identity = CellIdentity.model_validate(payload["identity"]).model_copy(
+        identity = CellIdentity.model_validate(saved["identity"]).model_copy(
             update={"source_content_digest": provenance.source_content_digest}
         )
-        summary_data = payload.get("summary")
+        summary_data = saved.get("summary")
         if summary_data is not None:
             summary_data = dict(summary_data)
             summary_data["intervals"] = tuple(
@@ -1059,15 +1074,15 @@ class ResultCell:
             summary = None if summary_data is None else EffectEstimate(**summary_data)
         return cls(
             identity=identity,
-            label=payload["label"],
+            label=saved["label"],
             family=None
-            if payload.get("family") is None
-            else FamilyScope.model_validate(payload["family"]),
-            source_snapshot_id=payload.get("source_snapshot_id"),
+            if saved.get("family") is None
+            else FamilyScope.model_validate(saved["family"]),
+            source_snapshot_id=saved.get("source_snapshot_id"),
             components=components,
             provenance=provenance,
             summary=summary,
-            projection_fields=payload.get("projection_fields") or {},
+            projection_fields=saved.get("projection_fields") or {},
             row_kind=row_kind,
             row_payload=row_payload,
         )
@@ -1110,18 +1125,17 @@ class ResultCell:
                 "projection_fields": _json(payload["projection_fields"]),
             }
             for name in ("sampling", "posterior", "sequential"):
-                component = payload["components"][name]
-                status = component["status"]
+                status, state = cell.components[name]
                 entry[name] = {
-                    "status": status["state"],
-                    "code": status["code"],
-                    "reason": status["reason"],
-                    "context": _json(status["context"]),
-                    "advisories": status["advisories"],
-                    "construction": component["construction"],
-                    "kind": component["kind"],
-                    "state_reason": component["reason"],
-                    "supports": component["supports"],
+                    "status": status.state,
+                    "code": status.code,
+                    "reason": status.reason,
+                    "context": _json(_plain(status.context)),
+                    "advisories": list(status.advisories),
+                    "construction": None if state is None else state.construction,
+                    "kind": None if state is None else state.kind,
+                    "state_reason": None if state is None else state.reason,
+                    "supports": sorted(op.value for op in cell.supports[name]),
                 }
             rows.append(entry)
         schema = _arrow_schema()
@@ -1239,7 +1253,7 @@ class ResultCell:
         return cells
 
 
-def _restore_result_cell(payload: Mapping[str, Any]) -> ResultCell:
+def _restore_result_cell(payload: Mapping[str, JsonValue]) -> ResultCell:
     return ResultCell.from_payload(payload)
 
 
@@ -1392,7 +1406,7 @@ def _summary(row: LiftEstimate) -> EffectEstimate:
     return project_effect(row)
 
 
-def _cell_from_arrow_payload(payload: Mapping[str, object]) -> ResultCell:
+def _cell_from_arrow_payload(payload: Mapping[str, JsonValue]) -> ResultCell:
     return ResultCell.from_payload(payload)
 
 
@@ -1776,7 +1790,7 @@ class AnalysisEnvelope:
     cells: tuple[ResultCell, ...]
     metadata: ReadoutMetadata | None
 
-    def to_payload(self, *, include_capture_metadata: bool = False) -> dict[str, Any]:
+    def to_payload(self, *, include_capture_metadata: bool = False) -> dict[str, JsonValue]:
         metadata = None if self.metadata is None else self.metadata.model_dump(mode="json")
         if metadata is not None and not include_capture_metadata:
             for key in ("source_content_digest", "captures"):
@@ -1790,17 +1804,19 @@ class AnalysisEnvelope:
         }
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> AnalysisEnvelope:
-        schema_version = payload.get("schema_version")
+    def from_payload(cls, payload: Mapping[str, JsonValue]) -> AnalysisEnvelope:
+        # A saved payload is untrusted JSON: each cell and the metadata are validated on read.
+        saved: Mapping[str, Any] = payload
+        schema_version = saved.get("schema_version")
         if schema_version not in {1, 2, _SCHEMA_VERSION}:
             raise CodedError(
                 "Unsupported result-cell schema",
                 code="results.cell.schema_unsupported",
                 context={"schema_version": schema_version},
             )
-        metadata = payload.get("metadata")
+        metadata = saved.get("metadata")
         return cls(
-            tuple(ResultCell.from_payload(cell) for cell in payload["cells"]),
+            tuple(ResultCell.from_payload(cell) for cell in saved["cells"]),
             None if metadata is None else ReadoutMetadata.from_saved_payload(metadata),
         )
 

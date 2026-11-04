@@ -54,6 +54,9 @@ class RunRecord(Protocol):
     def experiment_id(self) -> str: ...
 
     @property
+    def analysis_spec_hash(self) -> str: ...
+
+    @property
     def registration_hash(self) -> str | None: ...
 
     @property

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from increment._evidence_types import BreakoutIdentity
     from increment._literals import Backend
-    from increment.kernel.experiment import Experiment, SourceReference
+    from increment.kernel.experiment import DeclarationValue, Experiment, SourceReference
     from increment.kernel.resolver import Resolver
     from increment.query.artifact_contract import ArtifactContext, ArtifactStore
     from increment.semantics.artifact import UnitDayArtifactRef
@@ -347,7 +347,7 @@ def _run_identity_hashes(
 def experiment_for_binding(
     binding: SourceBinding,
     *,
-    operation_parameters: Mapping[str, object],
+    operation_parameters: Mapping[str, DeclarationValue],
     record_schema: bool = False,
     population: Literal["assigned", "triggered"] = "assigned",
 ) -> Experiment:

@@ -167,6 +167,7 @@ def require_operation[T](
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._evidence_types import RowValue
     from increment._readout_request import ReadoutRequest
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Encouragement, Observational, Randomized
@@ -2278,7 +2279,7 @@ class BreakoutMomentsSource(SequentialSourceMixin):
 
     def __init__(
         self,
-        rows: Sequence[Mapping[str, object]],
+        rows: Sequence[Mapping[str, RowValue]],
         *,
         dimension: str,
         metrics: Sequence[object],
@@ -2360,7 +2361,7 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         by: Sequence[str] = (),
         completed_windows_only: bool = False,
         include_covariate: bool = False,
-    ) -> list[dict[str, object]]:
+    ) -> list[dict[str, RowValue]]:
         if grain != "total":
             from increment._evidence_refusals import require_evidence
 

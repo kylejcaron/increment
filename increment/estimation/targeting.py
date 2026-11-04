@@ -42,6 +42,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from increment._display import format_interval
+from increment._evidence_types import JsonValue
 from increment._identity import canonical_id_strings
 from increment.errors import (
     CodedModel,
@@ -491,7 +492,7 @@ class CateValidation(CodedModel, BaseModel):
     #: Distinct declared clusters in the holdout population; `None` when the
     #: source declares no cluster (`_Holdout.cluster_ids` is `None`).
     n_clusters: int | None = Field(default=None, strict=True, gt=0)
-    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+    report_context: Mapping[str, JsonValue] | None = Field(default=None, exclude=True, repr=False)
 
     def as_cell(self, *, created_at=None):
         from importlib import import_module
@@ -631,7 +632,7 @@ class TargetingRule(CodedModel, BaseModel):
     score_cutoff: float | None = Field(allow_inf_nan=False)
     #: Declared model/adjustment columns; deployment identity is separate metadata.
     required_columns: tuple[str, ...] = ()
-    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+    report_context: Mapping[str, JsonValue] | None = Field(default=None, exclude=True, repr=False)
 
     def as_cell(self, *, created_at=None):
         from importlib import import_module
@@ -853,7 +854,7 @@ class TargetingSelection(CodedModel, BaseModel):
     seed: int
     rule: TargetingRule
     population: str | None = None
-    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+    report_context: Mapping[str, JsonValue] | None = Field(default=None, exclude=True, repr=False)
 
     def as_cell(self, *, created_at=None):
         from importlib import import_module

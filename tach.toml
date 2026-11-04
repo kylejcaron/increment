@@ -1169,6 +1169,7 @@ from = ["increment._evidence_types"]
 expose = [
   "ArtifactProvenance",
   "EvidenceSource",
+  "JsonValue",
   "EvidenceScope", "EvidenceStream", "BreakoutIdentity", "BreakoutCell", "BreakoutMethodMomentsRequest",
   "MethodFitRequest", "MethodFitAnswer", "ScalarBreakoutRows",
   "PreparedMulticovariateFit",

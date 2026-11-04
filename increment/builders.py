@@ -9,6 +9,7 @@ import os
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from inspect import signature
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from increment.switchback import SwitchbackAssignment
 
 
+from increment._analysis_config import UNSET, _Unset
 from increment._binding import SourceBinding, _ArtifactOpenSpec
 from increment._optional import require_warehouse
 from increment._source_resolver import SourceResolver, resolver_for
@@ -705,17 +707,98 @@ def from_frame(
 ) -> tuple[Experiment, SourceResolver]: ...
 
 
-def from_frame(
+def from_frame(  # noqa: PLR0913
     frame: IntoDataFrame,
     *,
     shape: Literal["summary", "panel"],
-    **kwargs: Any,
+    unit: str | _Unset = UNSET,
+    group: str | _Unset = UNSET,
+    date: str | _Unset = UNSET,
+    control: object | None = None,
+    metrics: MetricsArg | _Unset = UNSET,
+    experiment_id: str = "frame",
+    design: Randomized | Encouragement | Observational | None = None,
+    plan: AnalysisPlan | None = None,
+    uptake: str | None = None,
+    on_unassigned: Literal["error", "exclude"] = "error",
+    cluster: str | None = None,
+    intervention_grain: Literal["unit", "cluster"] | _Unset = UNSET,
+    exposure_date: str | None = None,
+    observation_end: dt.date | dt.datetime | str | int | float | None | _Unset = UNSET,
+    breakouts: Sequence[str] = (),
 ) -> tuple[Experiment, SourceResolver]:
-    """Build an experiment from a unit-summary or unit-panel frame."""
+    """Build an experiment from a unit-summary or unit-panel frame.
+
+    Each shape accepts only the keywords its overload declares.
+    """
+    supplied = {
+        name: value
+        for name, value in (
+            ("unit", unit),
+            ("group", group),
+            ("date", date),
+            ("control", control),
+            ("metrics", metrics),
+            ("experiment_id", experiment_id),
+            ("design", design),
+            ("plan", plan),
+            ("uptake", uptake),
+            ("on_unassigned", on_unassigned),
+            ("cluster", cluster),
+            ("intervention_grain", intervention_grain),
+            ("exposure_date", exposure_date),
+            ("observation_end", observation_end),
+            ("breakouts", breakouts),
+        )
+        if not isinstance(value, _Unset)
+    }
     if shape == "summary":
-        binding = _bind_summary(frame, **kwargs)
+        # Binding the supplied keywords raises the TypeError a direct call would.
+        signature(_bind_summary).bind(frame, **supplied)
+        assert not isinstance(unit, _Unset)
+        assert not isinstance(group, _Unset)
+        assert not isinstance(metrics, _Unset)
+        binding = _bind_summary(
+            frame,
+            unit=unit,
+            group=group,
+            control=control,
+            metrics=metrics,
+            experiment_id=experiment_id,
+            design=design,
+            plan=plan,
+            uptake=uptake,
+            on_unassigned=on_unassigned,
+            cluster=cluster,
+            intervention_grain=(
+                "unit" if isinstance(intervention_grain, _Unset) else intervention_grain
+            ),
+            exposure_date=exposure_date,
+            breakouts=breakouts,
+        )
     elif shape == "panel":
-        binding = _bind_panel(frame, **kwargs)
+        signature(_bind_panel).bind(frame, **supplied)
+        assert not isinstance(unit, _Unset)
+        assert not isinstance(group, _Unset)
+        assert not isinstance(date, _Unset)
+        assert not isinstance(metrics, _Unset)
+        binding = _bind_panel(
+            frame,
+            unit=unit,
+            group=group,
+            date=date,
+            control=control,
+            metrics=metrics,
+            experiment_id=experiment_id,
+            design=design,
+            plan=plan,
+            uptake=uptake,
+            exposure_date=exposure_date,
+            observation_end=None if isinstance(observation_end, _Unset) else observation_end,
+            breakouts=breakouts,
+            on_unassigned=on_unassigned,
+            cluster=cluster,
+        )
     else:
         _refuse("kernel.request.invalid", field="shape must be summary or panel")
     return resolver_for(binding)

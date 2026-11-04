@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Protocol, Self, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, Self, Unpack, cast, runtime_checkable
 from uuid import UUID
 
 from pydantic import (
@@ -23,6 +24,11 @@ from pydantic import (
 
 from increment.errors import CodedModel, _thaw
 from increment.logged_policy._refusals import _raise
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    from increment.errors import _DumpOptions, _JsonDumpOptions
 
 _NORMALIZATION_TOLERANCE = 1e-12
 _MISSING_CONTEXT = object()
@@ -41,14 +47,31 @@ type ContextScalar = (
     | UUID
     | Enum
 )
-type ContextKey = ContextScalar | tuple[Any, ...] | frozenset[Any]
+type ContextKey = ContextScalar | tuple[ContextKey, ...] | frozenset[ContextKey]
+# A frozen context value: a supported scalar, or an immutable mapping, tuple or set of them.
 type ContextValue = (
     ContextScalar
-    | Mapping[ContextKey, Any]
-    | list[Any]
-    | tuple[Any, ...]
-    | set[Any]
-    | frozenset[Any]
+    | Mapping[ContextKey, ContextValue]
+    | tuple[ContextValue, ...]
+    | frozenset[ContextValue]
+)
+# A context value as supplied, before freezing. NumPy bool, integer, half and single
+# float, datetime, timedelta and void scalars normalize to Python values; extended
+# precision does not and is refused. Mapping is invariant in its key type, so
+# string-keyed mappings are listed on their own.
+type ContextInput = (
+    ContextScalar
+    | np.bool
+    | np.integer
+    | np.float16
+    | np.float32
+    | np.datetime64
+    | np.timedelta64
+    | np.void
+    | Mapping[str, ContextInput]
+    | Mapping[ContextKey, ContextInput]
+    | Sequence[ContextInput]
+    | AbstractSet[ContextInput]
 )
 
 
@@ -193,19 +216,26 @@ class TabularPolicy(CodedModel, BaseModel):
             self._require_json_keys()
         return _thaw(value)
 
-    def model_dump(self, *, mode: str = "python", **kwargs: Any) -> dict[str, Any]:
+    def model_dump(
+        self, *, mode: str = "python", **kwargs: Unpack[_DumpOptions]
+    ) -> dict[str, str | dict[ContextKey, dict[str, float]] | dict[str, float] | None]:
         if mode == "json":
             self._require_json_keys()
         return super().model_dump(mode=mode, **kwargs)
 
-    def model_dump_json(self, **kwargs: Any) -> str:
+    def model_dump_json(self, **kwargs: Unpack[_JsonDumpOptions]) -> str:
         self._require_json_keys()
         return super().model_dump_json(**kwargs)
 
-    def __reduce__(self) -> tuple[Any, tuple[dict[str, Any]]]:
+    def __reduce__(
+        self,
+    ) -> tuple[
+        Callable[[object], Self],
+        tuple[dict[str, str | dict[ContextKey, dict[str, float]] | dict[str, float] | None]],
+    ]:
         return type(self).model_validate, (self.model_dump(mode="python"),)
 
-    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+    def __deepcopy__(self, memo: dict[int, object] | None = None) -> Self:
         copied = type(self).model_validate(self.model_dump(mode="python"))
         if memo is not None:
             memo[id(self)] = copied
@@ -225,7 +255,7 @@ class TabularPolicy(CodedModel, BaseModel):
             return None
         return self.probabilities.get(cast("ContextKey", frozen))
 
-    def distribution(self, context: Mapping[str, Any]) -> Mapping[str, float]:
+    def distribution(self, context: Mapping[str, ContextInput]) -> Mapping[str, float]:
         """The full action distribution at ``context`` (actions outside it have probability 0)."""
         value = context.get(self.context_key, _MISSING_CONTEXT)
         table = None if value is _MISSING_CONTEXT else self._tabulated(value)
@@ -241,7 +271,7 @@ class TabularPolicy(CodedModel, BaseModel):
             )
         return table
 
-    def probability(self, action: str, context: Mapping[str, Any]) -> float:
+    def probability(self, action: str, context: Mapping[str, ContextInput]) -> float:
         return float(self.distribution(context).get(action, 0.0))
 
 

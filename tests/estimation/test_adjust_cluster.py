@@ -72,13 +72,12 @@ def _moments(source, metric, **kwargs) -> MomentRows:
     )
 
 
-def _unit_rows(source, metric, **kwargs) -> UnitRows:
+def _unit_rows(source, metric, **kwargs) -> pa.Table:
     if "covariates" in kwargs:
         kwargs["covariates"] = tuple(kwargs["covariates"])
-    return cast(
-        UnitRows,
-        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
-    )
+    rows = request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs))
+    assert isinstance(rows, pa.Table)
+    return rows
 
 
 def _counts(source, kind):
@@ -1222,6 +1221,7 @@ class _StrictAdjustedUnitSource(EvidenceProvider):
         if request.covariates != ("z",):
             raise ValueError(f"undeclared covariates requested: {request.covariates!r}")
         frame = self.provider.unit_rows(request)
+        assert isinstance(frame, pa.Table)
         return frame.append_column(
             "cluster_id",
             pa.array([self._cluster_by_unit[u] for u in frame["unit_id"].to_pylist()]),

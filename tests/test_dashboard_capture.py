@@ -26,10 +26,11 @@ import re
 import sys
 import tempfile
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 import pytest
@@ -75,6 +76,13 @@ from tests.parity_harness.comparison import TOLERANCE
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
 
 CONFIG = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+
+
+def _json_cell(row: Mapping[str, object], name: str) -> Any:
+    cell = row[name]
+    assert isinstance(cell, str)
+    return json.loads(cell)
+
 
 _EVENT_LOG_SOURCE = """
 dialect: duckdb
@@ -1671,11 +1679,14 @@ def test_snapshot_owns_nested_readout_data() -> None:
     components[0]["bounds"]["lower"] = 99.0
     components[0]["labels"].append("changed")
     assert readout_csv(snapshot) == before
-    copied = snapshot.readout_rows[0]["sequential_components"][0]
+    captured = snapshot.readout_rows[0]["sequential_components"]
+    assert isinstance(captured, tuple)
+    copied = captured[0]
+    assert isinstance(copied, MappingProxyType)
     with pytest.raises(TypeError):
-        copied["bounds"]["lower"] = 0.0
+        copied["bounds"]["lower"] = 0.0  # ty: ignore[invalid-assignment]
     with pytest.raises(AttributeError):
-        copied["labels"].append("changed")
+        copied["labels"].append("changed")  # ty: ignore[unresolved-attribute]
 
 
 def test_snapshot_allocation_maps_are_owned_and_immutable() -> None:
@@ -1704,7 +1715,8 @@ def test_allocation_history_rows_are_immutable() -> None:
     raw = [dict(saved.allocation_history[0])]
     copied = dataclasses.replace(saved, allocation_history=tuple(raw))
     original_count = copied.allocation_history[0]["n_daily"]
-    raw[0]["n_daily"] += 100
+    assert isinstance(original_count, int)
+    raw[0]["n_daily"] = original_count + 100
     assert copied.allocation_history[0]["n_daily"] == original_count
     row = saved.allocation_history[0]
     with pytest.raises(TypeError):
@@ -1722,10 +1734,12 @@ def test_allocation_history_reconciles_with_the_renamed_unequal_experiment() -> 
     assert {row["experiment_id"] for row in rows} == {"pricing_copy"}
     assert {row["group_id"] for row in rows} == {"baseline", "candidate"}
     assert list(rows) == sorted(rows, key=lambda row: (row["ds"], row["group_id"]))
-    final_totals = {
-        group: max(row["n_cumulative"] for row in rows if row["group_id"] == group)
-        for group in ("baseline", "candidate")
-    }
+    cumulative: dict[str, list[int]] = {"baseline": [], "candidate": []}
+    for row in rows:
+        group, count = row["group_id"], row["n_cumulative"]
+        assert isinstance(group, str) and isinstance(count, int)
+        cumulative[group].append(count)
+    final_totals = {group: max(counts) for group, counts in cumulative.items()}
     assert final_totals == snapshot.allocation.observed
 
 
@@ -1990,7 +2004,7 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata():
     assert primary["view_partial"] is True
     assert primary["analysis_population"] == "assigned"
     assert primary["integrity_status"] == "not_checked_missing_declaration"
-    hidden = json.loads(primary["hidden_cells"])
+    hidden = _json_cell(primary, "hidden_cells")
     assert any(item["cell"]["metric"] == "session_seconds" for item in hidden)
 
     dashboard_snapshot = dataclasses.replace(
@@ -2061,13 +2075,13 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories():
     snapshot = show_exploratory_metrics(saved.snapshot, ("purchase_rate",))
     assert snapshot.allocation is not None and snapshot.allocation.is_srm
     failed = next(row for row in snapshot.readout_rows if row["metric"] == "empty_guardrail")
-    unavailable = json.loads(failed["unavailable_cells"])
+    unavailable = _json_cell(failed, "unavailable_cells")
     reason = next(item for item in unavailable if item["cell"]["metric"] == "empty_guardrail")
     assert reason["code"] == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
     advisory = next(
         item
         for row in snapshot.readout_rows
-        for item in json.loads(row["advisories"])
+        for item in _json_cell(row, "advisories")
         if item["code"] == "estimation.engine.small_total_clusters"
     )
     assert "below 40" in advisory["message"]

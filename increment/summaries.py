@@ -7,9 +7,12 @@ import math
 from collections.abc import Iterable, Mapping
 from numbers import Integral, Real
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, refuse
+
+if TYPE_CHECKING:
+    import numpy as np
 
 _UNSUPPORTED = RefusalSpec(
     "moments.summaries.unsupported",
@@ -269,7 +272,7 @@ def _validate_summary_roster(
 
 
 def moments_from_summaries(
-    rows: Iterable[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, str | int | float | Real | np.integer | np.floating]],
     *,
     metrics: Mapping[str, str],
     control: str,

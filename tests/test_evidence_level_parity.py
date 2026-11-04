@@ -353,6 +353,8 @@ def test_day_axis_capture_keeps_slice_source_identity():
 
 
 def test_method_fit_comparison_ignores_source_provenance_only():
+    from typing import Any, cast
+
     from increment._evidence_types import MetricEvidence
     from increment.evidence import MethodFitAnswer, MethodFitRequest
     from tests.evidence_fixtures.capture import _Capture
@@ -414,7 +416,7 @@ def test_method_fit_comparison_ignores_source_provenance_only():
     left = record(
         MethodFitAnswer(
             origin="warehouse",
-            envelope={"coefficients": {"a": 0.25}, "residual_variance": 3.0},
+            envelope=cast(Any, {"coefficients": {"a": 0.25}, "residual_variance": 3.0}),
             fit_identity=("source-left", "fit"),
             evidence_sha256="left-digest",
         )
@@ -422,7 +424,7 @@ def test_method_fit_comparison_ignores_source_provenance_only():
     right = record(
         MethodFitAnswer(
             origin="retained_fitted",
-            envelope={"coefficients": {"a": 0.25}, "residual_variance": 3.0},
+            envelope=cast(Any, {"coefficients": {"a": 0.25}, "residual_variance": 3.0}),
             fit_identity=("source-right", "fit"),
             evidence_sha256="right-digest",
         )
@@ -431,7 +433,7 @@ def test_method_fit_comparison_ignores_source_provenance_only():
     changed = record(
         MethodFitAnswer(
             origin="retained_fitted",
-            envelope={"coefficients": {"a": 0.5}, "residual_variance": 3.0},
+            envelope=cast(Any, {"coefficients": {"a": 0.5}, "residual_variance": 3.0}),
             fit_identity=("source-right", "fit"),
             evidence_sha256="right-digest",
         )
@@ -1697,7 +1699,9 @@ def _request_adapter(name):
     from pydantic import TypeAdapter
 
     from increment import _evidence_types
+    from increment.declarations import Method
     from increment.semantics import design, models
+    from increment.sequential_state import SequentialSnapshot
 
     adapter = TypeAdapter(_REQUEST_CLASSES[name])
     adapter.rebuild(
@@ -1705,6 +1709,10 @@ def _request_adapter(name):
             **vars(_evidence_types),
             **vars(models),
             **vars(design),
+            # Request fields annotated with names imported only for type checking.
+            "Method": Method,
+            "SequentialSnapshot": SequentialSnapshot,
+            "ExperimentDefinition": models.Experiment,
         }
     )
     return adapter
@@ -3345,7 +3353,11 @@ def _assert_old_metadata_payload(results, transcript, bindings, source_scopes, *
     expected = deepcopy(
         _capture()["scenarios"][transcript.scenario_id][transcript.ingress]["metadata"]
     )
-    actual = AnalysisEnvelope((), results.metadata).to_payload()["metadata"]
+    match AnalysisEnvelope((), results.metadata).to_payload()["metadata"]:
+        case dict() as actual:
+            pass
+        case other:
+            raise AssertionError(f"saved metadata is not a mapping: {other!r}")
     scope = expected["scope"]
     scope["snapshot_id"] = results.metadata.scope.snapshot_id
     scope["by_source"] = source_scopes

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -11,7 +11,6 @@ from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.evidence import (
     EvidenceProvider,
-    MomentRows,
     MomentsRequest,
     UnitRowsRequest,
     evidence_provider,
@@ -23,10 +22,11 @@ from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import view_readout
 
 
-def _moments(source, metric, **kwargs) -> MomentRows:
-    return cast(
-        MomentRows,
-        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+def _moments(source, metric, **kwargs) -> tuple[dict[str, Any], ...]:
+    rows = request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs))
+    assert isinstance(rows, tuple) and all(isinstance(row, dict) for row in rows)
+    return tuple(
+        {str(key): value for key, value in row.items()} for row in rows if isinstance(row, dict)
     )
 
 

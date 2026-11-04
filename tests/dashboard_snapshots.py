@@ -278,12 +278,12 @@ def snapshot(**overrides: Any) -> DashboardSnapshot:
     if "binding_fingerprint" in overrides:
         return result
     experiment = experiment_for(result)
+    recorded = experiment.analysis_context["experiment"]
+    assert isinstance(recorded, Mapping)
+    definition = {str(key): value for key, value in recorded.items()}
     return replace(
         result,
-        binding_fingerprint=_binding_fingerprint(
-            experiment.analysis_context["experiment"],
-            experiment.metrics,
-        ),
+        binding_fingerprint=_binding_fingerprint(definition, experiment.metrics),
     )
 
 

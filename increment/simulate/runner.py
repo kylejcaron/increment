@@ -1359,6 +1359,7 @@ class SwitchbackEvalResult(_FrozenResultModel):
 def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
     from increment._run import run
     from increment.builders import from_switchback_frame
+    from increment.estimation.contrast_results import ContrastResults
     from increment.frame import MetricSpec
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
@@ -1395,7 +1396,9 @@ def _run_switchback_replication(scenario: SwitchbackScenario) -> Estimate:
             ),
         ),
     )
-    (row,) = run(experiment, resolver).readout()
+    results = run(experiment, resolver).readout()
+    assert isinstance(results, ContrastResults)
+    (row,) = results
     return row.estimate
 
 

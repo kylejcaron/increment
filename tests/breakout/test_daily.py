@@ -1443,7 +1443,8 @@ class TestRunDailyLiftAlwaysValidInference:
         restored = type(selected).model_validate_json(selected.model_dump_json())
         readout_row = estimates_to_readout([restored])[0]
         assert readout_row["family_procedure"] == "e_bh"
-        assert "e-BH" in readout_row["selection_qualification"]
+        qualification = readout_row["selection_qualification"]
+        assert isinstance(qualification, str) and "e-BH" in qualification
 
     @pytest.mark.parametrize("view", ["daily", "cohort"])
     def test_disjoint_slices_refuse_before_summary_access(self, view):

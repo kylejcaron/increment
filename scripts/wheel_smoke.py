@@ -144,7 +144,8 @@ def main(*, core_only: bool = True) -> None:
     )
     estimates = run(experiment, resolver).readout()
     (row,) = estimates_to_readout(estimates)
-    assert row["lift"] is None and row["lower"] > 0
+    lower = row["lower"]
+    assert row["lift"] is None and isinstance(lower, float) and lower > 0
     assert row["higher"] is None and row["stat_sig"] is True
     assert row["value_scale"] == "relative"
     frame = estimates.to_frame(backend="pyarrow")

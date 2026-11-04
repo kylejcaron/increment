@@ -310,10 +310,11 @@ def test_sensitivity_report_row_round_trips_as_report_only_cell():
         payload = json.loads(json.dumps(cell.to_payload()))
         restored = ResultCell.from_payload(payload)
         assert restored.supports["sampling"] == frozenset()
-        assert restored.row_payload is not None
-        assert restored.row_payload["data"]["interval_unavailable_reason"] == (
-            report.interval_unavailable_reason
-        )
+        match restored.row_payload:
+            case {"data": {"interval_unavailable_reason": reason}}:
+                assert reason == report.interval_unavailable_reason
+            case _:
+                pytest.fail(f"sensitivity payload has no retained data: {restored.row_payload!r}")
         assert ResultCell.from_arrow(ResultCell.to_arrow([cell]))[0].row_payload == cell.row_payload
     finally:
         resolver.close()

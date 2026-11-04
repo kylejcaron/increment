@@ -1121,7 +1121,7 @@ def test_analysis_request_rejects_unportable_fields_with_code():
 
     with pytest.raises(CodedError) as raised:
         AnalysisRequest.from_requests(
-            (SequentialCaptureRequest(finalized=True, previous=object()),),
+            (SequentialCaptureRequest(finalized=True, previous=cast(Any, object())),),
             scope=Scope(view="run", grain="total"),
             registration_hash="r",
             source_ref="s",

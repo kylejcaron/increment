@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from increment._optional import require_warehouse
 
 if TYPE_CHECKING:
-    from ibis.expr.types import Table
+    from ibis.expr.types import Scalar, Table
 
     from increment.kernel.experiment import Experiment
     from increment.kernel.resolver import Resolver
@@ -29,7 +29,7 @@ def _build_panel_for_metric_binding(
     metric: Metric,
     *,
     population: Literal["assigned", "triggered"] = "assigned",
-) -> Any:
+) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]:
     from increment._source_admission import _require_analysis_operation
     from increment._source_operations import NativePanelSqlOperation
 
@@ -89,7 +89,7 @@ def build_panel_for_metric(
     metric: Metric,
     *,
     population: Literal["assigned", "triggered"] = "assigned",
-) -> Any:
+) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]:
     """Return one native metric's live panel tuple, independent of TEMP tables."""
     from increment._binding import binding_for
 

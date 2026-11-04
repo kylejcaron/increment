@@ -13,6 +13,7 @@ from increment._evidence_types import (
     AssignmentRequest,
     BreakoutIdentity,
     EvidenceScope,
+    EvidenceSource,
     EvidenceStream,
     evidence_streams_for_scope,
 )
@@ -36,7 +37,7 @@ class EvidenceExecutionContext:
     shared_capture: bool = False
     _state: str = field(init=False, default="unopened")
     _stack: ExitStack = field(init=False)
-    _scoped_provider: Any | None = field(init=False, default=None)
+    _scoped_provider: EvidenceSource | None = field(init=False, default=None)
     _source_identity: int = field(init=False)
     _source_aliases: dict[int, object] = field(init=False, default_factory=dict)
     _requested_coherence: ExecutionMode = field(init=False)
@@ -46,7 +47,7 @@ class EvidenceExecutionContext:
     _pinned_stream_inventory: Mapping[str, str] = field(
         init=False, default_factory=lambda: MappingProxyType({})
     )
-    _stream_resolver: Callable[[EvidenceProvider], tuple[EvidenceStream, ...]] | None = field(
+    _stream_resolver: Callable[[EvidenceSource], tuple[EvidenceStream, ...]] | None = field(
         init=False, default=None
     )
     _effective_modes: Mapping[str, EffectiveMode] = field(
@@ -62,7 +63,7 @@ class EvidenceExecutionContext:
     def __post_init__(self) -> None:
         self._state = "unopened"
         self._stack = ExitStack()
-        self._scoped_provider: EvidenceProvider | None = None
+        self._scoped_provider: EvidenceSource | None = None
         self._breakout_streams = MappingProxyType({})
         self._covariate_streams = MappingProxyType({})
         requested_coherence = self.coherence
@@ -71,7 +72,7 @@ class EvidenceExecutionContext:
             _refuse("kernel.request.invalid", field="coherence")
         self._requested_coherence = requested_coherence
 
-    def open(self) -> Any:
+    def open(self) -> EvidenceSource:
         if self._state == "open":
             return self._require_open()
         if self._state != "unopened":
@@ -260,7 +261,7 @@ class EvidenceExecutionContext:
             _refuse("kernel.context.undeclared_stream", stream="assignment_provider")
         return cast(AssignmentEvidence, method(request))
 
-    def _require_open(self) -> EvidenceProvider:
+    def _require_open(self) -> EvidenceSource:
         if self._state != "open" or self._scoped_provider is None:
             _refuse("kernel.context.closed")
         return self._scoped_provider
@@ -285,7 +286,7 @@ class EvidenceExecutionContext:
         source: object | None = None,
         metrics: Sequence[object] = (),
         configs: Sequence[object] | None = None,
-    ) -> Iterator[EvidenceProvider]:
+    ) -> Iterator[EvidenceSource]:
         provider = self._require_open()
         if self._snapshot_manifest:
             if self._stream_resolver is None:

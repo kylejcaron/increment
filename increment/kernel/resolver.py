@@ -35,7 +35,9 @@ class Resolver(Protocol):
         self, source_refs: Sequence[SourceReference], ctx: object | None = None
     ) -> object: ...
 
-    def verify(self, source_refs: Sequence[SourceReference], provider: Any) -> list[CodedError]: ...
+    def verify(
+        self, source_refs: Sequence[SourceReference], provider: object
+    ) -> list[CodedError]: ...
 
 
 @runtime_checkable
@@ -71,11 +73,11 @@ class BoundResolver:
     def verify(
         self,
         source_refs: Sequence[SourceReference],
-        provider: EvidenceProvider | None = None,
+        provider: object = None,
     ) -> list[CodedError]:
-        candidate = self.provider if provider is None else provider
-        if candidate is not self.provider:
+        if provider is not None and provider is not self.provider:
             return [_refusal("kernel.resolver.provider_mismatch", {})]
+        candidate = self.provider
         expected = {ref.expected_digest for ref in source_refs if ref.expected_digest is not None}
         if self.expected_digest is not None:
             expected.add(self.expected_digest)
@@ -160,13 +162,15 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 )
             )
         return refusals
+    # Recorded declarations are read as recorded; a corrupt one fails at the read.
+    recorded: Mapping[str, Any] = exp.analysis_context
     for source in exp.source_refs:
         capabilities = source.capabilities
         if capabilities is None:
             continue
-        constructor = exp.analysis_context.get("source_name") or source.name
+        constructor = recorded.get("source_name") or source.name
         for scope in exp.scopes:
-            inference = exp.analysis_context.get("plan", {}).get("inference") or {}
+            inference = recorded.get("plan", {}).get("inference") or {}
             checkpoint_projection = (
                 scope_operation(exp, scope) == "run_asof_lift"
                 and inference.get("registration") is not None
@@ -208,7 +212,7 @@ def resolve(estimator_id: str, exp: Experiment, metric: object) -> list[CodedErr
                 continue
             methods = (
                 method
-                for config in exp.analysis_context.get("configs", ())
+                for config in recorded.get("configs", ())
                 if config["metric"]["name"] == metric_name
                 for method in (config["decision_method"], *config["sensitivity_methods"])
             )

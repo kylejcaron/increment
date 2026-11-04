@@ -16,6 +16,7 @@ from increment.errors import CodedError, _freeze
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from ibis.expr.types import Scalar, Table
 
     from increment.estimation.diagnostics import SRMResult
     from increment.estimation.results import LiftEstimate
@@ -222,11 +223,11 @@ class NativePanelSqlOperation(Protocol):
 
     def build_panel_for_metric(
         self,
-        exposures: Any,
+        exposures: Table,
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-    ) -> Any: ...
+    ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]: ...
 
 
 @runtime_checkable

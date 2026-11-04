@@ -817,7 +817,8 @@ def test_asof_lift_raw_joint_itt_and_uptake_replay():
         "asof",
     }
     assert {cell.identity.key.estimand for cell in combined.cells} == {"compliance"}
-    assert len(combined.run.metadata.captures) == 1
+    metadata = combined.run.metadata
+    assert metadata is not None and len(metadata.captures) == 1
 
 
 def test_validate_encouragement_asof_inference_uses_the_retention_band_not_window_days():

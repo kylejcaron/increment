@@ -5,7 +5,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from increment._evidence_loaders import (
     load_moments,
@@ -74,6 +74,9 @@ from increment._trigger_integrity import (
 from increment.errors import CodedError
 from increment.semantics.models import Breakout
 from increment.sources import BreakoutMomentsSource, EvidenceSource, require_operation
+
+if TYPE_CHECKING:
+    from increment._analysis_config import ResolvedMetricConfig
 
 
 def _declared_breakout_property(value: object) -> str | None:
@@ -779,7 +782,7 @@ class _BreakoutScopedProvider:
         provider: EvidenceProvider,
         identity: BreakoutIdentity,
         population: Literal["assigned", "triggered"],
-        configs: tuple[object, ...] | None = None,
+        configs: tuple[ResolvedMetricConfig, ...] | None = None,
         *,
         scoped: bool = False,
         snapshot_provider: Any | None = None,

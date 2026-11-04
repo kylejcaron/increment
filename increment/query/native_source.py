@@ -177,6 +177,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._evidence_types import RowValue
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
     from increment.sequential_state import SequentialCheckpoint
@@ -3508,7 +3509,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._experiment.cluster, operation="breakout_moments"
         )
 
-        rows: list[dict[str, object]] = []
+        rows: list[dict[str, RowValue]] = []
         scalar_preparation = _ScalarBreakoutPreparation(breakout.property, properties_table, {})
         for metric in metrics:
             _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
@@ -4149,7 +4150,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         population: Literal["assigned", "triggered"] = "assigned",
         horizon_metrics: Sequence[Metric] | None = None,
-    ) -> Any:
+    ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar]:
         """Return live panel relations independent of operation-owned TEMP tables."""
         return self._build_panel_for_metric(
             exposures,

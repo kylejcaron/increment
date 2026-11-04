@@ -222,9 +222,11 @@ def test_absolute_margin_repr_matches_exported_additive_interpretation():
     latency = next(row for row in estimates_to_readout(results) if row["metric"] == "latency")
     rendered = repr(results)
 
-    assert "effect direction not established" in latency["effect_interpretation"]
-    assert "effect direction supported" not in latency["effect_interpretation"]
-    exported = latency["effect_interpretation"].removeprefix("Interpretation: ")
+    interpretation = latency["effect_interpretation"]
+    assert isinstance(interpretation, str)
+    assert "effect direction not established" in interpretation
+    assert "effect direction supported" not in interpretation
+    exported = interpretation.removeprefix("Interpretation: ")
     assert f"latency interpretation: {exported}" in rendered.splitlines()
 
 
@@ -245,8 +247,10 @@ def test_absolute_margin_uses_additive_interval_not_relative_interval():
     )
     (row,) = estimates_to_readout([estimate])
 
-    assert "direction supported (decrease)" in row["effect_interpretation"]
-    assert "increase supported" not in row["effect_interpretation"]
+    interpretation = row["effect_interpretation"]
+    assert isinstance(interpretation, str)
+    assert "direction supported (decrease)" in interpretation
+    assert "increase supported" not in interpretation
 
 
 def test_margin_success_below_zero_does_not_claim_increase():
@@ -267,10 +271,12 @@ def test_margin_success_below_zero_does_not_claim_increase():
     )
     (row,) = estimates_to_readout([estimate])
 
-    assert "rejects the null" in row["effect_interpretation"]
-    assert "margin met" in row["effect_interpretation"]
-    assert "effect direction supported (decrease)" in row["effect_interpretation"]
-    assert "increase" not in row["effect_interpretation"]
+    interpretation = row["effect_interpretation"]
+    assert isinstance(interpretation, str)
+    assert "rejects the null" in interpretation
+    assert "margin met" in interpretation
+    assert "effect direction supported (decrease)" in interpretation
+    assert "increase" not in interpretation
 
 
 def test_absolute_margin_without_additive_interval_does_not_fall_back_to_relative():
@@ -287,8 +293,10 @@ def test_absolute_margin_without_additive_interval_does_not_fall_back_to_relativ
     )
     (row,) = estimates_to_readout([estimate])
 
-    assert "unavailable" in row["effect_interpretation"].lower()
-    assert "increase supported" not in row["effect_interpretation"]
+    interpretation = row["effect_interpretation"]
+    assert isinstance(interpretation, str)
+    assert "unavailable" in interpretation.lower()
+    assert "increase supported" not in interpretation
 
 
 def test_estimate_frames_preserve_unknown_nullable_evidence_and_daily_values():

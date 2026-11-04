@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 from inspect import signature
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from pydantic import (
     BaseModel,
@@ -35,6 +35,9 @@ from increment.errors import (
     refusals,
 )
 from increment.semantics.models import CupedCovariate, CupedCovariateBinding
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
@@ -648,6 +651,30 @@ def _normalize_method_covariates_input(value: object) -> object:
     return value
 
 
+class Learner(Protocol):
+    """A propensity/outcome model: `fit` on covariates + label, then `predict`.
+
+    Stateless protocol (not ABC): any object satisfying the interface
+    works, including a user's own sklearn/LightGBM wrapper; no
+    inheritance required.
+    """
+
+    def fit(self, X: np.ndarray, d: np.ndarray) -> None:
+        """Fit the model on covariate matrix `X` and binary label `d`."""
+        ...
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Return predicted probabilities in `[0, 1]` for each row of `X`.
+
+        The closed interval, not open: a learner's sigmoid can saturate to
+        exactly 0.0/1.0 for extreme inputs. Callers relying on `1/e` or
+        `1/(1-e)` staying finite must gate on this via an overlap check
+        (e.g. `IdentificationGate.min_propensity`) rather than assume the
+        open interval.
+        """
+        ...
+
+
 class Method(CodedModel, BaseModel):
     """An estimation configuration: named method with optional adjustments."""
 
@@ -660,8 +687,8 @@ class Method(CodedModel, BaseModel):
     procedure: Literal["unadjusted"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    propensity_learner: Callable[[], Any] | None = None
-    outcome_learner: Callable[[], Any] | None = None
+    propensity_learner: Callable[[], Learner] | None = None
+    outcome_learner: Callable[[], Learner] | None = None
     folds: int | None = None
 
     @field_validator("covariates", mode="before")

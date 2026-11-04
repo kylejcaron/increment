@@ -41,6 +41,8 @@ from increment.estimation.results import (
 )
 
 if TYPE_CHECKING:
+    from datetime import date, datetime
+
     from coeftable import CoefTable, Theme
     from coeftable.theme import Direction
     from narwhals.typing import IntoDataFrame
@@ -48,7 +50,32 @@ if TYPE_CHECKING:
     from increment._run import RunResult
     from increment.breakout.estimates import EstimateList
     from increment.estimation.contrast_results import ContrastResults
+    from increment.estimation.results import (
+        BinomialConfidenceSet,
+        DeltaConversionEvidence,
+        RelativeConfidenceSet,
+    )
     from increment.result_envelope import AnalysisEnvelope
+    from increment.winsor import WinsorConfidenceSet
+
+
+type ReadoutValue = (
+    str
+    | int
+    | float
+    | bool
+    | date
+    | datetime
+    | Mapping[str, object]
+    | Sequence[str | Mapping[str, object]]
+    | RelativeConfidenceSet
+    | WinsorConfidenceSet
+    | BinomialConfidenceSet
+    | DeltaConversionEvidence
+    | None
+)
+"""One cell of a readout row: a scalar or date, a coded context or retained JSON spec,
+family axes or sequential components, or a retained confidence set or count evidence."""
 
 
 _REFUSALS = refusals(
@@ -100,7 +127,7 @@ def _has_additive_interval(estimate: Any) -> bool:
 
 def _base_liftestimate_to_row(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
-) -> dict[str, Any]:
+) -> dict[str, ReadoutValue]:
     """Preserve points, canonical confidence evidence, and actual decision metadata."""
     verdict = est.stat_sig()
     lift = est.lift
@@ -116,7 +143,7 @@ def _base_liftestimate_to_row(
         lower, higher, level = binomial.lower, binomial.upper, binomial.level
     else:
         lower = higher = level = None
-    row = {
+    row: dict[str, ReadoutValue] = {
         "metric": est.metric,
         "method": est.method,
         "method_role": getattr(est, "method_role", "decision"),
@@ -234,7 +261,7 @@ def _base_liftestimate_to_row(
 
 def _liftestimate_to_row(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
-) -> dict[str, Any]:
+) -> dict[str, ReadoutValue]:
     row = _base_liftestimate_to_row(est)
     result = est.sequential_result
     if result is not None:
@@ -264,7 +291,7 @@ def _liftestimate_to_row(
 
 def _decision_stat_columns(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
-) -> dict[str, Any]:
+) -> dict[str, float | None]:
     """Best-effort posterior-derived values, explicitly model-qualified."""
     if est.sequential_result is not None or getattr(est, "posterior_available", None) is not True:
         return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
@@ -284,9 +311,9 @@ def _decision_stat_columns(
 
 def contrast_results_to_readout(
     results: Sequence[ContrastResult],
-) -> list[dict[str, Any]]:
+) -> list[dict[str, ReadoutValue]]:
     """Convert fixed switchback contrasts to readout-table row dictionaries."""
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, ReadoutValue]] = []
     for result in results:
         estimate = result.estimate
         stat_sig = contrast_stat_sig(result)
@@ -372,7 +399,7 @@ def contrast_results_to_readout(
     return rows
 
 
-def _report_projection_to_readout(est: Any) -> dict[str, Any]:
+def _report_projection_to_readout(est: Any) -> dict[str, ReadoutValue]:
     from increment._interpretation import project_effect
 
     qualification = None
@@ -427,8 +454,10 @@ def _report_projection_to_readout(est: Any) -> dict[str, Any]:
 
 
 def estimates_to_readout(
-    estimates: Sequence[LiftEstimate | BreakoutEstimate | DailyLiftEstimate | ContrastResult],
-) -> list[dict[str, Any]]:
+    estimates: Sequence[
+        LiftEstimate | BreakoutEstimate | DailyLiftEstimate | DailyMetricValue | ContrastResult
+    ],
+) -> list[dict[str, ReadoutValue]]:
     """Convert estimates into readout rows with explicitly posterior-qualified values.
 
     Rows from a scoped collection also carry ``view_partial`` from their
@@ -438,7 +467,7 @@ def estimates_to_readout(
     metadata = getattr(estimates, "metadata", None)
     view_partial = None if metadata is None else metadata.partial
     interpretation = interpret_readout(estimates, metadata) if metadata is not None else None
-    rows = []
+    rows: list[dict[str, ReadoutValue]] = []
     for est in estimates:
         if isinstance(est, ContrastResult):
             row = contrast_results_to_readout([est])[0]
@@ -453,15 +482,15 @@ def estimates_to_readout(
         else:
             row = _liftestimate_to_row(est)
             row["view_partial"] = view_partial
-            if hasattr(est, "dimension_value") and hasattr(est, "dimension"):
+            if isinstance(est, (BreakoutEstimate, DailyLiftEstimate)):
                 row["segment"] = est.dimension_value
                 row["dimension"] = est.dimension
                 source = getattr(est, "source", None)
                 if source is not None:
                     row["source"] = source
-                if hasattr(est, "excluded"):
+                if isinstance(est, BreakoutEstimate):
                     row["excluded"] = est.excluded
-                if hasattr(est, "unavailable"):
+                else:
                     row["unavailable"] = est.unavailable
                 row["low_reliability"] = getattr(est, "low_reliability", False)
             ds = getattr(est, "ds", None)
@@ -1658,11 +1687,15 @@ def _readout_envelope_rows(data: Any) -> Any:
     return _EnvelopeReadoutRows(envelope_module.result_rows(data.cells), data.metadata, data.cells)
 
 
-# Keep trend labels aligned with ``_resolve_trend_frame``.
-def readout_table(
+# Keep trend labels aligned with ``_resolve_trend_frame``. Row dicts may hold any cell type
+# pandas accepts; ``V`` keeps caller-typed rows assignable to the invariant ``list``.
+def readout_table[V](
     data: IntoDataFrame
-    | list[dict[str, Any]]
-    | EstimateList[Any]
+    | list[dict[str, V]]
+    | EstimateList[LiftEstimate]
+    | EstimateList[BreakoutEstimate]
+    | EstimateList[DailyLiftEstimate]
+    | EstimateList[DailyMetricValue]
     | ContrastResults
     | AnalysisEnvelope
     | RunResult,
@@ -1896,8 +1929,8 @@ def readout_table(
     return table.header(title, subtitle)
 
 
-def trend_table(
-    data: IntoDataFrame | list[dict[str, Any]],
+def trend_table[V](
+    data: IntoDataFrame | list[dict[str, V]],
     *,
     title: str = "Metric Report",
     subtitle: str = "",

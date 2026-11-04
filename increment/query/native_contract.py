@@ -27,6 +27,7 @@ from increment.sources import (
 if TYPE_CHECKING:
     import pyarrow as pa
     from ibis import Table
+    from ibis.expr.types import Scalar
 
     from increment.sources import Grain
 
@@ -144,7 +145,7 @@ class NativeCoreSource(_BuiltinMomentSource, Protocol):
         metric: Metric,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-    ) -> Any: ...
+    ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, Scalar]: ...
 
 
 @runtime_checkable

@@ -44,6 +44,7 @@ def test_prepare_selects_exact_breakout_cell_and_local_fallback():
         assert restored.origin == prepared.origin
         envelope = restored.envelope
         assert envelope is not None
+        assert isinstance(envelope, SimpleNamespace)
         assert envelope.label == "B"
     local = prepare_multicovariate_fit(method, (), cell=second)
     assert local.origin == "local"

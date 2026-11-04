@@ -908,7 +908,11 @@ def test_tabular_policy_json_roundtrip_preserves_action_law():
     assert json.loads(policy.model_dump_json(warnings="error")) == payload
     for context, expected in (({"country": "US"}, 0.8), ({"country": "CA"}, 0.4), ({}, 0.4)):
         assert restored.probability("B", context) == expected
-    payload["probabilities"]["US"]["B"] = 0.0
+    probabilities = payload["probabilities"]
+    assert isinstance(probabilities, dict)
+    for row in probabilities.values():
+        assert isinstance(row, dict)
+        row.clear()
     assert policy.probability("B", {"country": "US"}) == 0.8
 
 
@@ -957,10 +961,14 @@ def test_tabular_policy_python_persistence_keeps_typed_keys_and_isolation():
     assert _typed_key_law(policy) == expected
 
     dumped = policy.model_dump(mode="python", warnings="error")
-    assert {type(key) for key in dumped["probabilities"]} >= {int, str, tuple, datetime}
+    table, default = dumped["probabilities"], dumped["default"]
+    assert isinstance(table, dict) and isinstance(default, dict)
+    assert {type(key) for key in table} >= {int, str, tuple, datetime}
     restored = TabularPolicy.model_validate(dumped)
-    dumped["probabilities"][1]["B"] = 0.0
-    dumped["default"]["B"] = 0.0
+    for row in table.values():
+        assert isinstance(row, dict)
+        row.clear()
+    default.clear()
     assert _typed_key_law(restored) == expected
     assert _typed_key_law(policy) == expected
 
@@ -987,7 +995,10 @@ def test_tabular_policy_json_refuses_non_string_keys_directly():
     assert pickle.loads(pickle.dumps(error)).code == error.code
     assert copy.deepcopy(error).context["key_types"] == error.context["key_types"]
     # Python persistence is unaffected, and construction never applies the JSON rule.
-    assert TARGET_POLICY_V1.model_dump(mode="python")["probabilities"][0] == {"A": 0.2, "B": 0.8}
+    assert TARGET_POLICY_V1.model_dump(mode="python")["probabilities"] == {
+        0: {"A": 0.2, "B": 0.8},
+        1: {"A": 0.8, "B": 0.2},
+    }
 
 
 def test_tabular_policy_constructor_refusal_precedes_json_key_refusal():

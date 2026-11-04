@@ -24,6 +24,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
 
+from increment._evidence_types import JsonValue
 from increment._identity import canonical_id_strings
 from increment.errors import (
     CodedModel,
@@ -568,7 +569,7 @@ class CateResult(CodedModel, BaseModel):
     interaction_means: tuple[float, ...] = Field(exclude=True, repr=False)
     interaction_positions: tuple[tuple[int, int], ...] = Field(exclude=True, repr=False)
     beta_ard: tuple[float, ...] | None = Field(default=None, exclude=True, repr=False)
-    report_context: Mapping[str, object] | None = Field(default=None, exclude=True, repr=False)
+    report_context: Mapping[str, JsonValue] | None = Field(default=None, exclude=True, repr=False)
 
     def as_cell(self, *, created_at=None):
         from importlib import import_module

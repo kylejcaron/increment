@@ -5,9 +5,10 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import date, datetime
+from decimal import Decimal
 from fractions import Fraction
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeAlias, cast
 
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment.errors import (
@@ -21,10 +22,18 @@ from increment.errors import (
 from increment.semantics.models import Breakout, Metric, RetentionMetric
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    from narwhals.typing import IntoDataFrame
+
     from increment._analysis_config import ResolvedMetricConfig
     from increment._source_types import EvidenceProvider, _BuiltinMomentSource
     from increment.decision import CompiledDecisionPlan
+    from increment.declarations import Method
+    from increment.estimation.cuped.types import CategoricalCells, MulticovariateCupedFit
     from increment.semantics.design import Encouragement, Observational, Randomized
+    from increment.semantics.models import Experiment as ExperimentDefinition
+    from increment.sequential_state import SequentialSnapshot
 
 
 EvidenceSource: TypeAlias = "EvidenceProvider | _BuiltinMomentSource"  # noqa: UP040
@@ -32,6 +41,21 @@ EvidenceSource: TypeAlias = "EvidenceProvider | _BuiltinMomentSource"  # noqa: U
 
 BreakoutRoute = Literal["artifact", "native", "panel", "unsupported"]
 DayAxisRoute = Literal["artifact", "moments", "native"]
+
+type RowValue = str | int | float | bool | Decimal | date | datetime | None
+"""One scalar cell of a raw evidence row, as a dataframe or warehouse returns it."""
+
+type JsonValue = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | list[JsonValue]
+    | tuple[JsonValue, ...]
+    | Mapping[str, JsonValue]
+)
+"""A JSON-compatible value: a scalar, or a list, tuple or string-keyed mapping of them."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +70,19 @@ def warehouse_cuped_fit_evidence(
 ) -> _WarehouseCupedFitEvidence:
     """Build the single warehouse-fit envelope used by live and fitted sources."""
     return _WarehouseCupedFitEvidence(fit, tuple(arm_order), tuple(withheld))
+
+
+class MethodFitEnvelope(Protocol):
+    """A compact CUPED fit with the arms it covers and the arms it withheld."""
+
+    @property
+    def fit(self) -> MulticovariateCupedFit | None: ...
+
+    @property
+    def arm_order(self) -> tuple[str, ...]: ...
+
+    @property
+    def withheld(self) -> tuple[tuple[str, CodedError], ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +107,7 @@ class MethodFitRequest:
     """Request method-specific CUPED evidence for a metric or breakout cell."""
 
     metric: Metric
-    method: Any
+    method: Method
     control: str
     arm_order: tuple[str, ...]
     population: Literal["assigned", "triggered"]
@@ -82,8 +119,8 @@ class MethodFitAnswer:
     """Retained or warehouse method-fit evidence, or its coded acquisition failure."""
 
     origin: Literal["warehouse", "retained_fitted", "retained_categorical", "unavailable"]
-    envelope: Any | None = None
-    cells: Any | None = None
+    envelope: MethodFitEnvelope | None = None
+    cells: CategoricalCells | None = None
     failure: CodedError | None = None
     fit_identity: tuple[object, ...] = ()
     evidence_sha256: str | None = None
@@ -100,8 +137,8 @@ class PreparedMulticovariateFit:
     """Selected retained, warehouse, or local input for a mixed-CUPED fit."""
 
     origin: Literal["warehouse", "retained_fitted", "retained_categorical", "local"]
-    envelope: Any | None = None
-    cells: Any | None = None
+    envelope: MethodFitEnvelope | None = None
+    cells: CategoricalCells | None = None
     failure: CodedError | None = None
     fit_identity: tuple[object, ...] = ()
 
@@ -249,7 +286,7 @@ class EvidenceScope:
     dimension: str | None = None
     estimands: tuple[str, ...] | None = None
     breakouts: tuple[BreakoutIdentity, ...] = ()
-    configs: tuple[Any, ...] | None = None
+    configs: tuple[ResolvedMetricConfig, ...] | None = None
     uptake_facts: tuple[str, ...] = ()
     snapshot: bool = False
     include_breakouts: bool = False
@@ -402,14 +439,14 @@ class MomentsRequest:
     metric: Metric
     grain: Literal["total", "daily", "asof"] = "total"
     by: tuple[str, ...] = ()
-    method: Any | None = None
+    method: Method | None = None
     include_covariate: bool = False
     completed_windows_only: bool = False
-    experiment: Any | None = None
+    experiment: ExperimentDefinition | None = None
     population: Literal["assigned", "triggered"] = "assigned"
 
 
-MomentRows = tuple[Mapping[str, Any], ...]
+MomentRows = tuple[Mapping[str, RowValue], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,7 +454,7 @@ class BreakoutMethodMomentsRequest:
     """Select method-specific moment rows and refusals for one breakout."""
 
     metric: Metric
-    method: Any
+    method: Method
     breakout: BreakoutIdentity
     population: Literal["assigned", "triggered"] = "assigned"
     completed_windows_only: bool = False
@@ -427,7 +464,7 @@ class BreakoutMethodMomentsRequest:
 class ScalarBreakoutRows:
     """Method-specific moments and scalar refusals indexed by segment."""
 
-    rows: tuple[Mapping[str, Any], ...]
+    rows: MomentRows
     refusals: tuple[tuple[str, str, RefusalSpec, Mapping[str, object]], ...] = ()
 
 
@@ -441,7 +478,7 @@ class UnitRowsRequest:
     population: Literal["assigned", "triggered"] = "assigned"
 
 
-UnitRows = Any
+type UnitRows = IntoDataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +503,7 @@ class CountEvidence:
 class SequentialSnapshotRequest:
     """Request a provider-owned current checkpoint linked to an optional parent."""
 
-    previous: Any | None = None
+    previous: SequentialSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,11 +512,11 @@ class SequentialCaptureRequest:
 
     finalized: bool
     as_of: object | None = None
-    previous: Any | None = None
+    previous: SequentialSnapshot | None = None
     freeze: tuple[str, ...] = ()
 
 
-SequentialCapture = Any
+type SequentialCapture = SequentialSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,10 +567,10 @@ CaptureStatus = Literal["captured", "live"]
 class EvidenceScopeResult:
     """A source view, physical stream inventory, and effective capture status."""
 
-    source: Any
+    source: AbstractContextManager[EvidenceSource]
     scope: EvidenceScope
     streams: tuple[EvidenceStream, ...] = ()
-    stream_resolver: Callable[[Any], tuple[EvidenceStream, ...]] | None = None
+    stream_resolver: Callable[[EvidenceSource], tuple[EvidenceStream, ...]] | None = None
     capture_status: CaptureStatus | None = None
     breakout_streams: Mapping[BreakoutIdentity, str] = dataclass_field(
         default_factory=lambda: MappingProxyType({})

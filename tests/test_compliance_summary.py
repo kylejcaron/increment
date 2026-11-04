@@ -22,7 +22,6 @@ from increment.evidence import (
     ComplianceRequest,
     CountEvidence,
     CountsRequest,
-    MomentRows,
     MomentsRequest,
     evidence_provider,
     request_evidence,
@@ -74,10 +73,11 @@ def _compliance(source, design, **kwargs):
     )
 
 
-def _moments(source, metric) -> MomentRows:
-    return cast(
-        MomentRows,
-        request_evidence(evidence_provider(source), MomentsRequest(metric)),
+def _moments(source, metric) -> tuple[dict[str, Any], ...]:
+    rows = request_evidence(evidence_provider(source), MomentsRequest(metric))
+    assert isinstance(rows, tuple) and all(isinstance(row, dict) for row in rows)
+    return tuple(
+        {str(key): value for key, value in row.items()} for row in rows if isinstance(row, dict)
     )
 
 

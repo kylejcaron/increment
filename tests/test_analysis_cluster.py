@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import ibis
 import numpy as np
+import pyarrow as pa
 import pytest
 
 from increment import Scope, from_definitions, from_frame, run
@@ -21,7 +22,7 @@ from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.sitewide import SitewideImpact
 from increment.estimators import sitewide
-from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
 from increment.query import summary_sql
 from increment.workflows import export_moments, metrics, srm
 from tests._unit_boundary import backend_fixture
@@ -34,11 +35,10 @@ from tests.analysis_factory import (
 from tests.sequential_cases import registration
 
 
-def _unit_rows(source, metric) -> UnitRows:
-    return cast(
-        UnitRows,
-        request_evidence(evidence_provider(source), UnitRowsRequest(metric)),
-    )
+def _unit_rows(source, metric) -> pa.Table:
+    rows = request_evidence(evidence_provider(source), UnitRowsRequest(metric))
+    assert isinstance(rows, pa.Table)
+    return rows
 
 
 N_STORES = 20  # per arm -> 40 total clusters, above the small-K warning

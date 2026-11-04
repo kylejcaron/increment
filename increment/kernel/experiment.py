@@ -4,11 +4,11 @@ import dataclasses
 import hashlib
 import json
 import reprlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
@@ -25,6 +25,34 @@ from increment.kernel.contracts import (
     contract_hash,
     declared_breakouts,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
+    from increment.declarations import Learner
+    from increment.kernel.ports import ResultsStorePort
+
+type DeclarationValue = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | Fraction
+    | Callable[[], Learner]
+    | BaseModel
+    | DataclassInstance
+    | ResultsStorePort
+    | list[DeclarationValue]
+    | tuple[DeclarationValue, ...]
+    | Mapping[str, DeclarationValue]
+)
+"""One recorded experiment declaration value.
+
+Models and dataclasses are frozen into mappings and lists into tuples at construction.
+Learner factories and Fractions stay as given; a learner factory makes the experiment
+non-portable, and a results store as a request option is refused at run.
+"""
 
 _DISPLAY = reprlib.Repr(maxlist=5, maxstring=48)
 
@@ -200,9 +228,9 @@ class Experiment:
         default_factory=dict
     )
     package_version: str = "0"
-    analysis_context: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    analysis_context: Mapping[str, DeclarationValue] = dataclasses.field(default_factory=dict)
     operations: Mapping[str, str] = dataclasses.field(default_factory=dict)
-    request_options: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    request_options: Mapping[str, DeclarationValue] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         scopes = tuple(self.scopes)
