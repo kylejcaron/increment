@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import subprocess
@@ -442,15 +443,33 @@ def _selects(expression: str, *marks: str) -> bool:
     return Expression.compile(expression).evaluate(matcher)
 
 
+def _noxfile() -> tuple[dict[str, str], dict[str, str]]:
+    """Tier markers and session sources, read without importing ``nox``.
+
+    The core-install job runs this module without development tools.
+    """
+    source = Path("noxfile.py").read_text()
+    tree = ast.parse(source)
+    markers = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "TIER_MARKERS" for t in node.targets)
+    )
+    functions = {
+        node.name: ast.get_source_segment(source, node) or ""
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    return markers, functions
+
+
 def test_nightly_and_main_select_exhaustive() -> None:
-    import inspect
-
-    import noxfile
-
-    full_tier = noxfile.TIER_MARKERS["all-except-scientific"]
+    markers, functions = _noxfile()
+    full_tier = markers["all-except-scientific"]
     assert _selects(full_tier, "slow", "exhaustive")
     assert _selects(full_tier, "integration", "slow", "exhaustive")
-    assert '"all-except-scientific"' in inspect.getsource(noxfile.tests_full)
+    assert '"all-except-scientific"' in functions["tests_full"]
     nightly = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())
     full_suite = nightly["jobs"]["test-all"]
     assert full_suite["if"] == "github.event_name != 'pull_request'"
@@ -471,7 +490,7 @@ def test_nightly_and_main_select_exhaustive() -> None:
     run = "\n".join(step.get("run", "") for step in job["steps"])
     assert run.count("make test-exhaustive ") == 1
     assert f"--splits {len(groups)} --group ${{{{ matrix.group }}}}" in run
-    exhaustive = noxfile.TIER_MARKERS["exhaustive"]
+    exhaustive = markers["exhaustive"]
     assert _selects(exhaustive, "slow", "exhaustive")
     assert _selects(exhaustive, "integration", "slow", "exhaustive")
     assert not _selects(exhaustive, "slow")
@@ -496,14 +515,14 @@ def test_nightly_and_main_select_exhaustive() -> None:
 
 
 def test_pr_slow_job_excludes_exhaustive_unless_required() -> None:
-    import noxfile
+    markers, _ = _noxfile()
 
     jobs = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]
     slow_job = jobs["slow"]
     assert "if" not in slow_job
     step = next(step for step in slow_job["steps"] if step.get("name") == "Run slow tests")
     assert step["run"].startswith("make test-slow ")
-    slow = noxfile.TIER_MARKERS["slow"]
+    slow = markers["slow"]
     assert json.loads(step["env"]["INCREMENT_COLLECT_TIERS"]) == {"slow": slow}
     assert _selects(slow, "slow")
     assert _selects(slow, "integration", "slow")
