@@ -2,19 +2,34 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
+import enum
+import functools
+import io
+import lzma
+import math
+import pickle
+from collections.abc import Mapping
 from dataclasses import replace
+from fractions import Fraction
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+
+from pydantic import BaseModel
 
 from increment import Experiment, Scope, SourceReference
 from increment._source_operations import DashboardExploreCapture, DashboardGroupData
 from increment.dashboard import DashboardConfig, DashboardSnapshot
 from increment.dashboard._data import DashboardOverview, _binding_fingerprint, enriched_rows
+from increment.errors import CodedError
 from increment.estimation.readout_types import (
     CellKey,
     CellRecord,
     IntegrityResult,
     PopulationRoster,
+    ReadoutCapture,
     ReadoutMetadata,
     ReadoutScope,
     SourceReadoutScope,
@@ -35,6 +50,7 @@ from increment.results import (
     SRMResult,
 )
 from increment.semantics.models import ConversionMetric, MeanMetric
+from tests.parity_harness.comparison import nested_close
 
 COUNTRY = ("event_log", "country")
 ADDED = "purchases_per_user"
@@ -449,3 +465,186 @@ def binomial_region():
         n_t=600,
         nuisance_beta=nuisance_beta(0.025),
     )
+
+
+# Frozen preparations: ``prepare_dashboard`` output saved by
+# ``uv run --extra dashboard python -m tests.test_dashboard_capture --freeze`` and pinned to a
+# fresh capture of the same source by ``test_frozen_snapshot_matches_a_fresh_capture``.
+FROZEN_DIR = Path(__file__).parent / "fixtures" / "dashboard"
+
+
+@dataclasses.dataclass(frozen=True)
+class FrozenDashboard:
+    """One saved preparation with its experiment and independent engine reads.
+
+    ``engine`` maps ``(view, metric, completed windows only, breakout)`` to what the public
+    readout returned for that request when the snapshot was captured, or its refusal.
+    """
+
+    experiment: Experiment
+    snapshot: DashboardSnapshot
+    engine: Mapping[tuple[Any, ...], Any]
+
+
+def _mapping_proxy(values: dict[Any, Any]) -> Mapping[Any, Any]:
+    return MappingProxyType(values)
+
+
+class _FrozenPickler(pickle.Pickler):
+    def reducer_override(self, obj: Any) -> Any:
+        if type(obj) is MappingProxyType:
+            return _mapping_proxy, (dict(obj),)
+        return NotImplemented
+
+
+def write_frozen(
+    name: str,
+    *,
+    experiment: Experiment,
+    snapshot: DashboardSnapshot,
+    engine: Mapping[tuple[Any, ...], Any] | None = None,
+) -> Path:
+    """Save one preparation exactly as captured."""
+    buffer = io.BytesIO()
+    _FrozenPickler(buffer, protocol=5).dump(
+        {"experiment": experiment.to_json(), "snapshot": snapshot, "engine": dict(engine or {})}
+    )
+    path = FROZEN_DIR / f"{name}.pickle.xz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(lzma.compress(buffer.getvalue()))
+    return path
+
+
+@functools.cache
+def frozen(name: str) -> FrozenDashboard:
+    """The saved preparation ``name``; it holds no connection, resolver or source."""
+    payload = pickle.loads(lzma.decompress((FROZEN_DIR / f"{name}.pickle.xz").read_bytes()))
+    return FrozenDashboard(
+        experiment=Experiment.from_json(payload["experiment"]),
+        snapshot=payload["snapshot"],
+        engine=MappingProxyType(payload["engine"]),
+    )
+
+
+def captured_form(
+    value: Any, *, without: frozenset[str] = frozenset(), by_type: frozenset[str] = frozenset()
+) -> Any:
+    """A comparable tree of everything ``value`` holds; ``without`` names fields to leave out.
+
+    Refusals keep their type, code and context; collections keep their rows and every
+    attribute they carry; callables keep their qualified name. Fields named in ``by_type`` keep
+    only their value's type. A pinned read's random capture identity is runtime-only and is
+    left out. An unknown type is refused rather than skipped.
+    """
+
+    def entry(name: Any, value: Any) -> Any:
+        return ("type", type(value).__qualname__) if name in by_type else walk(value)
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, CodedError):
+            return ("refusal", type(item).__qualname__, item.code, walk(item.context))
+        if isinstance(item, BaseModel):
+            names = [name for name in type(item).model_fields if name not in without]
+            if isinstance(item, ReadoutCapture):
+                names.remove("snapshot_id")
+            return (
+                type(item).__qualname__,
+                {name: entry(name, getattr(item, name)) for name in names},
+            )
+        if dataclasses.is_dataclass(item) and not isinstance(item, type):
+            fields = [field.name for field in dataclasses.fields(item)]
+            return (
+                type(item).__qualname__,
+                {name: entry(name, getattr(item, name)) for name in fields if name not in without},
+            )
+        if isinstance(item, functools.partial):
+            return ("partial", walk(item.func), walk(item.args), walk(item.keywords))
+        if isinstance(item, type) or callable(item):
+            return ("callable", item.__module__, item.__qualname__)
+        if isinstance(item, enum.Enum):
+            return (type(item).__qualname__, walk(item.value))
+        if isinstance(item, Mapping):
+            return {
+                repr(walk(key)): entry(key, value)
+                for key, value in item.items()
+                if key not in without
+            }
+        if isinstance(item, list) and type(item) is not list:
+            return (type(item).__qualname__, [walk(row) for row in item], walk(vars(item)))
+        if isinstance(item, list | tuple):
+            return [walk(entry) for entry in item]
+        if isinstance(item, set | frozenset):
+            return sorted((walk(entry) for entry in item), key=repr)
+        if item is None or isinstance(item, bool | int | float | Fraction | str | bytes | dt.date):
+            return item
+        raise TypeError(f"no captured form for {type(item).__qualname__}")
+
+    return walk(value)
+
+
+def capture_differences(
+    actual: Any,
+    expected: Any,
+    *,
+    without: frozenset[str] = frozenset(),
+    by_type: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Every place two captured values differ.
+
+    Floats agree to ``tests/parity_harness/comparison.py::TOLERANCE``, the tolerance for public
+    readout values from different executions; every other leaf is compared exactly.
+    """
+    found: list[str] = []
+
+    def compare(left: Any, right: Any, path: str) -> None:
+        if isinstance(left, float) and isinstance(right, float):
+            if (math.isnan(left) and math.isnan(right)) or nested_close(right, left):
+                return
+            found.append(f"{path}: {left!r} != {right!r}")
+        elif type(left) is not type(right):
+            found.append(f"{path}: {type(left).__name__} != {type(right).__name__}")
+        elif isinstance(left, dict):
+            for key in sorted(left.keys() | right.keys()):
+                if key not in left or key not in right:
+                    found.append(f"{path}[{key}]: present on one side only")
+                else:
+                    compare(left[key], right[key], f"{path}[{key}]")
+        elif isinstance(left, list | tuple):
+            if len(left) != len(right):
+                found.append(f"{path}: {len(left)} entries != {len(right)}")
+            for index, (one, other) in enumerate(zip(left, right, strict=False)):
+                compare(one, other, f"{path}[{index}]")
+        elif left != right:
+            found.append(f"{path}: {left!r} != {right!r}")
+
+    compare(
+        captured_form(actual, without=without, by_type=by_type),
+        captured_form(expected, without=without, by_type=by_type),
+        "$",
+    )
+    return found
+
+
+# Provenance digests of exact canonical float inputs; they promise no equality across
+# aggregation orders (docs/guides/reading-results.md, "source_content_digest").
+_EXACT_INPUT_DIGESTS = frozenset({"source_content_digest"})
+
+
+def _group_rows(value: DashboardSnapshot) -> list[DashboardGroupData]:
+    return sorted(
+        value.group_data, key=lambda row: (row.analysis_population, row.metric, row.group_id)
+    )
+
+
+def preparation_differences(actual: DashboardSnapshot, expected: DashboardSnapshot) -> list[str]:
+    """Every place two preparations of one source differ beyond the warehouse's reduction order.
+
+    The wall clock is left out and exact-input digests are compared by type alone. Group rows
+    have no promised order, so each population, metric and arm is compared with its own row.
+    """
+    return capture_differences(
+        actual,
+        expected,
+        without=frozenset({"computed_at", "group_data"}),
+        by_type=_EXACT_INPUT_DIGESTS,
+    ) + capture_differences(_group_rows(actual), _group_rows(expected))

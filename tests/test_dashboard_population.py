@@ -23,6 +23,7 @@ from increment.dashboard._app import build_payload, document
 from increment.dashboard._data import decision_rows, estimate_for_metric, row_for_metric
 from increment.errors import InvalidRequestError
 from increment.workflows import capture_sequential
+from tests.dashboard_snapshots import frozen
 from tests.test_analysis_trigger import _events, _write_defs
 from tests.test_compatibility_js import _node_gate, _resolve_node, _running_in_ci
 
@@ -113,76 +114,65 @@ def _assert_dashboard_population_dom_behavior(tmp_path, payload):
     )
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 def test_dashboard_snapshot_retains_population_specific_headline_and_group_evidence(tmp_path):
-    experiment, resolver = _triggered_dashboard(tmp_path)
-    try:
-        snapshot = prepare_dashboard(
-            experiment,
-            resolver,
-            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+    saved = frozen("triggered")
+    experiment, snapshot = saved.experiment, saved.snapshot
+    assert {row.analysis_population for row in snapshot.estimates} == {"triggered"}
+    assert set(snapshot.population_estimates) == {"assigned", "triggered"}
+    assert {row.analysis_population for row in snapshot.group_data} == {"assigned", "triggered"}
+    assert {(row.analysis_population, row.metric, row.group_id) for row in snapshot.group_data} == {
+        (population, "revenue", arm)
+        for population in ("assigned", "triggered")
+        for arm in ("C", "T")
+    }
+    default = estimate_for_metric(snapshot, "revenue")
+    assigned = estimate_for_metric(snapshot, "revenue", population="assigned")
+    assert default is not None and default.analysis_population == "triggered"
+    assert assigned is not None and assigned.analysis_population == "assigned"
+    default_row = row_for_metric(snapshot, "revenue")
+    assigned_row = row_for_metric(snapshot, "revenue", population="assigned")
+    assert default_row is not None and default_row["analysis_population"] == "triggered"
+    assert assigned_row is not None and assigned_row["analysis_population"] == "assigned"
+    assert set(snapshot.population_collections) == {"assigned", "triggered"}
+    retained_family_names = {}
+    for population in ("assigned", "triggered"):
+        collection = snapshot.population_collections[population]
+        assert collection.metadata is not None
+        scoped_rows = decision_rows(snapshot, population=population)
+        assert scoped_rows
+        assert {row["analysis_population"] for row in scoped_rows} == {population}
+        integrity = next(
+            item
+            for source in collection.metadata.scope.by_source.values()
+            for item in source.integrity
+            if item.analysis_population == population
         )
-        assert {row.analysis_population for row in snapshot.estimates} == {"triggered"}
-        assert set(snapshot.population_estimates) == {"assigned", "triggered"}
-        assert {row.analysis_population for row in snapshot.group_data} == {"assigned", "triggered"}
-        assert {
-            (row.analysis_population, row.metric, row.group_id) for row in snapshot.group_data
-        } == {
-            (population, "revenue", arm)
-            for population in ("assigned", "triggered")
-            for arm in ("C", "T")
+        assert {row["integrity_status"] for row in scoped_rows} == {integrity.status.value}
+        retained_family_names[population] = {
+            family["name"] for row in scoped_rows for family in json.loads(row["retained_family"])
         }
-        default = estimate_for_metric(snapshot, "revenue")
-        assigned = estimate_for_metric(snapshot, "revenue", population="assigned")
-        assert default is not None and default.analysis_population == "triggered"
-        assert assigned is not None and assigned.analysis_population == "assigned"
-        default_row = row_for_metric(snapshot, "revenue")
-        assigned_row = row_for_metric(snapshot, "revenue", population="assigned")
-        assert default_row is not None and default_row["analysis_population"] == "triggered"
-        assert assigned_row is not None and assigned_row["analysis_population"] == "assigned"
-        assert set(snapshot.population_collections) == {"assigned", "triggered"}
-        retained_family_names = {}
-        for population in ("assigned", "triggered"):
-            collection = snapshot.population_collections[population]
-            assert collection.metadata is not None
-            scoped_rows = decision_rows(snapshot, population=population)
-            assert scoped_rows
-            assert {row["analysis_population"] for row in scoped_rows} == {population}
-            integrity = next(
-                item
-                for source in collection.metadata.scope.by_source.values()
-                for item in source.integrity
-                if item.analysis_population == population
-            )
-            assert {row["integrity_status"] for row in scoped_rows} == {integrity.status.value}
-            retained_family_names[population] = {
-                family["name"]
-                for row in scoped_rows
-                for family in json.loads(row["retained_family"])
-            }
-        assert retained_family_names["assigned"] == retained_family_names["triggered"]
-        payload = build_payload(experiment, snapshot=snapshot)
-        assert payload["defaultPopulation"] == "triggered"
-        assert payload["populationOptions"] == ["assigned", "triggered"]
-        assert payload["populationViews"]["triggered"]["population"] == "triggered"
-        assert payload["populationViews"]["assigned"]["population"] == "assigned"
-        assert (
-            payload["populationViews"]["triggered"]["readoutCsv"]
-            != payload["populationViews"]["assigned"]["readoutCsv"]
+    assert retained_family_names["assigned"] == retained_family_names["triggered"]
+    payload = build_payload(experiment, snapshot=snapshot)
+    assert payload["defaultPopulation"] == "triggered"
+    assert payload["populationOptions"] == ["assigned", "triggered"]
+    assert payload["populationViews"]["triggered"]["population"] == "triggered"
+    assert payload["populationViews"]["assigned"]["population"] == "assigned"
+    assert (
+        payload["populationViews"]["triggered"]["readoutCsv"]
+        != payload["populationViews"]["assigned"]["readoutCsv"]
+    )
+    _assert_dashboard_population_dom_behavior(tmp_path, payload)
+    for population in ("assigned", "triggered"):
+        trajectory = load_explore(
+            experiment,
+            snapshot=snapshot,
+            metric="revenue",
+            view="cumulative_lift",
+            population=population,
         )
-        _assert_dashboard_population_dom_behavior(tmp_path, payload)
-        for population in ("assigned", "triggered"):
-            trajectory = load_explore(
-                experiment,
-                snapshot=snapshot,
-                metric="revenue",
-                view="cumulative_lift",
-                population=population,
-            )
-            assert trajectory
-            assert {row.analysis_population for row in trajectory} == {population}
-    finally:
-        resolver.close()
+        assert trajectory
+        assert {row.analysis_population for row in trajectory} == {population}
 
 
 @pytest.mark.integration
@@ -204,157 +194,110 @@ def test_dashboard_without_trigger_is_assigned_only(tmp_path):
         resolver.close()
 
 
-@pytest.mark.slow
-def test_triggered_explore_retains_triggered_daily_series(tmp_path):
-    experiment, resolver = _triggered_dashboard(tmp_path)
-    try:
-        snapshot = prepare_dashboard(
-            experiment,
-            resolver,
-            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
-        )
-        payload = build_payload(experiment, snapshot=snapshot)
-        triggered = payload["populationViews"]["triggered"]["explore"]["overall"]["revenue"][
-            "daily_values"
-        ]
-        assigned = payload["populationViews"]["assigned"]["explore"]["overall"]["revenue"][
-            "daily_values"
-        ]
-        assert "routeForward" not in triggered
-        assert triggered["pointCount"] > 0
-        assert assigned["pointCount"] > 0
-        assert {row.analysis_population for row in snapshot.population_estimates["triggered"]} == {
-            "triggered"
-        }
-    finally:
-        resolver.close()
-
-
 @pytest.mark.integration
-@pytest.mark.slow
-def test_overview_exploratory_rows_stay_in_their_population_family(tmp_path):
-    experiment, resolver = _triggered_dashboard(tmp_path, extra_metric=True)
-    try:
-        snapshot = prepare_dashboard(
-            experiment,
-            resolver,
-            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
-        )
-        assert any(metric.name == "trigger_conversion" for metric in snapshot.offered_metrics)
-        for population in ("assigned", "triggered"):
-            overview = snapshot.overviews[population]
-            assert overview.exploratory
-            assert {row.analysis_population for row in overview.exploratory} == {population}
-    finally:
-        resolver.close()
+def test_triggered_explore_retains_triggered_daily_series():
+    saved = frozen("triggered")
+    snapshot = saved.snapshot
+    payload = build_payload(saved.experiment, snapshot=snapshot)
+    triggered = payload["populationViews"]["triggered"]["explore"]["overall"]["revenue"][
+        "daily_values"
+    ]
+    assigned = payload["populationViews"]["assigned"]["explore"]["overall"]["revenue"][
+        "daily_values"
+    ]
+    assert "routeForward" not in triggered
+    assert triggered["pointCount"] > 0
+    assert assigned["pointCount"] > 0
+    assert {row.analysis_population for row in snapshot.population_estimates["triggered"]} == {
+        "triggered"
+    }
 
 
-@pytest.mark.slow
-def test_standalone_population_sections_use_one_population(tmp_path):
-    experiment, resolver = _triggered_dashboard(tmp_path)
-    try:
-        snapshot = prepare_dashboard(
-            experiment,
-            resolver,
-            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
-        )
-        triggered_header = render_header(snapshot).text
-        assigned_header = render_header(snapshot, population="assigned").text
-        assert ">40</p>" in triggered_header
-        assert ">80</p>" in assigned_header
-
-        triggered_details = render_metric_details(snapshot, metric="revenue").text
-        assigned_details = render_metric_details(
-            snapshot, metric="revenue", population="assigned"
-        ).text
-        for details in (triggered_details, assigned_details):
-            assert details.count("data-inc-literal>C</th>") == 1
-            assert details.count("data-inc-literal>T</th>") == 1
-        assert snapshot.allocation is not None
-        assert snapshot.triggered_allocation is not None
-        assert set(snapshot.triggered_allocation.observed.values()) == {18, 22}
-        health = render_health(snapshot).text
-        assert ">40</td>" in health
-        assert ">18</td>" in health
-        assert ">22</td>" in health
-    finally:
-        resolver.close()
+def test_overview_exploratory_rows_stay_in_their_population_family():
+    snapshot = frozen("triggered").snapshot
+    assert any(metric.name == "trigger_conversion" for metric in snapshot.offered_metrics)
+    for population in ("assigned", "triggered"):
+        overview = snapshot.overviews[population]
+        assert overview.exploratory
+        assert {row.analysis_population for row in overview.exploratory} == {population}
 
 
-@pytest.mark.slow
-def test_triggered_health_uses_triggered_balance_result(tmp_path):
+def test_standalone_population_sections_use_one_population():
+    snapshot = frozen("triggered").snapshot
+    triggered_header = render_header(snapshot).text
+    assigned_header = render_header(snapshot, population="assigned").text
+    assert ">40</p>" in triggered_header
+    assert ">80</p>" in assigned_header
+
+    triggered_details = render_metric_details(snapshot, metric="revenue").text
+    assigned_details = render_metric_details(snapshot, metric="revenue", population="assigned").text
+    for details in (triggered_details, assigned_details):
+        assert details.count("data-inc-literal>C</th>") == 1
+        assert details.count("data-inc-literal>T</th>") == 1
+    assert snapshot.allocation is not None
+    assert snapshot.triggered_allocation is not None
+    assert set(snapshot.triggered_allocation.observed.values()) == {18, 22}
+    health = render_health(snapshot).text
+    assert ">40</td>" in health
+    assert ">18</td>" in health
+    assert ">22</td>" in health
+
+
+def test_triggered_health_uses_triggered_balance_result():
     import dataclasses
     import re
 
-    experiment, resolver = _triggered_dashboard(tmp_path)
-    try:
-        snapshot = prepare_dashboard(
-            experiment,
-            resolver,
-            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+    snapshot = frozen("triggered").snapshot
+    assert snapshot.allocation is not None and not snapshot.allocation.is_srm
+    assert snapshot.triggered_allocation is not None
+    triggered = snapshot.triggered_allocation.model_copy(update={"is_srm": True})
+    history = tuple(
+        {
+            "experiment_id": snapshot.experiment_name,
+            "ds": snapshot.start + dt.timedelta(days=day),
+            "group_id": arm,
+            "n_daily": count,
+            "n_cumulative": count,
+        }
+        for day in (0, 1)
+        for arm, count in (
+            (snapshot.control_group, 0),
+            (snapshot.treatment_group, 10 if day else 0),
         )
-        assert snapshot.allocation is not None and not snapshot.allocation.is_srm
-        assert snapshot.triggered_allocation is not None
-        triggered = snapshot.triggered_allocation.model_copy(update={"is_srm": True})
-        history = tuple(
-            {
-                "experiment_id": snapshot.experiment_name,
-                "ds": snapshot.start + dt.timedelta(days=day),
-                "group_id": arm,
-                "n_daily": count,
-                "n_cumulative": count,
-            }
-            for day in (0, 1)
-            for arm, count in (
-                (snapshot.control_group, 0),
-                (snapshot.treatment_group, 10 if day else 0),
-            )
-        )
-        snapshot = dataclasses.replace(
-            snapshot,
-            triggered_allocation=triggered,
-            triggered_allocation_history=history,
-        )
-        assert snapshot.triggered_allocation is not None
-        html = render_health(snapshot).text
-        assert "27.8%" in html
-        assert "72.2%" in html
-        statuses = re.findall(r"inc-dashboard-status--(bad|ok)", html)
-        assert statuses[:2] == ["ok", "bad"]
-        assert set(snapshot.triggered_allocation.observed.values()) == {18, 22}
-        assert ">40</td>" in html
-        assert ">18</td>" in html
-        assert ">22</td>" in html
-    finally:
-        resolver.close()
+    )
+    snapshot = dataclasses.replace(
+        snapshot,
+        triggered_allocation=triggered,
+        triggered_allocation_history=history,
+    )
+    assert snapshot.triggered_allocation is not None
+    html = render_health(snapshot).text
+    assert "27.8%" in html
+    assert "72.2%" in html
+    statuses = re.findall(r"inc-dashboard-status--(bad|ok)", html)
+    assert statuses[:2] == ["ok", "bad"]
+    assert set(snapshot.triggered_allocation.observed.values()) == {18, 22}
+    assert ">40</td>" in html
+    assert ">18</td>" in html
+    assert ">22</td>" in html
 
 
-@pytest.mark.integration
-@pytest.mark.slow
-def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_path):
+def test_triggered_allocation_history_is_immutable_and_refusal_consistent():
     import dataclasses
 
-    experiment, resolver = _triggered_dashboard(tmp_path)
-    try:
-        snapshot = prepare_dashboard(
-            experiment,
-            resolver,
-            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+    snapshot = frozen("triggered").snapshot
+    assert snapshot.triggered_allocation_history
+    with pytest.raises(TypeError):
+        snapshot.triggered_allocation_history[0]["n_daily"] = 0  # ty: ignore[invalid-assignment]
+    with pytest.raises(InvalidRequestError) as caught:
+        dataclasses.replace(
+            snapshot,
+            triggered_allocation_history_refusal=(
+                "evidence.operation_unavailable",
+                "unsupported",
+            ),
         )
-        assert snapshot.triggered_allocation_history
-        with pytest.raises(TypeError):
-            snapshot.triggered_allocation_history[0]["n_daily"] = 0  # ty: ignore[invalid-assignment]
-        with pytest.raises(InvalidRequestError) as caught:
-            dataclasses.replace(
-                snapshot,
-                triggered_allocation_history_refusal=(
-                    "evidence.operation_unavailable",
-                    "unsupported",
-                ),
-            )
-        assert caught.value.code == "dashboard.invalid_snapshot"
-    finally:
-        resolver.close()
+    assert caught.value.code == "dashboard.invalid_snapshot"
 
 
 @pytest.mark.integration
