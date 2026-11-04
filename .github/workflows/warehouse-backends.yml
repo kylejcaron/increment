@@ -110,13 +110,20 @@ jobs:
           INCREMENT_TEST_SNOWFLAKE_DATABASE: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_DATABASE }}
           INCREMENT_TEST_SNOWFLAKE_SCHEMA: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_SCHEMA }}
 
+  # Shards take turns on the scratch dataset; the queue keeps waiting shards pending.
   bigquery:
+    name: bigquery shard ${{ matrix.group }}/3
     if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'cloud' }}
     concurrency:
       group: live-bigquery-backend
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -125,7 +132,11 @@ jobs:
       - name: Write service-account key
         run: printf '%s' "$SA_KEY" > "$RUNNER_TEMP/gcp-sa.json"
         env: {SA_KEY: "${{ secrets.INCREMENT_TEST_BIGQUERY_SA_KEY }}"}
-      - run: uv run --with nox nox -s tests_warehouse_bigquery
+      # Weights from run 41775920521; the mixed CUPED probe fills a shard alone.
+      - run: >-
+          uv run --with nox nox -s tests_warehouse_bigquery --
+          --splits 3 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --durations-path .github/bigquery-test-durations.json
         env:
           INCREMENT_TEST_BIGQUERY_PROJECT: ${{ secrets.INCREMENT_TEST_BIGQUERY_PROJECT }}
           INCREMENT_TEST_BIGQUERY_DATASET: ${{ secrets.INCREMENT_TEST_BIGQUERY_DATASET }}

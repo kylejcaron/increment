@@ -77,7 +77,7 @@ jobs:
   report-failure:
     name: report a failed weekly gate
     runs-on: ubuntu-latest
-    needs: [test-all-floor, warehouse-backends, parity-matrix-10x, newest-dependencies]
+    needs: [test-all-floor, warehouse-backends, parity-matrix-10x, newest-dependencies, newest-dependencies-lock, newest-dependencies-exhaustive]
     if: ${{ always() && (github.event_name == 'schedule' || inputs.target == 'all') && contains(needs.*.result, 'failure') }}
     timeout-minutes: 10
     permissions:
@@ -135,5 +135,47 @@ jobs:
           uv run --no-sync python -c 'from importlib.metadata import version; import increment, sqlglot; print("ibis-framework", version("ibis-framework")); print("sqlglot", sqlglot.__version__, sqlglot.__file__); print("increment", increment.__file__)'
       - run: make test-fast WORKERS=auto
       - run: make test-slow WORKERS=auto
-      - run: make test-exhaustive WORKERS=auto
       - run: make test-tier TIER=compile-registry WORKERS=auto
+  # One resolution for every exhaustive shard, so each collects the same tests.
+  newest-dependencies-lock:
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == 'newest-dependencies' }}
+    name: resolve newest dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      UV_LOCKED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv lock --upgrade
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: newest-dependencies-lock
+          path: uv.lock
+          if-no-files-found: error
+          retention-days: 30
+  newest-dependencies-exhaustive:
+    needs: newest-dependencies-lock
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == 'newest-dependencies' }}
+    name: newest dependencies exhaustive cross-source (3.12, shard ${{ matrix.group }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with: {enable-cache: true, python-version: "3.12"}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: newest-dependencies-lock
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Record resolved versions and source roots
+        run: |
+          uv run --no-sync python -c 'from importlib.metadata import version; import increment, sqlglot; print("ibis-framework", version("ibis-framework")); print("sqlglot", sqlglot.__version__, sqlglot.__file__); print("increment", increment.__file__)'
+      - run: make test-exhaustive WORKERS=auto PYTEST_ARGS="--splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/exhaustive-test-durations.json"

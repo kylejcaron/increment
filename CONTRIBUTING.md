@@ -855,6 +855,13 @@ average weight. To refresh weights, run the complete suite with
 `--store-durations --durations-path .github/postgres-test-durations.json`.
 Do not run workers against a shared warehouse namespace.
 
+The live BigQuery probes run in three shards balanced with
+`.github/bigquery-test-durations.json`, weighted from hosted run 41775920521;
+the mixed CUPED probe fills one shard alone. The shards share the scratch
+dataset, so they run one at a time: the concurrency queue holds each waiting
+shard instead of cancelling it. To refresh weights, run the complete session
+with `--store-durations --durations-path .github/bigquery-test-durations.json`.
+
 The
 [nightly workflow](.github/workflows/nightly.yml) runs daily at 06:00 UTC or
 on dispatch on any ref. It runs the full fast and slow tiers with the full
@@ -878,6 +885,11 @@ warehouse backends. Weekly failures create or update a GitHub issue labelled
 Each interpreter's dependency-floor suite uses three duration-balanced parts,
 each with its own retained JUnit report and the same 90-minute limit. The
 retained numerical cases run once per interpreter, in the first part.
+The newest-dependency run keeps its fast, slow and compile-registry tiers in
+one job. Its exhaustive tier runs in four shards split by
+`.github/exhaustive-test-durations.json`, each under a 60-minute limit. One job
+upgrades the lock and every shard installs it, so the shards collect the same
+tests.
 
 
 #### Refusal registry gate
@@ -918,9 +930,9 @@ These manual jobs are not required by `ci-ok`; do not use an untrusted branch
 with repository credentials. Use `backend_mode=postgres` for credential-free
 PostgreSQL probes or `all` to run all three backends.
 
-BigQuery prints each live probe's result and has a 45-minute workflow hang
-guard; PostgreSQL and Snowflake retain 30-minute guards. These are job
-deadlines, not performance targets or reduced test coverage.
+BigQuery prints each live probe's result and gives each shard a 45-minute
+workflow hang guard; PostgreSQL and Snowflake retain 30-minute guards. These
+are job deadlines, not performance targets or reduced test coverage.
 If BigQuery returns `QueryUsagePerDay`, its project-level daily query quota
 is exhausted. Keep the run failed and wait for the
 [midnight Pacific quota reset](https://docs.cloud.google.com/bigquery/docs/custom-quotas)
