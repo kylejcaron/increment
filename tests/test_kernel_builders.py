@@ -9,7 +9,7 @@ import sys
 import warnings
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pandas as pd
 import pytest
@@ -22,7 +22,7 @@ from increment.kernel.contracts import Registration, Scope
 from increment.kernel.experiment import Experiment, SourceReference
 from increment.kernel.resolver import runnable
 from increment.workflows import export_moments, materialize, unit_counts
-from tests.analysis_factory import replace_bound_source, view_readout
+from tests.analysis_factory import bound_source, replace_bound_source, view_readout
 from tests.warning_codes import warning_codes
 
 
@@ -443,6 +443,21 @@ def _write_undecodable_bytes(definitions: Path) -> None:
     experiments_path.write_bytes(experiments_path.read_bytes() + b"\xff\n")
 
 
+class _ReadRefusingSource:
+    """Answer a bound source's declarations; fail the test on any evidence read."""
+
+    def __init__(self, source: Any) -> None:
+        self.evidence = source.evidence
+        self.context = source.context
+        self.declaration_identity = source.declaration_identity
+
+    def _read(self, request: object) -> NoReturn:
+        pytest.fail(f"edited definitions were read: {type(request).__name__}")
+
+    moments = breakout_method_moments = unit_rows = method_fit = _read
+    compliance = compliance_series = counts = capture_sequential = scope = _read
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "edit",
@@ -450,29 +465,40 @@ def _write_undecodable_bytes(definitions: Path) -> None:
     ids=["changed_metric", "impossible_date", "undecodable_bytes"],
 )
 def test_edited_definitions_refuse_before_any_read(seeded_defs, seeded_con, edit):
-    from tests.parity_harness.query_log import enable_query_log, query_log
+    import duckdb
+    from packaging.version import Version
+
+    from tests.parity_harness.query_log import disable_query_log, enable_query_log, query_log
 
     experiment, reader = from_definitions(
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
+    source = bound_source(reader)
     edit(Path(seeded_defs))
-    assert enable_query_log(seeded_con)
+    # The stand-in fails on evidence reads; the query log sees any statement on the connection.
+    replace_bound_source(reader, _ReadRefusingSource(source))
+    logs_queries = enable_query_log(seeded_con)
+    # DuckDB's QueryLog first ships in 1.3.0.
+    assert logs_queries == (Version(duckdb.__version__) >= Version("1.3.0"))
     try:
         for read in (run, unit_counts):
-            logged = len(query_log(seeded_con))
+            logged = len(query_log(seeded_con)) if logs_queries else 0
             with warnings.catch_warnings(), pytest.raises(CodedError) as stale:
                 warnings.simplefilter("ignore", IncrementWarning)
                 read(experiment, reader)
-            statements = [
-                statement
-                for statement in query_log(seeded_con)[logged:]
-                if "duckdb_logs" not in statement
-            ]
-            assert statements == [], read
+            if logs_queries:
+                statements = [
+                    statement
+                    for statement in query_log(seeded_con)[logged:]
+                    if "duckdb_logs" not in statement
+                ]
+                assert statements == [], read
             assert stale.value.code == "kernel.definitions.catalog_stale", read
             assert dict(stale.value.context) == {"path": str(Path(seeded_defs))}
     finally:
-        seeded_con.con.execute("CALL disable_logging()")
+        if logs_queries:
+            disable_query_log(seeded_con)
+        replace_bound_source(reader, source)
         cast(Any, reader).close()
     with pytest.raises(CodedError) as offline:
         from_definitions(seeded_defs)
