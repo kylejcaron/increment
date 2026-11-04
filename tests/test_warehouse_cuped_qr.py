@@ -72,6 +72,37 @@ def _assert_no_transferred_extreme(expression):
             ), sql
 
 
+@contextmanager
+def _select_lists_at_most(limit: int, monkeypatch):
+    """Fail when a SELECT that DuckDB fetches or materializes lists more than ``limit`` entries."""
+    import sqlglot
+    from ibis.backends.duckdb import Backend
+
+    widths: list[int] = []
+    to_pyarrow = Backend.to_pyarrow
+    create_table = Backend.create_table
+
+    def record(expression) -> None:
+        statement = sqlglot.parse_one(ibis.to_sql(expression, dialect="duckdb"), read="duckdb")
+        widths.extend(len(select.expressions) for select in statement.find_all(sqlglot.exp.Select))
+
+    def fetch(self, expression, *args, **kwargs):
+        record(expression)
+        return to_pyarrow(self, expression, *args, **kwargs)
+
+    def create(self, name, /, obj=None, **kwargs):
+        if isinstance(obj, ibis.Table):
+            record(obj)
+        return create_table(self, name, obj, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Backend, "to_pyarrow", fetch)
+        patch.setattr(Backend, "create_table", create)
+        yield
+    assert widths
+    assert max(widths) <= limit
+
+
 def _positive_diagonal(r, rhs):
     signs = np.where(np.diag(r) < 0, -1.0, 1.0)
     return signs[:, None] * r, signs[:, None] * rhs
@@ -1552,10 +1583,11 @@ def _assert_fit_coordinates_equal(left_rows, right_rows):
 
 
 # Keep the 34-column, three-batch ratio path covered; CI needs a longer timeout for DuckDB.
+# Its BM sums span several statements, each within PostgreSQL's target-list limit.
 @pytest.mark.timeout(600)
 @pytest.mark.integration
 @pytest.mark.slow
-def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_path):
+def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_path, monkeypatch):
     import datetime as dt
 
     import pyarrow as pa
@@ -1683,10 +1715,12 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
         definitions_path, connection, experiment_name="mixed_cuped"
     )
     try:
-        actual = cast(
-            list[LiftEstimate],
-            view_readout(warehouse_experiment, warehouse_resolver, metrics=["rpo"]),
-        )
+        # 1,664 is PostgreSQL's target-list limit.
+        with _select_lists_at_most(1664, monkeypatch):
+            actual = cast(
+                list[LiftEstimate],
+                view_readout(warehouse_experiment, warehouse_resolver, metrics=["rpo"]),
+            )
         expected = cast(
             list[LiftEstimate], view_readout(local_experiment, local_resolver, metrics=["rpo"])
         )

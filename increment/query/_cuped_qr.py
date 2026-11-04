@@ -886,6 +886,12 @@ def _bm_component_score(
     )
 
 
+# Columns per BM feature relation and select-list entries per BM aggregate statement.
+# PostgreSQL caps tables at 1,600 columns and target lists at 1,664 entries; every
+# dialect shares this budget below both.
+_SELECT_LIST_BUDGET = 1200
+
+
 def _short_name(prefix: str, index: int) -> str:
     return prefix + np.base_repr(index, 36).lower()
 
@@ -941,7 +947,7 @@ def _aggregate_bm_batch(
     execute: Callable[[ir.Table], object],
     max_statement_chars: int = 80_000,
 ) -> tuple[tuple[float, float, FloatMatrix, FloatMatrix], ...]:
-    """Reduce every job's per-arm BM sums in statements of bounded length."""
+    """Reduce every job's per-arm BM sums in statements of bounded length and width."""
     from functools import cache
 
     from sqlglot import exp
@@ -970,11 +976,13 @@ def _aggregate_bm_batch(
                 descriptors.append((job_index, "g2", row, column, t2, left, right))
     values: dict[tuple[int, str, int, int], list[float]] = {}
     start = 0
+    # ``group_id`` takes one select-list entry.
+    max_fields = _SELECT_LIST_BUDGET - 1
     while start < len(descriptors):
         length = len(prefix) + len(suffix) - len(separator)
         aliases: list[str] = []
         fields: list[str] = []
-        while start + len(fields) < len(descriptors):
+        while start + len(fields) < len(descriptors) and len(fields) < max_fields:
             _job, kind, _row, _column, t2, left, right = descriptors[start + len(fields)]
             alias = _short_name("v", len(fields))
             field = templates[kind].format(t=t2, l=left, r=right, a=quote(alias))
@@ -1165,12 +1173,9 @@ def _warehouse_projection_reductions(
     )
 
 
-_BM_FEATURE_COLUMN_BUDGET = 1200
-
-
 def _bm_job_batches(jobs, *, width: int, base_columns: Sequence[str]):
     columns_per_job = 2 * width + 1
-    jobs_per_batch = max(1, (_BM_FEATURE_COLUMN_BUDGET - len(base_columns)) // columns_per_job)
+    jobs_per_batch = max(1, (_SELECT_LIST_BUDGET - len(base_columns)) // columns_per_job)
     return tuple(
         jobs[offset : offset + jobs_per_batch] for offset in range(0, len(jobs), jobs_per_batch)
     )

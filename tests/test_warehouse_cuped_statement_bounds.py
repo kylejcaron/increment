@@ -18,10 +18,11 @@ from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml
 
 pytestmark = pytest.mark.integration
 
-# 6 reads outside the fit, and 24 in it: 1 range check + 5 encoder + 4 outcome
+# 6 reads outside the fit, and 28 in it: 1 range check + 5 encoder + 4 outcome
 # + 1 factor + 1 denominator + 1 leverage + 1 score covariance + 1 U
-# + 5 projection scales + 4 BM statements.
-THREE_ARM_RATIO_FETCHES = 30
+# + 5 projection scales + 8 BM statements (18 jobs of 508 sums, at most 1,199
+# sums beside the group key per statement).
+THREE_ARM_RATIO_FETCHES = 34
 
 
 def _ratio_events(names: tuple[str, ...], units_per_arm: int) -> list[dict[str, object]]:
