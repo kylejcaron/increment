@@ -17,20 +17,21 @@ if TYPE_CHECKING:
 
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
-from tests.parity_harness.cases import PARITY_CASES, Absence
+from tests.parity_harness.cases import PARITY_CASES, PR_PARITY_CASES, Absence, ParityCase
 from tests.parity_harness.runner import assert_parity, run_case
+
+_PR_CASE_IDS = frozenset(case.id for case in PR_PARITY_CASES)
+
+
+def _case_marks(case: ParityCase) -> tuple[pytest.MarkDecorator, ...]:
+    """Cases outside the pull-request covering subset run in the exhaustive gate."""
+    if case.id not in _PR_CASE_IDS:
+        return (*case.marks, pytest.mark.slow, pytest.mark.exhaustive)
+    return (*case.marks, pytest.mark.slow) if case.slow else case.marks
 
 
 @pytest.mark.parametrize(
-    "case",
-    [
-        pytest.param(
-            case,
-            id=case.id,
-            marks=(*case.marks, pytest.mark.slow) if case.slow else case.marks,
-        )
-        for case in PARITY_CASES
-    ],
+    "case", [pytest.param(case, id=case.id, marks=_case_marks(case)) for case in PARITY_CASES]
 )
 @pytest.mark.integration
 def test_parity_case(case):
@@ -41,6 +42,56 @@ def test_parity_case(case):
 def test_parity_case_ids_are_unique():
     ids = [c.id for c in PARITY_CASES]
     assert len(ids) == len(set(ids)), f"duplicate parity case ids: {ids}"
+
+
+def _capability_families(case: ParityCase, outcome: dict) -> frozenset[tuple[str, str]]:
+    """The capability families one constructor shows in *case*, read from its frozen outcome.
+
+    Cases declare no metric type or method, so the families come from the identity capture
+    of every case and constructor: each retained row's metric type; each cell's method with
+    its estimand, its analysis population, and its inference route (`fixed`, or the sequential
+    route whose state it retains); its view (the case's day-axis view, `breakout` for a segment
+    cell, otherwise `run`); and a constructor's refusal code.
+    """
+    if outcome["kind"] == "refusal":
+        return frozenset({("refusal", outcome["code"])})
+    if outcome["kind"] != "cells":
+        return frozenset()
+    families = {
+        ("metric", row["metric_type"])
+        for cell in outcome["cells"].values()
+        if (row := cell["result_cell"].get("retained_row")) and row.get("metric_type")
+    }
+    for entry in outcome["metadata"]["cells"]:
+        cell = entry["cell"]
+        families |= {
+            ("method", f"{cell['method']}:{cell['estimand']}"),
+            ("population", cell["analysis_population"]),
+            ("sequential", cell["inference"]),
+            ("view", case.view or ("breakout" if cell["kind"] == "segment" else "run")),
+        }
+    return frozenset(families)
+
+
+def test_pr_parity_cases_cover_every_constructor_and_capability_family():
+    from pathlib import Path
+
+    from scripts.capture_evidence_identity import load_operations_capture
+
+    capture = Path(__file__).parent / "fixtures" / "evidence_identity" / "pre-kernel"
+    captured = load_operations_capture(capture / "operations.json.gz")["scenarios"]
+
+    def pairs(cases):
+        return {
+            (constructor, family)
+            for case in cases
+            for constructor, outcome in captured[case.id].items()
+            for family in _capability_families(case, outcome)
+        }
+
+    assert len(_PR_CASE_IDS) == len(PR_PARITY_CASES)
+    missing = pairs(PARITY_CASES) - pairs(PR_PARITY_CASES)
+    assert not missing, sorted(missing)
 
 
 def test_qr_cuped_rows_cover_six_ingresses_and_record_unavailable_sources():

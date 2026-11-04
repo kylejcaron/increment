@@ -98,13 +98,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The slow tier records in parts so each finishes well inside the timeout on a hosted runner.
+        # The slow and exhaustive tiers record in parts so each finishes well inside the timeout on a hosted runner.
         include:
           - {tier: fast, group: 1, splits: 1}
           - {tier: slow, group: 1, splits: 4}
           - {tier: slow, group: 2, splits: 4}
           - {tier: slow, group: 3, splits: 4}
           - {tier: slow, group: 4, splits: 4}
+          - {tier: exhaustive, group: 1, splits: 2}
+          - {tier: exhaustive, group: 2, splits: 2}
     env:
       TIER: ${{ matrix.tier }}
       GROUP: ${{ matrix.group }}
@@ -208,6 +210,13 @@ jobs:
         with:
           name: slow-test-durations
           path: weights/slow/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload exhaustive-test durations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exhaustive-test-durations
+          path: weights/exhaustive/
           if-no-files-found: error
           retention-days: 30
   refresh-selection-map:

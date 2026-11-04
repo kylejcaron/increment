@@ -10122,3 +10122,52 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _winsor_size_routed_case(),
     _mixed_cuped_multicovariate_case(),
 ) + capability_cases()
+
+# Every pull request runs this covering subset; the other cases run in the exhaustive gate.
+# Each constructor shows every capability family it has anywhere in `PARITY_CASES` (metric
+# type, method and estimand, view, population, inference route, refusal code) through the case
+# with the shortest recorded CI duration; `test_parity_harness` checks the coverage.
+_PR_PARITY_CASE_IDS = (
+    "edge-empty-arm",
+    "edge-zero-variance-arm",
+    "edge-near-zero-positive-ratio-denominator",
+    "edge-nonfinite-ratio-denominator",
+    "categorical-cuped-moments-format-13",
+    "bare_metric_name_summary_panel",
+    "cuped_covariate_name_summary_panel",
+    "triggered_daily",
+    "triggered_daily_lift",
+    "triggered_asof",
+    "triggered_sequential_asymptotic_mean",
+    "triggered_encouragement_compliance_asof",
+    "exact_counts_retention_cohort_boundary_export_from_unit_panel",
+    "audit-switchback-neighboring-integers",
+    "artifact_context_format_one_refusal",
+    "audit-sequential-missing-zero",
+    "audit-sequential-messy-mean-conversion",
+    "audit-adjusted-ratio-anchor",
+    "audit-compliance-only-sequential-unbounded-retention-catalog",
+    "sequential_automatic_breakout_continuous_bonferroni",
+    "sequential_automatic_multi_arm_exact",
+    "sequential_registered_registration_native_artifact_identity",
+    "sequential_boolean_segments_automatic_exact_bernoulli",
+    "clustered_zero_relative_variance_preserves_point_and_additive_interval",
+    "conversion_route_breakout_segments",
+    "encouragement_supplied_design_definitions",
+    "audit-compliance-only-outcome-missingness",
+    "audit-compliance-only-empty-catalog",
+    "encouragement_margin_guardrail_late_only",
+    "observational_iptw_conversion_diagnostics",
+    "observational_aipw_conversion_diagnostics",
+    "observational_quantile_refused_at_the_readout_seam",
+    "observational_aipw_dml_covariate_adjusted",
+    "observational_categorical_covariate_missing_levels",
+    "audit-quantile-family",
+    "winsor-percentile-zero-inclusive-2-arm",
+    "mixed-cuped-multicovariate-fixed-horizon",
+    "scalar_sequential_mean_cuped_asymptotic",
+)
+_CASES_BY_ID = {case.id: case for case in PARITY_CASES}
+PR_PARITY_CASES: tuple[ParityCase, ...] = tuple(
+    _CASES_BY_ID[case_id] for case_id in _PR_PARITY_CASE_IDS
+)

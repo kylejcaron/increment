@@ -52,9 +52,12 @@ No I/O at import; builders live in ``matrix_cases``.
 from __future__ import annotations
 
 import itertools
+import json
 import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
+from functools import cache
+from pathlib import Path
 from typing import Literal
 
 from increment.errors import InvalidRequestError
@@ -80,7 +83,8 @@ MISSING = ("error", "zero", "drop", "impute")
 
 
 def parity_matrix_scope() -> Literal["cover", "full"]:
-    """Return the selected parity scope, defaulting to the PR covering array."""
+    """The generated scope: the pull-request cells by default, every cell when
+    ``INCREMENT_PARITY_MATRIX=full`` (the exhaustive gate and full local runs)."""
     scope = os.environ.get("INCREMENT_PARITY_MATRIX", "cover")
     if scope not in ("cover", "full"):
         raise ValueError("INCREMENT_PARITY_MATRIX must be 'cover' or 'full'")
@@ -1314,12 +1318,48 @@ def classify(cell: Cell) -> Disposition:
 
 
 def iter_request_refusals():
-    """Enumerate refused read requests from the selected matrix and its variants."""
-    for cell in (*parity_matrix_cells(), *iter_asymptotic_retention_cells()):
+    """Enumerate refused read requests of every cell and its variants, in a fixed order."""
+    for cell in (*iter_cells(), *iter_asymptotic_retention_cells()):
         for method, leg in classify(cell).legs.items():
             for ingress, verdict in leg.items():
                 if isinstance(verdict.outcome, Refuses) and verdict.stage == "request":
                     yield cell, method, ingress, verdict.outcome.code
+
+
+def preflight_refusal_groups() -> dict[tuple[Cell, str], list[tuple[str, str]]]:
+    """The refused ``(method, code)`` read requests of each cell and ingress, in order."""
+    groups: dict[tuple[Cell, str], list[tuple[str, str]]] = {}
+    for cell, method, ingress, code in iter_request_refusals():
+        groups.setdefault((cell, ingress), []).append((method, code))
+    return groups
+
+
+@dataclass(frozen=True)
+class PreflightHazard:
+    """One refusal hazard of the preflight contract: a code with the keys of its context,
+    raised by one ingress at one stage, and the cell (``<cell id>-<ingress>``) that runs it
+    on every pull request."""
+
+    cell: str
+    ingress: str
+    code: str
+    context: tuple[str, ...]
+    stage: str
+
+
+PREFLIGHT_HAZARDS = Path(__file__).with_name("preflight_hazards.json")
+
+
+@cache
+def preflight_hazards() -> tuple[PreflightHazard, ...]:
+    """The recorded hazards; ``scripts/record_preflight_hazards.py`` regenerates the record."""
+    payload = json.loads(PREFLIGHT_HAZARDS.read_text(encoding="utf-8"))
+    return tuple(
+        PreflightHazard(
+            item["cell"], item["ingress"], item["code"], tuple(item["context"]), item["stage"]
+        )
+        for item in payload["hazards"]
+    )
 
 
 def _disposition_signature(disposition: Disposition) -> tuple[object, ...]:
@@ -1343,15 +1383,13 @@ def _disposition_signature(disposition: Disposition) -> tuple[object, ...]:
     return verdicts, refusal_codes, waived_ingresses
 
 
-def parity_matrix_cells() -> tuple[Cell, ...]:
-    """Return the selected primary matrix cells, including disposition sentinels and the
-    pinned CUPED cells."""
-    cells = tuple(iter_cells())
-    if parity_matrix_scope() == "full":
-        return cells
-
+@cache
+def pr_matrix_cells() -> tuple[Cell, ...]:
+    """The primary cells every pull request runs: a strength-3 covering array, one sentinel
+    per disposition and the pinned CUPED cells. The other cells run in the exhaustive gate."""
     from tests.parity_harness.covering import _covering_subset
 
+    cells = tuple(iter_cells())
     covered = set(
         _covering_subset(
             tuple(
@@ -1374,6 +1412,11 @@ def parity_matrix_cells() -> tuple[Cell, ...]:
         for cell in cells
         if (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing) in selected
     )
+
+
+def parity_matrix_cells() -> tuple[Cell, ...]:
+    """The primary cells the selected scope generates."""
+    return tuple(iter_cells()) if parity_matrix_scope() == "full" else pr_matrix_cells()
 
 
 def _hazard_codes(verdicts: Mapping[str, Verdict]) -> dict[str, set[str]]:

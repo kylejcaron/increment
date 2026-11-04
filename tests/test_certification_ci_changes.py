@@ -85,9 +85,22 @@ def test_fixture_repo_ignores_inherited_git_dir(
     assert _git(repo, "rev-parse", "--show-toplevel") == str(repo)
 
 
-def _required(repo: Path, base: str, event: str = "pull_request") -> bool:
+def _required(
+    repo: Path, base: str, event: str = "pull_request", *, gate: str = "certification"
+) -> bool:
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--event", event, "--base", base, "--head", "HEAD"],
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--gate",
+            gate,
+            "--event",
+            event,
+            "--base",
+            base,
+            "--head",
+            "HEAD",
+        ],
         cwd=repo,
         text=True,
         capture_output=True,
@@ -222,6 +235,66 @@ def test_missing_base_requires_certification(repository):
 def test_non_pr_events_require_certification(repository, event: str):
     repo, _ = repository
     assert _required(repo, "missing-base", event)
+
+
+@pytest.mark.grid("each exhaustive trigger path is a separate selector contract")
+@pytest.mark.parametrize(
+    "path",
+    [
+        "increment/query/_cuped_qr.py",
+        "increment/sources.py",
+        "increment/frame.py",
+        "increment/_frame_moments.py",
+        "increment/readouts/_evidence.py",
+        "increment/_evidence_loaders.py",
+        "increment/_source_types.py",
+        "tests/parity_harness/cases.py",
+        "tests/evidence_fixtures/FAULTS.md",
+        "scripts/certification_ci_changes.py",
+        ".github/workflows/ci.yml",
+        "noxfile.py",
+        "Makefile",
+        "pyproject.toml",
+        "uv.lock",
+    ],
+)
+def test_loader_change_requires_exhaustive(repository, path: str):
+    repo, base = repository
+    _commit_change(repo, path)
+    assert _required(repo, base, gate="exhaustive")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "increment/estimation/variance.py",
+        "increment/readouts/_breakout.py",
+        "increment/dashboard/_html.py",
+        "tests/test_behavior.py",
+        "docs/guide.md",
+        ".github/workflows/weekly.yml",
+    ],
+)
+def test_change_outside_loaders_and_their_grids_does_not_require_exhaustive(repository, path: str):
+    repo, base = repository
+    _commit_change(repo, path)
+    assert not _required(repo, base, gate="exhaustive")
+
+
+def test_change_to_a_module_holding_exhaustive_tests_requires_exhaustive(repository):
+    repo, base = repository
+    module = repo / "tests" / "test_grid.py"
+    module.write_text("import pytest\n\npytestmark = [pytest.mark.slow, pytest.mark.exhaustive]\n")
+    _git(repo, "add", "--all")
+    _git(repo, "commit", "-qm", "add a grid")
+    assert _required(repo, base, gate="exhaustive")
+
+
+def test_pushes_dispatches_and_unknown_bases_require_exhaustive(repository):
+    repo, _ = repository
+    assert _required(repo, "0" * 40, gate="exhaustive")
+    for event in ("push", "workflow_dispatch", "schedule"):
+        assert _required(repo, "missing-base", event, gate="exhaustive"), event
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.tooling]

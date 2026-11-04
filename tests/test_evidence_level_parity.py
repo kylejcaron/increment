@@ -209,6 +209,106 @@ def test_mean_and_conversion_evidence_matches_across_sources(monkeypatch):
     assert records[0].entries[_key()]["moments"]["n"] == 60
 
 
+def _parity_revenue(arm: str, unit: int) -> float:
+    """In-window revenue of unit *unit* in `dataset.event_rows`: a third buy nothing."""
+    return 0.0 if unit % 3 == 0 else 5.0 + (arm == "treatment") + unit % 5
+
+
+@pytest.mark.integration
+def test_triggered_run_acquires_the_triggered_members_evidence():
+    """A whole-window run of the triggered population requests triggered evidence and receives
+    the triggered units' values: here the first half of each arm sees the surface at
+    assignment, so its counts and moments differ from the assigned arm's."""
+    import datetime as dt
+    import statistics
+    from dataclasses import dataclass, field
+
+    from increment.artifacts import SourceSnapshotEvidence
+    from increment.semantics.models import AnalysisPlan, Definitions
+    from tests.analysis_factory import make_binding
+    from tests.evidence_fixtures.capture import _Capture, _wrapped_producers
+    from tests.parity_harness import dataset as ds
+    from tests.parity_harness.cases import _close_parity_binding, _track_connection
+    from tests.parity_harness.views import read
+
+    @dataclass
+    class _Acquisitions(_Capture):
+        seen: list = field(default_factory=list)
+
+        def record(self, name, result, arguments):
+            self.seen.append((self.context(arguments).get("request"), result))
+            return result
+
+    per_arm, triggered = 24, range(12)
+    rows = ds.event_rows(n_per_arm=per_arm)
+    rows += [
+        ds._row(f"{prefix}{unit}", ds._EXPOSURE_AT, "saw_surface")
+        for prefix in ("c", "t")
+        for unit in triggered
+    ]
+    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
+    payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
+    payload["experiments"][0]["trigger"] = "saw_surface"
+    cutoff = dt.datetime(2025, 1, 19, 23, 59, tzinfo=dt.UTC)
+    con = ds.duckdb_connection(rows)
+    bound = _track_connection(
+        make_binding(
+            con,
+            Definitions.model_validate(payload),
+            experiment="exp",
+            source_snapshot_evidence=SourceSnapshotEvidence(
+                observation_cutoff_ts=cutoff, complete_through_by_feed={"events": cutoff}
+            ),
+        ),
+        con,
+    )
+    acquisitions = _Acquisitions(
+        (Scope(view="run", grain="total", population="triggered"),), frozenset()
+    )
+    try:
+        with warnings.catch_warnings(), _wrapped_producers(acquisitions):
+            warnings.simplefilter("ignore", IncrementWarning)
+            readout = read(bound, "run", population="triggered", metrics=("revenue",))
+    finally:
+        _close_parity_binding(bound)
+
+    expected = {
+        arm: [_parity_revenue(arm, unit) for unit in triggered] for arm in ("control", "treatment")
+    }
+    assigned = {arm: [_parity_revenue(arm, unit) for unit in range(per_arm)] for arm in expected}
+    assert all(
+        statistics.fmean(expected[arm]) != statistics.fmean(assigned[arm]) for arm in expected
+    )
+    evidence = [
+        (request, result)
+        for request, result in acquisitions.seen
+        if type(request).__name__ == "MetricEvidenceRequest"
+    ]
+    ((request, result),) = evidence
+    moments = {row["group_id"]: row for row in result.rows}
+    for arm, values in expected.items():
+        mean = statistics.fmean(values)
+        assert moments[arm]["n"] == len(values)
+        assert moments[arm]["ref_y"] == pytest.approx(mean, rel=1e-9)
+        assert moments[arm]["cy2"] == pytest.approx(
+            sum((value - mean) ** 2 for value in values), rel=1e-9
+        )
+    counts = [
+        result for request, result in acquisitions.seen if type(request).__name__ == "CountsRequest"
+    ]
+    assert {count.population for count in counts} == {"assigned", "triggered"}
+    for count in counts:
+        size = len(triggered) if count.population == "triggered" else per_arm
+        assert count.counts == {"control": size, "treatment": size}
+    (row,) = readout
+    assert row.analysis_population == "triggered"
+    assert (row.n_control, row.n_treat) == (len(triggered), len(triggered))
+    assert row.mean_control == pytest.approx(statistics.fmean(expected["control"]), rel=1e-9)
+    assert row.mean_treat == pytest.approx(statistics.fmean(expected["treatment"]), rel=1e-9)
+    assert request.population == "triggered"
+
+
 @pytest.mark.integration
 def test_real_breakout_capture_checks_roster_per_declared_source():
     import ibis
@@ -1042,32 +1142,21 @@ def _frozen_coordinate(scenario_id, ingress):
     return coordinate
 
 
+def _coordinate_param(entry):
+    """Every declared coordinate runs in the exhaustive gate; the ceiling-scale artifact also
+    carries the stress cost of its 4,000,001-unit control arm."""
+    marks = [pytest.mark.slow, pytest.mark.exhaustive]
+    if (entry.scenario_id, entry.ingress) == (
+        "exact_binomial_beyond_the_former_arm_ceiling",
+        "from_unit_day_artifact",
+    ):
+        marks += [pytest.mark.stress, pytest.mark.timeout(900)]
+    return pytest.param(entry, id=f"{entry.scenario_id}--{entry.ingress}", marks=marks)
+
+
 @pytest.mark.integration
 @pytest.mark.grid("Complete declared scenario/source disposition and typed-input inventory")
-@pytest.mark.parametrize(
-    "entry",
-    [
-        pytest.param(
-            entry,
-            id=f"{entry.scenario_id}--{entry.ingress}",
-            marks=[pytest.mark.slow, pytest.mark.stress, pytest.mark.timeout(900)],
-        )
-        if (entry.scenario_id, entry.ingress)
-        == ("exact_binomial_beyond_the_former_arm_ceiling", "from_unit_day_artifact")
-        else pytest.param(
-            entry,
-            id=f"{entry.scenario_id}--{entry.ingress}",
-            marks=pytest.mark.slow,
-        )
-        if entry.scenario_id
-        in {
-            "exact_binomial_beyond_the_former_arm_ceiling",
-            "mixed-cuped-multicovariate-fixed-horizon",
-        }
-        else pytest.param(entry, id=f"{entry.scenario_id}--{entry.ingress}")
-        for entry in scenario_roster()
-    ],
-)
+@pytest.mark.parametrize("entry", [_coordinate_param(entry) for entry in scenario_roster()])
 def test_declared_coordinate_acquires_exact_evidence_or_disposition(entry):
     from tests.evidence_fixtures.scenarios import _scenario_case
 

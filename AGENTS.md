@@ -136,7 +136,9 @@ every loader.
   `tests/_unit_boundary.py` enforces this); `integration` marks component,
   query, UI and subprocess boundaries; `slow` marks expensive work;
   `parameter_recovery` and `numerical_certification` mark scientific checks and
-  are always also `slow`; `examples` marks notebooks. A `parametrize` past
+  are always also `slow`; `exhaustive` marks complete cross-source grids outside
+  the every-PR covering subset, is always also `slow`, and runs in its own gate
+  (`make test-exhaustive`); `examples` marks notebooks. A `parametrize` past
   twelve items becomes boundary cases plus a Hypothesis property or carries
   `@pytest.mark.grid("<reason>")`.
 - Tests are independent under xdist; modules that touch a shared path use
@@ -160,7 +162,10 @@ every loader.
   when README or docs change, run `make test-doc-snippets`.
 - A change to refusals, scopes or breakout selection runs
   `tests/test_parity_matrix.py::test_runnable_preserves_preflight_refusals`
-  (slow tier): `runnable()` and `run()` report the same code and context.
+  in the full scope (`INCREMENT_PARITY_MATRIX=full make test TESTS=<that node ID>`):
+  `runnable()` and `run()` report the same code and context. A new or changed
+  hazard regenerates `tests/parity_harness/preflight_hazards.json` with
+  `scripts/record_preflight_hazards.py`.
 - Tests never pass `examples/definitions` to a builder: builders write a
   catalog file beside the definitions and `tests/conftest.py` then fails the
   session. Use the `example_definitions` fixture.

@@ -37,6 +37,7 @@ def _tier_eligible(item: Any) -> bool:
     if _TIER == "slow":
         return "slow" in markers and not markers.intersection(
             {
+                "exhaustive",
                 "parameter_recovery",
                 "numerical_certification",
                 "examples",

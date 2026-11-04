@@ -135,4 +135,5 @@ jobs:
           uv run --no-sync python -c 'from importlib.metadata import version; import increment, sqlglot; print("ibis-framework", version("ibis-framework")); print("sqlglot", sqlglot.__version__, sqlglot.__file__); print("increment", increment.__file__)'
       - run: make test-fast WORKERS=auto
       - run: make test-slow WORKERS=auto
+      - run: make test-exhaustive WORKERS=auto
       - run: make test-tier TIER=compile-registry WORKERS=auto
