@@ -223,8 +223,9 @@ switchback_experiment, switchback_resolver = from_switchback_frame(
 Every builder returns an experiment declaration and a resolver for reading its
 source. Saving and loading the declaration preserves
 its hash; it does not serialize the data or a warehouse connection. Column types
-recorded for a source are saved with the declaration, and `experiment.provides()`
-lists them, but they are not part of its `hash()` or `analysis_spec_hash`.
+recorded for a source are saved with the declaration (`SourceReference.schema`), and
+`experiment.provides()` lists the recorded columns, but the types are not part of its
+`hash()` or `analysis_spec_hash`.
 
 Use the resolver as a context manager when it owns temporary warehouse tables or
 an opened artifact snapshot. Exiting the block releases those resources; it

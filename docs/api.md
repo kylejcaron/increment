@@ -133,7 +133,7 @@ values.
   the identities of its runs, no longer include the column types recorded for
   its sources. A connected and an offline `from_definitions` experiment now
   keep one identity before and after the first run records those types;
-  `to_json()` still saves them and `Experiment.provides()` lists them.
+  `to_json()` still saves them and `Experiment.provides()` lists the recorded columns.
   Identities of definitions-built experiments, and of experiments declared with
   `SourceReference(schema=...)`, change once, and so do the cell identities of
   their new runs, because a cell's identity includes its run's
