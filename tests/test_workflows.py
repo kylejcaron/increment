@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import subprocess
@@ -189,10 +190,16 @@ def test_nightly_publishes_duration_weights_only_from_every_successful_part() ->
     parts: dict[str, set[tuple[int, int]]] = {}
     for entry in record["strategy"]["matrix"]["include"]:
         parts.setdefault(entry["tier"], set()).add((entry["group"], entry["splits"]))
-    assert set(parts) == {"fast", "slow"}
+    assert set(parts) == {"fast", "slow", "exhaustive"}
     for tier, recorded in parts.items():
         (splits,) = {count for _, count in recorded}
         assert {group for group, _ in recorded} == set(range(1, splits + 1)), tier
+    uploads = {
+        step["with"]["path"]
+        for step in publish["steps"]
+        if "upload-artifact" in step.get("uses", "")
+    }
+    assert uploads == {f"weights/{tier}/" for tier in parts}
 
 
 def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
@@ -395,6 +402,17 @@ def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
     assert duration_report.get("shell") == "bash"
     assert "3.12-1,3.12-2,3.12-3,slow-1" in duration_report["env"]["EXPECTED_DURATION_SHARDS"]
     assert "3.13-1,3.13-2,3.13-3,3.14-1" in duration_report["env"]["EXPECTED_DURATION_SHARDS"]
+    from scripts.duration_report import DURATION_ARTIFACT_PREFIXES
+
+    downloads = [
+        step["with"]
+        for step in duration_job["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    assert {download["pattern"] for download in downloads} == {
+        f"{prefix}*" for prefix in DURATION_ARTIFACT_PREFIXES
+    }
+    assert {download["path"] for download in downloads} == {"duration-artifacts"}
     slow_job = jobs["slow"]
     slow_tests = next(step for step in slow_job["steps"] if step.get("id") == "slow-tests")
     assert slow_tests["env"]["INCREMENT_COLLECT_SHARD_ID"] == "slow-${{ matrix.group }}"
@@ -414,3 +432,118 @@ def test_pull_requests_run_the_full_fast_tier_on_one_python() -> None:
     assert gate_step["env"]["UNIT_NEWEST_RESULT"] == "${{ needs.unit-newest.result }}"
     run = gate_step["run"]
     assert 'check_conditional_job "$UNIT_NEWEST_REQUIRED" "$UNIT_NEWEST_RESULT" unit-newest' in run
+
+
+def _selects(expression: str, *marks: str) -> bool:
+    """Whether a pytest ``-m`` expression selects an item carrying exactly *marks*."""
+    from _pytest.mark import MarkMatcher
+    from _pytest.mark.expression import Expression
+
+    matcher = MarkMatcher.from_markers(getattr(pytest.mark, mark).mark for mark in marks)
+    return Expression.compile(expression).evaluate(matcher)
+
+
+def _noxfile() -> tuple[dict[str, str], dict[str, str]]:
+    """Tier markers and session sources, read without importing ``nox``.
+
+    The core-install job runs this module without development tools.
+    """
+    source = Path("noxfile.py").read_text()
+    tree = ast.parse(source)
+    markers = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "TIER_MARKERS" for t in node.targets)
+    )
+    functions = {
+        node.name: ast.get_source_segment(source, node) or ""
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    return markers, functions
+
+
+def test_nightly_and_main_select_exhaustive() -> None:
+    markers, functions = _noxfile()
+    full_tier = markers["all-except-scientific"]
+    assert _selects(full_tier, "slow", "exhaustive")
+    assert _selects(full_tier, "integration", "slow", "exhaustive")
+    assert '"all-except-scientific"' in functions["tests_full"]
+    nightly = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())
+    full_suite = nightly["jobs"]["test-all"]
+    assert full_suite["if"] == "github.event_name != 'pull_request'"
+    assert any('nox -s "tests_full-' in step.get("run", "") for step in full_suite["steps"])
+
+    ci = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    # PyYAML reads the `on:` key as a boolean.
+    assert ci[True]["push"] == {"branches": ["main"]}
+    changes = ci["jobs"]["changes"]
+    assert changes["outputs"]["exhaustive_required"] == "${{ steps.exhaustive.outputs.required }}"
+    selector = next(step for step in changes["steps"] if step.get("id") == "exhaustive")
+    assert "scripts/certification_ci_changes.py --gate exhaustive" in selector["run"]
+    assert selector["env"]["EVENT"] == "${{ github.event_name }}"
+    job = ci["jobs"]["exhaustive"]
+    assert job["if"] == "${{ needs.changes.outputs.exhaustive_required == 'true' }}"
+    groups = job["strategy"]["matrix"]["group"]
+    assert groups == list(range(1, len(groups) + 1))
+    run = "\n".join(step.get("run", "") for step in job["steps"])
+    assert run.count("make test-exhaustive ") == 1
+    assert f"--splits {len(groups)} --group ${{{{ matrix.group }}}}" in run
+    exhaustive = markers["exhaustive"]
+    assert _selects(exhaustive, "slow", "exhaustive")
+    assert _selects(exhaustive, "integration", "slow", "exhaustive")
+    assert not _selects(exhaustive, "slow")
+    assert not _selects(exhaustive, "slow", "exhaustive", "numerical_certification")
+    # Every route that runs the exhaustive tier generates the full matrix scope.
+    assert nightly["env"]["INCREMENT_PARITY_MATRIX"] == "full"
+    weekly = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]
+    assert weekly["parity-matrix-10x"]["env"]["INCREMENT_PARITY_MATRIX"] == "full"
+    assert any(
+        step.get("run", "").startswith("make test-exhaustive ")
+        for step in weekly["newest-dependencies"]["steps"]
+    )
+    makefile = Path("Makefile").read_text()
+    for target in ("test-exhaustive", "test-all"):
+        recipe = re.search(rf"(?m)^{target}:\n\t(.*)$", makefile)
+        assert recipe is not None, target
+        assert recipe.group(1).startswith("INCREMENT_PARITY_MATRIX=full "), target
+    for target in ("check", "ci-local"):
+        prerequisites = re.search(rf"(?m)^{target}:(.*)$", makefile)
+        assert prerequisites is not None, target
+        assert "test-exhaustive" in prerequisites.group(1).split(), target
+
+
+def test_pr_slow_job_excludes_exhaustive_unless_required() -> None:
+    markers, _ = _noxfile()
+
+    jobs = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())["jobs"]
+    slow_job = jobs["slow"]
+    assert "if" not in slow_job
+    step = next(step for step in slow_job["steps"] if step.get("name") == "Run slow tests")
+    assert step["run"].startswith("make test-slow ")
+    slow = markers["slow"]
+    assert json.loads(step["env"]["INCREMENT_COLLECT_TIERS"]) == {"slow": slow}
+    assert _selects(slow, "slow")
+    assert _selects(slow, "integration", "slow")
+    assert not _selects(slow, "slow", "exhaustive")
+    assert not _selects(slow, "integration", "slow", "exhaustive")
+
+    job = jobs["exhaustive"]
+    assert job["needs"] == ["changes"]
+    assert job["if"] == "${{ needs.changes.outputs.exhaustive_required == 'true' }}"
+    gate = jobs["ci-ok"]
+    assert "exhaustive" in gate["needs"]
+    gate_step = next(
+        step
+        for step in gate["steps"]
+        if step.get("name") == "Check required jobs and gate decisions"
+    )
+    assert gate_step["env"]["EXHAUSTIVE_REQUIRED"] == (
+        "${{ needs.changes.outputs.exhaustive_required }}"
+    )
+    assert gate_step["env"]["EXHAUSTIVE_RESULT"] == "${{ needs.exhaustive.result }}"
+    assert (
+        'check_conditional_job "$EXHAUSTIVE_REQUIRED" "$EXHAUSTIVE_RESULT" exhaustive'
+        in gate_step["run"]
+    )

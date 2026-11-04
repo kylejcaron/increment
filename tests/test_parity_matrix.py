@@ -9,10 +9,11 @@ exist but never compared. ``test_cell`` builds the cell on each ingress, runs it
 exactly that, so a stale refusal code, a refusal that became a number, a number that became a
 refusal and a numeric disagreement all fail.
 
-By default the primary cells are a strength-3 covering array with one sentinel per
-disposition and the pinned CUPED cells (``matrix.PR_CUPED_CELLS``);
-``INCREMENT_PARITY_MATRIX=full`` executes the full grid. The 64 asymptotic-retention variants
-always execute in either scope.
+By default every pull request generates the primary cells of a strength-3 covering array with
+one sentinel per disposition and the pinned CUPED cells (``matrix.pr_matrix_cells()``), and one
+preflight cell per recorded refusal hazard. ``INCREMENT_PARITY_MATRIX=full`` (the exhaustive
+gate, nightly and full local runs) also generates every other cell, marked ``exhaustive``. The
+64 asymptotic-retention variants always run.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request
@@ -25,6 +26,7 @@ shared between cells, so a cell never depends on test order or on a sibling havi
 from __future__ import annotations
 
 import itertools
+import json
 from collections.abc import Iterable
 from dataclasses import replace
 
@@ -47,32 +49,75 @@ def _reads_data(disposition: matrix.Disposition) -> bool:
     )
 
 
-def _params(cells: Iterable[matrix.Cell]) -> list:
+def _params(cells: Iterable[matrix.Cell], pr_cells: frozenset[matrix.Cell]) -> list:
     params = []
     for cell in cells:
         disposition = matrix.classify(cell)
-        marks = [pytest.mark.slow] if _reads_data(disposition) else []
+        if cell not in pr_cells:
+            marks = [pytest.mark.slow, pytest.mark.exhaustive]
+        elif _reads_data(disposition):
+            marks = [pytest.mark.slow]
+        else:
+            marks = []
         params.append(pytest.param(cell, id=cell.id, marks=marks))
     return params
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    cells = {
-        "test_cell": matrix.parity_matrix_cells,
-        "test_asymptotic_retention_cell": matrix.iter_asymptotic_retention_cells,
-    }.get(metafunc.function.__name__)
-    if cells is not None:
-        metafunc.parametrize("cell", _params(cells()))
+    if metafunc.function.__name__ == "test_cell":
+        metafunc.parametrize(
+            "cell", _params(matrix.parity_matrix_cells(), frozenset(matrix.pr_matrix_cells()))
+        )
+    elif metafunc.function.__name__ == "test_asymptotic_retention_cell":
+        variants = tuple(matrix.iter_asymptotic_retention_cells())
+        metafunc.parametrize("cell", _params(variants, frozenset(variants)))
 
 
 def _preflight_refusal_params() -> list:
-    groups: dict[tuple[matrix.Cell, str], list[tuple[str, str]]] = {}
-    for cell, method, ingress, code in matrix.iter_request_refusals():
-        groups.setdefault((cell, ingress), []).append((method, code))
-    return [
-        pytest.param(cell, ingress, requests, id=f"{cell.id}-{ingress}")
-        for (cell, ingress), requests in groups.items()
-    ]
+    """One cell per recorded hazard runs on every pull request; the full scope also generates
+    every other refusing cell, as exhaustive."""
+    representatives = {hazard.cell for hazard in matrix.preflight_hazards()}
+    full = matrix.parity_matrix_scope() == "full"
+    params = []
+    for (cell, ingress), requests in matrix.preflight_refusal_groups().items():
+        param_id = f"{cell.id}-{ingress}"
+        if param_id in representatives:
+            params.append(pytest.param(cell, ingress, requests, id=param_id))
+        elif full:
+            params.append(
+                pytest.param(cell, ingress, requests, id=param_id, marks=pytest.mark.exhaustive)
+            )
+    return params
+
+
+def test_each_scope_generates_its_cells_and_marks_the_rest_exhaustive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default scope generates the pull-request cells and refusal representatives; the
+    full scope generates every cell and refusing cell, marking those outside the
+    pull-request set exhaustive."""
+    pr_cells = frozenset(matrix.pr_matrix_cells())
+    representatives = {hazard.cell for hazard in matrix.preflight_hazards()}
+    refusing = {f"{cell.id}-{ingress}" for cell, ingress in matrix.preflight_refusal_groups()}
+    for scope, cells, preflight in (
+        ("cover", pr_cells, representatives),
+        ("full", frozenset(matrix.iter_cells()), refusing),
+    ):
+        monkeypatch.setenv("INCREMENT_PARITY_MATRIX", scope)
+        params = _params(matrix.parity_matrix_cells(), pr_cells)
+        assert {param.values[0] for param in params} == cells, scope
+        assert {
+            param.values[0]
+            for param in params
+            if any(mark.name == "exhaustive" for mark in param.marks)
+        } == cells - pr_cells, scope
+        generated = _preflight_refusal_params()
+        assert {param.id for param in generated} == preflight, scope
+        assert {
+            param.id
+            for param in generated
+            if not any(mark.name == "exhaustive" for mark in param.marks)
+        } == representatives, scope
 
 
 @pytest.mark.integration
@@ -95,18 +140,21 @@ def test_runnable_preserves_preflight_refusals(
         (method, code, build_case(cell, method, disposition.outcomes(method)))
         for method, code in requests
     ]
+    hazards: set[tuple[str, str, tuple[str, ...], str]] = set()
     try:
         bound = cases[0][2].build[ingress]()
     except CodedError as error:
         for method, code, _ in cases:
             assert error.code == code, method
             record_property(f"refusal_stage_{method}", "declaration")
+        hazards.add((ingress, error.code, tuple(sorted(error.context)), "declaration"))
+        _assert_recorded_hazards(f"{cell.id}-{ingress}", hazards, record_property)
         return
     try:
         for method, code, case in cases:
             try:
                 with monkeypatch.context() as method_patch:
-                    _assert_runnable_refusal(
+                    stage, context = _assert_runnable_refusal(
                         bound, cell, method, ingress, code, case, method_patch, record_property
                     )
             except BaseException as error:
@@ -114,8 +162,25 @@ def test_runnable_preserves_preflight_refusals(
                     f"Preflight refusal check: cell={cell.id}, source={ingress}, method={method}"
                 )
                 raise
+            hazards.add((ingress, code, context, stage))
     finally:
         _close_parity_binding(bound)
+    _assert_recorded_hazards(f"{cell.id}-{ingress}", hazards, record_property)
+
+
+def _assert_recorded_hazards(cell_id, hazards, record_property):
+    """Every refusal a cell raised is a recorded hazard, and a cell that runs a hazard on every
+    pull request still raises it."""
+    record_property("refusal_hazards", json.dumps(sorted(hazards)))
+    recorded = {(h.ingress, h.code, h.context, h.stage): h.cell for h in matrix.preflight_hazards()}
+    unrecorded = hazards - recorded.keys()
+    assert not unrecorded, (
+        f"{cell_id}: unrecorded refusal hazards {sorted(unrecorded)}; "
+        "regenerate tests/parity_harness/preflight_hazards.json with "
+        "scripts/record_preflight_hazards.py"
+    )
+    represented = {hazard for hazard, cell in recorded.items() if cell == cell_id}
+    assert represented <= hazards, f"{cell_id} no longer raises {sorted(represented - hazards)}"
 
 
 def _assert_runnable_refusal(
@@ -178,15 +243,39 @@ def _assert_runnable_refusal(
         else ("randomized.cuped" if cell.option == "cuped" else "randomized.unadjusted")
     )
     status = runnable(Experiment.from_json(experiment.to_json()), "m")[estimator]
-    if case.sequential:
-        record_property(f"refusal_stage_{method}", "construction")
-    elif not executed_reads:
-        record_property(f"refusal_stage_{method}", "preflight")
+    stage = "construction" if case.sequential else ("data" if executed_reads else "preflight")
+    record_property(f"refusal_stage_{method}", stage)
+    if stage == "preflight":
         _assert_preflight_refusal(status, executed.value, scope)
-    else:
-        record_property(f"refusal_stage_{method}", "data")
+    elif stage == "data":
         assert status.deferred_checks
     assert counted.loader_reads == []
+    return stage, tuple(sorted(executed.value.context))
+
+
+def test_pr_preflight_keeps_one_cell_per_refusal_hazard():
+    """Pull requests run one preflight cell per recorded refusal hazard: a code with the keys
+    of its context, raised by one ingress at one stage. The record names every request-stage
+    refusal the full matrix enumerates; the exhaustive cells hold every refusal to it."""
+    requests = {
+        f"{cell.id}-{ingress}": (ingress, {code for _, code in pairs})
+        for (cell, ingress), pairs in matrix.preflight_refusal_groups().items()
+    }
+    hazards = matrix.preflight_hazards()
+    keys = [(h.ingress, h.code, h.context, h.stage) for h in hazards]
+    assert len(set(keys)) == len(keys)
+    for hazard in hazards:
+        ingress, codes = requests[hazard.cell]
+        assert ingress == hazard.ingress and hazard.code in codes, hazard
+    assert {(ingress, code) for ingress, codes in requests.values() for code in codes} == {
+        (h.ingress, h.code) for h in hazards
+    }
+    pr_cells = {
+        param.id
+        for param in _preflight_refusal_params()
+        if not any(mark.name == "exhaustive" for mark in param.marks)
+    }
+    assert pr_cells == {h.cell for h in hazards}
 
 
 def _assert_preflight_refusal(status, expected, scope):
@@ -254,12 +343,11 @@ def test_qr_cuped_ingress_contract_is_enumerated_separately_from_scalar_cells():
     assert "mixed-cuped-multicovariate-fixed-horizon" in matrix.QR_CUPED_ROWS
 
 
-def test_pr_scope_runs_every_pinned_cuped_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pr_scope_runs_every_pinned_cuped_cell() -> None:
     """The covering array may select only a refusing variant of a CUPED shape; a pinned cell
     keeps that shape's cross-source comparison on every pull request, with its lift compared
     across the definitions and unit-day artifact readers."""
-    monkeypatch.setenv("INCREMENT_PARITY_MATRIX", "cover")
-    selected = set(matrix.parity_matrix_cells())
+    selected = set(matrix.pr_matrix_cells())
     assert matrix.PR_CUPED_CELLS
     for cell in matrix.PR_CUPED_CELLS:
         assert cell in selected, cell.id
