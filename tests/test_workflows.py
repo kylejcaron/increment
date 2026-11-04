@@ -8,6 +8,7 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -654,10 +655,6 @@ def test_nightly_and_main_select_exhaustive() -> None:
     assert nightly["env"]["INCREMENT_PARITY_MATRIX"] == "full"
     weekly = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]
     assert weekly["parity-matrix-10x"]["env"]["INCREMENT_PARITY_MATRIX"] == "full"
-    assert any(
-        step.get("run", "").startswith("make test-exhaustive ")
-        for step in weekly["newest-dependencies"]["steps"]
-    )
     makefile = Path("Makefile").read_text()
     for target in ("test-exhaustive", "test-all"):
         recipe = re.search(rf"(?m)^{target}:\n\t(.*)$", makefile)
@@ -831,3 +828,118 @@ def test_jobs_running_the_fast_or_full_tier_fetch_full_history() -> None:
             )
         )
     assert shallow == []
+
+
+def _assert_full_partition(job: dict, command: str) -> None:
+    """*command* runs one duration-balanced shard, and the job's matrix runs every shard once."""
+    split = re.search(r"--splits (\d+) --group \$\{\{ matrix\.group \}\}", command)
+    assert split is not None, command
+    splits = int(split.group(1))
+    assert splits > 1, command
+    assert "--splitting-algorithm least_duration" in command
+    # A failing shard must not cancel the rest of the partition.
+    assert job["strategy"]["fail-fast"] is False
+    assert job["strategy"]["matrix"]["group"] == list(range(1, splits + 1))
+
+
+def test_weekly_exhaustive_tier_runs_in_full_partitions_at_newest_dependencies() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())
+    jobs = workflow["jobs"]
+    newest = jobs["newest-dependencies"]
+    running = {name: job for name, job in jobs.items() if "exhaustive" in _job_test_tiers(job)}
+    assert running
+    for name, job in running.items():
+        assert job["if"] == newest["if"], name
+        steps = job["steps"]
+        runs = [step.get("run", "") for step in steps]
+        # `make test-exhaustive` is the route that generates the full matrix scope.
+        (command,) = [run for run in runs if run.startswith("make test-exhaustive ")]
+        _assert_full_partition(job, command)
+        assert "--durations-path .github/exhaustive-test-durations.json" in command, name
+        # Shards that resolved separately could collect different tests, so every
+        # shard installs the one upgraded lock a needed job publishes.
+        needs = job.get("needs", [])
+        (resolver,) = [
+            jobs[need]
+            for need in ([needs] if isinstance(needs, str) else needs)
+            if "uv lock --upgrade" in [step.get("run") for step in jobs[need]["steps"]]
+        ]
+        (upload,) = [
+            step["with"]
+            for step in resolver["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        ]
+        assert upload["path"] == "uv.lock", name
+        assert "uv lock --upgrade" not in runs, name
+        assert {**workflow["env"], **job.get("env", {})}["UV_LOCKED"] == "1", name
+        download = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("uses", "").startswith("actions/download-artifact@")
+            and step["with"] == {"name": upload["name"]}
+        )
+        assert download < next(
+            index for index, run in enumerate(runs) if run.startswith("uv sync")
+        ), name
+
+
+def _report_fires(condition: str, results: list[str]) -> bool:
+    """Evaluate the reporter's ``if`` for a scheduled run whose needed jobs ended with *results*."""
+    expression = condition.strip().removeprefix("${{").removesuffix("}}")
+    expression = re.sub(
+        r"contains\(needs\.\*\.result, '(\w+)'\)",
+        lambda match: str(match.group(1) in results),
+        expression,
+    )
+    expression = expression.replace("always()", "True")
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    scope = {"github": SimpleNamespace(event_name="schedule"), "inputs": SimpleNamespace(target="")}
+    return eval(expression, {"__builtins__": {}}, scope)
+
+
+def test_weekly_failure_report_fires_when_any_weekly_job_fails_or_times_out() -> None:
+    jobs = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]
+    report = jobs.pop("report-failure")
+    assert set(report["needs"]) == set(jobs)
+    # A job that runs past its time limit concludes `cancelled`, not `failure`.
+    for result in ("failure", "cancelled"):
+        assert _report_fires(report["if"], ["success", result, "skipped"]), result
+    assert not _report_fires(report["if"], ["success", "skipped"])
+
+
+def test_live_bigquery_probes_run_in_full_partitions_that_take_turns() -> None:
+    job = yaml.safe_load(Path(".github/workflows/warehouse-backends.yml").read_text())["jobs"][
+        "bigquery"
+    ]
+    (command,) = [
+        step["run"]
+        for step in job["steps"]
+        if "nox -s tests_warehouse_bigquery" in step.get("run", "")
+    ]
+    _assert_full_partition(job, command)
+    assert job["timeout-minutes"] == 45
+    # Each shard keeps the session's own test file and marker selection.
+    posargs = shlex.split(command.partition(" -- ")[2])
+    assert [arg for arg in posargs if arg.startswith("-")] == [
+        "--splits",
+        "--group",
+        "--splitting-algorithm",
+        "--durations-path",
+    ]
+    module = "integration/warehouse_execution/test_bigquery_execution.py"
+    probes = {
+        f"{module}::{node.name}"
+        for node in ast.parse(Path(module).read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    }
+    weights = json.loads(Path(posargs[posargs.index("--durations-path") + 1]).read_text())
+    assert weights
+    assert {node_id.partition("[")[0] for node_id in weights} <= probes
+    # Shards share the live scratch dataset: the matrix runs one at a time, and
+    # runs of the backend serialize through one concurrency group whose queue
+    # keeps every pending shard instead of cancelling the older one.
+    assert job["strategy"].get("max-parallel") == 1
+    concurrency = job["concurrency"]
+    assert "matrix" not in concurrency["group"]
+    assert concurrency.get("cancel-in-progress") is not True
+    assert concurrency.get("queue") == "max"

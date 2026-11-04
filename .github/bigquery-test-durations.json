@@ -1,0 +1,17 @@
+{
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_abort_after_manifest_leaves_nothing_visible": 59.12,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_cleanup_qualifies_bigquery_metadata_tables": 0.0,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_explicit_catalog_path": 55.59,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_manifest_index_namespace_contract": 119.24,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_output_confidentiality": 176.48,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_publish_adopt_parity": 229.78,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_artifact_sequential_identity_matches_native": 342.7,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_bigquery_float64_token_matches_pinned_python_binary64": 4.91,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_bigquery_float_token_probe_matches_rows_by_id": 0.52,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_bigquery_format4_digest_matches_duckdb": 18.97,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_bigquery_mixed_cuped_matches_local_with_native_and_artifact": 808.77,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_materialized_cache_reflects_true_correction": 77.2,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_ratio_metric_lift": 76.15,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_scratch_dataset_helpers_qualify_with_the_project": 0.0,
+  "integration/warehouse_execution/test_bigquery_execution.py::test_scratch_index_table_uses_a_string_database": 0.0
+}
