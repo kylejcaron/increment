@@ -290,7 +290,7 @@ def _run_identity_hashes(
                 "design": _json_value(experiment.design),
                 "metrics": _json_value(experiment.metrics),
                 "registration_hash": experiment.registration.registration_hash,
-                "source_refs": [item.canonical_payload() for item in experiment.source_refs],
+                "source_refs": [item.identity_payload() for item in experiment.source_refs],
                 "scopes": [item.canonical_payload() for item in experiment.scopes],
                 "operations": {
                     scope.hash(): scope_operation(experiment, scope) for scope in experiment.scopes

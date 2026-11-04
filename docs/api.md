@@ -129,6 +129,16 @@ values.
   `ExperimentDefinition(...)`, the name it is imported under, instead of
   `Experiment(...)`, the name of the execution specification. Its fields, saved
   JSON and identity hashes are unchanged.
+- Release note (bug fix): an experiment's `hash()` and `analysis_spec_hash`, and
+  the identities of its runs, no longer include the column types recorded for
+  its sources. A connected and an offline `from_definitions` experiment now
+  keep one identity before and after the first run records those types;
+  `to_json()` still saves them for `runnable`. Identities of definitions-built
+  experiments, and of experiments declared with `SourceReference(schema=...)`,
+  change once; runs saved earlier still reopen from their saved
+  `store.open_run` coordinates with `RunResult.from_handle`. Dataframe, moments,
+  switchback and artifact experiments record no column types, so their
+  identities are unchanged.
 
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal

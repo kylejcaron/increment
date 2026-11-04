@@ -222,7 +222,9 @@ switchback_experiment, switchback_resolver = from_switchback_frame(
 
 Every builder returns an experiment declaration and a resolver for reading its
 source. Saving and loading the declaration preserves
-its hash; it does not serialize the data or a warehouse connection.
+its hash; it does not serialize the data or a warehouse connection. Column types
+recorded for a source are saved with the declaration for `runnable`, but they are
+not part of its `hash()` or `analysis_spec_hash`.
 
 Use the resolver as a context manager when it owns temporary warehouse tables or
 an opened artifact snapshot. Exiting the block releases those resources; it
@@ -399,6 +401,9 @@ No source snapshot hash or wire-format version changes.
 
 Connected definitions builders record dtypes lazily from the selected input
 relations during the first execution, then refresh their offline catalog.
+Recording them does not change the experiment's identity: the connected and
+offline experiments share one `hash()` and `analysis_spec_hash` before and after
+that first execution.
 Construction performs no additional schema query. The definitions builder takes
 the path first and the experiment name as the `experiment_name=` keyword.
 Catalog refreshes retain the definitions digest from the original bind. Changing

@@ -1168,6 +1168,19 @@ def test_dataclass_learner_factory_stays_callable_until_export(with_reference):
     assert portable.value.code == "kernel.method.implementation_ref_missing"
 
 
+def test_recorded_schema_does_not_change_runtime_only_run_identity():
+    experiment, resolver = _runtime_experiment(_ConfiguredPropensity)
+    recorded = replace(
+        experiment,
+        source_refs=tuple(replace(ref, schema={"t.c": "string"}) for ref in experiment.source_refs),
+    )
+
+    unrecorded_run, recorded_run = run(experiment, resolver).run, run(recorded, resolver).run
+
+    assert unrecorded_run.analysis_spec_hash == recorded_run.analysis_spec_hash
+    assert unrecorded_run.execution_identity_hash == recorded_run.execution_identity_hash
+
+
 def test_runtime_callable_run_result_refuses_portable_storage(tmp_path):
     import pickle
 

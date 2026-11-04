@@ -99,6 +99,10 @@ class SourceReference:
             "declaration_version": self.declaration_version,
         }
 
+    def identity_payload(self) -> dict[str, object]:
+        """The canonical payload without recorded column types, which never change an analysis."""
+        return {**self.canonical_payload(), "schema": None}
+
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> SourceReference:
         raw_capabilities = payload.get("capabilities")
@@ -176,6 +180,19 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     return value
+
+
+def _encoded(payload: Callable[[], dict[str, object]], *, portable: bool = True) -> str:
+    try:
+        return canonical_json_bytes(payload()).decode("utf-8")
+    except (TypeError, ValueError) as exc:
+        if portable:
+            raise CodedError(
+                "Experiment contains values that cannot be represented portably",
+                code="kernel.method.implementation_ref_missing",
+                context={"field": "callable"},
+            ) from exc
+        raise
 
 
 def _capability_payload(value: EvidenceCapabilities | None) -> dict[str, object] | None:
@@ -295,16 +312,7 @@ class Experiment:
         }
 
     def to_json(self, *, portable: bool = True) -> str:
-        try:
-            return canonical_json_bytes(self.canonical_payload()).decode("utf-8")
-        except (TypeError, ValueError) as exc:
-            if portable:
-                raise CodedError(
-                    "Experiment contains values that cannot be represented portably",
-                    code="kernel.method.implementation_ref_missing",
-                    context={"field": "callable"},
-                ) from exc
-            raise
+        return _encoded(self.canonical_payload, portable=portable)
 
     @classmethod
     def from_json(cls, value: str | bytes) -> Experiment:
@@ -363,7 +371,14 @@ class Experiment:
         )
 
     def hash(self) -> str:
-        return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
+        """Identity of the declared analysis; recorded column types do not change it."""
+        return hashlib.sha256(_encoded(self._identity_payload).encode("utf-8")).hexdigest()
+
+    def _identity_payload(self) -> dict[str, object]:
+        return {
+            **self.canonical_payload(),
+            "source_refs": [item.identity_payload() for item in self.source_refs],
+        }
 
     def provides(self) -> frozenset[str]:
         return frozenset(
@@ -427,7 +442,7 @@ class Experiment:
                 "design": _json_value(self.design),
                 "metrics": _json_value(self.metrics),
                 "registration_hash": self.registration.registration_hash,
-                "source_refs": [item.canonical_payload() for item in self.source_refs],
+                "source_refs": [item.identity_payload() for item in self.source_refs],
                 "scopes": [item.canonical_payload() for item in self.scopes],
                 "operations": {scope.hash(): scope_operation(self, scope) for scope in self.scopes},
                 "request_options": _json_value(self.request_options),

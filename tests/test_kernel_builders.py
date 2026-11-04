@@ -206,6 +206,23 @@ def test_saved_definitions_experiment_keeps_its_declaration_and_runs(seeded_defs
 
 
 @pytest.mark.integration
+def test_offline_and_connected_definitions_share_identity_across_runs(seeded_defs, seeded_con):
+    built, reader = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
+    before, _ = from_definitions(seeded_defs, experiment_name="new_onboarding_v2")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            run(built, reader)
+    finally:
+        cast(Any, reader).close()
+    after, _ = from_definitions(seeded_defs, experiment_name="new_onboarding_v2")
+
+    assert built.hash() == before.hash() == after.hash()
+    assert built.analysis_spec_hash == before.analysis_spec_hash == after.analysis_spec_hash
+    assert after.provides()
+
+
+@pytest.mark.integration
 def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_defs, seeded_con):
     seeded_con.raw_sql("CREATE TEMP TABLE binding_close_sentinel(value INTEGER)")
     seeded_con.raw_sql("INSERT INTO binding_close_sentinel VALUES (37)")
