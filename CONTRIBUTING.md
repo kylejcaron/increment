@@ -858,8 +858,9 @@ Do not run workers against a shared warehouse namespace.
 The live BigQuery probes run in three shards balanced with
 `.github/bigquery-test-durations.json`, weighted from hosted run 41775920521;
 the mixed CUPED probe fills one shard alone. The shards share the scratch
-dataset, so the matrix runs them one at a time. To refresh weights, run the
-complete session with
+dataset, so the matrix runs them one at a time, and overlapping runs wait in
+the backend's concurrency queue instead of cancelling each other's pending
+shards. To refresh weights, run the complete session with
 `--store-durations --durations-path .github/bigquery-test-durations.json`.
 
 The

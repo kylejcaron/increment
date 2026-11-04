@@ -936,8 +936,10 @@ def test_live_bigquery_probes_run_in_full_partitions_that_take_turns() -> None:
     assert weights
     assert {node_id.partition("[")[0] for node_id in weights} <= probes
     # Shards share the live scratch dataset: the matrix runs one at a time, and
-    # runs of the backend serialize through one concurrency group.
+    # runs of the backend serialize through one concurrency group whose queue
+    # keeps every pending shard instead of cancelling the older one.
     assert job["strategy"].get("max-parallel") == 1
     concurrency = job["concurrency"]
     assert "matrix" not in concurrency["group"]
-    assert concurrency["cancel-in-progress"] is False
+    assert concurrency.get("cancel-in-progress") is not True
+    assert concurrency.get("queue") == "max"
