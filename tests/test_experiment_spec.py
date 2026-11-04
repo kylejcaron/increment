@@ -67,6 +67,24 @@ def test_experiment_round_trips_canonical_json_and_hash():
     assert restored.hash() == experiment.hash()
 
 
+def test_recorded_schema_does_not_change_experiment_identity():
+    def declared(schema):
+        return Experiment(
+            experiment_id="checkout",
+            design={"mechanism": "randomized"},
+            metrics={"orders": {"kind": "mean"}},
+            registration=Registration(registration_hash="registration-hash"),
+            source_refs=(SourceReference(name="events", uri="warehouse://events", schema=schema),),
+            scopes=(Scope(view="run", grain="total"),),
+        )
+
+    unrecorded, empty, recorded = (declared(schema) for schema in (None, {}, {"t.c": "string"}))
+
+    assert unrecorded.hash() == empty.hash() == recorded.hash()
+    assert unrecorded.analysis_spec_hash == empty.analysis_spec_hash == recorded.analysis_spec_hash
+    assert unrecorded.to_json() != recorded.to_json()
+
+
 @pytest.mark.parametrize(
     ("design", "shown"),
     (

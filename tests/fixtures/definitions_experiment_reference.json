@@ -1,6 +1,6 @@
 {
- "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON and its hash, saved verbatim; never regenerate it.",
- "hash": "82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570",
+ "provenance": "Captured 2026-11-01 at db79f30b, before the whole-window readout dropped its store keyword: from_definitions(<copy of examples/definitions>, <DuckDB seeded by examples._seed.seed_event_log>, experiment_name='new_onboarding_v2'). The experiment JSON is saved verbatim; never regenerate it. The hash is its identity with recorded column types excluded (captured as 82079d57392aded3d9a3054cca6cf0c56cdcbc7e2d22ac8f768f523eabde1570 when identity still covered them).",
+ "hash": "647ebccb8ca651d0c3c17cfba24517aa962fdb807ef0df123cf740fb3945eb6d",
  "experiment": {
   "analysis_context": {
    "cluster": null,

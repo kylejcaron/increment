@@ -1168,6 +1168,37 @@ def test_dataclass_learner_factory_stays_callable_until_export(with_reference):
     assert portable.value.code == "kernel.method.implementation_ref_missing"
 
 
+def test_recorded_schema_does_not_change_runtime_only_run_identity():
+    declared, resolver = from_frame(
+        _frame().assign(age=[0, 0, 1, 1] * 10),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("age",))
+        ),
+    )
+    experiment = replace(
+        declared,
+        request_options={
+            "decision_method": Method(name="iptw", propensity_learner=_ConfiguredPropensity)
+        },
+    )
+    recorded = replace(
+        experiment,
+        source_refs=tuple(replace(ref, schema={"t.c": "string"}) for ref in experiment.source_refs),
+    )
+    with pytest.raises(CodedError) as portable:
+        _ = experiment.analysis_spec_hash
+    assert portable.value.code == "kernel.method.implementation_ref_missing"
+
+    unrecorded_run, recorded_run = run(experiment, resolver).run, run(recorded, resolver).run
+
+    assert unrecorded_run.analysis_spec_hash == recorded_run.analysis_spec_hash
+    assert unrecorded_run.execution_identity_hash == recorded_run.execution_identity_hash
+
+
 def test_runtime_callable_run_result_refuses_portable_storage(tmp_path):
     import pickle
 
