@@ -21,9 +21,11 @@ def _snapshot_id(result: Any) -> str | None:
             "from_definitions",
             {
                 "daily": "sha256:64f65bc8a092793edc036331f96643d5f76eaf7d31eae2d27fac636bfdb2f504",
-                "daily_lift": "sha256:ed34e487c261b462afc2663879586ddb9a0317d4d2feb0f94fd1049778f54678",
+                # Lift snapshots digest arm counts; the pre-kernel route left them off exact
+                # binomial rows, so the daily_lift and asof_lift IDs differ from its oracle.
+                "daily_lift": "sha256:1a0d99b5bda0e711c1d810ea5e7f99a981eb20f94e518ea99ec2b72afeb93651",
                 "asof": "sha256:6e3358e10d620b1a10a51061deeafd5a5b20b11495103138ba611191abd4679d",
-                "asof_lift": "sha256:e85a35071b539ee939d5d29fb3e5f31c526aa2241f9617323539c8c52d1139dd",
+                "asof_lift": "sha256:36131f8f91f411dcc8fb459c7ccb38664729046acff35f6456dd829fb7a21b23",
                 "breakout": "sha256:b36013595a199643bc99407709b3253008aa20dfdbd310dfed3a1144aea57fc9",
             },
         ),
