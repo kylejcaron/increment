@@ -1,4 +1,4 @@
-# Traced on commit: eaa8271174995c34f7b367c21247963886c54b42
+# Traced on commit: cd0840063b926b54ab5e291ddd20b1d7fd886b25
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -42,7 +42,6 @@ increment._source_admission
 increment._source_diagnostics
 increment._source_identity
 increment._source_operations
-increment._source_resolver
 increment._source_sequential
 increment._source_types
 increment._source_workflows

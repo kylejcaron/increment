@@ -1752,7 +1752,7 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
     from increment.evidence import evidence_provider, request_evidence
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
-    source = resolver.binding.source
+    source = resolver._binding.source
     identities = (
         BreakoutIdentity("device", "events"),
         BreakoutIdentity("region", "profiles"),
@@ -1766,7 +1766,7 @@ def test_selected_breakout_preserves_identity_selection_and_definition_order(tmp
                     breakouts=identities,
                     metrics=(source.context.metrics[0],),
                     configs=source.context.configs,
-                    breakout_definitions=resolver.binding.experiment.breakouts,
+                    breakout_definitions=resolver._binding.experiment.breakouts,
                 ),
             ),
         )
@@ -1844,7 +1844,7 @@ def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
     from increment.evidence import EvidenceScope, evidence_provider
 
     experiment, resolver, con = _selected_breakout_sources(tmp_path)
-    source = resolver.binding.source
+    source = resolver._binding.source
     provider = evidence_provider(source)
     selected = BreakoutIdentity("region", "profiles")
     try:
@@ -1861,7 +1861,7 @@ def test_explicit_breakout_scope_is_preserved_without_expansion_flag(tmp_path):
         )
         assert expanded.scope.breakouts == tuple(
             BreakoutIdentity(item.property, item.source)
-            for item in resolver.binding.experiment.breakouts
+            for item in resolver._binding.experiment.breakouts
         )
     finally:
         resolver.close()

@@ -2470,12 +2470,14 @@ def published_artifact():
 
 
 @pytest.mark.slow
-def test_public_artifact_adoption_constructs_and_reopens(published_artifact):
+def test_public_artifact_adoption_constructs_and_refuses_after_close(published_artifact):
     _con, native, context, store, ref = published_artifact
     experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
     assert view_readout(experiment, resolver, metrics=["purchase_rate"])
     resolver.close()
-    assert view_readout(experiment, resolver, metrics=["purchase_rate"])
+    with pytest.raises(InvalidRequestError) as closed:
+        view_readout(experiment, resolver, metrics=["purchase_rate"])
+    assert closed.value.code == "kernel.run.reader_closed"
 
 
 @pytest.mark.slow
@@ -3110,7 +3112,7 @@ def test_polars_backend_survives_exploratory_run_and_breakout(seeded_defs, seede
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2"
     )
     bound = cast(Any, resolver)
-    bound.binding = replace(bound.binding, input_backend="polars")
+    bound._bound = replace(bound._binding, input_backend="polars")
     exploratory = available_metrics(experiment, resolver)[0].name
     results = view_readout(
         experiment,

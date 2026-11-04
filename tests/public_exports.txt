@@ -29,6 +29,7 @@ RunResult: Return stored result cells, effects, and final decision verdicts from
 run: Register an analysis before execution, persist its result cells, then decide from the validated run.
 Experiment: Describe an immutable analysis, its evidence references, and its selected scopes.
 ExperimentDefinition: Declare an experiment as written in definitions, for a custom provider or inspection.
+ExperimentReader: Read the data behind a builder's experiment until it is closed.
 Scope: Select a result view and its coordinates, population, and metrics.
 SourceReference: Record a named evidence source, its expected digest, schema, and capabilities.
 Resolver: Bind declared evidence sources to providers before analysis.

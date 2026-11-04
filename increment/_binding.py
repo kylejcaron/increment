@@ -1,31 +1,26 @@
 from __future__ import annotations
 
 import reprlib
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self
 
 from increment._canonical import declaration_value
+from increment._execute import execute_views, operation_parameters, selected_binding
+from increment._runnability import operation_options, scope_refusals
 from increment.decision import AnalysisState, ContrastContext, DefinitionsArmAnalysisState
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
-    from increment._evidence_types import BreakoutIdentity
+    from increment._evidence_types import BreakoutIdentity, SequentialCaptureRequest
     from increment._literals import Backend
+    from increment.estimation.readout_types import ScopedReadout
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import DeclarationValue, Experiment, SourceReference
-    from increment.kernel.resolver import Resolver
-    from increment.query.artifact_contract import ArtifactContext, ArtifactStore
-    from increment.semantics.artifact import UnitDayArtifactRef
     from increment.semantics.models import Breakout
-
-
-@dataclass(frozen=True, slots=True)
-class _ArtifactOpenSpec:
-    store: ArtifactStore
-    ref: UnitDayArtifactRef
-    expected_context: ArtifactContext
-    verification: Literal["lazy_digest"]
 
 
 _UNDECLARED_BREAKOUT = RefusalSpec(
@@ -38,7 +33,6 @@ _UNDECLARED_BREAKOUT = RefusalSpec(
 @dataclass(frozen=True, slots=True)
 class SourceBinding:
     state: AnalysisState
-    artifact_open: _ArtifactOpenSpec | None = None
     input_backend: Backend | None = None
     owns_source: bool = True
     selected_breakouts: tuple[Breakout, ...] | None = None
@@ -200,16 +194,8 @@ class SourceBinding:
     def _on_mixed_assignment(self) -> Literal["error", "warn", "exclude"]:
         return self.on_mixed_assignment
 
-    def reopened(self, source: Any) -> SourceBinding:
-        return replace(self, state=replace(self.state, source=source), owns_source=True)
-
     def with_source(self, source: Any) -> SourceBinding:
-        return replace(
-            self,
-            state=replace(self.state, source=source),
-            artifact_open=None,
-            owns_source=False,
-        )
+        return replace(self, state=replace(self.state, source=source), owns_source=False)
 
     def with_breakouts(self, breakouts: tuple[Breakout, ...]) -> SourceBinding:
         declared = self.declared_breakouts
@@ -266,82 +252,6 @@ def _source_digest(source: Any) -> str | None:
         if callable(identity)
         else None
     )
-
-
-def _run_identity_hashes(
-    experiment: Experiment, runtime_options: Mapping[str, object]
-) -> tuple[str, str]:
-    from pydantic_core import PydanticSerializationError
-
-    from increment._runnability import scope_operation
-    from increment.kernel.contracts import contract_hash
-    from increment.kernel.experiment import _json_value
-
-    try:
-        analysis_spec_hash = experiment.analysis_spec_hash
-        execution_identity_hash = experiment.execution_identity_hash
-    except CodedError as error:
-        if error.code != "kernel.method.implementation_ref_missing":
-            raise
-        analysis_spec_hash = contract_hash(
-            "analysis_spec.runtime_only",
-            {
-                "experiment_id": experiment.experiment_id,
-                "design": _json_value(experiment.design),
-                "metrics": _json_value(experiment.metrics),
-                "registration_hash": experiment.registration.registration_hash,
-                "source_refs": [item.identity_payload() for item in experiment.source_refs],
-                "scopes": [item.canonical_payload() for item in experiment.scopes],
-                "operations": {
-                    scope.hash(): scope_operation(experiment, scope) for scope in experiment.scopes
-                },
-                "request_options_runtime": declaration_value(experiment.request_options),
-            },
-        )
-        execution_identity_hash = contract_hash(
-            "execution_identity",
-            {
-                "analysis_spec_hash": analysis_spec_hash,
-                "implementations": [
-                    {
-                        "method_instance_id": key[0],
-                        "learner_role": key[1],
-                        "implementation": value.canonical_payload(),
-                    }
-                    for key, value in sorted(experiment.implementation_refs.items())
-                ],
-                "package_version": experiment.package_version,
-            },
-        )
-    if runtime_options:
-        try:
-            request = _json_value(runtime_options)
-        except CodedError as error:
-            if error.code != "kernel.method.implementation_ref_missing":
-                raise
-            request = {"runtime_options": declaration_value(runtime_options)}
-        except PydanticSerializationError:
-            request = {"runtime_options": declaration_value(runtime_options)}
-        analysis_spec_hash = contract_hash(
-            "analysis_spec.run_options",
-            {"analysis_spec_hash": analysis_spec_hash, "options": request},
-        )
-        execution_identity_hash = contract_hash(
-            "execution_identity",
-            {
-                "analysis_spec_hash": analysis_spec_hash,
-                "implementations": [
-                    {
-                        "method_instance_id": key[0],
-                        "learner_role": key[1],
-                        "implementation": value.canonical_payload(),
-                    }
-                    for key, value in sorted(experiment.implementation_refs.items())
-                ],
-                "package_version": experiment.package_version,
-            },
-        )
-    return analysis_spec_hash, execution_identity_hash
 
 
 def experiment_for_binding(
@@ -405,50 +315,83 @@ def experiment_for_binding(
     )
 
 
-class ResolverBinding:
+# How each builder's source reads, by the scheme of its recorded source reference.
+_READS: Mapping[str, str] = MappingProxyType(
+    {
+        "unit_summary": "dataframe snapshot",
+        "unit_panel": "dataframe snapshot",
+        "switchback": "dataframe snapshot",
+        "definitions": "warehouse, read live",
+        "artifact": "artifact",
+        "moments": "moments file",
+    }
+)
+
+
+class ExperimentReader:
+    """Read the data behind one experiment for ``run`` and the functions that read data.
+
+    A builder returns it with the experiment. A dataframe reader reads the frame it
+    was built from, a warehouse reader reads the warehouse live on every call, and an
+    offline reader restored from a saved catalog cannot read. Use it in a ``with``
+    block or call ``close()``; afterwards every read refuses, so build a new reader to
+    read again. Closing never closes a connection you supplied.
+    """
+
     def __init__(
         self,
-        binding: SourceBinding,
+        binding: SourceBinding | None,
         experiment: Experiment,
+        *,
         catalog_writer: Callable[[Experiment], None] | None = None,
-        reopen_artifact: Callable[[SourceBinding], object] | None = None,
+        definitions_guard: Callable[[], None] | None = None,
     ) -> None:
-        self.binding = binding
-        self.experiment = experiment
-        self.catalog_writer = catalog_writer
-        self.definitions_guard: Callable[[], None] | None = None
-        self._reopen_artifact = reopen_artifact
+        self._bound = binding
+        self._experiment = experiment
+        self._catalog_writer = catalog_writer
+        self._definitions_guard = definitions_guard
         self._closed = False
+
+    @property
+    def experiment(self) -> Experiment:
+        """The experiment this reader was built with."""
+        return self._experiment
+
+    @property
+    def closed(self) -> bool:
+        """Whether the reader is closed; a closed reader refuses every read."""
+        return self._closed
+
+    @property
+    def _binding(self) -> SourceBinding:
+        from increment.kernel.contracts import _refuse
+
+        if self._closed:
+            _refuse("kernel.run.reader_closed", experiment_id=self._experiment.experiment_id)
+        if self._bound is None:
+            _refuse("kernel.run.reader_offline", experiment_id=self._experiment.experiment_id)
+        return self._bound
 
     @property
     def _source(self) -> Any:
-        return self.binding.state.source
+        return self._binding.state.source
 
-    @property
-    def _experiment(self) -> Experiment:
-        return self.experiment
+    def _validate_experiment(self, experiment: Experiment) -> None:
+        _validate_experiment(experiment, self._experiment)
 
-    def validate_experiment(self, experiment: Experiment) -> None:
-        _validate_experiment(experiment, self.experiment)
-
-    def resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> object:
+    def _resolve(self, source_refs: Sequence[SourceReference], ctx: object | None = None) -> object:
+        """The one acquisition step every read takes, refused after close, offline or on edits."""
         del source_refs, ctx
-        if self.definitions_guard is not None:
-            self.definitions_guard()
-        source = self.binding.state.source
-        if self.binding.artifact_open is not None and getattr(source, "closed", False):
-            if self._reopen_artifact is None:
-                return source
-            source = self._reopen_artifact(self.binding)
-            self.binding = self.binding.reopened(source)
-        self._closed = False
-        return source
+        binding = self._binding
+        if self._definitions_guard is not None:
+            self._definitions_guard()
+        return binding.state.source
 
-    def verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
+    def _verify(self, source_refs: Sequence[SourceReference], provider: object) -> list[CodedError]:
         failures = []
-        if provider is not self.binding.state.source or tuple(
+        if provider is not self._binding.state.source or tuple(
             (r.name, r.uri) for r in source_refs
-        ) != tuple((r.name, r.uri) for r in self.experiment.source_refs):
+        ) != tuple((r.name, r.uri) for r in self._experiment.source_refs):
             return [
                 CodedError(
                     "Source references do not identify the bound provider",
@@ -488,12 +431,59 @@ class ResolverBinding:
                 )
         return failures
 
+    def _run_experiment(
+        self,
+        experiment: Experiment,
+        provider: object,
+        *,
+        options: Mapping[str, object] | None = None,
+        capture: SequentialCaptureRequest | None = None,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> tuple[ScopedReadout, ...]:
+        """Admit every selected view before any read, then execute them in one capture."""
+        if provider is not self._source:
+            _execution_unavailable(experiment, "declarations")
+        if experiment.request_options.get("store") is not None:
+            raise CodedError(
+                "Experiment execution does not accept a store request option; "
+                "pass results_store to run()",
+                code="kernel.run.invalid_input",
+                context={"field": "store"},
+            )
+        merged = dict(options or {})
+        for scope in experiment.scopes:
+            refusals = scope_refusals(experiment, scope)
+            if refusals:
+                raise refusals[0]
+            selected_binding(self._binding, experiment, scope)
+            operation_options(experiment, scope, merged)
+        scoped = execute_views(
+            self._binding,
+            experiment,
+            experiment.scopes,
+            options=merged,
+            capture=capture,
+            execution_context=execution_context,
+        )
+        if self._catalog_writer is not None:
+            schema = _schema_for_source(self._source)
+            self._catalog_writer(
+                replace(
+                    self._experiment,
+                    source_refs=tuple(
+                        replace(reference, schema=schema)
+                        for reference in self._experiment.source_refs
+                    ),
+                )
+            )
+        return scoped
+
     def close(self) -> None:
+        """Release what the builder opened; a connection you supplied stays open."""
         if self._closed:
             return
-        if self.binding.owns_source:
-            source = self.binding.state.source
-            close = getattr(source, "close", None)
+        if self._bound is not None and self._bound.owns_source:
+            close = getattr(self._bound.state.source, "close", None)
             if callable(close):
                 close()
         self._closed = True
@@ -505,20 +495,52 @@ class ResolverBinding:
         self.close()
 
     def __repr__(self) -> str:
-        """Name the source and whether it is closed, from recorded state only; never reads it."""
-        kind, _, name = self.experiment.source_refs[0].uri.partition("://")
+        """Name the experiment, how the reader reads and whether it is closed; never reads."""
+        if self._bound is None:
+            reads = "offline: cannot read"
+        else:
+            kind = self._experiment.source_refs[0].uri.partition("://")[0]
+            reads = _READS.get(kind, kind)
         return (
-            f"{type(self).__name__}(source={kind!r}, name={reprlib.repr(name)}, "
-            f"closed={self._closed})"
+            f"{type(self).__name__}(experiment_id={reprlib.repr(self._experiment.experiment_id)}, "
+            f"reads={reads!r}, closed={self._closed})"
         )
 
 
-def binding_for(experiment: Experiment, resolver: Resolver) -> SourceBinding:
-    from increment.kernel.resolver import _resolve_verified
-
-    _resolve_verified(experiment, resolver)
-    if not isinstance(resolver, ResolverBinding):
+def require_reader(reader: object) -> ExperimentReader:
+    """Refuse anything but the reader a builder returned, before any read."""
+    if not isinstance(reader, ExperimentReader):
         from increment.kernel.contracts import _refuse
 
-        _refuse("kernel.run.provider_execution_unavailable")
-    return resolver.binding
+        _refuse("kernel.run.reader_required", received=type(reader).__name__)
+    return reader
+
+
+def binding_for(experiment: Experiment, resolver: object) -> SourceBinding:
+    from increment.kernel.resolver import _resolve_verified
+
+    reader = require_reader(resolver)
+    _resolve_verified(experiment, reader)
+    return reader._binding
+
+
+def resolver_for(
+    binding: SourceBinding,
+    *,
+    record_schema: bool = False,
+    catalog_writer: Callable[[Experiment], None] | None = None,
+    definitions_guard: Callable[[], None] | None = None,
+) -> tuple[Experiment, ExperimentReader]:
+    """Declare the experiment a binding executes and the reader that owns it."""
+    experiment = experiment_for_binding(
+        binding,
+        operation_parameters=operation_parameters(),
+        record_schema=record_schema,
+    )
+    reader = ExperimentReader(
+        binding,
+        experiment,
+        catalog_writer=catalog_writer,
+        definitions_guard=definitions_guard,
+    )
+    return experiment, reader

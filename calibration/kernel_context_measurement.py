@@ -205,13 +205,13 @@ def _source(backend: Backend, root: Path) -> tuple[Any, Any]:
         from tests.source_conformance import definitions_source
 
         (_, resolver), _ = definitions_source(root, store="always", return_binding=True)
-        source = resolver.binding.source
+        source = resolver._binding.source
         _duckdb_connection(source).raw_sql("SET enable_progress_bar = false")
         return resolver, source
     from tests.source_conformance import unit_day_artifact_analysis
 
     _, resolver = unit_day_artifact_analysis(root)
-    return resolver, resolver.binding.source
+    return resolver, resolver._binding.source
 
 
 def _stable_value(value: Any) -> Any:
@@ -395,7 +395,7 @@ def _sample(route: Route, backend: Backend, rows: int, seed: int) -> Sample:  # 
                 _append_units(source, (rows - 16) // 2)
         from increment.readouts import _breakout
 
-        breakout = resolver.binding.experiment.breakouts[0]
+        breakout = resolver._binding.experiment.breakouts[0]
         breakout_name = breakout.property
         metrics = tuple(source.context.metrics)
         configs = tuple(source.context.configs)

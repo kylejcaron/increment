@@ -145,7 +145,7 @@ def test_builder_refuses_changed_registration_and_design_before_evidence_reads()
     from tests.analysis_factory import replace_bound_source
     from tests.test_metric_evidence import _CountingSource
 
-    counted = _CountingSource(resolver.binding.source)
+    counted = _CountingSource(resolver._binding.source)
     replace_bound_source(resolver, counted)
     changed = replace(
         experiment,
@@ -382,8 +382,9 @@ def test_bound_custom_provider_is_verification_only():
         source_refs=(replace(experiment.source_refs[0], expected_digest=None),),
     )
     with pytest.raises(CodedError) as error:
-        run(experiment, BoundResolver(resolver._source))
-    assert error.value.code == "kernel.run.provider_execution_unavailable"
+        run(experiment, cast(Any, BoundResolver(resolver._source)))
+    assert error.value.code == "kernel.run.reader_required"
+    assert error.value.context["received"] == "BoundResolver"
 
 
 @pytest.mark.parametrize("options", [{"capture": {"finalized": True}}, {"population": "triggered"}])
@@ -1079,7 +1080,7 @@ def test_definitions_argument_forms_and_unused_source_round_trip(tmp_path, seede
         assert experiment.source_refs[0].schema == {}
         offline, _ = from_definitions(path)
         assert offline.hash() == experiment.hash()
-        assert resolver.verify(offline.source_refs, resolver.resolve(offline.source_refs)) == []
+        assert resolver._verify(offline.source_refs, resolver._resolve(offline.source_refs)) == []
     assert run(experiment, resolver, metrics=["purchase_rate"]).cells
     captured, _ = from_definitions(path)
     assert captured.source_refs[0].schema

@@ -408,7 +408,7 @@ def test_selected_late_ad_hoc_metric_keeps_family_horizon_in_both_modes(tmp_path
                 definitions_path, cast(SQLBackend, con), experiment_name="exp", store="none"
             )
             experiment = replace(experiment, scopes=day_scopes)
-            cast(Any, resolver.resolve(experiment.source_refs)).panel_sql()
+            cast(Any, resolver._resolve(experiment.source_refs)).panel_sql()
             values = run(
                 experiment,
                 resolver,

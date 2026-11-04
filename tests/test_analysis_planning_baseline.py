@@ -118,7 +118,7 @@ class TestPlanningBaselineOnDataframeRoutes:
                 }
             ],
         )
-        source = resolver.binding.source
+        source = resolver._binding.source
         moments = source.moments
         monkeypatch.setattr(
             source,
@@ -1572,7 +1572,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 np.quantile(np.concatenate((triggered, triggered + 2.0)), 0.75)
             )
             for source in (pilot, reopened):
-                triggered_source = source[1].binding.source.triggered_source()
+                triggered_source = source[1]._binding.source.triggered_source()
                 metrics_by_name = {metric.name: metric for metric in workflow_metrics(*source)}
                 fixed_metric = metrics_by_name["fixed_revenue"]
                 raw_fixed = unit_rows(triggered_source, fixed_metric, "raw").to_pylist()
@@ -2362,7 +2362,7 @@ class TestLegacyPlanningSources:
 
         con, _path, pilot = _triggered_experiment(tmp_path)
         try:
-            source = cast("EvidenceSource", pilot[1].binding.source)
+            source = cast("EvidenceSource", pilot[1]._binding.source)
             monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
             triggered = cast("Any", source).triggered_source()
             with pytest.raises(CapabilityError) as raised:
@@ -2393,7 +2393,7 @@ def test_triggered_planning_baseline_matches_for_forwarding_provider(
     )
     if missing_treatment:
         con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'treatment'")
-    adapter = evidence_provider(native_resolver.binding.source)
+    adapter = evidence_provider(native_resolver._binding.source)
     scope_requests = []
     count_requests = []
     moment_requests = []
@@ -2484,7 +2484,7 @@ def test_forwarded_planning_baseline_ignores_mixed_assigned_unit_audit_bucket(tm
     )
 
     con, _path, (native_experiment, native_resolver) = _triggered_experiment(tmp_path)
-    adapter = evidence_provider(native_resolver.binding.source)
+    adapter = evidence_provider(native_resolver._binding.source)
 
     class Provider:
         context = adapter.context

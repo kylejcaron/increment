@@ -742,7 +742,7 @@ def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
+def test_publish_open_runs_the_same_arm_operations_and_refuses_after_close() -> None:
     from increment.estimation.engine import Method
 
     _con, (native_experiment, native_resolver), context, store, ref = _published()
@@ -789,14 +789,14 @@ def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
         )
     )
     adopted_resolver.close()
-    assert lift_rows(
+    with pytest.raises(CodedError) as closed:
         view_readout(
             adopted_experiment,
             adopted_resolver,
             metrics=["purchase_rate"],
             decision_method=unadjusted,
         )
-    )
+    assert closed.value.code == "kernel.run.reader_closed"
 
 
 def _add_treatment_units(con: Any) -> None:
@@ -866,19 +866,22 @@ def test_artifact_run_is_effectively_captured_when_live_is_requested(readonly_pu
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one() -> None:
+def test_a_fresh_artifact_reader_reads_its_pinned_generation_not_a_newer_one() -> None:
     con, (experiment, resolver), context, store, ref = _published()
     adopted = from_unit_day_artifact(store, ref, expected_context=context)
-    before = _purchase_lift(adopted)
-    adopted[1].close()
+    with adopted[1]:
+        before = _purchase_lift(adopted)
     _add_treatment_units(con)
     newer = publish_unit_day_artifact(experiment, resolver, store, refresh_of=ref)
     latest = from_unit_day_artifact(store, newer, expected_context=context)
     with latest[1]:
         assert _purchase_lift(latest) != pytest.approx(before)
-    assert _purchase_lift(adopted) == pytest.approx(before)
-    adopted[1].close()
-    assert _purchase_lift(adopted) == pytest.approx(before)
+    pinned = from_unit_day_artifact(store, ref, expected_context=context)
+    with pinned[1]:
+        assert _purchase_lift(pinned) == pytest.approx(before)
+    with pytest.raises(CodedError) as closed:
+        _purchase_lift(adopted)
+    assert closed.value.code == "kernel.run.reader_closed"
 
 
 def test_artifact_source_reports_closed_only_after_close() -> None:

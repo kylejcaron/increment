@@ -24,7 +24,7 @@ from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment
 
 def _source(pair: tuple[Any, Any]) -> Any:
     """The experiment's source, for evidence operations beyond the moment protocol."""
-    return pair[1].binding.source
+    return pair[1]._binding.source
 
 
 def _publish(con, native: tuple[Any, Any], *, kinds) -> tuple[Any, Any, Any]:

@@ -12,6 +12,7 @@
   "increment.Experiment": {},
   "increment.ExperimentDefinition": {},
   "increment.ExperimentMetric": {},
+  "increment.ExperimentReader": {},
   "increment.IdentificationGate": {},
   "increment.InferenceSpec": {},
   "increment.Method": {},

@@ -12,6 +12,8 @@ are in `increment.power`.
 
 ::: increment.run
 
+::: increment.ExperimentReader
+
 ::: increment.RunResult
 
 ::: increment.estimators.MetricTrends
@@ -164,6 +166,27 @@ values.
   Estimates, intervals and p-values are unchanged. Because those rows now carry
   arm counts, the snapshot and family IDs of daily and as-of lift readouts that
   contain them change once; runs saved before the change still reopen.
+- Release note (breaking API cutover): every builder returns an
+  `increment.ExperimentReader` with the experiment, including an offline
+  `from_definitions(path)`, whose object previously had a default repr and no
+  `with` support. Its public members are `experiment`, `closed` and `close()`,
+  and it is a context manager; the `binding`, `resolve`, `verify`,
+  `validate_experiment`, `run_experiment` and `catalog_writer` attributes are
+  private. A closed reader stays closed: after `close()` or a `with` block, `run`
+  and every function that reads data refuse with `kernel.run.reader_closed`
+  (context `experiment_id`) instead of reopening the source; build a new reader
+  to read again. An offline reader refuses every read with
+  `kernel.run.reader_offline`. `run` and the data-reading functions refuse
+  anything but a reader, such as `None`, swapped arguments, a `BoundResolver` or
+  another object with `resolve` and `verify` methods, with
+  `kernel.run.reader_required`, whose `received` context names the type passed.
+  `increment.errors.RETIRED_CODES` maps the retired `kernel.run.resolver_missing`
+  to `kernel.run.reader_required` and `kernel.run.reader_offline`, and
+  `kernel.run.provider_execution_unavailable` to `kernel.run.reader_required`.
+  `repr(reader)` reads `ExperimentReader(experiment_id=..., reads=...,
+  closed=...)`, where `reads` is `"dataframe snapshot"`, `"warehouse, read live"`,
+  `"artifact"`, `"moments file"` or `"offline: cannot read"`. Results and
+  experiment identity hashes are unchanged.
 
 - Release note (typing): public signatures and fields no longer use `Any`;
   `make lint` now refuses any new `Any` in a promised name. Results, refusal
@@ -369,6 +392,10 @@ and parameters not shown keep their names, defaults and refusals.
 | `Analysis.from_moments(rows, ...)` | `from_moments(rows, ...)` |
 | `Analysis.from_switchback_panel(frame, ...)` | `from_switchback_frame(frame, ...)` |
 | `with analysis:`, `analysis.close()` | `with resolver:`, `resolver.close()`; neither closes a connection you supplied |
+| `resolver.run_experiment(experiment, provider, ...)`, `resolver.resolve(...)`, `resolver.verify(...)`, `resolver.validate_experiment(experiment)` | `run(experiment, resolver, ...)`, which checks the experiment against the resolver and verifies its source declarations before reading |
+| `resolver.binding` and the source, plan, design and metrics it held | `resolver.experiment`, and the `workflows`, `query`, `artifacts` and `estimators` functions taking `(experiment, resolver)`, such as `workflows.metrics`, `workflows.compiled_decision_plan` and `workflows.experiment_definition` |
+| `resolver.catalog_writer(experiment)` | `run(experiment, resolver)` on a connected `from_definitions` pair, which records the offline catalog |
+| reading through a resolver after `close()` or its `with` block | build a new pair with the builder that returned it; a closed resolver refuses with `kernel.run.reader_closed` |
 | `analysis.run(**options)` | `run(experiment, resolver, **options).readout()`, the same `LiftEstimates` or `ContrastResults` |
 | `analysis.run(population="triggered")` | `scope = Scope(view="run", grain="total", population="triggered")`, then `run(experiment.with_views(scope), resolver).readout(scope)`; declare one run scope per population to read both |
 | `analysis.run(store=store)` | `run(experiment, resolver, results_store=store)`; `decision_log=` and `run_id=` are checked before any read |

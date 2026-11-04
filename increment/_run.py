@@ -6,7 +6,8 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
-from increment._binding import ResolverBinding, _run_identity_hashes
+from increment._binding import require_reader
+from increment._execute import _run_identity_hashes
 from increment._interpretation import EffectEstimate
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, WireFormatError, refuse
 from increment.estimation.readout_types import (
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
     from pydantic import BaseModel
 
-    from increment._binding import SourceBinding
+    from increment._binding import ExperimentReader, SourceBinding
     from increment._evidence_types import SequentialCaptureRequest
     from increment._literals import Backend, ValueScale
     from increment.breakout.estimates import (
@@ -58,7 +59,6 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
     from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.semantics.models import Metric
 
 
@@ -1030,7 +1030,7 @@ def _scope_population(experiment: Experiment, overrides: dict[str, object]) -> d
 
 
 def _preflight_persistence(
-    resolver: ResolverBinding,
+    resolver: ExperimentReader,
     experiment: Experiment,
     overrides: Mapping[str, object],
     *,
@@ -1040,13 +1040,13 @@ def _preflight_persistence(
     """Refuse a run that cannot be saved or logged under its registration, before any read."""
     from increment._runnability import operation_options, typed_request_options
 
-    binding = resolver.binding
+    binding = resolver._binding
     contrast = _contrast_context(binding)
     if contrast is None:
         _require_registered_plan(experiment.registration, binding.plan)
     else:
         _require_registered_contrast(experiment.registration, contrast)
-    resolver.validate_experiment(experiment)
+    resolver._validate_experiment(experiment)
     if contrast is None:
         CompiledPlanBinding.from_plan(experiment.registration, binding.plan)
     elif logging:
@@ -1065,7 +1065,7 @@ def _preflight_persistence(
 
 def run(  # noqa: PLR0913
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     *,
     views: Sequence[Scope] | None = None,
     run_id: str | None = None,
@@ -1107,22 +1107,9 @@ def run(  # noqa: PLR0913
         population=population,
         coherence=coherence,
     )
-    if resolver is None:
-        raise CodedError(
-            "Running an experiment requires a source resolver",
-            code="kernel.run.resolver_missing",
-            context={},
-        )
+    reader = require_reader(resolver)
     selected = _select_views(experiment, views)
     overrides = _coherence_override(selected, _scope_population(selected, overrides))
-    persisted = {"run_id": run_id, "results_store": results_store, "decision_log": decision_log}
-    identified = tuple(name for name, value in persisted.items() if value is not None)
-    if identified and not isinstance(resolver, ResolverBinding):
-        raise CodedError(
-            "Saving or identifying a run requires a resolver returned by a module builder",
-            code="kernel.run.invalid_input",
-            context={"fields": identified},
-        )
     if run_id is not None and not run_id:
         refuse_store(
             "store.run.identity_incomplete",
@@ -1131,7 +1118,7 @@ def run(  # noqa: PLR0913
         )
     if results_store is not None or decision_log is not None:
         _preflight_persistence(
-            cast(ResolverBinding, resolver),
+            reader,
             selected,
             overrides,
             saving=results_store is not None,
@@ -1139,17 +1126,15 @@ def run(  # noqa: PLR0913
         )
     scoped = run_experiment(
         selected,
-        resolver,
+        reader,
         options=overrides,
         capture=capture,
         execution_context=execution_context,
     )
-    if not isinstance(resolver, ResolverBinding):
-        return scoped
     from uuid import uuid4
 
     return _experiment_result(
-        resolver.binding,
+        reader._binding,
         selected,
         scoped,
         run_id=f"run-{uuid4().hex}" if run_id is None else run_id,

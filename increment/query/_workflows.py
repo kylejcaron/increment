@@ -9,8 +9,8 @@ from increment._optional import require_warehouse
 if TYPE_CHECKING:
     from ibis.expr.types import Scalar, Table
 
+    from increment._binding import ExperimentReader
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.semantics.models import Breakout, Metric
 
 
@@ -84,7 +84,7 @@ def _summary_sql_binding(binding: Any, breakouts: list[Breakout] | None = None) 
 
 def build_panel_for_metric(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     exposures: Table,
     metric: Metric,
     *,
@@ -101,7 +101,7 @@ def build_panel_for_metric(
 
 def panel_sql(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     breakouts: list[Breakout] | None = None,
 ) -> dict[str, str]:
     """Return per-metric panel SQL without executing."""
@@ -113,7 +113,7 @@ def panel_sql(
 
 def summary_sql(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     breakouts: list[Breakout] | None = None,
 ) -> dict[str, str]:
     """Return per-metric group-summary SQL without executing."""

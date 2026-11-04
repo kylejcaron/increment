@@ -922,7 +922,7 @@ def test_sequential_plans_refuse_added_metrics_and_uncorrected_segments(warehous
     (declared,) = experiment_definition(*analysis).breakouts
     with pytest.raises(CodedError) as refused:
         _dashboard_capture.dashboard_breakout_reads(
-            analysis[1].binding, declared
+            analysis[1]._binding, declared
         ).uncorrected_segments(metrics=["revenue"])
     assert refused.value.code == "facade.analysis.uncorrected_segments_sequential"
 
@@ -938,7 +938,7 @@ def test_uncorrected_segments_are_the_unadjusted_run_breakout_rows(warehouse, co
     )
     analysis = _analysis(warehouse, plan, breakout=True)
     (declared,) = experiment_definition(*analysis).breakouts
-    reads = _dashboard_capture.dashboard_breakout_reads(analysis[1].binding, declared)
+    reads = _dashboard_capture.dashboard_breakout_reads(analysis[1]._binding, declared)
     uncorrected = reads.uncorrected_segments(metrics=names)
     standalone = view_readout(
         *_analysis(
@@ -969,7 +969,7 @@ def test_uncorrected_segments_carry_added_metrics_as_exploratory_rows(warehouse)
     analysis = _analysis(warehouse, AnalysisPlan(primary="revenue"), breakout=True)
     (declared,) = experiment_definition(*analysis).breakouts
     rows = _dashboard_capture.dashboard_breakout_reads(
-        analysis[1].binding, declared
+        analysis[1]._binding, declared
     ).uncorrected_segments(metrics=[], exploratory_metrics=["purchase_rate"])
     assert rows and {row.metric for row in rows} == {"purchase_rate"}
     assert all(row.role == "exploratory" and row.family_q is None for row in rows)
@@ -1003,7 +1003,7 @@ def test_dashboard_snapshot_pins_and_serves_added_metrics():
                 "asof": _rows(reads.run_asof_lift(metrics=[], exploratory_metrics=names)),
             }
 
-        baseline = read(resolver.binding)
+        baseline = read(resolver._binding)
         assert all(baseline.values())
 
         def read_after_mutation(capture: Any) -> Any:
@@ -1015,12 +1015,12 @@ def test_dashboard_snapshot_pins_and_serves_added_metrics():
             return read(capture.binding)
 
         pinned = _dashboard_capture.capture_dashboard(
-            resolver.binding,
+            resolver._binding,
             read_after_mutation,
             metrics=[*workflows.metrics(experiment, resolver), *added],
         )
         assert pinned == baseline
-        assert read(resolver.binding)["whole"] != baseline["whole"], (
+        assert read(resolver._binding)["whole"] != baseline["whole"], (
             "the mutation must be visible unpinned"
         )
     finally:
@@ -1042,7 +1042,7 @@ def _refusals_of_every_new_code(warehouse) -> list[CodedError]:
     (declared,) = experiment_definition(*sequential).breakouts
     with pytest.raises(CodedError) as refused:
         _dashboard_capture.dashboard_breakout_reads(
-            sequential[1].binding, declared
+            sequential[1]._binding, declared
         ).uncorrected_segments(metrics=["revenue"])
     refusals.append(refused.value)
     seam_experiment, seam_resolver = from_frame(

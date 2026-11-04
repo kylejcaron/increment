@@ -80,12 +80,11 @@ from increment.tables import estimates_to_readout
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from increment._binding import SourceBinding
+    from increment._binding import ExperimentReader, SourceBinding
     from increment._dashboard_capture import DashboardCapture
     from increment._evidence_types import RowValue
     from increment.estimation.results import LiftEstimate
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.semantics.models import Metric, MultiplicitySpec
     from increment.tables import ReadoutValue
@@ -609,7 +608,7 @@ def _binding_fingerprint(definition: Mapping[str, object], metrics: Mapping[str,
 
 
 def prepare_dashboard(
-    experiment: Experiment, resolver: Resolver, *, config: DashboardConfig
+    experiment: Experiment, resolver: ExperimentReader, *, config: DashboardConfig
 ) -> DashboardSnapshot:
     """Run the headline readout once and capture it as a read-only snapshot.
 

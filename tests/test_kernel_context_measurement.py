@@ -515,7 +515,7 @@ def test_measurement_duckdb_source_disables_progress_output(tmp_path, monkeypatc
         tmp_path, store="always", return_binding=True
     )
     _, resolver = binding
-    connection = measurement._duckdb_connection(resolver.binding.source)
+    connection = measurement._duckdb_connection(resolver._binding.source)
     connection.raw_sql("SET enable_progress_bar = true")
     monkeypatch.setattr(
         source_conformance,

@@ -45,7 +45,7 @@ def test_shared_capture_normalizes_compliance_estimands_for_run_and_asof(tmp_pat
     (_, warehouse), con = _warehouse_compliance_analysis(
         "retention", unusable_outcome=True, separate_outcome_source=True
     )
-    definitions = warehouse.binding.definitions
+    definitions = warehouse._binding.definitions
     path = tmp_path / "definitions.json"
     path.write_text(json.dumps(definitions.model_dump(mode="json")), encoding="utf-8")
     experiment, resolver = from_definitions(path, con, experiment_name="exp", store="none")

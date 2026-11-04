@@ -119,12 +119,19 @@ constructor, such as `Scope.daily(population=...)`; a request option named
 differs from a selected scope's population.
 
 `Resolver` binds the named sources and verifies their recorded declarations.
-`BoundResolver` adapts a custom `EvidenceProvider` for verification only; it
-does not execute experiments and refuses with
-`kernel.run.provider_execution_unavailable`. Use the bound resolver returned by
-a module builder to execute an experiment. The top-level
-`run(experiment, resolver)` verifies the binding before calling the resolver's
-experiment execution adapter.
+`BoundResolver` adapts a custom `EvidenceProvider` for verification only.
+`run(experiment, resolver)` and every function that reads data accept only the
+`ExperimentReader` a module builder returns with the experiment; anything else,
+a `BoundResolver` included, refuses with `kernel.run.reader_required`, whose
+context names the type that was passed. `run` verifies the reader's source
+declarations before reading.
+
+A closed reader stays closed: after `close()` or the end of a `with` block,
+every read refuses with `kernel.run.reader_closed`; build a new reader with the
+same builder to read again. A reader that `from_definitions(path)` restores from
+the offline catalog cannot read and refuses with `kernel.run.reader_offline`;
+build it with a connection to run. `repr(reader)` names the experiment, how the
+reader reads and whether it is closed, without reading data.
 
 The specification format describes declarations; it does not itself open a warehouse or infer a source snapshot. Reproducible execution still requires the resolver and execution context to establish the actual snapshot identity.
 
@@ -422,8 +429,8 @@ Catalog updates lock the complete read-merge-replace operation, so concurrent
 bindings or schema refreshes retain each experiment's entry.
 
 The catalog records each loader's `declaration_identity()` digest alongside its
-schema and capabilities. A bound resolver recomputes that declaration digest
-at `verify()` and refuses a changed or unavailable recorded digest with
+schema and capabilities. A connected reader recomputes that declaration digest
+before every read and refuses a changed or unavailable recorded digest with
 `kernel.resolver.digest_mismatch`. It does not hash live rows: snapshot and
 content digests belong to the runtime evidence, not the saved specification.
 

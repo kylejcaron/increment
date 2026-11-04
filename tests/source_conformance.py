@@ -770,7 +770,7 @@ def _captured_source_session(source: Any) -> Any:
 
 
 def _analysis_connection(analysis: Any) -> Any:
-    return analysis[1].binding.connection
+    return analysis[1]._binding.connection
 
 
 def _clear_captured_source_tables(provider: Any) -> None:

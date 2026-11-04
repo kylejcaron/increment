@@ -48,8 +48,8 @@ def view_readout(
 
 
 def held_source(resolver: Any) -> object:
-    """The source a resolver currently holds, without reopening a closed artifact."""
-    return resolver.binding.state.source
+    """The source a reader holds, read without the reader's acquisition checks."""
+    return resolver._binding.state.source
 
 
 def native_connection(source: DefinitionsMomentSource) -> Any:
@@ -59,12 +59,12 @@ def native_connection(source: DefinitionsMomentSource) -> Any:
 
 def bound_source(resolver: Any) -> Any:
     """The source a builder resolver holds, for instance-level spies."""
-    return resolver.binding.source
+    return resolver._binding.source
 
 
 def replace_bound_source(resolver: Any, source: object) -> None:
     """Install a counting source in a builder resolver's immutable construction state."""
-    object.__setattr__(resolver.binding.state, "source", source)
+    object.__setattr__(resolver._binding.state, "source", source)
 
 
 def lift_rows(results: object) -> LiftEstimates:
@@ -228,8 +228,11 @@ def make_binding_like(
     plan: Any = None,
     experiment: Any = None,
 ) -> tuple[Any, Any]:
-    """Rebuild a native ``(experiment, resolver)`` pair from another resolver's inputs."""
-    binding = resolver.binding
+    """Rebuild a native ``(experiment, resolver)`` pair from another resolver's inputs.
+
+    The template may be closed; its stored binding still records what it was built from.
+    """
+    binding = resolver._bound
     current_experiment = binding.experiment
     next_experiment = current_experiment if experiment is None else experiment
     if design is None and experiment is not None:

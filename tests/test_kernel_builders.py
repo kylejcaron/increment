@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import shutil
@@ -55,7 +54,7 @@ def test_moments_builder_preserves_estimates_and_raw_outcome_refusals(tmp_path, 
     )
     from tests.test_metric_evidence import _CountingSource
 
-    counted = _CountingSource(resolver.binding.source)
+    counted = _CountingSource(resolver._binding.source)
     replace_bound_source(resolver, counted)
 
     restored = Experiment.from_json(experiment.to_json())
@@ -239,7 +238,7 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
 
     def materialized_names(experiment: Experiment, resolver: Any) -> tuple[str, ...]:
         materialize(experiment, resolver)
-        session = resolver.binding.session
+        session = resolver._binding.session
         names = tuple(item.name for item in session._materialized)
         assert names
         assert set(names) <= set(seeded_con.list_tables())
@@ -265,28 +264,26 @@ def test_builder_close_releases_owned_tables_preserves_caller_connection(seeded_
 
 @pytest.mark.integration
 def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_con):
-    from increment import _exploratory
+    from increment import ExperimentReader, _exploratory
 
     experiment, resolver = from_definitions(
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
     bound_resolver = cast(Any, resolver)
     materialize(experiment, resolver)
-    parent_names = tuple(item.name for item in bound_resolver.binding.session._materialized)
+    parent_names = tuple(item.name for item in bound_resolver._binding.session._materialized)
     assert parent_names
 
-    added = _exploratory.select_exploratory(bound_resolver.binding, ["aov"], caller="run")
-    exploratory = _exploratory.exploratory_sibling(bound_resolver.binding, added, caller="run")
+    added = _exploratory.select_exploratory(bound_resolver._binding, ["aov"], caller="run")
+    exploratory = _exploratory.exploratory_sibling(bound_resolver._binding, added, caller="run")
 
     def resolver_with_binding(binding: Any) -> Any:
-        derived_resolver = copy.copy(bound_resolver)
-        derived_resolver.binding = binding
-        return derived_resolver
+        return ExperimentReader(binding, experiment)
 
     derived_resolver = resolver_with_binding(exploratory)
 
     try:
-        breakout_resolver = resolver_with_binding(bound_resolver.binding.with_breakouts(()))
+        breakout_resolver = resolver_with_binding(bound_resolver._binding.with_breakouts(()))
         breakout_resolver.close()
         assert set(parent_names) <= set(seeded_con.list_tables())
 
@@ -300,25 +297,20 @@ def test_closing_derived_bindings_preserves_parent_session(seeded_defs, seeded_c
 
 
 @pytest.mark.integration
-def test_close_live_run_close_releases_new_warehouse_tables(seeded_defs, seeded_con):
+def test_closed_warehouse_reader_refuses_a_live_run_before_materializing(seeded_defs, seeded_con):
     experiment, resolver = from_definitions(
         seeded_defs, seeded_con, experiment_name="new_onboarding_v2", store="always"
     )
-    bound_resolver = cast(Any, resolver)
     materialize(experiment, resolver)
-    session = bound_resolver.binding.session
-    bound_resolver.close()
+    session = resolver._binding.session
+    resolver.close()
     assert not session._materialized
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", IncrementWarning)
-        assert run(experiment, resolver, coherence="live")
+    with pytest.raises(CodedError) as closed:
+        run(experiment, resolver, coherence="live")
 
-    live_names = tuple(item.name for item in session._materialized)
-    assert live_names
-    assert set(live_names) <= set(seeded_con.list_tables())
-    bound_resolver.close()
-    assert not set(live_names) & set(seeded_con.list_tables())
+    assert closed.value.code == "kernel.run.reader_closed"
+    assert not session._materialized
 
 
 # Materialization and repeated exploratory runs protect the parent session lifecycle.
@@ -331,7 +323,7 @@ def test_builder_exploratory_binding_does_not_close_parent_source(seeded_defs, s
     bound_resolver = cast(Any, resolver)
     try:
         materialize(experiment, resolver)
-        session = bound_resolver.binding.session
+        session = bound_resolver._binding.session
         parent_names = tuple(item.name for item in session._materialized)
         assert parent_names
         with warnings.catch_warnings():
@@ -377,7 +369,8 @@ def test_offline_definitions_builder_refuses_stale_catalog(tmp_path):
     assert raised.value.code == "kernel.definitions.catalog_stale"
 
 
-def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_path):
+def _write_offline_catalog(tmp_path: Path) -> tuple[Path, Experiment]:
+    """Definitions with a fresh offline catalog of one experiment, written without a connection."""
     from increment.semantics import load
 
     definitions = tmp_path / "definitions.yaml"
@@ -405,6 +398,11 @@ def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_
         ),
         encoding="utf-8",
     )
+    return definitions, experiment
+
+
+def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_path):
+    definitions, experiment = _write_offline_catalog(tmp_path)
 
     restored, resolver = from_definitions(definitions)
 
@@ -417,9 +415,109 @@ def test_offline_definitions_builder_loads_fresh_catalog_without_connection(tmp_
     with pytest.raises(CodedError) as invalid:
         run(changed, resolver)
     assert invalid.value.code == "kernel.run.execution_unavailable"
-    with pytest.raises(CodedError) as raised:
-        run(restored, resolver)
-    assert raised.value.code == "kernel.run.resolver_missing"
+
+
+def test_reader_public_surface_is_pinned(tmp_path):
+    from increment import ExperimentReader
+
+    _, frame_reader = from_frame(
+        _frame(),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    definitions, _ = _write_offline_catalog(tmp_path)
+    _, offline_reader = from_definitions(definitions)
+
+    for reader in (frame_reader, offline_reader):
+        assert type(reader) is ExperimentReader
+        assert {name for name in dir(reader) if not name.startswith("_")} == {
+            "experiment",
+            "closed",
+            "close",
+        }
+    assert repr(frame_reader) == (
+        "ExperimentReader(experiment_id='frame', reads='dataframe snapshot', closed=False)"
+    )
+    offline_reader.close()
+    assert repr(offline_reader) == (
+        "ExperimentReader(experiment_id='exp', reads='offline: cannot read', closed=True)"
+    )
+
+
+def test_closed_reader_refuses_every_read(tmp_path):
+    import polars as pl
+
+    experiment, reader = from_frame(
+        pl.from_pandas(_frame()),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    with reader:
+        assert run(experiment, reader).cells
+    definitions, _ = _write_offline_catalog(tmp_path)
+    offline_experiment, offline_reader = from_definitions(definitions)
+    offline_reader.close()
+
+    for closed_experiment, closed_reader in (
+        (experiment, reader),
+        (offline_experiment, offline_reader),
+    ):
+        assert closed_reader.closed is True
+        for read in (run, unit_counts):
+            with pytest.raises(CodedError) as closed:
+                read(closed_experiment, closed_reader)
+            assert closed.value.code == "kernel.run.reader_closed"
+            assert dict(closed.value.context) == {"experiment_id": closed_experiment.experiment_id}
+
+
+def test_reads_refuse_anything_but_a_reader():
+    experiment, reader = from_frame(
+        _frame(),
+        shape="summary",
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    )
+
+    class SiblingReader:
+        """Carries a real reader's whole surface without being an ExperimentReader."""
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(reader, name)
+
+    refused_arguments = (
+        (experiment, None),
+        (reader, experiment),
+        (experiment, object()),
+        (experiment, SiblingReader()),
+    )
+    for read in (run, unit_counts):
+        for arguments in refused_arguments:
+            with pytest.raises(CodedError) as refused:
+                read(*cast(Any, arguments))
+            assert refused.value.code == "kernel.run.reader_required"
+            assert refused.value.context["received"] == type(arguments[1]).__name__
+
+
+@pytest.mark.integration
+def test_offline_reader_supports_with_and_refuses_reads(seeded_defs, seeded_con):
+    _, connected = from_definitions(seeded_defs, seeded_con, experiment_name="new_onboarding_v2")
+    connected.close()
+    experiment, reader = from_definitions(seeded_defs, experiment_name="new_onboarding_v2")
+
+    with reader, pytest.raises(CodedError) as offline:
+        run(experiment, reader)
+
+    assert offline.value.code == "kernel.run.reader_offline"
+    display = repr(reader)
+    assert "0x" not in display and repr(experiment.experiment_id) in display
 
 
 def _change_metric_window(definitions: Path) -> None:
@@ -627,7 +725,7 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
     assert warning_codes(captured_warnings) == ["analysis.cuped.covariate_unused"]
     catalog_path = definitions / ".increment-kernel-catalog.json"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    offline, resolver = from_definitions(definitions, experiment_name="new_onboarding_v2")
+    offline, _ = from_definitions(definitions, experiment_name="new_onboarding_v2")
 
     assert offline.source_refs[0].schema
     assert catalog["experiments"]["new_onboarding_v2"]["source_refs"][0]["schema"]
@@ -638,22 +736,16 @@ def test_definitions_catalog_round_trips_schema_capabilities_and_runnability(
         == recorded_digest
     )
     assert offline.source_refs[0].expected_digest == recorded_digest
-    provider = online_resolver.resolve(online.source_refs)
-    assert online_resolver.verify(offline.source_refs, provider) == []
+    provider = online_resolver._resolve(online.source_refs)
+    assert online_resolver._verify(offline.source_refs, provider) == []
     changed = (replace(offline.source_refs[0], expected_digest="sha256:changed"),)
-    assert [error.code for error in online_resolver.verify(changed, provider)] == [
+    assert [error.code for error in online_resolver._verify(changed, provider)] == [
         "kernel.resolver.digest_mismatch"
     ]
     assert offline.source_refs[0].capabilities == online.source_refs[0].capabilities
     assert runnable(offline, "purchase_rate") == runnable(online, "purchase_rate")
     assert Experiment.from_json(online.to_json()).hash() == online.hash()
     assert Experiment.from_json(offline.to_json()).hash() == offline.hash()
-
-    definitions.joinpath("experiments.yaml").write_text("experiments: []\n", encoding="utf-8")
-
-    assert tuple(error.code for error in resolver.verify(offline.source_refs, object())) == (
-        "kernel.definitions.catalog_stale",
-    )
 
 
 @pytest.mark.integration
@@ -691,42 +783,41 @@ def test_saved_artifact_experiment_replays_with_fresh_resolver():
         con.disconnect()
 
 
-# Publish, close and reopen a real artifact while preserving the caller's connection.
+# Closing a real artifact reader releases its snapshot, keeps the caller's connection and
+# refuses later reads; a fresh reader over the same reference reads again.
 @pytest.mark.slow
 @pytest.mark.integration
-def test_artifact_resolver_reopens_owned_snapshot_after_close():
+def test_closed_artifact_reader_refuses_and_a_fresh_reader_reads():
     from increment.builders import from_unit_day_artifact
     from tests.test_unit_day_artifact_facade import _published
 
     con, _native, context, store, ref = _published()
     con.raw_sql("CREATE TEMP TABLE artifact_binding_sentinel(value INTEGER)")
     con.raw_sql("INSERT INTO artifact_binding_sentinel VALUES (53)")
-    resolver = None
     try:
         experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
-        first_source = resolver.binding.state.source
+        source = resolver._binding.state.source
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            assert run(experiment, resolver).cells
-        resolver.close()
-        assert getattr(first_source, "closed", False)
+            with resolver:
+                assert run(experiment, resolver).cells
+        assert getattr(source, "closed", False)
+
+        with pytest.raises(CodedError) as closed:
+            run(experiment, resolver)
+        assert closed.value.code == "kernel.run.reader_closed"
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", IncrementWarning)
-            assert run(experiment, resolver).cells
-        second_source = resolver.binding.state.source
-        assert second_source is not first_source
-        resolver.close()
-        assert getattr(second_source, "closed", False)
+            with from_unit_day_artifact(store, ref, expected_context=context)[1] as fresh:
+                assert run(experiment, fresh).cells
         assert con.raw_sql("SELECT value FROM artifact_binding_sentinel").fetchone()[0] == 53
     finally:
-        if resolver is not None:
-            resolver.close()
         con.disconnect()
 
 
 @pytest.mark.integration
-def test_resolver_repr_names_its_source_and_state_without_reopening_a_closed_artifact():
+def test_reader_repr_names_how_it_reads_without_reopening_a_closed_artifact():
     from increment.builders import from_unit_day_artifact
     from tests.test_unit_day_artifact_facade import _published
 
@@ -735,15 +826,15 @@ def test_resolver_repr_names_its_source_and_state_without_reopening_a_closed_art
     try:
         experiment, resolver = from_unit_day_artifact(store, ref, expected_context=context)
         assert "closed=False" in repr(resolver)
+        binding = resolver._binding
         resolver.close()
-        closed_source = resolver.binding.state.source
 
         display = repr(resolver)
 
-        assert "'artifact'" in display and repr(experiment.experiment_id) in display
+        assert "reads='artifact'" in display and repr(experiment.experiment_id) in display
         assert "closed=True" in display and "0x" not in display
-        assert resolver.binding.state.source is closed_source
-        assert getattr(closed_source, "closed", False)
+        assert resolver._bound is binding
+        assert getattr(binding.state.source, "closed", False)
     finally:
         if resolver is not None:
             resolver.close()

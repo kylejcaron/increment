@@ -32,10 +32,9 @@ if TYPE_CHECKING:
 
 
 from increment._analysis_config import UNSET, _Unset
-from increment._binding import SourceBinding, _ArtifactOpenSpec
+from increment._binding import ExperimentReader, SourceBinding, resolver_for
 from increment._optional import require_warehouse
-from increment._source_resolver import SourceResolver, resolver_for
-from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
+from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.kernel.contracts import _refuse
 from increment.kernel.experiment import Experiment
 
@@ -123,7 +122,6 @@ def bind_source(
     backend: str | None = None,
     store: Literal["auto", "always", "none"] = "auto",
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
-    artifact_open_spec: _ArtifactOpenSpec | None = None,
 ) -> SourceBinding:
     from increment.decision import ContrastContext
 
@@ -145,7 +143,7 @@ def bind_source(
         store=store,
         on_mixed_assignment=on_mixed_assignment,
     )
-    return SourceBinding(state, artifact_open=artifact_open_spec)
+    return SourceBinding(state)
 
 
 def _bind_definitions(
@@ -286,9 +284,7 @@ def _bind_summary(  # noqa: PLR0913
         breakouts=breakouts,
     )
     binding = bind_source(source, source.context.design)
-    return SourceBinding(
-        binding.state, artifact_open=binding.artifact_open, input_backend=_input_backend_of(frame)
-    )
+    return SourceBinding(binding.state, input_backend=_input_backend_of(frame))
 
 
 def _bind_panel(  # noqa: PLR0913
@@ -334,9 +330,7 @@ def _bind_panel(  # noqa: PLR0913
         cluster=cluster,
     )
     binding = bind_source(source, source.context.design)
-    return SourceBinding(
-        binding.state, artifact_open=binding.artifact_open, input_backend=_input_backend_of(frame)
-    )
+    return SourceBinding(binding.state, input_backend=_input_backend_of(frame))
 
 
 def _bind_artifact(
@@ -354,11 +348,7 @@ def _bind_artifact(
         expected_context=expected_context,
         verification=verification,
     )
-    return bind_source(
-        source,
-        source.context.design,
-        artifact_open_spec=_ArtifactOpenSpec(store, ref, expected_context, verification),
-    )
+    return bind_source(source, source.context.design)
 
 
 def _bind_switchback(
@@ -393,9 +383,7 @@ def _bind_switchback(
         contrast_references=contrast_references,
     )
     binding = bind_source(cast(Any, source), identification)
-    return SourceBinding(
-        binding.state, artifact_open=binding.artifact_open, input_backend=_input_backend_of(frame)
-    )
+    return SourceBinding(binding.state, input_backend=_input_backend_of(frame))
 
 
 def _bind_moments(
@@ -634,40 +622,6 @@ def _write_catalog(path: Path, experiment: Experiment, expected_digest: str | No
                 os.unlink(temporary)
 
 
-class _OfflineResolver:
-    def __init__(
-        self, definitions_path: Path, expected_digest: str, experiment: Experiment
-    ) -> None:
-        self.definitions_path = definitions_path
-        self.expected_digest = expected_digest
-        self.experiment = experiment
-
-    def validate_experiment(self, experiment: Experiment) -> None:
-        from increment._binding import _validate_experiment
-
-        _validate_experiment(experiment, self.experiment)
-
-    def resolve(self, source_refs: object, ctx: object | None = None) -> object:
-        del source_refs, ctx
-        raise CodedError(
-            "Executing offline definitions requires a bound warehouse connection",
-            code="kernel.run.resolver_missing",
-            context={},
-        )
-
-    def verify(self, source_refs: object, provider: object) -> list[CodedError]:
-        del source_refs, provider
-        if _loaded_digest(self.definitions_path) != self.expected_digest:
-            return [
-                CodedError(
-                    "Definitions changed since the offline catalog was loaded",
-                    code="kernel.definitions.catalog_stale",
-                    context={"path": str(self.definitions_path)},
-                )
-            ]
-        return []
-
-
 @overload
 def from_frame(
     frame: IntoDataFrame,
@@ -686,7 +640,7 @@ def from_frame(
     intervention_grain: Literal["unit", "cluster"] = "unit",
     exposure_date: str | None = None,
     breakouts: Sequence[str] = (),
-) -> tuple[Experiment, SourceResolver]: ...
+) -> tuple[Experiment, ExperimentReader]: ...
 
 
 @overload
@@ -708,7 +662,7 @@ def from_frame(
     breakouts: Sequence[str] = (),
     on_unassigned: Literal["error", "exclude"] = "error",
     cluster: str | None = None,
-) -> tuple[Experiment, SourceResolver]: ...
+) -> tuple[Experiment, ExperimentReader]: ...
 
 
 def from_frame(  # noqa: PLR0913
@@ -730,7 +684,7 @@ def from_frame(  # noqa: PLR0913
     exposure_date: str | None = None,
     observation_end: dt.date | dt.datetime | str | int | float | None | _Unset = UNSET,
     breakouts: Sequence[str] = (),
-) -> tuple[Experiment, SourceResolver]:
+) -> tuple[Experiment, ExperimentReader]:
     """Build an experiment from a unit-summary or unit-panel frame.
 
     Each shape accepts only the keywords its overload declares.
@@ -817,7 +771,7 @@ def from_definitions(
     store: Literal["auto", "always", "none"] = "auto",
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
-) -> tuple[Experiment, SourceResolver | _OfflineResolver]:
+) -> tuple[Experiment, ExperimentReader]:
     """Build from definitions, using a bound versioned catalog when offline."""
     require_warehouse("from_definitions")
     path = Path(definitions_path)
@@ -844,7 +798,7 @@ def from_definitions(
         if not isinstance(payload, dict):
             _refuse("kernel.definitions.catalog_missing", path=str(path))
         experiment = Experiment.from_json(json.dumps(payload))
-        return experiment, _OfflineResolver(path, str(catalog["definitions_digest"]), experiment)
+        return experiment, ExperimentReader(None, experiment)
 
     from increment.semantics.loader import load
 
@@ -866,11 +820,14 @@ def from_definitions(
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=source_snapshot_evidence,
     )
-    experiment, resolver = resolver_for(binding, record_schema=True)
+    experiment, reader = resolver_for(
+        binding,
+        record_schema=True,
+        catalog_writer=lambda captured: _write_catalog(path, captured, definitions_digest),
+        definitions_guard=lambda: _require_unchanged_definitions(path, definitions_digest),
+    )
     _write_catalog(path, experiment, definitions_digest)
-    resolver.catalog_writer = lambda captured: _write_catalog(path, captured, definitions_digest)
-    resolver.definitions_guard = lambda: _require_unchanged_definitions(path, definitions_digest)
-    return experiment, resolver
+    return experiment, reader
 
 
 def from_unit_day_artifact(
@@ -879,7 +836,7 @@ def from_unit_day_artifact(
     *,
     expected_context: ArtifactContext,
     verification: Literal["lazy_digest"] = "lazy_digest",
-) -> tuple[Experiment, SourceResolver]:
+) -> tuple[Experiment, ExperimentReader]:
     require_warehouse("from_unit_day_artifact")
     return resolver_for(
         _bind_artifact(store, ref, expected_context=expected_context, verification=verification)
@@ -900,7 +857,7 @@ def from_switchback_frame(
     experiment_id: str = "frame",
     plan: AnalysisPlan | None = None,
     contrast_references: Mapping[str, UnitCycleReference] | None = None,
-) -> tuple[Experiment, SourceResolver]:
+) -> tuple[Experiment, ExperimentReader]:
     binding = _bind_switchback(
         frame,
         unit=unit,
@@ -926,7 +883,7 @@ def from_moments(
     experiment_id: str | None = None,
     design: Randomized | Encouragement | Observational | None = None,
     plan: AnalysisPlan | None = None,
-) -> tuple[Experiment, SourceResolver]:
+) -> tuple[Experiment, ExperimentReader]:
     binding = _bind_moments(
         rows,
         metrics=metrics,

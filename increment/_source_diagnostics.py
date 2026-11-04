@@ -24,11 +24,11 @@ from increment.readouts._srm import triggered_srm
 if TYPE_CHECKING:
     import pyarrow as pa
 
+    from increment._binding import ExperimentReader
     from increment.decision import ContrastContext, ContrastSource
     from increment.estimation.diagnostics import NotApplicable, SRMResult
     from increment.estimation.health import ExperimentHealth
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.power import Baseline
     from increment.power.switchback import SwitchbackBaseline
     from increment.sources import _BuiltinMomentSource
@@ -41,7 +41,7 @@ _SWITCHBACK_ONLY = RefusalSpec(
 )
 
 
-def unit_counts(experiment: Experiment, resolver: Resolver) -> dict[str, int]:
+def unit_counts(experiment: Experiment, resolver: ExperimentReader) -> dict[str, int]:
     """Return enrolled unit counts by canonical group label.
 
     Excluded unassigned units appear under ``"(unassigned)"``. Sources
@@ -64,7 +64,7 @@ def _unit_counts_binding(binding: SourceBinding) -> dict[str, int]:
 
 def srm(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     *,
     expected: dict[str, float] | None = None,
     alpha: float = 0.001,
@@ -86,8 +86,8 @@ def srm(
     ----------
     experiment : Experiment
         Experiment declaration the resolver was built for.
-    resolver : Resolver
-        Resolver bound to the experiment's source.
+    resolver : ExperimentReader
+        Reader returned with the experiment by its builder.
     expected : dict[str, float] | None
         Target allocation for this call; otherwise the design's ``allocation``.
     alpha : float
@@ -162,7 +162,7 @@ def _srm_binding(
     return result
 
 
-def trigger_rates(experiment: Experiment, resolver: Resolver) -> dict[str, float]:
+def trigger_rates(experiment: Experiment, resolver: ExperimentReader) -> dict[str, float]:
     """Observed triggered share per arm.
 
     Feed a pooled estimate (e.g. the mean of these per-arm rates) into
@@ -200,7 +200,7 @@ def _trigger_rates_binding(binding: SourceBinding) -> dict[str, float]:
 
 def allocation_history(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     *,
     population: Literal["assigned", "triggered"] = "assigned",
 ) -> pa.Table:
@@ -236,7 +236,7 @@ def _allocation_history_binding(
 
 def health_check(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     *,
     expected_allocation: Mapping[str, float] | None = None,
 ) -> ExperimentHealth:
@@ -253,8 +253,8 @@ def health_check(
     ----------
     experiment : Experiment
         Experiment declaration the resolver was built for.
-    resolver : Resolver
-        Resolver bound to the experiment's source.
+    resolver : ExperimentReader
+        Reader returned with the experiment by its builder.
     expected_allocation : Mapping[str, float] | None
         Target arm shares for the allocation checks when the design declares none.
 
@@ -287,7 +287,7 @@ def _health_check_binding(
 
 
 def assignment_diagnostic(
-    experiment: Experiment, resolver: Resolver
+    experiment: Experiment, resolver: ExperimentReader
 ) -> SwitchbackAssignmentDiagnostic:
     """Return switchback assignment integrity evidence."""
     return _assignment_diagnostic_binding(binding_for(experiment, resolver))
@@ -300,7 +300,7 @@ def _assignment_diagnostic_binding(binding: SourceBinding) -> SwitchbackAssignme
 
 
 def planning_baseline(
-    experiment: Experiment, resolver: Resolver, metric: str
+    experiment: Experiment, resolver: ExperimentReader, metric: str
 ) -> Baseline | SwitchbackBaseline:
     """The planning input a power solver needs, computed from this experiment's data.
 

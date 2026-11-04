@@ -68,8 +68,8 @@ from increment.readouts._evidence import load_unit_rows
 from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
+    from increment._binding import ExperimentReader
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.semantics.design import Design, Observational
     from increment.semantics.models import Metric
 
@@ -664,7 +664,7 @@ def _select_targeting_rule_binding(  # noqa: PLR0913
 
 def estimate_cate(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     metric: str,
     *,
     control: str | None = None,
@@ -722,7 +722,7 @@ def estimate_cate(
 
 def validate_cate(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     metric: str,
     *,
     control: str,
@@ -796,7 +796,7 @@ def validate_cate(
 
 def targeting_rule(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     metric: str,
     *,
     control: str,
@@ -866,7 +866,7 @@ def targeting_rule(
 # Identification, selection and deployment controls remain explicit at the public boundary.
 def select_targeting_rule(  # noqa: PLR0913
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     metric: str,
     *,
     control: str,

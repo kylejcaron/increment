@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from increment._source_types import EvidenceCapabilities, EvidenceProvider
 from increment.errors import CodedError
-from increment.kernel.contracts import Scope, _refuse, declared_breakouts
+from increment.kernel.contracts import Scope, declared_breakouts
 from increment.kernel.experiment import Experiment, SourceReference
+
+if TYPE_CHECKING:
+    from increment._evidence_types import SequentialCaptureRequest
+    from increment.estimation.readout_types import ScopedReadout
+    from increment.kernel.context import EvidenceExecutionContext
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -40,17 +45,37 @@ class Resolver(Protocol):
     ) -> list[CodedError]: ...
 
 
-@runtime_checkable
-class _DeclarationValidator(Protocol):
-    def validate_experiment(self, experiment: Experiment) -> None: ...
+class _ReaderExecution(Protocol):
+    """The private surface of a builder's reader that the kernel validates, reads and runs."""
+
+    def _validate_experiment(self, experiment: Experiment) -> None: ...
+
+    def _resolve(
+        self, source_refs: Sequence[SourceReference], ctx: object | None = None
+    ) -> object: ...
+
+    def _verify(
+        self, source_refs: Sequence[SourceReference], provider: object
+    ) -> list[CodedError]: ...
+
+    def _run_experiment(
+        self,
+        experiment: Experiment,
+        provider: object,
+        *,
+        options: Mapping[str, object] | None = None,
+        capture: SequentialCaptureRequest | None = None,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> tuple[ScopedReadout, ...]: ...
 
 
-def _resolve_verified(exp: Experiment, resolver: Resolver, *, ctx: object | None = None) -> object:
+def _resolve_verified(
+    exp: Experiment, reader: _ReaderExecution, *, ctx: object | None = None
+) -> object:
     """Validate declarations and verify the resolved provider before use."""
-    if isinstance(resolver, _DeclarationValidator):
-        resolver.validate_experiment(exp)
-    provider = resolver.resolve(exp.source_refs, ctx)
-    failures = resolver.verify(exp.source_refs, provider)
+    reader._validate_experiment(exp)
+    provider = reader._resolve(exp.source_refs, ctx)
+    failures = reader._verify(exp.source_refs, provider)
     if failures:
         raise failures[0]
     return provider
@@ -323,29 +348,21 @@ def _select_views(exp: Experiment, views: Sequence[Scope] | None) -> Experiment:
 
 def run(
     exp: Experiment,
-    resolver: Resolver,
+    reader: _ReaderExecution,
     *,
     ctx: object | None = None,
-    options: dict[str, object] | None = None,
+    options: Mapping[str, object] | None = None,
     views: Sequence[Scope] | None = None,
-    capture: object | None = None,
-    execution_context: object | None = None,
-) -> Any:
-    """Resolve and verify the experiment's source before handing off execution.
-
-    Readout options, a sequential capture and a borrowed execution context reach
-    the resolver only when supplied, so an adapter that accepts none still runs.
-    """
+    capture: SequentialCaptureRequest | None = None,
+    execution_context: EvidenceExecutionContext | None = None,
+) -> tuple[ScopedReadout, ...]:
+    """Resolve and verify the experiment's source before the reader executes its views."""
     exp = _select_views(exp, views)
-    provider = _resolve_verified(exp, resolver, ctx=ctx)
-    execute = getattr(resolver, "run_experiment", None)
-    if not callable(execute):
-        _refuse("kernel.run.provider_execution_unavailable")
-    handoff: dict[str, object] = {}
-    if options:
-        handoff["options"] = options
-    if capture is not None:
-        handoff["capture"] = capture
-    if execution_context is not None:
-        handoff["execution_context"] = execution_context
-    return execute(exp, provider, **handoff)
+    provider = _resolve_verified(exp, reader, ctx=ctx)
+    return reader._run_experiment(
+        exp,
+        provider,
+        options=options,
+        capture=capture,
+        execution_context=execution_context,
+    )

@@ -29,9 +29,9 @@ from increment.readouts._whole_window import (
 from increment.semantics.models import Metric, RatioMetric
 
 if TYPE_CHECKING:
+    from increment._binding import ExperimentReader
     from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.query.native_contract import SitewideEvidence
     from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.sources import _BuiltinMomentSource
@@ -396,7 +396,7 @@ def _sitewide_binding(
 
 def sitewide(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     metric: str,
     *,
     arm: str | None = None,
@@ -428,8 +428,8 @@ def sitewide(
     ----------
     experiment : Experiment
         The experiment returned by a builder such as ``from_definitions``.
-    resolver : Resolver
-        The resolver returned with *experiment*.
+    resolver : ExperimentReader
+        The reader returned with *experiment*.
     metric : str
         Name of a metric declared on this experiment.
     arm : str | None

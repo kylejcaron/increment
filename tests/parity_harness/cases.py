@@ -25,7 +25,7 @@ from fractions import Fraction
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -80,6 +80,10 @@ from tests.parity_harness.scalar_capability_cases import capability_cases
 
 from . import dataset as ds
 from .views import View, read
+
+if TYPE_CHECKING:
+    from increment.query.artifact_contract import ArtifactContext
+    from increment.semantics.artifact import UnitDayArtifactRef
 
 _ARTIFACT_EXTENSION_KINDS = (
     "cuped_preperiod",
@@ -259,6 +263,7 @@ class _Owned:
 
     connections: tuple[Any, ...] = ()
     artifacts: tuple[tuple[Any, ArtifactStore, Any], ...] = ()
+    publication: tuple[ArtifactContext, UnitDayArtifactRef] | None = None
     cleanups: tuple[Callable[[], object], ...] = ()
     as_of: dt.date | None = None
 
@@ -301,6 +306,13 @@ def sequential_as_of(bound: Bound) -> dt.date | None:
     """The horizon a sequential case captures this ingress at, when it declares one."""
     owned = _OWNED.get(bound[1])
     return None if owned is None else owned.as_of
+
+
+def _adopted_publication(bound: Bound) -> tuple[ArtifactContext, UnitDayArtifactRef]:
+    """The expected context and reference an adopted artifact pair was built from."""
+    owned = _OWNED.get(bound[1])
+    assert owned is not None and owned.publication is not None
+    return owned.publication
 
 
 def _capture_kwargs(bound: Bound) -> dict[str, Any]:
@@ -356,6 +368,7 @@ def _publish_and_adopt(
         _close_parity_binding(native)
         raise
     _owned(adopted).artifacts = ((con, store, ref),)
+    _owned(adopted).publication = (context, ref)
     # The adopted pair now owns `con` and the generation; the native pair's own resources are
     # released with it.
     released = _OWNED.pop(native[1])
@@ -1164,9 +1177,7 @@ def _artifact_context_format_two_case() -> ParityCase:
         if ingress == "from_definitions":
             context = artifact_context(*bound)
         elif ingress == "from_unit_day_artifact":
-            spec = bound[1].binding.artifact_open
-            assert spec is not None
-            context = spec.expected_context
+            context, _ref = _adopted_publication(bound)
         else:
             return
         assert context.context_format == 2
@@ -1191,9 +1202,8 @@ def _artifact_context_format_one_refusal_case() -> ParityCase:
     def probe(ingress: str, bound: Bound) -> None:
         if ingress != "from_unit_day_artifact":
             return
-        spec = bound[1].binding.artifact_open
-        assert spec is not None
-        old_context = spec.expected_context.model_copy(update={"context_format": 1})
+        context, ref = _adopted_publication(bound)
+        old_context = context.model_copy(update={"context_format": 1})
 
         class NoStoreAccess:
             def validate_locator(self, *_args: Any, **_kwargs: Any) -> None:
@@ -1205,7 +1215,7 @@ def _artifact_context_format_one_refusal_case() -> ParityCase:
         try:
             builders.from_unit_day_artifact(
                 cast(ArtifactStore, NoStoreAccess()),
-                spec.ref,
+                ref,
                 expected_context=old_context,
             )
         except CodedError as exc:
