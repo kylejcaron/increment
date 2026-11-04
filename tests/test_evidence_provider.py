@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
 
@@ -44,6 +44,9 @@ from tests.source_conformance import (
     sql_totals_source,
     unit_summary_table,
 )
+
+if TYPE_CHECKING:
+    from increment.estimation.cuped.types import CategoricalCells
 
 
 def _frame_rows(frame: Any) -> list[dict[str, Any]]:
@@ -404,6 +407,8 @@ def test_compliance_series_does_not_reconvert_triggered_source() -> None:
 
 @pytest.mark.integration
 def test_raw_unit_rows_match_the_loader_path(tmp_path) -> None:
+    import pyarrow as pa
+
     source, _ = definitions_source(tmp_path)
     metric = source.context.metrics[0]
     provider = evidence_provider(source)
@@ -411,6 +416,7 @@ def test_raw_unit_rows_match_the_loader_path(tmp_path) -> None:
 
     expected = source.unit_frame(metric, outcome_stage="raw")
     actual = provider.unit_rows(request)
+    assert isinstance(actual, pa.Table)
 
     assert actual.to_pylist() == expected.to_pylist()
 
@@ -812,7 +818,7 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
             )
 
         def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
-            return EvidenceScopeResult(None, request)
+            return EvidenceScopeResult(cast(Any, None), request)
 
     provider = Provider()
     with pytest.raises(CapabilityError) as exc_info:
@@ -854,7 +860,7 @@ def test_temporal_compliance_requests_refuse_total_only_provider_before_reads() 
             return source.compliance_series(request.design)
 
         def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
-            return EvidenceScopeResult(nullcontext(self), request)
+            return EvidenceScopeResult(nullcontext(cast(Any, self)), request)
 
     provider = Provider()
     requests = (
@@ -2956,7 +2962,10 @@ def test_local_cuped_fallback_preserves_retained_categorical_components() -> Non
             if request.method.name == "retained":
                 return MethodFitAnswer(
                     "retained_categorical",
-                    cells=SimpleNamespace(arms=("control", "treatment"), counts=((2, 2), (2, 2))),
+                    cells=cast(
+                        "CategoricalCells",
+                        SimpleNamespace(arms=("control", "treatment"), counts=((2, 2), (2, 2))),
+                    ),
                     evidence_sha256="retained-categorical-evidence",
                 )
             return MethodFitAnswer("unavailable")

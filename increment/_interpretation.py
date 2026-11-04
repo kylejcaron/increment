@@ -375,7 +375,7 @@ def readout_evidence_columns(
     cell_or_row,
     *,
     source_snapshot_id: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, str | int | bool | None]:
     """Return portable scalar/JSON qualification columns for a source-qualified cell."""
     row = None
     if isinstance(cell_or_row, CellKey):

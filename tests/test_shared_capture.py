@@ -271,7 +271,7 @@ def test_narrowed_running_family_keeps_unselected_later_horizon():
 @pytest.mark.slow
 def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
     from increment.result_envelope import AnalysisEnvelope
-    from increment.store import ParquetResultsStore
+    from increment.store import ParquetResultsStore, Run
 
     rows = ds.event_rows()
     rows.append(
@@ -322,11 +322,13 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
         )
         assert actual.decisions.program == separate[0].decisions.program
         assert all(family in actual.decisions.families for family in separate[0].decisions.families)
-        assert len(actual.run.metadata.captures) == 1
+        metadata = actual.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         restored = AnalysisEnvelope.from_payload(actual.envelope.to_payload())
         assert restored.cells == actual.cells
         assert pickle.loads(pickle.dumps(actual)).cells == actual.cells
         store = ParquetResultsStore(tmp_path / "runs")
+        assert isinstance(actual.run, Run)
         store.put(actual.run)
         saved = store.open_run(
             actual.run.experiment_id, actual.run.analysis_spec_hash, actual.run.run_id
@@ -343,7 +345,8 @@ def test_registered_views_share_capture_preserve_cells_and_roundtrip(tmp_path):
             "run",
             "asof",
         )
-        assert len(selected.run.metadata.captures) == 1
+        metadata = selected.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         from increment.semantics.models import MeanMetric
 
         unregistered = MeanMetric(
@@ -689,7 +692,8 @@ def test_assigned_and_triggered_views_share_one_population_union(tmp_path):
             for scope in scopes
         ]
         actual = run(experiment, resolver, decision_method=method)
-        assert len(actual.run.metadata.captures) == 1
+        metadata = actual.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             _same_cells(
                 tuple(
@@ -768,7 +772,8 @@ def test_assigned_triggered_shared_run_uses_declared_source_for_same_name_varian
             for scope in scopes
         ]
         actual = run(experiment, resolver, metrics=[variant], decision_method=method)
-        assert len(actual.run.metadata.captures) == 1
+        metadata = actual.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             actual_scope = tuple(cell for cell in actual.cells if cell.identity.scope == scope)
             assert tuple(cell.identity.key for cell in actual_scope) == tuple(
@@ -827,7 +832,8 @@ def test_whole_window_and_daily_capture_same_name_metric_sources(tmp_path):
             max(cell.identity.key.ds for cell in separate[1].cells) == datetime(2025, 2, 20).date()
         )
         actual = run(experiment, resolver, metrics=[variant], decision_method=method)
-        assert len(actual.run.metadata.captures) == 1
+        metadata = actual.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             actual_scope = tuple(cell for cell in actual.cells if _scope(cell).view == scope.view)
             assert tuple(cell.identity.key for cell in actual_scope) == tuple(
@@ -869,7 +875,8 @@ def test_breakout_capture_uses_normalized_metric_for_both_populations(tmp_path):
             for scope in scopes
         )
         actual = run(experiment, resolver, metrics=[variant])
-        assert len(actual.run.metadata.captures) == 1
+        metadata = actual.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         for scope, expected in zip(scopes, separate, strict=True):
             actual_scope = tuple(
                 cell
@@ -922,7 +929,8 @@ def test_shared_capture_capabilities_follow_existing_six_ingress_dispositions():
                         tuple(cell for cell in result.cells if _scope(cell).view == scope.view),
                         expected.cells,
                     )
-                assert len(result.run.metadata.captures) == 1
+                metadata = result.run.metadata
+                assert metadata is not None and len(metadata.captures) == 1
                 assert_support("shared_capture", f"multiview_{ingress}", result)
             else:
                 assert isinstance(disposition, matrix.Refuses)
@@ -967,7 +975,8 @@ def test_switchback_metric_selection_scopes_share_contrast_evidence():
         experiment = replace(experiment, scopes=scopes)
         separate = [run(replace(experiment, scopes=(item,)), resolver) for item in scopes]
         result = run(experiment, resolver)
-        assert len(result.run.metadata.captures) == 1
+        metadata = result.run.metadata
+        assert metadata is not None and len(metadata.captures) == 1
         for item, expected in zip(scopes, separate, strict=True):
             _same_cells(
                 tuple(cell for cell in result.cells if cell.identity.scope == item),

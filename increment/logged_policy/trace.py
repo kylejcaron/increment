@@ -33,7 +33,12 @@ from pydantic import (
 from increment._identity import canonical_id_strings
 from increment.errors import CodedModel, _thaw
 from increment.logged_policy._refusals import _raise
-from increment.logged_policy.policy import PolicyRegistry, _freeze, _validate_distribution
+from increment.logged_policy.policy import (
+    ContextInput,
+    PolicyRegistry,
+    _freeze,
+    _validate_distribution,
+)
 
 PROPENSITY_FLOOR = 0.05
 _PROPENSITY_MATCH_TOLERANCE = 1e-9
@@ -318,13 +323,15 @@ def _audit_logging_distribution(
 
 
 def _ordered_admission(
-    records: Iterable[DecisionRecord | Mapping[str, Any]],
+    records: Iterable[DecisionRecord | Mapping[str, object]],
     *,
     registry: PolicyRegistry | None,
     logging_distributions: Iterable[Mapping[str, object]] | None,
 ) -> tuple[tuple[DecisionRecord, ...], tuple[tuple[float, ...], ...], object]:
     route = _admission_route(registry, logging_distributions)
-    typed = [r if isinstance(r, DecisionRecord) else DecisionRecord(**r) for r in records]
+    typed = [
+        r if isinstance(r, DecisionRecord) else DecisionRecord.model_validate(r) for r in records
+    ]
     if not typed:
         _raise("logged_policy.trace.empty", n_records=0, constructors=_AUDITED_CONSTRUCTORS)
     if route == "registry":
@@ -404,7 +411,13 @@ class LoggedTrace(CodedModel, BaseModel):
     @classmethod
     def from_records(
         cls,
-        records: Iterable[DecisionRecord | Mapping[str, Any]],
+        records: Iterable[
+            DecisionRecord
+            | Mapping[
+                str,
+                str | int | float | datetime | Sequence[str] | Mapping[str, ContextInput] | None,
+            ]
+        ],
         *,
         registry: PolicyRegistry | None = None,
         logging_distributions: Iterable[Mapping[str, object]] | None = None,

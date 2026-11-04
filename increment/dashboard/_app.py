@@ -101,7 +101,7 @@ _VIEW_TITLES = {
 }
 
 
-def render_dashboard(experiment: Experiment, *, snapshot: DashboardSnapshot) -> Any:
+def render_dashboard(experiment: Experiment, *, snapshot: DashboardSnapshot) -> mo.ui.anywidget:
     """The complete interactive dashboard for one prepared snapshot.
 
     ``experiment`` proves the snapshot belongs to the caller's experiment; every tab reads only
@@ -509,7 +509,7 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     from policy. Confidence sets not represented by the central interval keep every endpoint,
     and each unavailability reason is kept as the engine reported it.
     """
-    rows = snapshot.readout_rows
+    rows: tuple[Mapping[str, Any], ...] = snapshot.readout_rows
     notes: list[str] = []
     if not rows:
         return []

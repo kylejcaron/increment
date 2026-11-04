@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pyarrow as pa
 
 from increment._assignment_ledger_contract import ReducedAssignment, reduce_rows, validate_roles
 from increment._assignment_refusals import refuse_assignment_invalid
+
+if TYPE_CHECKING:
+    from narwhals.typing import IntoDataFrame
 
 
 class FrameLedger:
@@ -16,7 +19,9 @@ class FrameLedger:
 
     __slots__ = ("_frame", "roles")
 
-    def __init__(self, frame: Any, roles: Mapping[str, str]) -> None:
+    def __init__(
+        self, frame: pa.Table | pa.RecordBatch | IntoDataFrame, roles: Mapping[str, str]
+    ) -> None:
         self.roles = validate_roles(roles)
         if isinstance(frame, (pa.Table, pa.RecordBatch)):
             names = frame.column_names

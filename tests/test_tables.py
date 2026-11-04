@@ -18,7 +18,7 @@ import pytest
 
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 from increment.breakout.projection import to_frame
-from increment.estimation.results import Estimate, LiftEstimate
+from increment.estimation.results import Estimate, LiftEstimate, RelativeConfidenceSet
 from increment.estimators import AlwaysValid, estimate_sequential
 from increment.semantics.unit_cycle import UnitCycleTApproximation
 from increment.tables import (
@@ -1011,16 +1011,19 @@ def test_readout_table_treats_pandas_na_as_missing_multiplicity_status():
     pytest.importorskip("coeftable")
     import pandas as pd
 
-    known, missing = estimates_to_readout(
-        [
-            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
-            _estimate("other", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
-        ]
-    )
-    known["multiplicity_status"] = "exploratory_unadjusted"
-    missing["multiplicity_status"] = pd.NA
+    rows: list[dict[str, object]] = [
+        dict(row)
+        for row in estimates_to_readout(
+            [
+                _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+                _estimate("other", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            ]
+        )
+    ]
+    rows[0]["multiplicity_status"] = "exploratory_unadjusted"
+    rows[1]["multiplicity_status"] = pd.NA
 
-    html = readout_table([known, missing]).gt().as_raw_html()
+    html = readout_table(rows).gt().as_raw_html()
 
     assert "m¹" in html
     assert "other¹" not in html
@@ -2592,7 +2595,9 @@ def test_flat_joint_rows_preserve_disconnected_set_significance(model, control_m
     restored = model.model_validate_json(estimate.model_dump_json())
     assert region.geometry == "disconnected"
     assert estimates_to_readout([restored])[0]["stat_sig"] is True
-    assert estimates_to_readout([restored])[0]["relative_confidence_set"].contains(0) is False
+    relative = estimates_to_readout([restored])[0]["relative_confidence_set"]
+    assert isinstance(relative, RelativeConfidenceSet)
+    assert relative.contains(0) is False
 
 
 @pytest.mark.parametrize(
@@ -2632,8 +2637,10 @@ def test_directional_fieller_readout_retains_central_display_interval(control_me
         expected, abs=1e-12
     )
     assert row["open_side"] is None
-    assert row["relative_confidence_set"].contains(1.0)
-    assert row["relative_confidence_set"].contains(0.0) is (control_mean == 0.0)
+    relative = row["relative_confidence_set"]
+    assert isinstance(relative, RelativeConfidenceSet)
+    assert relative.contains(1.0)
+    assert relative.contains(0.0) is (control_mean == 0.0)
     assert row["stat_sig"] is (control_mean != 0.0)
 
 

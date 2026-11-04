@@ -412,7 +412,7 @@ class _CaptureGuard:
     def scope(self, request):
         from increment.evidence import EvidenceScopeResult
 
-        return EvidenceScopeResult(self, request)
+        return EvidenceScopeResult(cast(Any, self), request)
 
 
 @pytest.mark.parametrize("change", ["column", "missing"])

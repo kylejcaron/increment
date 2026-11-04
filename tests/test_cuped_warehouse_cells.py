@@ -18,7 +18,7 @@ from increment.artifacts import publish_unit_day_artifact
 from increment.errors import CapabilityError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.cuped.cells import fit_categorical_cells
-from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
 from increment.semantics.models import CupedCovariate, MeanMetric, Measure, RatioMetric
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import bound_source, view_readout
@@ -722,7 +722,6 @@ def test_categorical_warehouse_discrete_domain_refuses_before_query_execution():
 @backend_fixture()
 def categorical_sources(tmp_path, request):
     from dataclasses import replace
-    from typing import cast
 
     import pyarrow as pa
     import yaml
@@ -871,13 +870,14 @@ def test_integer_fact_domain_routes_through_qr_without_unit_keyed_transfer(
     native, artifact, request = categorical_sources
     source = native if ingress == "native" else artifact
     metric = source.context.metrics[0]
-    unit_rows = cast(
-        UnitRows,
-        request_evidence(
-            evidence_provider(source),
-            UnitRowsRequest(metric, covariates=("segment", "device")),
-        ),
-    ).to_pylist()
+    import pyarrow as pa
+
+    selected_rows = request_evidence(
+        evidence_provider(source),
+        UnitRowsRequest(metric, covariates=("segment", "device")),
+    )
+    assert isinstance(selected_rows, pa.Table)
+    unit_rows = selected_rows.to_pylist()
     expected = fit_cuped_multicovariate(
         np.asarray([row["y"] for row in unit_rows]),
         np.asarray([row["group_id"] for row in unit_rows]),

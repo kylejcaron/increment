@@ -425,7 +425,7 @@ def _assert_empty_sequential_compliance(tmp_path):
 
 
 def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
-    from increment.store import ParquetResultsStore
+    from increment.store import ParquetResultsStore, Run
 
     experiment, resolver = _connected(
         path, connection, source_snapshot_evidence=_CERTIFIED, store="none"
@@ -444,6 +444,7 @@ def _assert_triggered_only_store_roundtrip(tmp_path, path, connection):
             (cell.identity.source_snapshot_id, cell.identity.key) for cell in result.cells
         }
         store = ParquetResultsStore(tmp_path / "triggered-run")
+        assert isinstance(result.run, Run)
         store.put(result.run)
         restored_run = store.open_run(
             result.run.experiment_id, result.run.analysis_spec_hash, result.run.run_id
@@ -783,7 +784,9 @@ def test_triggered_sequential_metadata_orders_mixed_direction_cells(tmp_path):
 
         envelope = AnalysisEnvelope(tuple(legacy_rows.as_cells()), legacy_metadata)
         legacy_envelope = envelope.to_payload(include_capture_metadata=True)
-        legacy_envelope["metadata"]["cells"] = legacy_records
+        metadata = legacy_envelope["metadata"]
+        assert isinstance(metadata, dict)
+        legacy_envelope["metadata"] = {**metadata, "cells": legacy_records}
         restored_payload = AnalysisEnvelope.from_payload(legacy_envelope)
         restored_payload_metadata = restored_payload.metadata
         assert restored_payload_metadata is not None
@@ -1638,7 +1641,7 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
 
     restored = ReadoutResults.model_validate_json(rows.model_dump_json())
     qualification = estimates_to_readout([selected])[0]["selection_qualification"]
-    assert qualification is not None
+    assert isinstance(qualification, str)
     assert repr(qualification) in repr(selected)
     restored_selected = next(
         row
@@ -1718,6 +1721,7 @@ def test_filtered_readout_keeps_original_family_qualification(tmp_path):
             and row.discovery
         )
         qualification = estimates_to_readout([selected])[0]["selection_qualification"]
+        assert isinstance(qualification, str)
         filtered = rows.filter(
             lambda row: row.analysis_population == "triggered" and row.metric == selected.metric
         )

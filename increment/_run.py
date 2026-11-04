@@ -43,13 +43,19 @@ if TYPE_CHECKING:
     from increment._binding import SourceBinding
     from increment._evidence_types import SequentialCaptureRequest
     from increment._literals import Backend, ValueScale
-    from increment.breakout.estimates import EstimateList
+    from increment.breakout.estimates import (
+        BreakoutEstimates,
+        DailyLiftEstimates,
+        DailyMetricValues,
+        LiftEstimates,
+    )
     from increment.decide.evaluator import Decisions
     from increment.decision import CompiledDecisionPlan, ContrastContext
     from increment.estimation.contrast_results import ContrastResults
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
     from increment.estimation.readout_types import ReadoutMetadata
+    from increment.estimation.results import LiftEstimate
     from increment.kernel.context import EvidenceExecutionContext
     from increment.kernel.experiment import Experiment
     from increment.kernel.resolver import Resolver
@@ -93,8 +99,8 @@ class RunResult:
     cells: tuple[ResultCell, ...]
     effects: tuple[EffectEstimate | None, ...]
     decisions: Decisions
-    run: Any
-    live_rows: tuple[Any | None, ...] = ()
+    run: RunRecord
+    live_rows: tuple[LiftEstimate | None, ...] = ()
     _scoped: tuple[ScopedReadout, ...] = field(default=(), repr=False, compare=False)
     _row_models: tuple[type[BaseModel], ...] = field(default=(), repr=False, compare=False)
     _input_backend: Backend | None = field(default=None, repr=False, compare=False)
@@ -131,7 +137,11 @@ class RunResult:
         """The portable result cells with the run's metadata."""
         return AnalysisEnvelope(self.cells, self.run.metadata)
 
-    def readout(self, scope: Scope | None = None) -> EstimateList[Any] | ContrastResults:
+    def readout(
+        self, scope: Scope | None = None
+    ) -> (
+        LiftEstimates | DailyLiftEstimates | DailyMetricValues | BreakoutEstimates | ContrastResults
+    ):
         """Return the result collection one executed scope produced, unchanged.
 
         ``scope`` may be omitted only when the run executed one scope. A result
@@ -852,7 +862,7 @@ def _run_rows(
             binding_unavailable_reason = error.code
     created_at = datetime.now(UTC)
     cells: list[ResultCell] = []
-    live_rows: list[Any | None] = []
+    live_rows: list[LiftEstimate | None] = []
     for part, (identity_methods, identity_metrics, _) in zip(parts, overrides, strict=True):
         collection = part.collection
         live_rows_by_key = {

@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -22,6 +22,9 @@ from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation._tails import tail_isf
+
+if TYPE_CHECKING:
+    from increment._evidence_types import RowValue
 
 _ALWAYS_SRM_PREDECLARED = RefusalSpec(
     "estimation.diagnostics.always_srm_predeclared",
@@ -419,7 +422,7 @@ class AllocationBand(BaseModel):
 
 
 def allocation_posterior_bands(
-    counts: IntoDataFrame | Iterable[Mapping[str, Any]],
+    counts: IntoDataFrame | Iterable[Mapping[str, RowValue]],
     *,
     credible_level: float = 0.95,
     prior: tuple[float, float] = (1.0, 1.0),

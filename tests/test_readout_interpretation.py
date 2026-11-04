@@ -33,7 +33,7 @@ def test_low_reliability_interval_is_qualified_in_shared_interpretation():
     row = _run_mean(_mean_frame())[0].model_copy(update={"low_reliability": True})
     interpretation = estimates_to_readout([row])[0]["effect_interpretation"]
 
-    assert interpretation is not None
+    assert isinstance(interpretation, str)
     assert "low reliability" in interpretation.lower()
     assert "increase" not in interpretation.lower()
 

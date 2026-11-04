@@ -105,7 +105,10 @@ def test_run_live_mode_is_retained_and_qualified(tmp_path):
         ] * len(rows)
         exported = estimates_to_readout(rows)
         assert all(row["coherence"] == "live" for row in exported)
-        assert all(json.loads(row["effective_modes"]) == expected_modes for row in exported)
+        modes_cells = [row["effective_modes"] for row in exported]
+        assert all(
+            isinstance(cell, str) and json.loads(cell) == expected_modes for cell in modes_cells
+        )
         pytest.importorskip("coeftable")
         html = readout_table(rows).gt().as_raw_html()
         assert "Coherence: live" in html
@@ -167,6 +170,7 @@ def test_mutable_sql_panel_is_not_reported_as_captured():
 @pytest.mark.integration
 def test_native_scope_provider_yields_typed_pinned_provider():
     from increment.evidence import (
+        EvidenceProvider,
         EvidenceScope,
         MomentsRequest,
         evidence_provider,
@@ -188,6 +192,7 @@ def test_native_scope_provider_yields_typed_pinned_provider():
     )
     try:
         scoped = context.open()
+        assert isinstance(scoped, EvidenceProvider)
         rows = request_evidence(scoped, MomentsRequest(metric))
         assert rows
     finally:
@@ -1322,7 +1327,8 @@ def test_custom_provider_forwarding_artifact_has_no_capture_guarantee(tmp_path):
         exported = estimates_to_readout(rows)
         assert all(row["coherence"] is None for row in exported)
         assert all(row["provider_owned"] is True for row in exported)
-        assert all(json.loads(row["effective_modes"]) == modes for row in exported)
+        modes_cells = [row["effective_modes"] for row in exported]
+        assert all(isinstance(cell, str) and json.loads(cell) == modes for cell in modes_cells)
         pytest.importorskip("coeftable")
         assert "Coherence: provider-owned" in readout_table(rows).gt().as_raw_html()
     finally:

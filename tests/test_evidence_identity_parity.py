@@ -612,7 +612,7 @@ def _assert_operation_matches(
         assert expected["status"] == "available"
         expected_cell = expected["result_cell"]
         assert isinstance(expected_cell, Mapping)
-        actual_payload = actual.to_payload()
+        actual_payload: dict[str, object] = dict(actual.to_payload())
         expected_retained = expected_cell.get("retained_row")
         actual_retained = actual_payload.get("retained_row")
         if isinstance(expected_retained, Mapping) and isinstance(actual_retained, Mapping):

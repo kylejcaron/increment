@@ -326,18 +326,25 @@ def test_cate_envelope_captures_facade_identity_without_fit_state():
     gc.collect()
     restored = ResultCell.from_payload(payload)
     assert restored.row_kind == "cate"
-    assert restored.row_payload is not None
-    assert restored.row_payload["payload_version"] == 1
-    assert restored.row_payload["identity_context"]["metric"] == "revenue"
-    assert restored.row_payload["identity_context"]["source_identity"]
-    assert restored.row_payload["identity_context"]["control"] == "control"
-    assert restored.row_payload["identity_context"]["treatment"] == "treatment"
+    match restored.row_payload:
+        case {
+            "payload_version": 1,
+            "identity_context": {
+                "metric": "revenue",
+                "control": "control",
+                "treatment": "treatment",
+                "trigger_name": trigger_name,
+                "source_identity": {**source_identity},
+            },
+        }:
+            pass
+        case _:
+            pytest.fail(f"unexpected CATE report payload: {restored.row_payload!r}")
+    assert source_identity
     assert restored.supports["sampling"] == frozenset()
-    assert cell.identity.trigger_name == restored.row_payload["identity_context"]["trigger_name"]
+    assert cell.identity.trigger_name == trigger_name
     assert cell.identity.source_identity_hash is not None
-    assert cell.identity.experiment_id == restored.row_payload["identity_context"][
-        "source_identity"
-    ].get("study_id")
+    assert cell.identity.experiment_id == source_identity.get("study_id")
 
 
 def test_cate_and_targeting_cells_bind_distinct_study_and_source_identity():
@@ -624,11 +631,11 @@ def test_honest_cate_and_targeting_reports_have_report_only_cells():
         assert restored.row_payload == cell.row_payload
         assert restored.identity.experiment_id == "frame"
         assert restored.identity.source_identity_hash is not None
-        assert restored.row_payload is not None
-        assert (
-            restored.identity.trigger_name
-            == restored.row_payload["identity_context"]["trigger_name"]
-        )
+        match restored.row_payload:
+            case {"identity_context": {"trigger_name": trigger_name}}:
+                assert restored.identity.trigger_name == trigger_name
+            case _:
+                pytest.fail(f"report payload has no identity context: {restored.row_payload!r}")
         assert restored.summary is not None
         result_data = cast(Any, result)
         estimate = (

@@ -82,11 +82,13 @@ if TYPE_CHECKING:
 
     from increment._binding import SourceBinding
     from increment._dashboard_capture import DashboardCapture
+    from increment._evidence_types import RowValue
     from increment.estimation.results import LiftEstimate
     from increment.kernel.experiment import Experiment
     from increment.kernel.resolver import Resolver
     from increment.semantics.models import Experiment as ExperimentDefinition
     from increment.semantics.models import Metric, MultiplicitySpec
+    from increment.tables import ReadoutValue
 
 ExploreView = Literal["cumulative_lift", "daily_values", "cumulative_values", "segments"]
 
@@ -296,10 +298,10 @@ class DashboardSnapshot:
     metrics: tuple[Metric, ...]
     breakouts: tuple[tuple[str | None, str], ...]
     estimates: tuple[LiftEstimate, ...]
-    readout_rows: tuple[Mapping[str, Any], ...]
+    readout_rows: tuple[Mapping[str, ReadoutValue], ...]
     allocation: SRMResult | None
     allocation_refusal: tuple[str, str] | None
-    allocation_history: tuple[Mapping[str, Any], ...]
+    allocation_history: tuple[Mapping[str, RowValue], ...]
     allocation_history_refusal: tuple[str, str] | None
     config: DashboardConfig
     computed_at: dt.datetime
@@ -316,7 +318,7 @@ class DashboardSnapshot:
     offered_metrics: tuple[Metric, ...] = ()
     triggered_allocation: SRMResult | None = None
     triggered_allocation_refusal: tuple[str, str] | None = None
-    triggered_allocation_history: tuple[Mapping[str, Any], ...] = ()
+    triggered_allocation_history: tuple[Mapping[str, RowValue], ...] = ()
     triggered_allocation_history_refusal: tuple[str, str] | None = None
     health: ExperimentHealth | None = None
     readout_collection: LiftEstimates | None = None
@@ -600,7 +602,7 @@ def group_data_csv(snapshot: DashboardSnapshot, *, metric: str | None = None) ->
     return output.getvalue().encode("utf-8")
 
 
-def _binding_fingerprint(definition: Mapping[str, Any], metrics: Mapping[str, object]) -> str:
+def _binding_fingerprint(definition: Mapping[str, object], metrics: Mapping[str, object]) -> str:
     """Identify an experiment definition and its metrics, independently of selected views."""
     payload = {"experiment": definition, "metrics": metrics}
     return hashlib.sha256(canonical_json_bytes(declaration_value(payload))).hexdigest()
@@ -857,7 +859,7 @@ def _supported_experiment(binding: SourceBinding) -> ExperimentDefinition:
     return definition
 
 
-def _recorded_definition(experiment: Experiment) -> Mapping[str, Any]:
+def _recorded_definition(experiment: Experiment) -> Mapping[str, object]:
     """The experiment definition ``experiment`` records, refused as preparation refuses it."""
     if experiment.analysis_context.get("family") == "contrast":
         refuse(CONTRAST_UNAVAILABLE, method="experiment")
@@ -867,7 +869,8 @@ def _recorded_definition(experiment: Experiment) -> Mapping[str, Any]:
     design = recorded.get("design")
     if isinstance(design, Mapping):
         _refuse_design(str(design.get("mechanism")))
-    return recorded
+    # A recorded definition is a JSON object, so its keys are already strings.
+    return {str(key): value for key, value in recorded.items()}
 
 
 def _entry_name(entry: object) -> str:
@@ -972,7 +975,7 @@ def _require_treatment_arm(estimates: Sequence[LiftEstimate], *, treatment: str)
 
 def enriched_rows(
     estimates: Sequence[LiftEstimate | BreakoutEstimate],
-) -> tuple[Mapping[str, Any], ...]:
+) -> tuple[Mapping[str, ReadoutValue], ...]:
     """Convert estimates while carrying their retained collection qualifications."""
     rows = estimates_to_readout(estimates)
     if len(rows) != len(estimates):

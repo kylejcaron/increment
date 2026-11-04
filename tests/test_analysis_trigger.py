@@ -38,7 +38,6 @@ from increment.estimation.sitewide import SitewideImpact
 from increment.estimators import sitewide
 from increment.evidence import (
     BreakoutIdentity,
-    UnitRows,
     UnitRowsRequest,
     evidence_provider,
     request_evidence,
@@ -61,11 +60,10 @@ def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
 
 
-def _unit_rows(source, metric, **kwargs) -> UnitRows:
-    return cast(
-        UnitRows,
-        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
-    )
+def _unit_rows(source, metric, **kwargs) -> pa.Table:
+    rows = request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs))
+    assert isinstance(rows, pa.Table)
+    return rows
 
 
 _POPULATION_SCOPES = (
@@ -1036,6 +1034,7 @@ def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path
     from dataclasses import replace
 
     from increment.decide import decide
+    from increment.store import Run
     from increment.store.types import pinned_run
 
     reversed_metadata = metadata.model_copy(
@@ -1045,6 +1044,7 @@ def test_public_decision_keeps_assigned_and_triggered_families_separate(tmp_path
             )
         }
     )
+    assert isinstance(result.run, Run)
     reordered = decide(
         pinned_run(replace(result.run, metadata=reversed_metadata)), registration, compiled
     )

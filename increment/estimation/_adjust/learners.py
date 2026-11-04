@@ -1,14 +1,14 @@
-"""Learner protocols and default nuisance models for observational adjustment."""
+"""Default nuisance models for observational adjustment."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
 
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import expit
 
+from increment.declarations import Learner as Learner
 from increment.errors import InvalidRequestError, raiser, refusals
 
 _REFUSALS = refusals(
@@ -20,30 +20,6 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
-
-
-class Learner(Protocol):
-    """A propensity/outcome model: `fit` on covariates + label, then `predict`.
-
-    Stateless protocol (not ABC): any object satisfying the interface
-    works, including a user's own sklearn/LightGBM wrapper; no
-    inheritance required.
-    """
-
-    def fit(self, X: np.ndarray, d: np.ndarray) -> None:
-        """Fit the model on covariate matrix `X` and binary label `d`."""
-        ...
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Return predicted probabilities in `[0, 1]` for each row of `X`.
-
-        The closed interval, not open: a learner's sigmoid can saturate to
-        exactly 0.0/1.0 for extreme inputs. Callers relying on `1/e` or
-        `1/(1-e)` staying finite must gate on this via an overlap check
-        (e.g. `IdentificationGate.min_propensity`) rather than assume the
-        open interval.
-        """
-        ...
 
 
 # Concrete Learner: scipy-only ridge-regularized logistic regression

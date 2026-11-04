@@ -125,6 +125,17 @@ values.
 
 ### Earlier release notes
 
+- Release note (typing): public signatures and fields no longer use `Any`;
+  `make lint` now refuses any new `Any` in a promised name. Results, refusal
+  codes, saved formats and identity hashes are unchanged; a recorded `source_name`
+  that is not a string now raises `TypeError`. Type checkers now see the precise
+  types, so custom providers and callers may need to
+  narrow values they previously treated as `Any`: moment and breakout row cells
+  are typed scalars, `UnitRows` is a dataframe, `MethodFitAnswer.envelope` is a
+  protocol with `fit`, `arm_order` and `withheld`, saved payloads are JSON
+  values, and `EvidenceExecutionContext.open()`/`borrow()` return the evidence
+  source a scope yields. `RunResult.run` exposes `analysis_spec_hash`.
+
 - Release note (bug fix): `Experiment.from_json` now refuses unknown design
   mechanisms with `design.mechanism_unsupported` before accepting the saved
   declaration.

@@ -432,7 +432,8 @@ def test_encouragement_breakout_preserves_refused_scalar_decision_cells(with_pri
         assert {row["estimand"] for row in converted} == {"itt", "late"}
         assert all(row["sampling_available"] is False for row in converted)
         assert all(row["point_available"] is False for row in converted)
-        assert all(row["unavailable_cell_count"] >= 2 for row in converted)
+        counts = [row["unavailable_cell_count"] for row in converted]
+        assert all(isinstance(count, int) and count >= 2 for count in counts)
         assert "frame.validation.metric_covariate_column" in (
             readout_table(
                 collection.filter(lambda row: row.method == "adjusted"), nest_by="segment"

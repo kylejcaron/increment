@@ -14,7 +14,6 @@ from increment.evidence import (
     ComplianceSeriesRequest,
     ComplianceSummary,
     MomentsRequest,
-    UnitRows,
     UnitRowsRequest,
     evidence_provider,
     request_evidence,
@@ -458,13 +457,13 @@ def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):
         defs_path, con, experiment_name="native_observational_exp", store="none"
     )
     source = bound_source(native_resolver)
-    table = cast(
-        UnitRows,
-        request_evidence(
-            evidence_provider(source),
-            UnitRowsRequest(source.context.metrics[0], covariates=("tenure",)),
-        ),
+    import pyarrow as pa
+
+    table = request_evidence(
+        evidence_provider(source),
+        UnitRowsRequest(source.context.metrics[0], covariates=("tenure",)),
     )
+    assert isinstance(table, pa.Table)
     rows = table.to_pylist()
     assert rows
     assert all(row["tenure"] == pytest.approx(30.0) for row in rows)

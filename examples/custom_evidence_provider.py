@@ -23,6 +23,7 @@ from increment.evidence import (
     EvidenceScopeResult,
     MethodFitAnswer,
     MethodFitRequest,
+    MomentRows,
     MomentsRequest,
     ScalarBreakoutRows,
     SequentialCapture,
@@ -58,7 +59,7 @@ class RevenueProvider:
     # experiment's resolver supplies its real SourceContext from its construction metadata.
     context = cast(SourceContext, None)
 
-    def moments(self, request: MomentsRequest) -> tuple[dict[str, object], ...]:
+    def moments(self, request: MomentsRequest) -> MomentRows:
         if request.metric.name != "revenue" or request.grain != "total":
             raise ValueError("This demonstration stores only total revenue moments.")
         return (

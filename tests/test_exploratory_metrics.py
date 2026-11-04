@@ -1362,8 +1362,10 @@ def test_exploratory_live_results_retain_live_coherence_metadata():
 
         exported = estimates_to_readout(rows)
         assert all(row["coherence"] == "live" for row in exported)
+        modes_cells = [row["effective_modes"] for row in exported]
         assert all(
-            json.loads(row["effective_modes"]) == metadata.effective_modes for row in exported
+            isinstance(cell, str) and json.loads(cell) == metadata.effective_modes
+            for cell in modes_cells
         )
         assert "Coherence: live; no pinned snapshot is guaranteed." in (
             readout_table(rows).gt().as_raw_html()

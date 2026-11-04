@@ -191,7 +191,7 @@ def test_extension_catalog_types_a_string_covariate_as_a_level_extension(tmp_pat
     offered = {
         entry.request.property_name: entry.request
         for entry in ac.unit_day_artifact_extension_catalog(context)
-        if entry.request.kind in {"unit_covariate", "unit_covariate_level"}
+        if isinstance(entry.request, (UnitCovariateRequest, UnitCovariateLevelRequest))
     }
     assert offered == {
         "tenure": UnitCovariateRequest(property_name="tenure", source_name="events"),

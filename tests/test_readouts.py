@@ -38,7 +38,6 @@ from increment.evidence import (
     CountsRequest,
     MomentRows,
     MomentsRequest,
-    UnitRows,
     UnitRowsRequest,
     evidence_provider,
     request_evidence,
@@ -88,11 +87,10 @@ def _unit_counts(source):
     return answer.unit_counts or answer.counts
 
 
-def _unit_rows(source, metric, **kwargs) -> UnitRows:
-    return cast(
-        UnitRows,
-        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
-    )
+def _unit_rows(source, metric, **kwargs) -> pa.Table:
+    rows = request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs))
+    assert isinstance(rows, pa.Table)
+    return rows
 
 
 # 6 units, two arms, deliberately unbalanced revenue so a transposed group

@@ -751,6 +751,7 @@ class ContrastResults(list[ContrastResult]):
             "unavailable_cell_count",
             "hidden_cell_count",
         }
+        evidence_columns: dict[str, list[object]]
         if evidence:
             evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
         elif interpretation.groups and interpretation.groups[0].source_cells:

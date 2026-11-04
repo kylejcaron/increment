@@ -28,7 +28,7 @@ import numpy as np
 
 from increment._binding import SourceBinding, binding_for
 from increment._evidence_refusals import CONTRAST_UNAVAILABLE, require_evidence
-from increment._evidence_types import UnitRowsRequest, unit_frame_covariate_columns
+from increment._evidence_types import JsonValue, UnitRowsRequest, unit_frame_covariate_columns
 from increment._identity import canonical_id_strings
 from increment._source_admission import _require_analysis_operation
 from increment._source_types import (
@@ -326,7 +326,7 @@ def _unit_design(
 
 def _report_identity_context(
     source: EvidenceSource, unit: _UnitDesign, metric: str, control: str
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     from importlib import import_module
 
     source_identity = import_module("increment._source_identity").source_identity(source)
@@ -362,7 +362,7 @@ def _validation_settings(
     adjust: Sequence[Covariate],
     cluster_weight: str,
     bootstrap: ClusterBootstrap,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     """Validation inputs that change its verdict, recorded in its result identity."""
     return {
         "interactions": [covariate.model_dump(mode="json") for covariate in interact],

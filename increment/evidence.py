@@ -61,7 +61,7 @@ def _validate(provider: Any, request: object) -> None:
     require_evidence(provider, request=request)
 
 
-def evidence_provider(source: Any) -> EvidenceProvider:
+def evidence_provider(source: object) -> EvidenceProvider:
     """Return the built-in adapter or structural custom provider."""
     if is_builtin_source(source):
         return _BuiltInEvidenceProvider(source)

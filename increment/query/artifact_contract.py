@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from increment.semantics.artifact import (
         ArtifactContext,
+        ArtifactExtensionCatalogEntry,
         ArtifactRelationRef,
         RelationLocator,
         UnitDayArtifactManifest,
@@ -670,7 +671,9 @@ def artifact_source_mapping(context: Any) -> dict[str, Any]:
     return mapping
 
 
-def unit_day_artifact_extension_catalog(context: Any) -> tuple[Any, ...]:
+def unit_day_artifact_extension_catalog(
+    context: ArtifactContext,
+) -> tuple[ArtifactExtensionCatalogEntry, ...]:
     """Validate and expose the immutable extension catalog in a context."""
     validate_artifact_context(context)
     try:
@@ -684,7 +687,7 @@ def unit_day_artifact_extension_catalog(context: Any) -> tuple[Any, ...]:
             "artifact.extension.invalid", "extension_catalog must be an array"
         )
     model = _model("ArtifactExtensionCatalogEntry")
-    result: list[Any] = []
+    result: list[ArtifactExtensionCatalogEntry] = []
     seen: set[bytes] = set()
     previous: tuple[int, bytes] | None = None
     for raw in raw_entries:

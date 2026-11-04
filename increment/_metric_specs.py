@@ -288,7 +288,7 @@ class MetricSpec(CodedModel, BaseModel):
         return list(dict.fromkeys(cols))
 
 
-MetricsArg = str | Mapping[str, str] | Sequence["str | MetricSpec | Mapping[str, Any]"]
+MetricsArg = str | Mapping[str, str] | Sequence["str | MetricSpec | Mapping[str, object]"]
 
 
 def coerce_metrics(
@@ -338,7 +338,8 @@ def coerce_metrics(
             elif isinstance(spec, MetricSpec):
                 out.append(spec)
             elif isinstance(spec, Mapping):
-                out.append(MetricSpec(**spec))
+                # Keyword unpacking raises the TypeError a non-string key raised before.
+                out.append(MetricSpec.model_validate(dict(**spec)))
             else:
                 _raise("frame.metrics_entries_metricspec", type_name=type(spec).__name__)
     else:

@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 from increment import (
+    Method,
     Scope,
     from_definitions,
     from_frame,
@@ -24,7 +25,6 @@ from increment.evidence import (
     EvidenceScopeResult,
     MomentRows,
     MomentsRequest,
-    UnitRows,
     UnitRowsRequest,
     evidence_provider,
     request_evidence,
@@ -498,7 +498,7 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
         with pytest.raises(CapabilityError) as raised:
             request_evidence(
                 evidence_provider(triggered),
-                MomentsRequest(metric, method=object(), by=("not_declared",)),
+                MomentsRequest(metric, method=Method(name="unadjusted"), by=("not_declared",)),
             )
         assert raised.value.code == "evidence.breakout_unavailable"
         assert reads == 0
@@ -702,16 +702,12 @@ def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
         assert run(legacy) == baseline
         assert legacy.scope_calls == 1
         metric = metrics(experiment, resolver)[0]
-        assert (
-            cast(
-                UnitRows,
-                request_evidence(evidence_provider(legacy), UnitRowsRequest(metric)),
-            ).to_pylist()
-            == cast(
-                UnitRows,
-                request_evidence(evidence_provider(source), UnitRowsRequest(metric)),
-            ).to_pylist()
-        )
+        import pyarrow as pa
+
+        legacy_rows = request_evidence(evidence_provider(legacy), UnitRowsRequest(metric))
+        source_rows = request_evidence(evidence_provider(source), UnitRowsRequest(metric))
+        assert isinstance(legacy_rows, pa.Table) and isinstance(source_rows, pa.Table)
+        assert legacy_rows.to_pylist() == source_rows.to_pylist()
     finally:
         resolver.close()
 

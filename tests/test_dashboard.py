@@ -1196,6 +1196,7 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
     for row in (decision, sensitivity):
         method_at = summary.index(str(row["method"]))
         preceding = [value for start, value in levels if start < method_at]
+        assert isinstance(row["level"], float)
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
     notes = "\n".join(_app._report_notes(snapshot))
     disclosure = render_results(snapshot).text

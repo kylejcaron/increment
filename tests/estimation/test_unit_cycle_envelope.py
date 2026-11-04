@@ -330,7 +330,9 @@ def test_provenance_and_numeric_nulls_survive_result_json_and_frames(backend):
     assert json.loads(output["reference_spec"][0]) == result.reference_spec.model_dump(mode="json")
     assert output["open_side"][0] == "upper"
     row = contrast_results_to_readout([result])[0]
-    assert row["reference_spec"]["provenance"] == row["provenance"]
+    reference_spec = result.reference_spec.model_dump(mode="json")
+    assert row["reference_spec"] == reference_spec
+    assert reference_spec["provenance"] == row["provenance"]
     assert row["dof"] is None and row["higher"] is None
 
 

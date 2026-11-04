@@ -1815,7 +1815,8 @@ def acquire_scenario(  # noqa: PLR0915
             records = (*day_records, *ordinary.records)
             requests = (day_request, *base_requests)
             if breakout_request is not None:
-                slices = cast(Any, request_evidence(provider, breakout_request))
+                # A borrowed built-in source answers request_evidence directly.
+                slices = cast(Any, request_evidence(cast(Any, provider), breakout_request))
                 breakout_record = {
                     "request_type": "BreakoutSlicesRequest",
                     "request": _plain(breakout_request),
@@ -1872,7 +1873,7 @@ def acquire_scenario(  # noqa: PLR0915
             breakout_record = None
             scoped_unit_records: dict[int, Mapping[str, Any]] = {}
             if breakout_request is not None:
-                slices = cast(Any, request_evidence(provider, breakout_request))
+                slices = cast(Any, request_evidence(cast(Any, provider), breakout_request))
                 materialized_slices = tuple(slices.slices)
                 scope_inputs = _breakout_scope_receipts(
                     source,

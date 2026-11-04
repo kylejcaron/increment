@@ -25,7 +25,7 @@ class _Provider:
         status = "captured" if request.snapshot else "live"
 
         @contextmanager
-        def entered() -> Iterator[_Provider]:
+        def entered() -> Iterator[Any]:
             self.entered += 1
             try:
                 yield self
@@ -78,7 +78,7 @@ def test_frame_totals_capture_freezes_caller_owned_dataframe():
     import narwhals as nw
     import pandas as pd
 
-    from increment.evidence import UnitRowsRequest, evidence_provider
+    from increment.evidence import EvidenceProvider, UnitRowsRequest, evidence_provider
     from increment.frame import FrameTotalsSource, from_unit_summary
 
     frame = pd.DataFrame(
@@ -117,6 +117,7 @@ def test_frame_totals_capture_freezes_caller_owned_dataframe():
     context.open()
     frame["revenue"] = [100.0, 200.0, 300.0, 400.0]
     with context.borrow() as scoped:
+        assert isinstance(scoped, EvidenceProvider)
         rows = nw.from_native(scoped.unit_rows(UnitRowsRequest(metric)), eager_only=True)
     assert rows["y"].to_list() == [1.0, 2.0, 3.0, 4.0]
     assert context.effective_modes == {"revenue": "captured"}
@@ -190,7 +191,7 @@ def test_owned_scope_passes_read_exception_to_provider_exit():
     class Provider(_Provider):
         def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
             @contextmanager
-            def entered() -> Iterator[_Provider]:
+            def entered() -> Iterator[Any]:
                 try:
                     yield self
                 except BaseException as error:
@@ -225,7 +226,12 @@ def test_borrower_exception_does_not_close_owner():
 @pytest.mark.integration
 @pytest.mark.parametrize("fault", ["scope", "enter", "read", "exit"])
 def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
-    from increment.evidence import EvidenceScope, EvidenceScopeResult, evidence_provider
+    from increment.evidence import (
+        EvidenceProvider,
+        EvidenceScope,
+        EvidenceScopeResult,
+        evidence_provider,
+    )
     from increment.kernel.context import EvidenceExecutionContext
     from tests.analysis_factory import held_source, native_connection
     from tests.source_conformance import definitions_source
@@ -292,10 +298,10 @@ def test_context_faults_leave_no_duckdb_temp_tables(tmp_path, fault):
             if fault == "read":
                 with context.borrow() as scoped:
                     with pytest.raises(RuntimeError):
-                        scoped.moments(MomentsRequest(metric))
+                        cast(EvidenceProvider, scoped).moments(MomentsRequest(metric))
             else:
                 with context.borrow() as scoped:
-                    scoped.moments(MomentsRequest(metric))
+                    cast(EvidenceProvider, scoped).moments(MomentsRequest(metric))
             if fault == "exit":
                 with pytest.raises(RuntimeError):
                     context.close()

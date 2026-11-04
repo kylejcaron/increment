@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -667,9 +668,9 @@ def test_selected_run_retains_unselected_sequential_family_membership():
     )
 
     assert {cell.identity.key.metric for cell in result.cells} == {"purchase"}
-    family_members = {
-        key.metric for family in result.run.metadata.scope.families for key in family.members
-    }
+    metadata = result.run.metadata
+    assert metadata is not None
+    family_members = {key.metric for family in metadata.scope.families for key in family.members}
     assert family_members >= {"purchase", "secondary_0", "secondary_1"}
     missing = [
         member
@@ -880,23 +881,26 @@ def test_replayed_checkpoint_asof_preflight_uses_projection_evidence(tmp_path):
     requested = Experiment.from_json(replace(experiment, scopes=scopes).to_json())
     capabilities = requested.source_refs[0].capabilities
     assert capabilities is not None and capabilities.grains == frozenset({"total"})
+    from increment.results import ResultCell
     from tests.parity_harness.comparison import nested_close
+
+    def retained_data(cell: ResultCell) -> object:
+        match cell.to_payload():
+            case {"row_payload": {"data": data}}:
+                return data
+        raise AssertionError(f"report cell retains no row data: {cell.label}")
 
     actual = run(requested, resolver)
     asof_cells = [cell for cell in actual.cells if _scope(cell).view == "asof"]
     assert asof_cells
-    actual_payloads = [cell.to_payload()["row_payload"]["data"] for cell in asof_cells]
-    expected_payloads = [cell.to_payload()["row_payload"]["data"] for cell in expected.as_cells()]
+    actual_payloads = [retained_data(cell) for cell in asof_cells]
+    expected_payloads = [retained_data(cell) for cell in expected.as_cells()]
     assert nested_close(actual_payloads, expected_payloads)
     assert any(_scope(cell).view == "run" for cell in actual.cells)
     assert runnable(requested, "outcome")["randomized.unadjusted"].static_refusals == ()
     actual_captured = run(requested, resolver, capture=SequentialCaptureRequest(finalized=True))
     assert nested_close(
-        [
-            cell.to_payload()["row_payload"]["data"]
-            for cell in actual_captured.cells
-            if _scope(cell).view == "asof"
-        ],
+        [retained_data(cell) for cell in actual_captured.cells if _scope(cell).view == "asof"],
         expected_payloads,
     )
     values = replace(requested, operations={requested.scopes[1].hash(): "run_asof"})
@@ -1167,7 +1171,7 @@ def test_dataclass_learner_factory_stays_callable_until_export(with_reference):
 def test_runtime_callable_run_result_refuses_portable_storage(tmp_path):
     import pickle
 
-    from increment.store import ParquetResultsStore
+    from increment.store import ParquetResultsStore, Run
 
     experiment, resolver = _runtime_experiment(_ConfiguredPropensity)
     result = run(experiment, resolver)
@@ -1178,6 +1182,7 @@ def test_runtime_callable_run_result_refuses_portable_storage(tmp_path):
     with pytest.raises(CodedError) as serialization:
         pickle.dumps(result)
     assert serialization.value.code == "wire.procedure.runtime_method"
+    assert isinstance(result.run, Run)
     with pytest.raises(CodedError) as portability:
         ParquetResultsStore(tmp_path).put(result.run)
     assert portability.value.code == "wire.procedure.runtime_method"
@@ -1308,7 +1313,11 @@ def test_frozen_metric_keeps_undeclared_direction_on_day_axis(view, grain):
     assert [
         (cell.identity.key.ds, cell.identity.key.metric, cell.summary) for cell in actual.cells
     ] == [(cell.identity.key.ds, cell.identity.key.metric, cell.summary) for cell in direct.cells]
-    assert "preferred_direction" not in restored.request_options["metrics"][0]
+    restored_metrics = restored.request_options["metrics"]
+    assert isinstance(restored_metrics, tuple)
+    restored_metric = restored_metrics[0]
+    assert isinstance(restored_metric, Mapping)
+    assert "preferred_direction" not in restored_metric
 
 
 class _CallablePropensityFactory(BaseModel):
@@ -1834,7 +1843,7 @@ def test_value_only_day_axis_builder_operations_roundtrip_and_return_value_scope
 def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path):
     import pickle
 
-    from increment.store import ParquetResultsStore
+    from increment.store import ParquetResultsStore, Run
 
     frame = _frame().assign(age=[0, 0, 1, 1] * 10)
     experiment, resolver = from_frame(
@@ -1860,6 +1869,7 @@ def test_runtime_callable_override_run_result_refuses_portable_storage(tmp_path)
     with pytest.raises(CodedError) as serialization:
         pickle.dumps(result)
     assert serialization.value.code == "wire.procedure.runtime_method"
+    assert isinstance(result.run, Run)
     with pytest.raises(CodedError) as portability:
         ParquetResultsStore(tmp_path).put(result.run)
     assert portability.value.code == "wire.procedure.runtime_method"
@@ -1916,7 +1926,7 @@ def test_switchback_builder_returns_in_memory_run_result_and_refuses_portable_st
     import pickle
 
     from increment import from_switchback_frame
-    from increment.store import DecisionLog, ParquetResultsStore
+    from increment.store import DecisionLog, ParquetResultsStore, Run
     from tests.test_frame_switchback import _assignment, _identification, _rows
 
     experiment, resolver = from_switchback_frame(
@@ -1940,6 +1950,7 @@ def test_switchback_builder_returns_in_memory_run_result_and_refuses_portable_st
     with pytest.raises(CodedError) as serialization:
         pickle.dumps(result)
     assert serialization.value.code == "wire.procedure.contrast_context"
+    assert isinstance(result.run, Run)
     with pytest.raises(CodedError) as portability:
         ParquetResultsStore(tmp_path).put(result.run)
     assert portability.value.code == "wire.procedure.contrast_context"

@@ -71,10 +71,11 @@ def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> 
     return get_or_build(root / ".cache" / "increment-fixtures", key, build)
 
 
-def _moments(source, metric, **kwargs) -> MomentRows:
-    return cast(
-        MomentRows,
-        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+def _moments(source, metric, **kwargs) -> tuple[dict[str, Any], ...]:
+    rows = request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs))
+    assert isinstance(rows, tuple) and all(isinstance(row, dict) for row in rows)
+    return tuple(
+        {str(key): value for key, value in row.items()} for row in rows if isinstance(row, dict)
     )
 
 
@@ -1829,7 +1830,8 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
                 (cell.identity.key.source, cell.identity.key.dimension)
             )
         assert by_view == {(scope.view, scope.values): both for scope in scopes}
-        assert len(result.run.metadata.captures) == 1
+        run_metadata = result.run.metadata
+        assert run_metadata is not None and len(run_metadata.captures) == 1
         secondary = (BreakoutIdentity("country", "event_log_secondary"),)
         qualified = run(
             experiment.with_views(Scope(view="breakout", grain="total", segment=secondary)),

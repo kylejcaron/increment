@@ -29,6 +29,7 @@ def test_top_level_run_returns_a_validated_in_memory_result():
     import pytest
 
     from increment.errors import CodedError
+    from increment.store import Run
 
     plan = AnalysisPlan(primary="value")
     metric = synthesise_metric(MetricSpec(name="value", type="mean"))
@@ -69,6 +70,7 @@ def test_top_level_run_returns_a_validated_in_memory_result():
     assert result.decisions.cells[0].membership == "member"
     assert result.decisions.cells[0].family_id is not None
 
+    assert isinstance(result.run, Run)
     with pytest.raises(CodedError) as mismatch:
         replace(result.run, registration_hash="sha256:" + "0" * 64)
     assert mismatch.value.code == "store.run.identity_mismatch"
@@ -325,11 +327,13 @@ def test_public_run_returns_each_disjoint_family_from_its_complete_metadata_rost
 
     from increment.decide import decide
     from increment.result_envelope import ComponentStatus
+    from increment.store import Run
     from increment.store.types import pinned_run
 
     reversed_metadata = metadata.model_copy(
         update={"scope": scope.model_copy(update={"families": tuple(reversed(scope.families))})}
     )
+    assert isinstance(result.run, Run)
     reordered_run = replace(result.run, metadata=reversed_metadata)
     reordered_decisions = decide(pinned_run(reordered_run), registration, compiled)
     assert [
