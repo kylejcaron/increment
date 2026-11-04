@@ -8,6 +8,7 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -882,10 +883,28 @@ def test_weekly_exhaustive_tier_runs_in_full_partitions_at_newest_dependencies()
         ), name
 
 
-def test_weekly_failure_report_waits_for_every_weekly_job() -> None:
+def _report_fires(condition: str, results: list[str]) -> bool:
+    """Evaluate the reporter's ``if`` for a scheduled run whose needed jobs ended with *results*."""
+    expression = condition.strip().removeprefix("${{").removesuffix("}}")
+    expression = re.sub(
+        r"contains\(needs\.\*\.result, '(\w+)'\)",
+        lambda match: str(match.group(1) in results),
+        expression,
+    )
+    expression = expression.replace("always()", "True")
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    scope = {"github": SimpleNamespace(event_name="schedule"), "inputs": SimpleNamespace(target="")}
+    return eval(expression, {"__builtins__": {}}, scope)
+
+
+def test_weekly_failure_report_fires_when_any_weekly_job_fails_or_times_out() -> None:
     jobs = yaml.safe_load(Path(".github/workflows/weekly.yml").read_text())["jobs"]
     report = jobs.pop("report-failure")
     assert set(report["needs"]) == set(jobs)
+    # A job that runs past its time limit concludes `cancelled`, not `failure`.
+    for result in ("failure", "cancelled"):
+        assert _report_fires(report["if"], ["success", result, "skipped"]), result
+    assert not _report_fires(report["if"], ["success", "skipped"])
 
 
 def test_live_bigquery_probes_run_in_full_partitions_that_take_turns() -> None:
@@ -916,9 +935,9 @@ def test_live_bigquery_probes_run_in_full_partitions_that_take_turns() -> None:
     weights = json.loads(Path(posargs[posargs.index("--durations-path") + 1]).read_text())
     assert weights
     assert {node_id.partition("[")[0] for node_id in weights} <= probes
-    # Shards share the live scratch dataset: one runs at a time, and the queue
-    # keeps the waiting shards pending instead of cancelling them.
+    # Shards share the live scratch dataset: the matrix runs one at a time, and
+    # runs of the backend serialize through one concurrency group.
+    assert job["strategy"].get("max-parallel") == 1
     concurrency = job["concurrency"]
     assert "matrix" not in concurrency["group"]
     assert concurrency["cancel-in-progress"] is False
-    assert concurrency.get("queue") == "max"

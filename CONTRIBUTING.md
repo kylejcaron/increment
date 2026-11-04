@@ -858,9 +858,9 @@ Do not run workers against a shared warehouse namespace.
 The live BigQuery probes run in three shards balanced with
 `.github/bigquery-test-durations.json`, weighted from hosted run 41775920521;
 the mixed CUPED probe fills one shard alone. The shards share the scratch
-dataset, so they run one at a time: the concurrency queue holds each waiting
-shard instead of cancelling it. To refresh weights, run the complete session
-with `--store-durations --durations-path .github/bigquery-test-durations.json`.
+dataset, so the matrix runs them one at a time. To refresh weights, run the
+complete session with
+`--store-durations --durations-path .github/bigquery-test-durations.json`.
 
 The
 [nightly workflow](.github/workflows/nightly.yml) runs daily at 06:00 UTC or
@@ -880,8 +880,8 @@ The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch. It retains full test runs at dependency floors on all
 three Python versions, which nightly does not cover, plus all three live
-warehouse backends. Weekly failures create or update a GitHub issue labelled
-`weekly-failure`.
+warehouse backends. Weekly failures, including jobs cancelled at their time
+limit, create or update a GitHub issue labelled `weekly-failure`.
 Each interpreter's dependency-floor suite uses three duration-balanced parts,
 each with its own retained JUnit report and the same 90-minute limit. The
 retained numerical cases run once per interpreter, in the first part.

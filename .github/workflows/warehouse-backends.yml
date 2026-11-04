@@ -110,18 +110,18 @@ jobs:
           INCREMENT_TEST_SNOWFLAKE_DATABASE: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_DATABASE }}
           INCREMENT_TEST_SNOWFLAKE_SCHEMA: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_SCHEMA }}
 
-  # Shards take turns on the scratch dataset; the queue keeps waiting shards pending.
+  # Shards take turns on the scratch dataset, one at a time.
   bigquery:
     name: bigquery shard ${{ matrix.group }}/3
     if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'cloud' }}
     concurrency:
       group: live-bigquery-backend
       cancel-in-progress: false
-      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         group: [1, 2, 3]
     steps:
