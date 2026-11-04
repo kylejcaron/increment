@@ -2811,6 +2811,18 @@ def test_module_docstring_examples_still_run():
     assert result.failed == 0, f"{result.failed} docstring example(s) failed"
 
 
+def test_experiment_definition_repr_names_the_public_class(example_definitions):
+    """A declaration prints as the exported ``ExperimentDefinition``; nested declarations
+    keep their own names and the JSON dump does not carry the display name."""
+    from increment.semantics.loader import load
+
+    definition = load(example_definitions).experiments[0]
+
+    assert repr(definition).startswith("ExperimentDefinition(")
+    assert "plan=AnalysisPlan(" in repr(definition)
+    assert "ExperimentDefinition" not in definition.model_dump_json()
+
+
 # ── Frozen models (g5fb) ────────────────────────────────────────────────
 
 

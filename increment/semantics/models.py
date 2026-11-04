@@ -2455,6 +2455,10 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     #: inherited from the definitions-level default unless declared here.
     day_boundary: str = "UTC"
 
+    def __repr_name__(self) -> str:
+        """Print under the public export name, ``increment.ExperimentDefinition``."""
+        return "ExperimentDefinition"
+
     @field_validator("allocation")
     @classmethod
     def _snapshot_allocation(
