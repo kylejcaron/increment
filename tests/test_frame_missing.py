@@ -51,7 +51,7 @@ from increment.frame import (
     from_unit_panel,
     from_unit_summary,
 )
-from increment.readouts._run import _SEGMENT_LIMITED_POPULATION, _observed_population_label
+from increment.readouts._run import _observed_population_label
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests._frame_evidence_requests import _counts, _moments, _unit_rows
@@ -876,7 +876,9 @@ def test_skip_label_reaches_breakout_frame_and_render() -> None:
         for row in frame.iter_rows(named=True)
     }
     assert populations == {
-        (metric, segment): _SEGMENT_LIMITED_POPULATION if metric == "score" else None
+        (metric, segment): "observed-only population; counts not recorded per segment"
+        if metric == "score"
+        else None
         for metric in ("revenue", "score", "score2")
         for segment in ("a", "b")
     }
@@ -889,7 +891,9 @@ def test_skip_label_reaches_breakout_frame_and_render() -> None:
                 f"{metric} / arm=treatment / dimension=segment / segment={segment} / "
             )
         ]
-        assert line.count(_SEGMENT_LIMITED_POPULATION) == (1 if metric == "score" else 0)
+        assert line.count("observed-only population; counts not recorded per segment") == (
+            1 if metric == "score" else 0
+        )
 
 
 class _SaturatingWhereX:

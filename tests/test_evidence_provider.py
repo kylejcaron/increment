@@ -3457,7 +3457,6 @@ def test_provider_skip_metric_labels_its_daily_rows() -> None:
     observed-only population (no source counts a day's enrolled units); revenue's carry none."""
     from increment import render
     from increment.frame import MetricSpec, from_unit_panel
-    from increment.readouts._run import _DAY_LIMITED_POPULATION
 
     source = from_unit_panel(
         unit_panel_table(),
@@ -3481,7 +3480,7 @@ def test_provider_skip_metric_labels_its_daily_rows() -> None:
     # The panel spans three days.
     assert sorted((row["metric"], row["population"] or "") for row in daily_rows) == [
         *[("revenue", "")] * 3,
-        *[("score", _DAY_LIMITED_POPULATION)] * 3,
+        *[("score", "observed-only population; counts not recorded per day")] * 3,
     ]
     for metric, expected in (("revenue", 0), ("score", 1)):
         lines = [
@@ -3490,7 +3489,10 @@ def test_provider_skip_metric_labels_its_daily_rows() -> None:
             if line.startswith(f"{metric} / arm=treatment / ") and " / date=" in line
         ]
         assert len(lines) == 3
-        assert all(line.count(_DAY_LIMITED_POPULATION) == expected for line in lines)
+        assert all(
+            line.count("observed-only population; counts not recorded per day") == expected
+            for line in lines
+        )
 
 
 def test_analysis_unit_counts_uses_declared_typed_count_evidence() -> None:
