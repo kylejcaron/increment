@@ -543,7 +543,7 @@ def test_adopted_native_only_operations_refuse_with_exact_codes(
     published_pair: tuple[Any, ...],
 ) -> None:
     _native_pair, (experiment, resolver), _context, _store, _reference = published_pair
-    binding = resolver.binding
+    binding = resolver._binding
     for call, code in (
         (lambda: materialize(experiment, resolver), "evidence.operation_unavailable"),
         (lambda: panel_sql(experiment, resolver), "evidence.operation_unavailable"),

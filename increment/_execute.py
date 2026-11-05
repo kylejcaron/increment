@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset, overlay_configs, select_metrics
-from increment._binding import _run_identity_hashes
 from increment._breakout_readouts import plan_breakout_request, run_breakout
+from increment._canonical import declaration_value
 from increment._day_axis import (
     _TRIGGER_UNSUPPORTED,
     day_axis_readouts,
@@ -38,7 +38,7 @@ from increment._source_admission import (
 )
 from increment._source_types import is_custom_source
 from increment.decision import ContrastAnalysisState
-from increment.errors import refuse
+from increment.errors import CodedError, refuse
 from increment.estimation.engine import Method
 from increment.estimation.readout_types import ScopedReadout
 from increment.readouts._evidence import retained_sequential_capture
@@ -655,6 +655,81 @@ def selected_binding(binding: SourceBinding, experiment: Experiment, scope: Scop
     if set(selected) == set(scope_declared):
         return binding
     return binding.with_breakouts(selected)
+
+
+def _run_identity_hashes(
+    experiment: Experiment, runtime_options: Mapping[str, object]
+) -> tuple[str, str]:
+    from pydantic_core import PydanticSerializationError
+
+    from increment.kernel.contracts import contract_hash
+    from increment.kernel.experiment import _json_value
+
+    try:
+        analysis_spec_hash = experiment.analysis_spec_hash
+        execution_identity_hash = experiment.execution_identity_hash
+    except CodedError as error:
+        if error.code != "kernel.method.implementation_ref_missing":
+            raise
+        analysis_spec_hash = contract_hash(
+            "analysis_spec.runtime_only",
+            {
+                "experiment_id": experiment.experiment_id,
+                "design": _json_value(experiment.design),
+                "metrics": _json_value(experiment.metrics),
+                "registration_hash": experiment.registration.registration_hash,
+                "source_refs": [item.identity_payload() for item in experiment.source_refs],
+                "scopes": [item.canonical_payload() for item in experiment.scopes],
+                "operations": {
+                    scope.hash(): scope_operation(experiment, scope) for scope in experiment.scopes
+                },
+                "request_options_runtime": declaration_value(experiment.request_options),
+            },
+        )
+        execution_identity_hash = contract_hash(
+            "execution_identity",
+            {
+                "analysis_spec_hash": analysis_spec_hash,
+                "implementations": [
+                    {
+                        "method_instance_id": key[0],
+                        "learner_role": key[1],
+                        "implementation": value.canonical_payload(),
+                    }
+                    for key, value in sorted(experiment.implementation_refs.items())
+                ],
+                "package_version": experiment.package_version,
+            },
+        )
+    if runtime_options:
+        try:
+            request = _json_value(runtime_options)
+        except CodedError as error:
+            if error.code != "kernel.method.implementation_ref_missing":
+                raise
+            request = {"runtime_options": declaration_value(runtime_options)}
+        except PydanticSerializationError:
+            request = {"runtime_options": declaration_value(runtime_options)}
+        analysis_spec_hash = contract_hash(
+            "analysis_spec.run_options",
+            {"analysis_spec_hash": analysis_spec_hash, "options": request},
+        )
+        execution_identity_hash = contract_hash(
+            "execution_identity",
+            {
+                "analysis_spec_hash": analysis_spec_hash,
+                "implementations": [
+                    {
+                        "method_instance_id": key[0],
+                        "learner_role": key[1],
+                        "implementation": value.canonical_payload(),
+                    }
+                    for key, value in sorted(experiment.implementation_refs.items())
+                ],
+                "package_version": experiment.package_version,
+            },
+        )
+    return analysis_spec_hash, execution_identity_hash
 
 
 def execute_views(

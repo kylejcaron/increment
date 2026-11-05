@@ -6,6 +6,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from increment._binding import ExperimentReader
     from increment._run import RunResult, run
     from increment.builders import (
         from_definitions,
@@ -53,6 +54,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without an instal
 __all__ = [
     "Experiment",
     "ExperimentDefinition",
+    "ExperimentReader",
     "SourceReference",
     "Scope",
     "Resolver",
@@ -96,6 +98,7 @@ _LAZY_IMPORTS = {
     "run": ("increment._run", "run"),
     "Experiment": ("increment.kernel.experiment", "Experiment"),
     "SourceReference": ("increment.kernel.experiment", "SourceReference"),
+    "ExperimentReader": ("increment._binding", "ExperimentReader"),
     "Resolver": ("increment.kernel.resolver", "Resolver"),
     "Scope": ("increment.kernel.contracts", "Scope"),
     "BoundResolver": ("increment.kernel.resolver", "BoundResolver"),

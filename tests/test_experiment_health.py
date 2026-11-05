@@ -313,7 +313,7 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
             complete_through_by_feed={"events": cutoff},
         ),
     )
-    source = cast(Any, resolver).binding.source
+    source = cast(Any, resolver)._binding.source
     pin = source._pinned_source
     inserted = False
 

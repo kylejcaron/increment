@@ -11,7 +11,13 @@ from increment.evidence import BreakoutIdentity
 from increment.readouts import run
 from increment.results import DailyMetricValues
 from increment.workflows import allocation_history, metrics, sequential_snapshot, unit_counts
-from tests.analysis_factory import held_source, lift_rows, make_binding, view_readout
+from tests.analysis_factory import (
+    held_source,
+    lift_rows,
+    make_binding,
+    replace_bound_source,
+    view_readout,
+)
 from tests.source_conformance import definitions_source
 
 _ASSIGNED = Scope(view="run", grain="total")
@@ -235,6 +241,9 @@ def test_empty_selection_and_invalid_request_do_not_open_execution_scope(tmp_pat
         evidence = source.evidence
         context = source.context
 
+        def declaration_identity(self):
+            return source.declaration_identity()
+
         def moments(self, request):
             return source.moments(request)
 
@@ -274,11 +283,15 @@ def test_empty_selection_and_invalid_request_do_not_open_execution_scope(tmp_pat
         run(guard, metrics=["not-a-declared-metric"])
     assert readout_error.value.code == "facade.analysis_config.unknown_metric_declared"
 
-    resolver.close()
-    assert view_readout(experiment, resolver, metrics=[]) == []
-    with pytest.raises(CodedError) as facade_error:
-        view_readout(experiment, resolver, metrics=["not-a-declared-metric"])
-    assert facade_error.value.code == "facade.analysis_config.unknown_metric_declared"
+    replace_bound_source(resolver, guard)
+    try:
+        assert view_readout(experiment, resolver, metrics=[]) == []
+        with pytest.raises(CodedError) as facade_error:
+            view_readout(experiment, resolver, metrics=["not-a-declared-metric"])
+        assert facade_error.value.code == "facade.analysis_config.unknown_metric_declared"
+    finally:
+        replace_bound_source(resolver, source)
+        resolver.close()
 
 
 @pytest.mark.integration
@@ -1149,7 +1162,7 @@ def test_snapshot_ignores_ambiguous_covariate_on_unselected_metric(tmp_path):
         def read_snapshot(capture: Any) -> Any:
             return unit_counts(*builders.resolver_for(capture.binding))
 
-        bound = cast(Any, resolver).binding
+        bound = cast(Any, resolver)._binding
         assert capture_dashboard(bound, read_snapshot, metrics=[]) == expected_counts
         result = capture_dashboard(bound, read_snapshot, metrics=[metrics(experiment, resolver)[0]])
         assert result == expected_counts
@@ -2284,7 +2297,7 @@ def test_run_reuses_one_capture_for_primary_and_auxiliary_views(tmp_path, monkey
         Scope(view="asof", grain="asof", values=True),
     )
     experiment = replace(experiment, scopes=scopes)
-    source = resolver.binding.source
+    source = resolver._binding.source
     captures = 0
     original = source.readout_snapshot
 

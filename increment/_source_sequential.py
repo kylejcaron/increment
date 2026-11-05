@@ -9,14 +9,14 @@ from increment._binding import binding_for
 from increment._evidence_types import SequentialCaptureRequest
 
 if TYPE_CHECKING:
+    from increment._binding import ExperimentReader
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.sequential_state import SequentialSnapshot
 
 
 def capture_sequential(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     *,
     finalized: bool,
     previous=None,
@@ -55,7 +55,7 @@ def capture_sequential(
 
 
 def sequential_snapshot(
-    experiment: Experiment, resolver: Resolver, *, previous=None
+    experiment: Experiment, resolver: ExperimentReader, *, previous=None
 ) -> SequentialSnapshot:
     """Retrieve the source's current exact checkpoint, optionally proving its parent."""
     from increment.readouts._evidence import retained_sequential_snapshot

@@ -182,27 +182,16 @@ experiments:
 The `unit`, `experiment`, `arm`, and `version` roles are required. `cluster`,
 `period`, `layer`, and the three event-time roles are optional; omitted event
 times stay unknown. Requests reduce this relation inside the warehouse source
-boundary and return only immutable `AssignmentEvidence`.
+boundary and return only immutable `AssignmentEvidence`. `run` and the
+`increment.workflows` functions issue these requests through the reader; a
+custom provider answers the same request, and
+`increment.evidence.request_evidence(provider, request)` applies the shared
+capability checks before calling it:
 
 ```python
-import pandas as pd
-from increment import from_frame
-from increment.evidence import AssignmentRequest, evidence_provider, request_evidence
+from increment.evidence import AssignmentRequest
 
-experiment, resolver = from_frame(
-    pd.DataFrame({"unit": ["u1", "u2"], "arm": ["control", "treatment"], "value": [1.0, 2.0]}),
-    shape="summary",
-    unit="unit",
-    group="arm",
-    control="control",
-    metrics={"value": "mean"},
-    experiment_id="checkout",
-)
-source = resolver.resolve(experiment.source_refs)
-evidence = request_evidence(
-    evidence_provider(source),
-    AssignmentRequest(experiment="checkout", population="assigned"),
-)
+request = AssignmentRequest(experiment="checkout", population="assigned")
 ```
 
 The selection is deliberately explicit: a missing version or period is

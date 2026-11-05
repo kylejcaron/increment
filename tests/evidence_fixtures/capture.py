@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from functools import partial, wraps
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -20,7 +20,9 @@ from increment import Experiment, Scope, run
 from increment._evidence_types import DayAxisRows, MetricEvidence
 from increment.errors import CodedError
 from increment.kernel.contracts import contract_hash, method_estimator_id
-from increment.kernel.resolver import Resolver
+
+if TYPE_CHECKING:
+    from increment import ExperimentReader
 
 # Each entry is an acquisition boundary, not a reducer or estimator registry.
 PRODUCERS = (
@@ -510,7 +512,7 @@ def _wrapped_producers(capture: _Capture):
 
 def capture_acquired_evidence(
     experiment: Experiment,
-    resolver: Resolver,
+    resolver: ExperimentReader,
     *,
     views: Sequence[Scope] | None = None,
     expected: frozenset[CaptureKey],

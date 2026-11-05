@@ -27,9 +27,9 @@ from pydantic_core import PydanticCustomError
 from increment.errors import CodedError, CodedModel, InvalidRequestError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
+    from increment._binding import ExperimentReader
     from increment.estimation.targeting import CateValidation, TargetingRule
     from increment.kernel.experiment import Experiment
-    from increment.kernel.resolver import Resolver
     from increment.power import PowerResult
     from increment.simulate.runner import _KeyOutcome, _KeyStats
 
@@ -446,7 +446,7 @@ def simulate_clustered_cate(
     )
 
 
-def clustered_experiment(population: ClusteredCATEResult) -> tuple[Experiment, Resolver]:
+def clustered_experiment(population: ClusteredCATEResult) -> tuple[Experiment, ExperimentReader]:
     """Public dataframe experiment with the DGP's actual identification contract."""
     from increment.builders import from_frame
     from increment.semantics.design import AdjustmentSet, Observational, Randomized
@@ -2244,7 +2244,7 @@ def _validation_observations(
 
 
 def _fit_observation(
-    experiment: Experiment, resolver: Resolver, target: float, options: dict[str, Any]
+    experiment: Experiment, resolver: ExperimentReader, target: float, options: dict[str, Any]
 ) -> tuple[ClusteredObservation, str | None]:
     from increment.kernel.ports import cate_operations
 

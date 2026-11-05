@@ -543,21 +543,21 @@ def _(
                         "metrics.yaml",
                         # Internals peek: definitions metadata has no public
                         # count property; keep this display-only tour read-only.
-                        f"{len(resolver.binding.definitions.metrics)} metrics &mdash; type, fact, window",
+                        f"{len(resolver._binding.definitions.metrics)} metrics &mdash; type, fact, window",
                     ),
                     (
                         "fact_sources.yaml",
-                        f"{len(resolver.binding.definitions.fact_sources)} fact sources &mdash; "
+                        f"{len(resolver._binding.definitions.fact_sources)} fact sources &mdash; "
                         "SQL, entities, facts",
                     ),
                     (
                         "dim_sources.yaml",
-                        f"{len(resolver.binding.definitions.dim_sources)} dim sources &mdash; "
+                        f"{len(resolver._binding.definitions.dim_sources)} dim sources &mdash; "
                         "unit properties, joined on demand",
                     ),
                     (
                         "exposures.yaml",
-                        f"{len(resolver.binding.definitions.exposures)} exposure &mdash; {definition.exposure}",
+                        f"{len(resolver._binding.definitions.exposures)} exposure &mdash; {definition.exposure}",
                     ),
                 ],
                 DEFINITIONS,
@@ -663,7 +663,7 @@ def _(mo):
 def _(resolver):
     # Internals peek: the public panel builder needs this exposure relation,
     # while run(experiment, resolver) normally keeps it behind the resolver.
-    exposures = resolver.binding.source._get_exposures()
+    exposures = resolver._binding.source._get_exposures()
     exposures.execute().head()
     return (exposures,)
 

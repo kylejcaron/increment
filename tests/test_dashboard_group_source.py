@@ -190,7 +190,7 @@ def _native_groups(
 
 
 def _capture(resolver, *names):
-    binding = resolver.binding
+    binding = resolver._binding
     metrics = [metric for metric in binding.metrics if not names or metric.name in names]
     return {
         (row.metric, row.group_id): row for row in dashboard_group_data(binding, metrics=metrics)
@@ -361,7 +361,7 @@ def test_retained_checkpoint_values_survive_changed_live_outcomes(law, tmp_path)
         connection.create_table(
             "events", pa.Table.from_pylist(ghost, schema=events.schema), overwrite=True
         )
-        binding = cast(Any, resolver).binding
+        binding = cast(Any, resolver)._binding
         rows = dashboard_group_data(binding, metrics=binding.metrics, checkpoints=checkpoints)
         assert rows == snapshot.group_data
         expected = (
@@ -499,7 +499,7 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
         def unexpected_read(*args, **kwargs):
             pytest.fail("checkpoint validation must precede warehouse reads")
 
-        binding = resolver.binding
+        binding = resolver._binding
         monkeypatch.setattr(connection, "to_pyarrow", unexpected_read)
         with pytest.raises(CapabilityError) as caught:
             dashboard_group_data(binding, metrics=binding.metrics, checkpoints=checkpoints)
@@ -518,7 +518,7 @@ def test_group_metric_selection_is_validated_before_source_access(kind, code, mo
     from increment.errors import InvalidRequestError
 
     with _native_groups(metric_names=("mean",)) as (connection, experiment, resolver):
-        binding = resolver.binding
+        binding = resolver._binding
         metric = binding.metrics[0]
         requested = {
             "unknown": [metric.model_copy(update={"name": "undeclared"})],

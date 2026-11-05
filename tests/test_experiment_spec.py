@@ -87,39 +87,6 @@ def _recorded_experiment() -> Experiment:
     )
 
 
-def test_top_level_run_resolves_and_executes_experiment():
-    from increment import run
-
-    class Adapter:
-        def __init__(self):
-            self.calls = []
-
-        def resolve(self, source_refs, ctx=None):
-            self.calls.append(("resolve", tuple(source_refs)))
-            return object()
-
-        def verify(self, source_refs, provider):
-            self.calls.append(("verify", tuple(source_refs), provider))
-            return []
-
-        def run_experiment(self, exp, provider):
-            self.calls.append(("run", exp, provider))
-            return "completed"
-
-    experiment = Experiment(
-        experiment_id="checkout",
-        design={"mechanism": "randomized"},
-        metrics={},
-        registration=Registration(registration_hash="registration-hash"),
-        source_refs=(SourceReference(name="events", uri="warehouse://events"),),
-        scopes=(Scope(view="run", grain="total"),),
-    )
-    adapter = Adapter()
-
-    assert run(experiment, adapter) == "completed"
-    assert [call[0] for call in adapter.calls] == ["resolve", "verify", "run"]
-
-
 def test_experiment_round_trips_canonical_json_and_hash():
     experiment = Experiment(
         experiment_id="checkout",

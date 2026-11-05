@@ -22,10 +22,10 @@ from increment.query.artifact_contract import unit_day_artifact_extension_catalo
 from increment.query.session import WarehouseArtifactStore
 
 if TYPE_CHECKING:
-    from increment._source_resolver import SourceResolver
+    from increment import ExperimentReader
     from increment.kernel.experiment import Experiment
 
-    Bound = tuple[Experiment, SourceResolver]
+    Bound = tuple[Experiment, ExperimentReader]
 
 
 def _postgres_temp_schema(con):
@@ -201,7 +201,7 @@ experiments:
                     f"expected +25% ratio lift, got {row.lift.value}"
                 )
                 groups = dashboard_group_data(
-                    resolver.binding, metrics=workflows.metrics(experiment, resolver)
+                    resolver._binding, metrics=workflows.metrics(experiment, resolver)
                 )
                 # Linear q=.25 uses zero-based rank 7.25 for 30 units.
                 # Unit-total ramps are 0.75 + i/2 and 1.375 + i/4, respectively.
@@ -642,7 +642,7 @@ experiments:
                 assert abs(before.lift.ub - after.lift.ub) < 1e-9
                 _assert_boolean_dimension_labels(live, adopted, clustered=clustered)
                 for _, counted in (live, adopted):
-                    assert counted.binding.source.unit_counts() == {"control": 60, "treatment": 60}
+                    assert counted._binding.source.unit_counts() == {"control": 60, "treatment": 60}
                 with store.open_snapshot(ref) as snapshot:
                     manifest = snapshot.read_manifest(
                         ref.manifest, expected_sha256=ref.manifest_sha256
@@ -849,8 +849,8 @@ def _assert_same_sequential_readout(native: Bound, adopted: Bound) -> None:
     assert sorted((r.unit_id, r.group_id, r.digest) for r in native_snapshot.records) == sorted(
         (r.unit_id, r.group_id, r.digest) for r in adopted_snapshot.records
     )
-    native_source = native[1].binding.source
-    adopted_source = adopted[1].binding.source
+    native_source = native[1]._binding.source
+    adopted_source = adopted[1]._binding.source
     native_moments = native_source.moments(
         native_source.context.metrics[0], grain="asof", completed_windows_only=True
     )

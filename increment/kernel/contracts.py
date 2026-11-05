@@ -40,9 +40,18 @@ _REFUSALS = refusals(
             (),
         ),
         "kernel.request.population_scope_only": "Set population on Scope(population=...)",
-        "kernel.run.provider_execution_unavailable": (
-            "BoundResolver verifies providers but cannot execute them; use a resolver returned by a module builder",
-            (),
+        "kernel.run.reader_closed": (
+            "The reader for experiment {experiment_id!r} is closed; "
+            "build a new reader with the builder that returned it"
+        ),
+        "kernel.run.reader_offline": (
+            "The reader for experiment {experiment_id!r} was read from an offline catalog "
+            "and cannot read data; build it with a connection to run"
+        ),
+        "kernel.run.reader_required": (
+            "Pass the reader a builder returns with the experiment, not a {received}; "
+            "a BoundResolver only verifies a custom provider, so build a reader with "
+            "from_frame, from_definitions or another builder to run"
         ),
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",
         "kernel.definitions.catalog_missing": "Offline definitions catalog is missing for {path!r}; bind the definitions with a connection first",

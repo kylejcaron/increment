@@ -705,7 +705,7 @@ def test_sitewide_refuses_clustered_evidence_without_cluster_counts(tmp_path, mo
         rows=_sized_event_rows(control_units=3, treatment_units=3),
         windowed=False,
     )
-    source = resolver.binding.source
+    source = resolver._binding.source
     complete = source.sitewide_evidence
     monkeypatch.setattr(
         source,

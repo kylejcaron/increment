@@ -229,7 +229,7 @@ class TestEstimate:
                 return getattr(self._wrapped, name)
 
         custom_experiment, custom_resolver = bind_pair(
-            cast(Any, LegacySource(resolver.binding.source))
+            cast(Any, LegacySource(resolver._binding.source))
         )
         result = estimate_cate(
             custom_experiment, custom_resolver, "revenue", control="control", interact=["spend"]
@@ -851,7 +851,7 @@ class TestRefusals:
         def fail_if_called(*args, **kwargs):
             raise AssertionError("ratio refusal must precede unit_frame")
 
-        monkeypatch.setattr(resolver.binding.source, "unit_frame", fail_if_called)
+        monkeypatch.setattr(resolver._binding.source, "unit_frame", fail_if_called)
 
         with pytest.raises(UnsupportedRequestError) as exc_info:
             entry_point(experiment, resolver, "aov", **kwargs)
@@ -1092,7 +1092,7 @@ def test_targeting_refuses_unsupported_missing_policy_before_unit_frame(
     def fail(*_args, **_kwargs):
         raise AssertionError("unit_frame accessed before the missing-policy refusal")
 
-    monkeypatch.setattr(resolver.binding.source, "unit_frame", fail)
+    monkeypatch.setattr(resolver._binding.source, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
         _call_targeting_entry_point(caller, experiment, resolver)
     assert exc_info.value.code == "cate.identification.unsupported_missing_policy"
@@ -1116,7 +1116,7 @@ def test_targeting_refuses_unsupported_max_smd_before_unit_frame(caller, monkeyp
     def fail(*_args, **_kwargs):
         raise AssertionError("unit_frame accessed before the balance-policy refusal")
 
-    monkeypatch.setattr(resolver.binding.source, "unit_frame", fail)
+    monkeypatch.setattr(resolver._binding.source, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
         _call_targeting_entry_point(caller, experiment, resolver)
     assert exc_info.value.code == "cate.identification.unsupported_max_smd"
@@ -1137,7 +1137,7 @@ def test_estimate_refuses_non_randomized_before_touching_unit_frame(monkeypatch)
     def fail(*_args, **_kwargs):
         raise AssertionError("unit_frame accessed before the mechanism check")
 
-    monkeypatch.setattr(resolver.binding.source, "unit_frame", fail)
+    monkeypatch.setattr(resolver._binding.source, "unit_frame", fail)
     with pytest.raises(InvalidRequestError) as exc_info:
         estimate_cate(experiment, resolver, "revenue", control="control", interact=["spend"])
     assert exc_info.value.code == "cate.identification.randomized_only"
@@ -1616,7 +1616,7 @@ class TestClusterTransport:
             ),
         )
         randomized = Randomized(control_group="control")
-        source = resolver.binding.source
+        source = resolver._binding.source
         monkeypatch.setattr(
             source, "_context", dataclasses.replace(source.context, design=randomized)
         )
@@ -1731,7 +1731,7 @@ class TestClusterTransport:
         splitting/fold assignment and honest validation silently wrong,
         regardless of the declared intervention grain."""
         experiment, resolver = _cluster_experiment(pure_arms=True)
-        source = resolver.binding.source
+        source = resolver._binding.source
         real_unit_frame = source.unit_frame
 
         def dropped(metric, *, covariates=(), outcome_stage="transformed"):
@@ -1749,7 +1749,7 @@ class TestClusterTransport:
         from dataclasses import replace
 
         experiment, resolver = _experiment()
-        source = resolver.binding.source
+        source = resolver._binding.source
         monkeypatch.setattr(
             source, "_context", replace(source.context, intervention_grain="cluster")
         )
@@ -2119,7 +2119,7 @@ def test_public_equal_cluster_weighting_refuses_before_reading_unclustered_sourc
     def unavailable_frame(*args, **kwargs):
         raise AssertionError("invalid weighting must refuse before requesting rows")
 
-    monkeypatch.setattr(resolver.binding.source, "unit_frame", unavailable_frame)
+    monkeypatch.setattr(resolver._binding.source, "unit_frame", unavailable_frame)
     with pytest.raises(InvalidRequestError) as caught:
         estimate_cate(
             experiment, resolver, "revenue", control="control", interact=[], cluster_weight="equal"
@@ -2137,7 +2137,7 @@ def test_public_validation_rechecks_forged_bootstrap_before_loading_units(caller
     def reject_load(*args, **kwargs):
         pytest.fail("invalid bootstrap options must refuse before loading unit data")
 
-    monkeypatch.setattr(type(resolver.binding.source), "unit_frame", reject_load)
+    monkeypatch.setattr(type(resolver._binding.source), "unit_frame", reject_load)
     with pytest.raises(InvalidRequestError) as error:
         if caller == "validate":
             validate_cate(
@@ -2188,7 +2188,7 @@ def test_public_incompatible_deployment_refuses_before_loading_units(caller, mon
     def no_units(*args, **kwargs):
         pytest.fail("incompatible deployment must refuse before unit-frame loading")
 
-    monkeypatch.setattr(type(resolver.binding.source), "unit_frame", no_units)
+    monkeypatch.setattr(type(resolver._binding.source), "unit_frame", no_units)
     options: dict = (
         {"fraction": 0.5} if caller is targeting_rule else {"fractions": (0.5,), "seed": 1}
     )

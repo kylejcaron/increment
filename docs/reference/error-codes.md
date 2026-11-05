@@ -1093,7 +1093,9 @@ Retired codes and their replacements are listed below.
 | `kernel.request.population_scope_only` | `InvalidRequestError` | — | `increment.kernel.contracts` |
 | `kernel.request.scope_mismatch` | `InvalidRequestError` | `field`, `kind` | `increment.kernel.contracts` |
 | `kernel.request.unportable` | `InvalidRequestError` | `field`, `kind` | `increment.kernel.contracts` |
-| `kernel.run.provider_execution_unavailable` | `InvalidRequestError` | — | `increment.kernel.contracts` |
+| `kernel.run.reader_closed` | `InvalidRequestError` | `experiment_id` | `increment.kernel.contracts` |
+| `kernel.run.reader_offline` | `InvalidRequestError` | `experiment_id` | `increment.kernel.contracts` |
+| `kernel.run.reader_required` | `InvalidRequestError` | `received` | `increment.kernel.contracts` |
 | `kernel.scope.family_mismatch` | `CapabilityError` | `experiment_id`, `view` | `increment._runnability` |
 | `kernel.scope.invalid` | `InvalidRequestError` | `field` | `increment.kernel.contracts` |
 | `kernel.snapshot.integrity` | `InvalidRequestError` | `snapshot_id`, `stream` | `increment.kernel.contracts` |
@@ -1679,6 +1681,8 @@ Retired codes and their replacements are listed below.
 | `frame.frame_panel.metric_was_declared` | `frame.frame_totals.metric_was_declared` |
 | `frame.metric.finite_sample_metric_type` | `conversion_inference.finite_sample.metric_type` |
 | `frame.moments.metric_covariate_column` | `frame.validation.metric_covariate_impute_all_null` |
+| `kernel.run.provider_execution_unavailable` | `kernel.run.reader_required` |
+| `kernel.run.resolver_missing` | `kernel.run.reader_required`, `kernel.run.reader_offline` |
 | `plan.contrast_configs_template_mismatch` | `plan.compile_configs_template_mismatch` |
 | `plan.contrast_configs_wrong_type` | `plan.compile_configs_wrong_type` |
 | `power.alpha` | `estimation.diagnostics.alpha` |

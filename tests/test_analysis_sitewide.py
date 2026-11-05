@@ -295,7 +295,7 @@ class TestSitewide:
         experiment, resolver = _pricing_experiment(
             tmp_path, pricing_site_noise_con, [_REVENUE_PER_SESSION]
         )
-        source = resolver.binding.source
+        source = resolver._binding.source
         complete = source.sitewide_evidence
         monkeypatch.setattr(
             source,

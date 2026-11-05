@@ -59,9 +59,12 @@ module-builder pair, then run the experiment, or pass
 `kernel.request.population_scope_only` means population was placed in request
 options, or `run(population=...)` differs from a selected scope's population;
 set it on `Scope(population=...)` instead.
-`kernel.run.provider_execution_unavailable` means `BoundResolver` verified a
-custom provider but has no execution adapter. Use the resolver returned by a
-module builder to run an experiment.
+`kernel.run.reader_required` means `run` or a function that reads data received
+something other than the reader a builder returns; its `received` context names
+the type. A `BoundResolver` only verifies a custom provider, so build a reader
+with a module builder to run an experiment. `kernel.run.reader_closed` means the
+reader was closed; build a new one. `kernel.run.reader_offline` means the reader
+came from an offline catalog; build it with a connection.
 
 `kernel.scope.family_mismatch` means a switchback view was requested from an
 ordinary arm experiment. Build a switchback experiment with

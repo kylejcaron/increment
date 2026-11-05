@@ -2389,9 +2389,9 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         } == {"assigned", "triggered"}
 
         declared = metrics(*native)
-        assigned = dashboard_group_data(native[1].binding, metrics=declared)
+        assigned = dashboard_group_data(native[1]._binding, metrics=declared)
         triggered = dashboard_group_data(
-            native[1].binding, metrics=declared, population="triggered"
+            native[1]._binding, metrics=declared, population="triggered"
         )
         assert_support("triggered_auxiliary_reads", "dashboard_definitions_population", triggered)
         assert assigned and triggered
@@ -2494,7 +2494,7 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
         assert triggered_result.relative_impact == pytest.approx(untriggered_result.relative_impact)
 
         adopted = _adopted_cate_experiment(
-            native_connection(native[1].binding.source), native, kinds=("site_volume",)
+            native_connection(native[1]._binding.source), native, kinds=("site_volume",)
         )
         artifact_result = sitewide(*adopted, "revenue")
         assert artifact_result.analysis_population == "assigned"
@@ -2545,7 +2545,7 @@ def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path
         native = sitewide(*with_late, "revenue")
         reference = sitewide(*without_late, "revenue")
         adopted = _adopted_cate_experiment(
-            native_connection(with_late[1].binding.source), with_late, kinds=("site_volume",)
+            native_connection(with_late[1]._binding.source), with_late, kinds=("site_volume",)
         )
         artifact = sitewide(*adopted, "revenue")
         assert isinstance(reference, SitewideImpact)

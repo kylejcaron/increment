@@ -4,9 +4,8 @@ import re
 import warnings
 from pathlib import Path
 
-from increment import RunResult, from_frame
+from increment import ExperimentReader, RunResult, from_frame
 from increment.kernel.experiment import Experiment
-from increment.kernel.resolver import Resolver
 from increment.result_envelope import ResultCell
 from tests.analysis_factory import view_readout
 
@@ -55,7 +54,7 @@ def test_readme_quickstart_executes_recommended_run() -> None:
         exec(compile(match.group(1), "README.md quickstart", "exec"), namespace)
 
     assert isinstance(namespace["exp"], Experiment)
-    assert isinstance(namespace["resolver"], Resolver)
+    assert isinstance(namespace["resolver"], ExperimentReader)
     result = namespace["result"]
     assert isinstance(result, RunResult)
     assert result.effects == tuple(cell.summary for cell in result.cells)
