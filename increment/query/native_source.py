@@ -3026,6 +3026,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"] = "assigned",
         # Internal flag controlling whether CUPED narrowing is applied.
         narrow_cuped: bool = False,  # noqa: FBT001, FBT002
+        include_covariate: bool = True,  # noqa: FBT001, FBT002
     ) -> pa.Table:
         """Every selected metric's ``group_summary`` moments, unioned into
         one arrow table -- the shared substrate ``export()``/``moments()``/
@@ -3043,6 +3044,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         covariate whenever ``n_pre_periods>0`` allows it). Set only by
         ``DefinitionsMomentSource.moments_source``, whose cube is consumed immediately by
         the same call that resolved *methods*.
+        ``include_covariate=False`` excludes pre-period moments even when available.
         """
         # Import lazily because pyarrow is provided by live ibis connections.
         import pyarrow as pa
@@ -3087,7 +3089,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 if method.variance_reduction == "cuped"
             }
             family = next(iter(families.values())) if len(families) == 1 else None
-            covariate = next(iter(family.covariates or ()), None) if family is not None else None
+            covariate = (
+                next(iter(family.covariates or ()), None)
+                if include_covariate and family is not None
+                else None
+            )
             pre_stats_override = (
                 self._bound_scalar_covariate_pre_stats(covariate, exposures, metric)
                 if covariate is not None
@@ -3096,7 +3102,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             # Several scalar families cannot share one cube's x columns: the cube then
             # carries outcome moments only, and each family is acquired by its own request.
             want_cuped = (
-                (family is not None if narrow_cuped else True) if len(families) <= 1 else False
+                include_covariate
+                and len(families) <= 1
+                and (family is not None if narrow_cuped else True)
             )
             summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
                 metric,
@@ -4447,7 +4455,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 self.breakouts,
                 route="use breakout_moments() for a dimensioned totals view",
             )
-        combined = self._moments_for_metrics(selected=[metric], population=population)
+        combined = self._moments_for_metrics(
+            selected=[metric], population=population, include_covariate=include_covariate
+        )
         return cast("list[dict[str, Any]]", combined.to_pylist())
 
     def moments_for_method(

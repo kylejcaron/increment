@@ -1059,7 +1059,7 @@ def test_conformance_covers_every_declared_request_kind(loaded):
 @pytest.mark.parametrize("kind", CONFORMANCE_KINDS, ids=lambda kind: kind.__name__)
 def test_loader_answers_request_kind(kind, loader, loaded):
     cell = (kind.__name__, loader)
-    outcome = _without_known_difference(cell, loaded.outcome(kind, loader))
+    outcome = loaded.outcome(kind, loader)
     if cell in REFUSALS:
         code, context = REFUSALS[cell]
         assert outcome == Refused(code, context)
@@ -1077,9 +1077,7 @@ def test_loader_answers_request_kind(kind, loader, loaded):
         for other in LOADERS
         if (kind.__name__, other) not in REFUSALS and (kind.__name__, other) not in ROUTE_ANSWERS
     )
-    reference_outcome = _without_known_difference(
-        (kind.__name__, reference), loaded.outcome(kind, reference)
-    )
+    reference_outcome = loaded.outcome(kind, reference)
     _assert_close(outcome, reference_outcome, tolerance, f"{cell} versus {reference}")
 
 
@@ -1111,39 +1109,6 @@ COVARIATE_MOMENTS: dict[str, object] = {
     "moments": _TOTALS["revenue"],
     "switchback_frame": Refused(*_grain(_SWITCHBACK, "total", ())),
 }
-
-# Known defect, tracked as "Definitions returns covariate moments without
-# include_covariate": definitions attach the pre-period covariate to total moments that
-# did not request it. Pinned exactly, then removed before any other comparison.
-_UNREQUESTED_X = {
-    "revenue": {"control": _pre_period(106, 27), "treatment": _pre_period(122, 31)},
-    "purchase_rate": {
-        arm: {"role": "covariate", "mean": 1.0, "m2": 0.0, "c_y": 0.0, "c_den": None}
-        for arm in _ARMS
-    },
-    "rps": {
-        "control": {**_pre_period(106, 27), "c_den": 0.0},
-        "treatment": {**_pre_period(122, 31), "c_den": 0.0},
-    },
-}
-KNOWN_DIFFERENCES: dict[tuple[str, str], object] = {
-    ("MomentsRequest", "definitions"): _UNREQUESTED_X,
-    ("EvidenceScope", "definitions"): _UNREQUESTED_X,
-}
-
-
-def _without_known_difference(cell: tuple[str, str], outcome: Any) -> Any:
-    known = KNOWN_DIFFERENCES.get(cell)
-    if known is None or isinstance(outcome, Refused):
-        return outcome
-    observed = {
-        metric: {arm: row["x"] for arm, row in rows.items()} for metric, rows in outcome.items()
-    }
-    _assert_close(observed, known, _MOMENTS_TOLERANCE, f"{cell} known difference")
-    return {
-        metric: {arm: {**row, "x": None} for arm, row in rows.items()}
-        for metric, rows in outcome.items()
-    }
 
 
 @pytest.mark.parametrize("loader", LOADERS)
