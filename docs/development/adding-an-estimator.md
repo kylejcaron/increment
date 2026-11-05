@@ -42,6 +42,11 @@ This required method set is a compatibility contract: never add a required
 `EvidenceProvider` method. New evidence capabilities must remain optional or be
 served through an explicitly versioned contract.
 
+A total `MomentsRequest` without a method returns outcome moments only. Covariate
+moments require `include_covariate=True`; declaring pre-period data alone does
+not attach them. Method-specific requests retain the moments their method needs,
+and exported moments cubes retain available covariates for later analysis.
+
 To check a provider against an experiment's recorded declarations without
 running anything, wrap it in a resolver:
 `increment.evidence.BoundResolver(provider).verify(experiment.source_refs)`
