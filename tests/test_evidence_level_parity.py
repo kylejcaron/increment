@@ -1177,24 +1177,25 @@ def _coordinate_param(entry):
 @pytest.mark.grid("Complete declared scenario/source disposition and typed-input inventory")
 @pytest.mark.parametrize("entry", [_coordinate_param(entry) for entry in scenario_roster()])
 def test_declared_coordinate_acquires_exact_evidence_or_disposition(entry):
-    from tests.evidence_fixtures.scenarios import _scenario_case
+    from tests.evidence_fixtures.scenarios import _scenario_case, current_disposition
 
     expected_warnings = (
         _scenario_case(entry.scenario_id).expected_warning_codes.get(entry.ingress, ())
         if entry.family != "preflight"
         else ()
     )
-    if entry.disposition == "source":
+    acquires = current_disposition(entry.scenario_id, entry.ingress)["kind"] == "cells"
+    if acquires:
         frozen = _frozen_coordinate(entry.scenario_id, entry.ingress)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", IncrementWarning)
-        if entry.disposition != "source":
+        if not acquires:
             result = observe_scenario_disposition(entry.scenario_id, entry.ingress)
             assert result["observed"] == result["expected"]
         else:
             live = _acquired_coordinate(entry.scenario_id, entry.ingress, frozen.baseline_revision)
     assert set(warning_codes(caught)) <= set(expected_warnings)
-    if entry.disposition != "source":
+    if not acquires:
         return
     assert not live.missing_representations
     assert live.declaration_sha256 == _digest(
