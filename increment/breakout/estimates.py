@@ -94,7 +94,7 @@ from increment.estimation.engine import (
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
-from increment.estimation.multiplicity import stamp_multiplicity_status
+from increment.estimation.multiplicity import design_excluded, stamp_multiplicity_status
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.readout_types import register_collection_types
 from increment.estimation.results import (
@@ -3948,11 +3948,19 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
     method_roles_by_metric = context.method_roles_by_metric
     from increment.decision import DecisionFailure, SegmentHypothesisKey
 
+    if correction != "bh":
+        return results
+    count_excluded = {
+        (row.dimension_value, row.metric, row.group_id)
+        for row in results
+        if row.method_role == "decision" and design_excluded(row)
+    }
     family_keys = [
         SegmentHypothesisKey(metric_name, group_id, "itt", dimension, segment_value)
         for segment_value, metric_name, group_id in _breakout_family_cells(segments, all_pairs)
+        if (segment_value, metric_name, group_id) not in count_excluded
     ]
-    if correction != "bh" or not family_keys:
+    if not family_keys:
         return results
     canonical_rows = {
         (segment_value, estimate.metric, estimate.group_id): estimate
@@ -3974,6 +3982,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
         "family_axes": ("metric", "arm", "segment"),
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
+        "family_size": outcome.n_family,
     }
     for index, row in enumerate(results):
         if row.method_role != "decision" or row.lift is not None:
@@ -4010,6 +4019,9 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     if estimate.method_role == "decision"
                     else None,
                     "family_threshold": family_record["family_threshold"]
+                    if estimate.method_role == "decision"
+                    else None,
+                    "family_size": family_record["family_size"]
                     if estimate.method_role == "decision"
                     else None,
                     "family_nominal_alpha": (
@@ -4106,6 +4118,9 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_size": family_record["family_size"]
+                    if estimate.method_role == "decision"
+                    else None,
                     "family_nominal_alpha": (
                         family_record["family_nominal_alpha"]
                         if estimate.method_role == "decision" and family_discovery(outcome, key)
@@ -4177,6 +4192,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 low_reliability=original.low_reliability,
                 family_procedure="bh",
                 family_nominal_alpha=alpha,
+                family_size=outcome.n_family,
                 **family_fields,
             )
             continue
@@ -4190,7 +4206,13 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             low_reliability=original.low_reliability,
             role="exploratory",
             **family_fields,
-        ).model_copy(update={"family_procedure": "bh", "family_nominal_alpha": alpha})
+        ).model_copy(
+            update={
+                "family_procedure": "bh",
+                "family_nominal_alpha": alpha,
+                "family_size": outcome.n_family,
+            }
+        )
     return results
 
 
@@ -4299,9 +4321,12 @@ def run_breakout(  # noqa: PLR0913
         ``"bh"`` selects a flat family and reinverts selected intervals at
         min(q*R/m, nominal alpha). Sequential inputs use the predeclared full
         roster and current/frozen likelihood, including missing cells with
-        log evidence -infinity. Fixed-horizon inputs retain the present-row
-        family and require complete p-value evidence. Every row is exploratory.
-        Informative priors remain separate from the sampling evidence used for selection.
+        log evidence -infinity. A fixed-horizon family is every present cell
+        except design-excluded ones (an arm with fewer than 2 units, or a
+        missing arm): those come back as unavailable rows outside the family,
+        and the family's ``family_size`` counts the rest. Every row is
+        exploratory. Informative priors remain separate from the sampling
+        evidence used for selection.
     q : float
         FDR level for ``correction="bh"``'s family selection. Unused
         otherwise.
@@ -4327,9 +4352,10 @@ def run_breakout(  # noqa: PLR0913
         Invalid ``correction``, or an explicit ``methods=[]``.
     CapabilityError
         Under ``correction="bh"``, missing or invalid typed family evidence, or a
-        failure outside the conservative non-rejection policy (code
-        ``family.evidence.incomplete``). Eligible unavailable cells remain in the
-        family as non-rejections, with their original coded failure retained.
+        failure that is neither design-based nor an outcome-based non-rejection
+        (code ``family.evidence.incomplete``). Outcome-based unavailable cells
+        remain in the family as non-rejections, with their original coded
+        failure retained.
 
     Returns
     -------

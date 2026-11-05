@@ -1637,7 +1637,7 @@ results together. It accepts only uncorrected fixed-horizon decision rows.
     | Clustered ratio (Fieller set) | Supported: reinverted from persisted joint reference. |
     | No relative interval (non-positive arm mean), selected by an absolute margin or additive evidence against zero | Supported: additive interval uses persisted `abs_diff`, `abs_se`, reference, and `abs_alpha`, never narrower than nominal. Rows serialized before `abs_alpha` are refused with `estimation.family.exploratory_construction`. |
     | Breakout segments and whole-window rows | Supported: one family across metric, arm, and segment. |
-    | Design-excluded cells (too few units or no control) | Not hypotheses; returned unchanged outside the family. Outcome-based exclusions remain in `m` as non-rejections. |
+    | Design-excluded cells (fewer than two units in an arm, or a missing arm) | Not hypotheses; returned unchanged outside the family. Outcome-based exclusions, including a control arm lost to a non-positive mean, remain in `m` as non-rejections. |
     | Informative prior | Posterior fields may change; selection uses persisted sampling evidence. Prior-bound rows without a proven sampling-availability marker refuse with `readout.legacy.sampling_unreconstructible`. |
     | Sequential inference | Unfinished; refused with `estimation.family.exploratory_sequential`. |
     | Quantile, percentile-winsorized, and additive-scale rows | Unfinished; refused with `estimation.family.exploratory_construction` because intervals cannot be reissued without approximation. |

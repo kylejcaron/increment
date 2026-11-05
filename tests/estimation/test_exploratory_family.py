@@ -382,7 +382,7 @@ def test_selected_intervals_equal_run_breakout_bh(alternative, q):
     tested = sum(row.excluded is None for row in reference)
     assert tested < len(reference)  # BR carries no mean-metric cells: excluded by design
     for ours, theirs in zip(corrected, reference, strict=True):
-        _close(ours.model_dump(exclude={"family_size"}), theirs.model_dump(exclude={"family_size"}))
+        _close(ours.model_dump(), theirs.model_dump())
         assert ours.family_size == (tested if theirs.excluded is None else None)
     selected = [ours for ours in corrected if ours.discovery]
     assert bool(selected) == (alternative != "less")
@@ -462,7 +462,7 @@ def test_cuped_decision_rows_equal_run_breakout_bh():
     assert {row.method for row in corrected} == {"cuped"}
     assert any(row.discovery for row in corrected) and not all(row.discovery for row in corrected)
     for ours, theirs in zip(corrected, reference, strict=True):
-        _close(ours.model_dump(exclude={"family_size"}), theirs.model_dump(exclude={"family_size"}))
+        _close(ours.model_dump(), theirs.model_dump())
 
 
 def test_a_cell_whose_estimation_failed_refuses_the_family_as_run_breakout_does():

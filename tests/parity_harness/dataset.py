@@ -59,21 +59,20 @@ raising a comparable error:
 - Store assignment (`f"s{(i // 5) % n_stores}"`) is the SAME sequence in
   both arms. Two hazards, both confirmed live: a store id prefixed by arm
   (`f"{prefix}s{i % n_stores}"`, the natural first attempt) leaves every
-  segment single-arm, and every breakout comparison refuses with no
-  comparison possible. A store index taken directly from `i % n_stores`
+  segment single-arm, and every breakout comparison comes back unavailable
+  with no comparison possible. A store index taken directly from `i % n_stores`
   (the next natural attempt, with `n_stores=3`) silently correlates with
   the exact-binomial non-purchaser cohort's own `i % 3 != 0` skip
   condition -- with `n_stores=3`, `i % 3 == 0` selects BOTH "store s0" AND
   "never purchases", so segment s0's `revenue`/`rps` mean is exactly zero
-  for every unit in every arm, and `run_breakout` refuses with
-  `family.evidence.incomplete` regardless of sample size (confirmed live
-  at 4x this seed's `n_per_arm`: the failure persists unchanged). Dividing
+  for every unit in every arm, and those breakout cells are unavailable as
+  non-positive means at any sample size. Dividing
   `i` by 5 before taking `% n_stores` decorrelates the two conditions
   (`gcd(5, 3) = 1`, so no store's cohort aligns with the skip condition);
   confirmed live with the corrected formula: every store segment carries a
   real mix of purchasers and non-purchasers in both arms, and
-  `run_breakout` succeeds at this seed's ordinary `n_per_arm=60` with no
-  need to enlarge the fixture at all.
+  `run_breakout` estimates every store at this seed's ordinary `n_per_arm=60`
+  with no need to enlarge the fixture at all.
 - Every metric declares `preferred_direction` (both in the YAML `metrics:`
   catalog and on each frame-path `MetricSpec`) -- a guardrail role refuses
   at plan compilation (`plan.guardrail.direction`) without one, confirmed
