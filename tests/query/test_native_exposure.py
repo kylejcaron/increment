@@ -17,9 +17,10 @@ import datetime as dt
 from typing import Any, cast
 
 import ibis
+import pyarrow as pa
 import pytest
 
-from increment import from_definitions, from_unit_day_artifact
+from increment import View, from_definitions, from_unit_day_artifact
 from increment.artifacts import artifact_context, publish_unit_day_artifact
 from increment.errors import CapabilityError
 from increment.workflows import allocation_history, metrics
@@ -429,6 +430,83 @@ experiments:
     analysis = from_definitions(defs_path, con, experiment_name="exp")
 
     assert _enrolled_by_arm(analysis) == {"control": 1, "treatment": 1}
+
+
+@pytest.mark.parametrize("exposure", ["fact", "sql"])
+def test_mixed_timestamp_kinds_are_session_independent(tmp_path, exposure):
+    """Every arm is exposed at 10:00Z through a time-zone-aware relation and buys at naive
+    09:00 (1.0) and 11:00 (5.0). Naive timestamps are UTC, so only the 11:00 purchase
+    follows exposure and each arm's mean is 5.0 whatever the session time zone."""
+    units = {"c1": "control", "c2": "control", "t1": "treatment", "t2": "treatment"}
+    exposed = pa.array([dt.datetime(2025, 1, 1, 10, tzinfo=dt.UTC)] * 4, pa.timestamp("us", "UTC"))
+    views = pa.table(
+        {
+            "user_id": list(units),
+            "event_at": exposed,
+            "event": ["page_view"] * 4,
+            "group_id": list(units.values()),
+        }
+    )
+    enrollments = pa.table(
+        {"unit_id": list(units), "ts": exposed, "group_id": list(units.values())}
+    )
+    # The unenrolled unit's later purchase shows the feed loaded through the window.
+    purchases = [
+        (unit, dt.datetime(2025, 1, 1, hour), value)
+        for unit in units
+        for hour, value in ((9, 1.0), (11, 5.0))
+    ]
+    purchases.append(("late", dt.datetime(2025, 1, 22), 1.0))
+    orders = pa.table(
+        {
+            "user_id": [unit for unit, _, _ in purchases],
+            "event_at": pa.array([at for _, at, _ in purchases], pa.timestamp("us")),
+            "event": ["purchase"] * len(purchases),
+            "revenue": [value for _, _, value in purchases],
+        }
+    )
+    enrolled = (
+        "{name: enrolled, fact: page_view}"
+        if exposure == "fact"
+        else '{name: enrolled, sql: "SELECT unit_id, ts, group_id FROM enrollments"}'
+    )
+    defs_path = _write_defs(
+        tmp_path,
+        f"""
+fact_sources:
+  - {{name: views, sql: SELECT * FROM views, timestamp_column: event_at, entities: [user_id],
+     facts: [{{name: page_view, column: null}}]}}
+  - {{name: orders, sql: SELECT * FROM orders, timestamp_column: event_at, entities: [user_id],
+     facts: [{{name: purchase, column: revenue}}]}}
+exposures: [{enrolled}]
+metrics:
+  - {{name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 7}}
+experiments:
+  - {{name: exp, exposure: enrolled, unit: user_id, start: 2025-01-01, end: 2025-01-02,
+     observation_end: 2025-01-20, control_group: control, plan: {{primary: revenue}}}}
+""",
+    )
+    means = {}
+    for zone in ("UTC", "America/Los_Angeles", "Asia/Tokyo"):
+        con = ibis.duckdb.connect()
+        con.raw_sql(f"SET TimeZone = '{zone}'")
+        for name, table in (("views", views), ("enrollments", enrollments), ("orders", orders)):
+            con.create_table(name, table)
+        experiment, reader = from_definitions(defs_path, con, experiment_name="exp")
+        try:
+            rows = view_readout(experiment, reader, View(view="asof", grain="asof", values=True))
+        finally:
+            reader.close()
+            con.disconnect()
+        means[zone] = {
+            (row.group_id, row.ds): None if row.value is None else row.value.value for row in rows
+        }
+
+    for zone in ("America/Los_Angeles", "Asia/Tokyo"):
+        assert means[zone].keys() == means["UTC"].keys()
+        for key, mean in means[zone].items():
+            assert mean == pytest.approx(5.0, abs=1e-12)
+            assert mean == pytest.approx(means["UTC"][key], abs=1e-12)
 
 
 def test_definitions_assignment_ledger_uses_explicit_role_mapping(tmp_path):

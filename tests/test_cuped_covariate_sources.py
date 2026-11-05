@@ -1614,8 +1614,8 @@ def test_direct_native_readout_does_not_acquire_removed_scalar_binding(tmp_path)
         ),
     )
     try:
-        con.raw_sql("ALTER TABLE cov_events DROP COLUMN tenure")
-        con.raw_sql("ALTER TABLE cov_events DROP COLUMN history_b")
+        # Acquiring the removed binding would refuse its missing="refuse" covariate.
+        con.raw_sql("UPDATE cov_events SET tenure = NULL, history_b = NULL")
         (row,) = readouts.run(source, decision_method=Method.unadjusted(), sensitivity_methods=())
         assert row.method == "naive"
         assert row.require_lift().value is not None

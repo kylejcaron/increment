@@ -86,6 +86,7 @@ from increment.query.builders import (
     _attach_uptake_flag,
     _dense_unit_days,
     _local_date,
+    _naive_utc_ts,
     _observable_window_flags,
     _scope_exposure_events,
     _uptake_events_in_elapsed_window,
@@ -121,6 +122,7 @@ from increment.query.fact_resolution import (
     _rename_to_builder_cols,
     _resolve_breakout_fact_source,
     _resolve_value_column,
+    resolve_fact_source_sql,
     validate_fact_source_schema,
 )
 from increment.query.integrity import (
@@ -326,6 +328,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._on_mixed_assignment: Literal["error", "warn", "exclude"] = on_mixed_assignment
         self._backend = backend
         self._declaration_schema: dict[str, str] | None = None
+        self._mixed_timestamp_kinds: bool | None = None
         from increment.plan import refuse_observational_relative_margin
 
         refuse_observational_relative_margin(design, plan)
@@ -562,8 +565,64 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     def _get_fact_table(self, fact_source: FactSource, *, require_event: bool = True) -> Table:
         """Memoized fact table with event-schema validation for event consumers."""
         return self._session.fact_table(
-            fact_source, self._experiment.unit, require_event=require_event
+            fact_source,
+            self._experiment.unit,
+            require_event=require_event,
+            naive_utc=self._timestamp_kinds_mixed(),
         )
+
+    def _timestamp_kinds_mixed(self) -> bool:
+        """Whether this experiment's relations mix time-zone-aware and naive timestamps.
+
+        Decided once from the exposure, trigger, metric, uptake and CUPED relations. When
+        they mix, every aware timestamp is read as naive UTC at ingress, so no comparison
+        depends on the session time zone; relations of one kind keep their own type.
+        """
+        if self._mixed_timestamp_kinds is None:
+            aware: set[bool] = set()
+            for sql, column in self._timestamped_relations():
+                try:
+                    dtype = self._session.source_sql(sql).schema().get(column)
+                except Exception:  # an unresolvable relation is never read, so never compared
+                    continue
+                if dtype is not None:
+                    aware.add(getattr(dtype, "timezone", None) is not None)
+            self._mixed_timestamp_kinds = len(aware) > 1
+        return self._mixed_timestamp_kinds
+
+    def _timestamped_relations(self) -> tuple[tuple[str, str], ...]:
+        """``(sql, timestamp column)`` of each exposure, trigger, metric, uptake and CUPED relation."""
+        relations: dict[tuple[str, str], None] = {}
+        facts: list[str] = []
+        for name in (self._experiment.exposure, self._experiment.trigger):
+            if name is None:
+                continue
+            exposure = self._exp_lookup_exposures[name]
+            if exposure.sql is not None:
+                relations[(exposure.sql, "ts")] = None
+            elif exposure.fact is not None:
+                facts.append(exposure.fact)
+        for metric in dict.fromkeys((*self._metrics, *self._horizon_metrics)):
+            if isinstance(metric, RatioMetric):
+                facts.extend((metric.numerator.fact, metric.denominator.fact))
+            else:
+                facts.append(metric.fact)
+        uptake = getattr(self._context.design, "uptake", None)
+        if uptake is not None:
+            facts.append(uptake.fact)
+        for config in self._context.configs:
+            for method in effective_methods(config, design=self._context.design):
+                for covariate in method.covariates or ():
+                    covariate = self._resolve_covariate_binding(covariate, config.metric)
+                    if (
+                        isinstance(covariate, CupedCovariateBinding)
+                        and covariate.measure is not None
+                    ):
+                        facts.append(covariate.measure.fact)
+        for fact in facts:
+            source, _ = _find_fact_source(self._defs, fact)
+            relations[(source.sql, source.timestamp_column)] = None
+        return tuple(relations)
 
     def _site_volume_scope_names(
         self, site_volume_metrics: frozenset[str], sources: dict[str, FactSource]
@@ -1120,11 +1179,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
+        pinned._mixed_timestamp_kinds = self._timestamp_kinds_mixed()
         for source in sources.values():
             validate_fact_source_schema(
                 pinned._session.source_sql(source.sql),
                 source,
                 require_event=source.name in event_source_names,
+                require_values=False,
             )
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
@@ -1838,6 +1899,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                         "in the exposure sql; enrollment and arm assignment read them"
                     ),
                 )
+            if self._timestamp_kinds_mixed():
+                tbl = _naive_utc_ts(tbl)
             if "experiment_id" in tbl.columns:
                 tbl = tbl.filter(tbl.experiment_id == self._experiment.name)
             else:
@@ -1854,8 +1917,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # fact table, _get_fact_table synthesizes an all-NULL one, so a post-rename check
         # would always pass and silently drop every row.
         fs, _fact = _find_fact_source(self._defs, exposure_def.fact)
-        source_table = self._session.source_sql(fs.sql)
-        validate_fact_source_schema(source_table, fs)
+        source_table = resolve_fact_source_sql(self._session.source_sql, fs)
+        validate_fact_source_schema(
+            source_table, fs, require_values=self._session._source_tables is None
+        )
         raw_has_experiment_id = "experiment_id" in source_table.columns
         # Scoping before pinning (`dim_joined=False`) skips the dim join when the
         # source declares no dims: scoping reads no joined property, and
@@ -1864,7 +1929,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if dim_joined or fs.dims:
             tbl = self._get_fact_table(fs)
         else:
-            tbl = _rename_to_builder_cols(source_table, fs, self._experiment.unit)
+            tbl = _rename_to_builder_cols(
+                source_table,
+                fs,
+                self._experiment.unit,
+                naive_utc=self._timestamp_kinds_mixed(),
+            )
         tbl = tbl.filter(tbl.event == exposure_def.fact)
         if raw_has_experiment_id:
             # NULL experiment_id can mark unrelated rows sharing this fact, such as

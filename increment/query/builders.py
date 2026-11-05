@@ -186,6 +186,29 @@ def _utc_timestamp_literal(ts: ir.TimestampColumn, value: dt.datetime) -> ir.Sca
     return ibis.literal(normalized, type=ts.type())
 
 
+_UTC_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+
+
+def _since_utc_epoch(
+    ts: ir.TimestampColumn, unit: Literal["second", "microsecond"]
+) -> ir.IntegerColumn:
+    """Whole *unit*s from the UTC epoch to a time-zone-aware *ts*.
+
+    Counting from the epoch instant reads *ts* as an instant, where a direct
+    cast would render it in the backend's session time zone.
+    """
+    return ts.delta(ibis.literal(_UTC_EPOCH), unit=unit)
+
+
+def _naive_utc_ts(table: ir.Table) -> ir.Table:
+    """*table* with a time-zone-aware ``ts`` rewritten as the naive UTC timestamp of the
+    same instant; a ``ts`` of any other type is kept as it is."""
+    if getattr(table.ts.type(), "timezone", None) is None:
+        return table
+    micros = _since_utc_epoch(table.ts, "microsecond")
+    return table.mutate(ts=ibis.literal(dt.datetime(1970, 1, 1)) + micros.as_interval("us"))
+
+
 def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.DateColumn:
     """Event timestamp -> calendar date under a fixed UTC *offset* day
     boundary.
@@ -198,8 +221,7 @@ def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.Da
     both sides, or to dates already localized upstream.
     """
     if getattr(ts.type(), "timezone", None) is not None:
-        epoch = ibis.literal(dt.datetime(1970, 1, 1, tzinfo=dt.UTC))
-        seconds = ts.delta(epoch, unit="second") + int(offset.total_seconds())
+        seconds = _since_utc_epoch(ts, "second") + int(offset.total_seconds())
         days = (seconds.cast("float64") / 86400.0).floor().cast("int32")
         local = ibis.literal(dt.date(1970, 1, 1)) + days.as_interval("D")
         return cast("ir.DateColumn", local.cast(dt.date))

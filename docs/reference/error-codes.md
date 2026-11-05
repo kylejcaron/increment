@@ -258,6 +258,7 @@ Retired codes and their replacements are listed below.
 | `definition.fact.source_renames_its` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.fact.source_renames_propert` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.fact_source.missing_columns` | `DefinitionError` | `fact_source`, `missing` | `increment.query.fact_resolution` |
+| `definition.fact_source.sql_unresolved` | `DefinitionError` | `fact_source` | `increment.query.fact_resolution` |
 | `definition.filter.op_between_comparable` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.filter.op_between_values` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
 | `definition.filter.op_exactly_value` | `DefinitionError` | `message` | `increment.semantics.loader`, `increment.semantics.models` |
