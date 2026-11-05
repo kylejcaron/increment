@@ -1650,7 +1650,7 @@ def combine_family_evidence(
         EValueEvidence,
         PValueEvidence,
     )
-    from increment.estimation.family import bh_select, e_bh_select
+    from increment.estimation.family import bh_select_with_nonrejections, e_bh_select
     from increment.estimation.multiplicity import outcome_non_rejection
 
     unavailable = [
@@ -1678,8 +1678,8 @@ def combine_family_evidence(
                 code="results.operation.unsupported",
                 context={"operation": Operation.COMBINE_FAMILY.value, "procedure": procedure},
             )
-        selected_indices, _threshold = bh_select(
-            [item.p_value if isinstance(item, PValueEvidence) else 1.0 for item in values], level
+        selected_indices, _threshold = bh_select_with_nonrejections(
+            [item.p_value if isinstance(item, PValueEvidence) else None for item in values], level
         )
         selected = set(selected_indices)
     elif procedure == "e_bh":

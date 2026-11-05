@@ -4336,9 +4336,12 @@ def run_breakout(  # noqa: PLR0913
         min(q*R/m, nominal alpha). Sequential inputs use the predeclared full
         roster and current/frozen likelihood, including missing cells with
         log evidence -infinity. A fixed-horizon family is every present cell
-        except design-excluded ones (an arm with fewer than 2 units, or a
-        missing arm): those come back as unavailable rows outside the family,
-        and the family's ``family_size`` counts the rest. Every row is
+        except design-excluded ones (a missing arm, or an arm with fewer than
+        2 units under a method that estimates its variance; an exact-binomial
+        conversion or retention cell stays eligible at 1 unit): those come back
+        as unavailable rows outside the family, and the family's
+        ``family_size`` counts the rest. Outcome-excluded cells count there and
+        are never selected, at any ``q``. Every row is
         exploratory. Informative priors remain separate from the sampling
         evidence used for selection.
     q : float

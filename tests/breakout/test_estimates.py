@@ -30,7 +30,7 @@ from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method, estimate_lift
-from increment.estimation.family import bh_select, e_bh_select
+from increment.estimation.family import bh_select, e_bh_select, select_exploratory_family
 from increment.estimation.inference import Normal
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.sequential import AlwaysValid
@@ -1143,6 +1143,39 @@ class TestRunBreakoutBHCorrection:
         assert [(row.family_threshold, row.discovery) for row in family] == [
             (row.family_threshold, row.discovery) for row in without_x
         ]
+
+    def test_bh_family_never_selects_an_outcome_exclusion_at_q_one(self):
+        """At q = 1 every p-value passes the k = m step; a control lost to a non-positive mean
+        still counts in m but is never selected, by the view or by select_exploratory_family."""
+        rows = [
+            _make_arm_row(100, 10.0, 4.0, country="A", group_id="control"),
+            _make_arm_row(100, 11.0, 4.0, country="A", group_id="treatment"),
+            _make_arm_row(100, -1.0, 4.0, country="N", group_id="control"),
+            _make_arm_row(100, 1.0, 4.0, country="N", group_id="treatment"),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            view, nominal = [
+                run_breakout(
+                    rows,
+                    [_mean_metric()],
+                    control_group="control",
+                    dimension="country",
+                    correction=correction,
+                    q=1.0,
+                )
+                for correction in ("bh", "none")
+            ]
+        exploratory = cast(
+            "list[BreakoutEstimate]", list(select_exploratory_family(list(nominal), q=1.0))
+        )
+
+        for result in (view, exploratory):
+            by_segment = {row.dimension_value: row for row in result}
+            assert (by_segment["N"].excluded, by_segment["N"].lift) == ("nonpositive_mean", None)
+            assert by_segment["N"].discovery is False
+            assert by_segment["A"].discovery is True
+            assert by_segment["A"].family_size == by_segment["N"].family_size == 2
 
     def test_bh_family_dedups_by_method(self):
         """2 methods x 1 metric x 2 segments: family size must count

@@ -232,6 +232,18 @@ def bh_select(p_values: Sequence[float], q: float) -> tuple[list[int], float]:
     return _bh_step_up(p_values, q)
 
 
+def bh_select_with_nonrejections(
+    p_values: Sequence[float | None], q: float
+) -> tuple[list[int], float]:
+    """BH step-up where ``None`` is a sure non-rejection: it counts in ``m`` but is never
+    selected at any ``q`` (a p of 1 would otherwise pass the ``k = m`` step at ``q = 1``)."""
+    _require_q(q)
+    for i, p in enumerate(p_values):
+        if p is not None and (not math.isfinite(p) or not (0.0 <= p <= 1.0)):
+            _raise("estimation.family.p_values_finite", i=i, p=p)
+    return _bh_step_up([math.inf if p is None else p for p in p_values], q)
+
+
 def log_e_threshold(alpha: Fraction | float) -> Fraction | float:
     """Return the certified log-evidence cutoff for a one-sided level."""
     return (-log_interval(Fraction(alpha))).hi
@@ -664,18 +676,19 @@ def select_family[K: Hashable](
         )
     order = _unique_family_keys(cells)
     evidence = _require_complete_evidence(order, computation, inference=inference)
-    p_values = []
-    for value in evidence:
+    p_values: list[float | None] = []
+    for key, value in zip(order, evidence, strict=True):
         if not isinstance(value, PValueEvidence):
             from increment.sequential_state import sequential_refuse
 
             sequential_refuse("source.invalid", "fixed family requires p-value evidence")
-        p_values.append(value.p_value)
+        # A failure admitted as a sure non-rejection has no sampled p-value.
+        p_values.append(value.p_value if key in computation.evidence else None)
     canonical_method = {key: value.method for key, value in zip(order, evidence, strict=True)}
     fixed_q = float(q)
     if Fraction(fixed_q) > Fraction(q):
         fixed_q = math.nextafter(fixed_q, 0.0)
-    selected_idx, threshold = bh_select(p_values, fixed_q)
+    selected_idx, threshold = bh_select_with_nonrejections(p_values, fixed_q)
     selected = frozenset(order[i] for i in selected_idx)
     realized = _conservative_ratio(fixed_q, len(selected_idx), len(order)) if selected else None
     alpha = min(realized, nominal_alpha) if realized is not None else None
