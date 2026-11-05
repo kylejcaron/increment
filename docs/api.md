@@ -127,6 +127,18 @@ values.
 
 ### Earlier release notes
 
+- Release note (documentation): the switchback guide names the codes its
+  refusals carry. Duplicate metric specifications refuse with
+  `frame.duplicate_metric_name` (`InvalidRequestError`), not an uncoded
+  `ValueError`. A shared schedule declared over one block refuses with
+  `source.frame.switchback.schedule`, and
+  `estimation.contrast.switchback_block_inference` applies when combined
+  shared-schedule partitions hold fewer than two blocks. The data-model and
+  metric-types guides state that a warehouse outcome event counts only when it
+  is strictly after the unit's `first_exposure_ts`, so an event at that exact
+  instant, such as a first-purchase exposure's enrolling order, counts in
+  neither the outcome nor the CUPED window. Refusals, estimates and experiment
+  identity are unchanged.
 - Release note (documentation): the power guide's `PowerResult` table states
   that `mde_relative` is relative to the declared `null_lift`, not to control,
   and that the matching `relative_lift` is

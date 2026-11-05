@@ -19,6 +19,9 @@ exposures:
 
   - name: first_purchase
     fact: purchase
+    # Outcomes count only events strictly after the enrolling purchase, so a
+    # purchase conversion metric on this exposure measures a repeat purchase
+    # and a revenue metric excludes the enrolling order.
     description: >
       Exposure is the first purchase event. Used for revenue /
       conversion experiments where only users who complete a

@@ -328,16 +328,20 @@ Switchback construction failures expose these stable codes:
 | `source.frame.switchback.units` | Fewer than two units are present for the default unit-cycle t approximation or pilot variance. A declared variance envelope and a shared schedule permit a one-unit roster. |
 | `source.frame.switchback.plan` | A plan has non-default `q`, `view_multiplicity`, secondary-family inference, non-fixed inference, unsupported plan-bound `decision_method`/`sensitivity_methods`/`prior`, relative margins, or a nonzero relative null. |
 
-- Shared-block inference with fewer than two independent blocks refuses with
-  `InvalidRequestError`, code `estimation.contrast.switchback_block_inference`;
-  a larger roster does not satisfy this minimum.
+- A shared schedule declared over one block refuses with
+  `source.frame.switchback.schedule`: one block realizes only one cycle order,
+  a positivity failure, and a larger roster does not lift it. Block-t inference
+  over combined shared-schedule partitions that hold fewer than two independent
+  blocks refuses with `InvalidRequestError`, code
+  `estimation.contrast.switchback_block_inference`.
 - The validator raises `InvalidRequestError` for assignment, identification,
   columns, domain, schedule, missingness, numeric, and units codes;
   unsupported metric options use `CapabilityError`.
 - Multiple primary metrics are supported and receive the compiler's
-  conservative alpha splitting. Duplicate metric specifications are rejected
-  by metric coercion with an uncoded `ValueError`, and duplicate plan entries
-  by `AnalysisPlan` validation, not `source.frame.switchback.plan`.
+  conservative alpha splitting. Duplicate metric specifications refuse with
+  `InvalidRequestError`, code `frame.duplicate_metric_name`. Duplicate plan
+  entries are rejected by `AnalysisPlan` validation, not
+  `source.frame.switchback.plan`.
 - `run(experiment, reader)` accepts only its default role/prior arguments (`UNSET`).
   The fixed `ContrastDecisionProcedure` owns the one decision method, fixed
   inference, family (`none`), alternative, null, and alpha. Passing

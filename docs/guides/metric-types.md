@@ -337,7 +337,11 @@ product-analytics tool.
 returned on or after the 7th calendar day *after* the exposure day. A
 warehouse query that counts the exposure day as day 1 measures a band shifted
 by one day and produces a genuinely different number. When reconciling, check
-the indexing convention first.
+the indexing convention first. On day 0, warehouse definitions count an
+outcome event only when its timestamp is strictly after `first_exposure_ts`,
+so an event at that exact instant, such as the order that enrolls a unit
+under a first-purchase exposure, counts in neither the outcome nor the CUPED
+window (see [Data model](data-model.md#one-row-per-unit-per-day)).
 
 **Days are calendar days at the declared `day_boundary` (default UTC).** The
 exposure timestamp is cast to a calendar date at the boundary (plain `"UTC"`
